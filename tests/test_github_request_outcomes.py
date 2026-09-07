@@ -8,8 +8,10 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from auto_coder.adversarial_validator import AdversarialValidationResult
+from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig
 from auto_coder.logger_config import setup_logger
-from auto_coder.util.gh_cache import get_ghapi_client
+from auto_coder.util.gh_cache import ActionsSecretPublisher, GitHubClient, get_ghapi_client
 from auto_coder.util.github_request_outcome import (
     DeliveryCertainty,
     DiagnosticTransport,
@@ -18,8 +20,45 @@ from auto_coder.util.github_request_outcome import (
     GitHubRequestRefused,
     RequestProvenance,
     classify_response,
+    configure_github_request_boundary,
     response_metadata,
 )
+
+
+def test_process_boundary_refuses_distinct_production_credentials_without_a_send(tmp_path, monkeypatch):
+    """Controller, reviewer-App, and secret publication all reach one seam."""
+    sent = []
+
+    def forbidden_send(self, request):
+        sent.append(request)
+        return httpx.Response(500, request=request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", forbidden_send)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.jwt.encode", lambda *args, **kwargs: "reviewer-jwt")
+    key = tmp_path / "reviewer.pem"
+    key.write_text("private", encoding="utf-8")
+    observations = []
+    configure_github_request_boundary(lambda context: False, observations.append)
+    try:
+        with pytest.raises(GitHubRequestRefused):
+            GitHubClient("ordinary-token").get_issue_dispatch_snapshot_strict("acme/widgets", 1)
+
+        reviewer = GitHubAppReviewer(ReviewerAppConfig("123", private_key_path=key))
+        assert reviewer.publish("acme/widgets", 2, "sha", AdversarialValidationResult(result="PASS")).success is False
+
+        with pytest.raises(Exception):
+            ActionsSecretPublisher("secret-token").set_repository_secret("acme/widgets", "VALUE", "secret")
+    finally:
+        configure_github_request_boundary()
+
+    assert sent == []
+    assert len(observations) == 3
+    assert {item.context.subsystem for item in observations} == {
+        "controller-strict",
+        "reviewer-app",
+        "actions-secrets",
+    }
+    assert all(item.delivery is DeliveryCertainty.DEFINITELY_NOT_SENT for item in observations)
 
 
 def _client(handler, **kwargs):

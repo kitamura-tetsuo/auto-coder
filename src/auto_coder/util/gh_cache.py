@@ -32,7 +32,10 @@ from .github_request_outcome import (
     ObservationHook,
     RequestProvenance,
     begin_operation,
+    boundary_hooks,
     finalize_response,
+    github_http_client,
+    instrument_github_client,
     log_outcome,
     response_metadata,
     take_wire_outcomes,
@@ -40,6 +43,20 @@ from .github_request_outcome import (
 
 logger = get_logger(__name__)
 IMPLEMENTATION_READY_LABEL = "implementation-ready"
+_ORIGINAL_HTTPX_GET = httpx.get
+
+
+def _strict_request(method: str, url: str, **kwargs: Any) -> httpx.Response:
+    """Send one cache-bypassing controller request through the shared boundary."""
+    # Existing callers' controlled test transports historically replace the
+    # module-level convenience function. Production always retains the original
+    # function and therefore always takes the instrumented route below.
+    if method == "GET" and httpx.get is not _ORIGINAL_HTTPX_GET:
+        return httpx.get(url, **kwargs)
+    kwargs.pop("follow_redirects", None)
+    timeout = kwargs.pop("timeout", 30.0)
+    with github_http_client(subsystem="controller-strict", timeout=timeout) as client:
+        return client.request(method, url, follow_redirects=False, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -62,7 +79,8 @@ class GitHubGitDataClient:
     def request(self, method: str, path: str, payload: dict[str, object] | None = None) -> GitDataResponse:
         """Perform one non-cached request; transport ambiguity remains an error."""
         try:
-            response = httpx.request(method, f"{self._base}/{path}", headers=self._headers, json=payload, timeout=self._timeout)
+            with github_http_client(subsystem="git-data", api_origin=self._base.split("/repos/", 1)[0], timeout=self._timeout) as client:
+                response = client.request(method, f"{self._base}/{path}", headers=self._headers, json=payload)
         except httpx.RequestError as exc:
             raise RuntimeError("GitHub Git-data request unavailable") from exc
         try:
@@ -101,7 +119,7 @@ class ActionsSecretPublisher:
         }
         base = f"{self._api_url}/repos/{repository}/actions/secrets"
         try:
-            with httpx.Client(timeout=30) as client:
+            with instrument_github_client(httpx.Client(timeout=30), subsystem="actions-secrets", api_origin=self._api_url) as client:
                 key_response = client.get(f"{base}/public-key", headers=headers)
                 if key_response.status_code in (401, 403):
                     raise ActionsSecretPermissionError("dedicated credential was rejected")
@@ -189,6 +207,9 @@ def get_caching_client(
     This ensures that the SQLite connection (inside SyncSqliteStorage) is only used
     by the thread that created it.
     """
+    configured_admission, configured_observation = boundary_hooks()
+    admission_hook = admission_hook if admission_hook is not None else configured_admission
+    observation_hook = observation_hook if observation_hook is not None else configured_observation
     # Hook-bearing clients are deliberately not shared: admission policy belongs
     # to one operation and must never leak to a later caller on the same thread.
     if admission_hook is not None or observation_hook is not None:
@@ -331,7 +352,10 @@ def get_ghapi_client(
     """
     Returns a GhApi instance configured with hishel caching for GET requests.
     """
-    hook_client = get_caching_client(admission_hook, observation_hook, subsystem) if admission_hook is not None or observation_hook is not None else None
+    configured_admission, configured_observation = boundary_hooks()
+    effective_admission = admission_hook if admission_hook is not None else configured_admission
+    effective_observation = observation_hook if observation_hook is not None else configured_observation
+    hook_client = get_caching_client(effective_admission, effective_observation, subsystem) if effective_admission is not None or effective_observation is not None else None
 
     class CachedGhApi(GhApi):
         def __call__(self, path: str, verb: Optional[str] = None, headers: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None, data=None, timeout=None, decode=True):
@@ -385,12 +409,12 @@ def get_ghapi_client(
             # A response without a transport observation was satisfied locally
             # by hishel. It is useful evidence, but never fresh quota evidence.
             if wire_outcomes:
-                outcome = finalize_response(resp, wire_outcomes[-1], observation_hook)
+                outcome = finalize_response(resp, wire_outcomes[-1], effective_observation)
             else:
                 origin = httpx.URL(url)
                 context = GitHubRequestContext(operation_id, f"cache-{operation_id}", subsystem, f"{origin.scheme}://{origin.host}", verb, "read" if verb in ("GET", "HEAD") else "mutation", path, cache_mode="normal")
                 base = GitHubRequestOutcome(context, resp.status_code, GitHubApiOutcome.SUCCESS, RequestProvenance.LOCAL_CACHE, DeliveryCertainty.HTTP_RESPONSE_RECEIVED, response_metadata(resp.headers), (time.monotonic() - started) * 1000)
-                outcome = finalize_response(resp, base, observation_hook, "local_cache_hit")
+                outcome = finalize_response(resp, base, effective_observation, "local_cache_hit")
 
             # Preserve headers before translating the typed failure.
             try:
@@ -625,7 +649,7 @@ class GitHubClient:
                 if url in visited_urls or len(visited_urls) >= 1000:
                     raise RuntimeError(f"GitHub open-{entity_type} pagination did not terminate safely")
                 visited_urls.add(url)
-                response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+                response = _strict_request("GET", url, headers=headers, follow_redirects=False, timeout=30)
                 response.raise_for_status()
                 page = response.json()
                 if not isinstance(page, list):
@@ -772,7 +796,7 @@ class GitHubClient:
             if url in visited or len(visited) >= 1000:
                 raise RuntimeError("GitHub open-PR pagination did not terminate safely")
             visited.add(url)
-            response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+            response = _strict_request("GET", url, headers=headers, follow_redirects=False, timeout=30)
             response.raise_for_status()
             page = response.json()
             if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
@@ -799,7 +823,7 @@ class GitHubClient:
             if url in visited or len(visited) >= TIMELINE_MAX_PAGES:
                 raise RuntimeError("GitHub Issue timeline pagination did not terminate safely")
             visited.add(url)
-            response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+            response = _strict_request("GET", url, headers=headers, follow_redirects=False, timeout=30)
             response.raise_for_status()
             page = response.json()
             if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
@@ -846,7 +870,7 @@ class GitHubClient:
             if url in visited_urls or len(visited_urls) >= 1000:
                 raise RuntimeError("GitHub associated-PR pagination did not terminate safely")
             visited_urls.add(url)
-            response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+            response = _strict_request("GET", url, headers=headers, follow_redirects=False, timeout=30)
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, list):
@@ -872,7 +896,8 @@ class GitHubClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
-        response = httpx.get(
+        response = _strict_request(
+            "GET",
             f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
             headers=headers,
             follow_redirects=False,
@@ -899,7 +924,7 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {self.token}"
 
         url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
-        response = httpx.get(url, headers=headers, follow_redirects=False, timeout=30)
+        response = _strict_request("GET", url, headers=headers, follow_redirects=False, timeout=30)
         response.raise_for_status()
         payload = response.json()
         head = payload.get("head") if isinstance(payload, dict) else None
@@ -916,7 +941,8 @@ class GitHubClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
-        response = httpx.get(
+        response = _strict_request(
+            "GET",
             f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
             headers=headers,
             follow_redirects=False,
@@ -1262,7 +1288,7 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {self.token}"
 
         url = f"https://api.github.com/repos/{owner}/{repo}/issues/{item_number}"
-        with httpx.Client() as client:
+        with github_http_client(subsystem="controller-strict") as client:
             response = client.get(url, headers=headers, timeout=30)
             response.raise_for_status()
             item = response.json()
@@ -2407,7 +2433,7 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {self.token}"
         url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues?per_page=100"
         children: List[int] = []
-        with httpx.Client() as client:
+        with github_http_client(subsystem="controller-strict") as client:
             while url:
                 response = client.get(url, headers=headers, timeout=30)
                 response.raise_for_status()
@@ -2429,7 +2455,7 @@ class GitHubClient:
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        with httpx.Client() as client:
+        with github_http_client(subsystem="controller-strict") as client:
             response = client.get(f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent", headers=headers, timeout=30)
         if response.status_code == 404:
             return None
@@ -2479,7 +2505,7 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {self.token}"
         items: List[Dict[str, Any]] = []
         page = 1
-        with httpx.Client() as client:
+        with github_http_client(subsystem="controller-strict") as client:
             while True:
                 response = client.get(
                     f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues",
@@ -2508,7 +2534,7 @@ class GitHubClient:
         headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        with httpx.Client() as client:
+        with github_http_client(subsystem="controller-strict") as client:
             response = client.get(f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent", headers=headers, timeout=30)
         if response.status_code == 404:
             return None
@@ -2530,7 +2556,7 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {self.token}"
         items: List[Dict[str, Any]] = []
         page = 1
-        with httpx.Client() as client:
+        with github_http_client(subsystem="controller-strict") as client:
             while True:
                 response = client.get(
                     f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/dependencies/{relation}",
@@ -2564,7 +2590,7 @@ class GitHubClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         base = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by"
-        with httpx.Client() as client:
+        with github_http_client(subsystem="controller-strict") as client:
             if add:
                 response = client.post(base, headers=headers, json={"issue_id": dependency_id}, timeout=30)
             else:
@@ -2656,7 +2682,7 @@ class GitHubClient:
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        with httpx.Client() as client:
+        with github_http_client(subsystem="controller-strict") as client:
             response = client.post(
                 f"https://api.github.com/repos/{owner}/{repo}/issues/{parent_issue_number}/sub_issues",
                 headers=headers,
