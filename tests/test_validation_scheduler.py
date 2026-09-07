@@ -175,6 +175,7 @@ def test_executor_preserves_repository_context_through_real_analyzer_factories(t
     )
     github = Mock()
     parent, children = issue(10), [issue(20), issue(30)]
+    children[0]["body"] += "\n\n## Context\nParent-Issue: #40\nIssue #40 is historical prose evidence only."
     snapshots = {10: parent, 20: children[0], 30: children[1]}
     github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
     github.get_direct_sub_issues_strict.return_value = [dict(child) for child in children]
@@ -202,6 +203,9 @@ def test_executor_preserves_repository_context_through_real_analyzer_factories(t
     assert '"issue_number": 10' in decomposition_prompt
     assert '"issue_number": 20' in decomposition_prompt
     assert '"issue_number": 30' in decomposition_prompt
+    assert '"issue_number": 40' not in decomposition_prompt
+    assert "Parent-Issue: #40" in decomposition_prompt
+    github.get_direct_sub_issues_strict.assert_called_once_with("owner/repo", 10)
     engine.validation_scheduler.shutdown()
 
 
