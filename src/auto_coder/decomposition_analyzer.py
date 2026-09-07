@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterator, Optional, Sequence
 
 from .backend_manager import BackendManager, run_llm_prompt
+from .objective_evidence import ObjectiveAnchor, objective_evidence_json
 from .prompt_loader import render_prompt
 from .requirement_contract import NormativeIssueManifest
 from .specification_analyzer import _reject_duplicate_json_members
@@ -72,6 +73,7 @@ class DecompositionReviewEvidence:
 
     baseline: str
     prior_applied_outcomes: tuple[str, ...] = ()
+    objectives: tuple[ObjectiveAnchor, ...] = ()
 
 
 _REVIEW_EVIDENCE: ContextVar[Optional[DecompositionReviewEvidence]] = ContextVar("decomposition_review_evidence", default=None)
@@ -203,6 +205,7 @@ def analyze_issue_decomposition(
         direct_child_specifications=json.dumps([issue_payload(child) for child in children], ensure_ascii=False, indent=2),
         durable_decomposition_baseline=review_evidence.baseline if review_evidence else "(No earlier decomposition baseline is available.)",
         prior_applied_decomposition_outcomes=("\n\n".join(review_evidence.prior_applied_outcomes) if review_evidence and review_evidence.prior_applied_outcomes else "(No prior applied material decomposition-review outcomes.)"),
+        objective_evidence=(json.dumps([json.loads(objective_evidence_json(item)) for item in review_evidence.objectives], ensure_ascii=False, indent=2) if review_evidence and review_evidence.objectives else "(Required Objective evidence is unavailable.)"),
     )
     try:
         if prompt_runner is not None:

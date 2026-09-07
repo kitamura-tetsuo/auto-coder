@@ -1,5 +1,17 @@
 # Client Features Documentation
 
+## Durable per-Issue Objective anchors
+
+Every supported individual or complete direct-child-set specification review
+captures one repository-and-Issue-number-scoped Objective anchor after normative
+manifest validation. The first valid individual baseline takes precedence for
+legacy migration; otherwise the first admitted current snapshot wins atomically.
+Anchored text and explicit legacy absence survive edits, relationship changes,
+concurrent review work, and restart. Individual and decomposition prompts receive
+the immutable original state separately from the current structural extraction,
+and Objective evidence never enters the normative Requirement manifest. Invalid,
+unreadable, or unpersistable required evidence fails closed before semantic review.
+
 ## Native sibling dependency reconciliation
 
 GitHub Issue lifecycle, native dependency, and sub-issue deliveries now create
