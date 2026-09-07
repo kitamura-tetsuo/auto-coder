@@ -24,11 +24,12 @@ from .specification_analyzer import (
     analyze_issue_specification,
     individual_relationship_context,
     individual_review_evidence,
+    objective_integrity_result,
 )
 from .specification_repair_rounds import SpecificationRepairRoundStore
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
-VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v3-objective-anchor"
+VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v4-objective-scope"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
 
 
@@ -303,6 +304,12 @@ class SpecificationValidationLifecycle:
                     evidence = IndividualReviewEvidence(history.baseline, history.prior_applied_outcomes, objective)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     return ValidationDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}")
+                integrity = objective_integrity_result(evidence, manifest.issue_number)
+                if integrity is not None:
+                    decision = ValidationDecision(identity, integrity.verdict, integrity.findings, remediation=integrity.remediation)
+                    if integrity.verdict == "BLOCKED":
+                        self.store.save(decision)
+                    return decision
             existing = self.store.get(identity)
             if existing is not None:
                 return existing

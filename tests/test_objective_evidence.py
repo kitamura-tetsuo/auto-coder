@@ -43,12 +43,13 @@ def test_individual_production_lifecycle_keeps_original_and_current_separate(tmp
         )
 
     with patch("auto_coder.specification_validation_lifecycle.analyze_issue_specification", side_effect=analyze):
-        SpecificationValidationLifecycle("owner/repo", "model-a", tmp_path / "decisions.json").decide(manifest, "Anchor", first)
-        SpecificationValidationLifecycle("owner/repo", "model-b", tmp_path / "decisions.json").decide(build_normative_issue_manifest(1857, "Anchor", edited), "Anchor", edited)
+        first_result = SpecificationValidationLifecycle("owner/repo", "model-a", tmp_path / "decisions.json").decide(manifest, "Anchor", first)
+        changed_result = SpecificationValidationLifecycle("owner/repo", "model-b", tmp_path / "decisions.json").decide(build_normative_issue_manifest(1857, "Anchor", edited), "Anchor", edited)
 
-    assert '"original_text": "Original purpose"' in prompts[1]
-    assert '"text": "Replacement purpose"' in prompts[1]
-    assert '"requirement_id": "REQ-001"' in prompts[1]
+    assert first_result.verdict == "READY"
+    assert changed_result.verdict == "BLOCKED"
+    assert changed_result.findings[0].category == "objective_conflict"
+    assert len(prompts) == 1
     assert "Original purpose" not in json.dumps([{"requirement_id": item.requirement_id, "text": item.text} for item in build_normative_issue_manifest(1857, "Anchor", edited).requirements])
 
 
@@ -85,3 +86,52 @@ def test_legacy_absence_concurrency_and_corrupt_baseline_fail_closed(tmp_path):
     decision = gate.decide(build_normative_issue_manifest(9, "Broken", body("Latest")), "Broken", body("Latest"))
     assert decision.verdict == "ERROR"
     assert called == []
+
+
+def test_production_lifecycle_blocks_anchor_tampering_before_model_or_cached_ready(tmp_path):
+    path = tmp_path / "decisions.json"
+    original = body("Render a preview without changing live state.")
+    calls = []
+    gate = SpecificationValidationLifecycle(
+        "owner/repo",
+        "model",
+        path,
+        lambda *_args: calls.append("model") or SpecificationAnalysisResult("READY"),
+    )
+    first_manifest = build_normative_issue_manifest(1858, "Preview", original)
+    assert gate.decide(first_manifest, "Preview", original).verdict == "READY"
+
+    variants = (
+        body("Render and apply a preview."),
+        "## Requirements\n- REQ-001: Preserve the value.",
+        "## Objective\n\n## Requirements\n- REQ-001: Preserve the value.",
+        original + "\n\n## Objective\nSecond purpose.",
+    )
+    for changed in variants:
+        result = gate.decide(build_normative_issue_manifest(1858, "Preview", changed), "Preview", changed)
+        assert result.verdict == "BLOCKED"
+        assert result.remediation == "EDIT_IN_PLACE"
+        assert len(result.findings) == 1
+        finding = result.findings[0]
+        assert finding.category == "objective_conflict"
+        assert finding.requirement_ids == ()
+        assert "Render a preview without changing live state." in finding.explanation
+        assert "replacement Issue" in finding.clarification
+    assert calls == ["model"]
+
+
+def test_unanchored_production_issue_remains_reviewable_and_never_adopts_later_objective(tmp_path):
+    path = tmp_path / "decisions.json"
+    calls = []
+    gate = SpecificationValidationLifecycle(
+        "owner/repo",
+        "model",
+        path,
+        lambda *_args: calls.append("model") or SpecificationAnalysisResult("READY"),
+    )
+    legacy = "## Requirements\n- REQ-001: Preserve the value."
+    assert gate.decide(build_normative_issue_manifest(12, "Legacy", legacy), "Legacy", legacy).verdict == "READY"
+    later = body("A later purpose")
+    assert gate.decide(build_normative_issue_manifest(12, "Legacy", later), "Legacy", later).verdict == "READY"
+    assert gate.objective_store.capture(12, later, "current:v1").state == "UNANCHORED"
+    assert calls == ["model", "model"]

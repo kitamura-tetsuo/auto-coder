@@ -4,10 +4,19 @@ from pathlib import Path
 
 import pytest
 
+from src.auto_coder.objective_evidence import ObjectiveAnchor, extract_objective
 from src.auto_coder.requirement_contract import build_normative_issue_manifest
-from src.auto_coder.specification_analyzer import IndividualRelationshipContext, analyze_issue_specification
+from src.auto_coder.specification_analyzer import IndividualRelationshipContext, IndividualReviewEvidence
+from src.auto_coder.specification_analyzer import analyze_issue_specification as _analyze_issue_specification
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "specification_regressions"
+
+
+def analyze_issue_specification(manifest, body, **kwargs):
+    current = extract_objective(body)
+    state = "ANCHORED" if current.status == "PRESENT" else "UNANCHORED"
+    kwargs["review_evidence"] = IndividualReviewEvidence("{}", objective=ObjectiveAnchor(manifest.issue_number, state, current.text, "fixture:v1", current))
+    return _analyze_issue_specification(manifest, body, **kwargs)
 
 
 def test_outliner_5290_fixture_preserves_provenance_and_review_oracle() -> None:

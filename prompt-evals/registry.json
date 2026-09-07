@@ -1,4 +1,13 @@
 {
   "schema_version": 1,
-  "targets": []
+  "targets": [
+    {
+      "id": "individual-objective-scope",
+      "prompt_dependencies": [
+        {"path": "src/auto_coder/prompts.yaml", "keys": ["issue.adversarial_specification_analysis"]}
+      ],
+      "config": "prompt-evals/targets/individual-objective-scope/promptfooconfig.yaml",
+      "cases": ["prompt-evals/targets/individual-objective-scope/cases/*.yaml"]
+    }
+  ]
 }

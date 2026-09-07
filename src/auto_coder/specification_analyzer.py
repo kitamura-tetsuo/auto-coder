@@ -21,6 +21,7 @@ SPECIFICATION_FINDING_CATEGORIES = frozenset(
         "unverifiable_requirement",
         "false_success_gap",
         "unstated_dependency",
+        "objective_conflict",
     }
 )
 
@@ -94,6 +95,36 @@ def individual_relationship_context(context: IndividualRelationshipContext) -> I
 
 def _error(message: str) -> SpecificationAnalysisResult:
     return SpecificationAnalysisResult(verdict="ERROR", error=message)
+
+
+def objective_integrity_result(evidence: IndividualReviewEvidence, issue_number: Optional[int] = None) -> Optional[SpecificationAnalysisResult]:
+    """Return the deterministic blocker for an altered anchored Objective."""
+    anchor = evidence.objective
+    if anchor is None:
+        return _error("Required Objective evidence is unavailable")
+    if (issue_number is not None and anchor.issue_number != issue_number) or not isinstance(anchor.source_identity, str) or not anchor.source_identity.strip():
+        return _error("Required Objective evidence is malformed")
+    if anchor.state == "UNANCHORED":
+        return None
+    if anchor.state != "ANCHORED" or not isinstance(anchor.original_text, str) or not anchor.original_text.strip():
+        return _error("Required Objective evidence is malformed")
+    current = anchor.current
+    if current.status == "PRESENT" and current.text == anchor.original_text:
+        return None
+    mismatch = {
+        "ABSENT": "The current Issue has no Objective section.",
+        "INVALID": "The current Issue has a duplicate or empty Objective section.",
+    }.get(current.status, "The current Objective text differs from the fixed Objective.")
+    quoted = json.dumps(anchor.original_text, ensure_ascii=False)
+    finding = SpecificationFinding(
+        category="objective_conflict",
+        requirement_ids=(),
+        explanation=f"Fixed Objective {quoted} was not preserved. {mismatch}",
+        clarification=("Restore the fixed Objective text exactly (apart from CRLF-to-LF conversion and outer whitespace), " "or obtain a user decision to create a replacement Issue for the changed purpose; do not rewrite the anchor."),
+        counterexample="",
+        missing_normative_boundary="",
+    )
+    return SpecificationAnalysisResult("BLOCKED", (finding,), remediation="EDIT_IN_PLACE")
 
 
 def _reject_duplicate_json_members(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -187,6 +218,11 @@ def analyze_issue_specification(
         return _error(manifest.error or "A valid explicit normative Requirement manifest is required")
 
     review_evidence = review_evidence or _REVIEW_EVIDENCE.get()
+    if review_evidence is None:
+        return _error("Required Objective evidence is unavailable")
+    integrity = objective_integrity_result(review_evidence, manifest.issue_number)
+    if integrity is not None:
+        return integrity
     relationship_context = relationship_context or _RELATIONSHIP_CONTEXT.get() or IndividualRelationshipContext()
     if relationship_context.role not in {"standalone", "child"}:
         return _error("Specification analysis received an invalid authoritative relationship role")

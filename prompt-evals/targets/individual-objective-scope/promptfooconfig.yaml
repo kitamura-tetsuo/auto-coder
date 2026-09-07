@@ -1,0 +1,6 @@
+description: Individual Issue fixed-Objective semantic discrimination
+providers:
+  - openai:gpt-5.2
+prompts:
+  - file://prompt.py:render
+tests: file://cases/*.yaml
