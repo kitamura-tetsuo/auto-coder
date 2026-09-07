@@ -429,7 +429,71 @@ class AutomationEngine:
             if not isinstance(child, dict) or child.get("number") != number or not isinstance(native_parent, dict) or native_parent.get("number") != parent_number:
                 raise ParentOperationalError(f"native parent for child #{number} is not #{parent_number}")
             authoritative_children.append(child)
+        self._require_shallow_hierarchy(repo_name, parent_number, parent, authoritative_children)
         return parent, authoritative_children
+
+    def _require_shallow_hierarchy(
+        self,
+        repo_name: str,
+        parent_number: int,
+        parent: Dict[str, Any],
+        children: List[Dict[str, Any]],
+    ) -> None:
+        """Reject a graph member that is both a child and a parent.
+
+        GitHub supports deeper sub-issue trees, but Auto-Coder's decomposition
+        contract deliberately has exactly one relationship level.  These reads
+        are strict so unavailable evidence cannot silently flatten a real tree.
+        """
+        parent_reader = getattr(self.github, "get_parent_issue_details_strict", None)
+        child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
+        if not callable(parent_reader) or not callable(child_reader):
+            raise ParentOperationalError("authoritative shallow-hierarchy readers are unavailable")
+        ancestor = parent_reader(repo_name, parent_number)
+        if ancestor is not None:
+            raise ParentSpecificationError(f"Issue #{parent_number} is both a child and a parent; nested hierarchies are unsupported")
+        for child in children:
+            number = child.get("number")
+            descendants = child_reader(repo_name, int(number))
+            if not isinstance(descendants, list):
+                raise ParentOperationalError(f"cannot establish direct-child membership for Issue #{number}")
+            if descendants:
+                raise ParentSpecificationError(f"Issue #{number} is both a child and a parent; nested hierarchies are unsupported")
+
+    def _complete_container_parent(
+        self,
+        repo_name: str,
+        parent_number: int,
+        decomposition_decision: DecompositionDecision,
+        child_decisions: dict[int, ValidationDecision],
+    ) -> tuple[bool, str]:
+        """Close an exactly validated, fully completed parent specification set."""
+        try:
+            current = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
+            if current is None:
+                return False, "authoritative parent/direct-child state is unavailable"
+            parent, children = current
+            if not self._is_open_issue(parent) or not is_implementation_ready(parent):
+                return False, "parent is no longer open and submitted"
+            decomposition = self._get_decomposition_validator(repo_name)
+            if decomposition_decision.verdict != "READY" or decomposition.identity(parent, children) != decomposition_decision.identity:
+                return False, "decomposition validation identity is stale or is not READY"
+            individual = self._get_specification_validator(repo_name)
+            for child in children:
+                number = child.get("number")
+                if not isinstance(number, int) or child.get("state") != "closed":
+                    return False, "a direct child is no longer closed"
+                decision = child_decisions.get(number)
+                identity = individual.identity(number, str(child.get("title") or ""), str(child.get("body") or ""))
+                if decision is None or decision.verdict != "READY" or decision.identity != identity:
+                    return False, f"individual validation for child #{number} is stale or is not READY"
+            self.github.close_issue(repo_name, parent_number)
+            closed = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
+            if not isinstance(closed, dict) or closed.get("state") != "closed":
+                return False, "GitHub did not confirm parent closure"
+            return True, "Completed - closed container parent after all direct children completed"
+        except Exception as exc:
+            return False, f"authoritative parent completion failed: {exc}"
 
     def _get_authoritative_parent_number(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[int]:
         """Resolve the current native parent without trusting collected hints."""
@@ -486,6 +550,19 @@ class AutomationEngine:
                         raise ParentOperationalError(f"cannot resolve declared parent #{declared}: {exc}") from exc
                     if not isinstance(target, dict) or target.get("number") != declared or "pull_request" in target:
                         raise ParentSpecificationError(f"declared parent #{declared} is not an Issue in {repo_name}")
+                    if not self._is_open_issue(target):
+                        raise ParentSpecificationError(f"declared parent #{declared} is closed")
+                    try:
+                        target_parent = self.github.get_parent_issue_details_strict(repo_name, declared)
+                        child_members = self.github.get_direct_sub_issues_strict(repo_name, issue_number)
+                    except Exception as exc:
+                        raise ParentOperationalError(f"cannot validate shallow Parent-Issue relationship: {exc}") from exc
+                    if target_parent is not None:
+                        raise ParentSpecificationError(f"declared parent #{declared} is already a child; nested hierarchies are unsupported")
+                    if not isinstance(child_members, list):
+                        raise ParentOperationalError(f"cannot establish direct-child membership for Issue #{issue_number}")
+                    if child_members:
+                        raise ParentSpecificationError(f"Issue #{issue_number} is already a parent and cannot become a child")
                     child_id = current.get("id")
                     if not isinstance(child_id, int) or isinstance(child_id, bool):
                         raise ParentOperationalError("authoritative child snapshot omitted its database ID")
@@ -2106,7 +2183,7 @@ class AutomationEngine:
                     # not to implementation eligibility. Submit the complete set
                     # before closed-child filtering or retained-owner routing.
                     decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set, config)
-                    parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
+                    parent_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
                     _, authoritative_children = parent_submission_set
                     open_children = sorted(
                         (child for child in authoritative_children if child.get("state") == "open" and isinstance(child.get("number"), int)),
@@ -2124,9 +2201,37 @@ class AutomationEngine:
                             result.error = "Parent/child decomposition validation found material defects"
                             if side_effect_error:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
+                            result.actions = ["Rejected - blocked parent/child decomposition"]
                         elif decomposition_enabled and parent_decision is not None and parent_decision.verdict == "ERROR":
                             result.error = "Decomposition validation failed; parent readiness was preserved for retry"
-                        result.actions = ["Skipped - submitted parent has no open child eligible for sequential implementation"]
+                            result.actions = ["Deferred - decomposition validation error"]
+                        elif any(decision.verdict == "ERROR" for decision in child_decisions.values()):
+                            result.error = "Individual validation failed; parent readiness was preserved for retry"
+                            result.actions = ["Deferred - child specification validation error"]
+                        elif any(decision.verdict == "BLOCKED" for decision in child_decisions.values()):
+                            blocked = next(decision for decision in child_decisions.values() if decision.verdict == "BLOCKED")
+                            validator = self._get_specification_validator(repo_name)
+
+                            def set_is_current() -> bool:
+                                latest = self._fetch_authoritative_decomposition_set(repo_name, item_number)
+                                return latest is not None and self._is_open_issue(latest[0]) and is_implementation_ready(latest[0]) and parent_decision is not None and parent_decomposition_validator.identity(*latest) == parent_decision.identity
+
+                            side_effect_error = validator.apply_inherited_blocked(self.github, blocked, item_number, set_is_current)
+                            result.error = "Child specification validation found material defects"
+                            if side_effect_error:
+                                result.error += f"; GitHub side effect failed: {side_effect_error}"
+                            result.actions = ["Rejected - blocked child specification"]
+                        elif decomposition_enabled and parent_decision is not None:
+                            complete, message = self._complete_container_parent(repo_name, item_number, parent_decision, child_decisions)
+                            if complete:
+                                result.success = True
+                                result.actions = [message]
+                            else:
+                                result.error = message
+                                result.actions = ["Deferred - container parent completion requires retry"]
+                                result.refill_retry_required = True
+                        else:
+                            result.actions = ["Deferred - container parent requires decomposition validation"]
                         return result
                     child = self.github.get_issue_dispatch_snapshot_strict(repo_name, int(open_children[0]["number"]))
                     child["parent_issue_number"] = item_number
@@ -2776,22 +2881,6 @@ class AutomationEngine:
                     return result
 
                 if item_type == "issue":
-                    # Check if issue has sub-issues (Parent Issue)
-                    # If so, force local processing to handle branch merging correctly
-                    has_sub_issues = False
-                    if candidate.data:
-                        # Try to use data from candidate first if available
-                        # This might be populated by previous calls (e.g. in _get_candidates)
-                        # but usually we need to check specifically if we don't have that info
-                        pass
-
-                    # Reliable check for sub-issues
-                    try:
-                        all_sub_issues = self.github.get_all_sub_issues(repo_name, item_number)
-                        has_sub_issues = len(all_sub_issues) > 0
-                    except Exception as e:
-                        logger.warning(f"Failed to check for sub-issues for #{item_number}: {e}")
-
                     # Check if issue has difficult label
                     is_difficult = False
                     if candidate.data:
@@ -2802,29 +2891,7 @@ class AutomationEngine:
                                 is_difficult = True
                                 break
 
-                    if has_sub_issues:
-                        logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Delegating verification to backend_with_high_score_cloud.")
-                        get_trace_logger().log(
-                            "Dispatch",
-                            f"Dispatching parent issue #{item_number} to High Score Cloud Backend",
-                            item_type="issue",
-                            item_number=item_number,
-                            details={"mode": "parent_verification", "backend": "backend_with_high_score_cloud"},
-                        )
-                        from .issue_processor import _process_issue_high_score_cloud
-
-                        # Use the lifecycle-aware dispatcher. It persists asynchronous
-                        # sessions and retains the processing label, while preserving
-                        # the synchronous fallback for local backend configurations.
-                        result.actions = _process_issue_high_score_cloud(
-                            repo_name,
-                            candidate.data,
-                            config,
-                            self.github,
-                            label_context=should_process,
-                            implementation_slots=implementation_slots,
-                        )
-                    elif is_difficult:
+                    if is_difficult:
                         # For difficult issues, bypass Jules and delegate to backend_with_high_score_cloud directly
                         logger.info(f"Issue #{item_number} has 'difficult' label. Delegating to backend_with_high_score_cloud.")
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to High Score Cloud Backend (difficult label)", item_type="issue", item_number=item_number, details={"mode": "high_score_cloud"})

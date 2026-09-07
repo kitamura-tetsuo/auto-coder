@@ -940,7 +940,7 @@ pr:
 
 issue:
   adversarial_decomposition_analysis: |-
-    Evaluate whether the supplied parent Issue and complete direct-child set form a sufficient contract for sequential child implementation and parent verification.
+    Evaluate whether the supplied parent Issue and complete direct-child set form a sufficient contract for sequential child implementation and container-parent completion.
 
     Perform semantic specification analysis only. The supplied manifests are the sole authoritative normative Requirements. Titles and body evidence may expose omissions or contradictions, but must never be inherited into another Issue's Requirements. Do not reparse Markdown, inspect repository code, add Issues outside the supplied membership, or rely on history, conventions, architecture preferences, external standards, or protocols unless a Requirement explicitly incorporates one.
 

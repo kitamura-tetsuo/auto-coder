@@ -313,6 +313,18 @@ title/body digests, and the effective decomposition prompt, result contract, and
 provider/model route. Closed children remain generation members, so completing a
 sibling does not invalidate a reusable durable `READY` decision.
 
+Container parents are coordination-only specification sets and never enter an
+implementation backend, including explicit, forced, urgent, local, cloud, and
+recovery routes. Once the exact current decomposition and every exact current
+child have reusable `READY` evidence and every direct child is closed, a final
+cache-bypassing reconciliation closes the still-submitted parent directly. Any
+identity or membership drift, reopened child, validation `ERROR`, or GitHub close
+failure leaves completion observable and retryable without implementation fallback.
+Parent relationships may be established only against an open same-repository
+Issue, and an Issue that is already a child or already has children cannot be
+made the middle of a nested hierarchy. Pre-existing nested hierarchies fail
+closed until manually corrected.
+
 Set and direct-child validation jobs are eagerly coalesced by exact identity and run
 concurrently under one configurable positive `process_issues.validation_concurrency`
 bound (default 2), independently of implementation capacity. Standalone validation

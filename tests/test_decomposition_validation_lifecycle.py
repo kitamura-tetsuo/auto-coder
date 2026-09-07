@@ -362,10 +362,11 @@ def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_
     with patch("auto_coder.util.gh_cache.get_ghapi_client", return_value=api):
         normalized = github.get_open_issues_json("owner/repo")
     assert normalized[0]["has_open_sub_issues"] is False
-    github.get_direct_sub_issues_strict = Mock(return_value=[child])
+    github.get_direct_sub_issues_strict = Mock(side_effect=lambda _repo, number: [child] if number == 10 else [])
     snapshots = {10: parent, 11: child}
     github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(snapshots[number]))
     github.get_parent_issue_details_strict = Mock(side_effect=lambda _repo, number: dict(parent) if number == 11 else None)
+    github.close_issue = Mock(side_effect=lambda _repo, number: snapshots[number].update(state="closed"))
     events = []
     engine = configured_engine(
         tmp_path,
@@ -375,7 +376,7 @@ def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_
     )
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized[0], 0, issue_number=10), engine.config)
-    assert result.actions == ["Skipped - submitted parent has no open child eligible for sequential implementation"]
+    assert result.actions == ["Completed - closed container parent after all direct children completed"]
     assert set(events) == {"set", "individual"}
     dispatch.assert_not_called()
     GitHubClient.reset_singleton()
