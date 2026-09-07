@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterator, Optional
 
+from .runtime_locks import ensure_lock_directory, lock_path
+
 OBJECTIVE_EVIDENCE_POLICY = "objective-anchor-v1"
 
 
@@ -76,14 +78,15 @@ class ObjectiveAnchorStore:
     def __init__(self, repository: str, path: Optional[Path] = None) -> None:
         root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
         self.path = path or root / repository / "individual_review_history.json"
+        self.repository = repository
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
         import fcntl
 
-        lock_path = self.path.with_suffix(".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a", encoding="utf-8") as stream:
+        runtime_path = lock_path(self.repository, self.path, "individual-review-history")
+        ensure_lock_directory(runtime_path)
+        with runtime_path.open("a", encoding="utf-8") as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
             try:
                 yield

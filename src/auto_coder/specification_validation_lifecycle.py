@@ -15,6 +15,7 @@ from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
 from .requirement_contract import NormativeIssueManifest
+from .runtime_locks import ensure_lock_directory, lock_path
 from .specification_analyzer import (
     SPECIFICATION_FINDING_CATEGORIES,
     IndividualRelationshipContext,
@@ -104,6 +105,7 @@ class IndividualReviewHistoryStore:
     def __init__(self, repository: str, path: Optional[Path] = None) -> None:
         state_root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
         self.path = path or state_root / repository / "individual_review_history.json"
+        self.repository = repository
 
     def _read(self) -> dict[str, object]:
         try:
@@ -155,9 +157,9 @@ class IndividualReviewHistoryStore:
     def _locked(self) -> Iterator[None]:
         import fcntl
 
-        lock_path = self.path.with_suffix(".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a", encoding="utf-8") as stream:
+        runtime_path = lock_path(self.repository, self.path, "individual-review-history")
+        ensure_lock_directory(runtime_path)
+        with runtime_path.open("a", encoding="utf-8") as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
             try:
                 yield
@@ -201,6 +203,7 @@ class SpecificationValidationStore:
     def __init__(self, repository: str, path: Optional[Path] = None) -> None:
         state_root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
         self.path = path or state_root / repository / "specification_validations.json"
+        self.repository = repository
 
     def _read(self) -> dict[str, object]:
         try:
@@ -214,12 +217,12 @@ class SpecificationValidationStore:
         """Serialize one identity in this process and across daemon processes."""
         import fcntl
 
+        runtime_path = lock_path(self.repository, self.path, "specification-validation", key)
         with _IDENTITY_LOCKS_GUARD:
-            lock = _IDENTITY_LOCKS.setdefault(f"{self.path}:{key}", threading.Lock())
+            lock = _IDENTITY_LOCKS.setdefault(str(runtime_path), threading.Lock())
         with lock:
-            lock_path = self.path.with_suffix(f".{key}.lock")
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with lock_path.open("a", encoding="utf-8") as stream:
+            ensure_lock_directory(runtime_path)
+            with runtime_path.open("a", encoding="utf-8") as stream:
                 fcntl.flock(stream, fcntl.LOCK_EX)
                 try:
                     yield

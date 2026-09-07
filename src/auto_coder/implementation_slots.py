@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterator, NoReturn, Optional
 
 from .issue_context import resolve_issue_oracles
 from .logger_config import get_logger
+from .runtime_locks import ensure_lock_directory, lock_path
 
 logger = get_logger(__name__)
 
@@ -73,7 +74,7 @@ class ImplementationSlotRepository:
         runtime_root = os.environ.get("AUTO_CODER_RUNTIME_ROOT")
         default_root = Path(runtime_root) / "state" if runtime_root else Path.home() / ".auto-coder"
         self.storage_path = storage_path or default_root / repo_name / "implementation_slots.json"
-        self.lock_path = self.storage_path.with_suffix(".lock")
+        self.lock_path = lock_path(repo_name, self.storage_path, "implementation-store")
         self._thread_lock = threading.RLock()
         self._owner_locks: Dict[str, threading.RLock] = {}
         self._serialization_depth = threading.local()
@@ -127,6 +128,10 @@ class ImplementationSlotRepository:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             self._raise_permission_error(self.storage_path.parent, exc)
+        try:
+            ensure_lock_directory(self.lock_path, os.stat(self.storage_path.parent).st_gid)
+        except (OSError, RuntimeError) as exc:
+            self._raise_permission_error(self.lock_path.parent, exc)
         with self._thread_lock:
             try:
                 lock_fd = self._open_lock_file(self.lock_path)
@@ -834,7 +839,11 @@ class ImplementationSlotRepository:
                     depths[owner.key] -= 1
                 return
 
-            mutation_lock_path = self.storage_path.parent / f"implementation-{owner.kind}-{owner.number}.lock"
+            mutation_lock_path = lock_path(self.repo_name, self.storage_path, "implementation-owner", owner.key)
+            try:
+                ensure_lock_directory(mutation_lock_path, os.stat(self.storage_path.parent).st_gid)
+            except (OSError, RuntimeError) as exc:
+                self._raise_permission_error(mutation_lock_path.parent, exc)
             try:
                 mutation_lock_fd = self._open_lock_file(mutation_lock_path)
             except OSError as exc:

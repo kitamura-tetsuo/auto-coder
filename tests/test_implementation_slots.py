@@ -383,12 +383,15 @@ print(json.dumps({
     "serialization_attempts": serialization_attempts,
 }))
 """
+    environment = os.environ.copy()
+    environment["AUTO_CODER_RUNTIME_ROOT"] = str(storage_path.parent / "runtime")
     return subprocess.run(
         [*unix_identity_command(uid, gid), sys.executable, "-c", script, str(storage_path), str(owner_number), action],
         cwd=Path(__file__).parents[1],
         check=True,
         capture_output=True,
         text=True,
+        env=environment,
     )
 
 
@@ -420,8 +423,10 @@ def test_alternating_unix_identities_retain_shared_permissions_and_state():
 
         state = json.loads(storage_path.read_text(encoding="utf-8"))
         assert set(state) == {"issue:101", "issue:202", "issue:303", "issue:404", "issue:505"}
-        owner_lock_path = shared_directory / "implementation-issue-505.lock"
-        for path in (storage_path, storage_path.with_suffix(".lock"), owner_lock_path):
+        lock_directory = shared_directory / "runtime/locks/owner/repo"
+        store_lock_path = next(lock_directory.glob("implementation-store-*.lock"))
+        owner_lock_path = next(lock_directory.glob("implementation-owner-*.lock"))
+        for path in (storage_path, store_lock_path, owner_lock_path):
             metadata = path.stat()
             assert metadata.st_gid == shared_gid
             assert metadata.st_mode & 0o777 == 0o660
@@ -443,6 +448,7 @@ time.sleep(30)
             cwd=Path(__file__).parents[1],
             stdout=subprocess.PIPE,
             text=True,
+            env={**os.environ, "AUTO_CODER_RUNTIME_ROOT": str(shared_directory / "runtime")},
         )
         assert live_process.stdout is not None
         legacy_execution_id = live_process.stdout.readline().strip()
@@ -476,10 +482,10 @@ time.sleep(30)
 
             retry_result = json.loads(run_slot_writer_as(second_uid, shared_gid, storage_path, owner_number, "serialize-retries").stdout)
 
-            assert [attempt["entered"] for attempt in retry_result["serialization_attempts"]] == [False, False]
-            expected_error = f"Cannot safely establish or use implementation slot shared-state permissions for '{legacy_owner_lock}'"
             assert len(retry_result["serialization_attempts"]) == 2
-            assert all(attempt["error"].startswith(expected_error) for attempt in retry_result["serialization_attempts"])
+            assert [attempt["entered"] for attempt in retry_result["serialization_attempts"]] == [True, True]
+            assert all(attempt["error"] is None for attempt in retry_result["serialization_attempts"])
+            assert legacy_owner_lock.stat().st_mode & 0o777 == int(legacy_mode, 8)
 
         restrict_command = ["chown", f"{first_uid}:{shared_gid}", str(inaccessible_path)]
         if os.geteuid() != 0:
@@ -516,7 +522,8 @@ def test_readable_legacy_state_is_migrated_without_semantic_reset(tmp_path):
     assert slots.active_owners() == (owner,)
     assert slots.reserve(ImplementationOwner("issue", 1750)) is True
     assert storage_path.stat().st_mode & 0o777 == 0o660
-    assert storage_path.with_suffix(".lock").stat().st_mode & 0o777 == 0o660
+    assert slots.lock_path.stat().st_mode & 0o777 == 0o660
+    assert not storage_path.with_suffix(".lock").exists()
 
 
 def test_corrupt_state_error_is_distinct_from_permission_failures(tmp_path):
@@ -534,8 +541,11 @@ def test_cross_identity_processes_racing_final_slot_admit_exactly_one():
     gate_path = shared_directory / "start"
     first_uid, second_uid, shared_gid = 65532, 65533, os.getgid()
     setup_commands = [
+        ["mkdir", str(shared_directory / "runtime")],
         ["chown", f"{os.getuid()}:{shared_gid}", str(shared_directory)],
+        ["chown", f"{os.getuid()}:{shared_gid}", str(shared_directory / "runtime")],
         ["chmod", "2770", str(shared_directory)],
+        ["chmod", "2770", str(shared_directory / "runtime")],
     ]
     race_script = """
 import sys
@@ -560,11 +570,14 @@ time.sleep(30)
                 command = ["sudo", "-n", *command]
             subprocess.run(command, check=True)
         for uid, owner_number in ((first_uid, 701), (second_uid, 702)):
+            environment = os.environ.copy()
+            environment["AUTO_CODER_RUNTIME_ROOT"] = str(shared_directory / "runtime")
             process = subprocess.Popen(
                 [*unix_identity_command(uid, shared_gid), sys.executable, "-c", race_script, str(storage_path), str(gate_path), str(owner_number)],
                 cwd=Path(__file__).parents[1],
                 stdout=subprocess.PIPE,
                 text=True,
+                env=environment,
             )
             assert process.stdout is not None
             processes.append(process)
