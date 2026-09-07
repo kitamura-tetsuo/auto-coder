@@ -1,9 +1,9 @@
 description: Individual Issue fixed-Objective semantic discrimination
 providers:
-  - id: openai:chat:gpt-4.1
+  - id: openai:codex-sdk:gpt-5.6-sol
     config:
-      apiBaseUrl: https://models.github.ai/inference
-      apiKey: ${GITHUB_TOKEN}
+      sandbox_mode: read-only
+      model_reasoning_effort: high
 prompts:
   - file://prompt.py:render
 tests: file://cases/*.yaml
