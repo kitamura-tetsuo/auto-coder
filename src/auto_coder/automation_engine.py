@@ -326,6 +326,17 @@ class AutomationEngine:
 
         return get_issue_decomposition_validation_from_config(repo_name=repo_name)
 
+    def _is_pr_adversarial_validation_enabled(self, repo_name: str, config: Optional[AutomationConfig] = None) -> bool:
+        """Return whether PR adversarial validation is enabled."""
+        cfg = config or self.config
+        if cfg is not None and getattr(cfg, "repo_name", None) == repo_name:
+            return bool(getattr(cfg, "pr_adversarial_validation", True)) and bool(getattr(cfg, "ENABLE_ADVERSARIAL_VALIDATION", True))
+        if cfg is not None and (not getattr(cfg, "pr_adversarial_validation", True) or not getattr(cfg, "ENABLE_ADVERSARIAL_VALIDATION", True)):
+            return False
+        from .llm_backend_config import get_pr_adversarial_validation_from_config
+
+        return get_pr_adversarial_validation_from_config(repo_name=repo_name)
+
     def _get_decomposition_validator(self, repo_name: str) -> DecompositionValidationLifecycle:
         validator = self._decomposition_validators.get(repo_name)
         if validator is None:
@@ -1727,7 +1738,7 @@ class AutomationEngine:
                     pr_priority = 2  # Unmergeable PRs (elevated from priority 1)
                 elif not checks.success:
                     pr_priority = 1  # Fix-required but mergeable PRs
-                elif is_current_head_adversarial_review_blocked(self.github, repo_name, pr_data, self.config):
+                elif self._is_pr_adversarial_validation_enabled(repo_name, self.config) and is_current_head_adversarial_review_blocked(self.github, repo_name, pr_data, self.config):
                     # Auto-Coder's own adversarial review already found material
                     # violations at this exact HEAD and has no further normal
                     # action until the PR author/backend supplies a new commit

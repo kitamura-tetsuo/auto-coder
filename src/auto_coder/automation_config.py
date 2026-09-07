@@ -183,6 +183,8 @@ class AutomationConfig:
         repo_name: Optional[str] = None,
         max_adversarial_validations: Optional[int] = None,
         max_adversarial_reviews: Optional[int] = None,
+        pr_adversarial_validation: Optional[bool] = None,
+        enable_adversarial_validation: Optional[bool] = None,
     ):
         """Initialize AutomationConfig with optional environment variable overrides.
 
@@ -197,6 +199,8 @@ class AutomationConfig:
             repo_name: Optional GitHub repository in 'owner/repo' format for repo-scoped config.
             max_adversarial_validations: Optional maximum number of adversarial reviews to perform.
             max_adversarial_reviews: Optional alias for max_adversarial_validations.
+            pr_adversarial_validation: Optional canonical switch for PR adversarial validation.
+            enable_adversarial_validation: Optional alias for pr_adversarial_validation.
         """
         # Store init parameters for later use
         self._env_override = env_override
@@ -278,6 +282,10 @@ class AutomationConfig:
         for switch_name in FEATURE_SWITCH_NAMES:
             val = get_feature_switch_from_config(switch_name, repo_name=effective_repo, apply_env=False)
             object.__setattr__(self, switch_name, val)
+        if pr_adversarial_validation is not None:
+            object.__setattr__(self, "pr_adversarial_validation", pr_adversarial_validation)
+        elif enable_adversarial_validation is not None:
+            object.__setattr__(self, "pr_adversarial_validation", enable_adversarial_validation)
         object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", self.pr_adversarial_validation)
         object.__setattr__(self, "PR_LABEL_COPYING_ENABLED", True)
         object.__setattr__(self, "PR_LABEL_MAX_COUNT", 3)
@@ -552,12 +560,12 @@ class AutomationConfig:
                 logger.error(f"Failed to parse AUTO_CODER_PR_ALLOWLIST: {e}")
 
         # Read adversarial validation flag from environment variable
-        adv_val_env = os.environ.get("AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION")
+        adv_val_env = os.environ.get("AUTO_CODER_PR_ADVERSARIAL_VALIDATION") or os.environ.get("AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION")
         if adv_val_env is not None:
             enabled = adv_val_env.strip().lower() not in ("false", "0", "no")
             object.__setattr__(self, "pr_adversarial_validation", enabled)
             object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", enabled)
-            logger.info(f"Loaded ENABLE_ADVERSARIAL_VALIDATION={enabled} from environment")
+            logger.info(f"Loaded pr_adversarial_validation={enabled} from environment")
 
         # Max adversarial validation executions override
         max_adv_val_env = os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS") or os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_REVIEWS") or os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_VALIDATION_ATTEMPTS")
