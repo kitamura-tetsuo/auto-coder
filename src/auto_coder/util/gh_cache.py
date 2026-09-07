@@ -2520,6 +2520,59 @@ class GitHubClient:
             raise ValueError(f"GitHub returned an ambiguous parent for {repo_name}#{issue_number}")
         return payload
 
+    def _get_issue_dependencies_strict(self, repo_name: str, issue_number: int, relation: str) -> List[Dict[str, Any]]:
+        """Return one complete, uncached native Issue dependency relation."""
+        if relation not in {"blocked_by", "blocking"}:
+            raise ValueError("unsupported Issue dependency relation")
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        items: List[Dict[str, Any]] = []
+        page = 1
+        with httpx.Client() as client:
+            while True:
+                response = client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/dependencies/{relation}",
+                    headers=headers,
+                    params={"per_page": 100, "page": page},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise ValueError("GitHub returned an ambiguous Issue dependency relation")
+                for item in payload:
+                    if not isinstance(item, dict) or isinstance(item.get("number"), bool) or not isinstance(item.get("number"), int) or isinstance(item.get("id"), bool) or not isinstance(item.get("id"), int):
+                        raise ValueError("GitHub returned a malformed Issue dependency")
+                    items.append(item)
+                if len(payload) < 100:
+                    return items
+                page += 1
+
+    def get_blocked_by_strict(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+        return self._get_issue_dependencies_strict(repo_name, issue_number, "blocked_by")
+
+    def get_blocking_strict(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
+        return self._get_issue_dependencies_strict(repo_name, issue_number, "blocking")
+
+    @retry_with_backoff()
+    def mutate_blocked_by_strict(self, repo_name: str, issue_number: int, dependency_id: int, *, add: bool) -> None:
+        """Add/remove an incoming dependency using its stable GitHub Issue ID."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        base = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by"
+        with httpx.Client() as client:
+            if add:
+                response = client.post(base, headers=headers, json={"issue_id": dependency_id}, timeout=30)
+            else:
+                response = client.delete(f"{base}/{dependency_id}", headers=headers, timeout=30)
+        if response.status_code not in ({200, 201} if add else {200, 204}):
+            response.raise_for_status()
+            raise RuntimeError("GitHub returned an ambiguous Issue dependency mutation response")
+
     def add_sub_issue(
         self,
         repo_name: str,
