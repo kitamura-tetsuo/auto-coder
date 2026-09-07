@@ -186,6 +186,7 @@ class AutomationConfig:
         pr_adversarial_validation: Optional[bool] = None,
         enable_adversarial_validation: Optional[bool] = None,
         pr_review_thread_gate: Optional[bool] = None,
+        automatic_test_fix: Optional[bool] = None,
     ):
         """Initialize AutomationConfig with optional environment variable overrides.
 
@@ -203,6 +204,7 @@ class AutomationConfig:
             pr_adversarial_validation: Optional canonical switch for PR adversarial validation.
             enable_adversarial_validation: Optional alias for pr_adversarial_validation.
             pr_review_thread_gate: Optional canonical switch for PR review-thread gating.
+            automatic_test_fix: Optional canonical switch for automatic test-failure repair loops.
         """
         # Store init parameters for later use
         self._env_override = env_override
@@ -291,6 +293,8 @@ class AutomationConfig:
         object.__setattr__(self, "ENABLE_ADVERSARIAL_VALIDATION", self.pr_adversarial_validation)
         if pr_review_thread_gate is not None:
             object.__setattr__(self, "pr_review_thread_gate", pr_review_thread_gate)
+        if automatic_test_fix is not None:
+            object.__setattr__(self, "automatic_test_fix", automatic_test_fix)
         object.__setattr__(self, "PR_LABEL_COPYING_ENABLED", True)
         object.__setattr__(self, "PR_LABEL_MAX_COUNT", 3)
         object.__setattr__(self, "JULES_ONLY_MODE", False)
@@ -577,6 +581,13 @@ class AutomationConfig:
             enabled = thread_gate_env.strip().lower() not in ("false", "0", "no")
             object.__setattr__(self, "pr_review_thread_gate", enabled)
             logger.info(f"Loaded pr_review_thread_gate={enabled} from environment")
+
+        # Read automatic test fix flag from environment variable
+        test_fix_env = os.environ.get("AUTO_CODER_AUTOMATIC_TEST_FIX")
+        if test_fix_env is not None:
+            enabled = test_fix_env.strip().lower() not in ("false", "0", "no")
+            object.__setattr__(self, "automatic_test_fix", enabled)
+            logger.info(f"Loaded automatic_test_fix={enabled} from environment")
 
         # Max adversarial validation executions override
         max_adv_val_env = os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS") or os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_REVIEWS") or os.environ.get("AUTO_CODER_MAX_ADVERSARIAL_VALIDATION_ATTEMPTS")

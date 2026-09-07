@@ -42,6 +42,14 @@ class WorkspaceFixResult:
     model: str
 
 
+def _is_automatic_test_fix_enabled(config: Optional[AutomationConfig] = None) -> bool:
+    if config is not None:
+        return bool(getattr(config, "automatic_test_fix", True))
+    from .llm_backend_config import get_automatic_test_fix_from_config
+
+    return get_automatic_test_fix_from_config()
+
+
 def _to_test_result(data: Any) -> TestResult:
     """Convert legacy dict payloads into a TestResult.
 
@@ -420,6 +428,15 @@ def apply_test_stability_fix(
     """
     backend, provider, model = _extract_backend_model(llm_backend_manager)
 
+    if not _is_automatic_test_fix_enabled(config):
+        return WorkspaceFixResult(
+            summary="Automatic test fix is disabled; skipping test stability fix",
+            raw_response=None,
+            backend=backend,
+            provider=provider,
+            model=model,
+        )
+
     try:
         full_suite_output = f"{full_suite_result.get('errors', '')}\n{full_suite_result.get('output', '')}".strip()
         isolated_output = f"{isolated_result.get('errors', '')}\n{isolated_result.get('output', '')}".strip()
@@ -485,6 +502,15 @@ def apply_workspace_test_fix(
     """
 
     backend, provider, model = _extract_backend_model(llm_backend_manager)
+
+    if not _is_automatic_test_fix_enabled(config):
+        return WorkspaceFixResult(
+            summary="Automatic test fix is disabled; skipping workspace test fix",
+            raw_response=None,
+            backend=backend,
+            provider=provider,
+            model=model,
+        )
 
     try:
         # Convert legacy dict payloads to TestResult for structured extraction
@@ -650,6 +676,14 @@ def fix_to_pass_tests(
             summary["messages"].append(msg)
             summary["success"] = True
             cleanup_llm_task_file()
+            return summary
+
+        if not _is_automatic_test_fix_enabled(config):
+            msg = "Automatic test fix is disabled; skipping repair"
+            logger.info(msg)
+            summary["messages"].append(msg)
+            summary["success"] = False
+            summary["attempts"] = 0
             return summary
 
         # Check for test stability issue (failed in full suite but passed in isolation)

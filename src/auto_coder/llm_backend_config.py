@@ -1976,6 +1976,10 @@ def get_feature_switch_from_config(
         thread_gate_env = os.environ.get("AUTO_CODER_PR_REVIEW_THREAD_GATE")
         if thread_gate_env is not None:
             return thread_gate_env.strip().lower() not in ("false", "0", "no")
+    if apply_env and feature_name == "automatic_test_fix":
+        test_fix_env = os.environ.get("AUTO_CODER_AUTOMATIC_TEST_FIX")
+        if test_fix_env is not None:
+            return test_fix_env.strip().lower() not in ("false", "0", "no")
 
     data = load_app_config_data(config_path=config_path, repo_name=repo_name)
 
