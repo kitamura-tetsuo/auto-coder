@@ -23,6 +23,15 @@ implementation-slot state is active or unreadable.
 
 This file documents the client-facing features and tools provided by auto-coder.
 
+## Explicit single-target outcome reporting
+
+`process-issues --only` reports the authoritative outcome of the requested target
+as Success, Deferred, Skipped, Blocked, or Failed. The engine preserves the
+resolved Issue/PR identity, structured outcome, actions, and reason even when a
+non-successful target is absent from the legacy processed-item collections.
+Missing or contradictory explicit results fail closed, and plain-number targets
+retain their authoritatively resolved Issue or pull-request type.
+
 ## Repo-scoped feature-switch contract for optional pipeline gates
 
 Auto-Coder exposes canonical, repo-scoped boolean feature settings for optional

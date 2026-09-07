@@ -18,7 +18,7 @@ import httpx
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .adversarial_validation_scheduler import AdversarialValidationScheduler
-from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult, PRProcessingOutcome
+from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .decomposition_analyzer import DecompositionIssue
 from .decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
@@ -2270,11 +2270,15 @@ class AutomationEngine:
             return result
         if candidate.type == "pr" and not self._is_pr_author_allowed(candidate.data):
             logger.info(f"Skipping PR #{item_number} - author not in PR allowlist")
+            result.target_outcome = ExplicitTargetOutcome.SKIPPED
+            result.target_reason = "PR author is not in the allowlist"
             return result
         if candidate.type == "issue":
             collected_candidate = candidate
             if not self._is_issue_author_allowed(candidate.data):
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
+                result.target_outcome = ExplicitTargetOutcome.SKIPPED
+                result.target_reason = "Issue author is not in the allowlist"
                 return result
             if isinstance(self.github, GitHubClient):
                 try:
@@ -2298,10 +2302,12 @@ class AutomationEngine:
                     )
                 except ParentSpecificationError as exc:
                     result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                    result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                     return result
                 except ParentOperationalError as exc:
                     result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
                     result.refill_retry_required = True
                     return result
@@ -2324,20 +2330,24 @@ class AutomationEngine:
                     result.error = f"Cannot confirm parent readiness submission: {exc}"
                     return result
                 if not self._is_open_issue(parent_snapshot):
+                    result.target_outcome = ExplicitTargetOutcome.SKIPPED
                     result.actions = ["Skipped - parent issue is closed"]
                     return result
                 if is_implementation_ready(parent_snapshot):
                     if self._defer_initial_issue_stabilization(repo_name, parent_snapshot):
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
                         return result
                     try:
                         parent_submission_set = self._fetch_authoritative_decomposition_set(repo_name, item_number)
                     except ParentSpecificationError as exc:
                         result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                        result.target_outcome = ExplicitTargetOutcome.BLOCKED
                         result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                         return result
                     except ParentOperationalError as exc:
                         result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
                         result.refill_retry_required = True
                         return result
@@ -2366,12 +2376,15 @@ class AutomationEngine:
                             result.error = "Parent/child decomposition validation found material defects"
                             if side_effect_error:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
+                            result.target_outcome = ExplicitTargetOutcome.BLOCKED
                             result.actions = ["Rejected - blocked parent/child decomposition"]
                         elif decomposition_enabled and parent_decision is not None and parent_decision.verdict == "ERROR":
                             result.error = "Decomposition validation failed; parent readiness was preserved for retry"
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - decomposition validation error"]
                         elif any(decision.verdict == "ERROR" for decision in child_decisions.values()):
                             result.error = "Individual validation failed; parent readiness was preserved for retry"
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - child specification validation error"]
                         elif any(decision.verdict == "BLOCKED" for decision in child_decisions.values()):
                             blocked = next(decision for decision in child_decisions.values() if decision.verdict == "BLOCKED")
@@ -2385,17 +2398,21 @@ class AutomationEngine:
                             result.error = "Child specification validation found material defects"
                             if side_effect_error:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
+                            result.target_outcome = ExplicitTargetOutcome.BLOCKED
                             result.actions = ["Rejected - blocked child specification"]
                         elif decomposition_enabled and parent_decision is not None:
                             complete, message = self._complete_container_parent(repo_name, item_number, parent_decision, child_decisions)
                             if complete:
                                 result.success = True
+                                result.target_outcome = ExplicitTargetOutcome.SUCCESS
                                 result.actions = [message]
                             else:
                                 result.error = message
+                                result.target_outcome = ExplicitTargetOutcome.DEFERRED
                                 result.actions = ["Deferred - container parent completion requires retry"]
                                 result.refill_retry_required = True
                         else:
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - container parent requires decomposition validation"]
                         return result
                     child = self.github.get_issue_dispatch_snapshot_strict(repo_name, int(open_children[0]["number"]))
@@ -2411,6 +2428,7 @@ class AutomationEngine:
                         advance_issue_attempt,
                         authoritative_parent_number=item_number,
                     )
+                result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.actions = [f"Skipped - parent submission is missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
 
@@ -2422,18 +2440,23 @@ class AutomationEngine:
                     result.error = f"Cannot fetch authoritative parent/child specification set: {exc}"
                     return result
                 if live_parent_set is None or item_number not in {child.get("number") for child in live_parent_set[1]}:
+                    result.target_outcome = ExplicitTargetOutcome.SKIPPED
                     result.actions = ["Skipped - child is no longer in the authoritative parent set"]
                     return result
                 if not self._is_open_issue(live_parent_set[0]):
+                    result.target_outcome = ExplicitTargetOutcome.SKIPPED
                     result.actions = ["Skipped - authoritative parent is closed"]
                     return result
                 if not is_implementation_ready(live_parent_set[0]):
+                    result.target_outcome = ExplicitTargetOutcome.SKIPPED
                     result.actions = [f"Skipped - authoritative parent is missing {IMPLEMENTATION_READY_LABEL} label"]
                     return result
                 if self._defer_initial_issue_stabilization(repo_name, live_parent_set[0]):
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
                     return result
             elif is_implementation_ready(candidate.data) and self._defer_initial_issue_stabilization(repo_name, candidate.data):
+                result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
                 return result
             if not generation_serialized:
@@ -2453,10 +2476,12 @@ class AutomationEngine:
                         )
                     except ParentSpecificationError as exc:
                         result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                        result.target_outcome = ExplicitTargetOutcome.BLOCKED
                         result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                         return result
                     except ParentOperationalError as exc:
                         result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
                         result.refill_retry_required = True
                         return result
@@ -2487,8 +2512,10 @@ class AutomationEngine:
                                     lambda: self._standalone_validation_is_current(repo_name, owned_decision),
                                 )
                                 result.error = "Specification validation found material defects"
+                                result.target_outcome = ExplicitTargetOutcome.BLOCKED
                                 result.actions = ["Rejected - blocked specification"]
                                 return result
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
                     return result
                 with slots.serialize(owner):
@@ -2506,6 +2533,7 @@ class AutomationEngine:
                             str(snapshot.get("body") or ""),
                         ).key
                         if (is_implementation_ready(snapshot) and slots.validation_identity(owner) == current_identity) or not slots.release_unbound_idle_owner(owner):
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
                             return result
                     return self._process_single_candidate_unified(
@@ -2528,10 +2556,12 @@ class AutomationEngine:
                 )
             except ParentSpecificationError as exc:
                 result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                result.target_outcome = ExplicitTargetOutcome.BLOCKED
                 result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                 return result
             except ParentOperationalError as exc:
                 result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
+                result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
                 result.refill_retry_required = True
                 return result
@@ -2567,12 +2597,15 @@ class AutomationEngine:
                     result.error = f"Cannot fetch authoritative parent/child specification set: {exc}"
                     return result
                 if authoritative_set is None or item_number not in {child.get("number") for child in authoritative_set[1]}:
+                    result.target_outcome = ExplicitTargetOutcome.SKIPPED
                     result.actions = ["Skipped - child is no longer in the authoritative parent set"]
                     return result
                 if not self._is_open_issue(authoritative_set[0]):
+                    result.target_outcome = ExplicitTargetOutcome.SKIPPED
                     result.actions = ["Skipped - authoritative parent is closed"]
                     return result
                 if not is_implementation_ready(authoritative_set[0]):
+                    result.target_outcome = ExplicitTargetOutcome.SKIPPED
                     result.actions = [f"Skipped - authoritative parent is missing {IMPLEMENTATION_READY_LABEL} label"]
                     return result
 
@@ -2586,6 +2619,7 @@ class AutomationEngine:
             # effect; explicit/forced processing therefore cannot bypass it.
             if not self._is_open_issue(current_issue) or (not independently_ready and not inherited_ready):
                 logger.info(f"Skipping Issue #{item_number} - missing {IMPLEMENTATION_READY_LABEL} label")
+                result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.actions = [f"Skipped - missing {IMPLEMENTATION_READY_LABEL} label"]
                 return result
 
@@ -2593,6 +2627,7 @@ class AutomationEngine:
                 assert authoritative_set is not None
                 parent_snapshot, child_snapshots = authoritative_set
                 if self._defer_initial_issue_stabilization(repo_name, parent_snapshot):
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = ["Deferred - readiness submission is in its initial stabilization window"]
                     return result
                 decomposition_validator = self._get_decomposition_validator(repo_name)
@@ -2600,11 +2635,13 @@ class AutomationEngine:
                 decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
                 if decomposition_enabled and decomposition_validator.is_reissue_required(inherited_parent_number or 0) is True:
                     result.error = "Parent specification set requires a replacement Issue number"
+                    result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Rejected - parent set is durably reissue-required"]
                     return result
                 spec_validation_enabled = self._is_issue_specification_validation_enabled(repo_name, config)
                 if spec_validation_enabled and individual_validator.is_reissue_required(item_number) is True:
                     result.error = "Child specification requires a replacement Issue number"
+                    result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Rejected - child is durably reissue-required"]
                     return result
                 decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config)
@@ -2612,6 +2649,7 @@ class AutomationEngine:
                 if decomposition_enabled and decomposition_decision is not None:
                     if decomposition_decision.verdict == "ERROR":
                         result.error = "Decomposition validation failed; parent readiness was preserved for retry"
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - decomposition validation error"]
                         return result
                     if decomposition_decision.verdict == "BLOCKED":
@@ -2624,6 +2662,7 @@ class AutomationEngine:
                         except Exception as exc:
                             side_effect_error = str(exc)
                         result.error = "Parent/child decomposition validation found material defects"
+                        result.target_outcome = ExplicitTargetOutcome.BLOCKED
                         result.actions = ["Rejected - blocked parent/child decomposition"]
                         if side_effect_error:
                             result.error += f"; GitHub side effect failed: {side_effect_error}"
@@ -2632,10 +2671,12 @@ class AutomationEngine:
                     for eager_decision in eager_child_decisions.values():
                         if eager_decision.verdict == "ERROR":
                             result.error = "Individual validation failed; parent readiness was preserved for retry"
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - child specification validation error"]
                             return result
                 open_predecessors = sorted(int(child["number"]) for child in child_snapshots if child.get("state") == "open" and isinstance(child.get("number"), int) and int(child["number"]) < item_number)
                 if open_predecessors:
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = [f"Deferred - earlier sibling(s) remain open: {open_predecessors}"]
                     return result
 
@@ -2665,6 +2706,7 @@ class AutomationEngine:
                     )
                     self.github.add_comment_to_issue(repo_name, item_number, diagnostic)
                 logger.warning(f"Rejected Issue #{item_number} before implementation dispatch: {contract.error}")
+                result.target_outcome = ExplicitTargetOutcome.BLOCKED
                 result.actions = [f"Rejected - invalid requirement contract: {contract.error}"]
                 result.error = contract.error
                 return result
@@ -2680,6 +2722,7 @@ class AutomationEngine:
             if spec_validation_enabled:
                 if validator.is_reissue_required(item_number) is True:
                     result.error = "Specification requires a replacement Issue number"
+                    result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Rejected - Issue is durably reissue-required"]
                     return result
                 if inherited_ready:
@@ -2693,6 +2736,7 @@ class AutomationEngine:
                     ).result()
                 if decision.verdict == "ERROR":
                     result.error = "Specification validation failed; implementation-ready was preserved for retry"
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = ["Deferred - specification validation error"]
                     result.refill_retry_required = True
                     return result
@@ -2729,9 +2773,11 @@ class AutomationEngine:
                     if side_effect_error:
                         logger.error(f"Specification BLOCKED side effects failed for Issue #{item_number}: {side_effect_error}")
                         result.error = f"Specification is blocked; GitHub side effect failed: {side_effect_error}"
+                        result.target_outcome = ExplicitTargetOutcome.BLOCKED
                         result.actions = ["Rejected - blocked specification (side effects incomplete)"]
                         return result
                     result.error = "Specification validation found material defects"
+                    result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Rejected - blocked specification"]
                     return result
 
@@ -2777,6 +2823,7 @@ class AutomationEngine:
             )
             expected_identity = decision.identity if spec_validation_enabled and decision is not None else individual_identity
             if not submission_current or dispatch_identity != expected_identity:
+                result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]
                 return result
 
@@ -2795,6 +2842,7 @@ class AutomationEngine:
                 result.refill_retry_required = True
                 return result
             if hierarchy_blocked:
+                result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.actions = ["Skipped - unresolved Issue hierarchy dependency"]
                 return result
 
@@ -2803,6 +2851,7 @@ class AutomationEngine:
         # arrived while it ran must stop before implementation ownership or any
         # local/cloud provider dispatch is started.
         if self.is_draining:
+            result.target_outcome = ExplicitTargetOutcome.DEFERRED
             result.actions = ["Deferred - graceful shutdown began before implementation dispatch"]
             return result
 
@@ -2866,9 +2915,11 @@ class AutomationEngine:
                 result.refill_retry_required = True
                 return result
             if not generation_is_current:
+                result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.actions = ["Skipped - validated Issue generation changed before ownership admission"]
                 return result
             if self.is_draining:
+                result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = ["Deferred - graceful shutdown began before implementation ownership admission"]
                 return result
             execution_id = slots.current_execution_id(owner) if continue_execution else None
@@ -2893,6 +2944,7 @@ class AutomationEngine:
                         result.refill_retry_required = True
                         return result
                     if not generation_is_current:
+                        result.target_outcome = ExplicitTargetOutcome.SKIPPED
                         result.actions = ["Skipped - validated Issue generation changed during capacity reconciliation"]
                         return result
                     execution_id = slots.start_execution(
@@ -2902,6 +2954,7 @@ class AutomationEngine:
                         github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
                     )
             except ImplementationHierarchyConflict as exc:
+                result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = [f"Deferred - direct parent/child implementation conflict ({exc})"]
                 return result
             except ImplementationHierarchyUnavailable as exc:
@@ -2910,6 +2963,7 @@ class AutomationEngine:
                 return result
         if execution_id is None:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
+            result.target_outcome = ExplicitTargetOutcome.DEFERRED
             result.actions = [f"Deferred - {reason} ({owner.key})"]
             result.capacity_deferred = not bool(slots.active_execution_ids(owner))
             return result
@@ -2969,6 +3023,7 @@ class AutomationEngine:
         )
 
         if self.is_draining:
+            result.target_outcome = ExplicitTargetOutcome.DEFERRED
             result.actions = ["Deferred - graceful shutdown began before reserved dispatch"]
             return result
 
@@ -2990,6 +3045,7 @@ class AutomationEngine:
                 if unsafe_branch_result.closed:
                     result.actions = list(unsafe_branch_result.actions)
                     result.success = True
+                    result.target_outcome = ExplicitTargetOutcome.SUCCESS
                     return result
                 if unsafe_branch_result.metadata_error:
                     result.actions = list(unsafe_branch_result.actions)
@@ -3000,9 +3056,13 @@ class AutomationEngine:
             # Check author allowlists before any processing or API actions
             if item_type == "pr" and not self._is_pr_author_allowed(candidate.data):
                 logger.info(f"Skipping PR #{item_number} - author not in PR allowlist")
+                result.target_outcome = ExplicitTargetOutcome.SKIPPED
+                result.target_reason = "PR author is not in the allowlist"
                 return result
             elif item_type == "issue" and not self._is_issue_author_allowed(candidate.data):
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
+                result.target_outcome = ExplicitTargetOutcome.SKIPPED
+                result.target_reason = "Issue author is not in the allowlist"
                 return result
 
             # Candidate data is not an authority for GitHub's item type. The
@@ -3033,6 +3093,7 @@ class AutomationEngine:
                     for issue_number in empty_pr_result.issue_numbers:
                         result.actions.extend(self._process_unlocked_issue(repo_name, issue_number, config, jules_mode))
                     result.success = True
+                    result.target_outcome = ExplicitTargetOutcome.SUCCESS
                     return result
 
                 stale_jules_result = _close_stale_jules_pr(self.github, repo_name, candidate.data, config)
@@ -3044,6 +3105,7 @@ class AutomationEngine:
                     for issue_number in stale_jules_result.issue_numbers:
                         result.actions.extend(self._process_unlocked_issue(repo_name, issue_number, config, jules_mode))
                     result.success = True
+                    result.target_outcome = ExplicitTargetOutcome.SUCCESS
                     return result
 
             # Use LabelManager context manager to handle @auto-coder label automatically
@@ -3060,6 +3122,7 @@ class AutomationEngine:
             ) as should_process:
                 if not should_process:
                     get_trace_logger().log("Skip", f"Skipping {item_type} #{item_number} - already processing", item_type=item_type, item_number=item_number, details={"reason": "label_exists"})
+                    result.target_outcome = ExplicitTargetOutcome.SKIPPED
                     result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
                     return result
 
@@ -3119,6 +3182,7 @@ class AutomationEngine:
                         if not self._get_implementation_slots(repo_name).record_provider_session(owner, binding.task_id):
                             raise RuntimeError(f"Could not retain asynchronous implementation ownership for issue #{item_number}")
                     result.success = True
+                    result.target_outcome = ExplicitTargetOutcome.SUCCESS
                 elif item_type == "pr":
                     # PR processing
                     pr_result = process_pull_request(
@@ -3135,6 +3199,11 @@ class AutomationEngine:
                         result.error = pr_result.error
                     result.outcome = pr_result.outcome
                     result.success = pr_result.outcome != PRProcessingOutcome.FAILED
+                    result.target_outcome = {
+                        PRProcessingOutcome.SUCCESS: ExplicitTargetOutcome.SUCCESS,
+                        PRProcessingOutcome.DEFERRED: ExplicitTargetOutcome.DEFERRED,
+                        PRProcessingOutcome.FAILED: ExplicitTargetOutcome.FAILED,
+                    }[pr_result.outcome]
 
         except AutoCoderRetryableBackendError as e:
             diagnostic = str(e)
@@ -3142,6 +3211,7 @@ class AutomationEngine:
             result.error = diagnostic
             result.outcome = PRProcessingOutcome.DEFERRED
             result.success = True
+            result.target_outcome = ExplicitTargetOutcome.DEFERRED
             logger.warning(f"Deferred {candidate.type} #{candidate.data.get('number', 'N/A')} after retryable backend failure: {diagnostic}")
         except Exception as e:
             result.error = str(e)
@@ -3393,54 +3463,73 @@ class AutomationEngine:
                 if not self._check_and_handle_closed_branch(repo_name):
                     # check_and_handle_closed_state will handle branch switching and exit
                     # This line should not be reached, but just in case
-                    return {
+                    closed_result: Dict[str, Any] = {
                         "repository": repo_name,
                         "timestamp": datetime.now().isoformat(),
                         "issues_processed": [],
                         "prs_processed": [],
                         "errors": ["Exited due to closed item on current branch"],
                     }
+                    if explicit_only:
+                        closed_result.update(
+                            target_number=number,
+                            target_type=target_type if target_type in {"issue", "pr"} else None,
+                            target_outcome=ExplicitTargetOutcome.FAILED.value,
+                            target_actions=[],
+                            target_reason="Exited due to closed item on current branch",
+                        )
+                    return closed_result
 
                 logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
                 result = ProcessResult(
                     repository=repo_name,
                     timestamp=datetime.now().isoformat(),
+                    target_number=number if explicit_only else None,
                 )
+
+                def explicit_result() -> Dict[str, Any]:
+                    return {
+                        "repository": result.repository,
+                        "timestamp": result.timestamp,
+                        "issues_processed": result.issues_processed,
+                        "prs_processed": result.prs_processed,
+                        "errors": result.errors,
+                        "target_number": result.target_number,
+                        "target_type": result.target_type,
+                        "target_outcome": result.target_outcome,
+                        "target_actions": result.target_actions,
+                        "target_reason": result.target_reason,
+                    }
 
                 try:
                     # Create a Candidate from the single item
                     candidate = self._create_candidate_from_single(repo_name, target_type, number)
                     if not candidate:
-                        return {
-                            "repository": result.repository,
-                            "timestamp": result.timestamp,
-                            "issues_processed": result.issues_processed,
-                            "prs_processed": result.prs_processed,
-                            "errors": result.errors,
-                        }
+                        if explicit_only:
+                            result.target_outcome = ExplicitTargetOutcome.FAILED.value
+                            result.target_reason = f"Could not resolve requested target #{number}"
+                            result.errors.append(result.target_reason)
+                        return explicit_result()
+
+                    if explicit_only:
+                        result.target_type = candidate.type if candidate.type in {"issue", "pr"} else None
 
                     if explicit_only and candidate.type == "issue":
                         try:
                             refreshed_target = self._preflight_explicit_issue_relationships(repo_name, number)
                             candidate.data.update(refreshed_target)
                         except ParentSpecificationError as exc:
-                            result.errors.append(f"Blocked relationship reconciliation for Issue #{number}: {exc}")
-                            return {
-                                "repository": result.repository,
-                                "timestamp": result.timestamp,
-                                "issues_processed": result.issues_processed,
-                                "prs_processed": result.prs_processed,
-                                "errors": result.errors,
-                            }
+                            result.target_outcome = ExplicitTargetOutcome.BLOCKED.value
+                            result.target_reason = f"Blocked relationship reconciliation for Issue #{number}: {exc}"
+                            result.target_actions = [result.target_reason]
+                            result.errors.append(result.target_reason)
+                            return explicit_result()
                         except ParentOperationalError as exc:
-                            result.errors.append(f"Retryable relationship reconciliation failure for Issue #{number}: {exc}")
-                            return {
-                                "repository": result.repository,
-                                "timestamp": result.timestamp,
-                                "issues_processed": result.issues_processed,
-                                "prs_processed": result.prs_processed,
-                                "errors": result.errors,
-                            }
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED.value
+                            result.target_reason = f"Retryable relationship reconciliation failure for Issue #{number}: {exc}"
+                            result.target_actions = [result.target_reason]
+                            result.errors.append(result.target_reason)
+                            return explicit_result()
 
                     # Explicit/single-item processing is another supported
                     # discovery origin for specification changes.  Resolve and
@@ -3467,6 +3556,29 @@ class AutomationEngine:
                         )
                     else:
                         processing_result = self._process_single_candidate_unified(*processing_args)
+
+                    if explicit_only:
+                        result.target_actions = list(processing_result.actions)
+                        result.target_reason = processing_result.target_reason or processing_result.error or (processing_result.actions[0] if processing_result.actions else None)
+                        identity_matches = processing_result.number == number and processing_result.type == candidate.type
+                        target_outcome = processing_result.target_outcome
+                        if not identity_matches:
+                            diagnostic = f"Explicit target identity mismatch: requested {candidate.type} #{number}, " f"processed {processing_result.type} #{processing_result.number}"
+                            result.errors.append(diagnostic)
+                            result.target_reason = diagnostic
+                            result.target_outcome = ExplicitTargetOutcome.FAILED.value
+                        elif target_outcome is None:
+                            diagnostic = f"Explicit processing returned no authoritative outcome for {candidate.type} #{number}"
+                            result.errors.append(diagnostic)
+                            result.target_reason = diagnostic
+                            result.target_outcome = ExplicitTargetOutcome.FAILED.value
+                        elif target_outcome is ExplicitTargetOutcome.SUCCESS and processing_result.error:
+                            diagnostic = f"Contradictory successful outcome for {candidate.type} #{number}: {processing_result.error}"
+                            result.errors.append(diagnostic)
+                            result.target_reason = diagnostic
+                            result.target_outcome = ExplicitTargetOutcome.FAILED.value
+                        else:
+                            result.target_outcome = target_outcome.value
 
                     # Only add to processed list if there was no error and processing succeeded
                     if processing_result.error:
@@ -3534,15 +3646,31 @@ class AutomationEngine:
                     msg = f"Error in process_single: {e}"
                     logger.error(msg)
                     result.errors.append(msg)
+                    if explicit_only:
+                        result.target_outcome = ExplicitTargetOutcome.FAILED.value
+                        result.target_reason = msg
 
             # Convert dataclass to dict for backward compatibility with existing code
-            return {
+            output: Dict[str, Any] = {
                 "repository": result.repository,
                 "timestamp": result.timestamp,
                 "issues_processed": result.issues_processed,
                 "prs_processed": result.prs_processed,
                 "errors": result.errors,
             }
+            if explicit_only:
+                output.update(
+                    target_number=result.target_number,
+                    target_type=result.target_type,
+                    target_outcome=result.target_outcome or ExplicitTargetOutcome.FAILED.value,
+                    target_actions=result.target_actions,
+                    target_reason=result.target_reason,
+                )
+                if result.target_outcome is None:
+                    diagnostic = f"Explicit processing produced no outcome for target #{number}"
+                    output["errors"].append(diagnostic)
+                    output["target_reason"] = diagnostic
+            return output
 
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""

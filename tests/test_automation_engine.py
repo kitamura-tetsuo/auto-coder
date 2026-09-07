@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessedPRResult, PRProcessingOutcome
+from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.implementation_slots import ImplementationHierarchyConflict, ImplementationOwner, ImplementationSlotRepository
 from auto_coder.util.gh_cache import GitHubClient
@@ -377,6 +377,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         engine = AutomationEngine(mock_github_client, config=AutomationConfig())
         candidate = Candidate(type="issue", data={"number": 100, "title": "Recovery"}, priority=1)
         processing_result = CandidateProcessingResult(type="issue", number=100, title="Recovery", success=True, actions=["started"])
+        processing_result.target_outcome = ExplicitTargetOutcome.SUCCESS
         engine._check_and_handle_closed_branch = Mock(return_value=True)
         engine._create_candidate_from_single = Mock(return_value=candidate)
         engine._preflight_explicit_issue_relationships = Mock(return_value=dict(candidate.data))
@@ -388,6 +389,25 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True)
         engine._preflight_explicit_issue_relationships.assert_called_once_with("owner/repo", 100)
         assert result["issues_processed"][0]["actions_taken"] == ["started"]
+        assert result["target_outcome"] == "success"
+        assert result["target_type"] == "issue"
+        assert result["target_number"] == 100
+
+    def test_explicit_process_single_fails_closed_when_candidate_cannot_be_resolved(self, mock_github_client):
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=None)
+
+        with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
+            result = engine.process_single("owner/repo", "auto", 404, explicit_only=True)
+
+        assert result["target_number"] == 404
+        assert result["target_type"] is None
+        assert result["target_outcome"] == "failed"
+        assert result["target_reason"] == "Could not resolve requested target #404"
+        assert result["errors"] == ["Could not resolve requested target #404"]
+        assert result["issues_processed"] == []
+        assert result["prs_processed"] == []
 
     def test_forced_pr_reaches_validation_attempt_despite_active_execution_and_label(self, tmp_path):
         from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository

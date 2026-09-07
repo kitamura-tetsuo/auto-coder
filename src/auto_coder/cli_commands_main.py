@@ -388,9 +388,28 @@ def process_issues(
                 # Auto-detect the type; process_single reports failures in its result
                 # instead of raising, so the detection happens while building the candidate.
                 result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force)
-                target_type = "pr" if result.get("prs_processed") else "issue"
             else:
                 result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force)
+
+            diagnostics = list(result.get("errors") or [])
+            resolved_type = result.get("target_type")
+            outcome = result.get("target_outcome")
+            valid_outcomes = {"success", "deferred", "skipped", "blocked", "failed"}
+            if resolved_type not in {"issue", "pr"}:
+                diagnostics.append(f"Explicit result did not provide an authoritative target type for #{number}")
+                outcome = "failed"
+            elif result.get("target_number") != number:
+                diagnostics.append(f"Explicit result target mismatch: requested #{number}, received #{result.get('target_number')}")
+                outcome = "failed"
+            elif outcome not in valid_outcomes:
+                diagnostics.append(f"Explicit result provided unsupported target outcome: {outcome!r}")
+                outcome = "failed"
+            elif outcome == "success" and diagnostics:
+                diagnostics.append("Explicit result claimed success while reporting processing errors")
+                outcome = "failed"
+            target_type = resolved_type if resolved_type in {"issue", "pr"} else (target_type or "item")
+            result["errors"] = diagnostics
+            result["target_outcome"] = outcome
 
             # Create completion message with clickable link
             target_display = f"{target_type} #{number}"
@@ -398,7 +417,11 @@ def process_issues(
                 target_url = f"https://github.com/{repo_name}/{'issues' if target_type == 'issue' else 'pull'}/{number}"
                 target_display = create_terminal_link(target_display, target_url)
 
-            spinner.step(f"Processed single {target_display}")
+            outcome_label = str(outcome).capitalize()
+            if outcome == "success":
+                spinner.step(f"Processed single {target_display}")
+            else:
+                spinner.step(f"{outcome_label} single {target_display}")
 
         # Prepare summary for completion message
         target_display = f"{target_type} #{number}"
@@ -406,17 +429,25 @@ def process_issues(
             target_url = f"https://github.com/{repo_name}/{'issues' if target_type == 'issue' else 'pull'}/{number}"
             target_display = create_terminal_link(target_display, target_url)
 
+        status_by_outcome = {
+            "success": "Success",
+            "deferred": "Deferred",
+            "skipped": "Skipped",
+            "blocked": "Blocked",
+            "failed": "Failed",
+        }
+        final_outcome = result.get("target_outcome")
         completion_summary: Dict[str, Any] = {
             "Repository": repo_name,
             "Target": target_display,
-            "Status": "Success" if not result.get("errors") else "Completed with errors",
+            "Status": status_by_outcome.get(final_outcome, "Failed") if isinstance(final_outcome, str) else "Failed",
         }
 
         if result.get("errors"):
             completion_summary["Errors"] = result["errors"]
 
         # Extract actions taken
-        actions = []
+        actions = list(result.get("target_actions") or [])
         # Check issues_processed
         for issue_res in result.get("issues_processed", []):
             if issue_res.get("actions_taken"):
@@ -427,7 +458,9 @@ def process_issues(
                 actions.extend(pr_res["actions_taken"])
 
         if actions:
-            completion_summary["Actions Taken"] = actions
+            completion_summary["Actions Taken"] = list(dict.fromkeys(actions))
+        if result.get("target_reason"):
+            completion_summary["Reason"] = result["target_reason"]
 
         print_completion_message("Processing Complete", completion_summary)
 
