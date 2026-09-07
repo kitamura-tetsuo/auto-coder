@@ -14,7 +14,7 @@ http://localhost:6274/?MCP_PROXY_AUTH_TOKEN=973ff60cac74430ba774a6b9bbe0d366232c
 
 ## ✅ 0.0.0.0 Support via TCP Proxy
 
-Using the TCP proxy (`tcp_proxy.py`), the following ports are listening on 0.0.0.0:
+Using the TCP proxy (`scripts/tcp_proxy.py`), the following ports are listening on 0.0.0.0:
 
 - **Inspector Web UI**: 0.0.0.0:6274
 - **MCP Proxy Server**: 0.0.0.0:6277
@@ -57,8 +57,8 @@ You can test tools directly from Inspector:
 ```bash
 # Restart the proxy
 pkill -f tcp_proxy.py
-python3 /home/node/src/auto-coder/tcp_proxy.py 6274 localhost 6274 &
-python3 /home/node/src/auto-coder/tcp_proxy.py 6277 localhost 6277 &
+python3 /home/node/src/auto-coder/scripts/tcp_proxy.py 6274 localhost 6274 &
+python3 /home/node/src/auto-coder/scripts/tcp_proxy.py 6277 localhost 6277 &
 ```
 
 ### When Connection Fails

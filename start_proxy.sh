@@ -22,7 +22,7 @@ start_proxy() {
     sleep 1
 
     # Start proxy with nohup and disown
-    nohup python3 /home/node/src/auto-coder/tcp_proxy.py ${listen_port} ${target_host} ${target_port} \
+    nohup python3 /home/node/src/auto-coder/scripts/tcp_proxy.py ${listen_port} ${target_host} ${target_port} \
         > ${LOG_FILE}_${listen_port}.log 2>&1 &
 
     # Disown the process to make it independent of shell
