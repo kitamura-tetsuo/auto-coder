@@ -20,6 +20,7 @@ from .decomposition_analyzer import (
     DecompositionReviewEvidence,
     analyze_issue_decomposition,
     decomposition_review_evidence,
+    objective_integrity_result,
 )
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
@@ -28,7 +29,7 @@ from .specification_repair_rounds import SpecificationRepairRoundStore
 from .specification_validation_lifecycle import specification_digest
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
-DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v4-objective-anchor"
+DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v5-distinct-objectives"
 DECOMPOSITION_FINDINGS_MARKER = "auto-coder-decomposition-validation"
 
 
@@ -265,6 +266,12 @@ class DecompositionValidationLifecycle:
                     evidence = DecompositionReviewEvidence(history.baseline, history.prior_applied_outcomes, objectives)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
                     return DecompositionDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}")
+                integrity = objective_integrity_result(evidence, members)
+                if integrity is not None:
+                    decision = DecompositionDecision(identity, integrity.verdict, integrity.findings, remediation=integrity.remediation, remediation_reason=integrity.error)
+                    if integrity.verdict == "BLOCKED":
+                        self.store.save(decision)
+                    return decision
             existing = self.store.get(identity)
             if existing is not None:
                 return existing

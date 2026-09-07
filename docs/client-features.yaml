@@ -45,6 +45,12 @@ in-place restoration guidance; legacy `UNANCHORED` Issues continue ordinary revi
 With an intact anchor, semantic review uses its purpose only to detect concrete
 outcome conflicts and reject adjacent scope, never to promote Objective prose into
 Requirements.
+Complete-set review preserves a distinct fixed purpose for the parent and every
+direct child. It checks both each child's scope and whether their explicitly
+contracted outcomes compose to the parent's purpose; tracking parents coordinate
+missing ownership rather than receiving a final implementation pass. Set findings
+support `objective_conflict` without weakening explicit parent-Requirement oracles,
+and unchanged-purpose restoration is an in-place repair.
 
 ## Native sibling dependency reconciliation
 

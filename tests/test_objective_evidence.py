@@ -67,6 +67,36 @@ def test_complete_set_captures_each_identity_and_restart_individual_reuses_child
     assert set_gate.objective_store.capture(100, parent.body, "individual-current-snapshot:v1").original_text == "Parent purpose"
 
 
+def test_complete_set_rejects_parent_or_child_objective_tampering_before_cached_ready(tmp_path):
+    parent, child = issue(200, "Coordinate preview without applying it."), issue(201, "Project the draft without applying it.")
+    snapshots = lambda p, c: (
+        {"id": 2000, "number": 200, "title": "Parent", "body": p.body},
+        [{"id": 2010, "number": 201, "title": "Child", "body": c.body}],
+    )
+    calls = []
+    gate = DecompositionValidationLifecycle(
+        "owner/repo",
+        "model",
+        tmp_path / "sets.json",
+        lambda _parent, _children: calls.append("model") or DecompositionAnalysisResult("READY"),
+    )
+    original_snapshots = snapshots(parent, child)
+    assert gate.decide(gate.identity(*original_snapshots), parent, [child]).verdict == "READY"
+
+    for changed_parent, changed_child, affected in (
+        (issue(200, "Coordinate preview and apply it."), child, 200),
+        (parent, issue(201, "Persist and project the draft."), 201),
+    ):
+        current = snapshots(changed_parent, changed_child)
+        result = gate.decide(gate.identity(*current), changed_parent, [changed_child])
+        assert result.verdict == "BLOCKED"
+        assert result.remediation == "EDIT_IN_PLACE"
+        assert result.findings[0].category == "objective_conflict"
+        assert result.findings[0].affected_issues[0].issue_number == affected
+        assert result.findings[0].affected_issues[0].requirement_ids == ()
+    assert calls == ["model"]
+
+
 def test_legacy_absence_concurrency_and_corrupt_baseline_fail_closed(tmp_path):
     path = tmp_path / "individual_review_history.json"
     legacy = json.dumps({"issue_number": 7, "title": "Legacy", "body": "## Requirements\n- REQ-001: Work.", "requirements": []})
