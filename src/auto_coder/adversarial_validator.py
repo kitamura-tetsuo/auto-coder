@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence
 
 from .automation_config import AutomationConfig
@@ -98,6 +99,7 @@ def run_exact_head_dynamic_check(
     config: AutomationConfig,
     check_target: str,
     expected_head_sha: str,
+    execution_cwd: Optional[str] = None,
 ) -> DynamicCheckExecution:
     """Run a focused check locally only after proving the current exact HEAD.
 
@@ -108,7 +110,12 @@ def run_exact_head_dynamic_check(
     prevents a check that moved HEAD from being accepted as evidence.
     """
     executor = CommandExecutor()
-    before = executor.run_command(["git", "rev-parse", "HEAD"])
+
+    def current_head() -> Any:
+        command = ["git", "rev-parse", "HEAD"]
+        return executor.run_command(command, cwd=execution_cwd) if execution_cwd else executor.run_command(command)
+
+    before = current_head()
     if not before.success or not before.stdout.strip():
         reason = (before.stderr or "git rev-parse HEAD returned no revision").strip()
         return DynamicCheckExecution(verification_error=reason)
@@ -133,9 +140,10 @@ def run_exact_head_dynamic_check(
         command,
         timeout=executor.DEFAULT_TIMEOUTS["test"],
         env_overrides={"INSIDE_TARGET_EXECUTION": "true"},
+        cwd=execution_cwd,
     )
 
-    after = executor.run_command(["git", "rev-parse", "HEAD"])
+    after = current_head()
     if not after.success or not after.stdout.strip():
         reason = (after.stderr or "git rev-parse HEAD returned no revision after the check").strip()
         return DynamicCheckExecution(
@@ -2207,6 +2215,7 @@ def run_adversarial_validation(
     session_registry: Optional[ReviewerSessionRegistry] = None,
     claimed_review_threads_section: Optional[str] = None,
     claimed_review_threads: Sequence["ClaimedReviewThread"] = (),
+    execution_cwd: Optional[str] = None,
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
 
@@ -2231,6 +2240,18 @@ def run_adversarial_validation(
     """
     pr_number = pr_data.get("number", 0)
     head_sha = str((pr_data.get("head") or {}).get("sha") or pr_data.get("head_sha") or "")
+
+    def verify_execution_target(boundary: str) -> None:
+        if execution_cwd is None:
+            return
+        target = Path(execution_cwd)
+        verification = CommandExecutor.run_command(["git", "rev-parse", "HEAD"], cwd=str(target))
+        actual = verification.stdout.strip().lower()
+        if not target.is_dir() or not verification.success or not head_sha or actual != head_sha.lower():
+            detail = actual or verification.stderr.strip() or "unavailable"
+            raise RuntimeError(f"Adversarial validation execution target mismatch at {boundary}: expected {head_sha}, found {detail}")
+
+    verify_execution_target("context collection")
     logger.info(f"Starting strong-model adversarial validation for PR #{pr_number}")
     get_trace_logger().log("Adversarial Validation", f"Validating PR #{pr_number} against specification", item_type="pr", item_number=pr_number)
 
@@ -2373,10 +2394,12 @@ def run_adversarial_validation(
 
     # 4. Invoke the strong model
     with ProgressStage("Adversarial validation"):
+        verify_execution_target("LLM invocation")
         if stored_session:
             response = backend_manager.continue_session(stored_session.session_id, prompt, is_noedit=True)
         else:
             response = run_llm_prompt(prompt, backend_manager=backend_manager, is_noedit=True)
+    verify_execution_target("LLM completion")
 
     used_backend, used_type, used_model = manager_identity()
     provider_session_id = getattr(backend_manager, "_last_session_id", None)
@@ -2396,7 +2419,7 @@ def run_adversarial_validation(
         check_target = result.dynamic_check_requested.strip()
         logger.info(f"Adversarial reviewer requested dynamic validation check: {check_target}")
         try:
-            test_res = run_exact_head_dynamic_check(config, check_target, head_sha)
+            test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
             if test_res.verification_error:
                 known_mismatch = test_res.executed_sha is not None
                 result.result = "ERROR" if known_mismatch else "INCONCLUSIVE"

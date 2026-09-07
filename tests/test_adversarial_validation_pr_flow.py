@@ -2023,6 +2023,7 @@ class TestAdversarialValidationPRFlow:
             github_client=client,
             claimed_review_threads_section="(No claimed-addressed review threads for this run.)",
             claimed_review_threads=(),
+            execution_cwd=mock_worktree.return_value.__enter__.return_value,
         )
         mock_merge_pr.assert_called_once()
 
