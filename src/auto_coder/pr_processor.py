@@ -351,6 +351,24 @@ def _is_pr_adversarial_validation_enabled(
     return True
 
 
+def _is_pr_review_thread_gate_enabled(
+    config: Optional[AutomationConfig] = None,
+    repo_name: Optional[str] = None,
+) -> bool:
+    """Return whether PR review thread gate is enabled."""
+    if config is not None and repo_name is not None and getattr(config, "repo_name", None) == repo_name:
+        return bool(getattr(config, "pr_review_thread_gate", True))
+    if config is not None and not getattr(config, "pr_review_thread_gate", True):
+        return False
+    if repo_name is not None:
+        from .llm_backend_config import get_pr_review_thread_gate_from_config
+
+        return get_pr_review_thread_gate_from_config(repo_name=repo_name)
+    if config is not None:
+        return bool(getattr(config, "pr_review_thread_gate", True))
+    return True
+
+
 def is_authoritative_adversarial_thread(
     thread: ReviewThread,
     repo_name: str,
@@ -2352,19 +2370,20 @@ def _handle_pr_merge(
         # retry it on every processing run, and refuse to merge while any
         # thread remains blocked, regardless of what CI/validation would
         # otherwise decide this run (REQ-006, REQ-008).
-        stale_client = github_client or GitHubClient.get_instance()
-        try:
-            pending_stale_threads = retry_pending_stale_review_thread_rollbacks(stale_client, repo_name, pr_number)
-        except StaleReviewThreadRegistryError as e:
-            # The registry's storage cannot be trusted (corrupt, unreadable):
-            # it may be hiding a real stale-resolution blocker, so this must
-            # never be treated as "no blockers exist" (REQ-006, REQ-008).
-            logger.error(f"Stale-review-thread registry is unreadable for PR #{pr_number}: {e}")
-            actions.append(f"Skipping merge for PR #{pr_number}: stale-review-thread registry could not be read ({e})")
-            return actions
-        if pending_stale_threads:
-            actions.append(f"Skipping merge for PR #{pr_number}: review thread(s) {', '.join(pending_stale_threads)} were resolved against a stale head and could not be reverted")
-            return actions
+        if _is_pr_review_thread_gate_enabled(config, repo_name):
+            stale_client = github_client or GitHubClient.get_instance()
+            try:
+                pending_stale_threads = retry_pending_stale_review_thread_rollbacks(stale_client, repo_name, pr_number)
+            except StaleReviewThreadRegistryError as e:
+                # The registry's storage cannot be trusted (corrupt, unreadable):
+                # it may be hiding a real stale-resolution blocker, so this must
+                # never be treated as "no blockers exist" (REQ-006, REQ-008).
+                logger.error(f"Stale-review-thread registry is unreadable for PR #{pr_number}: {e}")
+                actions.append(f"Skipping merge for PR #{pr_number}: stale-review-thread registry could not be read ({e})")
+                return actions
+            if pending_stale_threads:
+                actions.append(f"Skipping merge for PR #{pr_number}: review thread(s) {', '.join(pending_stale_threads)} were resolved against a stale head and could not be reverted")
+                return actions
 
         # Step 1: Check GitHub Actions status using utility function
         # Use switch_branch_on_in_progress=False to just skip instead of exit
@@ -2530,63 +2549,70 @@ def _handle_pr_merge(
             # (REQ-001, REQ-011) does not block merge outright; it is instead
             # carried into a fresh adversarial validation run so an independent
             # disposition can decide whether to resolve it.
-            claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
-            if claimed_thread_state.lookup_error:
-                actions.append(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {claimed_thread_state.lookup_error}")
-                if processing_status is not None:
-                    processing_status.error = claimed_thread_state.lookup_error
-                    processing_status.outcome = PRProcessingOutcome.FAILED
-                return actions
+            thread_gate_enabled = _is_pr_review_thread_gate_enabled(config, repo_name)
+            adv_enabled = _is_pr_adversarial_validation_enabled(config, repo_name)
             revalidating_older_head_threads = False
             reviewer_login = ""
-            adv_enabled = _is_pr_adversarial_validation_enabled(config, repo_name)
-            if adv_enabled:
-                if claimed_thread_state.has_blocking_unresolved and not _is_dependabot_pr(pr_data):
-                    # An authentic validator finding remains a merge blocker, but it
-                    # must not prevent validation of a newer head.  Same-head
-                    # non-PASS results still take the ordinary blocking/dedup path.
-                    head_sha_for_gate = pr_data.get("head", {}).get("sha", "")
-                    gate_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
-                    if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
-                        current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
-                        if not current_status_error and current_status is None:
-                            try:
-                                reviewer_login = resolve_reviewer_app_identity(repo_name).login
-                            except Exception as exc:
-                                logger.error(f"Could not authenticate older-head adversarial threads for PR #{pr_number}: {exc}")
-                            else:
-                                claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login)
-                                revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
-                                if revalidating_older_head_threads:
-                                    actions.append(f"Allowing adversarial validation of new head {head_sha_for_gate[:8]} with older-head review findings still unresolved")
-            else:
-                claimed_thread_state = _filter_unresolved_review_threads_for_disabled_validator(claimed_thread_state, repo_name)
-            if claimed_thread_state.has_blocking_unresolved:
-                actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
-                pending_provenance = tuple(thread for thread in claimed_thread_state.blocking_unresolved if is_change_provenance_thread(thread))
-                repair_threads = tuple(thread for thread in claimed_thread_state.blocking_unresolved if not is_change_provenance_thread(thread))
-                if pending_provenance:
-                    actions.append(f"Awaiting implementer provenance clarification on {len(pending_provenance)} review thread(s); no code change was requested")
-                if repair_threads:
-                    repair_result = _delegate_cloud_review_thread_repair(
-                        repo_name,
-                        pr_data,
-                        github_client=github_client,
-                        unresolved_threads=repair_threads,
-                    )
-                    actions.extend(repair_result)
-                    if not repair_result.delivered and processing_status is not None:
-                        processing_status.error = repair_result[0] if repair_result else "Unresolved review repair was not delivered"
+            claimed_review_threads: Sequence[Any] = ()
+
+            if thread_gate_enabled:
+                claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
+                if claimed_thread_state.lookup_error:
+                    actions.append(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {claimed_thread_state.lookup_error}")
+                    if processing_status is not None:
+                        processing_status.error = claimed_thread_state.lookup_error
                         processing_status.outcome = PRProcessingOutcome.FAILED
-                return actions
-            claimed_review_threads = claimed_thread_state.claimed
-            if claimed_review_threads:
-                actions.append(f"PR #{pr_number} has {len(claimed_review_threads)} claimed-addressed review thread(s) pending independent validation")
+                    return actions
+                if adv_enabled:
+                    if claimed_thread_state.has_blocking_unresolved and not _is_dependabot_pr(pr_data):
+                        # An authentic validator finding remains a merge blocker, but it
+                        # must not prevent validation of a newer head.  Same-head
+                        # non-PASS results still take the ordinary blocking/dedup path.
+                        head_sha_for_gate = pr_data.get("head", {}).get("sha", "")
+                        gate_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
+                        if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
+                            current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
+                            if not current_status_error and current_status is None:
+                                try:
+                                    reviewer_login = resolve_reviewer_app_identity(repo_name).login
+                                except Exception as exc:
+                                    logger.error(f"Could not authenticate older-head adversarial threads for PR #{pr_number}: {exc}")
+                                else:
+                                    claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login)
+                                    revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
+                                    if revalidating_older_head_threads:
+                                        actions.append(f"Allowing adversarial validation of new head {head_sha_for_gate[:8]} with older-head review findings still unresolved")
+                else:
+                    claimed_thread_state = _filter_unresolved_review_threads_for_disabled_validator(claimed_thread_state, repo_name)
+                if claimed_thread_state.has_blocking_unresolved:
+                    actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
+                    pending_provenance = tuple(thread for thread in claimed_thread_state.blocking_unresolved if is_change_provenance_thread(thread))
+                    repair_threads = tuple(thread for thread in claimed_thread_state.blocking_unresolved if not is_change_provenance_thread(thread))
+                    if pending_provenance:
+                        actions.append(f"Awaiting implementer provenance clarification on {len(pending_provenance)} review thread(s); no code change was requested")
+                    if repair_threads:
+                        repair_result = _delegate_cloud_review_thread_repair(
+                            repo_name,
+                            pr_data,
+                            github_client=github_client,
+                            unresolved_threads=repair_threads,
+                        )
+                        actions.extend(repair_result)
+                        if not repair_result.delivered and processing_status is not None:
+                            processing_status.error = repair_result[0] if repair_result else "Unresolved review repair was not delivered"
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                    return actions
+
+                claimed_review_threads = claimed_thread_state.claimed
+                if claimed_review_threads:
+                    actions.append(f"PR #{pr_number} has {len(claimed_review_threads)} claimed-addressed review thread(s) pending independent validation")
 
             # Strong-model adversarial validation step. Issue-less PRs have no
             # independent specification oracle, so validation is not applicable.
+            # Dependabot PRs have automated provenance and are not subject to
+            # adversarial validation.
             adversarial_validation_enabled = adv_enabled and not _is_dependabot_pr(pr_data)
-            adversarial_eligibility = AdversarialValidationEligibility()
+            adversarial_validation_applicable = False
             if adversarial_validation_enabled:
                 adversarial_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
                 if adversarial_eligibility.lookup_error:
@@ -2596,10 +2622,21 @@ def _handle_pr_merge(
                         processing_status.outcome = PRProcessingOutcome.FAILED
                     return actions
 
-            adversarial_validation_applicable = adversarial_eligibility.is_applicable
-            if adversarial_validation_enabled and not adversarial_validation_applicable:
-                actions.append(f"Skipped adversarial validation for PR #{pr_number}: no linked Issue specification oracle")
-                logger.info(f"PR #{pr_number} has no linked Issue; adversarial validation is not applicable")
+                adversarial_validation_applicable = adversarial_eligibility.is_applicable
+                if not adversarial_validation_applicable:
+                    actions.append(f"Skipped adversarial validation for PR #{pr_number}: no linked Issue specification oracle")
+                    logger.info(f"PR #{pr_number} has no linked Issue; adversarial validation is not applicable")
+                elif not thread_gate_enabled:
+                    # When thread gate is disabled, adversarial validation may still read
+                    # claimed threads for independent validation (REQ-004), but lookup errors
+                    # do not fail or defer the PR (REQ-003).
+                    adv_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
+                    if adv_thread_state.lookup_error:
+                        logger.warning(f"Failed to check review threads for adversarial validation of PR #{pr_number}: {adv_thread_state.lookup_error}")
+                    else:
+                        claimed_review_threads = adv_thread_state.claimed
+                        if claimed_review_threads:
+                            actions.append(f"PR #{pr_number} has {len(claimed_review_threads)} claimed-addressed review thread(s) pending independent validation")
 
             if adversarial_validation_enabled and adversarial_validation_applicable:
                 max_adv_reviews = config.MAX_ADVERSARIAL_VALIDATIONS if config.MAX_ADVERSARIAL_VALIDATIONS is not None else config.MAX_ADVERSARIAL_REVIEWS
@@ -2667,19 +2704,23 @@ def _handle_pr_merge(
                     if codex_review.completed:
                         post_codex_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number)
                         if post_codex_thread_state.lookup_error:
-                            actions.append(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}; validation not started")
-                            if processing_status is not None:
-                                processing_status.error = post_codex_thread_state.lookup_error
-                                processing_status.outcome = PRProcessingOutcome.FAILED
-                            return actions
-                        if revalidating_older_head_threads:
+                            if thread_gate_enabled:
+                                actions.append(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}; validation not started")
+                                if processing_status is not None:
+                                    processing_status.error = post_codex_thread_state.lookup_error
+                                    processing_status.outcome = PRProcessingOutcome.FAILED
+                                return actions
+                            else:
+                                logger.warning(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}")
+                        elif revalidating_older_head_threads:
                             post_codex_thread_state = _allow_older_head_adversarial_threads(post_codex_thread_state, reviewer_login)
-                        if post_codex_thread_state.has_blocking_unresolved:
+                        if post_codex_thread_state.has_blocking_unresolved and thread_gate_enabled:
                             actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
                             return actions
                         # Codex may have just posted its own review threads; use the
                         # freshest claimed-thread set for this validation run.
-                        claimed_review_threads = post_codex_thread_state.claimed
+                        if not post_codex_thread_state.lookup_error:
+                            claimed_review_threads = post_codex_thread_state.claimed
 
                     head_sha = pr_data.get("head", {}).get("sha", "")
 
@@ -5278,15 +5319,16 @@ def _merge_pr(
         from auto_coder.util.gh_cache import get_ghapi_client
 
         client = github_client or GitHubClient.get_instance()
-        review_thread_state = _get_review_thread_gate_state(client, repo_name, pr_number, config=config)
-        if review_thread_state.lookup_error:
-            logger.info(f"PR #{pr_number} review threads could not be checked. Skipping merge.")
-            log_action(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {review_thread_state.lookup_error}")
-            return False
-        if review_thread_state.has_unresolved:
-            logger.info(f"PR #{pr_number} has unresolved review threads. Skipping merge.")
-            log_action(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
-            return False
+        if _is_pr_review_thread_gate_enabled(config, repo_name):
+            review_thread_state = _get_review_thread_gate_state(client, repo_name, pr_number, config=config)
+            if review_thread_state.lookup_error:
+                logger.info(f"PR #{pr_number} review threads could not be checked. Skipping merge.")
+                log_action(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {review_thread_state.lookup_error}")
+                return False
+            if review_thread_state.has_unresolved:
+                logger.info(f"PR #{pr_number} has unresolved review threads. Skipping merge.")
+                log_action(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
+                return False
 
         token = client.token
         api = get_ghapi_client(token)

@@ -1972,6 +1972,10 @@ def get_feature_switch_from_config(
         adv_val_env = os.environ.get("AUTO_CODER_PR_ADVERSARIAL_VALIDATION") or os.environ.get("AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION")
         if adv_val_env is not None:
             return adv_val_env.strip().lower() not in ("false", "0", "no")
+    if apply_env and feature_name == "pr_review_thread_gate":
+        thread_gate_env = os.environ.get("AUTO_CODER_PR_REVIEW_THREAD_GATE")
+        if thread_gate_env is not None:
+            return thread_gate_env.strip().lower() not in ("false", "0", "no")
 
     data = load_app_config_data(config_path=config_path, repo_name=repo_name)
 
