@@ -67,7 +67,15 @@ from .sibling_dependencies import (
     parse_blocked_by_declaration,
 )
 from .specification_analyzer import IndividualRelationshipContext
-from .specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision, configured_provider_identity
+from .specification_validation_lifecycle import (
+    DIAGNOSTIC_EFFECT,
+    READINESS_WITHDRAWAL_EFFECT,
+    VALIDATION_PUBLICATION_STAGE,
+    SpecificationValidationLifecycle,
+    ValidationDecision,
+    configured_provider_identity,
+    validation_publication_identity,
+)
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -243,6 +251,102 @@ class _IssueProcessingStageHandler:
         if result.target_outcome is ExplicitTargetOutcome.DEFERRED:
             return StageOutcome()
         return StageOutcome(completed_effects=obligation.unfinished_effects)
+
+
+class _ValidationPublicationStageHandler:
+    """Resumes an Issue specification/decomposition BLOCKED publication.
+
+    This is the effect-level counterpart to ``_IssueProcessingStageHandler``:
+    it owns exactly the two independently-trackable effects a BLOCKED
+    decision requires (the diagnostic comment and, when applicable, the
+    parent readiness withdrawal), durably completed one at a time via
+    ``PendingWorkStore.complete_effect`` from inside
+    ``SpecificationValidationLifecycle.apply_blocked``/``apply_inherited_blocked``
+    (Issue #1923, REQ-001, REQ-002, REQ-007).
+
+    Recovery re-derives the current decision from scratch -- issue snapshot,
+    hierarchy, and the durably-saved decision keyed by a freshly recomputed
+    identity -- exactly as a fresh evaluation would (REQ-005). A revision
+    mismatch (edited title/body, changed hierarchy, or a new readiness
+    submission) supersedes the retained obligation rather than authorizing
+    stale effects (REQ-003).
+    """
+
+    def __init__(self, engine: "AutomationEngine", repo_name: str) -> None:
+        self._engine = engine
+        self._repo_name = repo_name
+
+    def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def recover(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def _run(self, obligation: PendingObligation) -> StageOutcome:
+        engine = self._engine
+        repo_name = self._repo_name
+        entity = obligation.identity.entity
+        issue_number: Optional[int] = None
+        if entity.startswith("issue:"):
+            try:
+                issue_number = int(entity.split(":", 1)[1])
+            except ValueError:
+                issue_number = None
+        if issue_number is None:
+            logger.warning("Malformed validation-publication pending-work identity {!r}; discarding obligation", entity)
+            return StageOutcome(superseded=True)
+        try:
+            fresh_issue = engine.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+        except GitHubRequestError as exc:
+            return StageOutcome(error=exc)
+        if not isinstance(fresh_issue, dict) or fresh_issue.get("number") != issue_number or "pull_request" in fresh_issue:
+            return StageOutcome(superseded=True)
+        title = str(fresh_issue.get("title") or "")
+        body = str(fresh_issue.get("body") or "")
+        validator = engine._get_specification_validator(repo_name)
+        parent_number = engine._get_authoritative_parent_number(repo_name, issue_number, fresh_issue)
+        relationship_context = None
+        authoritative_set: Optional[tuple[Dict[str, Any], List[Dict[str, Any]]]] = None
+        if parent_number is not None:
+            try:
+                authoritative_set = engine._fetch_authoritative_decomposition_set(repo_name, parent_number)
+            except GitHubRequestError as exc:
+                return StageOutcome(error=exc)
+            if authoritative_set is not None:
+                relationship_context = engine._child_review_context(*authoritative_set, issue_number)
+        fresh_identity = validator.identity(issue_number, title, body, relationship_context)
+        if fresh_identity.key != obligation.identity.revision:
+            # An edited Issue, a changed hierarchy, or a new readiness
+            # submission produces a different identity; the retained
+            # obligation described a now-obsolete result (REQ-003, REQ-005).
+            return StageOutcome(superseded=True)
+        decision = validator.store.get(fresh_identity)
+        if decision is None or decision.verdict != "BLOCKED":
+            return StageOutcome(superseded=True)
+        try:
+            if parent_number is not None:
+
+                def _set_is_current() -> bool:
+                    latest = engine._fetch_authoritative_decomposition_set(repo_name, parent_number)
+                    if latest is None or not engine._is_open_issue(latest[0]) or not is_implementation_ready(latest[0]) or issue_number not in {child.get("number") for child in latest[1]}:
+                        return False
+                    relationship = engine._child_review_context(*latest, issue_number)
+                    return validator.identity(issue_number, title, body, relationship) == decision.identity
+
+                side_effect_error = validator.apply_inherited_blocked(engine.github, decision, parent_number, _set_is_current)
+            else:
+                side_effect_error = validator.apply_blocked(engine.github, decision, lambda: engine._standalone_validation_is_current(repo_name, decision))
+        except GitHubRequestError as exc:
+            return StageOutcome(error=exc)
+        if side_effect_error:
+            logger.warning("Validation publication effects remain incomplete for Issue #{}: {}", issue_number, side_effect_error)
+            return StageOutcome()
+        current = get_pending_work_store().get(obligation.identity)
+        if current is None:
+            # Every effect this obligation named has been durably completed
+            # via complete_effect() from inside apply_blocked/apply_inherited_blocked.
+            return StageOutcome(completed_effects=obligation.unfinished_effects)
+        return StageOutcome()
 
 
 class EngineLifecycle(str, Enum):
@@ -1391,6 +1495,7 @@ class AutomationEngine:
         self.pending_work_scheduler.register_handler(STARTUP_RECONCILIATION_STAGE, _StartupReconciliationHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(VALIDATION_PUBLICATION_STAGE, _ValidationPublicationStageHandler(self, repo_name))
 
         if not self.is_draining:
             # Webhooks are not a durable event log. Recover work missed while
@@ -3226,6 +3331,8 @@ class AutomationEngine:
                                 decision,
                                 lambda: self._standalone_validation_is_current(repo_name, decision),
                             )
+                    except GitHubRequestError as exc:
+                        return self._defer_validation_publication(repo_name, item_number, decision, exc, result)
                     except Exception as exc:
                         side_effect_error = str(exc)
                     if side_effect_error:
@@ -3723,6 +3830,44 @@ class AutomationEngine:
         result.error = str(error)
         result.target_outcome = ExplicitTargetOutcome.DEFERRED
         result.actions = [f"Deferred GitHub-dependent work: {obligation.reason.value}"]
+        return result
+
+    def _defer_validation_publication(
+        self,
+        repo_name: str,
+        item_number: int,
+        decision: ValidationDecision,
+        error: GitHubRequestError,
+        result: CandidateProcessingResult,
+    ) -> CandidateProcessingResult:
+        """Retain a BLOCKED publication (diagnostic/readiness-withdrawal) interrupted by GitHub.
+
+        Unlike ``_defer_issue_evaluation`` this never reports the durable
+        ``BLOCKED`` terminal outcome on an operational failure (REQ-006): a
+        publication interruption stays a DEFERRED, automatically-resumable
+        obligation on ``VALIDATION_PUBLICATION_STAGE``, and only the effects
+        this specific decision has not yet durably completed (per the
+        ``SpecificationValidationStore`` flags) are retained (REQ-001, REQ-002).
+        """
+        identity = validation_publication_identity(repo_name, item_number, decision.identity.key)
+        validator = self._get_specification_validator(repo_name)
+        current = validator.store.get(decision.identity)
+        unfinished: tuple[str, ...] = ()
+        if current is None or not current.findings_published:
+            unfinished += (DIAGNOSTIC_EFFECT,)
+        if current is None or not current.readiness_removed:
+            unfinished += (READINESS_WITHDRAWAL_EFFECT,)
+        obligation = get_pending_work_store().defer(identity, error, unfinished)
+        logger.warning(
+            "Deferred BLOCKED publication for Issue #{} after GitHub operational failure {}; next eligible at {}",
+            item_number,
+            obligation.reason.value,
+            obligation.not_before,
+        )
+        self.pending_work_scheduler.wake()
+        result.error = str(error)
+        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+        result.actions = [f"Deferred BLOCKED publication: {obligation.reason.value}"]
         return result
 
     def _get_implementation_slots(self, repo_name: str) -> ImplementationSlotRepository:
