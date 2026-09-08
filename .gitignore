@@ -238,3 +238,12 @@ pyright_results.json
 # Mock files from tests
 <MagicMock*
 .aider*
+
+# Root-level disposable agent and diagnostic artifacts
+/.agent-tmp/
+/coverage.json
+/debug_log.json
+/codex.patch
+/setup.py.backup
+/=1.0.0
+/<MagicMock*

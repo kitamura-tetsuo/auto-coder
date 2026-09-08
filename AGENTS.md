@@ -27,6 +27,15 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * Document all features in `docs/client-features.yaml` as soon as possible.
 * Read `docs/client-features.yaml` to comply with specifications and not to degrade.
 * Do not create duplicate functions in multiple locations.
+* Put disposable investigation scripts, debugging scripts, one-shot rewrite scripts,
+  and their outputs under `.agent-tmp/`; these files must remain untracked and must
+  not be committed. Do not place a tracked placeholder in `.agent-tmp/`.
+* Put maintained scripts under `scripts/` and formal regression tests under `tests/`.
+  Do not create Python files in the repository root.
+* Do not bypass repository hygiene with `git add -f`, hook bypass options, disabling
+  the checker, or allowlisting disposable artifacts. A legitimate new non-Python
+  root file requires an explicit, reviewed change to
+  `scripts/repository_hygiene_allowlist.json`.
 
 ### GitHub Operations
 
