@@ -588,7 +588,7 @@ async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, 
         run_id = None
 
         for _ in range(12):  # 12 * 5s = 1 minutes
-            status_result = _check_github_actions_status(repo_name, pr_data, config)
+            status_result = _check_github_actions_status(repo_name, pr_data, config, github_client)
             if status_result.ids:
                 run_found = True
                 run_id = status_result.ids[0]  # Take the first one found
@@ -610,7 +610,7 @@ async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, 
         final_status = "failure"
 
         for _ in range(360):  # 360 * 10s = 60 minutes
-            status_result = _check_github_actions_status(repo_name, pr_data, config)
+            status_result = _check_github_actions_status(repo_name, pr_data, config, github_client)
 
             if not status_result.in_progress:
                 completed = True
@@ -840,7 +840,7 @@ def process_pull_request(
                 get_trace_logger().log("PR Processing", f"Processing PR #{pr_number}", item_type="pr", item_number=pr_number, details={"branch": branch_name})
 
                 # Check GitHub Actions status and mergeability
-                github_checks = _check_github_actions_status(repo_name, pr_data, config)
+                github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
 
                 get_trace_logger().log("CI Status", f"CI Status for PR #{pr_number}: {'Success' if github_checks.success else 'Failure/Pending'}", item_type="pr", item_number=pr_number, details={"success": github_checks.success, "in_progress": github_checks.in_progress})
 
@@ -1465,7 +1465,7 @@ def _close_stale_jules_pr(
         # Only close when CI is actually not passing. Completed runs are required:
         # a run still in progress may yet turn green.
         if github_checks is None:
-            github_checks = _check_github_actions_status(repo_name, pr_data, config)
+            github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
 
         if github_checks.success:
             logger.info(f"Jules PR #{pr_number} is older than {config.JULES_PR_CI_TIMEOUT_HOURS}h but CI passed, keeping it open")
@@ -2474,7 +2474,7 @@ def _handle_pr_merge(
             return actions
 
         # Step 3: Get detailed status for merge decision
-        github_checks = _check_github_actions_status(repo_name, pr_data, config)
+        github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
         if github_checks.error:
             actions.append(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
             logger.error(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
