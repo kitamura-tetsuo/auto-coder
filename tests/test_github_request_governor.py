@@ -21,6 +21,7 @@ from auto_coder.util.github_request_outcome import (
     GitHubResponseMetadata,
     RequestProvenance,
     configure_github_request_boundary,
+    github_http_client,
 )
 
 
@@ -243,6 +244,41 @@ def test_concurrent_real_clients_never_overlap(monkeypatch) -> None:
         thread.join(timeout=2)
         configure_github_request_boundary()
     assert errors == []
+
+
+def test_fresh_thread_uncached_completion_resolves_its_reservation(tmp_path) -> None:
+    """REQ-001/AS-001: a brand-new thread's first request must not lose its
+    completion observation. `getattr(_state, "wire_outcomes", [])` used to
+    hand back a throwaway list on a thread that never called
+    `begin_operation()`; appending to it silently discarded the outcome and
+    left the governor reservation resolved=0 forever."""
+    governor = GitHubRequestGovernor(store_path=tmp_path / "fresh_thread.sqlite3")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            with github_http_client(
+                subsystem="controller-strict",
+                transport=httpx.MockTransport(handler),
+                admission_hook=governor.admit,
+                observation_hook=governor.observe,
+            ) as client:
+                client.get("https://api.github.com/repos/acme/widgets")
+        except BaseException as exc:  # pragma: no cover - surfaced via assertion below
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=2)
+    assert errors == []
+
+    # The completed attempt must be resolved: an unrelated admission on the
+    # same origin must not be refused as still in-flight.
+    assert governor.admit(context(2)) is True
 
 
 def test_production_transport_cooldown_and_episode_survive_fresh_instance(tmp_path, monkeypatch) -> None:

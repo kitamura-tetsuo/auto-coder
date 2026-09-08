@@ -124,12 +124,28 @@ def boundary_hooks() -> tuple[AdmissionHook | None, ObservationHook | None]:
         return _admission_hook, _observation_hook
 
 
+def _wire_outcomes() -> list[GitHubRequestOutcome]:
+    """Return this thread's pending-observation list, creating it if absent.
+
+    A plain ``getattr(_state, "wire_outcomes", [])`` returns a throwaway list
+    on a fresh thread: appending to it is silently discarded because nothing
+    ever assigns it back onto ``_state``. Every mutator must go through this
+    helper so the list a wire attempt appends to is the same list a later
+    response hook reads from, with no caller-side setup required first.
+    """
+    outcomes = getattr(_state, "wire_outcomes", None)
+    if outcomes is None:
+        outcomes = []
+        _state.wire_outcomes = outcomes
+    return outcomes
+
+
 def begin_operation() -> None:
     _state.wire_outcomes = []
 
 
 def take_wire_outcomes() -> list[GitHubRequestOutcome]:
-    outcomes = getattr(_state, "wire_outcomes", [])
+    outcomes = _wire_outcomes()
     _state.wire_outcomes = []
     return list(outcomes)
 
@@ -326,13 +342,16 @@ class DiagnosticTransport(httpx.BaseTransport):
         except Exception as exc:
             outcome = GitHubRequestOutcome(context, None, GitHubApiOutcome.TRANSPORT_FAILURE, RequestProvenance.NETWORK, DeliveryCertainty.INDETERMINATE, GitHubResponseMetadata(), (time.monotonic() - started) * 1000, _redact_message(str(exc), credentials))
             log_outcome(outcome, "transport_failure")
-            getattr(_state, "wire_outcomes", []).append(outcome)
+            # No httpx response is returned on this path, so no "response" event
+            # hook will ever run to pop this outcome off the pending-observation
+            # list. Deliver it to the governor directly instead of queuing it,
+            # so a later, unrelated response never mistakenly pops it as its own.
             if self._observation_hook:
                 self._observation_hook(outcome)
             raise GitHubRequestError(outcome) from exc
         metadata = response_metadata(response.headers)
         outcome = GitHubRequestOutcome(context, response.status_code, classify_response(response.status_code, metadata), RequestProvenance.NETWORK, DeliveryCertainty.HTTP_RESPONSE_RECEIVED, metadata, (time.monotonic() - started) * 1000)
-        getattr(_state, "wire_outcomes", []).append(outcome)
+        _wire_outcomes().append(outcome)
         return response
 
     def close(self) -> None:
@@ -355,11 +374,15 @@ def github_http_client(
     observation = observation_hook if observation_hook is not None else configured_observation
 
     def observe(response: httpx.Response) -> None:
-        outcomes = getattr(_state, "wire_outcomes", [])
+        outcomes = _wire_outcomes()
         if not outcomes:
             return
         base = outcomes.pop()
-        response.read()
+        try:
+            response.read()
+        except Exception as exc:
+            finalize_read_failure(response, base, observation, exc)
+            raise
         finalize_response(response, base, observation)
 
     return httpx.Client(
@@ -389,13 +412,54 @@ def instrument_github_client(
             client._mounts[pattern] = DiagnosticTransport(mounted, admission, observation, subsystem, api_origin)  # type: ignore[attr-defined]
 
     def observe(response: httpx.Response) -> None:
-        outcomes = getattr(_state, "wire_outcomes", [])
-        if outcomes:
+        outcomes = _wire_outcomes()
+        if not outcomes:
+            return
+        base = outcomes.pop()
+        try:
             response.read()
-            finalize_response(response, outcomes.pop(), observation)
+        except Exception as exc:
+            finalize_read_failure(response, base, observation, exc)
+            raise
+        finalize_response(response, base, observation)
 
     client.event_hooks["response"].append(observe)
     return client
+
+
+def finalize_read_failure(
+    response: httpx.Response,
+    base: GitHubRequestOutcome,
+    observation_hook: ObservationHook | None,
+    exc: Exception,
+) -> GitHubRequestOutcome:
+    """Deliver a terminal observation when the body could not be read.
+
+    The status line and headers were already received over the wire, so
+    delivery is genuinely HTTP_RESPONSE_RECEIVED, not fabricated as
+    definitely-not-sent; classification and any throttle metadata come from
+    the headers alone, since the body (and any structured error it carries)
+    is unavailable. This must run for every exit out of the response hook
+    that isn't a normal decoded response, so a completed local attempt is
+    never left indefinitely classified as in-flight in the governor.
+    """
+    header_credentials = tuple(value for key, value in response.request.headers.items() if key.lower() in ("authorization", "cookie"))
+    credentials = header_credentials + tuple(part for value in header_credentials for part in value.split() if len(part) >= 4)
+    metadata = response_metadata(response.headers)
+    outcome = GitHubRequestOutcome(
+        base.context,
+        response.status_code,
+        classify_response(response.status_code, metadata),
+        base.provenance,
+        DeliveryCertainty.HTTP_RESPONSE_RECEIVED,
+        metadata,
+        base.elapsed_ms,
+        _redact_message(str(exc), credentials),
+    )
+    log_outcome(outcome, "body_read_failure")
+    if observation_hook:
+        observation_hook(outcome)
+    return outcome
 
 
 def finalize_response(
