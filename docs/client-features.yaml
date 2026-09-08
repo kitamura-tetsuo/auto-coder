@@ -2168,6 +2168,17 @@ github-pending-work-scheduler:
     - "`AutomationEngine.get_status()` includes a `pending_work` snapshot (repository, entity, stage, revision, reason, status, next-eligible time, unfinished effects, and whether it is blocked and why) for daemon status visibility."
     - "A preflight-schema database (no `status` column) is migrated in place on open; its rows default to waiting so pre-existing retained work is preserved rather than dropped."
 
+resumable-startup-reconciliation:
+  description: "A deferred or throttled startup GitHub scan retains recoverable work and retries automatically instead of terminating the daemon (Issue #1921)."
+  documentation: "src/auto_coder/automation_engine.py"
+  behavior:
+    - "`start_automation` registers a `startup-reconciliation` stage handler with the pending-work scheduler (immediately after creating its task, before any await) and runs the first startup attempt inline: open-PR ownership discovery, then strict Issue/PR enumeration."
+    - "A `GitHubRequestError` from that attempt (a local admission deferral or an actual GitHub throttle, authentication, or forbidden response) does not terminate the daemon: it is retained as a durable pending-work obligation keyed by a stable repository-scoped identity (`WorkIdentity(repo_name, \"startup\", \"startup-reconciliation\")`, stable across restarts), and the already-running pending-work scheduler retries it independent of the ordinary worker pool. Any other exception is a genuine defect and continues to propagate and stop the daemon, unchanged from before."
+    - "The ordinary worker pool, producer loop, and invalidation loop do not start until startup reconciliation succeeds; `start_automation` waits on that outcome (or on shutdown) without blocking the event loop, so webhook receipt, status reporting, and graceful shutdown remain responsive while recovery is incomplete."
+    - "Every retry -- whether the inline first attempt or a scheduler-driven dispatch/recover -- performs a complete fresh open-PR-ownership discovery and Issue/PR enumeration; a later-page failure is never combined with an earlier successful page as partial success."
+    - "Open-PR ownership discovery failure (deferred or throttled) is no longer silently swallowed: `ImplementationSlotRepository.reconcile(discover_open_prs=True)` propagates it so the same durable obligation covers both ownership discovery and entity enumeration, preserving existing owners until discovery completes."
+    - "On success, any pending-work obligation retained for this repository's startup-reconciliation identity is cleared (superseded or its effect completed), so a later timer never repeats a full repository enumeration merely because time passed; `AutomationEngine.get_status()['pending_work']` continues to expose an incomplete cycle's reason and next-eligible time via the existing pending-work snapshot."
+
 repository-hygiene-enforcement:
   description: "Checks the complete tracked repository state at commit and in PR CI while keeping disposable agent work untracked."
   documentation: docs/repository-hygiene.md

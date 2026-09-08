@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -13,10 +14,20 @@ from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from src.auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
 from src.auto_coder.entity_invalidation import CIWebhookDelivery, DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
+from src.auto_coder.github_pending_work import PendingWorkScheduler, PendingWorkStore
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
 from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from src.auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
+from src.auto_coder.util.github_request_outcome import (
+    DeliveryCertainty,
+    GitHubApiOutcome,
+    GitHubRequestContext,
+    GitHubRequestOutcome,
+    GitHubRequestRefused,
+    GitHubResponseMetadata,
+    RequestProvenance,
+)
 from src.auto_coder.webhook_server import SentryWebhookPayload, create_app, process_github_payload, process_sentry_payload
 
 
@@ -332,6 +343,92 @@ def test_startup_reconciliation_recovers_missed_issue_through_worker_path(tmp_pa
     assert processed == [1725]
     assert engine.get_status()["startup_reconciliation"] == {"complete": True, "error": None}
     github.get_open_entities_strict.assert_called_once_with("owner/repo")
+
+
+def _deferred_admission_error(retry_after=0):
+    outcome = GitHubRequestOutcome(
+        GitHubRequestContext("op", "attempt", "startup", "https://api.github.com", "GET", "read", "/repos/{owner}/{repo}/issues"),
+        None,
+        GitHubApiOutcome.REFUSED,
+        RequestProvenance.NETWORK,
+        DeliveryCertainty.DEFINITELY_NOT_SENT,
+        GitHubResponseMetadata(retry_after_seconds=retry_after),
+        1,
+    )
+    return GitHubRequestRefused(outcome)
+
+
+def test_startup_admission_deferral_retries_durably_without_terminating_daemon(tmp_path: Path, monkeypatch):
+    """Issue #1921 AS-001/REQ-001/REQ-002/REQ-006/REQ-007: a deferred startup scan
+    retains recoverable work and retries through the pending-work scheduler instead
+    of terminating the daemon; ordinary workers only start once it succeeds."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    store = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("src.auto_coder.automation_engine.get_pending_work_store", lambda: store)
+
+    attempts = []
+    allow_retry = threading.Event()
+
+    def enumerate_entities(repo_name):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise _deferred_admission_error()
+        allow_retry.wait(timeout=5)
+        return OpenGitHubEntities(pull_requests=[100])
+
+    github = MagicMock()
+    github.get_open_entities_strict.side_effect = enumerate_entities
+    engine = AutomationEngine(github, AutomationConfig())
+    engine.pending_work_scheduler = PendingWorkScheduler(store, poll_interval=0.02)
+    processed = []
+    monkeypatch.setattr(engine, "_create_candidate_from_single", _candidate)
+    monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())
+    monkeypatch.setattr(engine, "_producer_loop", lambda repo: asyncio.Event().wait())
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
+    monkeypatch.setattr("src.auto_coder.automation_engine.install_asyncio_diagnostics", lambda loop: None)
+    monkeypatch.setattr("src.auto_coder.automation_engine.get_health_monitor", MagicMock())
+
+    async def scenario():
+        task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
+        for _ in range(200):
+            if attempts:
+                break
+            await asyncio.sleep(0.01)
+        assert attempts, "the first startup attempt never ran"
+
+        # The daemon stays alive with visible, incomplete recovery rather than crashing.
+        for _ in range(200):
+            if len(attempts) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert len(attempts) >= 2, "the pending-work scheduler never retried the deferred scan"
+        assert not task.done()
+        assert engine.startup_reconciled is False
+        pending = engine.get_status()["pending_work"]
+        assert any(item["stage"] == "startup-reconciliation" and item["repository"] == "owner/repo" for item in pending)
+        # Ordinary work never starts before recovery succeeds.
+        assert processed == []
+
+        allow_retry.set()
+        for _ in range(300):
+            if engine.startup_reconciled:
+                break
+            await asyncio.sleep(0.01)
+        assert engine.startup_reconciled is True
+        assert len(attempts) >= 2, "the pending-work scheduler never retried the deferred scan"
+
+        for _ in range(200):
+            if processed == [100]:
+                break
+            await asyncio.sleep(0.01)
+        assert processed == [100]
+        # A completed obligation must not linger for a later timer-driven repeat.
+        assert engine.get_status()["pending_work"] == []
+
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
 
 
 def test_startup_reconciliation_failure_never_starts_steady_state(tmp_path: Path, monkeypatch):
