@@ -8,6 +8,7 @@ import pytest
 
 from auto_coder.github_pending_work import (
     MAX_THROTTLED_RETRIES,
+    MIN_LOCAL_RETRY_INTERVAL_SECONDS,
     ObligationStatus,
     PendingReason,
     PendingWorkScheduler,
@@ -63,6 +64,35 @@ def test_admission_deferral_does_not_spend_throttle_attempt(tmp_path):
     assert result.reason is PendingReason.ADMISSION_DEFERRED
     assert result.throttle_attempts == 0
     assert result.not_before == 200
+
+
+def test_admission_deferral_without_a_trustworthy_retry_at_still_waits_a_second(tmp_path):
+    """REQ-001: a now-or-earlier/unknown retry_at must never permit immediate retry."""
+    store = PendingWorkStore(tmp_path / "pending.db")
+    identity = WorkIdentity("acme/widgets", "pr:9", "ci", "head")
+
+    # No governor_deadline at all (the caller lost/never had a retry_at).
+    result = store.defer(identity, _error(GitHubApiOutcome.REFUSED, retry_after=0), ("ci",), now=100)
+    assert result.not_before == 100 + MIN_LOCAL_RETRY_INTERVAL_SECONDS
+
+    # A governor_deadline that is itself now-or-earlier (e.g. the governor's
+    # own "request_in_flight" bookkeeping not yet reflecting a real deadline)
+    # must not shortcut the local floor either.
+    stale = store.defer(identity, _error(GitHubApiOutcome.REFUSED, retry_after=0), ("ci",), governor_deadline=100, now=100)
+    assert stale.not_before == 100 + MIN_LOCAL_RETRY_INTERVAL_SECONDS
+
+
+def test_admission_deferral_propagates_a_deferred_errors_own_retry_at(tmp_path):
+    """A GitHubRequestDeferred's own retry_at is honored without an explicit governor_deadline."""
+    from auto_coder.github_request_governor import GitHubRequestDeferred
+
+    store = PendingWorkStore(tmp_path / "pending.db")
+    identity = WorkIdentity("acme/widgets", "pr:10", "ci", "head")
+    context = GitHubRequestContext("operation", "attempt", "test", "https://api.github.com", "GET", "read", "/repos/{owner}/{repo}")
+    deferred = GitHubRequestDeferred(context, "request_in_flight", retry_at=250.0)
+
+    result = store.defer(identity, deferred, ("ci",), now=100)
+    assert result.not_before == 250.0
 
 
 def test_retry_bound_is_semantic_and_survives_restart(tmp_path):
@@ -271,6 +301,46 @@ async def test_scheduler_shutdown_leaves_in_flight_obligation_running_for_recove
     assert remaining is not None
     assert remaining.status == ObligationStatus.RUNNING.value
     assert remaining.unfinished_effects == ("effect",)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_self_notification_does_not_skip_the_local_retry_floor(tmp_path):
+    """AS-001/AS-002: a handler's own wake() (fired after every claim) must not
+    let a repeatedly admission-deferred obligation re-dispatch faster than the
+    REQ-001 local floor, even though the scheduler wakes on every completion.
+    """
+    store = PendingWorkStore(tmp_path / "pending.db")
+    identity = WorkIdentity("acme/widgets", "pr:11", "ci", "head")
+    store.defer(identity, _error(GitHubApiOutcome.REFUSED, retry_after=0), ("ci",), now=time.time())
+
+    class _AlwaysDeferredHandler:
+        def __init__(self):
+            self.dispatch_times: list[float] = []
+
+        def dispatch(self, obligation):
+            self.dispatch_times.append(time.monotonic())
+            return StageOutcome(error=_error(GitHubApiOutcome.REFUSED, retry_after=0))
+
+        def recover(self, obligation):
+            raise AssertionError("not expected")
+
+    # A short poll_interval isolates the assertion to the REQ-001 floor
+    # itself (rather than the ordinary poll cadence) and would busy-loop
+    # every poll_interval without the fix, since defer() re-arms the
+    # obligation to due-now and _run_claimed() always calls self.wake().
+    scheduler = PendingWorkScheduler(store, poll_interval=0.05)
+    handler = _AlwaysDeferredHandler()
+    scheduler.register_handler("ci", handler)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(scheduler.run(shutdown))
+    try:
+        await _run_until(lambda: len(handler.dispatch_times) >= 3, timeout=5.0)
+    finally:
+        shutdown.set()
+        await task
+
+    gaps = [b - a for a, b in zip(handler.dispatch_times, handler.dispatch_times[1:])]
+    assert all(gap >= MIN_LOCAL_RETRY_INTERVAL_SECONDS - 0.05 for gap in gaps), gaps
 
 
 def test_manual_retry_resets_count_and_deadline_without_touching_effects(tmp_path):

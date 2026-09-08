@@ -25,6 +25,12 @@ _DEFAULT_STORE: PendingWorkStore | None = None
 _DEFAULT_SCHEDULER: PendingWorkScheduler | None = None
 MAX_THROTTLED_RETRIES = 3
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
+# The minimum interval between this process's own re-executions of the same
+# obligation after a local (pre-send) GitHub admission deferral. This is a
+# local re-execution floor, not a GitHub rate limit or send permission: the
+# governor remains the sole authority on when a request may actually be
+# sent, and every resumed attempt still goes through its ordinary admission.
+MIN_LOCAL_RETRY_INTERVAL_SECONDS = 1.0
 
 
 class ObligationStatus(str, Enum):
@@ -125,7 +131,19 @@ class PendingWorkStore:
         else:
             reason = PendingReason.THROTTLED
         retry_after = error.outcome.metadata.retry_after_seconds or 0.0
-        due = max(current_time + retry_after, governor_deadline or current_time)
+        # A local admission deferral (e.g. GitHubRequestDeferred) carries the
+        # governor's own computed retry_at, derived from real cooldown/queue
+        # state; an explicit governor_deadline argument still takes priority
+        # when the caller has a more specific deadline to enforce.
+        known_deadline = governor_deadline if governor_deadline is not None else getattr(error, "retry_at", None)
+        due = max(current_time + retry_after, known_deadline if known_deadline is not None else current_time)
+        if classification is GitHubApiOutcome.REFUSED:
+            # REQ-001: self-notifications, unrelated completions, and generic
+            # wake calls must never let this same obligation re-run sooner
+            # than one second after this deferral was handled, regardless of
+            # whether the governor's own retry_at is now-or-earlier, missing,
+            # or otherwise cannot be trusted as a positive future deadline.
+            due = max(due, current_time + MIN_LOCAL_RETRY_INTERVAL_SECONDS)
         try:
             with _LOCK, self._connect() as connection:
                 row = connection.execute(
