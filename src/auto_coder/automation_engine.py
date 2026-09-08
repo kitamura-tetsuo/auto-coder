@@ -29,7 +29,7 @@ from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
 from .git_commit import git_push
 from .git_info import get_current_branch
-from .github_ci_observer import ci_read_phase_method
+from .github_ci_observer import ci_read_phase_method, end_ci_read_phase
 from .github_request_governor import GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_slots import (
@@ -2002,6 +2002,7 @@ class AutomationEngine:
                                 logger.warning(f"Failed to fetch details for PR #{pr_number}: {e}")
 
                         if node_id:
+                            end_ci_read_phase("mark-pr-ready")
                             # GraphQL mutation to mark as ready
                             mutation = """
                             mutation($id: ID!) {
@@ -2023,6 +2024,7 @@ class AutomationEngine:
 
                 # Close PRs that have zero effective diff.
                 # Runs before label and stale checks so empty PRs are cleaned up and retried immediately.
+                end_ci_read_phase("empty-pr-policy")
                 empty_pr_result = _close_empty_pr(self.github, repo_name, pr_data, self.config)
                 if empty_pr_result.closed:
                     for action in empty_pr_result.actions:
@@ -2042,6 +2044,7 @@ class AutomationEngine:
                 # This runs before the label and "waiting for Jules" skips below, because a
                 # stale Jules PR normally still carries the @auto-coder label from an earlier
                 # run and would otherwise never be looked at again.
+                end_ci_read_phase("stale-jules-policy")
                 stale_jules_result = _close_stale_jules_pr(self.github, repo_name, pr_data, self.config)
                 if stale_jules_result.closed:
                     for action in stale_jules_result.actions:

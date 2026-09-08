@@ -31,6 +31,12 @@ from .util.github_request_outcome import GitHubRequestError
 logger = get_logger(__name__)
 T = TypeVar("T")
 _PAGE_SIZE = 100
+_ADVISORY_WORKFLOW_PATHS = frozenset(
+    {
+        ".github/workflows/prompt-regression.yml",
+        ".github/workflows/prompt-regression-report.yml",
+    }
+)
 
 
 def _conclusion(status: str, conclusion: object) -> CIConclusion:
@@ -130,6 +136,9 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
                         if not isinstance(item, dict) or item.get("head_sha") != head_sha:
                             raise ValueError(f"malformed or mismatched {source} identity")
                         if source == "workflows":
+                            workflow_path = str(item.get("path") or "").split("@", 1)[0]
+                            if workflow_path in _ADVISORY_WORKFLOW_PATHS:
+                                continue
                             run_id, workflow_id, attempt = item.get("id"), item.get("workflow_id"), item.get("run_attempt")
                             if not run_id or not workflow_id or not isinstance(attempt, int) or attempt <= 0:
                                 raise ValueError("workflow run lacks id/workflow_id/run_attempt")

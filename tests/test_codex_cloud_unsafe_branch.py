@@ -114,7 +114,6 @@ def test_automation_engine_rejects_work_pr_before_label_and_in_progress_ci_gates
     engine = AutomationEngine(github_client, config=config)
 
     with (
-        patch("auto_coder.util.github_action.preload_github_actions_status") as preload_ci,
         patch("auto_coder.util.github_action.check_github_actions_and_exit_if_in_progress", return_value=False) as ci_gate,
         patch("auto_coder.util.github_action._check_github_actions_status", return_value=MagicMock(success=True)),
         patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as followup,
@@ -126,7 +125,6 @@ def test_automation_engine_rejects_work_pr_before_label_and_in_progress_ci_gates
     assert candidates == []
     github_client.close_pr.assert_called_once()
     followup.assert_called_once()
-    preload_ci.assert_called_once_with("owner/repo", [])
     label_gate.assert_not_called()
     ci_gate.assert_not_called()
     increment.assert_not_called()
@@ -289,16 +287,15 @@ def test_candidate_collection_preserves_live_task_branch_when_cache_says_work(
     engine = AutomationEngine(client, config=config)
 
     with (
-        patch("auto_coder.util.github_action.preload_github_actions_status") as preload,
         patch("auto_coder.util.github_action._check_github_actions_status", return_value=MagicMock(success=False)),
-        patch("auto_coder.pr_processor._close_empty_pr", return_value=MagicMock(closed=False)),
+        patch("auto_coder.pr_processor._close_empty_pr", return_value=MagicMock(closed=False)) as empty_check,
     ):
         candidates = engine._get_candidates("owner/repo")
 
     client.get_pull_request_metadata_strict.assert_called_once_with("owner/repo", 162)
     assert not client.close_pr.called
-    preload.assert_called_once()
-    assert preload.call_args.args[1][0]["head"]["ref"] == "issue-161-fixed"
+    assert candidates == []
+    assert empty_check.call_args.args[2]["head"]["ref"] == "issue-161-fixed"
 
 
 @pytest.mark.parametrize("wrapper", ["merge", "fix"])

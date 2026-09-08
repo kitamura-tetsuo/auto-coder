@@ -28,7 +28,7 @@ from auto_coder.progress_decorators import progress_stage
 from ..automation_config import AutomationConfig
 from ..ci_observation import CheckObservation, CIConclusion, ObservationAvailability, WorkflowObservation
 from ..dispatch_claim_store import DispatchOutcome
-from ..github_ci_observer import approve_waiting_deployment, observe_ci
+from ..github_ci_observer import approve_waiting_deployment, end_ci_read_phase, observe_ci
 from ..logger_config import get_logger
 from ..security_utils import redact_string
 from ..test_log_utils import generate_merged_playwright_report
@@ -2003,14 +2003,16 @@ def check_github_actions_and_exit_if_in_progress(
             return True
 
         # Check GitHub Actions status
-        github_checks = _check_github_actions_status(repo_name, pr_data, config)
+        github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
         # Optimized: Use the in_progress status from the summary check instead of fetching detailed checks.
         # _check_github_actions_status already correctly identifies in-progress runs from check-runs or workflow runs.
         # This avoids N+1 API calls (one per workflow run) incurred by get_detailed_checks_from_history.
 
         # Deployment approval is an explicit policy effect, never part of observation.
         if github_checks.waiting_runs:
-            token = GitHubClient.get_instance().token
+            end_ci_read_phase("deployment-approval")
+            client = github_client or GitHubClient.get_instance()
+            token = client.token
             api = get_ghapi_client(token)
             for run_id, attempt, head_sha in github_checks.waiting_runs:
                 approve_waiting_deployment(api, token, repo_name, run_id, attempt, head_sha)

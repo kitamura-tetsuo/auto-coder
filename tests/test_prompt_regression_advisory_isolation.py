@@ -16,6 +16,7 @@ HEAD = "a" * 40
 def workflow_run(run_id: int, path: str, conclusion: str = "failure", status: str = "completed") -> dict[str, object]:
     return {
         "id": run_id,
+        "workflow_id": 100,
         "name": "changed display name",
         "path": path,
         "head_sha": HEAD,
