@@ -35,6 +35,7 @@ from .cli_commands_lock import lock_group, unlock
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues, serve
 from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
+from .cli_commands_pending_work import pending_work_group
 from .cli_commands_usage import usage_amount
 from .cli_commands_utils import auth_status, get_actions_logs, migrate_branches
 from .cli_helpers import qwen_help_has_flags  # Re-export for tests
@@ -122,7 +123,7 @@ def main(ctx: click.Context, force: bool) -> None:
         invoked_cmd = ctx.invoked_subcommand if hasattr(ctx, "invoked_subcommand") else None
 
         # Skip lock check for read-only commands
-        read_only_commands = ["config", "auth-status", "unlock", "get-actions-logs", "mcp-pdb", "health", "usage-amount", "deployment"]
+        read_only_commands = ["config", "auth-status", "unlock", "get-actions-logs", "mcp-pdb", "health", "usage-amount", "deployment", "pending-work"]
         is_unlock = invoked_cmd == "unlock" or "unlock" in sys.argv
 
         if not (invoked_cmd in read_only_commands or has_help_flag or is_unlock):
@@ -190,6 +191,7 @@ main.add_command(config_group)
 main.add_command(lock_group)  # Keep for backward compatibility
 main.add_command(mcp_group)
 main.add_command(mcp_pdb_group)
+main.add_command(pending_work_group)
 
 # Register top-level utility commands
 main.add_command(get_actions_logs)
