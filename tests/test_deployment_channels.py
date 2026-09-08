@@ -305,6 +305,9 @@ def test_workflows_route_only_latest_successful_build_through_tested_provenance(
     assert "PROMOTION_MEMO: ${{ inputs.memo }}" in promote
     assert "secrets.RELEASE_CATALOG_TOKEN || secrets.GITHUB_TOKEN" in promote
     assert "actions: read" in promote and "contents: write" in promote
+    assert "astral-sh/setup-uv" in promote
+    assert "actions/setup-python" in promote
+    assert "uv sync" in promote
     assert "uv run auto-coder deployment promote-release" in promote
     assert "docker/build-push-action" not in promote
     assert "context:" not in promote
@@ -313,6 +316,9 @@ def test_workflows_route_only_latest_successful_build_through_tested_provenance(
     assert rollback.count("release_tag:") == 1
     assert "digest:" not in rollback
     assert "tested-beta-" not in rollback
+    assert "astral-sh/setup-uv" in rollback
+    assert "actions/setup-python" in rollback
+    assert "uv sync" in rollback
     assert "uv run auto-coder deployment restore-release" in rollback
     assert '--release-tag "$RELEASE_TAG"' in rollback
     assert '--release-sha "$RELEASE_SHA"' in rollback

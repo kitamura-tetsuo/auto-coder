@@ -49,13 +49,23 @@ def ensure_lock_directory(path: Path, shared_gid: Optional[int] = None) -> None:
     current = base
     try:
         base.mkdir(parents=True, exist_ok=True)
-        for part in directory.relative_to(base).parts:
-            current /= part
-            try:
-                current.mkdir()
-            except FileExistsError:
-                continue
-            os.chown(current, -1, shared_gid)
-            os.chmod(current, 0o2770)
+        old_umask = os.umask(0)
+        try:
+            for part in directory.relative_to(base).parts:
+                current /= part
+                try:
+                    current.mkdir(mode=0o2770)
+                except FileExistsError:
+                    continue
+                try:
+                    os.chown(current, -1, shared_gid)
+                except OSError:
+                    pass
+                try:
+                    os.chmod(current, 0o2770)
+                except OSError:
+                    pass
+        finally:
+            os.umask(old_umask)
     except OSError as exc:
         raise RuntimeError(f"Cannot establish shared runtime lock directory '{current}': {exc}") from exc
