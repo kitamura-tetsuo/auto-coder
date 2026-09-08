@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 ISSUE_STABILIZATION_SECONDS = 60
+CI_RECONCILIATION_SECONDS = 300
 
 
 def issue_stabilization_deadline(created_at: str) -> Optional[float]:
@@ -123,6 +124,19 @@ class DurableInvalidationQueue:
                 latest_seen REAL NOT NULL, eligible_at REAL NOT NULL,
                 state TEXT NOT NULL CHECK(state IN ('pending', 'processing')),
                 PRIMARY KEY(repository, head_sha)
+            );
+            CREATE TABLE IF NOT EXISTS ci_watches (
+                repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
+                head_sha TEXT NOT NULL, workflow_id TEXT NOT NULL DEFAULT '',
+                run_id TEXT, run_number INTEGER, run_attempt INTEGER,
+                observation_availability TEXT NOT NULL DEFAULT 'unavailable',
+                observation_epoch INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at REAL, next_reconcile_at REAL NOT NULL,
+                publication_state TEXT NOT NULL DEFAULT 'none',
+                throttle_attempts INTEGER NOT NULL DEFAULT 0,
+                operational_block TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY(repository, pr_number, head_sha, workflow_id)
             );
             """
         )
@@ -241,6 +255,15 @@ class DurableInvalidationQueue:
                     (delivery.repository, delivery.delivery_id, number),
                 )
                 self._advance_ci_pr(delivery.repository, number, received)
+                # A webhook is invalidation evidence, not a result.  Move the
+                # matching durable observation obligation to the same quiet
+                # window; the consumer will still perform an authoritative read.
+                self._connection.execute(
+                    """UPDATE ci_watches SET observation_epoch = observation_epoch + 1,
+                           next_reconcile_at = MIN(next_reconcile_at, ?)
+                       WHERE repository = ? AND pr_number = ? AND active = 1""",
+                    (received + 2, delivery.repository, number),
+                )
             if not delivery.pull_request_numbers and delivery.head_sha:
                 self._connection.execute(
                     """INSERT INTO ci_correlations(repository, head_sha, observation_epoch,
@@ -254,6 +277,60 @@ class DurableInvalidationQueue:
                     (delivery.repository, delivery.head_sha, received, received, received + 2),
                 )
             return True
+
+    def ensure_ci_watch(self, repository: str, pr_number: int, head_sha: str, workflow_id: str = "", *, now: Optional[float] = None) -> bool:
+        """Durably create a targeted CI obligation without weakening an existing one."""
+        if not repository or pr_number <= 0 or not head_sha:
+            return False
+        created = time.time() if now is None else now
+        with self._lock, self._connection:
+            self._connection.execute(
+                """INSERT INTO ci_watches(repository, pr_number, head_sha, workflow_id,
+                       next_reconcile_at) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(repository, pr_number, head_sha, workflow_id)
+                   DO UPDATE SET active = 1""",
+                (repository, pr_number, head_sha, workflow_id, created),
+            )
+        return True
+
+    def promote_due_ci_watches(self, repository: str, now: Optional[float] = None) -> int:
+        """Promote only due targeted watches and retain their 300-second clock."""
+        attempted = time.time() if now is None else now
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                """SELECT pr_number, head_sha, workflow_id FROM ci_watches
+                   WHERE repository = ? AND active = 1 AND operational_block IS NULL
+                     AND next_reconcile_at <= ?""",
+                (repository, attempted),
+            ).fetchall()
+            for number, head_sha, workflow_id in rows:
+                self._connection.execute(
+                    """UPDATE ci_watches SET last_attempt_at = ?, next_reconcile_at = ?
+                       WHERE repository = ? AND pr_number = ? AND head_sha = ? AND workflow_id = ?""",
+                    (attempted, attempted + CI_RECONCILIATION_SECONDS, repository, number, head_sha, workflow_id),
+                )
+                self._connection.execute(
+                    """INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state)
+                       VALUES (?, 'pr', ?, 1, 'dirty')
+                       ON CONFLICT(repository, entity_type, entity_number) DO UPDATE SET
+                         generation = CASE WHEN state = 'processing' THEN generation + 1 ELSE generation END""",
+                    (repository, number),
+                )
+        return len(rows)
+
+    def retire_ci_watches(self, repository: str, pr_number: int, current_head: Optional[str] = None) -> None:
+        """Stop obsolete periodic work while retaining watch and claim history."""
+        with self._lock, self._connection:
+            if current_head is None:
+                self._connection.execute(
+                    "UPDATE ci_watches SET active = 0 WHERE repository = ? AND pr_number = ?",
+                    (repository, pr_number),
+                )
+            else:
+                self._connection.execute(
+                    "UPDATE ci_watches SET active = 0 WHERE repository = ? AND pr_number = ? AND head_sha <> ?",
+                    (repository, pr_number, current_head),
+                )
 
     def _advance_ci_pr(self, repository: str, number: int, received: float) -> None:
         self._connection.execute(
@@ -365,8 +442,10 @@ class DurableInvalidationQueue:
             row = self._connection.execute(
                 """SELECT MIN(eligible_at) FROM (
                      SELECT eligible_at FROM ci_pending_prs WHERE repository = ?
-                     UNION ALL SELECT eligible_at FROM ci_correlations WHERE repository = ? AND state = 'pending')""",
-                (repository, repository),
+                     UNION ALL SELECT eligible_at FROM ci_correlations WHERE repository = ? AND state = 'pending'
+                     UNION ALL SELECT next_reconcile_at FROM ci_watches
+                       WHERE repository = ? AND active = 1 AND operational_block IS NULL)""",
+                (repository, repository, repository),
             ).fetchone()
         return None if not row or row[0] is None else max(0.0, float(row[0]) - time.time())
 

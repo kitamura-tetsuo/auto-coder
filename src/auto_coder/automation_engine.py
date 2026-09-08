@@ -1452,6 +1452,7 @@ class AutomationEngine:
             await asyncio.to_thread(self.invalidations.finish_ci_correlation, repo_name, sha, numbers)
             logger.info(f"CI correlation complete repository={repo_name} sha={sha[:12]} targets={len(numbers)}")
         promoted = await asyncio.to_thread(self.invalidations.promote_due_ci, repo_name)
+        promoted += await asyncio.to_thread(self.invalidations.promote_due_ci_watches, repo_name)
         if promoted:
             logger.info(f"Promoted coalesced CI batches repository={repo_name} count={promoted}")
 

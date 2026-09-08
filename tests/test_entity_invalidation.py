@@ -12,7 +12,7 @@ from src.auto_coder.automation_config import AutomationConfig, Candidate, Candid
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from src.auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
-from src.auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
+from src.auto_coder.entity_invalidation import CIWebhookDelivery, DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
 from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -1078,3 +1078,24 @@ def test_sentry_created_issue_waits_then_fetches_current_state(tmp_path: Path, m
 
     asyncio.run(scenario())
     assert processed == [final_state]
+
+
+def test_ci_watch_reconciliation_is_targeted_and_restart_durable(tmp_path: Path):
+    path = tmp_path / "invalidations.sqlite3"
+    queue = DurableInvalidationQueue(path)
+    assert queue.ensure_ci_watch("owner/repo", 42, "head", "ci.yml", now=100)
+    assert queue.promote_due_ci_watches("owner/repo", now=99) == 0
+    assert queue.promote_due_ci_watches("owner/repo", now=100) == 1
+    assert queue.promote_due_ci_watches("owner/repo", now=399) == 0
+    reopened = DurableInvalidationQueue(path)
+    assert reopened.promote_due_ci_watches("owner/repo", now=400) == 1
+
+
+def test_ci_webhook_advances_watch_without_consuming_periodic_deadline(tmp_path: Path):
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    queue.ensure_ci_watch("owner/repo", 42, "head", "ci.yml", now=100)
+    assert queue.promote_due_ci_watches("owner/repo", now=100) == 1
+    delivery = CIWebhookDelivery("owner/repo", "delivery", "workflow_run", "completed", (42,), "head", "ci.yml", "9", 2)
+    assert queue.accept_ci_delivery(delivery, now=110)
+    assert queue.promote_due_ci_watches("owner/repo", now=111.9) == 0
+    assert queue.promote_due_ci_watches("owner/repo", now=112) == 1
