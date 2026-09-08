@@ -1,32 +1,28 @@
-"""Process-local admission policy for controller-owned GitHub API traffic."""
+"""Durable admission policy for controller-owned GitHub API traffic."""
 
 from __future__ import annotations
 
 import json
+import math
+import os
+import sqlite3
 import threading
 import time
-from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
 
 from .logger_config import get_logger
-from .util.github_request_outcome import (
-    DeliveryCertainty,
-    GitHubApiOutcome,
-    GitHubRequestContext,
-    GitHubRequestOutcome,
-    GitHubRequestRefused,
-    GitHubResponseMetadata,
-    RequestProvenance,
-    normalize_api_origin,
-)
+from .util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestContext, GitHubRequestOutcome, GitHubRequestRefused, GitHubResponseMetadata, RequestProvenance, normalize_api_origin
 
 logger = get_logger(__name__)
-
 REQUESTS_PER_MINUTE = 300
 MUTATIONS_PER_MINUTE = 60
 MUTATIONS_PER_HOUR = 400
 MUTATION_SPACING_SECONDS = 1.0
+RECOVERY_COOLDOWN_SECONDS = 60.0
+SCHEMA_VERSION = 1
 
 
 class GitHubRequestDeferred(GitHubRequestRefused):
@@ -35,138 +31,272 @@ class GitHubRequestDeferred(GitHubRequestRefused):
     def __init__(self, context: GitHubRequestContext, reason: str, retry_at: float) -> None:
         self.reason = reason
         self.retry_at = retry_at
-        outcome = GitHubRequestOutcome(
-            context,
-            None,
-            GitHubApiOutcome.REFUSED,
-            RequestProvenance.NETWORK,
-            DeliveryCertainty.DEFINITELY_NOT_SENT,
-            GitHubResponseMetadata(),
-            0.0,
-            message=reason,
-        )
-        super().__init__(outcome)
+        super().__init__(GitHubRequestOutcome(context, None, GitHubApiOutcome.REFUSED, RequestProvenance.NETWORK, DeliveryCertainty.DEFINITELY_NOT_SENT, GitHubResponseMetadata(), 0.0, message=reason))
 
 
-@dataclass
+class GovernorStateError(RuntimeError):
+    """The required durable governor state cannot be safely used."""
+
+
+@dataclass(frozen=True)
 class _OriginState:
-    attempts: deque[float] = field(default_factory=deque)
-    mutations: deque[float] = field(default_factory=deque)
-    in_flight: str | None = None
-    in_flight_kind: str | None = None
-    last_mutation_completion: float | None = None
     cooldown_until: float = 0.0
+    cooldown_reason: str = ""
     throttle_count: int = 0
     episode_active: bool = False
-    post_cooldown_attempts: set[str] = field(default_factory=set)
+    last_mutation_completion: float | None = None
+
+
+def default_governor_path() -> Path:
+    """Return the controller-wide governor path, independent of its cwd."""
+    configured = os.environ.get("AUTO_CODER_RUNTIME_ROOT", "").strip()
+    root = Path(configured).expanduser() if configured else Path.home() / ".auto-coder" / "runtime"
+    return root / "github" / "request_governor.sqlite3"
 
 
 class GitHubRequestGovernor:
-    """One synchronized rolling-window governor shared by all credential roles."""
+    """One synchronized, durable rolling-window governor for all credentials."""
 
-    def __init__(self, *, monotonic=time.monotonic, wall_time=time.time) -> None:
+    def __init__(self, *, monotonic: Callable[[], float] = time.monotonic, wall_time: Callable[[], float] = time.time, store_path: Path | None = None) -> None:
         self._monotonic = monotonic
         self._wall_time = wall_time
+        self.path = store_path or default_governor_path()
         self._lock = threading.RLock()
-        self._origins: dict[str, _OriginState] = {}
-
-    def _state(self, origin: str) -> _OriginState:
-        return self._origins.setdefault(normalize_api_origin(origin), _OriginState())
+        self._connection: sqlite3.Connection | None = None
+        self._unavailable_reason: str | None = None
+        self._base_monotonic = self._checked_time(monotonic(), "monotonic clock")
+        self._base_wall = self._checked_time(wall_time(), "UTC clock")
+        try:
+            self._open_and_recover()
+        except Exception as exc:
+            self._fail_closed(f"state initialization failed: {exc}")
 
     @staticmethod
-    def _trim(values: deque[float], now: float, window: float) -> None:
-        while values and values[0] <= now - window:
-            values.popleft()
+    def _checked_time(value: float, name: str) -> float:
+        if not math.isfinite(value):
+            raise GovernorStateError(f"invalid {name}")
+        return value
+
+    @staticmethod
+    def _stored_number(value: object, label: str) -> float:
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) < 0:
+            raise GovernorStateError(f"invalid stored {label}")
+        return float(value)
+
+    def _now(self) -> float:
+        elapsed = self._checked_time(self._monotonic(), "monotonic clock") - self._base_monotonic
+        if elapsed < 0:
+            raise GovernorStateError("monotonic clock moved backward")
+        return self._base_wall + elapsed
+
+    class _Transaction:
+        def __init__(self, owner: "GitHubRequestGovernor") -> None:
+            self.owner = owner
+
+        def __enter__(self) -> None:
+            assert self.owner._connection is not None
+            self.owner._connection.execute("BEGIN IMMEDIATE")
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            assert self.owner._connection is not None
+            self.owner._connection.execute("ROLLBACK" if exc_type else "COMMIT")
+
+    def _transaction(self) -> _Transaction:
+        return self._Transaction(self)
+
+    def _open_and_recover(self) -> None:
+        existed = self.path.exists()
+        if not existed:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(str(self.path), timeout=30, isolation_level=None, check_same_thread=False)
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=FULL")
+        if existed:
+            if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                raise GovernorStateError("SQLite integrity check failed")
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "governor_metadata" not in tables:
+                raise GovernorStateError("existing store has no supported schema")
+        self._connection = connection
+        if not existed:
+            self._initialize_schema()
+        row = connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata WHERE singleton=1").fetchone()
+        if row is None or row[0] != SCHEMA_VERSION:
+            raise GovernorStateError("incompatible governor schema")
+        self._base_wall = max(self._base_wall, self._stored_number(row[1], "UTC checkpoint"))
+        now = self._now()
+        with self._transaction():
+            unresolved = connection.execute("SELECT origin, attempt_id FROM reservations WHERE resolved=0 AND recovered=0").fetchall()
+            for origin, attempt_id in unresolved:
+                state = self._read_state(str(origin))
+                deadline = max(state.cooldown_until, now + RECOVERY_COOLDOWN_SECONDS)
+                connection.execute("UPDATE origin_state SET cooldown_until_utc=?, cooldown_reason=? WHERE origin=?", (deadline, "unresolved_attempt_recovery", origin))
+                connection.execute("UPDATE reservations SET recovered=1 WHERE origin=? AND attempt_id=?", (origin, attempt_id))
+                self._diagnostic(str(origin), str(attempt_id), "recovered", "unresolved_attempt_recovery", deadline, now)
+            self._checkpoint(now)
+
+    def _initialize_schema(self) -> None:
+        assert self._connection is not None
+        self._connection.executescript(
+            """BEGIN IMMEDIATE;
+                CREATE TABLE governor_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL, last_logical_utc REAL NOT NULL);
+                CREATE TABLE origin_state (
+                    origin TEXT PRIMARY KEY, cooldown_until_utc REAL NOT NULL DEFAULT 0,
+                    cooldown_reason TEXT NOT NULL DEFAULT '', throttle_count INTEGER NOT NULL DEFAULT 0,
+                    episode_active INTEGER NOT NULL DEFAULT 0 CHECK(episode_active IN (0,1)),
+                    last_mutation_completion_utc REAL
+                );
+                CREATE TABLE reservations (
+                    origin TEXT NOT NULL, attempt_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('read','mutation')), admitted_utc REAL NOT NULL,
+                    resolved INTEGER NOT NULL DEFAULT 0 CHECK(resolved IN (0,1)),
+                    recovered INTEGER NOT NULL DEFAULT 0 CHECK(recovered IN (0,1)),
+                    post_cooldown INTEGER NOT NULL DEFAULT 0 CHECK(post_cooldown IN (0,1)),
+                    PRIMARY KEY(origin, attempt_id)
+                );
+                CREATE INDEX reservations_budget ON reservations(origin, admitted_utc);
+                COMMIT;"""
+        )
+        with self._transaction():
+            self._connection.execute("INSERT INTO governor_metadata VALUES (1, ?, ?)", (SCHEMA_VERSION, self._base_wall))
+
+    def _read_state(self, origin: str) -> _OriginState:
+        assert self._connection is not None
+        row = self._connection.execute("SELECT cooldown_until_utc, cooldown_reason, throttle_count, episode_active, last_mutation_completion_utc FROM origin_state WHERE origin=?", (origin,)).fetchone()
+        if row is None:
+            self._connection.execute("INSERT INTO origin_state(origin) VALUES (?)", (origin,))
+            return _OriginState()
+        cooldown = self._stored_number(row[0], "cooldown deadline")
+        completion = None if row[4] is None else self._stored_number(row[4], "mutation completion")
+        if not isinstance(row[1], str) or not isinstance(row[2], int) or row[2] < 0 or row[3] not in (0, 1):
+            raise GovernorStateError("invalid stored origin state")
+        return _OriginState(cooldown, row[1], row[2], bool(row[3]), completion)
+
+    def _checkpoint(self, now: float) -> None:
+        assert self._connection is not None
+        self._connection.execute("UPDATE governor_metadata SET last_logical_utc=MAX(last_logical_utc, ?) WHERE singleton=1", (now,))
+
+    def _cleanup(self, now: float) -> None:
+        assert self._connection is not None
+        self._connection.execute("DELETE FROM reservations WHERE admitted_utc <= ?", (now - 3600.0,))
+        self._connection.execute("DELETE FROM origin_state WHERE cooldown_until_utc <= ? AND COALESCE(last_mutation_completion_utc, 0) <= ? AND throttle_count=0 AND origin NOT IN (SELECT origin FROM reservations)", (now, now - MUTATION_SPACING_SECONDS))
 
     def admit(self, context: GitHubRequestContext) -> bool:
-        """Charge one actual attempt or raise a pre-transmission deferral."""
-        now = self._monotonic()
+        """Durably reserve one actual attempt before transport may send it."""
         origin = normalize_api_origin(context.api_origin)
         with self._lock:
-            state = self._state(origin)
-            self._trim(state.attempts, now, 60.0)
-            self._trim(state.mutations, now, 3600.0)
-            reason = ""
-            eligible = now
-            if state.cooldown_until > now:
-                reason, eligible = "rate_limit_cooldown", state.cooldown_until
-            elif state.in_flight is not None:
-                # The exact end of an active wire attempt is unknowable.
-                reason, eligible = "request_in_flight", now
-            elif len(state.attempts) >= REQUESTS_PER_MINUTE:
-                reason, eligible = "request_rolling_window", state.attempts[0] + 60.0
-            elif context.kind == "mutation":
-                recent_mutations = sum(value > now - 60.0 for value in state.mutations)
-                if recent_mutations >= MUTATIONS_PER_MINUTE:
-                    reason = "mutation_minute_window"
-                    eligible = list(state.mutations)[-recent_mutations] + 60.0
-                elif len(state.mutations) >= MUTATIONS_PER_HOUR:
-                    reason, eligible = "mutation_hour_window", state.mutations[0] + 3600.0
-                elif state.last_mutation_completion is not None and now < state.last_mutation_completion + MUTATION_SPACING_SECONDS:
-                    reason, eligible = "mutation_spacing", state.last_mutation_completion + MUTATION_SPACING_SECONDS
-            if reason:
-                self._log(context, "deferred", reason, eligible, now)
-                raise GitHubRequestDeferred(context, reason, self._wall_time() + max(0.0, eligible - now))
-
-            state.attempts.append(now)
-            if context.kind == "mutation":
-                state.mutations.append(now)
-            state.in_flight = context.attempt_id
-            state.in_flight_kind = context.kind
-            if state.episode_active and now >= state.cooldown_until:
-                state.post_cooldown_attempts.add(context.attempt_id)
-            self._log(context, "admitted", "eligible", now, now)
-            return True
+            if self._unavailable_reason is not None:
+                self._refuse_unavailable(context, origin)
+            try:
+                now = self._now()
+                assert self._connection is not None
+                with self._transaction():
+                    self._cleanup(now)
+                    state = self._read_state(origin)
+                    rows = self._connection.execute("SELECT attempt_id, kind, admitted_utc, resolved, recovered FROM reservations WHERE origin=? ORDER BY admitted_utc", (origin,)).fetchall()
+                    for row in rows:
+                        self._stored_number(row[2], "reservation timestamp")
+                    active = next((row for row in rows if row[3] == 0 and row[4] == 0), None)
+                    attempts = [float(row[2]) for row in rows if float(row[2]) > now - 60.0]
+                    minute = [float(row[2]) for row in rows if row[1] == "mutation" and float(row[2]) > now - 60.0]
+                    hour = [float(row[2]) for row in rows if row[1] == "mutation" and float(row[2]) > now - 3600.0]
+                    reason, eligible = "", now
+                    if state.cooldown_until > now:
+                        reason, eligible = "rate_limit_cooldown", state.cooldown_until
+                    elif active is not None:
+                        reason = "request_in_flight"
+                    elif len(attempts) >= REQUESTS_PER_MINUTE:
+                        reason, eligible = "request_rolling_window", min(attempts) + 60.0
+                    elif context.kind == "mutation":
+                        if len(minute) >= MUTATIONS_PER_MINUTE:
+                            reason, eligible = "mutation_minute_window", min(minute) + 60.0
+                        elif len(hour) >= MUTATIONS_PER_HOUR:
+                            reason, eligible = "mutation_hour_window", min(hour) + 3600.0
+                        elif state.last_mutation_completion is not None and now < state.last_mutation_completion + MUTATION_SPACING_SECONDS:
+                            reason, eligible = "mutation_spacing", state.last_mutation_completion + MUTATION_SPACING_SECONDS
+                    if not reason:
+                        self._connection.execute("INSERT INTO reservations(origin, attempt_id, kind, admitted_utc, post_cooldown) VALUES (?, ?, ?, ?, ?)", (origin, context.attempt_id, context.kind, now, int(state.episode_active and now >= state.cooldown_until)))
+                    self._checkpoint(now)
+                if reason:
+                    self._diagnostic(origin, context.attempt_id, "deferred", reason, eligible, now)
+                    raise GitHubRequestDeferred(context, reason, self._retry_at(eligible, now))
+                self._diagnostic(origin, context.attempt_id, "admitted", "eligible", now, now)
+                return True
+            except GitHubRequestDeferred:
+                raise
+            except Exception as exc:
+                self._fail_closed(f"reservation persistence failed: {exc}", origin)
+                self._refuse_unavailable(context, origin)
+        return False
 
     def observe(self, outcome: GitHubRequestOutcome) -> None:
-        """Atomically release concurrency and apply all fresh response evidence."""
+        """Durably record completion and throttle evidence before another admission."""
         if outcome.provenance is not RequestProvenance.NETWORK or outcome.delivery is DeliveryCertainty.DEFINITELY_NOT_SENT:
             return
-        now = self._monotonic()
         origin = normalize_api_origin(outcome.context.api_origin)
-        throttled = outcome.classification in {
-            GitHubApiOutcome.PRIMARY_THROTTLED,
-            GitHubApiOutcome.SECONDARY_THROTTLED,
-            GitHubApiOutcome.THROTTLED,
-        }
         with self._lock:
-            state = self._state(origin)
-            if state.in_flight == outcome.context.attempt_id:
-                if state.in_flight_kind == "mutation":
-                    state.last_mutation_completion = now
-                state.in_flight = None
-                state.in_flight_kind = None
+            if self._unavailable_reason is not None:
+                return
+            try:
+                now = self._now()
+                assert self._connection is not None
+                throttled = outcome.classification in {GitHubApiOutcome.PRIMARY_THROTTLED, GitHubApiOutcome.SECONDARY_THROTTLED, GitHubApiOutcome.THROTTLED}
+                with self._transaction():
+                    state = self._read_state(origin)
+                    reservation = self._connection.execute("SELECT kind, post_cooldown FROM reservations WHERE origin=? AND attempt_id=? AND resolved=0", (origin, outcome.context.attempt_id)).fetchone()
+                    if reservation is None:
+                        raise GovernorStateError("completion has no unresolved reservation")
+                    self._connection.execute("UPDATE reservations SET resolved=1 WHERE origin=? AND attempt_id=?", (origin, outcome.context.attempt_id))
+                    completion = now if reservation[0] == "mutation" else state.last_mutation_completion
+                    cooldown, cooldown_reason, count, episode = state.cooldown_until, state.cooldown_reason, state.throttle_count, state.episode_active
+                    if throttled:
+                        count, episode = count + 1, True
+                        deadlines = [cooldown, now + min(3600.0, 60.0 * 2 ** (count - 1))]
+                        if outcome.metadata.retry_after_seconds is not None:
+                            deadlines.append(now + self._stored_number(outcome.metadata.retry_after_seconds, "Retry-After"))
+                        if outcome.metadata.rate_limit_remaining == 0 and outcome.metadata.rate_limit_reset is not None:
+                            deadlines.append(now + max(0.0, self._stored_number(outcome.metadata.rate_limit_reset, "rate limit reset") - self._wall_time()))
+                        cooldown, cooldown_reason = max(deadlines), "throttle_observation"
+                    elif outcome.classification is GitHubApiOutcome.SUCCESS and outcome.metadata.rate_limit_remaining == 0:
+                        reset_delay = 0.0 if outcome.metadata.rate_limit_reset is None else max(0.0, self._stored_number(outcome.metadata.rate_limit_reset, "rate limit reset") - self._wall_time())
+                        cooldown, cooldown_reason = max(cooldown, now + max(60.0, reset_delay)), "successful_remaining_zero"
+                    elif outcome.classification is GitHubApiOutcome.SUCCESS and reservation[1]:
+                        count, episode = 0, False
+                    self._connection.execute("UPDATE origin_state SET cooldown_until_utc=?, cooldown_reason=?, throttle_count=?, episode_active=?, last_mutation_completion_utc=? WHERE origin=?", (cooldown, cooldown_reason, count, int(episode), completion, origin))
+                    self._checkpoint(now)
+                if cooldown > now:
+                    self._diagnostic(origin, outcome.context.attempt_id, "cooldown", cooldown_reason, cooldown, now)
+            except Exception as exc:
+                self._fail_closed(f"outcome persistence failed: {exc}", origin)
 
-            if throttled:
-                state.episode_active = True
-                state.throttle_count += 1
-                local_deadline = now + min(3600.0, 60.0 * 2 ** (state.throttle_count - 1))
-                deadlines = [state.cooldown_until, local_deadline]
-                if outcome.metadata.retry_after_seconds is not None:
-                    deadlines.append(now + outcome.metadata.retry_after_seconds)
-                if outcome.metadata.rate_limit_remaining == 0 and outcome.metadata.rate_limit_reset is not None:
-                    deadlines.append(now + max(0.0, outcome.metadata.rate_limit_reset - self._wall_time()))
-                state.cooldown_until = max(deadlines)
-                self._log(outcome.context, "cooldown", "throttle_observation", state.cooldown_until, now)
-            elif outcome.classification is GitHubApiOutcome.SUCCESS and outcome.metadata.rate_limit_remaining == 0:
-                reset_delay = None
-                if outcome.metadata.rate_limit_reset is not None:
-                    reset_delay = outcome.metadata.rate_limit_reset - self._wall_time()
-                state.cooldown_until = max(state.cooldown_until, now + (reset_delay if reset_delay is not None and reset_delay > 0 else 60.0))
-                self._log(outcome.context, "cooldown", "successful_remaining_zero", state.cooldown_until, now)
-            elif outcome.classification is GitHubApiOutcome.SUCCESS and outcome.context.attempt_id in state.post_cooldown_attempts:
-                state.episode_active = False
-                state.throttle_count = 0
-            state.post_cooldown_attempts.discard(outcome.context.attempt_id)
+    def _retry_at(self, logical_deadline: float, logical_now: float) -> float:
+        return self._wall_time() + max(0.0, logical_deadline - logical_now)
 
-    def _log(self, context: GitHubRequestContext, decision: str, reason: str, eligible: float, now: float) -> None:
-        retry_at = self._wall_time() + max(0.0, eligible - now)
-        diagnostic = {
+    def _refuse_unavailable(self, context: GitHubRequestContext, origin: str) -> None:
+        now = self._now()
+        self._diagnostic(origin, context.attempt_id, "refused", "governor_state_unavailable", now + 60.0, now, self._unavailable_reason)
+        raise GitHubRequestDeferred(context, "governor_state_unavailable", self._wall_time() + 60.0)
+
+    def _fail_closed(self, reason: str, origin: str = "unknown") -> None:
+        self._unavailable_reason = reason
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except sqlite3.Error:
+                pass
+            self._connection = None
+        logger.bind(github_governor={"state_path": str(self.path), "origin": origin, "refusal_reason": reason}).error("GitHub governor state unavailable; network admission is closed")
+
+    def _diagnostic(self, origin: str, attempt: str, decision: str, reason: str, eligible: float, now: float, refusal: str | None = None) -> None:
+        diagnostic: dict[str, object] = {
             "decision": decision,
-            "origin": normalize_api_origin(context.api_origin),
-            "attempt": context.attempt_id,
-            "kind": context.kind,
+            "state_path": str(self.path),
+            "origin": origin,
+            "attempt": attempt,
             "delay_reason": reason,
-            "next_eligible_at": datetime.fromtimestamp(retry_at, timezone.utc).isoformat(),
+            "remaining_wait_seconds": max(0.0, eligible - now),
+            "next_eligible_at": datetime.fromtimestamp(self._retry_at(eligible, now), timezone.utc).isoformat(),
         }
+        if refusal:
+            diagnostic["refusal_reason"] = refusal
         logger.bind(github_governor=diagnostic).info("github_governor_diagnostic {}", json.dumps(diagnostic, sort_keys=True))

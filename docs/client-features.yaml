@@ -153,6 +153,13 @@ cannot enter immediately receives a typed, definitely-not-sent deferral carrying
 the reason and earliest known retry time, allowing webhook and local work to
 continue without quota sleeper tasks.
 
+Admission reservations, rolling budgets, mutation-completion spacing, throttle
+episodes, and cooldown deadlines are durably recorded in the controller-wide
+`~/.auto-coder/runtime/github/request_governor.sqlite3` store. Restart recovery
+conservatively charges unresolved attempts and adds a recovery cooldown; corrupt,
+incompatible, or unwritable state fails GitHub admission closed. Persisted records
+are origin-scoped and contain no credentials or request content.
+
 ## Crash-safe Codex Cloud submission ownership
 
 Initial Codex Cloud dispatch publishes a repository- and Issue-attempt-scoped
