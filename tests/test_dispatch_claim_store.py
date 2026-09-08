@@ -100,6 +100,14 @@ class TestClaimAcquisition:
         retry = store.try_acquire_claim(identity)
         assert retry.acquired is True
 
+    def test_stale_holder_cannot_overwrite_reacquired_claim(self, store, identity):
+        first = store.try_acquire_claim(identity)
+        assert store.record_outcome(identity, DispatchOutcome.REJECTED, first.holder_id)
+        second = store.try_acquire_claim(identity)
+
+        assert store.record_outcome(identity, DispatchOutcome.ACCEPTED, first.holder_id) is False
+        assert store.record_outcome(identity, DispatchOutcome.ACCEPTED, second.holder_id) is True
+
     def test_new_head_sha_is_a_new_identity(self, store, identity):
         """AS-006: a claim for SHA A does not block an otherwise eligible SHA B."""
         claim_a = store.try_acquire_claim(identity)

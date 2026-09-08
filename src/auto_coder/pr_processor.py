@@ -52,6 +52,7 @@ from .git_branch import branch_context, git_checkout_branch, git_commit_with_ret
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
 from .github_app_reviewer import ReviewerAppIdentity, publish_adversarial_review, resolve_reviewer_app_identity
+from .github_pending_work import WorkIdentity, get_pending_work_store
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config
@@ -79,6 +80,7 @@ from .test_log_utils import extract_all_failed_tests, extract_first_failed_test,
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
 from .util.github_action import _create_github_action_log_summary
+from .util.github_request_outcome import GitHubRequestError
 from .utils import CommandExecutor, CommandResult, bind_command_execution_cwd, get_pr_author_login, is_same_github_login, log_action, reset_command_execution_cwd
 
 logger = get_logger(__name__)
@@ -307,6 +309,8 @@ def _get_claimed_review_thread_state(
             # to the ordinary "unresolved threads block merge" behavior.
             return ClaimedReviewThreadGateState(has_blocking_unresolved=True)
         threads = client.get_pr_review_threads_strict(repo_name, pr_number)
+    except GitHubRequestError:
+        raise
     except Exception as e:
         logger.error(f"Failed detailed review-thread lookup for PR #{pr_number}: {e}")
         return ClaimedReviewThreadGateState(lookup_error=str(e))
@@ -873,6 +877,28 @@ def process_pull_request(
 
         return processed_pr
 
+    except GitHubRequestError as e:
+        pr_number = pr_data.get("number", "unknown")
+        revision = str(pr_data.get("head", {}).get("sha") or "")
+        obligation = get_pending_work_store().defer(
+            WorkIdentity(repo_name, f"pr:{pr_number}", "pr-processing", revision),
+            e,
+            ("authoritative-refresh", "pr-processing"),
+        )
+        logger.warning(
+            "Deferred PR #{} after GitHub operational failure {}; next eligible at {}",
+            pr_number,
+            obligation.reason.value,
+            obligation.not_before,
+        )
+        return ProcessedPRResult(
+            pr_data=pr_data,
+            actions_taken=[f"Deferred GitHub-dependent work: {obligation.reason.value}"],
+            priority="defer",
+            analysis=None,
+            error=str(e),
+            outcome=PRProcessingOutcome.DEFERRED,
+        )
     except Exception as e:
         pr_number = pr_data.get("number", "unknown")
         logger.error(f"Failed to process PR #{pr_number}: {e}")
@@ -2517,7 +2543,11 @@ def _handle_pr_merge(
                     # write itself fails, the claim is already left in its
                     # prior (suppressing) state, so dispatch admission still
                     # fails closed for this identity (REQ-003).
-                    recorded = claim_store.record_outcome(dispatch_identity, dispatch_result.outcome)
+                    recorded = claim_store.record_outcome(
+                        dispatch_identity,
+                        dispatch_result.outcome,
+                        holder_id=claim.holder_id,
+                    )
                     if not recorded:
                         logger.error(f"Failed to durably record dispatch outcome {dispatch_result.outcome.value} for {dispatch_identity.key()}; claim remains suppressing")
 

@@ -146,6 +146,17 @@ The local protective ceilings are one in-flight request, 300 network attempts pe
 rolling 60 seconds, 60 mutations per rolling 60 seconds, and 400 mutations per
 rolling hour, with one second between mutation completion and the next mutation.
 These are conservative local ceilings, not a guarantee of GitHub allowance.
+Durable GitHub-dependent obligations preserve repository/entity, processing stage,
+semantic revision, independent unfinished effects, and the next eligible time across
+restart. Actual throttle retries are bounded to three retries after the first response;
+local admission refusals do not spend this budget, while authentication, forbidden,
+indeterminate-delivery, and exhausted work remain visible operational blocks. Manual
+workflow dispatch claims use holder tokens so only the current holder can publish a
+definite non-send/rejection outcome; stale holders cannot unlock or overwrite a newer
+claim. The supported manual retry route is to change the semantic input revision or
+remove the blocked row from ~/.auto-coder/github_pending_work.db after correcting the
+operational cause; neither route bypasses the shared governor.
+
 Fresh primary, secondary, and GraphQL throttle evidence closes the origin-wide
 gate using Retry-After, reset, and exponential local cooldown evidence; cache-only
 reads and non-GitHub origins do not consume or alter these budgets. Work that
