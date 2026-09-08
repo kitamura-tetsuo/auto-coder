@@ -10,7 +10,8 @@ from pydantic import BaseModel
 
 from .automation_engine import AutomationEngine
 from .dashboard import init_dashboard
-from .entity_invalidation import ISSUE_STABILIZATION_SECONDS, issue_stabilization_deadline
+from .entity_invalidation import ISSUE_STABILIZATION_SECONDS, CIWebhookDelivery, issue_stabilization_deadline
+from .github_ci_observer import fence_active_ci_observations
 from .label_manager import LEGACY_AUTO_CODER_LABEL
 from .logger_config import get_logger
 
@@ -19,6 +20,12 @@ logger = get_logger(__name__)
 # Webhook actions whose payload carries the single label that was added/removed.
 _LABEL_CHANGE_ACTIONS = {"labeled", "unlabeled"}
 _DEPENDENCY_EVENTS = {"issue_dependencies", "sub_issues"}
+_CI_ACTIONS = {
+    "workflow_run": {"requested", "in_progress", "completed"},
+    "workflow_job": {"queued", "in_progress", "completed"},
+    "check_run": {"created", "completed", "rerequested", "requested_action"},
+    "check_suite": {"requested", "completed", "rerequested"},
+}
 
 
 def _endpoint_is_local(endpoint: Mapping[str, Any], repo_name: str) -> bool:
@@ -137,6 +144,41 @@ async def process_github_payload(
 ) -> None:
     """Translate relevant webhook notifications into durable entity invalidations."""
     action = payload.get("action")
+    recognized_ci = event_type == "status" or event_type in _CI_ACTIONS
+    supported_ci = event_type == "status" or (event_type in _CI_ACTIONS and action in _CI_ACTIONS[event_type])
+    if recognized_ci:
+        if not supported_ci:
+            logger.info(f"Ignored unsupported CI webhook event={event_type} action={action}")
+            return
+        if not delivery_id:
+            raise HTTPException(status_code=422, detail="Supported CI delivery requires X-GitHub-Delivery")
+        container_name = event_type if event_type in _CI_ACTIONS else None
+        container = payload.get(container_name) if container_name else payload
+        container = container if isinstance(container, Mapping) else {}
+        pull_requests = container.get("pull_requests", [])
+        numbers = tuple(sorted({item["number"] for item in pull_requests if isinstance(item, Mapping) and isinstance(item.get("number"), int) and not isinstance(item.get("number"), bool) and item["number"] > 0})) if isinstance(pull_requests, list) else ()
+        sha = container.get("head_sha") or container.get("sha")
+        head_sha = sha.strip() if isinstance(sha, str) and sha.strip() else None
+        if not numbers and head_sha is None:
+            raise HTTPException(status_code=422, detail="Supported CI delivery requires a PR number or head SHA")
+        workflow_id = container.get("workflow_id")
+        run_id = container.get("run_id") or container.get("id")
+        attempt = container.get("run_attempt")
+        delivery = CIWebhookDelivery(
+            repo_name, delivery_id, event_type or "", action if isinstance(action, str) else None, numbers, head_sha, str(workflow_id) if workflow_id is not None else None, str(run_id) if run_id is not None else None, attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else None
+        )
+        try:
+            accepted = await asyncio.to_thread(engine.invalidations.accept_ci_delivery, delivery)
+        except Exception as exc:
+            logger.error(f"Failed CI intake repository={repo_name} delivery={delivery_id}: {type(exc).__name__}")
+            raise HTTPException(status_code=503, detail="CI delivery persistence failed") from exc
+        if accepted:
+            fence_active_ci_observations(f"webhook:{event_type}")
+            wake_event = getattr(engine, "_invalidation_wake_event", None)
+            if wake_event is not None:
+                wake_event.set()
+        logger.info(f"{'Accepted' if accepted else 'Duplicate'} CI intake repository={repo_name} delivery={delivery_id} targets={len(numbers)} sha={bool(head_sha)}")
+        return
     identities: set[tuple[str, int]] = set()
     dependency_reevaluation = False
     entity_actions = {
@@ -186,33 +228,6 @@ async def process_github_payload(
         # conservative authoritative scan.  It is persisted before HTTP 200,
         # so removed edges and downtime cannot erase reverse discovery.
         identities.add(("dependency", 1))
-
-    completion_events = {("workflow_run", "completed"), ("workflow_job", "completed"), ("check_run", "completed"), ("check_suite", "completed")}
-    if (event_type, action) in completion_events or event_type == "status":
-        container_name: Optional[str] = {
-            "workflow_run": "workflow_run",
-            "workflow_job": "workflow_job",
-            "check_run": "check_run",
-            "check_suite": "check_suite",
-        }.get(event_type or "")
-        container: object
-        if container_name is None:
-            container = payload
-        else:
-            container = payload.get(container_name)
-        if not isinstance(container, Mapping):
-            container = {}
-        pull_requests = container.get("pull_requests", [])
-        if isinstance(pull_requests, list):
-            for pull_request in pull_requests:
-                number = pull_request.get("number") if isinstance(pull_request, Mapping) else None
-                if isinstance(number, int):
-                    identities.add(("pr", number))
-        if not identities:
-            sha = container.get("head_sha") or container.get("sha")
-            if isinstance(sha, str) and sha:
-                numbers = await asyncio.to_thread(engine.github.get_pull_request_numbers_for_commit, repo_name, sha)
-                identities.update(("pr", number) for number in numbers)
 
     # Queue the scope token first. Its scan then coalesces with endpoint rows
     # from this delivery instead of redispatching an endpoint already handled.

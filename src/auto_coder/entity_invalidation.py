@@ -50,6 +50,19 @@ class GitHubDeliveryMetadata:
     action: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class CIWebhookDelivery:
+    repository: str
+    delivery_id: str
+    event_type: str
+    action: Optional[str]
+    pull_request_numbers: tuple[int, ...]
+    head_sha: Optional[str]
+    workflow_id: Optional[str] = None
+    run_id: Optional[str] = None
+    run_attempt: Optional[int] = None
+
+
 class DurableInvalidationQueue:
     """SQLite-backed dirty-entity set with generation-based in-flight coalescing."""
 
@@ -84,6 +97,32 @@ class DurableInvalidationQueue:
                 repository TEXT NOT NULL,
                 delivery_id TEXT NOT NULL,
                 PRIMARY KEY(repository, delivery_id)
+            );
+            CREATE TABLE IF NOT EXISTS ci_webhook_deliveries (
+                repository TEXT NOT NULL, delivery_id TEXT NOT NULL,
+                event_type TEXT NOT NULL, action TEXT, head_sha TEXT,
+                workflow_id TEXT, run_id TEXT, run_attempt INTEGER,
+                received_at REAL NOT NULL,
+                PRIMARY KEY(repository, delivery_id)
+            );
+            CREATE TABLE IF NOT EXISTS ci_delivery_targets (
+                repository TEXT NOT NULL, delivery_id TEXT NOT NULL,
+                pr_number INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(repository, delivery_id, pr_number),
+                FOREIGN KEY(repository, delivery_id) REFERENCES ci_webhook_deliveries(repository, delivery_id)
+            );
+            CREATE TABLE IF NOT EXISTS ci_pending_prs (
+                repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
+                observation_epoch INTEGER NOT NULL, first_seen REAL NOT NULL,
+                latest_seen REAL NOT NULL, eligible_at REAL NOT NULL,
+                PRIMARY KEY(repository, pr_number)
+            );
+            CREATE TABLE IF NOT EXISTS ci_correlations (
+                repository TEXT NOT NULL, head_sha TEXT NOT NULL,
+                observation_epoch INTEGER NOT NULL, first_seen REAL NOT NULL,
+                latest_seen REAL NOT NULL, eligible_at REAL NOT NULL,
+                state TEXT NOT NULL CHECK(state IN ('pending', 'processing')),
+                PRIMARY KEY(repository, head_sha)
             );
             """
         )
@@ -183,6 +222,154 @@ class DurableInvalidationQueue:
                 """
             )
 
+    def accept_ci_delivery(self, delivery: CIWebhookDelivery, now: Optional[float] = None) -> bool:
+        """Atomically retain a CI delivery and advance its durable observation scopes."""
+        received = time.time() if now is None else now
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """INSERT OR IGNORE INTO ci_webhook_deliveries
+                   (repository, delivery_id, event_type, action, head_sha,
+                    workflow_id, run_id, run_attempt, received_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (delivery.repository, delivery.delivery_id, delivery.event_type, delivery.action, delivery.head_sha, delivery.workflow_id, delivery.run_id, delivery.run_attempt, received),
+            )
+            if cursor.rowcount == 0:
+                return False
+            for number in delivery.pull_request_numbers:
+                self._connection.execute(
+                    "INSERT INTO ci_delivery_targets(repository, delivery_id, pr_number) VALUES (?, ?, ?)",
+                    (delivery.repository, delivery.delivery_id, number),
+                )
+                self._advance_ci_pr(delivery.repository, number, received)
+            if not delivery.pull_request_numbers and delivery.head_sha:
+                self._connection.execute(
+                    """INSERT INTO ci_correlations(repository, head_sha, observation_epoch,
+                           first_seen, latest_seen, eligible_at, state)
+                       VALUES (?, ?, 1, ?, ?, ?, 'pending')
+                       ON CONFLICT(repository, head_sha) DO UPDATE SET
+                           observation_epoch = observation_epoch + 1,
+                           latest_seen = excluded.latest_seen,
+                           eligible_at = MIN(first_seen + 10, excluded.latest_seen + 2),
+                           state = 'pending'""",
+                    (delivery.repository, delivery.head_sha, received, received, received + 2),
+                )
+            return True
+
+    def _advance_ci_pr(self, repository: str, number: int, received: float) -> None:
+        self._connection.execute(
+            """INSERT INTO ci_pending_prs(repository, pr_number, observation_epoch,
+                   first_seen, latest_seen, eligible_at)
+               VALUES (?, ?, 1, ?, ?, ?)
+               ON CONFLICT(repository, pr_number) DO UPDATE SET
+                   observation_epoch = observation_epoch + 1,
+                   latest_seen = excluded.latest_seen,
+                   eligible_at = MIN(first_seen + 10, excluded.latest_seen + 2)""",
+            (repository, number, received, received, received + 2),
+        )
+
+    def claim_ci_correlation(self, repository: str) -> Optional[str]:
+        """Claim one due SHA lookup; an interrupted claim is recovered on startup."""
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                """UPDATE ci_correlations SET state = 'processing'
+                   WHERE rowid = (SELECT rowid FROM ci_correlations
+                     WHERE repository = ? AND state = 'pending' AND eligible_at <= ?
+                     ORDER BY eligible_at LIMIT 1)
+                   RETURNING head_sha""",
+                (repository, time.time()),
+            ).fetchone()
+            return str(row[0]) if row else None
+
+    def finish_ci_correlation(self, repository: str, sha: str, numbers: list[int]) -> None:
+        """Fan a completely resolved correlation into recoverable delivery targets."""
+        with self._lock, self._connection:
+            scope = self._connection.execute(
+                """SELECT observation_epoch, first_seen, latest_seen, eligible_at
+                   FROM ci_correlations WHERE repository = ? AND head_sha = ? AND state = 'processing'""",
+                (repository, sha),
+            ).fetchone()
+            if scope is None:
+                raise RuntimeError("CI correlation claim is no longer current")
+            deliveries = self._connection.execute(
+                """SELECT delivery_id FROM ci_webhook_deliveries
+                   WHERE repository = ? AND head_sha = ? AND NOT EXISTS
+                     (SELECT 1 FROM ci_delivery_targets t WHERE t.repository = ci_webhook_deliveries.repository
+                      AND t.delivery_id = ci_webhook_deliveries.delivery_id)""",
+                (repository, sha),
+            ).fetchall()
+            for (delivery_id,) in deliveries:
+                for number in sorted(set(numbers)):
+                    self._connection.execute(
+                        "INSERT OR IGNORE INTO ci_delivery_targets(repository, delivery_id, pr_number) VALUES (?, ?, ?)",
+                        (repository, delivery_id, number),
+                    )
+            epoch, first_seen, latest_seen, eligible_at = scope
+            for number in sorted(set(numbers)):
+                self._connection.execute(
+                    """INSERT INTO ci_pending_prs(repository, pr_number, observation_epoch,
+                           first_seen, latest_seen, eligible_at) VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(repository, pr_number) DO UPDATE SET
+                           observation_epoch = observation_epoch + excluded.observation_epoch,
+                           latest_seen = MAX(latest_seen, excluded.latest_seen),
+                           eligible_at = MIN(first_seen + 10, MAX(eligible_at, excluded.eligible_at))""",
+                    (repository, number, epoch, first_seen, latest_seen, eligible_at),
+                )
+            self._connection.execute("DELETE FROM ci_correlations WHERE repository = ? AND head_sha = ?", (repository, sha))
+
+    def release_ci_correlation(self, repository: str, sha: str, retry_after: float = 60) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE ci_correlations SET state = 'pending', eligible_at = MAX(eligible_at, ?) WHERE repository = ? AND head_sha = ?",
+                (time.time() + retry_after, repository, sha),
+            )
+
+    def promote_due_ci(self, repository: str) -> int:
+        """Atomically turn due PR batches into ordinary authoritative reevaluations."""
+        promoted = 0
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                "SELECT pr_number, observation_epoch FROM ci_pending_prs WHERE repository = ? AND eligible_at <= ?",
+                (repository, time.time()),
+            ).fetchall()
+            for number, epoch in rows:
+                target_rows = self._connection.execute(
+                    """SELECT t.delivery_id, d.event_type, d.action FROM ci_delivery_targets t
+                       JOIN ci_webhook_deliveries d USING(repository, delivery_id)
+                       WHERE t.repository = ? AND t.pr_number = ? AND t.applied = 0""",
+                    (repository, number),
+                ).fetchall()
+                for delivery_id, event_type, action in target_rows:
+                    self._connection.execute(
+                        """INSERT OR IGNORE INTO github_deliveries
+                           (repository, delivery_id, entity_type, entity_number, event_type, action)
+                           VALUES (?, ?, 'pr', ?, ?, ?)""",
+                        (repository, delivery_id, number, event_type, action),
+                    )
+                    self._connection.execute(
+                        "UPDATE ci_delivery_targets SET applied = 1 WHERE repository = ? AND delivery_id = ? AND pr_number = ?",
+                        (repository, delivery_id, number),
+                    )
+                self._connection.execute(
+                    """INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state)
+                       VALUES (?, 'pr', ?, 1, 'dirty')
+                       ON CONFLICT(repository, entity_type, entity_number) DO UPDATE SET
+                         generation = CASE WHEN state = 'processing' THEN generation + 1 ELSE generation END""",
+                    (repository, number),
+                )
+                self._connection.execute("DELETE FROM ci_pending_prs WHERE repository = ? AND pr_number = ? AND observation_epoch = ?", (repository, number, epoch))
+                promoted += 1
+        return promoted
+
+    def seconds_until_next_ci(self, repository: str) -> Optional[float]:
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT MIN(eligible_at) FROM (
+                     SELECT eligible_at FROM ci_pending_prs WHERE repository = ?
+                     UNION ALL SELECT eligible_at FROM ci_correlations WHERE repository = ? AND state = 'pending')""",
+                (repository, repository),
+            ).fetchone()
+        return None if not row or row[0] is None else max(0.0, float(row[0]) - time.time())
+
     @staticmethod
     def _raw_legacy_delivery_id(delivery_id: str) -> str:
         """Undo the former adapter's ``:<entity index>`` delivery suffix."""
@@ -197,6 +384,10 @@ class DurableInvalidationQueue:
             self._connection.execute(
                 """UPDATE entity_invalidations SET state = 'dirty', claimed_generation = NULL
                    WHERE repository = ? AND state IN ('queued', 'processing')""",
+                (repository,),
+            )
+            self._connection.execute(
+                "UPDATE ci_correlations SET state = 'pending' WHERE repository = ? AND state = 'processing'",
                 (repository,),
             )
 

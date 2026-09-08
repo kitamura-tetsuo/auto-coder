@@ -1426,8 +1426,12 @@ class AutomationEngine:
             # Clear first so an invalidation arriving during the drain remains
             # observable instead of being erased by a later clear.
             self._invalidation_wake_event.clear()
+            await self._drain_ci_webhooks(repo_name)
             await self._enqueue_pending_invalidations(repo_name)
             delay = await asyncio.to_thread(self.invalidations.seconds_until_next_ready, repo_name)
+            ci_delay = await asyncio.to_thread(self.invalidations.seconds_until_next_ci, repo_name)
+            if ci_delay is not None:
+                delay = ci_delay if delay is None else min(delay, ci_delay)
             try:
                 if delay is None:
                     await self._invalidation_wake_event.wait()
@@ -1435,6 +1439,21 @@ class AutomationEngine:
                     await asyncio.wait_for(self._invalidation_wake_event.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 pass
+
+    async def _drain_ci_webhooks(self, repo_name: str) -> None:
+        """Resolve due SHA obligations, then promote quiet CI batches."""
+        while sha := await asyncio.to_thread(self.invalidations.claim_ci_correlation, repo_name):
+            try:
+                numbers = await asyncio.to_thread(self.github.get_pull_request_numbers_for_commit, repo_name, sha)
+            except Exception as exc:
+                logger.warning(f"CI correlation pending repository={repo_name} sha={sha[:12]} error={type(exc).__name__}")
+                await asyncio.to_thread(self.invalidations.release_ci_correlation, repo_name, sha)
+                break
+            await asyncio.to_thread(self.invalidations.finish_ci_correlation, repo_name, sha, numbers)
+            logger.info(f"CI correlation complete repository={repo_name} sha={sha[:12]} targets={len(numbers)}")
+        promoted = await asyncio.to_thread(self.invalidations.promote_due_ci, repo_name)
+        if promoted:
+            logger.info(f"Promoted coalesced CI batches repository={repo_name} count={promoted}")
 
     @staticmethod
     def _issue_refill_priority(issue: Dict[str, Any]) -> int:
