@@ -87,6 +87,13 @@ from .utils import CommandExecutor, CommandResult, bind_command_execution_cwd, g
 logger = get_logger(__name__)
 cmd = CommandExecutor()
 
+# Pending-work stage for a PR evaluation interrupted by a GitHub operational
+# failure (local admission deferral, throttle, authentication, or forbidden
+# response). Registered with the process-wide PendingWorkScheduler so a
+# deferred obligation is actually consumed instead of being retained forever.
+PR_PROCESSING_STAGE = "pr-processing"
+PR_PROCESSING_REFRESH_EFFECT = "authoritative-refresh"
+
 
 def _remove_reviewer_sessions_for_closed_pr(repo_name: str, pr_number: int) -> None:
     """Best-effort removal of every backend's reviewer association for a closed PR."""
@@ -772,9 +779,9 @@ def process_pull_request(
         pr_number = pr_data.get("number", "unknown")
         revision = str(pr_data.get("head", {}).get("sha") or "")
         obligation = get_pending_work_store().defer(
-            WorkIdentity(repo_name, f"pr:{pr_number}", "pr-processing", revision),
+            WorkIdentity(repo_name, f"pr:{pr_number}", PR_PROCESSING_STAGE, revision),
             e,
-            ("authoritative-refresh", "pr-processing"),
+            (PR_PROCESSING_REFRESH_EFFECT, PR_PROCESSING_STAGE),
         )
         logger.warning(
             "Deferred PR #{} after GitHub operational failure {}; next eligible at {}",

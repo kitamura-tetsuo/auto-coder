@@ -48,6 +48,7 @@ from .label_manager import LabelManager
 from .llm_backend_config import active_repo_context
 from .logger_config import get_logger
 from .parent_issue_reconciliation import ParentDeclarationStatus, ParentOperationalError, ParentSpecificationError, parse_parent_declaration
+from .pr_processor import PR_PROCESSING_STAGE
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
@@ -88,6 +89,23 @@ INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX = "auto-coder-invalid-requirement-con
 INVALID_DEPENDENCY_MARKER_PREFIX = "auto-coder-invalid-sibling-dependency"
 STARTUP_RECONCILIATION_STAGE = "startup-reconciliation"
 STARTUP_RECONCILIATION_EFFECT = "startup-scan"
+# Pending-work stage for an Issue hierarchy/readiness evaluation interrupted by
+# a GitHub operational failure. See PR_PROCESSING_STAGE in pr_processor.py for
+# the equivalent PR-side stage.
+ISSUE_PROCESSING_STAGE = "issue-processing"
+ISSUE_PROCESSING_REFRESH_EFFECT = "authoritative-refresh"
+
+
+def _issue_content_revision(issue_data: Dict[str, Any]) -> str:
+    """Stable fingerprint of the Issue inputs an evaluation decision relied on.
+
+    Used to detect a changed title/body between deferral and resumption
+    (REQ-003): a resumed evaluation must not authorize an action using
+    observations that were current for a different revision of the Issue.
+    """
+    title = str(issue_data.get("title") or "")
+    body = str(issue_data.get("body") or "")
+    return hashlib.sha256(f"{title}\x1f{body}".encode("utf-8", "surrogatepass")).hexdigest()
 
 
 class _StartupReconciliationHandler:
@@ -121,6 +139,110 @@ class _StartupReconciliationHandler:
         assert engine._startup_reconciliation_event is not None
         loop.call_soon_threadsafe(engine._startup_reconciliation_event.set)
         return StageOutcome(completed_effects=(STARTUP_RECONCILIATION_EFFECT,))
+
+
+class _PrProcessingStageHandler:
+    """Resumes a PR evaluation deferred by a GitHub operational failure.
+
+    Dispatch always re-establishes the PR's current head before authorizing
+    anything: it never resends whatever decision was in flight when the
+    original ``GitHubRequestError`` was raised. Resumption goes through
+    ``AutomationEngine._process_single_candidate`` -- the same production
+    entrypoint the ordinary worker pool uses -- so LabelManager ownership,
+    author allow-listing, and every other admission gate apply identically to
+    a resumed evaluation and a freshly discovered one (REQ-004).
+    """
+
+    def __init__(self, engine: "AutomationEngine", repo_name: str) -> None:
+        self._engine = engine
+        self._repo_name = repo_name
+
+    def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def recover(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def _run(self, obligation: PendingObligation) -> StageOutcome:
+        engine = self._engine
+        entity = obligation.identity.entity
+        pr_number: Optional[int] = None
+        if entity.startswith("pr:"):
+            try:
+                pr_number = int(entity.split(":", 1)[1])
+            except ValueError:
+                pr_number = None
+        if pr_number is None:
+            logger.warning("Malformed PR pending-work identity {!r}; discarding obligation", entity)
+            return StageOutcome(superseded=True)
+        try:
+            raw_pr = engine.github.get_pull_request_metadata_strict(self._repo_name, pr_number)
+        except GitHubRequestError as exc:
+            return StageOutcome(error=exc)
+        pr_data = engine.github.get_pr_details(raw_pr)
+        current_head = str((pr_data.get("head") or {}).get("sha") or "")
+        # A changed head since deferral means the retained observations no
+        # longer describe the PR being resumed. Discard this obligation and
+        # let normal invalidation/webhook handling evaluate the new head on
+        # its own terms rather than fabricating a re-evaluation here
+        # (REQ-003, REQ-006).
+        if obligation.identity.revision and current_head != obligation.identity.revision:
+            return StageOutcome(superseded=True)
+        result = engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0))
+        if result.target_outcome is ExplicitTargetOutcome.DEFERRED:
+            # The resumed evaluation hit another operational failure and has
+            # already re-persisted its own obligation through the same defer
+            # path; nothing further to apply here.
+            return StageOutcome()
+        return StageOutcome(completed_effects=obligation.unfinished_effects)
+
+
+class _IssueProcessingStageHandler:
+    """Resumes an Issue hierarchy/readiness evaluation deferred by a GitHub failure.
+
+    See ``_PrProcessingStageHandler`` for the equivalent PR-side contract;
+    this handler applies the same freshness and admission requirements to
+    Issue evaluation.
+    """
+
+    def __init__(self, engine: "AutomationEngine", repo_name: str) -> None:
+        self._engine = engine
+        self._repo_name = repo_name
+
+    def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def recover(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def _run(self, obligation: PendingObligation) -> StageOutcome:
+        engine = self._engine
+        entity = obligation.identity.entity
+        issue_number: Optional[int] = None
+        if entity.startswith("issue:"):
+            try:
+                issue_number = int(entity.split(":", 1)[1])
+            except ValueError:
+                issue_number = None
+        if issue_number is None:
+            logger.warning("Malformed Issue pending-work identity {!r}; discarding obligation", entity)
+            return StageOutcome(superseded=True)
+        try:
+            fresh_issue = engine.github.get_issue_dispatch_snapshot_strict(self._repo_name, issue_number)
+        except GitHubRequestError as exc:
+            return StageOutcome(error=exc)
+        if not isinstance(fresh_issue, dict) or fresh_issue.get("number") != issue_number or "pull_request" in fresh_issue:
+            # No longer an authoritative open Issue snapshot; nothing left for
+            # this obligation to authorize.
+            return StageOutcome(superseded=True)
+        current_revision = _issue_content_revision(fresh_issue)
+        if obligation.identity.revision and current_revision != obligation.identity.revision:
+            return StageOutcome(superseded=True)
+        candidate = Candidate(type="issue", data=fresh_issue, priority=0, issue_number=issue_number)
+        result = engine._process_single_candidate(self._repo_name, candidate)
+        if result.target_outcome is ExplicitTargetOutcome.DEFERRED:
+            return StageOutcome()
+        return StageOutcome(completed_effects=obligation.unfinished_effects)
 
 
 class EngineLifecycle(str, Enum):
@@ -1267,6 +1389,8 @@ class AutomationEngine:
         # crashed prior process can never be recovered while unregistered.
         self._startup_reconciliation_event = asyncio.Event()
         self.pending_work_scheduler.register_handler(STARTUP_RECONCILIATION_STAGE, _StartupReconciliationHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(self, repo_name))
 
         if not self.is_draining:
             # Webhooks are not a durable event log. Recover work missed while
@@ -2646,12 +2770,16 @@ class AutomationEngine:
                 # describes open children. Complete authoritative membership is
                 # therefore consulted before any Issue can be treated standalone.
                 direct_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
+            except GitHubRequestError as exc:
+                return self._defer_issue_evaluation(repo_name, item_number, candidate.data, exc, result)
             except Exception as exc:
                 result.error = f"Cannot determine authoritative direct-child membership: {exc}"
                 return result
             if isinstance(direct_children, list) and direct_children:
                 try:
                     parent_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
+                except GitHubRequestError as exc:
+                    return self._defer_issue_evaluation(repo_name, item_number, candidate.data, exc, result)
                 except Exception as exc:
                     result.error = f"Cannot confirm parent readiness submission: {exc}"
                     return result
@@ -3560,6 +3688,41 @@ class AutomationEngine:
             result.error = str(e)
             logger.error(f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {e}")
 
+        return result
+
+    def _defer_issue_evaluation(
+        self,
+        repo_name: str,
+        item_number: int,
+        issue_data: Dict[str, Any],
+        error: GitHubRequestError,
+        result: CandidateProcessingResult,
+    ) -> CandidateProcessingResult:
+        """Retain an Issue hierarchy/readiness evaluation interrupted by GitHub.
+
+        Mirrors ``process_pull_request``'s ``GitHubRequestError`` handling for
+        PRs (see ``pr_processor.py``): the obligation is durably registered
+        with the pending-work scheduler (``ISSUE_PROCESSING_STAGE``) instead of
+        being reported as an ordinary error, so a registered stage handler
+        resumes it through current authoritative state (REQ-001, REQ-002).
+        """
+        revision = _issue_content_revision(issue_data)
+        identity = WorkIdentity(repo_name, f"issue:{item_number}", ISSUE_PROCESSING_STAGE, revision)
+        obligation = get_pending_work_store().defer(
+            identity,
+            error,
+            (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE),
+        )
+        logger.warning(
+            "Deferred Issue #{} after GitHub operational failure {}; next eligible at {}",
+            item_number,
+            obligation.reason.value,
+            obligation.not_before,
+        )
+        self.pending_work_scheduler.wake()
+        result.error = str(error)
+        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+        result.actions = [f"Deferred GitHub-dependent work: {obligation.reason.value}"]
         return result
 
     def _get_implementation_slots(self, repo_name: str) -> ImplementationSlotRepository:
