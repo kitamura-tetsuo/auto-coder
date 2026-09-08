@@ -1,12 +1,11 @@
-import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchIdentity, DispatchOutcome
-from auto_coder.pr_processor import _handle_pr_merge, monitor_workflow_async
+from auto_coder.pr_processor import _handle_pr_merge
 from auto_coder.util.github_action import GitHubActionsStatusResult, WorkflowDispatchResult
 
 
@@ -63,6 +62,9 @@ class TestWorkflowTrigger(unittest.TestCase):
         self._tmp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp_dir.cleanup)
         self._claim_store = DispatchClaimStore(db_path=Path(self._tmp_dir.name) / "dispatch_claims.db")
+        self._env = patch.dict("os.environ", {"AUTO_CODER_INVALIDATION_DB": str(Path(self._tmp_dir.name) / "invalidations.db")})
+        self._env.start()
+        self.addCleanup(self._env.stop)
         patcher = patch("auto_coder.pr_processor.get_dispatch_claim_store", return_value=self._claim_store)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -71,8 +73,7 @@ class TestWorkflowTrigger(unittest.TestCase):
     @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
     @patch("auto_coder.pr_processor.LabelManager")
     @patch("auto_coder.util.github_action.trigger_workflow_dispatch")
-    @patch("threading.Thread")
-    def test_handle_pr_merge_triggers_workflow(self, mock_thread, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
+    def test_handle_pr_merge_triggers_workflow(self, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
         # Setup: No existing checks (ids is empty)
         mock_check_status.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
 
@@ -88,7 +89,7 @@ class TestWorkflowTrigger(unittest.TestCase):
 
         # Verify
         mock_trigger.assert_called_once_with(self.repo_name, "ci.yml", "feature-branch")
-        mock_thread.assert_called_once()  # Thread started
+        self.assertIn("Created durable CI watch for ci.yml", actions)
         mock_lm_instance.keep_label.assert_called_once()  # Label kept
         self.assertIn("Triggered ci.yml for PR #123", actions)
 
@@ -129,8 +130,7 @@ class TestWorkflowTrigger(unittest.TestCase):
     @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
     @patch("auto_coder.pr_processor.LabelManager")
     @patch("auto_coder.util.github_action.trigger_workflow_dispatch")
-    @patch("threading.Thread")
-    def test_new_head_sha_dispatches_despite_prior_accepted_claim(self, mock_thread, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
+    def test_new_head_sha_dispatches_despite_prior_accepted_claim(self, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
         """REQ-001/REQ-007 regression: an accepted claim for head SHA A must not
         suppress an otherwise eligible dispatch once the PR head advances to a
         different SHA B, and each identity's persisted claim must carry its own
@@ -162,8 +162,7 @@ class TestWorkflowTrigger(unittest.TestCase):
     @patch("auto_coder.pr_processor.get_detailed_checks_from_history")
     @patch("auto_coder.pr_processor.LabelManager")
     @patch("auto_coder.util.github_action.trigger_workflow_dispatch")
-    @patch("threading.Thread")
-    def test_dispatch_identity_uses_authoritative_strict_head_not_stale_caller_data(self, mock_thread, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
+    def test_dispatch_identity_uses_authoritative_strict_head_not_stale_caller_data(self, mock_trigger, mock_label_manager, mock_get_detailed, mock_check_status):
         """REQ-001 regression: the durable dispatch identity must be keyed by the
         authoritative head SHA obtained from the strict, cache-bypassing PR
         metadata fetch performed inside _handle_pr_merge, not by whatever
@@ -200,71 +199,6 @@ class TestWorkflowTrigger(unittest.TestCase):
         # at all, proving the strict refresh -- not the caller's stale data --
         # determined the persisted claim.
         self.assertTrue(self._claim_store.try_acquire_claim(identity_stale).acquired)
-
-
-class TestAsyncMonitor(unittest.IsolatedAsyncioTestCase):
-    @patch("auto_coder.pr_processor.GitHubClient")
-    @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.label_manager.LabelManager")
-    async def test_monitor_workflow_success(self, mock_label_manager, mock_check_status, mock_gh_client_cls):
-        repo_name = "owner/repo"
-        pr_number = 123
-        head_sha = "sha123"
-        workflow_id = "ci.yml"
-
-        mock_gh_client = MagicMock()
-        mock_gh_client_cls.get_instance.return_value = mock_gh_client
-
-        # Sequence of status checks:
-        # 1. No run yet (waiting)
-        # 2. Run found (in progress)
-        # 3. Run completed (success)
-        mock_check_status.side_effect = [
-            GitHubActionsStatusResult(ids=[], in_progress=False),  # Wait
-            GitHubActionsStatusResult(ids=[999], in_progress=True),  # Found
-            GitHubActionsStatusResult(ids=[999], in_progress=True),  # Still running
-            GitHubActionsStatusResult(ids=[999], in_progress=False, success=True),  # Completed success
-        ]
-
-        # Execute
-        # We need to mock asyncio.sleep to speed up test
-        with patch("asyncio.sleep", new_callable=AsyncMock):
-            await monitor_workflow_async(repo_name, pr_number, head_sha, workflow_id)
-
-        # Verify
-        # 1. Check status called multiple times
-        self.assertTrue(mock_check_status.call_count >= 3)
-
-        # 2. Commit status updated
-        mock_gh_client.create_commit_status.assert_called_once_with(repo_name=repo_name, sha=head_sha, state="success", target_url="https://github.com/owner/repo/actions/runs/999", description="Workflow ci.yml success", context="auto-coder/ci.yml")
-
-        # 3. Label removed
-        mock_label_manager.return_value.__enter__.return_value.remove_label.assert_called_once()
-
-    @patch("auto_coder.pr_processor.GitHubClient")
-    @patch("auto_coder.util.github_action._check_github_actions_status")
-    @patch("auto_coder.label_manager.LabelManager")
-    async def test_monitor_workflow_timeout_start(self, mock_label_manager, mock_check_status, mock_gh_client_cls):
-        repo_name = "owner/repo"
-        pr_number = 123
-        head_sha = "sha123"
-        workflow_id = "ci.yml"
-
-        mock_gh_client = MagicMock()
-        mock_gh_client_cls.get_instance.return_value = mock_gh_client
-
-        # Always return no runs
-        mock_check_status.return_value = GitHubActionsStatusResult(ids=[], in_progress=False)
-
-        # Execute with short loop for test (mocking range in real code is hard, so we rely on side_effect exhaustion or just let it run a few times if we could control loop)
-        # Since we can't easily control the loop count without modifying code, we'll just let it run a few times and then raise StopIteration or similar to break?
-        # Or better, we just mock asyncio.sleep and let it run. But 60 iterations is a lot.
-        # Let's mock range? No, that's built-in.
-        # We can mock _check_github_actions_status to eventually raise an exception to break the loop if we wanted, but we want to test the timeout logic.
-        # Actually, for this test, I'll just verify the logic flow by mocking the loop behavior if possible, or just trust the logic.
-        # But to be safe, let's just test the "run found" path primarily.
-        # If I want to test timeout, I'd need to reduce the range in the source code or mock it.
-        pass
 
 
 if __name__ == "__main__":

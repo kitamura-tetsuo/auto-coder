@@ -46,6 +46,7 @@ from .branch_manager import BranchManager
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
+from .entity_invalidation import DurableInvalidationQueue
 from .exceptions import AutoCoderRetryableBackendError
 from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
@@ -95,9 +96,6 @@ def _remove_reviewer_sessions_for_closed_pr(repo_name: str, pr_number: int) -> N
         logger.warning(f"Failed to remove reviewer sessions for closed PR #{pr_number}: {exc}")
 
 
-# Track active monitors to prevent duplicate execution within the same process
-_active_monitors: set[int] = set()
-_active_monitors_lock = threading.Lock()
 _cloud_review_delivery_lock = threading.RLock()
 _cloud_conflict_delivery_lock = threading.RLock()
 
@@ -546,113 +544,6 @@ def _get_adversarial_validation_eligibility(github_client: Any, repo_name: str, 
         logger.error(f"Failed to verify adversarial-validation eligibility: {resolution.error}")
         return AdversarialValidationEligibility(lookup_error=resolution.error)
     return AdversarialValidationEligibility(issue_numbers=tuple(issue.number for issue in resolution.issues))
-
-
-def _run_async_monitor(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
-    """Run the async monitor in a separate thread."""
-    try:
-        asyncio.run(monitor_workflow_async(repo_name, pr_number, head_sha, workflow_id))
-    finally:
-        with _active_monitors_lock:
-            _active_monitors.discard(pr_number)
-            logger.debug(f"Removed PR #{pr_number} from active monitors")
-
-
-async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
-    """Monitor a triggered workflow asynchronously until completion.
-
-    1. Wait for workflow run to appear.
-    2. Wait for workflow run to complete.
-    3. Update commit status.
-    4. Remove @auto-coder label.
-    """
-    from auto_coder.label_manager import LabelManager
-    from auto_coder.util.github_action import _check_github_actions_status
-
-    from .jules_client import JulesClient
-
-    logger.info(f"Started async monitor for PR #{pr_number} (workflow: {workflow_id})")
-
-    github_client = GitHubClient.get_instance()
-    config = AutomationConfig()
-
-    # Create a dummy PR data for _check_github_actions_status
-    pr_data = {
-        "number": pr_number,
-        "head": {"sha": head_sha},
-    }
-
-    try:
-        # 1. Wait for workflow run to appear (max 1 minutes)
-        run_found = False
-        run_id = None
-
-        for _ in range(12):  # 12 * 5s = 1 minutes
-            status_result = _check_github_actions_status(repo_name, pr_data, config, github_client)
-            if status_result.ids:
-                run_found = True
-                run_id = status_result.ids[0]  # Take the first one found
-                logger.info(f"Found workflow run {run_id} for PR #{pr_number}")
-                break
-            await asyncio.sleep(5)
-
-        if not run_found:
-            logger.error(f"Timeout waiting for workflow run to appear for PR #{pr_number}")
-            # Remove label so it can be retried? Or leave it?
-            # User said: "workflow_dispatchでActionを起動前から、 Action完了まで、PRに対して @auto-coder ラベルを付加して多重実行を防止してください。"
-            # If it fails to start, we should probably remove the label so it can be retried or handled manually.
-            with LabelManager(github_client, repo_name, pr_number, item_type="pr", skip_label_add=True) as lm:
-                lm.remove_label()
-            return
-
-        # 2. Wait for workflow run to complete (max 60 minutes)
-        completed = False
-        final_status = "failure"
-
-        for _ in range(360):  # 360 * 10s = 60 minutes
-            status_result = _check_github_actions_status(repo_name, pr_data, config, github_client)
-
-            if not status_result.in_progress:
-                completed = True
-                final_status = "success" if status_result.success else "failure"
-                logger.info(f"Workflow run {run_id} completed with status: {final_status}")
-                break
-
-            await asyncio.sleep(10)
-
-        if not completed:
-            logger.error(f"Timeout waiting for workflow run {run_id} to complete for PR #{pr_number}")
-            final_status = "error"  # Timeout treated as error
-
-        # 3. Update commit status
-        # Map our status to GitHub commit status state (pending, success, error, failure)
-        # final_status is already success/failure/error
-        commit_status_state = final_status
-
-        target_url = f"https://github.com/{repo_name}/actions/runs/{run_id}" if run_id else ""
-        description = f"Workflow {workflow_id} {final_status}"
-
-        try:
-            github_client.create_commit_status(repo_name=repo_name, sha=head_sha, state=commit_status_state, target_url=target_url, description=description, context=f"auto-coder/{workflow_id}")
-        except Exception as e:
-            logger.error(f"Failed to update commit status for PR #{pr_number}: {e}")
-
-        # 4. Remove @auto-coder label
-        try:
-            with LabelManager(github_client, repo_name, pr_number, item_type="pr", skip_label_add=True) as lm:
-                lm.remove_label()
-            logger.info(f"Removed @auto-coder label from PR #{pr_number}")
-        except Exception as e:
-            logger.error(f"Failed to remove label from PR #{pr_number}: {e}")
-
-    except Exception as e:
-        logger.error(f"Error in async monitor for PR #{pr_number}: {e}")
-        # Ensure label is removed on error to avoid sticking
-        try:
-            with LabelManager(github_client, repo_name, pr_number, item_type="pr", skip_label_add=True) as lm:
-                lm.remove_label()
-        except Exception:
-            pass
 
 
 def has_unresolved_review_threads(
@@ -2423,6 +2314,20 @@ def _handle_pr_merge(
             actions.extend(unsafe_branch_result.actions)
             return actions
 
+        watched_head = str(pr_data.get("head", {}).get("sha") or "")
+        if watched_head:
+            try:
+                ci_watch_store = DurableInvalidationQueue(Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser())
+                ci_watch_store.retire_ci_watches(repo_name, pr_number, watched_head)
+                if not ci_watch_store.ensure_ci_watch(repo_name, pr_number, watched_head):
+                    raise RuntimeError("invalid CI watch identity")
+            except Exception as exc:
+                logger.error(f"Durable CI watch unavailable repository={repo_name} pr={pr_number}: {exc}")
+                actions.append(f"Skipping merge for PR #{pr_number}: durable CI watch unavailable")
+                if processing_status is not None:
+                    processing_status.outcome = PRProcessingOutcome.DEFERRED
+                return actions
+
         # A stale review-thread resolution (issue #1619) that could not be
         # rolled back in an earlier run is a persistent integrity failure:
         # retry it on every processing run, and refuse to merge while any
@@ -2525,14 +2430,22 @@ def _handle_pr_merge(
                     actions.append(f"Skipped triggering {workflow_id} for PR #{pr_number}: dispatch already claimed ({claim.reason})")
                     return actions
 
-                # `_active_monitors` remains only a local, same-process
-                # optimization to avoid redundant monitor threads; it is not
-                # the correctness oracle for dispatch admission (that is the
-                # durable claim store above), since it does not survive
-                # controller restart.
-                with _active_monitors_lock:
-                    _active_monitors.add(pr_number)
-                    logger.debug(f"Added PR #{pr_number} to active monitors")
+                # Publish the restart-safe observation obligation before the
+                # external dispatch.  A store failure leaves the already
+                # acquired claim suppressing and therefore visibly blocked;
+                # it must never degrade to an unmonitored dispatch.
+                invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
+                try:
+                    watch_store = DurableInvalidationQueue(invalidation_path)
+                    watch_created = watch_store.ensure_ci_watch(repo_name, pr_number, head_sha or "", workflow_id)
+                except Exception as exc:
+                    logger.error(f"CI watch persistence blocked dispatch {dispatch_identity.key()}: {exc}")
+                    actions.append(f"Blocked triggering {workflow_id} for PR #{pr_number}: durable CI watch unavailable")
+                    return actions
+                if not watch_created:
+                    logger.error(f"CI watch identity was invalid for {dispatch_identity.key()}")
+                    actions.append(f"Blocked triggering {workflow_id} for PR #{pr_number}: durable CI watch unavailable")
+                    return actions
 
                 try:
                     dispatch_result = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
@@ -2555,28 +2468,13 @@ def _handle_pr_merge(
                         actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
                         get_trace_logger().log("CI Trigger", f"Triggered {workflow_id} for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"workflow": workflow_id})
 
-                        # 3. Start async monitor
-                        try:
-                            monitor_thread = threading.Thread(target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True)
-                            monitor_thread.start()
-                            actions.append(f"Started async monitor for {workflow_id}")
-                            get_trace_logger().log("CI Trigger", f"Started async monitor for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"monitor": True})
-                        except Exception as e:
-                            # Clean up if thread fails to start
-                            with _active_monitors_lock:
-                                _active_monitors.discard(pr_number)
-                            logger.error(f"Failed to start monitor thread for PR #{pr_number}: {e}")
-                            actions.append(f"Failed to start monitor for {workflow_id}: {e}")
-
-                        # Keep the label so async monitor can remove it later
+                        actions.append(f"Created durable CI watch for {workflow_id}")
+                        get_trace_logger().log("CI Trigger", f"Created durable CI watch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"workflow": workflow_id})
                         lm.keep_label()
                         return actions
 
                     else:
                         actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number} (outcome={dispatch_result.outcome.value})")
-                        # Clean up active monitor since we failed to trigger
-                        with _active_monitors_lock:
-                            _active_monitors.discard(pr_number)
                         # Label will be removed by LabelManager exit
 
                 except Exception as e:
@@ -2585,8 +2483,6 @@ def _handle_pr_merge(
                     # dispatch outcome could not even be classified and
                     # recorded, so the identity must remain suppressing
                     # (REQ-003, REQ-004, AS-003) rather than risk a duplicate.
-                    with _active_monitors_lock:
-                        _active_monitors.discard(pr_number)
                     raise e
 
             return actions
