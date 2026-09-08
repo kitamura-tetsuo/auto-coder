@@ -2031,6 +2031,7 @@ class TestAtomicMergeSHAPrecondition:
     """Test atomic SHA precondition enforcement in _merge_pr."""
 
     @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.merge_operation_adapter.get_ghapi_client")
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
     @patch("auto_coder.pr_processor._close_linked_issues")
     @patch("auto_coder.pr_processor._archive_jules_session")
@@ -2039,15 +2040,19 @@ class TestAtomicMergeSHAPrecondition:
         mock_archive,
         mock_close_issues,
         mock_get_ghapi,
+        mock_get_ghapi_adapter,
         mock_threads,
+        tmp_path,
     ):
         """When expected_head_sha is provided, pulls.merge must receive sha=<expected_head_sha>."""
+        from auto_coder.merge_operation_state import MergeOperationStore
         from auto_coder.pr_processor import _merge_pr
 
         mock_api = MagicMock()
         mock_api.pulls.get.return_value = {"number": 100, "user": {"login": "developer"}}
-        mock_api.pulls.merge.return_value = {"merged": True}
+        mock_api.pulls.merge.return_value = {"merged": True, "sha": "mergedsha"}
         mock_get_ghapi.return_value = mock_api
+        mock_get_ghapi_adapter.return_value = mock_api
 
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -2056,14 +2061,16 @@ class TestAtomicMergeSHAPrecondition:
         config = AutomationConfig()
         config.MERGE_METHOD = "--squash"
 
-        result = _merge_pr(
-            repo_name="owner/repo",
-            pr_number=100,
-            analysis={},
-            config=config,
-            github_client=client,
-            expected_head_sha="abc123456789",
-        )
+        store = MergeOperationStore(db_path=tmp_path / "merge_ops.db")
+        with patch("auto_coder.merge_operation_state.get_merge_operation_store", return_value=store):
+            result = _merge_pr(
+                repo_name="owner/repo",
+                pr_number=100,
+                analysis={},
+                config=config,
+                github_client=client,
+                expected_head_sha="abc123456789",
+            )
 
         assert result is True
         mock_api.pulls.merge.assert_called_once_with(
@@ -2076,6 +2083,7 @@ class TestAtomicMergeSHAPrecondition:
         mock_close_issues.assert_called_once_with("owner/repo", 100)
 
     @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.merge_operation_adapter.get_ghapi_client")
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
     @patch("auto_coder.pr_processor._get_allowed_merge_methods", return_value=["--squash", "--merge"])
     @patch("auto_coder.pr_processor._close_linked_issues")
@@ -2086,16 +2094,28 @@ class TestAtomicMergeSHAPrecondition:
         mock_close_issues,
         mock_get_allowed,
         mock_get_ghapi,
+        mock_get_ghapi_adapter,
         mock_threads,
+        tmp_path,
     ):
         """When GitHub API rejects merge due to SHA mismatch (409 Conflict), merge returns False."""
+        from auto_coder.merge_operation_state import MergeOperationStore
         from auto_coder.pr_processor import _merge_pr
+        from auto_coder.util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestContext, GitHubRequestError, GitHubRequestOutcome, GitHubResponseMetadata, RequestProvenance
 
         mock_api = MagicMock()
         mock_api.pulls.get.return_value = {"number": 100, "user": {"login": "developer"}, "mergeable": True}
-        # GitHub returns HTTP 409 Conflict when head branch was modified
-        mock_api.pulls.merge.side_effect = RuntimeError("409 Conflict: Head branch was modified. Review and try the merge again.")
+        # GitHub returns HTTP 409 Conflict when head branch was modified: a
+        # synchronous merge PUT 409 means the expected head no longer
+        # matches, so the operation is superseded rather than confirmed
+        # rejected (REQ-006) -- either way the merge never succeeds.
+        context = GitHubRequestContext(operation_id="op", attempt_id="attempt", subsystem="test", api_origin="https://api.github.com", method="PUT", kind="mutation", endpoint_template="/pulls/{n}/merge")
+        outcome = GitHubRequestOutcome(
+            context=context, status=409, classification=GitHubApiOutcome.REMOTE_ERROR, provenance=RequestProvenance.NETWORK, delivery=DeliveryCertainty.HTTP_RESPONSE_RECEIVED, metadata=GitHubResponseMetadata(), elapsed_ms=1.0, message="Head branch was modified. Review and try the merge again."
+        )
+        mock_api.pulls.merge.side_effect = GitHubRequestError(outcome)
         mock_get_ghapi.return_value = mock_api
+        mock_get_ghapi_adapter.return_value = mock_api
 
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
@@ -2104,14 +2124,16 @@ class TestAtomicMergeSHAPrecondition:
         config = AutomationConfig()
         config.MERGE_METHOD = "--squash"
 
-        result = _merge_pr(
-            repo_name="owner/repo",
-            pr_number=100,
-            analysis={},
-            config=config,
-            github_client=client,
-            expected_head_sha="abc123456789",
-        )
+        store = MergeOperationStore(db_path=tmp_path / "merge_ops.db")
+        with patch("auto_coder.merge_operation_state.get_merge_operation_store", return_value=store):
+            result = _merge_pr(
+                repo_name="owner/repo",
+                pr_number=100,
+                analysis={},
+                config=config,
+                github_client=client,
+                expected_head_sha="abc123456789",
+            )
 
         assert result is False
         mock_close_issues.assert_not_called()

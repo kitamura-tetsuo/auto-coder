@@ -213,17 +213,28 @@ def test_production_conflict_path_reports_confirmed_followup_in_actions_and_pr(t
 
 def test_direct_merge_path_propagates_confirmed_followup_to_action_sink(tmp_path) -> None:
     """A failed API merge must expose acceptance before deferring cloud repair."""
+    from src.auto_coder.merge_operation_state import MergeOperationStore
+    from src.auto_coder.util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestContext, GitHubRequestError, GitHubRequestOutcome, GitHubResponseMetadata, RequestProvenance
+
     cloud_client = FollowupClient()
     github = Mock(token="token")
     github.get_pr_comments.return_value = []
     api = Mock()
-    api.pulls.merge.return_value = {"merged": False}
+    # A real conflict is a definitive, cause-specified rejection (not an
+    # HTTP-success body with merged=false, which merge_operation_adapter
+    # treats as indeterminate rather than a confirmed failure -- REQ-005).
+    context = GitHubRequestContext(operation_id="op", attempt_id="attempt", subsystem="test", api_origin="https://api.github.com", method="PUT", kind="mutation", endpoint_template="/pulls/{n}/merge")
+    outcome = GitHubRequestOutcome(context=context, status=405, classification=GitHubApiOutcome.REMOTE_ERROR, provenance=RequestProvenance.NETWORK, delivery=DeliveryCertainty.HTTP_RESPONSE_RECEIVED, metadata=GitHubResponseMetadata(), elapsed_ms=1.0, message="Pull Request is not mergeable")
+    api.pulls.merge.side_effect = GitHubRequestError(outcome)
     conflicting_pr = pr_data()
     conflicting_pr["mergeable"] = False
     api.pulls.get.return_value = conflicting_pr
 
+    store = MergeOperationStore(db_path=tmp_path / "merge_ops.db")
     with (
         patch("auto_coder.util.gh_cache.get_ghapi_client", return_value=api),
+        patch("src.auto_coder.merge_operation_adapter.get_ghapi_client", return_value=api),
+        patch("src.auto_coder.merge_operation_state.get_merge_operation_store", return_value=store),
         patch("src.auto_coder.pr_processor._get_review_thread_gate_state", return_value=Mock(lookup_error=None, has_unresolved=False)),
         patch("src.auto_coder.pr_processor._get_allowed_merge_methods", return_value=[]),
         patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(cloud_client, "task_e_direct")),

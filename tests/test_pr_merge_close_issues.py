@@ -231,22 +231,30 @@ class TestMergePRWithIssueClosing:
 
     @patch("src.auto_coder.pr_processor._archive_jules_session")
     @patch("src.auto_coder.pr_processor._close_linked_issues")
+    @patch("src.auto_coder.merge_operation_adapter.get_ghapi_client")
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
     @patch("src.auto_coder.pr_processor.GitHubClient")
-    def test_merge_pr_closes_issues_on_success(self, mock_github_client, mock_get_ghapi_client, mock_close_issues, mock_archive_session):
+    def test_merge_pr_closes_issues_on_success(self, mock_github_client, mock_get_ghapi_client, mock_get_ghapi_client_adapter, mock_close_issues, mock_archive_session, tmp_path):
         """Test that successful merge triggers issue closing."""
+        from src.auto_coder.merge_operation_state import MergeOperationStore
+
         config = AutomationConfig()
         config.MERGE_AUTO = False
         config.MERGE_METHOD = "--squash"
 
         mock_api = Mock()
         mock_get_ghapi_client.return_value = mock_api
+        mock_get_ghapi_client_adapter.return_value = mock_api
         mock_github_client.get_instance.return_value.token = "token"
 
+        head_sha = "e" * 40
+        mock_api.pulls.get.return_value = {"number": 123, "user": {"login": "some-developer"}, "head": {"sha": head_sha}}
         # Mock successful merge
-        mock_api.pulls.merge.return_value = {"merged": True}
+        mock_api.pulls.merge.return_value = {"merged": True, "sha": "mergedsha"}
 
-        result = _merge_pr("test/repo", 123, {}, config)
+        store = MergeOperationStore(db_path=tmp_path / "merge_ops.db")
+        with patch("src.auto_coder.merge_operation_state.get_merge_operation_store", return_value=store):
+            result = _merge_pr("test/repo", 123, {}, config)
 
         assert result is True
         mock_close_issues.assert_called_once_with("test/repo", 123)
@@ -254,25 +262,33 @@ class TestMergePRWithIssueClosing:
 
     @patch("src.auto_coder.pr_processor._archive_jules_session")
     @patch("src.auto_coder.pr_processor._close_linked_issues")
+    @patch("src.auto_coder.merge_operation_adapter.get_ghapi_client")
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
     @patch("src.auto_coder.pr_processor.GitHubClient")
-    def test_merge_pr_does_not_close_issues_on_failure(self, mock_github_client, mock_get_ghapi_client, mock_close_issues, mock_archive_session):
+    def test_merge_pr_does_not_close_issues_on_failure(self, mock_github_client, mock_get_ghapi_client, mock_get_ghapi_client_adapter, mock_close_issues, mock_archive_session, tmp_path):
         """Test that failed merge does not trigger issue closing."""
+        from src.auto_coder.merge_operation_state import MergeOperationStore
+
         config = AutomationConfig()
         config.MERGE_AUTO = False
         config.MERGE_METHOD = "--squash"
 
         mock_api = Mock()
         mock_get_ghapi_client.return_value = mock_api
+        mock_get_ghapi_client_adapter.return_value = mock_api
         mock_github_client.get_instance.return_value.token = "token"
 
-        # Mock failed merge (API failure)
+        # Mock failed merge (API failure): a body-read failure is
+        # indeterminate delivery, never a fabricated success.
         mock_api.pulls.merge.side_effect = Exception("Merge failed")
 
-        # Mock conflict check (not conflict)
-        mock_api.pulls.get.return_value = {"mergeable": True}
+        # Not a conflict; a real head SHA is present.
+        head_sha = "1" * 40
+        mock_api.pulls.get.return_value = {"number": 123, "user": {"login": "some-developer"}, "head": {"sha": head_sha}, "mergeable": True}
 
-        result = _merge_pr("test/repo", 123, {}, config)
+        store = MergeOperationStore(db_path=tmp_path / "merge_ops.db")
+        with patch("src.auto_coder.merge_operation_state.get_merge_operation_store", return_value=store):
+            result = _merge_pr("test/repo", 123, {}, config)
 
         assert result is False
         mock_close_issues.assert_not_called()
@@ -280,22 +296,30 @@ class TestMergePRWithIssueClosing:
 
     @patch("src.auto_coder.pr_processor._archive_jules_session")
     @patch("src.auto_coder.pr_processor._close_linked_issues")
+    @patch("src.auto_coder.merge_operation_adapter.get_ghapi_client")
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
     @patch("src.auto_coder.pr_processor.GitHubClient")
-    def test_merge_pr_auto_merge_closes_issues(self, mock_github_client, mock_get_ghapi_client, mock_close_issues, mock_archive_session):
+    def test_merge_pr_auto_merge_closes_issues(self, mock_github_client, mock_get_ghapi_client, mock_get_ghapi_client_adapter, mock_close_issues, mock_archive_session, tmp_path):
         """Test that auto-merge success triggers issue closing."""
+        from src.auto_coder.merge_operation_state import MergeOperationStore
+
         config = AutomationConfig()
         config.MERGE_AUTO = True
         config.MERGE_METHOD = "--squash"
 
         mock_api = Mock()
         mock_get_ghapi_client.return_value = mock_api
+        mock_get_ghapi_client_adapter.return_value = mock_api
         mock_github_client.get_instance.return_value.token = "token"
 
+        head_sha = "f" * 40
+        mock_api.pulls.get.return_value = {"number": 123, "user": {"login": "some-developer"}, "head": {"sha": head_sha}}
         # Mock successful merge (API handles it same as direct now)
-        mock_api.pulls.merge.return_value = {"merged": True}
+        mock_api.pulls.merge.return_value = {"merged": True, "sha": "mergedsha"}
 
-        result = _merge_pr("test/repo", 123, {}, config)
+        store = MergeOperationStore(db_path=tmp_path / "merge_ops.db")
+        with patch("src.auto_coder.merge_operation_state.get_merge_operation_store", return_value=store):
+            result = _merge_pr("test/repo", 123, {}, config)
 
         assert result is True
         mock_close_issues.assert_called_once_with("test/repo", 123)

@@ -5296,6 +5296,31 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     return actions
 
 
+def _describe_merge_operation_outcome(result: Any) -> str:
+    """Render one merge-operation adapter result distinctly for observability (REQ-010).
+
+    Never collapses DEFERRED/OPERATIONALLY_BLOCKED/INDETERMINATE/SUPERSEDED
+    into a generic "Merge failed" label.
+    """
+    status = result.operation.status.value
+    return f"status={status}, outcome={result.kind.value}, reason={result.reason or 'pending'}"
+
+
+def _finalize_merge_success(repo_name: str, pr_number: int, method: str) -> bool:
+    """Post-processing after a durably confirmed merge (REQ-009).
+
+    ``_close_linked_issues``/``_archive_jules_session`` already swallow their
+    own failures internally, so a post-processing problem is observable via
+    their own logging without ever turning a confirmed merge back into a
+    reported failure or triggering a re-merge/re-approval.
+    """
+    get_trace_logger().log("Merging", f"Successfully merged PR #{pr_number}", item_type="pr", item_number=pr_number, details={"method": method})
+    log_action(f"Successfully merged PR #{pr_number} (method: {method})")
+    _close_linked_issues(repo_name, pr_number)
+    _archive_jules_session(repo_name, pr_number)
+    return True
+
+
 def _merge_pr(
     repo_name: str,
     pr_number: int,
@@ -5304,15 +5329,29 @@ def _merge_pr(
     github_client: Optional[Any] = None,
     expected_head_sha: Optional[str] = None,
 ) -> bool:
-    """Merge a PR using GitHub CLI with conflict resolution and simple fallbacks.
+    """Merge a PR through the durable per-effect merge operation (Issue #1939).
 
-    Fallbacks (no LLM):
-    - After conflict resolution and retry failure, poll mergeable state briefly
-    - Try alternative merge methods allowed by repo settings (--merge/--rebase/--squash)
+    Approval and merge are each advanced through ``merge_operation_adapter``
+    against a durable ``MergeOperation`` (Issue #1937/#1938) instead of being
+    treated as one boolean success/failure: a local admission deferral, a
+    real GitHub throttle, an authentication/forbidden block, or an
+    indeterminate delivery is reported as such and returned without any
+    repository/PR diagnostic GET, alternate merge method, conflict repair, or
+    LLM fallback (REQ-001, REQ-002). Only a definitive, cause-specified
+    rejection -- GitHub having actually and unambiguously refused the
+    mutation -- may fall through to the pre-existing conflict-resolution and
+    allowed-alternate-method handling below (REQ-007). The operation persists
+    across calls, so a resumed attempt (whether from the next normal
+    processing cycle or from ``merge_operation_scheduler``) never re-sends an
+    already-confirmed approval or merge.
 
-    After successful merge, automatically closes any issues referenced in the PR body
-    using GitHub's linking keywords (closes, fixes, resolves, etc.)
+    After a successful merge, automatically closes any issues referenced in
+    the PR body using GitHub's linking keywords (closes, fixes, resolves,
+    etc.) and archives any associated Jules session.
     """
+    from .merge_operation_adapter import AdapterOutcomeKind, AdapterResult, attempt_approval, attempt_merge, reconcile_approval, reconcile_merge
+    from .merge_operation_state import EffectName, EffectState, MergeOperationIdentity, get_merge_operation_store
+
     try:
         from auto_coder.util.gh_cache import get_ghapi_client
 
@@ -5331,160 +5370,240 @@ def _merge_pr(
         token = client.token
         api = get_ghapi_client(token)
         owner, repo = repo_name.split("/")
+        store = get_merge_operation_store()
+        identity = MergeOperationIdentity("https://api.github.com", repo_name, pr_number)
 
-        def _attempt_api_merge(method: str) -> bool:
-            try:
-                # GhApi method names for merge_method are: 'merge', 'squash', 'rebase'
-                # method argument from config (e.g. '--squash') needs to be stripped
-                api_method = method.replace("--", "")
-                kwargs: Dict[str, Any] = {"merge_method": api_method}
-                if expected_head_sha:
-                    kwargs["sha"] = expected_head_sha
-                result = api.pulls.merge(owner, repo, pr_number, **kwargs)
-                if result.get("merged"):
-                    get_trace_logger().log("Merging", f"Successfully merged PR #{pr_number}", item_type="pr", item_number=pr_number, details={"method": method})
-                    log_action(f"Successfully merged PR #{pr_number} (method: {method})")
-                    _close_linked_issues(repo_name, pr_number)
-                    _archive_jules_session(repo_name, pr_number)
-                    return True
-                return False
-            except Exception as e:
-                # 405/409 errors come here
-                sha_info = f" (expected SHA {expected_head_sha[:8]})" if expected_head_sha else ""
-                logger.warning(f"Merge failed for PR #{pr_number} with method {method}{sha_info}: {e}")
-                return False
-
-        # Check if the PR is authored by a dependency bot and auto-approve it
         try:
             pr_info = api.pulls.get(owner, repo, pr_number)
-            if _is_dependabot_pr(pr_info):
-                logger.info(f"Auto-approving Dependabot PR #{pr_number}")
-                api.pulls.create_review(owner, repo, pr_number, event="APPROVE", body="Auto-approved by Auto-Coder")
-                log_action(f"Auto-approved Dependabot PR #{pr_number}")
         except Exception as e:
-            logger.warning(f"Could not auto-approve Dependabot PR #{pr_number}: {e}")
-
-        # Attempt merge with configured method
-        if _attempt_api_merge(config.MERGE_METHOD):
-            return True
-
-        # Try alternative merge methods if the primary method failed (even when not a conflict)
-        try:
-            allowed = _get_allowed_merge_methods(repo_name)
-            methods_order = [m for m in ["--squash", "--merge", "--rebase"] if m != config.MERGE_METHOD]
-            for m in methods_order:
-                if m in allowed:
-                    logger.info(f"Primary merge method {config.MERGE_METHOD} failed. Trying fallback allowed method {m} for PR #{pr_number}")
-                    if _attempt_api_merge(m):
-                        return True
-        except Exception as e:
-            logger.warning(f"Error trying fallback merge methods: {e}")
-
-        # If failed, check if it was due to conflicts (check mergeable state)
-        is_conflict = False
-        try:
-            pr_info = api.pulls.get(owner, repo, pr_number)
-            if pr_info.get("mergeable") is False:
-                is_conflict = True
-        except Exception:
-            pass
-
-        if is_conflict:
-            logger.info(f"PR #{pr_number} has merge conflicts, attempting to resolve...")
-            log_action(f"PR #{pr_number} has merge conflicts, attempting resolution")
-
-            if _is_jules_pr(pr_info):
-                logger.info(f"PR #{pr_number} is a Jules PR with merge conflicts. Requesting Jules to resolve it.")
-                try:
-                    from auto_coder.jules_client import JulesClient
-
-                    jules_client = JulesClient()
-                    session_id = _extract_session_id_from_pr_body(pr_info.get("body", ""))
-                    if session_id:
-                        prompt = render_prompt("pr.jules_merge_conflict_resolution")
-                        jules_client.send_message(session_id, prompt)
-                        logger.info(f"Requested Jules to resolve merge conflict in session {session_id}")
-                        log_action(f"Requested Jules to resolve merge conflicts for PR #{pr_number}")
-                        return False
-                    else:
-                        logger.warning(f"Jules PR #{pr_number} has merge conflicts but no session ID found. Cannot delegate.")
-                except Exception as e:
-                    logger.error(f"Error requesting Jules to resolve conflict: {e}")
-
-            # Dependency-bot PRs (Dependabot/Renovate) are never conflict-resolved:
-            # the bot recreates the PR against the updated base branch by itself.
-            if _is_dependabot_pr(pr_info):
-                logger.info(f"PR #{pr_number} is a dependency-bot PR with merge conflicts. Skipping conflict resolution.")
-                log_action(f"Skipped merge conflict resolution for dependency-bot PR #{pr_number}")
-                return False
-
-            cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_info, client)
-            if cloud_delegation:
-                if cloud_delegation.accepted_action:
-                    log_action(cloud_delegation.accepted_action)
-                log_action(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
-                return False
-
-            # Try to resolve merge conflicts
-            if _resolve_pr_merge_conflicts(repo_name, pr_number, config):
-                # Poll for mergeability
-                logger.info(f"Conflicts resolved for PR #{pr_number}, waiting for GitHub to update mergeable state")
-                log_action(f"Polling mergeable state for PR #{pr_number} after conflict resolution")
-
-                polling_succeeded = _poll_pr_mergeable(repo_name, pr_number, config)
-
-                if polling_succeeded:
-                    logger.info(f"GitHub confirmed PR #{pr_number} is mergeable, attempting merge")
-                else:
-                    logger.warning(f"Polling timed out for PR #{pr_number}, attempting merge anyway")
-
-                # Retry merge
-                if _attempt_api_merge(config.MERGE_METHOD):
-                    log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
-                    return True
-                else:
-                    logger.warning(f"Merge failed for PR #{pr_number} even after conflict resolution")
-                    log_action(f"Failed to merge PR #{pr_number} after conflict resolution", False, "Merge API failed")
-
-                    # Try alternative merge methods
-                    allowed = _get_allowed_merge_methods(repo_name)
-                    methods_order = [config.MERGE_METHOD] + [m for m in ["--squash", "--merge", "--rebase"] if m != config.MERGE_METHOD]
-                    for m in methods_order:
-                        if m not in allowed or m == config.MERGE_METHOD:
-                            continue
-                        if _attempt_api_merge(m):
-                            return True
-
-                    # Trigger fallback
-                    try:
-                        pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
-                        _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution exhausted)")
-                    except Exception:
-                        pass
-                    return False
-            else:
-                log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
-                try:
-                    pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
-                    _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (resolution failed)")
-                except Exception:
-                    pass
-                return False
-
-        else:
-            # Not a conflict, but merge failed (maybe checks pending or not approved?)
-            log_action(f"Failed to merge PR #{pr_number}", False, "Merge API failed (not conflict)")
-            try:
-                pr_info = api.pulls.get(owner, repo, pr_number)
-                pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
-                _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed")
-            except Exception:
-                pass
+            logger.error(f"Could not read PR #{pr_number} before merge: {e}")
             return False
+
+        head_sha = expected_head_sha or pr_info.get("head", {}).get("sha") or ""
+        if not head_sha:
+            logger.error(f"No head SHA available for PR #{pr_number}; aborting merge")
+            return False
+
+        needs_approval = _is_dependabot_pr(pr_info)
+        reviewer_identity = ""
+        if needs_approval:
+            try:
+                reviewer_identity = resolve_reviewer_app_identity(repo_name).login
+            except Exception as e:
+                logger.warning(f"Could not resolve reviewer identity for auto-approval of PR #{pr_number}: {e}")
+            needs_approval = bool(reviewer_identity)
+
+        def _advance(effect_name: EffectName, attempt_fn, reconcile_fn) -> AdapterResult:
+            current = store.get(identity)
+            effect = current.effect(effect_name) if current is not None else None
+            if effect is not None and effect.state is EffectState.DELIVERY_UNKNOWN:
+                return reconcile_fn(store, token, identity)
+            return attempt_fn(store, token, identity)
+
+        def _try_merge(method: str, target_head_sha: str) -> AdapterResult:
+            store.get_or_create(
+                identity,
+                expected_head_sha=target_head_sha,
+                merge_method=method,
+                approval_credential_role="auto-coder-bot",
+                reviewer_identity=reviewer_identity,
+                needs_approval=needs_approval,
+            )
+            if needs_approval:
+                approval_result = _advance(EffectName.APPROVAL, attempt_approval, reconcile_approval)
+                approval_state = approval_result.operation.effect(EffectName.APPROVAL).state
+                if approval_state not in (EffectState.NOT_NEEDED, EffectState.CONFIRMED_COMPLETE):
+                    return approval_result
+            return _advance(EffectName.MERGE, attempt_merge, reconcile_merge)
+
+        result = _try_merge(config.MERGE_METHOD.replace("--", ""), head_sha)
+
+        if result.operation.effect(EffectName.MERGE).state is EffectState.CONFIRMED_COMPLETE:
+            return _finalize_merge_success(repo_name, pr_number, config.MERGE_METHOD)
+
+        approval_effect = result.operation.effect(EffectName.APPROVAL)
+        if needs_approval and approval_effect.state not in (EffectState.NOT_NEEDED, EffectState.CONFIRMED_COMPLETE):
+            log_action(f"Auto-approval not completed for PR #{pr_number}: {_describe_merge_operation_outcome(result)}")
+            return False
+
+        # Anything short of a definitive, cause-specified rejection is a
+        # retryable pending state (mutation spacing, a real throttle, an
+        # operational block, an indeterminate delivery, or a superseded
+        # head): REQ-002/REQ-007 forbid diagnostic GETs, alternate methods,
+        # conflict repair, or LLM fallback for any of these. The durable
+        # operation (and, in the daemon, merge_operation_scheduler) is what
+        # retries it once its own deadline has passed.
+        if result.kind is not AdapterOutcomeKind.DEFINITIVE_REJECTION:
+            log_action(f"Merge not completed for PR #{pr_number}: {_describe_merge_operation_outcome(result)}")
+            return False
+
+        # A definitive, cause-specified rejection: only now may current
+        # conditions be consulted to choose between conflict repair and an
+        # allowed alternate method (REQ-007).
+        return _handle_definitive_merge_rejection(
+            repo_name,
+            pr_number,
+            config,
+            client,
+            api,
+            owner,
+            repo,
+            store,
+            identity,
+            _try_merge,
+            head_sha,
+        )
 
     except Exception as e:
         logger.error(f"Error merging PR #{pr_number}: {e}")
         return False
+
+
+def _handle_definitive_merge_rejection(
+    repo_name: str,
+    pr_number: int,
+    config: AutomationConfig,
+    client: Any,
+    api: Any,
+    owner: str,
+    repo: str,
+    store: Any,
+    identity: Any,
+    try_merge: Any,
+    head_sha: str,
+) -> bool:
+    """Handle a GitHub-confirmed, cause-specified merge rejection (REQ-007).
+
+    Only reached once ``merge_operation_adapter`` has already classified the
+    outcome as a definitive rejection (not a mutation-spacing defer, real
+    throttle, operational block, or indeterminate delivery); it is therefore
+    safe here to re-check current conditions and decide between an allowed
+    alternate merge method and conflict resolution.
+    """
+    from .merge_operation_adapter import AdapterOutcomeKind
+    from .merge_operation_state import EffectName, EffectState
+
+    try:
+        pr_info = api.pulls.get(owner, repo, pr_number)
+    except Exception as e:
+        logger.warning(f"Could not re-check PR #{pr_number} after merge rejection: {e}")
+        return False
+
+    is_conflict = pr_info.get("mergeable") is False
+
+    if not is_conflict:
+        allowed = _get_allowed_merge_methods(repo_name)
+        selected = config.MERGE_METHOD
+        # REQ-007: an alternate method is only a candidate once current
+        # repository settings actually show the selected method disallowed
+        # and an alternate allowed -- never merely because the selected one
+        # failed.
+        if selected not in allowed:
+            for alt in [m for m in ["--squash", "--merge", "--rebase"] if m != selected and m in allowed]:
+                store.manual_reset_effect(identity, EffectName.MERGE)
+                alt_result = try_merge(alt.replace("--", ""), head_sha)
+                if alt_result.operation.effect(EffectName.MERGE).state is EffectState.CONFIRMED_COMPLETE:
+                    return _finalize_merge_success(repo_name, pr_number, alt)
+            log_action(f"Failed to merge PR #{pr_number} with any currently allowed merge method", False, "Merge API failed")
+            return False
+
+        log_action(f"Failed to merge PR #{pr_number}", False, "Merge API failed (not conflict)")
+        try:
+            pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
+            _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed")
+        except Exception:
+            pass
+        return False
+
+    logger.info(f"PR #{pr_number} has merge conflicts, attempting to resolve...")
+    log_action(f"PR #{pr_number} has merge conflicts, attempting resolution")
+
+    if _is_jules_pr(pr_info):
+        logger.info(f"PR #{pr_number} is a Jules PR with merge conflicts. Requesting Jules to resolve it.")
+        try:
+            from auto_coder.jules_client import JulesClient
+
+            jules_client = JulesClient()
+            session_id = _extract_session_id_from_pr_body(pr_info.get("body", ""))
+            if session_id:
+                prompt = render_prompt("pr.jules_merge_conflict_resolution")
+                jules_client.send_message(session_id, prompt)
+                logger.info(f"Requested Jules to resolve merge conflict in session {session_id}")
+                log_action(f"Requested Jules to resolve merge conflicts for PR #{pr_number}")
+                return False
+            else:
+                logger.warning(f"Jules PR #{pr_number} has merge conflicts but no session ID found. Cannot delegate.")
+        except Exception as e:
+            logger.error(f"Error requesting Jules to resolve conflict: {e}")
+
+    # Dependency-bot PRs (Dependabot/Renovate) are never conflict-resolved:
+    # the bot recreates the PR against the updated base branch by itself.
+    if _is_dependabot_pr(pr_info):
+        logger.info(f"PR #{pr_number} is a dependency-bot PR with merge conflicts. Skipping conflict resolution.")
+        log_action(f"Skipped merge conflict resolution for dependency-bot PR #{pr_number}")
+        return False
+
+    cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_info, client)
+    if cloud_delegation:
+        if cloud_delegation.accepted_action:
+            log_action(cloud_delegation.accepted_action)
+        log_action(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
+        return False
+
+    if not _resolve_pr_merge_conflicts(repo_name, pr_number, config):
+        log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
+        try:
+            pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
+            _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (resolution failed)")
+        except Exception:
+            pass
+        return False
+
+    logger.info(f"Conflicts resolved for PR #{pr_number}, waiting for GitHub to update mergeable state")
+    log_action(f"Polling mergeable state for PR #{pr_number} after conflict resolution")
+
+    polling_succeeded = _poll_pr_mergeable(repo_name, pr_number, config)
+    if polling_succeeded:
+        logger.info(f"GitHub confirmed PR #{pr_number} is mergeable, attempting merge")
+    else:
+        logger.warning(f"Polling timed out for PR #{pr_number}, attempting merge anyway")
+
+    # Conflict resolution produced a new commit: the durable operation must
+    # target the PR's new current head, never the pre-resolution one.
+    try:
+        refreshed_pr = api.pulls.get(owner, repo, pr_number)
+        new_head_sha = refreshed_pr.get("head", {}).get("sha") or head_sha
+    except Exception:
+        refreshed_pr = pr_info
+        new_head_sha = head_sha
+
+    retry_result = try_merge(config.MERGE_METHOD.replace("--", ""), new_head_sha)
+    if retry_result.operation.effect(EffectName.MERGE).state is EffectState.CONFIRMED_COMPLETE:
+        log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
+        return _finalize_merge_success(repo_name, pr_number, config.MERGE_METHOD)
+
+    if retry_result.kind is not AdapterOutcomeKind.DEFINITIVE_REJECTION:
+        log_action(f"Merge not completed for PR #{pr_number} after conflict resolution: {_describe_merge_operation_outcome(retry_result)}")
+        return False
+
+    logger.warning(f"Merge failed for PR #{pr_number} even after conflict resolution")
+    log_action(f"Failed to merge PR #{pr_number} after conflict resolution", False, "Merge API failed")
+
+    allowed = _get_allowed_merge_methods(repo_name)
+    selected = config.MERGE_METHOD
+    if selected not in allowed:
+        for alt in [m for m in ["--squash", "--merge", "--rebase"] if m != selected and m in allowed]:
+            store.manual_reset_effect(identity, EffectName.MERGE)
+            alt_result = try_merge(alt.replace("--", ""), new_head_sha)
+            if alt_result.operation.effect(EffectName.MERGE).state is EffectState.CONFIRMED_COMPLETE:
+                return _finalize_merge_success(repo_name, pr_number, alt)
+
+    try:
+        pr_data = {"number": pr_number, "body": refreshed_pr.get("body", "")}
+        _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution exhausted)")
+    except Exception:
+        pass
+    return False
 
 
 def _poll_pr_mergeable(
