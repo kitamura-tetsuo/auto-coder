@@ -763,14 +763,12 @@ class ImplementationSlotRepository:
         # lifecycle below remains the sole authority for releasing its owner.
         self.reclaim_stale_executions()
         if discover_open_prs:
-            try:
-                self._record_open_pr_memberships(github_client)
-            except Exception as exc:
-                # Startup has not yet discovered candidates. If the complete
-                # open-PR set or any supported ownership oracle is unavailable,
-                # no existing reservation can safely be declared terminal.
-                logger.warning(f"Could not discover open implementation PRs; retaining all slots: {exc}")
-                return
+            # Unlike the failure handling below, discovery failure is not
+            # swallowed here: the caller (startup reconciliation) owns
+            # retaining this as recoverable work and retrying it durably, so
+            # a deferred or throttled discovery must propagate rather than
+            # silently declare recovery complete with a partial owner set.
+            self._record_open_pr_memberships(github_client)
         for owner in self.active_owners():
             try:
                 # Lifecycle reconciliation must never erase live execution

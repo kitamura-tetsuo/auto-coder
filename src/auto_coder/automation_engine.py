@@ -30,7 +30,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .github_ci_observer import ci_read_phase_method, end_ci_read_phase
-from .github_pending_work import PendingWorkScheduler, get_pending_work_store
+from .github_pending_work import PendingObligation, PendingWorkScheduler, StageOutcome, WorkIdentity, get_pending_work_store
 from .github_request_governor import GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_slots import (
@@ -74,7 +74,7 @@ from .update_manager import check_for_updates_and_restart
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, InvalidSubIssueRelationshipError, get_ghapi_client, is_implementation_ready, parse_parent_issue_number, parse_parent_issue_url_number, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
-from .util.github_request_outcome import configure_github_request_boundary
+from .util.github_request_outcome import GitHubRequestError, configure_github_request_boundary
 from .utils import CommandExecutor, get_target_container, log_action
 from .validation_scheduler import ValidationAdmissionDeferred, ValidationJob, ValidationScheduler
 
@@ -86,6 +86,41 @@ CAPACITY_STATE_CHECK_INTERVAL_SECONDS = 1
 REFILL_RETRY_INTERVAL_SECONDS = 60
 INVALID_REQUIREMENT_CONTRACT_MARKER_PREFIX = "auto-coder-invalid-requirement-contract"
 INVALID_DEPENDENCY_MARKER_PREFIX = "auto-coder-invalid-sibling-dependency"
+STARTUP_RECONCILIATION_STAGE = "startup-reconciliation"
+STARTUP_RECONCILIATION_EFFECT = "startup-scan"
+
+
+class _StartupReconciliationHandler:
+    """Retries the durable startup-recovery obligation via the pending-work scheduler.
+
+    Startup recovery has no partial, non-idempotent mutation of its own: it
+    only reads authoritative GitHub state and durably (re)invalidates the
+    entities it discovers, through the same path used for webhooks. An
+    obligation left 'running' by a controller that stopped mid-dispatch is
+    therefore simply retried the same way as a fresh dispatch.
+    """
+
+    def __init__(self, engine: "AutomationEngine", repo_name: str) -> None:
+        self._engine = engine
+        self._repo_name = repo_name
+
+    def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run()
+
+    def recover(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run()
+
+    def _run(self) -> StageOutcome:
+        engine = self._engine
+        loop = engine._loop
+        assert loop is not None, "startup reconciliation obligation dispatched before the engine loop started"
+        try:
+            asyncio.run_coroutine_threadsafe(engine._attempt_startup_reconciliation(self._repo_name), loop).result()
+        except GitHubRequestError as exc:
+            return StageOutcome(error=exc)
+        assert engine._startup_reconciliation_event is not None
+        loop.call_soon_threadsafe(engine._startup_reconciliation_event.set)
+        return StageOutcome(completed_effects=(STARTUP_RECONCILIATION_EFFECT,))
 
 
 class EngineLifecycle(str, Enum):
@@ -120,7 +155,7 @@ class AutomationEngine:
         self._refill_lock = asyncio.Lock()
         self.startup_reconciled = False
         self.startup_reconciliation_error: Optional[str] = None
-        self._startup_reconciliation_attempted = False
+        self._startup_reconciliation_event: Optional[asyncio.Event] = None
         self.active_workers: Dict[int, Optional[Candidate]] = {}
         self.open_prs_snapshot: List[Dict[str, Any]] = []
         self.open_issues_snapshot: List[Dict[str, Any]] = []
@@ -1228,17 +1263,23 @@ class AutomationEngine:
         # so retained work from a previous run is never orphaned by a fresh
         # enumeration that only marks entities dirty again.
         pending_work_task = asyncio.create_task(self.pending_work_scheduler.run(self._shutdown_event), name="pending-work-scheduler")
+        # Registered before any await so an obligation left 'running' by a
+        # crashed prior process can never be recovered while unregistered.
+        self._startup_reconciliation_event = asyncio.Event()
+        self.pending_work_scheduler.register_handler(STARTUP_RECONCILIATION_STAGE, _StartupReconciliationHandler(self, repo_name))
 
         if not self.is_draining:
-            # Discover open PR ownership before releasing startup reservations.
-            # A PR linked only by branch metadata has no Issue timeline event and
-            # may not have been recorded if the previous process stopped before its
-            # first candidate scan.
-            self._get_implementation_slots(repo_name).reconcile(self.github, discover_open_prs=True)
-
-            # Webhooks are not a durable event log. Recover work missed while this
-            # process was offline before claiming steady-state correctness.
-            await self._reconcile_open_github_entities(repo_name)
+            # Webhooks are not a durable event log. Recover work missed while
+            # this process was offline (including open PR ownership, which
+            # must be discovered before releasing startup reservations)
+            # before claiming steady-state correctness. A local admission
+            # deferral or an actual GitHub throttle/authentication/forbidden
+            # response does not terminate the daemon here: it is retained as
+            # a durable pending-work obligation and retried by the
+            # pending-work scheduler, independent of the ordinary worker
+            # pool started below, which must not begin before recovery
+            # succeeds.
+            await self._perform_startup_reconciliation(repo_name)
 
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
@@ -1340,18 +1381,72 @@ class AutomationEngine:
             shutdown_wait.cancel()
             get_health_monitor().log_snapshot(reason="engine_stop")
 
+    async def _perform_startup_reconciliation(self, repo_name: str) -> None:
+        """Complete startup recovery, retrying governed admission failures durably.
+
+        The first attempt runs inline. A ``GitHubRequestError`` -- a local
+        admission deferral or an actual GitHub throttle, authentication, or
+        forbidden response -- does not terminate the daemon: the attempt is
+        retained as a durable pending-work obligation with a stable
+        repository-scoped identity (stable across restarts, since it is keyed
+        only by repository and stage) and retried by the already-running
+        pending-work scheduler, independent of the ordinary worker pool. This
+        method then waits for that obligation to resolve -- or for shutdown --
+        without blocking the event loop, so webhook receipt, status, and
+        graceful shutdown remain responsive while recovery is incomplete. Any
+        other exception is a genuine defect and continues to propagate.
+        """
+        identity = WorkIdentity(repo_name, "startup", STARTUP_RECONCILIATION_STAGE)
+        try:
+            await self._attempt_startup_reconciliation(repo_name)
+            # A prior process may have left this identity retained (waiting on
+            # a not-yet-due retry, or blocked on an operational failure) before
+            # this fresh inline attempt succeeded outright; clear it so the
+            # scheduler never repeats a full enumeration for already-completed
+            # recovery merely because that old obligation's deadline arrives.
+            await asyncio.to_thread(get_pending_work_store().supersede, identity)
+            return
+        except GitHubRequestError as exc:
+            obligation = await asyncio.to_thread(get_pending_work_store().defer, identity, exc, (STARTUP_RECONCILIATION_EFFECT,))
+            logger.warning(f"Startup GitHub reconciliation for {repo_name} deferred ({obligation.reason.value}); " f"the daemon stays up and the pending-work scheduler will retry automatically " f"(next eligible at {obligation.not_before})")
+            self.pending_work_scheduler.wake()
+
+        assert self._startup_reconciliation_event is not None and self._shutdown_event is not None
+        wait_ready = asyncio.ensure_future(self._startup_reconciliation_event.wait())
+        wait_shutdown = asyncio.ensure_future(self._shutdown_event.wait())
+        try:
+            await asyncio.wait({wait_ready, wait_shutdown}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for pending_wait in (wait_ready, wait_shutdown):
+                if not pending_wait.done():
+                    pending_wait.cancel()
+            await asyncio.gather(wait_ready, wait_shutdown, return_exceptions=True)
+
+    async def _attempt_startup_reconciliation(self, repo_name: str) -> None:
+        """One full attempt at startup recovery: PR ownership, then Issue/PR enumeration.
+
+        Used for both the inline first attempt and every scheduler-driven
+        retry, so a resumed scan always performs a complete fresh discovery
+        rather than resuming from stale partial state.
+        """
+        # Discover open PR ownership before releasing startup reservations. A
+        # PR linked only by branch metadata has no Issue timeline event and
+        # may not have been recorded if the previous process stopped before
+        # its first candidate scan.
+        await asyncio.to_thread(self._get_implementation_slots(repo_name).reconcile, self.github, True)
+        await self._reconcile_open_github_entities(repo_name)
+
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
-        """One-shot startup recovery through the normal invalidation path.
+        """One attempt at recovery through the normal invalidation path.
 
         Enumeration observations never complete or clean an entity. They only
         mark its stable identity dirty; workers subsequently perform the same
         strict current-state fetch and eligibility decision used for webhooks.
         Consequently, a webhook arriving after an older enumeration observation
-        cannot be cleared by reconciliation.
+        cannot be cleared by reconciliation. A malformed or incomplete page
+        fails the whole operation (see ``get_open_entities_strict``), so a
+        caller never advertises recovery as complete from a partial result.
         """
-        if self._startup_reconciliation_attempted:
-            raise RuntimeError("Startup GitHub reconciliation was already attempted for this engine")
-        self._startup_reconciliation_attempted = True
         self.startup_reconciled = False
         self.startup_reconciliation_error = None
         try:
