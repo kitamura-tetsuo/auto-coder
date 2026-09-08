@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
+from .github_pending_work import WorkIdentity, get_pending_work_store
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
@@ -32,6 +33,21 @@ from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
 VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v4-objective-scope"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
+
+# Pending-work stage for the two independently-trackable BLOCKED publication
+# effects (Issue #1923): a diagnostic findings comment and, when required, the
+# associated implementation-ready withdrawal. Both are durably completed via
+# ``PendingWorkStore.complete_effect`` as each succeeds, so a controller
+# restart or a governed retry after one effect fails never re-sends the other
+# and never forgets the still-missing one.
+VALIDATION_PUBLICATION_STAGE = "validation-publication"
+DIAGNOSTIC_EFFECT = "diagnostic"
+READINESS_WITHDRAWAL_EFFECT = "readiness-withdrawal"
+
+
+def validation_publication_identity(repository: str, issue_number: int, decision_identity_key: str) -> WorkIdentity:
+    """Durable obligation identity for one BLOCKED decision's publication effects."""
+    return WorkIdentity(repository, f"issue:{issue_number}", VALIDATION_PUBLICATION_STAGE, decision_identity_key)
 
 
 def configured_provider_identity() -> str:
@@ -355,15 +371,60 @@ class SpecificationValidationLifecycle:
         decision: ValidationDecision,
         submission_is_current: Optional[Callable[[], bool]] = None,
     ) -> Optional[str]:
-        """Apply idempotent effects only while BLOCKED evidence is authoritative."""
+        """Apply idempotent effects only while BLOCKED evidence is authoritative.
+
+        The diagnostic comment and the readiness withdrawal are independently
+        completed against the durable pending-work store (REQ-001, REQ-002,
+        REQ-007): each is confirmed via ``complete_effect`` exactly when its
+        own GitHub mutation (or an already-recorded prior completion) is
+        established, so a failure partway through never re-sends the sibling
+        that already succeeded and never silently drops the one that has not.
+        """
         issue_number = decision.identity.issue_number
         expected_identity = decision.identity
+        publication_identity = validation_publication_identity(self.repository, issue_number, decision.identity.key)
+        pending_work_store = get_pending_work_store()
         with self.store.locked(decision.identity.key):
             current_decision = self.store.get(decision.identity)
             if current_decision is None or current_decision.verdict != "BLOCKED":
                 return "durable BLOCKED decision is unavailable"
 
-            def matching_snapshot() -> Optional[dict[str, object]]:
+            # Effects already durably confirmed by an earlier partial run are
+            # not re-derived from live label state: the label's own absence
+            # may be exactly that earlier withdrawal, and must not hide a
+            # still-missing diagnostic behind a stale currentness check
+            # (REQ-004).
+            if current_decision.findings_published:
+                pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
+            if current_decision.readiness_removed:
+                pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
+
+            def diagnostic_is_current() -> bool:
+                """Currentness for the diagnostic comment.
+
+                Requires the same full currentness check as the label
+                withdrawal (identity match plus ``submission_is_current``),
+                *except* when that check is failing only because this
+                exact decision's own readiness withdrawal already
+                completed: that specific absence of the label must not
+                hide a still-missing diagnostic comment (REQ-004). Any
+                other currentness failure (an added child, a changed
+                hierarchy, and so on) still withholds the comment, exactly
+                as before.
+                """
+                snapshot = github.get_issue_dispatch_snapshot_strict(self.repository, issue_number)  # type: ignore[attr-defined]
+                if not isinstance(snapshot, dict):
+                    return False
+                identity = self.identity(issue_number, str(snapshot.get("title") or ""), str(snapshot.get("body") or ""))
+                if identity != expected_identity:
+                    return False
+                if submission_is_current is None or submission_is_current():
+                    return True
+                recorded = self.store.get(expected_identity)
+                return recorded is not None and recorded.readiness_removed
+
+            def blocked_snapshot() -> Optional[dict[str, object]]:
+                """Currentness for the label withdrawal: identity match and label still present."""
                 snapshot = github.get_issue_dispatch_snapshot_strict(self.repository, issue_number)  # type: ignore[attr-defined]
                 if not isinstance(snapshot, dict) or not is_implementation_ready(snapshot):
                     return None
@@ -374,7 +435,7 @@ class SpecificationValidationLifecycle:
 
             # A changed/withdrawn submission must not receive stale effects. It is
             # not an operational failure: the old generation simply remains blocked.
-            if matching_snapshot() is None:
+            if not diagnostic_is_current():
                 return None
             current_decision = self._apply_repair_round_policy(current_decision)
             self._record_applied_outcome(current_decision)
@@ -388,13 +449,14 @@ class SpecificationValidationLifecycle:
                 comments = github.get_issue_comments_strict(self.repository, issue_number)  # type: ignore[attr-defined]
                 # Comment enumeration is external I/O. An edit during that read
                 # invalidates publication just as an edit before the read does.
-                if matching_snapshot() is None:
+                if not diagnostic_is_current():
                     return None
                 if not any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict)):
                     github.add_comment_to_issue(self.repository, issue_number, self.findings_comment(current_decision))  # type: ignore[attr-defined]
                 current_decision = ValidationDecision(current_decision.identity, current_decision.verdict, current_decision.findings, True, current_decision.readiness_removed, current_decision.remediation, current_decision.remediation_reason)
                 self.store.save(current_decision)
-            if matching_snapshot() is None:
+                pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
+            if blocked_snapshot() is None:
                 return None
             # readiness_removed describes the previous submission, not all future
             # submissions. If the label is currently present it was explicitly
@@ -410,6 +472,7 @@ class SpecificationValidationLifecycle:
                 current_decision.remediation_reason,
             )
             self.store.save(current_decision)
+            pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
         return None
 
     def apply_inherited_blocked(
@@ -419,18 +482,39 @@ class SpecificationValidationLifecycle:
         parent_number: int,
         set_is_current: Callable[[], bool],
     ) -> Optional[str]:
-        """Withdraw a parent submission for one current blocked child."""
+        """Withdraw a parent submission for one current blocked child.
+
+        See ``apply_blocked`` for the effect-completion contract this shares:
+        the diagnostic comment and the parent's readiness withdrawal are
+        confirmed independently against the durable pending-work store.
+        """
         issue_number = decision.identity.issue_number
+        publication_identity = validation_publication_identity(self.repository, issue_number, decision.identity.key)
+        pending_work_store = get_pending_work_store()
         with self.store.locked(decision.identity.key):
             failures: list[str] = []
             current = self.store.get(decision.identity)
             if current is None or current.verdict != "BLOCKED":
                 return "durable child BLOCKED decision is unavailable"
 
-            def still_current() -> bool:
-                snapshot = github.get_issue_dispatch_snapshot_strict(self.repository, issue_number)  # type: ignore[attr-defined]
-                return isinstance(snapshot, dict) and specification_digest(str(snapshot.get("title") or ""), str(snapshot.get("body") or "")) == decision.identity.specification_digest and set_is_current()
+            if current.findings_published:
+                pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
+            if current.readiness_removed:
+                pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
 
+            def digest_matches() -> bool:
+                snapshot = github.get_issue_dispatch_snapshot_strict(self.repository, issue_number)  # type: ignore[attr-defined]
+                return isinstance(snapshot, dict) and specification_digest(str(snapshot.get("title") or ""), str(snapshot.get("body") or "")) == decision.identity.specification_digest
+
+            def still_current() -> bool:
+                return digest_matches() and set_is_current()
+
+            # The full parent-set currentness check (hierarchy, sibling
+            # membership, and decomposition identity, not merely the
+            # readiness label) still gates the diagnostic here: unlike the
+            # standalone case, an inherited BLOCKED result is only
+            # authoritative for a specific decomposition set, and a change
+            # anywhere in that set must supersede it (REQ-003, REQ-005).
             if not still_current():
                 return None
             current = self._apply_repair_round_policy(current)
@@ -460,11 +544,13 @@ class SpecificationValidationLifecycle:
                     if published:
                         current = ValidationDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed, current.remediation, current.remediation_reason)
                         self.store.save(current)
+                        pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
             if not still_current():
                 return "; ".join(failures) or None
             try:
                 github.remove_labels(self.repository, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
                 self.store.save(ValidationDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation, current.remediation_reason))
+                pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
         return "; ".join(failures) or None
