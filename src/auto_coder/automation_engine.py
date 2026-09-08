@@ -30,6 +30,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .github_ci_observer import ci_read_phase_method, end_ci_read_phase
+from .github_pending_work import PendingWorkScheduler, get_pending_work_store
 from .github_request_governor import GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_slots import (
@@ -108,6 +109,7 @@ class AutomationEngine:
         self.github = github_client
         self.github_request_governor = GitHubRequestGovernor()
         configure_github_request_boundary(self.github_request_governor.admit, self.github_request_governor.observe)
+        self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store())
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
         self.queue: asyncio.Queue[Candidate] = asyncio.Queue()
@@ -1212,6 +1214,21 @@ class AutomationEngine:
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} workers")
         self.invalidations.recover(repo_name)
         await self._enqueue_pending_invalidations(repo_name)
+
+        # Record resource usage and unhandled asyncio errors for the whole run
+        self._loop = asyncio.get_running_loop()
+        self._shutdown_event = asyncio.Event()
+        self._force_stop_event = asyncio.Event()
+        if self.is_draining:
+            self._shutdown_event.set()
+
+        # The pending-work scheduler must be available (supervising its own
+        # durable obligations, including any left 'running' by a controller
+        # that stopped mid-dispatch) before startup reconciliation finishes,
+        # so retained work from a previous run is never orphaned by a fresh
+        # enumeration that only marks entities dirty again.
+        pending_work_task = asyncio.create_task(self.pending_work_scheduler.run(self._shutdown_event), name="pending-work-scheduler")
+
         if not self.is_draining:
             # Discover open PR ownership before releasing startup reservations.
             # A PR linked only by branch metadata has no Issue timeline event and
@@ -1226,12 +1243,6 @@ class AutomationEngine:
         # Sync repo_name to environment for subprocesses (like test.sh)
         os.environ["REPO_NAME"] = repo_name
 
-        # Record resource usage and unhandled asyncio errors for the whole run
-        self._loop = asyncio.get_running_loop()
-        self._shutdown_event = asyncio.Event()
-        self._force_stop_event = asyncio.Event()
-        if self.is_draining:
-            self._shutdown_event.set()
         self._wake_up_event = asyncio.Event()
         self._pr_merged_or_closed = False
         install_asyncio_diagnostics(self._loop)
@@ -1270,7 +1281,7 @@ class AutomationEngine:
         # Start workers
         workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
 
-        all_loop_tasks = [producer_task, invalidation_task, *workers]
+        all_loop_tasks = [producer_task, invalidation_task, pending_work_task, *workers]
         if codex_recovery_task is not None:
             all_loop_tasks.append(codex_recovery_task)
         if capacity_task is not None:
@@ -1830,6 +1841,7 @@ class AutomationEngine:
                 for wid, c in self.active_workers.items()
             },
             "open_items": open_items_status,
+            "pending_work": self.pending_work_scheduler.snapshot(),
         }
         return status
 

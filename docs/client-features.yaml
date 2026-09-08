@@ -2155,6 +2155,19 @@ short-objective-contract-policy:
     - "Production Issue, label, cloud, PR implementation, correction, initial review, rereview, and dynamic follow-up prompts receive one shared policy: Objective is scope evidence while current explicit Requirements are the sole merge-blocking contract."
     - "Objective-only omissions use supported specification-gap or clarification channels and never become invented REQ IDs, automatic Issue edits, or implicit code and test obligations."
 
+github-pending-work-scheduler:
+  description: "Connects the durable GitHub pending-work store to the daemon lifecycle so retained obligations resume automatically after admission or startup, rather than only being observable through direct store manipulation (Issue #1920)."
+  documentation: "src/auto_coder/github_pending_work.py"
+  behavior:
+    - "`AutomationEngine` owns a `PendingWorkScheduler` (one per process) that runs as its own supervised task inside `start_automation`, started before startup reconciliation so restart-surviving obligations are never orphaned by a fresh enumeration."
+    - "A semantic stage (e.g. startup reconciliation, Issue/PR evaluation, publication) registers a `StageHandler` (`dispatch`/`recover`) with the scheduler via `register_handler(stage, handler)`; an obligation for an unregistered stage is left retained and reported as blocked rather than discarded or completed."
+    - "The scheduler wakes on the earliest due deadline or an explicit `wake()` call (e.g. an admission-change notification) instead of polling tightly; a due-but-not-actionable obligation waits at least one poll interval (default 1s) before the next attempt, never a zero-delay loop."
+    - "Obligations track a `status` of waiting or running. Dispatch claims a row as running before invoking its handler; a controller that stops (crash or graceful shutdown) while a claim is running leaves that row running, and the next scheduler start routes it through the handler's `recover()` entry instead of a fresh `dispatch()` or treating it as complete."
+    - "A stage handler's error result re-defers only its own still-unfinished effects through the existing throttle/admission-deferral accounting in `PendingWorkStore.defer()`; completing one effect never discharges an independent sibling effect."
+    - "`auto-coder pending-work list` and `auto-coder pending-work retry --repository --entity --stage [--revision]` expose the store for operators: list is read-only, and retry clears only the selected obligation's retry deadline and throttle count (REQ-007) without touching confirmed effect receipts or any other obligation; the retried dispatch still goes through the shared governor."
+    - "`AutomationEngine.get_status()` includes a `pending_work` snapshot (repository, entity, stage, revision, reason, status, next-eligible time, unfinished effects, and whether it is blocked and why) for daemon status visibility."
+    - "A preflight-schema database (no `status` column) is migrated in place on open; its rows default to waiting so pre-existing retained work is preserved rather than dropped."
+
 repository-hygiene-enforcement:
   description: "Checks the complete tracked repository state at commit and in PR CI while keeping disposable agent work untracked."
   documentation: docs/repository-hygiene.md
