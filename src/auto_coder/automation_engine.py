@@ -47,6 +47,8 @@ from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_
 from .label_manager import LabelManager
 from .llm_backend_config import active_repo_context
 from .logger_config import get_logger
+from .merge_operation_scheduler import get_merge_operation_scheduler
+from .merge_operation_state import MergeOperation
 from .parent_issue_reconciliation import ParentDeclarationStatus, ParentOperationalError, ParentSpecificationError, parse_parent_declaration
 from .pr_processor import PR_PROCESSING_STAGE
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
@@ -203,6 +205,48 @@ class _PrProcessingStageHandler:
             # path; nothing further to apply here.
             return StageOutcome()
         return StageOutcome(completed_effects=obligation.unfinished_effects)
+
+
+class _MergeOperationResumeHandler:
+    """Resumes a durable merge operation once its own retry deadline has passed.
+
+    ``merge_operation_scheduler.MergeOperationScheduler`` owns only timing:
+    it hands this handler the due ``MergeOperation`` and nothing more. This
+    handler re-establishes the PR's current head before doing anything else
+    and, when it still matches the operation's expected head, resumes
+    through the very same ``AutomationEngine._process_single_candidate``
+    entrypoint every other PR evaluation goes through (REQ-005, REQ-006).
+    Normal processing re-validates CI/review/thread/mergeability conditions
+    on its own before reaching ``pr_processor._merge_pr``, which is what
+    actually advances the operation's still-unfinished effect through
+    ``merge_operation_adapter`` -- this handler never calls GitHub itself and
+    never re-implements that validation.
+    """
+
+    def __init__(self, engine: "AutomationEngine", repo_name: str) -> None:
+        self._engine = engine
+        self._repo_name = repo_name
+
+    def __call__(self, operation: MergeOperation) -> None:
+        engine = self._engine
+        pr_number = operation.identity.pr_number
+        try:
+            raw_pr = engine.github.get_pull_request_metadata_strict(self._repo_name, pr_number)
+        except GitHubRequestError as exc:
+            logger.info("Could not refresh PR #{} for merge-operation resumption: {}", pr_number, exc)
+            return
+        pr_data = engine.github.get_pr_details(raw_pr)
+        current_head = str((pr_data.get("head") or {}).get("sha") or "")
+        if current_head and current_head != operation.expected_head_sha:
+            # A newer head invalidates this operation's own execution
+            # permission; normal invalidation/webhook handling evaluates the
+            # new head on its own terms rather than this handler fabricating
+            # a re-evaluation for it (REQ-006).
+            from .merge_operation_state import get_merge_operation_store
+
+            get_merge_operation_store().supersede(operation.identity)
+            return
+        engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0))
 
 
 class _IssueProcessingStageHandler:
@@ -371,6 +415,7 @@ class AutomationEngine:
         self.github_request_governor = GitHubRequestGovernor()
         configure_github_request_boundary(self.github_request_governor.admit, self.github_request_governor.observe)
         self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store())
+        self.merge_operation_scheduler = get_merge_operation_scheduler()
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
         self.queue: asyncio.Queue[Candidate] = asyncio.Queue()
@@ -1497,6 +1542,15 @@ class AutomationEngine:
         self.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(VALIDATION_PUBLICATION_STAGE, _ValidationPublicationStageHandler(self, repo_name))
 
+        # A pending approval/merge effect (Issue #1939) is resumed by its own
+        # dedicated scheduler rather than PR_PROCESSING_STAGE: its deadlines,
+        # throttle counters, and receipts already live durably in
+        # MergeOperationStore (Issue #1937), so this loop reads that store's
+        # own due() timings directly instead of duplicating them into a
+        # second obligation store.
+        merge_operation_task = asyncio.create_task(self.merge_operation_scheduler.run(self._shutdown_event), name="merge-operation-scheduler")
+        self.merge_operation_scheduler.register_resume_handler(_MergeOperationResumeHandler(self, repo_name))
+
         if not self.is_draining:
             # Webhooks are not a durable event log. Recover work missed while
             # this process was offline (including open PR ownership, which
@@ -1551,7 +1605,7 @@ class AutomationEngine:
         # Start workers
         workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
 
-        all_loop_tasks = [producer_task, invalidation_task, pending_work_task, *workers]
+        all_loop_tasks = [producer_task, invalidation_task, pending_work_task, merge_operation_task, *workers]
         if codex_recovery_task is not None:
             all_loop_tasks.append(codex_recovery_task)
         if capacity_task is not None:
@@ -2166,6 +2220,7 @@ class AutomationEngine:
             },
             "open_items": open_items_status,
             "pending_work": self.pending_work_scheduler.snapshot(),
+            "merge_operations": self.merge_operation_scheduler.snapshot(),
         }
         return status
 

@@ -837,6 +837,24 @@ class MergeOperationStore:
             logger.error("Could not read due merge operations: {}", exc)
             raise MergeOperationPersistenceError("Merge operations could not be read") from exc
 
+    def next_due_at(self) -> float | None:
+        """Earliest deadline among waiting operations, or ``None`` if none are scheduled.
+
+        Used by the resumption scheduler to sleep until the next deadline
+        instead of polling; a blocked/superseded/merge-confirmed operation is
+        never timer-driven and is therefore excluded.
+        """
+        try:
+            with _LOCK, self._connect() as connection:
+                row = connection.execute(
+                    "SELECT MIN(not_before) FROM merge_operations WHERE status=? AND not_before > 0",
+                    (OperationStatus.WAITING.value,),
+                ).fetchone()
+            return float(row[0]) if row and row[0] is not None else None
+        except Exception as exc:
+            logger.error("Could not read next due merge operation deadline: {}", exc)
+            raise MergeOperationPersistenceError("Merge operations could not be read") from exc
+
 
 def get_merge_operation_store() -> MergeOperationStore:
     """Return the process-wide durable merge-operation store."""
