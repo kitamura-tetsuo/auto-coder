@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 from unittest.mock import MagicMock, Mock, patch
 
+import httpx
 import pytest
 
 from src.auto_coder.util.gh_cache import GitHubClient, PullRequestRepairMetadata
@@ -226,8 +227,9 @@ class TestGitHubClient:
         pr1 = {"number": 1, "title": "PR 1"}
         pr2 = {"number": 2, "title": "PR 2"}
 
-        mock_response = Mock()
-        mock_response.json.return_value = [pr1, pr2]
+        url = "https://api.github.com/repos/test/repo/pulls?state=open&sort=created&direction=asc&per_page=1"
+        request = httpx.Request("GET", url)
+        mock_response = httpx.Response(200, json=[pr1, pr2], request=request)
         mock_client = Mock()
         mock_client.request.return_value = mock_response
         mock_get_caching.return_value = mock_client
@@ -250,12 +252,8 @@ class TestGitHubClient:
     def test_get_open_pull_requests_follows_pagination(self, mock_get_caching, mock_github_token):
         first_url = "https://api.github.com/repos/test/repo/pulls?state=open&sort=created&direction=asc&per_page=100"
         second_url = f"{first_url}&page=2"
-        first_response = Mock()
-        first_response.json.return_value = [{"number": 1}]
-        first_response.links = {"next": {"url": second_url}}
-        second_response = Mock()
-        second_response.json.return_value = [{"number": 108, "head": {"ref": "issue-100-work"}}]
-        second_response.links = {}
+        first_response = httpx.Response(200, headers={"Link": f'<{second_url}>; rel="next"'}, json=[{"number": 1}], request=httpx.Request("GET", first_url))
+        second_response = httpx.Response(200, json=[{"number": 108, "head": {"ref": "issue-100-work"}}], request=httpx.Request("GET", second_url))
         mock_client = Mock()
         mock_client.request.side_effect = [first_response, second_response]
         mock_get_caching.return_value = mock_client

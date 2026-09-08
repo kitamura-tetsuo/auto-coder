@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import types
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -227,6 +228,73 @@ def get_caching_client(
         storage = SyncSqliteStorage(database_path=".cache/gh_cache.db")
         _local_storage.client = SyncCacheClient(storage=storage, transport=DiagnosticTransport())
     return _local_storage.client
+
+
+def _finalize_caching_response(
+    resp: httpx.Response,
+    *,
+    operation_id: str,
+    subsystem: str,
+    path_template: str,
+    started: float,
+    observation_hook: ObservationHook | None,
+) -> GitHubRequestOutcome:
+    """Deliver exactly one completion observation for a direct caching-client response.
+
+    A wire attempt recorded on this thread since the matching ``begin_operation()``
+    finalizes from that attempt, mirroring what ``get_ghapi_client()`` already does
+    for its own requests. An empty pending-observation list means the response was
+    satisfied entirely from local cache, with no real communication to complete;
+    that is reported too (as diagnostic-only ``LOCAL_CACHE`` provenance) but never
+    consumes or resolves a Governor reservation, since none was created for it.
+    """
+    wire_outcomes = take_wire_outcomes()
+    if wire_outcomes:
+        return finalize_response(resp, wire_outcomes[-1], observation_hook)
+    origin = resp.request.url
+    method = resp.request.method.upper()
+    context = GitHubRequestContext(
+        operation_id,
+        f"cache-{operation_id}",
+        subsystem,
+        f"{origin.scheme}://{origin.host}",
+        method,
+        "read" if method in ("GET", "HEAD") else "mutation",
+        path_template,
+        cache_mode="normal",
+    )
+    base = GitHubRequestOutcome(
+        context,
+        resp.status_code,
+        GitHubApiOutcome.SUCCESS,
+        RequestProvenance.LOCAL_CACHE,
+        DeliveryCertainty.HTTP_RESPONSE_RECEIVED,
+        response_metadata(resp.headers),
+        (time.monotonic() - started) * 1000,
+    )
+    return finalize_response(resp, base, observation_hook, "local_cache_hit")
+
+
+def _caching_request(client: httpx.Client, method: str, url: str, *, path_template: str, subsystem: str = "ghapi", **kwargs: Any) -> httpx.Response:
+    """Perform one direct ``get_caching_client()`` request and resolve its reservation.
+
+    ``get_ghapi_client()`` finalizes every request it sends through the shared
+    cached-HTTP boundary. Every other caller that talks to ``get_caching_client()``
+    directly must go through this helper instead of calling ``client.request``/
+    ``get``/``post`` itself, or the real communication it performs is never
+    reported back to the Governor and its reservation is left open indefinitely
+    (surfacing as a spurious ``request_in_flight`` refusal on the next request to
+    the same origin).
+    """
+    _, observation_hook = boundary_hooks()
+    operation_id = str(uuid.uuid4())
+    begin_operation()
+    started = time.monotonic()
+    extensions = dict(kwargs.pop("extensions", None) or {})
+    extensions.setdefault("auto_coder_operation_id", operation_id)
+    resp = client.request(method, url, extensions=extensions, **kwargs)
+    _finalize_caching_response(resp, operation_id=operation_id, subsystem=subsystem, path_template=path_template, started=started, observation_hook=observation_hook)
+    return resp
 
 
 def retry_with_backoff(retries=3, backoff_in_seconds=1):
@@ -584,7 +652,7 @@ class GitHubClient:
             payload["variables"] = variables
 
         try:
-            response = client.post(url, headers=headers, json=payload, timeout=30)
+            response = _caching_request(client, "POST", url, headers=headers, json=payload, timeout=30, path_template="/graphql")
             response.raise_for_status()
             data = response.json()
 
@@ -763,7 +831,7 @@ class GitHubClient:
                 if url in visited_urls or len(visited_urls) >= 1000:
                     raise RuntimeError("GitHub open-PR pagination did not terminate safely")
                 visited_urls.add(url)
-                resp = client.request("GET", url, headers=headers)
+                resp = _caching_request(client, "GET", url, headers=headers, path_template=f"/repos/{owner}/{repo}/pulls")
                 resp.raise_for_status()
                 page = resp.json()
                 if not isinstance(page, list):
@@ -852,7 +920,7 @@ class GitHubClient:
                 headers["Authorization"] = f"Bearer {self.token}"
 
             url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
-            resp = client.request("GET", url, headers=headers)
+            resp = _caching_request(client, "GET", url, headers=headers, path_template=f"/repos/{owner}/{repo}/pulls/{{id}}")
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
@@ -984,7 +1052,7 @@ class GitHubClient:
             per_page = min(limit, 100) if limit else 100
             list_url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&per_page={per_page}"
 
-            list_resp = client.request("GET", list_url, headers=headers)
+            list_resp = _caching_request(client, "GET", list_url, headers=headers, path_template=f"/repos/{owner}/{repo}/pulls")
             list_resp.raise_for_status()
             prs_summary = list_resp.json()
 
@@ -994,7 +1062,7 @@ class GitHubClient:
                 try:
                     pr_num = pr_summary["number"] if isinstance(pr_summary, dict) else pr_summary.number
                     detail_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_num}"
-                    detail_resp = client.request("GET", detail_url, headers=headers)
+                    detail_resp = _caching_request(client, "GET", detail_url, headers=headers, path_template=f"/repos/{owner}/{repo}/pulls/{{id}}")
                     detail_resp.raise_for_status()
                     pr_details = detail_resp.json()
                 except Exception as e:
@@ -1470,7 +1538,7 @@ class GitHubClient:
                     raise RuntimeError(f"Issue #{issue_number} timeline pagination repeated URL: {url}")
                 visited_urls.add(url)
 
-                response = client.get(url, headers=headers)
+                response = _caching_request(client, "GET", url, headers=headers, path_template=f"/repos/{owner}/{repo}/issues/{issue_number}/timeline")
                 response.raise_for_status()
                 page_events = response.json()
                 if not isinstance(page_events, list) or not all(isinstance(event, dict) for event in page_events):
@@ -2287,7 +2355,7 @@ class GitHubClient:
             client = get_caching_client()
             url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
             headers = {"Authorization": f"bearer {self.token}", "Accept": "application/vnd.github.v3.diff", "X-GitHub-Api-Version": "2022-11-28"}
-            response = client.get(url, headers=headers)
+            response = _caching_request(client, "GET", url, headers=headers, path_template=f"/repos/{owner}/{repo}/pulls/{{id}}")
             response.raise_for_status()
             return response.text
         except Exception as e:
@@ -2648,7 +2716,7 @@ class GitHubClient:
             }
             payload = {"sub_issue_id": int(sub_issue_id)}
 
-            response = client.post(url, headers=headers, json=payload)
+            response = _caching_request(client, "POST", url, headers=headers, json=payload, path_template=f"/repos/{owner}/{repo}/issues/{{id}}/sub_issues")
             if response.status_code in (200, 201):
                 logger.info(f"Successfully linked issue #{sub_issue_number} as sub-issue of #{parent_issue_number}")
                 self.clear_sub_issue_cache()
@@ -2722,7 +2790,7 @@ class GitHubClient:
             url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues"
             headers = {"Authorization": f"bearer {self.token}", "Accept": "application/vnd.github.v3+json", "X-GitHub-Api-Version": "2022-11-28"}  # As hinted by user docs
 
-            response = client.get(url, headers=headers)
+            response = _caching_request(client, "GET", url, headers=headers, path_template=f"/repos/{owner}/{repo}/issues/{{id}}/sub_issues")
 
             # If 404, it might simply mean no sub-issues or feature not enabled, return empty
             if response.status_code == 404:

@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, Mock, patch
 
+import httpx
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
@@ -65,10 +66,8 @@ class TestGitHubClientREST:
             "changed_files": 1,
         }
 
-        list_response = MagicMock()
-        list_response.json.return_value = [mock_pr_summary]
-        detail_response = MagicMock()
-        detail_response.json.return_value = mock_pr_detail
+        list_response = httpx.Response(200, json=[mock_pr_summary], request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/pulls?state=open&per_page=100"))
+        detail_response = httpx.Response(200, json=mock_pr_detail, request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/pulls/123"))
         mock_client.request.side_effect = [list_response, detail_response]
 
         client = GitHubClient.get_instance(mock_github_token)
