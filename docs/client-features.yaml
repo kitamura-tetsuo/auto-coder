@@ -138,6 +138,21 @@ Every API-origin redirect hop is independently governed. Cross-origin artifact
 downloads preserve their bytes but are excluded from GitHub quota observations,
 and authorization is not forwarded by the redirecting HTTP client.
 
+## Shared GitHub request pacing and cooldown
+
+Each running controller applies one synchronized admission policy per normalized
+GitHub API origin across repositories, clients, workers, and credential roles.
+The local protective ceilings are one in-flight request, 300 network attempts per
+rolling 60 seconds, 60 mutations per rolling 60 seconds, and 400 mutations per
+rolling hour, with one second between mutation completion and the next mutation.
+These are conservative local ceilings, not a guarantee of GitHub allowance.
+Fresh primary, secondary, and GraphQL throttle evidence closes the origin-wide
+gate using Retry-After, reset, and exponential local cooldown evidence; cache-only
+reads and non-GitHub origins do not consume or alter these budgets. Work that
+cannot enter immediately receives a typed, definitely-not-sent deferral carrying
+the reason and earliest known retry time, allowing webhook and local work to
+continue without quota sleeper tasks.
+
 ## Crash-safe Codex Cloud submission ownership
 
 Initial Codex Cloud dispatch publishes a repository- and Issue-attempt-scoped
