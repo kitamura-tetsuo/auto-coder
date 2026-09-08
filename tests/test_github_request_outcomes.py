@@ -21,8 +21,19 @@ from auto_coder.util.github_request_outcome import (
     RequestProvenance,
     classify_response,
     configure_github_request_boundary,
+    github_http_client,
     response_metadata,
 )
+
+
+class _RaisingStream(httpx.SyncByteStream):
+    """A response body stream that fails mid-read, after headers arrive."""
+
+    def __iter__(self):
+        raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+    def close(self) -> None:
+        pass
 
 
 def test_process_boundary_refuses_distinct_production_credentials_without_a_send(tmp_path, monkeypatch):
@@ -163,6 +174,39 @@ def test_timeout_is_indeterminate_and_secret_safe(tmp_path):
     assert "SENSITIVE" not in rendered
     assert "SIGNED" not in rendered
     assert "BODYSECRET" not in rendered
+
+
+def test_body_read_failure_finalizes_instead_of_stranding_occupancy():
+    """AS-003/REQ-004: a body-read failure inside the response hook must still
+    deliver a terminal, non-fabricated observation and must not automatically
+    resend the request."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"x-ratelimit-remaining": "5"}, stream=_RaisingStream(), request=request)
+
+    observations = []
+    sent = []
+
+    def counting_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return handler(request)
+
+    with github_http_client(
+        subsystem="controller-strict",
+        transport=httpx.MockTransport(counting_handler),
+        observation_hook=observations.append,
+    ) as client:
+        with pytest.raises(httpx.RemoteProtocolError):
+            client.get("https://api.github.com/repos/acme/widgets")
+
+    assert len(sent) == 1
+    assert len(observations) == 1
+    outcome = observations[0]
+    assert outcome.status == 200
+    assert outcome.delivery is DeliveryCertainty.HTTP_RESPONSE_RECEIVED
+    assert outcome.provenance is RequestProvenance.NETWORK
+    assert outcome.metadata.rate_limit_remaining == 5
+    assert outcome.classification is GitHubApiOutcome.SUCCESS
 
 
 def test_success_payload_is_preserved_and_cache_result_is_separate():
