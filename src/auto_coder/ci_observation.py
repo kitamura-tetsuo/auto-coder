@@ -109,6 +109,7 @@ class WorkflowObservation:
     execution: WorkflowExecutionIdentity
     conclusion: CIConclusion
     display_name: str = ""
+    waiting_for_deployment: bool = False
 
 
 @dataclass(frozen=True)

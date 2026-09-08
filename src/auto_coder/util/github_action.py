@@ -26,7 +26,9 @@ except ImportError:
 from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
+from ..ci_observation import CheckObservation, CIConclusion, ObservationAvailability, WorkflowObservation
 from ..dispatch_claim_store import DispatchOutcome
+from ..github_ci_observer import approve_waiting_deployment, end_ci_read_phase, observe_ci
 from ..logger_config import get_logger
 from ..security_utils import redact_string
 from ..test_log_utils import generate_merged_playwright_report
@@ -226,6 +228,7 @@ class GitHubActionsStatusResult:
     ids: List[int] = field(default_factory=list)
     in_progress: bool = False
     error: Optional[str] = None
+    waiting_runs: List[Tuple[int, int, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -435,200 +438,40 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
         return []
 
 
-def _auto_approve_waiting_deployments(repo_name: str, run_id: int) -> None:
-    """Automatically approve pending deployments for a workflow run."""
-    try:
-        token = GitHubClient.get_instance().token
-        api = get_ghapi_client(token)
-        owner, repo = repo_name.split("/")
-
-        logger.info(f"Checking for pending deployments for run {run_id}")
-        pending = api.actions.get_pending_deployments_for_run(owner, repo, run_id)
-        if not pending:
-            return
-
-        env_ids = [env["environment"]["id"] for env in pending]
-        if env_ids:
-            logger.info(f"Approving deployments for environment IDs: {env_ids}")
-            api.actions.review_pending_deployments_for_run(owner, repo, run_id, environment_ids=env_ids, state="approved", comment="Auto-approved by Auto-Coder")
-            logger.info(f"Successfully approved deployments for run {run_id}.")
-    except Exception as e:
-        logger.warning(f"Failed to auto-approve deployment for run {run_id}: {e}")
-
-
 @progress_stage("Checking GitHub Actions")
-def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> GitHubActionsStatusResult:
-    """Check GitHub Actions status for a PR.
+def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, github_client: Optional[GitHubClient] = None) -> GitHubActionsStatusResult:
+    """Evaluate a complete, exact-head immutable CI observation.
 
-    Verifies that the checks correspond to the current PR HEAD SHA.
-    If checks are for an older commit, returns in_progress=True to wait for new checks.
+    Retrieval never performs deployment approval and partial/unavailable evidence
+    is never converted to an empty or passing status.
     """
-    pr_number = pr_data["number"]
-    # Get the current HEAD SHA of the PR
-    current_head_sha = pr_data.get("head", {}).get("sha")
+    pr_number = pr_data.get("number")
+    head_sha = pr_data.get("head", {}).get("sha")
+    if not isinstance(pr_number, int) or not isinstance(head_sha, str) or not head_sha:
+        return GitHubActionsStatusResult(success=False, error="Current PR head is unavailable")
+    client = github_client or GitHubClient.get_instance()
+    token = getattr(client, "token", None)
+    if not isinstance(token, str) or not token:
+        return GitHubActionsStatusResult(success=False, error="GitHub credential is unavailable")
+    api = get_ghapi_client(token)
+    snapshot = observe_ci(api, token, repo_name, pr_number, head_sha)
+    if not snapshot.complete:
+        return GitHubActionsStatusResult(success=False, error=snapshot.unavailable_reason or snapshot.availability.value)
+    if snapshot.availability is ObservationAvailability.KNOWN_EMPTY:
+        return GitHubActionsStatusResult(success=False, in_progress=True, error="No current CI observations")
 
-    try:
-        logger.debug(f"pr_data={pr_data}, head_sha={current_head_sha}")
-        if not current_head_sha:
-            logger.warning(f"No head SHA found for PR #{pr_number}, falling back to historical checks")
-            return _check_github_actions_status_from_history(repo_name, pr_data, config)
-
-        # Check cache first
-        # Caching removed to ensure fresh status is always retrieved
-        # cache = get_github_cache()
-        # cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
-        # cached_result = cache.get(cache_key)
-        # if cached_result:
-        #     logger.debug(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
-        #     return cached_result
-
-        # Use gh API to get check runs for the commit
-        # gh pr checks does not support --json, so we use the API directly
-        try:
-            token = GitHubClient.get_instance().token
-            api = get_ghapi_client(token)
-            owner, repo = repo_name.split("/")
-
-            # API: api.checks.list_for_ref(owner, repo, ref)
-            res = api.checks.list_for_ref(owner, repo, ref=current_head_sha, per_page=100)
-            checks_data = res.get("check_runs", [])
-
-            # Fetch workflow runs to catch any queued workflows that haven't created check runs yet
-            try:
-                workflow_res = api.actions.list_workflow_runs_for_repo(owner, repo, head_sha=current_head_sha, per_page=100)
-                checks_data.extend(workflow_res.get("workflow_runs", []))
-            except GitHubRequestError:
-                # A governed observation is authoritative only when complete.
-                # Never amplify throttling/auth failures through another endpoint.
-                raise
-            except Exception as w_err:
-                logger.warning(f"Failed to fetch workflow runs for PR #{pr_number}: {w_err}")
-
-        except GitHubRequestError:
-            raise
-        except Exception as e:
-            api_error = str(e)
-            log_action(f"Failed to get check runs for {current_head_sha[:8]}", False, api_error)
-            logger.info(f"API call failed for #{pr_number}, attempting historical fallback...")
-            fallback_result = _check_github_actions_status_from_history(repo_name, pr_data, config)
-            if fallback_result.error:
-                fallback_result.error = f"Primary check failed: {api_error}\nFallback check also failed: {fallback_result.error}"
-            return fallback_result
-
-        # Preserve workflow provenance until this point and isolate advisory
-        # executions before name-based deduplication, waiting, deployment
-        # approval, run-id collection, or failure construction.
-        checks_data = _exclude_prompt_regression_advisories(checks_data, api, owner, repo)
-
-        if not checks_data:
-            # No checks found, checks might not have started yet
-            # For a new commit, we expect at least some checks if CI is configured.
-            # If 0 checks, it's ambiguous: either no CI, or CI hasn't started.
-            # We'll treat it as success if we can't find anything, but log it.
-            # Alternatively, if we expect checks, we should wait.
-            # For now, preserving similar logic: if empty, return success (line 312 of original)
-            gh_status_result = GitHubActionsStatusResult(
-                success=True,
-                ids=[],
-                in_progress=False,
-            )
-            # cache.set(cache_key, gh_status_result)
-            return gh_status_result
-
-        # Map API response matching_checks to the expected format
-        # API fields: name, status, conclusion, html_url (as url), head_sha
-        # content is already filtered by SHA by the API call nature
-        matching_checks = []
-        for check in checks_data:
-            c = check.copy()
-            # gh pr checks returned browser URL in 'url' field
-            # API returns API URL in 'url' and browser URL in 'html_url'
-            c["url"] = check.get("html_url", "")
-            matching_checks.append(c)
-
-        # Deduplicate checks by name, keeping only the latest run
-        # Sort by completed_at (descending), then created_at (descending)
-        # We want the most recent run for each name
-        matching_checks.sort(key=lambda x: (x.get("completed_at") or x.get("created_at") or "", x.get("id") or 0), reverse=True)
-
-        unique_checks = {}
-        for check in matching_checks:
-            name = check.get("name")
-            if name and name not in unique_checks:
-                unique_checks[name] = check
-
-        # Use the deduplicated values
-        matching_checks = list(unique_checks.values())
-
-        checks = []
-        failed_checks = []
-        all_passed = True
-        has_in_progress = False
-        run_ids = []
-
-        for check in matching_checks:
-            name = check.get("name", "")
-            status = (check.get("status") or "").lower()
-            conclusion = (check.get("conclusion") or "").lower()
-            url = check.get("url", "")
-
-            # Extract run ID from URL
-            if url and "/actions/runs/" in url:
-                import re
-
-                match = re.search(r"/actions/runs/(\d+)", url)
-                if match:
-                    run_ids.append(int(match.group(1)))
-
-            if conclusion in ["success", "pass"]:
-                checks.append({"name": name, "state": "completed", "conclusion": "success"})
-            elif conclusion in ["failure", "failed", "error", "timed_out", "cancelled"]:
-                all_passed = False
-                checks.append({"name": name, "state": "completed", "conclusion": "failure"})
-                failed_checks.append({"name": name, "conclusion": "failure", "details_url": url})
-            elif status in ["in_progress", "queued", "pending", "waiting"]:
-                if status == "waiting" and url and "/actions/runs/" in url:
-                    try:
-                        import re
-
-                        match = re.search(r"/actions/runs/(\d+)", url)
-                        if match:
-                            _auto_approve_waiting_deployments(repo_name, int(match.group(1)))
-                    except Exception as e:
-                        logger.warning(f"Error during auto-approve: {e}")
-                has_in_progress = True
-                all_passed = False
-                checks.append({"name": name, "state": "pending", "conclusion": "pending"})
-                failed_checks.append({"name": name, "conclusion": "pending", "details_url": url})
-            elif conclusion in ["skipped", "neutral"]:
-                checks.append({"name": name, "state": "completed", "conclusion": conclusion})
-            else:
-                # Unknown status
-                all_passed = False
-                checks.append({"name": name, "state": "completed", "conclusion": conclusion or status})
-                failed_checks.append({"name": name, "conclusion": conclusion or status, "details_url": url})
-
-        # Remove duplicates
-        run_ids = list(set(run_ids))
-
-        gh_status_result = GitHubActionsStatusResult(
-            success=all_passed,
-            ids=run_ids,
-            in_progress=has_in_progress,
-        )
-
-        # Cache the result
-        # cache.set(cache_key, gh_status_result)
-
-        return gh_status_result
-
-    except GitHubRequestError:
-        raise
-    except Exception as e:
-        logger.error(f"Error checking GitHub Actions for PR #{pr_number}: {e}")
-        # Try historical search on exception
-        logger.info(f"Exception during PR checks for #{pr_number}, attempting historical fallback...")
-        return _check_github_actions_status_from_history(repo_name, pr_data, config)
+    # A newer explicit attempt makes earlier evidence for that run ineligible.
+    newest_attempt: Dict[Tuple[str, str], int] = {}
+    for fact in snapshot.facts:
+        if isinstance(fact, WorkflowObservation) and fact.execution.attempt is not None:
+            key = (fact.execution.workflow_id, fact.execution.run_id)
+            newest_attempt[key] = max(newest_attempt.get(key, 0), fact.execution.attempt)
+    current_facts = [fact for fact in snapshot.facts if not isinstance(fact, WorkflowObservation) or fact.execution.attempt == newest_attempt.get((fact.execution.workflow_id, fact.execution.run_id))]
+    pending = any(fact.conclusion is CIConclusion.PENDING for fact in current_facts)
+    failing = any(fact.conclusion not in {CIConclusion.SUCCESS, CIConclusion.SKIPPED, CIConclusion.NEUTRAL} for fact in current_facts)
+    run_ids = sorted({int(fact.execution.run_id) for fact in current_facts if isinstance(fact, WorkflowObservation)})
+    waiting_runs = [(int(fact.execution.run_id), int(fact.execution.attempt), head_sha) for fact in current_facts if isinstance(fact, WorkflowObservation) and fact.waiting_for_deployment and fact.execution.attempt is not None]
+    return GitHubActionsStatusResult(success=not failing, ids=run_ids, in_progress=pending, waiting_runs=waiting_runs)
 
 
 # --- Common helpers for historical GitHub Actions processing ---
@@ -862,10 +705,6 @@ def _check_github_actions_status_from_history(
             status = (run.get("status") or "").lower()
             if status in ["in_progress", "queued", "pending", "waiting"]:
                 has_in_progress = True
-                if status == "waiting":
-                    rid = run.get("id")
-                    if rid:
-                        _auto_approve_waiting_deployments(repo_name, int(rid))
 
         any_failed = any((run.get("conclusion") or "").lower() in ["failure", "failed", "error"] for run in latest_commit_runs)
 
@@ -2113,10 +1952,6 @@ def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> 
                 elif status in ["in_progress", "queued", "pending", "waiting"]:
                     has_in_progress = True
                     all_passed = False
-                    if status == "waiting":
-                        rid = run.get("id") or run.get("databaseId")
-                        if rid:
-                            _auto_approve_waiting_deployments(repo_name, int(rid))
 
             run_ids = list(set(run_ids))
 
@@ -2168,10 +2003,19 @@ def check_github_actions_and_exit_if_in_progress(
             return True
 
         # Check GitHub Actions status
-        github_checks = _check_github_actions_status(repo_name, pr_data, config)
+        github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
         # Optimized: Use the in_progress status from the summary check instead of fetching detailed checks.
         # _check_github_actions_status already correctly identifies in-progress runs from check-runs or workflow runs.
         # This avoids N+1 API calls (one per workflow run) incurred by get_detailed_checks_from_history.
+
+        # Deployment approval is an explicit policy effect, never part of observation.
+        if github_checks.waiting_runs:
+            end_ci_read_phase("deployment-approval")
+            client = github_client or GitHubClient.get_instance()
+            token = client.token
+            api = get_ghapi_client(token)
+            for run_id, attempt, head_sha in github_checks.waiting_runs:
+                approve_waiting_deployment(api, token, repo_name, run_id, attempt, head_sha)
 
         # If GitHub Actions are still in progress
         if github_checks.in_progress:

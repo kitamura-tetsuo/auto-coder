@@ -27,6 +27,13 @@ diagnostics after restart require a fresh authoritative cycle before reuse.
 Constructing, publishing, or reusing these observations has no GitHub or provider
 side effects and does not itself compute the required-check verdict.
 
+Production GitHub CI integration targets check runs and workflow runs by exact
+head and retrieves all pages as one complete observation. Identical authenticated
+representations coalesce inside candidate-selection phases; phases do not survive
+mutation or external-work boundaries. Deployment approval is a separate serialized
+policy consumer which freshly revalidates the run attempt and pending environment
+set before submitting an approval, and remembers confirmed or indeterminate delivery.
+
 ## Git-state repository hygiene inspection
 
 The standalone `scripts/check_repository_hygiene.py` checker validates either the

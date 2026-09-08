@@ -46,7 +46,7 @@ class TestPRChecksNoChecks:
             "head_branch": "test-branch",
             "head": {"ref": "test-branch"},
         }
-        # Mock _check_github_actions_status_from_history to verify it's called
+        # A missing exact head cannot authorize a historical fallback.
         with patch("src.auto_coder.util.github_action._check_github_actions_status_from_history") as mock_history:
             mock_history.return_value = GitHubActionsStatusResult(
                 success=True,
@@ -56,10 +56,8 @@ class TestPRChecksNoChecks:
 
             result = _check_github_actions_status("kitamura-tetsuo/outliner", pr_data, config)
 
-            # Should call historical fallback
-            mock_history.assert_called_once()
-
-            # Should return the result from history
-            assert result.success is True
+            mock_history.assert_not_called()
+            assert result.success is False
             assert result.in_progress is False
-            assert result.ids == [123]
+            assert result.ids == []
+            assert result.error == "Current PR head is unavailable"

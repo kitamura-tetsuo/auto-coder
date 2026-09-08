@@ -9,7 +9,7 @@ class TestGitHubActionDeduplication(unittest.TestCase):
     @patch("auto_coder.util.github_action.GitHubClient")
     @patch("auto_coder.util.github_action.get_ghapi_client")
     @patch("auto_coder.util.github_action.get_github_cache")
-    def test_duplicate_check_runs_are_deduplicated(self, mock_get_cache, mock_get_ghapi_client, mock_github_client):
+    def test_same_name_checks_are_not_collapsed_without_execution_association(self, mock_get_cache, mock_get_ghapi_client, mock_github_client):
         # Setup mock cache
         mock_cache_instance = MagicMock()
         mock_cache_instance.get.return_value = None
@@ -21,14 +21,15 @@ class TestGitHubActionDeduplication(unittest.TestCase):
         # Mock API response with duplicate check runs
         # GhApi returns Python dicts/lists, not JSON strings
         check_runs = [
-            {"name": "Run Tests", "status": "completed", "conclusion": "failure", "started_at": "2023-10-27T10:00:00Z", "completed_at": "2023-10-27T10:05:00Z", "html_url": "https://github.com/owner/repo/actions/runs/1", "id": 1},
-            {"name": "Run Tests", "status": "completed", "conclusion": "success", "started_at": "2023-10-27T10:10:00Z", "completed_at": "2023-10-27T10:15:00Z", "html_url": "https://github.com/owner/repo/actions/runs/2", "id": 2},
+            {"name": "Run Tests", "status": "completed", "conclusion": "failure", "head_sha": "sha123", "app": {"id": 1}, "id": 1},
+            {"name": "Run Tests", "status": "completed", "conclusion": "success", "head_sha": "sha123", "app": {"id": 1}, "id": 2},
         ]
 
         mock_api = MagicMock()
         mock_get_ghapi_client.return_value = mock_api
         # Mocks api.checks.list_for_ref(owner, repo, ref) -> {"check_runs": ...}
         mock_api.checks.list_for_ref.return_value = {"check_runs": check_runs}
+        mock_api.actions.list_workflow_runs_for_repo.return_value = {"workflow_runs": []}
 
         # Call the function
         repo_name = "owner/repo"
@@ -37,11 +38,8 @@ class TestGitHubActionDeduplication(unittest.TestCase):
 
         result = _check_github_actions_status(repo_name, pr_data, config)
 
-        # Before fix, this should fail because it sees the failure
-        # After fix, this should pass because it only sees the success (latest)
-        self.assertTrue(result.success, "Should report success when latest run is successful, ignoring older failed run")
-        self.assertEqual(len(result.ids), 1, "Should only report one run ID (the latest)")
-        self.assertEqual(result.ids[0], 2, "Should report the latest run ID")
+        self.assertFalse(result.success, "Unassociated checks cannot be ordered by timestamps or display name")
+        self.assertEqual(result.ids, [], "Check IDs must not be presented as workflow run IDs")
 
 
 if __name__ == "__main__":

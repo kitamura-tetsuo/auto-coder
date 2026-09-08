@@ -29,6 +29,7 @@ from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
 from .git_commit import git_push
 from .git_info import get_current_branch
+from .github_ci_observer import ci_read_phase_method, end_ci_read_phase
 from .github_request_governor import GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_slots import (
@@ -1893,6 +1894,7 @@ class AutomationEngine:
             # Continue processing on error
             return True
 
+    @ci_read_phase_method
     def _get_candidates(self, repo_name: str, max_items: Optional[int] = None) -> List[Candidate]:
         """Collect PR/Issue candidates with priority.
 
@@ -1922,7 +1924,6 @@ class AutomationEngine:
         from .util.github_action import (
             _check_github_actions_status,
             check_github_actions_and_exit_if_in_progress,
-            preload_github_actions_status,
         )
 
         candidates: List[Candidate] = []
@@ -1961,7 +1962,6 @@ class AutomationEngine:
                 safe_pr_data_list.append(unsafe_branch_result.authoritative_pr_data or pr_data)
 
             pr_data_list = safe_pr_data_list
-            preload_github_actions_status(repo_name, pr_data_list)
 
             # Lazy-load repository object if needed for Jules PRs
             repo = None
@@ -2002,6 +2002,7 @@ class AutomationEngine:
                                 logger.warning(f"Failed to fetch details for PR #{pr_number}: {e}")
 
                         if node_id:
+                            end_ci_read_phase("mark-pr-ready")
                             # GraphQL mutation to mark as ready
                             mutation = """
                             mutation($id: ID!) {
@@ -2023,6 +2024,7 @@ class AutomationEngine:
 
                 # Close PRs that have zero effective diff.
                 # Runs before label and stale checks so empty PRs are cleaned up and retried immediately.
+                end_ci_read_phase("empty-pr-policy")
                 empty_pr_result = _close_empty_pr(self.github, repo_name, pr_data, self.config)
                 if empty_pr_result.closed:
                     for action in empty_pr_result.actions:
@@ -2042,6 +2044,7 @@ class AutomationEngine:
                 # This runs before the label and "waiting for Jules" skips below, because a
                 # stale Jules PR normally still carries the @auto-coder label from an earlier
                 # run and would otherwise never be looked at again.
+                end_ci_read_phase("stale-jules-policy")
                 stale_jules_result = _close_stale_jules_pr(self.github, repo_name, pr_data, self.config)
                 if stale_jules_result.closed:
                     for action in stale_jules_result.actions:
