@@ -59,6 +59,8 @@ class _Phase:
 
 
 _local = threading.local()
+_active_phases: list[_Phase] = []
+_active_phases_lock = threading.Lock()
 _approval_guard = threading.Lock()
 _approval_locks: dict[tuple[str, int], threading.Lock] = {}
 _confirmed_approvals: set[tuple[str, int, int, tuple[int, ...], str]] = set()
@@ -70,6 +72,8 @@ def ci_read_phase(reason: str = "read-only") -> Iterator[None]:
     """Share exact observations only for the lifetime of this read-only phase."""
     previous = getattr(_local, "phase", None)
     phase = _Phase()
+    with _active_phases_lock:
+        _active_phases.append(phase)
     _local.phase = phase
     logger.debug(f"CI observation phase={phase.identity} epoch=0 reason={reason} started")
     try:
@@ -77,6 +81,9 @@ def ci_read_phase(reason: str = "read-only") -> Iterator[None]:
     finally:
         phase.cache.clear()
         _local.phase = previous
+        with _active_phases_lock:
+            if phase in _active_phases:
+                _active_phases.remove(phase)
         logger.debug(f"CI observation phase={phase.identity} ended")
 
 
@@ -101,6 +108,20 @@ def end_ci_read_phase(reason: str) -> None:
             logger.debug(f"CI observation phase={phase.identity} epoch={phase.epoch} fenced reason={reason}")
 
 
+def fence_active_ci_observations(reason: str) -> None:
+    """Fence reads immediately when durable webhook evidence is accepted."""
+    with _active_phases_lock:
+        phases = tuple(_active_phases)
+    for phase in phases:
+        # Do not acquire the phase's network-read lock: webhook intake must not
+        # wait for (and thereby depend on) an outbound GitHub request. The GIL
+        # makes this epoch assignment atomic; observe_ci compares its captured
+        # value before making the result available.
+        phase.epoch += 1
+        phase.cache.clear()
+        logger.debug(f"CI observation phase={phase.identity} epoch={phase.epoch} fenced reason={reason}")
+
+
 def _credential_identity(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
@@ -114,6 +135,7 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
     subject = ObservationSubject(api_origin, repository, pr_number, head_sha)
     request = ObservationRequest("github-actions", f"checks+workflows;head={head_sha};per_page={_PAGE_SIZE};auth={credential}")
     with phase.lock:  # also coalesces overlapping identical reads
+        captured_epoch = phase.epoch
         cached = phase.cache.get(key)
         if cached is not None:
             logger.debug(f"CI observation cycle={cached.cycle_id} epoch={cached.invalidation_epoch} repo={repository} pr={pr_number} head={head_sha} availability={cached.availability.value} reason=phase-reuse")
@@ -154,13 +176,15 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
                         break
                     page += 1
             availability = ObservationAvailability.KNOWN if facts else ObservationAvailability.KNOWN_EMPTY
-            snapshot = CIObservationSnapshot(subject, request, cycle, phase.epoch, availability, tuple(facts))
+            snapshot = CIObservationSnapshot(subject, request, cycle, captured_epoch, availability, tuple(facts))
         except GitHubRequestError as exc:
             classification = getattr(getattr(exc, "outcome", None), "classification", None)
             availability = ObservationAvailability.THROTTLED if str(getattr(classification, "value", classification)) in {"throttled", "forbidden", "authentication"} else ObservationAvailability.UNAVAILABLE
-            snapshot = CIObservationSnapshot(subject, request, cycle, phase.epoch, availability, unavailable_reason=f"GitHub CI request failed ({availability.value})")
+            snapshot = CIObservationSnapshot(subject, request, cycle, captured_epoch, availability, unavailable_reason=f"GitHub CI request failed ({availability.value})")
         except Exception as exc:
-            snapshot = CIObservationSnapshot(subject, request, cycle, phase.epoch, ObservationAvailability.PARTIAL, unavailable_reason=str(exc))
+            snapshot = CIObservationSnapshot(subject, request, cycle, captured_epoch, ObservationAvailability.PARTIAL, unavailable_reason=str(exc))
+        if captured_epoch != phase.epoch:
+            snapshot = CIObservationSnapshot(subject, request, cycle, captured_epoch, ObservationAvailability.SUPERSEDED, unavailable_reason="completion was fenced by newer webhook evidence", diagnostic_facts=snapshot.facts or snapshot.diagnostic_facts)
         phase.cache[key] = snapshot
         logger.debug(f"CI observation cycle={cycle} epoch={phase.epoch} repo={repository} pr={pr_number} head={head_sha} availability={snapshot.availability.value} reason=network-fetch")
         return snapshot

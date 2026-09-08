@@ -9,6 +9,12 @@ from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.webhook_server import create_app
 
 
+class MockInvalidations(list):
+    def accept_ci_delivery(self, delivery):
+        self.append(delivery)
+        return True
+
+
 # Minimal mock to avoid importing everything
 class MockGitHubClient:
     def __init__(self):
@@ -42,7 +48,7 @@ class MockEngine:
     def __init__(self):
         self.github = MockGitHubClient()
         self.queue = MockQueue()
-        self.invalidations = []
+        self.invalidations = MockInvalidations()
 
     async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None, event_type=None, action=None, not_before=None):
         self.invalidations.append((repo_name, entity_type, number, delivery_id, event_type, action))
@@ -104,7 +110,7 @@ def test_material_webhooks_are_normalized_at_http_boundary(mock_init_dashboard, 
 
 
 @patch("src.auto_coder.webhook_server.init_dashboard")
-def test_completed_check_without_embedded_pr_resolves_commit(mock_init_dashboard):
+def test_completed_check_without_embedded_pr_is_persisted_without_lookup(mock_init_dashboard):
     engine = MockEngine()
     engine.github.commit_pull_requests = [21, 22]
     app = create_app(engine, "owner/repo")
@@ -115,12 +121,16 @@ def test_completed_check_without_embedded_pr_resolves_commit(mock_init_dashboard
             headers={"X-GitHub-Event": "check_run", "X-GitHub-Delivery": "check-delivery"},
         )
     assert response.status_code == 200
-    assert [item[2] for item in engine.invalidations] == [21, 22]
-    assert all(item[3:] == ("check-delivery", "check_run", "completed") for item in engine.invalidations)
+    assert engine.github.commit_pull_requests == [21, 22]
+    assert len(engine.invalidations) == 1
+    delivery = engine.invalidations[0]
+    assert delivery.delivery_id == "check-delivery"
+    assert delivery.head_sha == "abc"
+    assert delivery.pull_request_numbers == ()
 
 
 @patch("src.auto_coder.webhook_server.init_dashboard")
-def test_completed_check_paginates_commit_lookup_before_invalidating(mock_init_dashboard, monkeypatch):
+def test_completed_check_defers_paginated_commit_lookup(mock_init_dashboard, monkeypatch):
     engine = MockEngine()
     engine.github = GitHubClient("token")
     app = create_app(engine, "owner/repo")
@@ -144,8 +154,9 @@ def test_completed_check_paginates_commit_lookup_before_invalidating(mock_init_d
         )
 
     assert response.status_code == 200
-    assert [item[2] for item in engine.invalidations] == list(range(1, 32))
-    assert [call.args[0] for call in get.call_args_list] == [first_url, second_url]
+    assert len(engine.invalidations) == 1
+    assert engine.invalidations[0].head_sha == "abc"
+    assert get.call_args_list == []
 
 
 @pytest.mark.parametrize("event_type,entity_key", [("issues", "issue"), ("pull_request", "pull_request")])
