@@ -33,7 +33,7 @@ from ..test_log_utils import generate_merged_playwright_report
 from ..utils import CommandExecutor, log_action
 from .gh_cache import GitHubClient, get_ghapi_client
 from .github_cache import get_github_cache
-from .github_request_outcome import github_http_client
+from .github_request_outcome import GitHubRequestError, GitHubRequestRefused, github_http_client
 
 
 def _clean_log_line(line: str) -> str:
@@ -497,9 +497,15 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             try:
                 workflow_res = api.actions.list_workflow_runs_for_repo(owner, repo, head_sha=current_head_sha, per_page=100)
                 checks_data.extend(workflow_res.get("workflow_runs", []))
+            except GitHubRequestError:
+                # A governed observation is authoritative only when complete.
+                # Never amplify throttling/auth failures through another endpoint.
+                raise
             except Exception as w_err:
                 logger.warning(f"Failed to fetch workflow runs for PR #{pr_number}: {w_err}")
 
+        except GitHubRequestError:
+            raise
         except Exception as e:
             api_error = str(e)
             log_action(f"Failed to get check runs for {current_head_sha[:8]}", False, api_error)
@@ -616,6 +622,8 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
 
         return gh_status_result
 
+    except GitHubRequestError:
+        raise
     except Exception as e:
         logger.error(f"Error checking GitHub Actions for PR #{pr_number}: {e}")
         # Try historical search on exception
@@ -1083,6 +1091,17 @@ def _classify_dispatch_exception(exc: Exception) -> DispatchOutcome:
     status) is indeterminate, since we cannot disprove that GitHub accepted
     the request before the response was lost.
     """
+    if isinstance(exc, GitHubRequestRefused):
+        # The governor positively established that no transport send occurred.
+        return DispatchOutcome.REJECTED
+    if isinstance(exc, GitHubRequestError):
+        # A lost response may mean that GitHub accepted the mutation.  A
+        # completed 4xx response is a definitive rejection, including an
+        # ordinary permission failure; throttles remain rejected by GitHub.
+        if exc.outcome.delivery.value == "definitely_not_sent":
+            return DispatchOutcome.REJECTED
+        if exc.outcome.delivery.value == "indeterminate_after_possible_send":
+            return DispatchOutcome.INDETERMINATE
     code = _extract_http_status_code(exc)
     if isinstance(code, int) and 400 <= code < 500:
         return DispatchOutcome.REJECTED
@@ -1132,6 +1151,9 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> Wor
         logger.info(f"Successfully triggered workflow '{workflow_id}'")
         return WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)
 
+    except GitHubRequestRefused as e:
+        logger.info(f"Workflow dispatch deferred before send for '{workflow_id}'")
+        return WorkflowDispatchResult(outcome=DispatchOutcome.REJECTED, error=str(e))
     except Exception as e:
         # Fallback for 422 error (missing workflow_dispatch trigger)
         import time
@@ -2175,6 +2197,8 @@ def check_github_actions_and_exit_if_in_progress(
 
         return True
 
+    except GitHubRequestError:
+        raise
     except Exception as e:
         logger.error(f"Error checking GitHub Actions status: {e}")
         return True  # Continue processing on error

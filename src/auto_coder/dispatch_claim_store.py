@@ -11,6 +11,7 @@ rather than risk a duplicate external call.
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -62,6 +63,7 @@ class ClaimResult:
 
     acquired: bool
     reason: str = ""
+    holder_id: str = ""
 
 
 def default_dispatch_claim_db_path() -> Path:
@@ -101,9 +103,13 @@ class DispatchClaimStore:
                 state TEXT NOT NULL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
+                , holder_id TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(dispatch_claims)")}
+        if "holder_id" not in columns:
+            conn.execute("ALTER TABLE dispatch_claims ADD COLUMN holder_id TEXT NOT NULL DEFAULT ''")
 
     def try_acquire_claim(self, identity: DispatchIdentity) -> ClaimResult:
         """Attempt to durably acquire the dispatch-suppressing claim for identity.
@@ -128,10 +134,11 @@ class DispatchClaimStore:
                             (key,),
                         ).fetchone()
                         now = time.time()
+                        holder_id = str(uuid.uuid4())
 
                         if row is None:
                             conn.execute(
-                                "INSERT INTO dispatch_claims " "(claim_key, repo_name, pr_number, head_sha, workflow_id, state, created_at, updated_at) " "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                "INSERT INTO dispatch_claims " "(claim_key, repo_name, pr_number, head_sha, workflow_id, state, created_at, updated_at, holder_id) " "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                 (
                                     key,
                                     identity.repo_name,
@@ -141,19 +148,20 @@ class DispatchClaimStore:
                                     DispatchOutcome.PENDING.value,
                                     now,
                                     now,
+                                    holder_id,
                                 ),
                             )
                             conn.execute("COMMIT")
-                            return ClaimResult(acquired=True)
+                            return ClaimResult(acquired=True, holder_id=holder_id)
 
                         state = row[0]
                         if state == DispatchOutcome.REJECTED.value:
                             conn.execute(
-                                "UPDATE dispatch_claims SET state = ?, updated_at = ? WHERE claim_key = ?",
-                                (DispatchOutcome.PENDING.value, now, key),
+                                "UPDATE dispatch_claims SET state = ?, updated_at = ?, holder_id = ? WHERE claim_key = ?",
+                                (DispatchOutcome.PENDING.value, now, holder_id, key),
                             )
                             conn.execute("COMMIT")
-                            return ClaimResult(acquired=True)
+                            return ClaimResult(acquired=True, holder_id=holder_id)
 
                         conn.execute("COMMIT")
                         return ClaimResult(acquired=False, reason=f"existing claim state={state}")
@@ -169,7 +177,7 @@ class DispatchClaimStore:
             logger.error(f"Dispatch claim store error while acquiring claim for {key}: {e}")
             return ClaimResult(acquired=False, reason=f"store error: {e}")
 
-    def record_outcome(self, identity: DispatchIdentity, outcome: DispatchOutcome) -> bool:
+    def record_outcome(self, identity: DispatchIdentity, outcome: DispatchOutcome, holder_id: str = "") -> bool:
         """Durably record the observable outcome of a dispatch attempt.
 
         Returns True only if the write is confirmed. On storage failure the
@@ -185,12 +193,19 @@ class DispatchClaimStore:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
                         now = time.time()
-                        conn.execute(
-                            "UPDATE dispatch_claims SET state = ?, updated_at = ? WHERE claim_key = ?",
-                            (outcome.value, now, key),
-                        )
+                        if holder_id:
+                            cursor = conn.execute(
+                                "UPDATE dispatch_claims SET state = ?, updated_at = ? WHERE claim_key = ? AND holder_id = ?",
+                                (outcome.value, now, key, holder_id),
+                            )
+                        else:
+                            # Kept for callers created before holder tokens were exposed.
+                            cursor = conn.execute(
+                                "UPDATE dispatch_claims SET state = ?, updated_at = ? WHERE claim_key = ?",
+                                (outcome.value, now, key),
+                            )
                         conn.execute("COMMIT")
-                        return True
+                        return cursor.rowcount == 1
                     except Exception:
                         try:
                             conn.execute("ROLLBACK")
