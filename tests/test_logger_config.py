@@ -2,6 +2,7 @@
 
 import sys
 import tempfile
+import uuid
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -293,3 +294,136 @@ class TestDefaultLogFile:
         content = log_file.read_text(encoding="utf-8")
         assert "info entry" in content
         assert "debug entry" not in content
+
+
+class TestExceptionDiagnosticsDoNotLeakLocals:
+    """Loguru's ``diagnose`` traceback expansion must never reach an
+    application sink, regardless of sink kind, verbosity or environment
+    defaults. See https://github.com/kitamura-tetsuo/auto-coder/issues/1924.
+    """
+
+    def setup_method(self):
+        logger.remove()
+        logger.configure(patcher=None)
+
+    def teardown_method(self):
+        logger.remove()
+        logger.add(sys.stderr)
+        logger.configure(patcher=None)
+
+    @staticmethod
+    def _raise_with_secret_locals(secret: str) -> None:
+        """Raise from a frame whose locals contain a secret under an
+        unrelated variable name, nested inside Click-param-like and HTTP
+        header-like containers, mirroring the disclosure described in the
+        Issue."""
+
+        click_params = {"github_token": secret, "repo": "kitamura-tetsuo/auto-coder"}
+        request_headers = {"Authorization": f"Bearer {secret}"}
+        opaque_value = secret  # unrelated name on purpose (AS-002)
+        _ = (click_params, request_headers, opaque_value)
+        raise RuntimeError("controlled failure for diagnostics test")
+
+    def _assert_safe_and_useful(self, output: str, secret: str) -> None:
+        assert secret not in output
+        assert f"Bearer {secret}" not in output
+        assert "RuntimeError" in output
+        assert "controlled failure for diagnostics test" in output
+        assert "_raise_with_secret_locals" in output
+
+    def test_console_stream_sink_hides_locals_but_keeps_diagnostics(self, monkeypatch):
+        secret = f"ghp_{uuid.uuid4().hex}"
+        buffer = StringIO()
+
+        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            mock_settings.log_level = "DEBUG"
+
+            setup_logger(log_level="DEBUG", stream=buffer)
+
+            try:
+                self._raise_with_secret_locals(secret)
+            except RuntimeError:
+                get_logger(__name__).exception("failed during controlled test")
+            logger.complete()
+
+        self._assert_safe_and_useful(buffer.getvalue(), secret)
+
+    def test_file_sink_hides_locals_but_keeps_diagnostics(self, tmp_path):
+        secret = f"ghp_{uuid.uuid4().hex}"
+        log_file = tmp_path / "app.log"
+
+        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            mock_settings.log_level = "DEBUG"
+
+            setup_logger(log_level="DEBUG", log_file=str(log_file), stream=StringIO())
+
+            try:
+                self._raise_with_secret_locals(secret)
+            except RuntimeError:
+                get_logger(__name__).exception("failed during controlled test")
+            logger.complete()
+
+        self._assert_safe_and_useful(log_file.read_text(encoding="utf-8"), secret)
+
+    def test_progress_footer_sink_hides_locals_but_keeps_diagnostics(self):
+        from src.auto_coder.progress_footer import ProgressFooter
+
+        secret = f"ghp_{uuid.uuid4().hex}"
+        buffer = StringIO()
+        buffer.isatty = lambda: False  # type: ignore[method-assign]
+        footer = ProgressFooter(stream=buffer)
+
+        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            mock_settings.log_level = "DEBUG"
+
+            setup_logger(log_level="DEBUG", progress_footer=footer)
+
+            try:
+                self._raise_with_secret_locals(secret)
+            except RuntimeError:
+                get_logger(__name__).exception("failed during controlled test")
+            logger.complete()
+
+        self._assert_safe_and_useful(buffer.getvalue(), secret)
+
+    def test_loguru_diagnose_env_default_cannot_reopen_leak(self, monkeypatch):
+        """``LOGURU_DIAGNOSE=YES`` must not override the hard-coded
+        ``diagnose=False`` on application sinks (REQ-002, AS-004)."""
+
+        monkeypatch.setenv("LOGURU_DIAGNOSE", "YES")
+        secret = f"ghp_{uuid.uuid4().hex}"
+        buffer = StringIO()
+
+        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            mock_settings.log_level = "DEBUG"
+
+            setup_logger(log_level="DEBUG", stream=buffer)
+
+            try:
+                self._raise_with_secret_locals(secret)
+            except RuntimeError:
+                get_logger(__name__).exception("failed during controlled test")
+            logger.complete()
+
+        self._assert_safe_and_useful(buffer.getvalue(), secret)
+
+    def test_repeated_setup_does_not_reintroduce_diagnose(self):
+        """Reconfiguring the logger repeatedly must keep every sink safe."""
+
+        secret = f"ghp_{uuid.uuid4().hex}"
+        buffer = StringIO()
+
+        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            mock_settings.log_level = "DEBUG"
+
+            setup_logger(log_level="INFO", stream=StringIO())
+            setup_logger(log_level="DEBUG", stream=StringIO())
+            setup_logger(log_level="DEBUG", stream=buffer)
+
+            try:
+                self._raise_with_secret_locals(secret)
+            except RuntimeError:
+                get_logger(__name__).exception("failed during controlled test")
+            logger.complete()
+
+        self._assert_safe_and_useful(buffer.getvalue(), secret)

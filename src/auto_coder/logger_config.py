@@ -194,6 +194,13 @@ def setup_logger(
         selected_stream = sys.stdout if verbose_requested else sys.stderr
 
     # Add console handler (to specified stream or progress footer sink)
+    #
+    # ``diagnose=False`` is deliberately hard-coded on every application sink
+    # below (never sourced from settings or the environment). Loguru's
+    # diagnose mode expands local variables into exception tracebacks, which
+    # can leak credentials reachable from the failing frame (e.g. Click
+    # parameter dicts, HTTP authorization headers). See
+    # https://loguru.readthedocs.io/en/stable/resources/recipes.html#security-considerations-when-using-loguru
     if progress_footer is not None:
         logger.add(
             progress_footer.sink_wrapper,
@@ -202,6 +209,7 @@ def setup_logger(
             colorize=True,
             enqueue=use_enqueue,
             catch=True,  # Catch exceptions during logging to prevent shutdown crashes
+            diagnose=False,
         )
     else:
         logger.add(
@@ -210,6 +218,7 @@ def setup_logger(
             level=level,
             colorize=True,
             enqueue=use_enqueue,
+            diagnose=False,
         )
 
     # Fall back to the default application log so that long runs always leave a
@@ -265,6 +274,7 @@ def setup_logger(
             retention="14 days",
             compression="zip",
             enqueue=use_enqueue,
+            diagnose=False,
         )
 
 
