@@ -29,6 +29,7 @@ from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
 from .git_commit import git_push
 from .git_info import get_current_branch
+from .github_request_governor import GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_slots import (
     ImplementationHierarchyConflict,
@@ -71,6 +72,7 @@ from .update_manager import check_for_updates_and_restart
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, InvalidSubIssueRelationshipError, get_ghapi_client, is_implementation_ready, parse_parent_issue_number, parse_parent_issue_url_number, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
+from .util.github_request_outcome import configure_github_request_boundary
 from .utils import CommandExecutor, get_target_container, log_action
 from .validation_scheduler import ValidationAdmissionDeferred, ValidationJob, ValidationScheduler
 
@@ -103,6 +105,8 @@ class AutomationEngine:
     ) -> None:
         """Initialize automation engine."""
         self.github = github_client
+        self.github_request_governor = GitHubRequestGovernor()
+        configure_github_request_boundary(self.github_request_governor.admit, self.github_request_governor.observe)
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
         self.queue: asyncio.Queue[Candidate] = asyncio.Queue()

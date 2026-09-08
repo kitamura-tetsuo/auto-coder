@@ -186,7 +186,14 @@ _SECONDARY = re.compile(r"secondary rate limit|abuse detection", re.IGNORECASE)
 def classify_response(status: int, metadata: GitHubResponseMetadata, errors: object = None, message: str = "") -> GitHubApiOutcome:
     error_entries = errors if isinstance(errors, list) else []
     error_messages = [str(entry.get("message", "")) for entry in error_entries if isinstance(entry, dict)]
-    error_types = [str(entry.get("type", "")) for entry in error_entries if isinstance(entry, dict)]
+    error_types: list[str] = []
+    for entry in error_entries:
+        if not isinstance(entry, dict):
+            continue
+        error_types.append(str(entry.get("type", "")))
+        extensions = entry.get("extensions")
+        if isinstance(extensions, dict):
+            error_types.extend(str(extensions.get(key, "")) for key in ("type", "code"))
     combined = " ".join([message, *error_messages])
     primary = metadata.rate_limit_remaining == 0
     secondary = metadata.retry_after_seconds is not None or bool(_SECONDARY.search(combined))
@@ -212,6 +219,16 @@ def classify_response(status: int, metadata: GitHubResponseMetadata, errors: obj
     return GitHubApiOutcome.SUCCESS if status < 400 else GitHubApiOutcome.REMOTE_ERROR
 
 
+def normalize_api_origin(origin: str) -> str:
+    """Return a credential-free canonical scheme/host/port API origin."""
+    parts = urlsplit(origin)
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    default_port = (scheme == "https" and parts.port == 443) or (scheme == "http" and parts.port == 80)
+    authority = host if parts.port is None or default_port else f"{host}:{parts.port}"
+    return urlunsplit((scheme, authority, "", "", ""))
+
+
 def _safe_endpoint(url: httpx.URL) -> tuple[str, str, str | None, str | None]:
     parts = urlsplit(str(url))
     path = parts.path
@@ -219,7 +236,7 @@ def _safe_endpoint(url: httpx.URL) -> tuple[str, str, str | None, str | None]:
     repository = "/".join(segments[1:3]) if len(segments) >= 3 and segments[0] == "repos" else None
     item_match = re.search(r"/(?:issues|pulls)/(\d+)(?:/|$)", path)
     template = re.sub(r"(?<=/)(\d+)(?=/|$)", "{id}", path)
-    return urlunsplit((parts.scheme, parts.netloc, "", "", "")), template, repository, item_match.group(1) if item_match else None
+    return normalize_api_origin(str(url)), template, repository, item_match.group(1) if item_match else None
 
 
 def _sensitive_endpoint(path: str) -> bool:
@@ -270,7 +287,7 @@ class DiagnosticTransport(httpx.BaseTransport):
         self._admission_hook = admission_hook
         self._observation_hook = observation_hook
         self._subsystem = subsystem
-        self._api_origin = api_origin.rstrip("/")
+        self._api_origin = normalize_api_origin(api_origin)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         origin, endpoint, repository, item = _safe_endpoint(request.url)
@@ -280,9 +297,18 @@ class DiagnosticTransport(httpx.BaseTransport):
         if origin != self._api_origin:
             return self._transport.handle_request(request)
         strict_read = "strict" in self._subsystem and request.method in ("GET", "HEAD")
-        context = GitHubRequestContext(
-            str(request.extensions.get("auto_coder_operation_id", uuid.uuid4())), str(uuid.uuid4()), self._subsystem, origin, request.method, "read" if request.method in ("GET", "HEAD") else "mutation", endpoint, repository, item, "bypass" if strict_read else "normal", strict_read
-        )
+        method = request.method.upper()
+        kind = "read" if method in ("GET", "HEAD", "OPTIONS") else "mutation"
+        if request.url.path.rstrip("/").endswith("/graphql") and method == "POST":
+            # Classification is entirely local and the document is never logged.
+            try:
+                payload = json.loads(request.content)
+                document = payload.get("query", "") if isinstance(payload, dict) else ""
+                stripped = re.sub(r"(?s)^\s*(?:#[^\n]*\n\s*)*", "", document)
+                kind = "read" if re.match(r"(?i)^(?:query\b|\{)", stripped) else "mutation"
+            except (TypeError, ValueError, UnicodeDecodeError):
+                kind = "mutation"
+        context = GitHubRequestContext(str(request.extensions.get("auto_coder_operation_id", uuid.uuid4())), str(uuid.uuid4()), self._subsystem, origin, method, kind, endpoint, repository, item, "bypass" if strict_read else "normal", strict_read)
         header_credentials = tuple(value for key, value in request.headers.items() if key.lower() in ("authorization", "cookie"))
         credentials = header_credentials + tuple(part for value in header_credentials for part in value.split() if len(part) >= 4)
         if self._admission_hook is not None and self._admission_hook(context) is False:

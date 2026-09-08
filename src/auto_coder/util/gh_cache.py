@@ -355,7 +355,10 @@ def get_ghapi_client(
     configured_admission, configured_observation = boundary_hooks()
     effective_admission = admission_hook if admission_hook is not None else configured_admission
     effective_observation = observation_hook if observation_hook is not None else configured_observation
-    hook_client = get_caching_client(effective_admission, effective_observation, subsystem) if effective_admission is not None or effective_observation is not None else None
+    # Explicit per-call hooks own a dedicated client. Process-wide controller
+    # hooks are resolved by get_caching_client itself, retaining the ordinary
+    # no-argument adapter contract used by callers and test transports.
+    hook_client = get_caching_client(admission_hook, observation_hook, subsystem) if admission_hook is not None or observation_hook is not None else None
 
     class CachedGhApi(GhApi):
         def __call__(self, path: str, verb: Optional[str] = None, headers: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None, data=None, timeout=None, decode=True):
