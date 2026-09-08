@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from auto_coder.implementation_slots import (
@@ -729,7 +730,7 @@ def test_reconciliation_retains_slot_when_production_timeline_is_unavailable(tmp
     monkeypatch.setattr(github, "get_issue_details", lambda issue: issue)
 
     class UnavailableTimeline:
-        def get(self, _url, headers=None):
+        def request(self, method, url, headers=None, extensions=None):
             raise RuntimeError("timeline offline")
 
     monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda: UnavailableTimeline())
@@ -763,9 +764,12 @@ def test_reconciliation_reads_all_timeline_pages_before_releasing_slot(tmp_path,
     second_url = f"{first_url}&page=2"
 
     class TimelineResponse:
-        def __init__(self, events, next_url=None):
+        def __init__(self, url, events, next_url=None):
             self.events = events
             self.links = {"next": {"url": next_url}} if next_url else {}
+            self.request = httpx.Request("GET", url)
+            self.status_code = 200
+            self.headers: dict[str, str] = {}
 
         def raise_for_status(self):
             return None
@@ -777,18 +781,19 @@ def test_reconciliation_reads_all_timeline_pages_before_releasing_slot(tmp_path,
         def __init__(self):
             self.requested_urls = []
 
-        def get(self, url, headers=None):
+        def request(self, method, url, headers=None, extensions=None):
             self.requested_urls.append(url)
             if url == first_url:
-                return TimelineResponse([{"event": "commented"}] * 100, second_url)
+                return TimelineResponse(url, [{"event": "commented"}] * 100, second_url)
             assert url == second_url
             return TimelineResponse(
+                url,
                 [
                     {
                         "event": "cross-referenced",
                         "source": {"issue": {"number": 108, "pull_request": {}}},
                     }
-                ]
+                ],
             )
 
     timeline = PaginatedTimeline()
@@ -822,7 +827,12 @@ def test_reconciliation_retains_branch_linked_pr_absent_from_timeline(tmp_path, 
     monkeypatch.setattr(github, "get_pr_details", lambda pr: pr)
 
     class EmptyTimelineResponse:
-        links = {}
+        links: dict = {}
+        status_code = 200
+        headers: dict = {}
+
+        def __init__(self, url):
+            self.request = httpx.Request("GET", url)
 
         def raise_for_status(self):
             return None
@@ -831,8 +841,8 @@ def test_reconciliation_retains_branch_linked_pr_absent_from_timeline(tmp_path, 
             return []
 
     class EmptyTimeline:
-        def get(self, _url, headers=None):
-            return EmptyTimelineResponse()
+        def request(self, method, url, headers=None, extensions=None):
+            return EmptyTimelineResponse(url)
 
     monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda: EmptyTimeline())
     branch_linked_pr = {
