@@ -10,7 +10,7 @@ import pytest
 
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
-from auto_coder.util.gh_cache import get_ghapi_client
+from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
 from auto_coder.util.github_request_outcome import (
     DeliveryCertainty,
     DiagnosticTransport,
@@ -279,6 +279,39 @@ def test_fresh_thread_uncached_completion_resolves_its_reservation(tmp_path) -> 
     # The completed attempt must be resolved: an unrelated admission on the
     # same origin must not be refused as still in-flight.
     assert governor.admit(context(2)) is True
+
+
+def test_direct_caching_client_usage_resolves_its_reservation(tmp_path, monkeypatch) -> None:
+    """REQ-001/AS-001: a caller that talks to get_caching_client() directly
+    (bypassing the GhApi wrapper -- e.g. GitHubClient.get_open_pull_requests)
+    must resolve its Governor reservation on success too. Before this fix,
+    get_caching_client()'s SyncCacheClient had no completion hook for callers
+    that invoke client.request() themselves, so the reservation stayed
+    unresolved and every later same-origin request was refused as
+    request_in_flight for the rest of the process's life.
+
+    This goes through the real get_caching_client() factory and a real,
+    durably-stored GitHubRequestGovernor; only the actual socket send
+    (httpx.HTTPTransport.handle_request) is replaced, matching AS-001's
+    requirement that the boundary itself -- not a stand-in for it -- is what
+    gets exercised.
+    """
+    governor = GitHubRequestGovernor(store_path=tmp_path / "direct_usage.sqlite3")
+    configure_github_request_boundary(governor.admit, governor.observe)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"number": 1}], request=request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda self, request: handler(request))
+    try:
+        result = GitHubClient("token").get_open_pull_requests("acme/widgets")
+        assert result == [{"number": 1}]
+
+        # The completed attempt must be resolved: a later admission on the same
+        # origin must not be refused as still in-flight.
+        assert governor.admit(context(2)) is True
+    finally:
+        configure_github_request_boundary()
 
 
 def test_production_transport_cooldown_and_episode_survive_fresh_instance(tmp_path, monkeypatch) -> None:

@@ -5,6 +5,7 @@ Tests for GitHub client sub-issues detection functionality using REST API.
 import json
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 
 from src.auto_coder.util.gh_cache import GitHubClient
@@ -45,13 +46,10 @@ class TestGitHubClientSubIssues:
             },
         ]
 
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = sub_issues_data
-        mock_response.raise_for_status = Mock()
+        mock_response = httpx.Response(200, json=sub_issues_data, request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues/1/sub_issues"))
 
         mock_caching_client = Mock()
-        mock_caching_client.get.return_value = mock_response
+        mock_caching_client.request.return_value = mock_response
 
         with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
@@ -82,13 +80,10 @@ class TestGitHubClientSubIssues:
             },
         ]
 
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = sub_issues_data
-        mock_response.raise_for_status = Mock()
+        mock_response = httpx.Response(200, json=sub_issues_data, request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues/1/sub_issues"))
 
         mock_caching_client = Mock()
-        mock_caching_client.get.return_value = mock_response
+        mock_caching_client.request.return_value = mock_response
 
         with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
@@ -113,13 +108,10 @@ class TestGitHubClientSubIssues:
             },
         ]
 
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = sub_issues_data
-        mock_response.raise_for_status = Mock()
+        mock_response = httpx.Response(200, json=sub_issues_data, request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues/1/sub_issues"))
 
         mock_caching_client = Mock()
-        mock_caching_client.get.return_value = mock_response
+        mock_caching_client.request.return_value = mock_response
 
         with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
@@ -131,13 +123,10 @@ class TestGitHubClientSubIssues:
         # Mock REST API response with no sub-issues
         sub_issues_data = []
 
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = sub_issues_data
-        mock_response.raise_for_status = Mock()
+        mock_response = httpx.Response(200, json=sub_issues_data, request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues/1/sub_issues"))
 
         mock_caching_client = Mock()
-        mock_caching_client.get.return_value = mock_response
+        mock_caching_client.request.return_value = mock_response
 
         with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
@@ -154,7 +143,7 @@ class TestGitHubClientSubIssues:
         mock_error_response.text = "Internal Server Error"
 
         mock_caching_client = Mock()
-        mock_caching_client.get.side_effect = httpx.HTTPStatusError("Server Error", request=Mock(), response=mock_error_response)
+        mock_caching_client.request.side_effect = httpx.HTTPStatusError("Server Error", request=Mock(), response=mock_error_response)
 
         with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
@@ -170,7 +159,7 @@ class TestGitHubClientSubIssues:
         mock_error_response.status_code = 404
 
         mock_caching_client = Mock()
-        mock_caching_client.get.side_effect = httpx.HTTPStatusError("Not Found", request=Mock(), response=mock_error_response)
+        mock_caching_client.request.side_effect = httpx.HTTPStatusError("Not Found", request=Mock(), response=mock_error_response)
 
         with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")
@@ -200,13 +189,10 @@ class TestGitHubClientSubIssues:
             {"number": 100, "title": "Self", "state": "open"},
             {"number": 200, "title": "Child", "state": "open"},
         ]
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = sub_issues_data
-        mock_response.raise_for_status = Mock()
+        mock_response = httpx.Response(200, json=sub_issues_data, request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues/1/sub_issues"))
 
         mock_caching_client = Mock()
-        mock_caching_client.get.return_value = mock_response
+        mock_caching_client.request.return_value = mock_response
 
         with patch("src.auto_coder.util.gh_cache.get_caching_client", return_value=mock_caching_client):
             client = GitHubClient.get_instance("test_token")

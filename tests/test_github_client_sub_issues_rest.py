@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from src.auto_coder.util.gh_cache import GitHubClient
@@ -15,10 +16,12 @@ class TestGitHubClientSubIssuesREST:
 
         # Mock Response
         # Endpoint: /repos/owner/repo/issues/1/sub_issues
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = [{"number": 101, "state": "open"}, {"number": 102, "state": "closed"}, {"number": 103, "state": "open"}]
-        mock_client.get.return_value = mock_response
+        mock_response = httpx.Response(
+            200,
+            json=[{"number": 101, "state": "open"}, {"number": 102, "state": "closed"}, {"number": 103, "state": "open"}],
+            request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues/1/sub_issues"),
+        )
+        mock_client.request.return_value = mock_response
 
         client = GitHubClient.get_instance("token")
         client.clear_sub_issue_cache()  # Clear cache from previous tests
@@ -29,8 +32,8 @@ class TestGitHubClientSubIssuesREST:
 
         # Assert
         assert result == [101, 103]
-        args, kwargs = mock_client.get.call_args
-        assert "/repos/owner/repo/issues/1/sub_issues" in args[0]
+        args, kwargs = mock_client.request.call_args
+        assert "/repos/owner/repo/issues/1/sub_issues" in args[1]
         assert kwargs["headers"]["X-GitHub-Api-Version"] == "2022-11-28"
 
     @patch("src.auto_coder.util.gh_cache.get_caching_client")
@@ -41,10 +44,12 @@ class TestGitHubClientSubIssuesREST:
         mock_get_caching.return_value = mock_client
 
         # Mock Response
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = [{"number": 201, "state": "closed"}, {"number": 202, "state": "open"}]
-        mock_client.get.return_value = mock_response
+        mock_response = httpx.Response(
+            200,
+            json=[{"number": 201, "state": "closed"}, {"number": 202, "state": "open"}],
+            request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues/2/sub_issues"),
+        )
+        mock_client.request.return_value = mock_response
 
         client = GitHubClient.get_instance("token")
         client._caching_client = mock_client

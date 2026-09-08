@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig, Candidate
@@ -48,20 +49,19 @@ class TestAddSubIssue:
         mock_get_issue.return_value = mock_sub_issue
 
         mock_http_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.status_code = 201
-        mock_http_client.post.return_value = mock_response
+        mock_response = httpx.Response(201, request=httpx.Request("POST", "https://api.github.com/repos/owner/repo/issues/100/sub_issues"))
+        mock_http_client.request.return_value = mock_response
         mock_get_caching_client.return_value = mock_http_client
 
         client = GitHubClient.get_instance("test-token")
         success = client.add_sub_issue("owner/repo", parent_issue_number=100, sub_issue_number=200)
 
         assert success is True
-        mock_http_client.post.assert_called_once_with(
-            "https://api.github.com/repos/owner/repo/issues/100/sub_issues",
-            headers={"Authorization": "bearer test-token", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
-            json={"sub_issue_id": 98765},
-        )
+        mock_http_client.request.assert_called_once()
+        args, kwargs = mock_http_client.request.call_args
+        assert args == ("POST", "https://api.github.com/repos/owner/repo/issues/100/sub_issues")
+        assert kwargs["headers"] == {"Authorization": "bearer test-token", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        assert kwargs["json"] == {"sub_issue_id": 98765}
 
     @patch.object(GitHubClient, "get_all_sub_issues")
     def test_add_sub_issue_already_sub_issue(self, mock_get_all_sub_issues, mock_github_token):
@@ -81,10 +81,8 @@ class TestAddSubIssue:
         mock_get_issue.return_value = {"id": 98765, "number": 200}
 
         mock_http_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-        mock_response.text = "Forbidden"
-        mock_http_client.post.return_value = mock_response
+        mock_response = httpx.Response(403, text="Forbidden", request=httpx.Request("POST", "https://api.github.com/repos/owner/repo/issues/100/sub_issues"))
+        mock_http_client.request.return_value = mock_response
         mock_get_caching_client.return_value = mock_http_client
 
         client = GitHubClient.get_instance("test-token")

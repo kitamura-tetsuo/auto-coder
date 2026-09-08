@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from src.auto_coder.util.gh_cache import GitHubClient
@@ -15,23 +16,25 @@ class TestGitHubClientTimelineREST:
 
         # Mock Response: Timeline with connected and cross-referenced events
         # We simulate a mix of events to test filtering
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = [
-            {"event": "commented", "id": 1},
-            {"event": "connected", "source": {"issue": {"number": 101, "pull_request": {"url": "..."}}}},
-            {"event": "cross-referenced", "source": {"issue": {"number": 102, "pull_request": {"url": "..."}}}},
-            {
-                "event": "cross-referenced",
-                "source": {
-                    "issue": {
-                        "number": 55  # Not a PR (maybe another issue ref)
-                        # No 'pull_request' key
-                    }
+        mock_response = httpx.Response(
+            200,
+            json=[
+                {"event": "commented", "id": 1},
+                {"event": "connected", "source": {"issue": {"number": 101, "pull_request": {"url": "..."}}}},
+                {"event": "cross-referenced", "source": {"issue": {"number": 102, "pull_request": {"url": "..."}}}},
+                {
+                    "event": "cross-referenced",
+                    "source": {
+                        "issue": {
+                            "number": 55  # Not a PR (maybe another issue ref)
+                            # No 'pull_request' key
+                        }
+                    },
                 },
-            },
-        ]
-        mock_client.get.return_value = mock_response
+            ],
+            request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues/1/timeline?per_page=100"),
+        )
+        mock_client.request.return_value = mock_response
 
         client = GitHubClient.get_instance("token")
         client._caching_client = mock_client
@@ -51,10 +54,12 @@ class TestGitHubClientTimelineREST:
         mock_get_caching.return_value = mock_client
 
         # Mock Response
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = [{"event": "connected", "source": {"issue": {"number": 101, "pull_request": {}}}}]
-        mock_client.get.return_value = mock_response
+        mock_response = httpx.Response(
+            200,
+            json=[{"event": "connected", "source": {"issue": {"number": 101, "pull_request": {}}}}],
+            request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/issues/1/timeline?per_page=100"),
+        )
+        mock_client.request.return_value = mock_response
 
         client = GitHubClient.get_instance("token")
         client._caching_client = mock_client
