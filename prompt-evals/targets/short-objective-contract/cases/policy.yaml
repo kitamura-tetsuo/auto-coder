@@ -1,0 +1,35 @@
+- vars:
+    id: new-authoring
+    scenario: "Draft a non-trivial Issue for previewing a saved draft without applying it. Output JSON with objective and details_location."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return typeof r.objective==='string' && r.objective.split(/[.!?]+/).filter(Boolean).length<=2 && !/acceptance|test plan|persist/i.test(r.objective) && /requirement|contract/i.test(r.details_location);"
+- vars:
+    id: purpose-preserving-correction
+    scenario: "Objective is exactly 'Preview a saved draft without applying it.' Requirements omit a no-live-write restriction, so a writer implementation can falsely succeed. Output JSON with objective, classification, and requirement_action."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return r.objective==='Preview a saved draft without applying it.' && /clarification|false-success/i.test(r.classification) && /no.*write|prohibit.*write/i.test(r.requirement_action);"
+- vars:
+    id: reject-adjacent-demand
+    scenario: "A sufficient single-controller preview contract is reviewed with a request for distributed ownership solely for hypothetical deployment. Output JSON with decision and objective_changed."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return /reject|separate|adjacent/i.test(r.decision) && r.objective_changed===false;"
+- vars:
+    id: user-owned-purpose-change
+    scenario: "The fixed Objective forbids applying previews. A proposal would allow applying them. Output JSON with action and mutate_issue_before_user_decision."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return /stop|user|escalat|decision/i.test(r.action) && r.mutate_issue_before_user_decision===false;"
+- vars:
+    id: objective-only-pr-gap
+    scenario: "A PR omits behavior mentioned only in Objective and absent from all explicit REQs. Output JSON with merge_blocking, channel, and fabricated_req_id."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return r.merge_blocking===false && /specification|clarification/i.test(r.channel) && (r.fabricated_req_id===null || r.fabricated_req_id===false);"

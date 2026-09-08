@@ -30,6 +30,22 @@
       "cases": [
         "prompt-evals/targets/decomposition-objective-scope/cases/*.yaml"
       ]
+    },
+    {
+      "id": "short-objective-contract",
+      "prompt_dependencies": [
+        {
+          "path": "src/auto_coder/prompts.yaml",
+          "keys": [
+            "policies.short_objective_authoring",
+            "policies.objective_requirements_boundary"
+          ]
+        }
+      ],
+      "config": "prompt-evals/targets/short-objective-contract/promptfooconfig.yaml",
+      "cases": [
+        "prompt-evals/targets/short-objective-contract/cases/*.yaml"
+      ]
     }
   ]
 }
