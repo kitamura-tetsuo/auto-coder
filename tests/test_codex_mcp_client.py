@@ -201,7 +201,7 @@ def test_fallback_exec_uses_no_options_when_none_configured(monkeypatch):
     assert len(popen_calls) >= 2
     args, _ = popen_calls[1]
     cmd = args[0]
-    assert cmd == ["codex", "exec", "test prompt"]
+    assert cmd == ["codex", "exec", "-"]
     # Verify no hardcoded options are present
     assert "-s" not in cmd
     assert "workspace-write" not in cmd

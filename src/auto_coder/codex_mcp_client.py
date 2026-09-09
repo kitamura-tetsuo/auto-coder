@@ -26,11 +26,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__ as AUTO_CODER_VERSION
+from .codex_cli_args import build_codex_exec_command
 from .exceptions import AutoCoderTimeoutError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .security_utils import redact_data, redact_string
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
@@ -440,47 +442,31 @@ class CodexMCPClient(LLMClientBase):
 
         # Fallback: codex exec
         try:
-            cmd: List[str] = ["codex", "exec"]
             # Apply configurable options from config
             # Use options_for_noedit for no-edit operations if available
             options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-            if options_to_use:
-                cmd.extend(options_to_use)
-            if extra_args:
-                cmd.extend(extra_args)
-            cmd.append(escaped_prompt)
+            cmd = build_codex_exec_command(options_to_use or [], extra_args)
             logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
             logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
             # Build display command for logging
             display_options = " ".join(options_to_use) if options_to_use else ""
             logger.info(f"🤖 Running under MCP session: codex exec {display_options} [prompt]")
 
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-                output_lines: List[str] = []
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    line = line.rstrip("\n")
-                    output_lines.append(line)
-                return_code = proc.wait(timeout=7200)  # 2 hour timeout
-                output = "\n".join(output_lines).strip()
-
-                # Log full response once using JSON format
-                self._log_fallback_event(cmd, output, return_code)
-
-                if return_code != 0:
-                    raise RuntimeError(f"codex exec failed with return code {return_code}")
-                return output
-            except subprocess.TimeoutExpired:
-                if proc:
-                    proc.kill()
+            command_result = CommandExecutor.run_command(
+                cmd,
+                timeout=7200,
+                stream_output=True,
+                stdin_text=escaped_prompt,
+            )
+            stdout = (command_result.stdout or "").strip()
+            stderr = (command_result.stderr or "").strip()
+            output = stdout or stderr
+            self._log_fallback_event(cmd, output, command_result.returncode)
+            if command_result.returncode == -1 and "timed out" in stderr.lower():
                 raise AutoCoderTimeoutError("codex exec timed out after 7200 seconds")
+            if command_result.returncode != 0:
+                raise RuntimeError(f"codex exec failed with return code {command_result.returncode}: {output}")
+            return output
         except Exception as e:
             raise RuntimeError(f"Failed to run codex exec under MCP session: {e}")
 
