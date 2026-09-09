@@ -210,6 +210,16 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
 
         state: Dict[str, Any] = {"mode": SelectionMode.FOLLOW_LATEST, "pinned_execution_id": None, "refreshing": False, "last_refresh_ok_at": None}
         mermaid_holder: Dict[str, str] = {"code": ""}
+        # Rendered-projection cache and persistent element handles (issue #1978).
+        # A periodic refresh that observes the same projection as last time
+        # must not touch the DOM at all (REQ-002/REQ-004): every section below
+        # is only cleared/rebuilt when its own signature changes, and rows/
+        # content for unchanged-shape tables and the Mermaid diagram are
+        # patched in place via NiceGUI's reactive props rather than recreated,
+        # which is what keeps scroll position, pagination, and Follow/pinned
+        # selection stable across ticks (REQ-003).
+        render_cache: Dict[str, Any] = {}
+        elements: Dict[str, Any] = {}
 
         def pin(execution_id: str) -> None:
             state["mode"] = SelectionMode.PINNED
@@ -244,72 +254,91 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
 
                 executions = executions_for_item(snapshot, repo_name, item_type, item_number)
                 selection: DetailSelection = resolve_selected_execution(executions, state["mode"], state["pinned_execution_id"])
-
-                navigation_container.clear()
-                with navigation_container:
-                    following = state["mode"] is SelectionMode.FOLLOW_LATEST
-                    ui.button("Follow latest", on_click=follow_latest).props(f"dense {'flat' if not following else 'unelevated'}")
-
-                    current_index: Optional[int] = None
-                    if selection.execution is not None:
-                        for i, summary in enumerate(executions):
-                            if summary.execution_id == selection.execution.execution_id:
-                                current_index = i
-                                break
-
-                    def pin_relative(offset: int, index: Optional[int] = current_index) -> None:
-                        if index is None:
-                            return
-                        target = index + offset
-                        if 0 <= target < len(executions):
-                            pin(executions[target].execution_id)
-
-                    btn_older = ui.button(icon="arrow_downward", on_click=lambda: pin_relative(-1)).props("dense flat").tooltip("Older execution")
-                    if current_index is None or current_index <= 0:
-                        btn_older.disable()
-
-                    if selection.pinned_evicted:
-                        ui.label("Pinned execution no longer retained").classes("font-bold text-red-600")
-                    elif current_index is not None:
-                        ui.label(f"Execution {current_index + 1} of {len(executions)} ({'following latest' if following else 'pinned'})").classes("font-bold")
-                    else:
-                        ui.label("No retained executions").classes("font-bold text-gray-500")
-
-                    btn_newer = ui.button(icon="arrow_upward", on_click=lambda: pin_relative(1)).props("dense flat").tooltip("Newer execution")
-                    if current_index is None or current_index >= len(executions) - 1:
-                        btn_newer.disable()
-
-                identity_container.clear()
-                with identity_container:
-                    if snapshot.events_truncated:
-                        ui.label("Note: retained diagnostic history has been truncated by bounded retention; earlier events (for this and other items) may be missing.").classes("text-sm text-amber-600")
-
-                    if selection.pinned_evicted:
-                        ui.label(f"The pinned execution {selection.pinned_execution_id!r} is no longer retained locally. " "This does not mean it never existed or that it failed; its evidence has simply been evicted.").classes("text-red-600")
-                    elif selection.execution is None:
-                        ui.label("No execution has been observed locally for this item in this process run. " "This does not indicate there was never earlier work, nor that any remote work has finished.").classes("text-gray-500")
-                    else:
-                        summary = selection.execution
-                        exec_events = events_for_execution(snapshot, summary.execution_id)
-                        started_present = execution_start_event_present(exec_events)
-                        finished_event = execution_finished_event(exec_events)
-                        ui.label(f"Execution: {summary.execution_id}").classes("font-mono text-sm")
-                        ui.label(f"Process run: {snapshot.process_run_id}").classes("font-mono text-sm text-gray-500")
-                        if not started_present:
-                            ui.label("Start evidence for this execution has been evicted; this history is partially retained (incomplete).").classes("text-sm text-amber-600")
-                        if finished_event is not None:
-                            ui.label(f"Completion: {finished_event.outcome or 'unknown'} (observed {datetime.fromtimestamp(finished_event.timestamp).strftime('%Y-%m-%d %H:%M:%S')})").classes("text-sm")
-                        else:
-                            ui.label("Completion: not yet recorded for this execution.").classes("text-sm text-gray-500")
-
                 selected_events: List[Any] = []
                 if selection.execution is not None:
                     selected_events = events_for_execution(snapshot, selection.execution.execution_id)
 
-                diagram_container.clear()
-                with diagram_container:
-                    mermaid_code = build_observed_path_diagram(selected_events)
-                    mermaid_holder["code"] = mermaid_code
+                following = state["mode"] is SelectionMode.FOLLOW_LATEST
+                current_index: Optional[int] = None
+                if selection.execution is not None:
+                    for i, summary in enumerate(executions):
+                        if summary.execution_id == selection.execution.execution_id:
+                            current_index = i
+                            break
+
+                # --- Navigation (Follow latest / older / newer execution) ---
+                nav_sig = (following, selection.pinned_evicted, current_index, tuple(e.execution_id for e in executions))
+                if nav_sig != render_cache.get("nav_sig"):
+                    navigation_container.clear()
+                    with navigation_container:
+                        ui.button("Follow latest", on_click=follow_latest).props(f"dense {'flat' if not following else 'unelevated'}")
+
+                        def pin_relative(offset: int, index: Optional[int] = current_index) -> None:
+                            if index is None:
+                                return
+                            target = index + offset
+                            if 0 <= target < len(executions):
+                                pin(executions[target].execution_id)
+
+                        btn_older = ui.button(icon="arrow_downward", on_click=lambda: pin_relative(-1)).props("dense flat").tooltip("Older execution")
+                        if current_index is None or current_index <= 0:
+                            btn_older.disable()
+
+                        if selection.pinned_evicted:
+                            ui.label("Pinned execution no longer retained").classes("font-bold text-red-600")
+                        elif current_index is not None:
+                            ui.label(f"Execution {current_index + 1} of {len(executions)} ({'following latest' if following else 'pinned'})").classes("font-bold")
+                        else:
+                            ui.label("No retained executions").classes("font-bold text-gray-500")
+
+                        btn_newer = ui.button(icon="arrow_upward", on_click=lambda: pin_relative(1)).props("dense flat").tooltip("Newer execution")
+                        if current_index is None or current_index >= len(executions) - 1:
+                            btn_newer.disable()
+                    render_cache["nav_sig"] = nav_sig
+
+                # --- Execution identity/origin header ---
+                started_present = execution_start_event_present(selected_events) if selection.execution is not None else None
+                finished_event = execution_finished_event(selected_events) if selection.execution is not None else None
+                identity_sig = (
+                    snapshot.events_truncated,
+                    selection.pinned_evicted,
+                    selection.pinned_execution_id if selection.pinned_evicted else None,
+                    selection.execution.execution_id if selection.execution is not None else None,
+                    snapshot.process_run_id if selection.execution is not None else None,
+                    started_present,
+                    (finished_event.outcome, finished_event.timestamp) if finished_event is not None else None,
+                )
+                if identity_sig != render_cache.get("identity_sig"):
+                    identity_container.clear()
+                    with identity_container:
+                        if snapshot.events_truncated:
+                            ui.label("Note: retained diagnostic history has been truncated by bounded retention; earlier events (for this and other items) may be missing.").classes("text-sm text-amber-600")
+
+                        if selection.pinned_evicted:
+                            ui.label(f"The pinned execution {selection.pinned_execution_id!r} is no longer retained locally. " "This does not mean it never existed or that it failed; its evidence has simply been evicted.").classes("text-red-600")
+                        elif selection.execution is None:
+                            ui.label("No execution has been observed locally for this item in this process run. " "This does not indicate there was never earlier work, nor that any remote work has finished.").classes("text-gray-500")
+                        else:
+                            summary = selection.execution
+                            ui.label(f"Execution: {summary.execution_id}").classes("font-mono text-sm")
+                            ui.label(f"Process run: {snapshot.process_run_id}").classes("font-mono text-sm text-gray-500")
+                            if not started_present:
+                                ui.label("Start evidence for this execution has been evicted; this history is partially retained (incomplete).").classes("text-sm text-amber-600")
+                            if finished_event is not None:
+                                ui.label(f"Completion: {finished_event.outcome or 'unknown'} (observed {datetime.fromtimestamp(finished_event.timestamp).strftime('%Y-%m-%d %H:%M:%S')})").classes("text-sm")
+                            else:
+                                ui.label("Completion: not yet recorded for this execution.").classes("text-sm text-gray-500")
+                    render_cache["identity_sig"] = identity_sig
+
+                # --- Activity diagram: patched in place via Mermaid's reactive
+                # `content` prop (no clear/rebuild) whenever only the diagram
+                # text changes, so the diagram never flickers on an ordinary
+                # tick; a full rebuild only happens the first time or when it
+                # toggles between "no events" and "has events" (REQ-004).
+                mermaid_code = build_observed_path_diagram(selected_events)
+                mermaid_holder["code"] = mermaid_code
+                diagram_kind = "code" if mermaid_code else "empty"
+                if diagram_kind != render_cache.get("diagram_kind"):
 
                     def copy_mermaid() -> None:
                         # Reads the holder at click time, never a value captured
@@ -318,90 +347,132 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(mermaid_holder['code'])})")
                         ui.notify("Copied!")
 
-                    with ui.row().classes("items-center gap-2 mb-2"):
-                        ui.label("Processing Path (observed order, not asserted control flow)").classes("text-xl font-bold")
+                    diagram_container.clear()
+                    with diagram_container:
+                        with ui.row().classes("items-center gap-2 mb-2"):
+                            ui.label("Processing Path (observed order, not asserted control flow)").classes("text-xl font-bold")
+                            if mermaid_code:
+                                ui.button(icon="content_copy", on_click=copy_mermaid).props("flat round dense").tooltip("Copy Mermaid Code")
+
                         if mermaid_code:
-                            ui.button(icon="content_copy", on_click=copy_mermaid).props("flat round dense").tooltip("Copy Mermaid Code")
+                            elements["mermaid"] = ui.mermaid(mermaid_code).classes("w-full bg-white p-4 rounded shadow")
+                        else:
+                            ui.label("No observed events for this execution.")
+                    render_cache["diagram_kind"] = diagram_kind
+                    render_cache["mermaid_code"] = mermaid_code
+                elif mermaid_code and mermaid_code != render_cache.get("mermaid_code"):
+                    elements["mermaid"].set_content(mermaid_code)
+                    render_cache["mermaid_code"] = mermaid_code
 
-                    if mermaid_code:
-                        ui.mermaid(mermaid_code).classes("w-full bg-white p-4 rounded shadow")
-                    else:
-                        ui.label("No observed events for this execution.")
+                # --- Observed evidence table: rows patched in place (no
+                # clear/rebuild) whenever the section already shows a table,
+                # so the QTable's own client-side pagination state is never
+                # reset by an update that merely appends/changes rows
+                # (REQ-002, REQ-003, AS-005).
+                evidence = evidence_rows(selected_events)
+                evidence_has_rows = bool(evidence)
+                if evidence_has_rows != render_cache.get("evidence_has_rows"):
+                    evidence_container.clear()
+                    with evidence_container:
+                        ui.label("Observed Evidence (local diagnostics only, not live GitHub/provider state)").classes("text-xl font-bold mb-2")
+                        if evidence:
+                            columns = [
+                                {"name": "time", "label": "Observed At", "field": "time", "align": "left"},
+                                {"name": "stage", "label": "Stage", "field": "stage", "align": "left"},
+                                {"name": "outcome", "label": "Outcome", "field": "outcome", "align": "left"},
+                                {"name": "facts", "label": "Facts", "field": "facts", "align": "left"},
+                            ]
+                            elements["evidence_table"] = ui.table(columns=columns, rows=evidence, pagination=10).classes("w-full")
+                        else:
+                            ui.label("No evidence facts recorded for this execution.")
+                    render_cache["evidence_has_rows"] = evidence_has_rows
+                    render_cache["evidence_rows"] = evidence
+                elif evidence != render_cache.get("evidence_rows"):
+                    elements["evidence_table"].rows = evidence
+                    render_cache["evidence_rows"] = evidence
 
-                evidence_container.clear()
-                with evidence_container:
-                    ui.label("Observed Evidence (local diagnostics only, not live GitHub/provider state)").classes("text-xl font-bold mb-2")
-                    rows = evidence_rows(selected_events)
-                    if not rows:
-                        ui.label("No evidence facts recorded for this execution.")
-                    else:
-                        columns = [
-                            {"name": "time", "label": "Observed At", "field": "time", "align": "left"},
-                            {"name": "stage", "label": "Stage", "field": "stage", "align": "left"},
-                            {"name": "outcome", "label": "Outcome", "field": "outcome", "align": "left"},
-                            {"name": "facts", "label": "Facts", "field": "facts", "align": "left"},
-                        ]
-                        ui.table(columns=columns, rows=rows, pagination=10).classes("w-full")
+                # --- Decision log table: same in-place row patching as evidence. ---
+                log_rows = []
+                for event in reversed(selected_events):  # newest-first (REQ-009)
+                    fact_lines = [f"{k}: {format_fact_value(v)}" for k, v in sorted((event.facts or {}).items())]
+                    log_rows.append(
+                        {
+                            "time": datetime.fromtimestamp(event.timestamp).strftime("%H:%M:%S"),
+                            "stage": event.label or event.stage_id,
+                            "kind": event.kind,
+                            "outcome": event.outcome or "unknown",
+                            "facts": "\n".join(fact_lines) if fact_lines else "",
+                        }
+                    )
+                logs_has_rows = bool(log_rows)
+                if logs_has_rows != render_cache.get("logs_has_rows"):
+                    logs_container.clear()
+                    with logs_container:
+                        ui.label("Decision Log").classes("text-xl font-bold mb-2")
+                        if log_rows:
+                            columns = [
+                                {"name": "time", "label": "Time", "field": "time", "align": "left"},
+                                {"name": "stage", "label": "Stage", "field": "stage", "align": "left"},
+                                {"name": "kind", "label": "Kind", "field": "kind", "align": "left"},
+                                {"name": "outcome", "label": "Outcome", "field": "outcome", "align": "left"},
+                                {"name": "facts", "label": "Facts", "field": "facts", "align": "left"},
+                            ]
+                            elements["logs_table"] = ui.table(columns=columns, rows=log_rows, pagination=10).classes("w-full")
+                        else:
+                            ui.label("No events recorded for this execution.")
+                    render_cache["logs_has_rows"] = logs_has_rows
+                    render_cache["log_rows"] = log_rows
+                elif log_rows != render_cache.get("log_rows"):
+                    elements["logs_table"].rows = log_rows
+                    render_cache["log_rows"] = log_rows
 
-                logs_container.clear()
-                with logs_container:
-                    ui.label("Decision Log").classes("text-xl font-bold mb-2")
-                    if not selected_events:
-                        ui.label("No events recorded for this execution.")
-                    else:
-                        columns = [
-                            {"name": "time", "label": "Time", "field": "time", "align": "left"},
-                            {"name": "stage", "label": "Stage", "field": "stage", "align": "left"},
-                            {"name": "kind", "label": "Kind", "field": "kind", "align": "left"},
-                            {"name": "outcome", "label": "Outcome", "field": "outcome", "align": "left"},
-                            {"name": "facts", "label": "Facts", "field": "facts", "align": "left"},
-                        ]
-                        rows = []
-                        for event in reversed(selected_events):  # newest-first (REQ-009)
-                            fact_lines = [f"{k}: {format_fact_value(v)}" for k, v in sorted((event.facts or {}).items())]
-                            rows.append(
-                                {
-                                    "time": datetime.fromtimestamp(event.timestamp).strftime("%H:%M:%S"),
-                                    "stage": event.label or event.stage_id,
-                                    "kind": event.kind,
-                                    "outcome": event.outcome or "unknown",
-                                    "facts": "\n".join(fact_lines) if fact_lines else "",
-                                }
-                            )
-                        ui.table(columns=columns, rows=rows, pagination=10).classes("w-full")
-
-                legacy_container.clear()
-                with legacy_container:
-                    unscoped = unscoped_events_for_item(snapshot, repo_name, item_type, item_number)
-                    legacy_raw = get_trace_logger().get_logs(item_type=item_type, item_number=item_number, limit=500)
-                    if unscoped or legacy_raw:
-                        ui.label("Unscoped / legacy diagnostic evidence (not attributed to any execution)").classes("text-lg font-bold mb-2")
-                    if unscoped:
-                        columns = [
-                            {"name": "time", "label": "Time", "field": "time", "align": "left"},
-                            {"name": "stage", "label": "Stage", "field": "stage", "align": "left"},
-                            {"name": "outcome", "label": "Outcome", "field": "outcome", "align": "left"},
-                            {"name": "supported", "label": "Schema", "field": "supported", "align": "left"},
-                        ]
-                        rows = [
-                            {
-                                "time": datetime.fromtimestamp(e.timestamp).strftime("%H:%M:%S"),
-                                "stage": e.label or e.stage_id,
-                                "outcome": e.outcome or "unknown",
-                                "supported": "supported" if e.supported else "unsupported schema",
-                            }
-                            for e in reversed(unscoped)
-                        ]
-                        ui.table(columns=columns, rows=rows, pagination=10).classes("w-full mb-4")
-                    if legacy_raw:
-                        ui.label("Legacy raw diagnostic text (pre-migration; inert text only)").classes("text-md font-bold mb-2")
-                        columns = [
-                            {"name": "time", "label": "Time", "field": "time", "align": "left"},
-                            {"name": "category", "label": "Category", "field": "category", "align": "left"},
-                            {"name": "message", "label": "Message", "field": "message", "align": "left"},
-                            {"name": "details", "label": "Details", "field": "details", "align": "left"},
-                        ]
-                        ui.table(columns=columns, rows=prepare_log_rows(legacy_raw), pagination=10).classes("w-full")
+                # --- Unscoped/legacy diagnostic evidence: rebuilt only when a
+                # table appears/disappears; rows patched in place otherwise. ---
+                unscoped = unscoped_events_for_item(snapshot, repo_name, item_type, item_number)
+                legacy_raw = get_trace_logger().get_logs(item_type=item_type, item_number=item_number, limit=500)
+                unscoped_rows = [
+                    {
+                        "time": datetime.fromtimestamp(e.timestamp).strftime("%H:%M:%S"),
+                        "stage": e.label or e.stage_id,
+                        "outcome": e.outcome or "unknown",
+                        "supported": "supported" if e.supported else "unsupported schema",
+                    }
+                    for e in reversed(unscoped)
+                ]
+                legacy_raw_rows = prepare_log_rows(legacy_raw)
+                legacy_shape = (bool(unscoped_rows), bool(legacy_raw_rows))
+                if legacy_shape != render_cache.get("legacy_shape"):
+                    legacy_container.clear()
+                    with legacy_container:
+                        if unscoped_rows or legacy_raw_rows:
+                            ui.label("Unscoped / legacy diagnostic evidence (not attributed to any execution)").classes("text-lg font-bold mb-2")
+                        if unscoped_rows:
+                            columns = [
+                                {"name": "time", "label": "Time", "field": "time", "align": "left"},
+                                {"name": "stage", "label": "Stage", "field": "stage", "align": "left"},
+                                {"name": "outcome", "label": "Outcome", "field": "outcome", "align": "left"},
+                                {"name": "supported", "label": "Schema", "field": "supported", "align": "left"},
+                            ]
+                            elements["unscoped_table"] = ui.table(columns=columns, rows=unscoped_rows, pagination=10).classes("w-full mb-4")
+                        if legacy_raw_rows:
+                            ui.label("Legacy raw diagnostic text (pre-migration; inert text only)").classes("text-md font-bold mb-2")
+                            columns = [
+                                {"name": "time", "label": "Time", "field": "time", "align": "left"},
+                                {"name": "category", "label": "Category", "field": "category", "align": "left"},
+                                {"name": "message", "label": "Message", "field": "message", "align": "left"},
+                                {"name": "details", "label": "Details", "field": "details", "align": "left"},
+                            ]
+                            elements["legacy_table"] = ui.table(columns=columns, rows=legacy_raw_rows, pagination=10).classes("w-full")
+                    render_cache["legacy_shape"] = legacy_shape
+                    render_cache["unscoped_rows"] = unscoped_rows
+                    render_cache["legacy_raw_rows"] = legacy_raw_rows
+                else:
+                    if unscoped_rows and unscoped_rows != render_cache.get("unscoped_rows"):
+                        elements["unscoped_table"].rows = unscoped_rows
+                        render_cache["unscoped_rows"] = unscoped_rows
+                    if legacy_raw_rows and legacy_raw_rows != render_cache.get("legacy_raw_rows"):
+                        elements["legacy_table"].rows = legacy_raw_rows
+                        render_cache["legacy_raw_rows"] = legacy_raw_rows
             finally:
                 state["refreshing"] = False
 
