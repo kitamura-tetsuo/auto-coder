@@ -363,15 +363,84 @@ class MuseClient(LLMClientBase):
                 detail = "Git lifecycle command"
             raise RuntimeError(f"Muse execution violated the Git-state invariant ({detail} changed)")
 
+    @staticmethod
+    def _path_is_within(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            return False
+        return True
+
+    def _safe_prompt_directory(self) -> Path:
+        """Select a temporary directory outside the worktree and Git metadata."""
+        repository = Path.cwd().resolve()
+        protected = [repository]
+        for argument in ("--git-dir", "--git-common-dir"):
+            result = self._git("rev-parse", "--path-format=absolute", argument)
+            if result.returncode != 0:
+                raise RuntimeError("Unable to locate Git metadata for Muse prompt isolation")
+            protected.append(Path(os.fsdecode(result.stdout).strip()).resolve())
+
+        candidates = [Path(tempfile.gettempdir())]
+        if os.name == "posix":
+            candidates.append(Path("/tmp"))
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if any(self._path_is_within(resolved, root) for root in protected):
+                continue
+            if resolved.is_dir() and os.access(resolved, os.W_OK | os.X_OK):
+                return resolved
+        raise RuntimeError("No safe temporary directory is available outside the repository for the Muse prompt file")
+
+    def _create_prompt_file(self, prompt: str) -> Path:
+        """Write one complete rendered prompt to an exclusively created private file."""
+        path: Optional[Path] = None
+        descriptor: Optional[int] = None
+        try:
+            descriptor, raw_path = tempfile.mkstemp(prefix="auto-coder-muse-prompt-", dir=self._safe_prompt_directory())
+            path = Path(raw_path)
+            if os.name == "posix":
+                os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as prompt_file:
+                descriptor = None
+                prompt_file.write(prompt.encode("utf-8"))
+                prompt_file.flush()
+                os.fsync(prompt_file.fileno())
+            file_stat = path.stat()
+            if not stat.S_ISREG(file_stat.st_mode) or (os.name == "posix" and stat.S_IMODE(file_stat.st_mode) != 0o600):
+                raise RuntimeError("Muse prompt transport did not produce a private regular file")
+            return path
+        except BaseException as exc:
+            cleanup_error: Optional[OSError] = None
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError as close_exc:
+                    cleanup_error = close_exc
+            if path is not None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as unlink_exc:
+                    cleanup_error = cleanup_error or unlink_exc
+            failure = RuntimeError(f"Unable to prepare the complete Muse prompt file: {exc}")
+            if cleanup_error is not None:
+                failure.add_note(f"Prompt file cleanup also failed: {cleanup_error}")
+            raise failure from exc
+
+    @staticmethod
+    def _reject_competing_prompt_sources(arguments: list[str]) -> None:
+        for argument in arguments:
+            if argument in {"--prompt", "--prompt-file"} or argument.startswith(("--prompt=", "--prompt-file=")):
+                raise RuntimeError("Muse options must not configure a prompt source; Auto-Coder owns --prompt-file")
+
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         before = self._snapshot()
-        metadata_watch = _GitMetadataWatch()
         processed = self.config_backend.replace_placeholders(model_name=self.model_name) if self.config_backend else {}
         options = processed.get("options_for_noedit" if is_noedit and self.options_for_noedit else "options", self.options_for_noedit if is_noedit and self.options_for_noedit else self.options)
         command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse"))
-        command.extend(["exec", *options])
-        command.extend(self.consume_extra_args())
-        command.append(render_prompt("muse.execution", task_prompt=prompt, mode="no-edit" if is_noedit else "edit"))
+        invocation_arguments = [*options, *self.consume_extra_args()]
+        self._reject_competing_prompt_sources(invocation_arguments)
+        rendered_prompt = render_prompt("muse.execution", task_prompt=prompt, mode="no-edit" if is_noedit else "edit")
         env = os.environ.copy()
         if self.config_backend and self.config_backend.api_key and "MUSE_API_KEY" not in env:
             env["MUSE_API_KEY"] = self.config_backend.api_key
@@ -380,33 +449,59 @@ class MuseClient(LLMClientBase):
         trace_path = trace_file.name
         trace_file.close()
         env["GIT_TRACE2_EVENT"] = trace_path
-
-        logger.warning("LLM invocation: Muse Code CLI is being called. Keep LLM calls minimized.")
-        logger.info("Running Muse Code in non-interactive %s mode", "no-edit" if is_noedit else "edit")
+        metadata_watch = _GitMetadataWatch()
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout, env=env)
-        except subprocess.TimeoutExpired as exc:
-            mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
+            prompt_path = self._create_prompt_file(rendered_prompt)
+        except BaseException:
             metadata_watch.close()
-            os.unlink(trace_path)
-            self._assert_invariants(before, is_noedit, mutation_observed)
-            raise AutoCoderTimeoutError(f"Muse Code CLI timed out after {self.timeout} seconds") from exc
-        except OSError as exc:
-            metadata_watch.close()
-            os.unlink(trace_path)
-            raise RuntimeError(f"Muse Code CLI could not be executed: {exc}") from exc
+            try:
+                os.unlink(trace_path)
+            except OSError as cleanup_exc:
+                logger.error("Unable to remove Muse Git trace file %s: %s", trace_path, cleanup_exc)
+            raise
+        command.extend(["exec", *invocation_arguments, "--prompt-file", str(prompt_path)])
 
-        output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-        mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
-        metadata_watch.close()
-        os.unlink(trace_path)
-        self._assert_invariants(before, is_noedit, mutation_observed)
-        markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded", "429"]
-        if has_usage_marker_match(output, markers):
-            raise AutoCoderUsageLimitError(output or "Muse Code usage limit reached")
-        if result.returncode != 0:
-            raise RuntimeError(f"Muse Code CLI failed with return code {result.returncode}\n{output}")
-        return output
+        try:
+            logger.warning("LLM invocation: Muse Code CLI is being called. Keep LLM calls minimized.")
+            logger.info("Running Muse Code in non-interactive %s mode", "no-edit" if is_noedit else "edit")
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout, env=env)
+            except subprocess.TimeoutExpired as exc:
+                mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
+                self._assert_invariants(before, is_noedit, mutation_observed)
+                raise AutoCoderTimeoutError(f"Muse Code CLI timed out after {self.timeout} seconds") from exc
+            except OSError as exc:
+                raise RuntimeError(f"Muse Code CLI could not be executed: {exc}") from exc
+
+            output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+            mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
+            self._assert_invariants(before, is_noedit, mutation_observed)
+            markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded", "429"]
+            if has_usage_marker_match(output, markers):
+                raise AutoCoderUsageLimitError(output or "Muse Code usage limit reached")
+            if result.returncode != 0:
+                raise RuntimeError(f"Muse Code CLI failed with return code {result.returncode}\n{output}")
+            final_output = output
+        except BaseException as exc:
+            try:
+                prompt_path.unlink()
+            except OSError as cleanup_exc:
+                logger.error("Unable to remove Muse prompt file %s: %s", prompt_path, cleanup_exc)
+                exc.add_note(f"Muse prompt file cleanup failed: {cleanup_exc}")
+            raise
+        else:
+            try:
+                prompt_path.unlink()
+            except OSError as cleanup_exc:
+                logger.error("Unable to remove Muse prompt file %s: %s", prompt_path, cleanup_exc)
+                raise RuntimeError(f"Muse completed but its prompt file could not be removed: {cleanup_exc}") from cleanup_exc
+            return final_output
+        finally:
+            metadata_watch.close()
+            try:
+                os.unlink(trace_path)
+            except OSError as exc:
+                logger.error("Unable to remove Muse Git trace file %s: %s", trace_path, exc)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         return False

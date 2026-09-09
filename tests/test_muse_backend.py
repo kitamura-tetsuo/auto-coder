@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shlex
 import stat
@@ -14,6 +16,7 @@ from click import ClickException
 
 from src.auto_coder.cli_helpers import build_backend_manager, check_backend_prerequisites
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from src.auto_coder.prompt_loader import render_prompt
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -68,6 +71,115 @@ def test_config_alias_reaches_lazy_muse_exec_and_keeps_head(tmp_path: Path, monk
     assert output == "ACTION_SUMMARY: Muse completed"
     assert _git(repo, "rev-parse", "HEAD") == head
     assert (repo / "tracked.txt").read_text() == "after\n"
+
+
+@pytest.mark.parametrize("size", [256 * 1024, 2 * 1024 * 1024])
+def test_muse_transports_full_rendered_prompt_through_private_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, size: int) -> None:
+    repo = _repository(tmp_path)
+    report = tmp_path / f"report-{size}.json"
+    script = tmp_path / f"muse-{size}"
+    script.write_text(
+        """#!/usr/bin/env python3
+import hashlib
+import json
+import os
+import stat
+import sys
+import time
+from pathlib import Path
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code 1.0.2")
+    raise SystemExit(0)
+arguments = sys.argv[1:]
+assert arguments[0] == "exec"
+assert arguments.count("--prompt-file") == 1
+prompt_path = Path(arguments[arguments.index("--prompt-file") + 1])
+time.sleep(0.05)
+payload = prompt_path.read_bytes()
+file_stat = prompt_path.stat()
+report = {
+    "argv": arguments,
+    "path": str(prompt_path),
+    "regular": stat.S_ISREG(file_stat.st_mode),
+    "mode": stat.S_IMODE(file_stat.st_mode),
+    "size": len(payload),
+    "digest": hashlib.sha256(payload).hexdigest(),
+    "body_in_environment": any(payload.decode("utf-8") in value for value in os.environ.values()),
+    "api_key": os.environ.get("MUSE_API_KEY"),
+}
+Path(os.environ["MUSE_TEST_REPORT"]).write_text(json.dumps(report))
+print("ACTION_SUMMARY: Muse completed")
+"""
+    )
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(
+        backends={
+            "muse": BackendConfig(
+                name="muse",
+                backend_type="muse",
+                model="muse-spark-1.3",
+                options=["--model", "[model_name]"],
+                api_key="private-test-key",
+            )
+        }
+    )
+    task = (("Unicode ☃ @ ' \" ; $(false)\r\n" * ((size // 30) + 1))[:size]).rstrip("\n")
+    expected = render_prompt("muse.execution", task_prompt=task, mode="edit").encode("utf-8")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    monkeypatch.setenv("MUSE_TEST_REPORT", str(report))
+
+    assert _manager(config)._run_llm_cli(task) == "ACTION_SUMMARY: Muse completed"
+
+    observed = json.loads(report.read_text())
+    assert observed["argv"][:4] == ["exec", "--model", "muse-spark-1.3", "--prompt-file"]
+    assert task not in observed["argv"]
+    assert observed["regular"] is True
+    assert observed["mode"] == 0o600
+    assert observed["size"] == len(expected)
+    assert observed["digest"] == hashlib.sha256(expected).hexdigest()
+    assert observed["body_in_environment"] is False
+    assert observed["api_key"] == "private-test-key"
+    assert not Path(observed["path"]).exists()
+    assert not Path(observed["path"]).is_relative_to(repo)
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_muse_uses_safe_external_directory_when_tmpdir_is_in_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    unsafe_temp = repo / "temporary"
+    unsafe_temp.mkdir()
+    report = tmp_path / "prompt-path"
+    script = _muse_script(tmp_path, 'eval "prompt_path=\\${$(($# - 1))}"')
+    # Use a small dedicated script because POSIX sh has no portable negative
+    # positional-parameter syntax.
+    script.write_text("#!/bin/sh\n" "if [ \"$1\" = --version ]; then echo 'Muse Code 1.0.2'; exit 0; fi\n" 'while [ "$1" != --prompt-file ]; do shift; done\n' 'printf \'%s\' "$2" > "$MUSE_TEST_REPORT"\n' 'cat "$2" >/dev/null\n' "echo ACTION_SUMMARY: Muse completed\n")
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    monkeypatch.setenv("MUSE_TEST_REPORT", str(report))
+    monkeypatch.setenv("TMPDIR", str(unsafe_temp))
+    monkeypatch.setattr("src.auto_coder.muse_client.tempfile.tempdir", None)
+
+    assert _manager(config)._run_llm_cli("implement") == "ACTION_SUMMARY: Muse completed"
+    assert not Path(report.read_text()).is_relative_to(repo)
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_muse_rejects_configured_prompt_source_before_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    launched = tmp_path / "launched"
+    script = _muse_script(tmp_path, f"touch {shlex.quote(str(launched))}")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", options=["--prompt-file", "configured.txt"])})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with pytest.raises(RuntimeError, match="must not configure a prompt source"):
+        _manager(config)._run_llm_cli("implement")
+
+    assert not launched.exists()
 
 
 def test_muse_commit_is_rejected_and_head_is_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:

@@ -1,5 +1,17 @@
 # Client Features Documentation
 
+## Muse prompt-file transport
+
+Every local Muse task is rendered in full and delivered to `muse exec` through
+exactly one adapter-owned `--prompt-file`.  Each invocation uses a distinct,
+owner-only regular file outside the target worktree and Git metadata; the file
+is finalized before launch, remains available until the child exits, and is
+removed on every handled outcome.  Conflicting configured prompt sources fail
+before launch, while model, mode, authentication, workspace, session arguments,
+and the existing Git-state audit remain unchanged.  Prompt contents are never
+placed in process arguments, environment values, shell intermediaries, or
+diagnostics.
+
 ## Antigravity prompt stdin transport
 
 Local Antigravity tasks use its explicit finite `--input-format text` mode and
@@ -782,10 +794,12 @@ secret_name = "CODEX_AUTH_JSON"
 Meta Muse Code is available as the `muse` backend and as named aliases with
 `backend_type = "muse"`. Install and authenticate the `muse` CLI (or provide
 `MUSE_API_KEY`) before startup. Auto-Coder invokes `muse exec` once with the
-configured model and edit/no-edit options. Muse may inspect files, edit the
-working tree, and run tests, but Auto-Coder exclusively owns branches, HEAD,
-staging, commits, pushes, and pull-request lifecycle operations. A lifecycle
-mutation, or any repository mutation during no-edit execution, fails the run.
+configured model and edit/no-edit options, transporting the complete rendered
+task in an execution-scoped private `--prompt-file` outside the repository.
+Muse may inspect files, edit the working tree, and run tests, but Auto-Coder
+exclusively owns branches, HEAD, staging, commits, pushes, and pull-request
+lifecycle operations. A lifecycle mutation, or any repository mutation during
+no-edit execution, fails the run.
 
 #### Authoritative Codex Cloud task IDs
 
