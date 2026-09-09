@@ -73,8 +73,9 @@ class TestGeminiClient:
         _ = client._run_llm_cli("ping")
 
         called_cmd = mock_run_command.call_args[0][0]
-        assert called_cmd[-1] == "ping"
-        assert called_cmd[-3:-1] == ["--resume", "session42"]
+        assert called_cmd[-4:-2] == ["--resume", "session42"]
+        assert called_cmd[-2:] == ["--input-format", "text"]
+        assert mock_run_command.call_args.kwargs["stdin_text"] == "ping"
 
     """Test cases for GeminiClient class."""
 
