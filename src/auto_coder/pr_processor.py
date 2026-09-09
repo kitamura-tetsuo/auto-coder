@@ -48,6 +48,7 @@ from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
 from .entity_invalidation import DurableInvalidationQueue
 from .exceptions import AutoCoderRetryableBackendError
+from .execution_trace import EventKind, Outcome, get_trace_collector
 from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
@@ -58,6 +59,7 @@ from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
+from .merge_operation_adapter import AdapterOutcomeKind
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
@@ -93,6 +95,49 @@ cmd = CommandExecutor()
 # deferred obligation is actually consumed instead of being retained forever.
 PR_PROCESSING_STAGE = "pr-processing"
 PR_PROCESSING_REFRESH_EFFECT = "authoritative-refresh"
+
+# Never collapses a retryable pending merge-operation state into a plain
+# failure (REQ-006): each AdapterOutcomeKind keeps its own distinct Outcome.
+_ADAPTER_OUTCOME_TO_TRACE_OUTCOME: Dict["AdapterOutcomeKind", "Outcome"] = {
+    AdapterOutcomeKind.CONFIRMED_COMPLETE: Outcome.COMPLETED,
+    AdapterOutcomeKind.DEFERRED: Outcome.DEFERRED,
+    AdapterOutcomeKind.OPERATIONALLY_BLOCKED: Outcome.BLOCKED,
+    AdapterOutcomeKind.DEFINITIVE_REJECTION: Outcome.BLOCKED,
+    AdapterOutcomeKind.INDETERMINATE: Outcome.UNKNOWN,
+    AdapterOutcomeKind.SUPERSEDED: Outcome.SUPERSEDED,
+    AdapterOutcomeKind.ALREADY_SATISFIED: Outcome.UNKNOWN,
+    AdapterOutcomeKind.NO_RECONCILIATION_NEEDED: Outcome.UNKNOWN,
+}
+
+
+def _record_pr_stage(
+    pr_number: int,
+    stage_id: str,
+    label: str,
+    outcome: Outcome,
+    facts: Optional[Dict[str, Any]] = None,
+    kind: EventKind = EventKind.STAGE_RESULT,
+) -> None:
+    """Record a PR-processing stage event using the ambient execution scope.
+
+    The scope is bound by ``AutomationEngine`` before this module's
+    processing functions run (REQ-002); when none is bound, ``TraceCollector``
+    retains the event as legacy/unscoped instead of inventing one. A
+    diagnostic-recorder failure is caught here and never propagates into the
+    decision it is describing (REQ-008).
+    """
+    try:
+        merged_facts = {"pr_number": pr_number, **(facts or {})}
+        get_trace_collector().record_event(
+            kind,
+            stage_id=stage_id,
+            origin=stage_id,
+            label=label,
+            outcome=outcome,
+            facts=merged_facts,
+        )
+    except Exception:
+        logger.debug(f"Diagnostic trace recording failed for pr#{pr_number} stage {stage_id}; continuing", exc_info=True)
 
 
 def _remove_reviewer_sessions_for_closed_pr(repo_name: str, pr_number: int) -> None:
@@ -644,12 +689,14 @@ def process_pull_request(
             processed_pr.actions_taken = list(unsafe_branch_result.actions)
             processed_pr.priority = "defer"
             processed_pr.outcome = PRProcessingOutcome.DEFERRED
+            _record_pr_stage(pr_number, "pr.unsafe-codex-cloud-recovery", f"pr#{pr_number} unsafe Codex Cloud PR recovery", Outcome.DEFERRED, {"reason": str(unsafe_branch_result.metadata_error)})
             return processed_pr
         pr_data = unsafe_branch_result.authoritative_pr_data or pr_data
         processed_pr.pr_data = pr_data
         if unsafe_branch_result.closed:
             processed_pr.actions_taken = unsafe_branch_result.actions
             processed_pr.priority = "close"
+            _record_pr_stage(pr_number, "pr.unsafe-codex-cloud-recovery", f"pr#{pr_number} unsafe Codex Cloud PR recovery", Outcome.COMPLETED, {"actions": list(unsafe_branch_result.actions)})
             return processed_pr
 
         # Close PRs with zero effective diff before any further processing.
@@ -659,6 +706,7 @@ def process_pull_request(
         if empty_pr_result.closed:
             processed_pr.actions_taken = empty_pr_result.actions
             processed_pr.priority = "close"
+            _record_pr_stage(pr_number, "pr.empty-pr-recovery", f"pr#{pr_number} empty-PR recovery", Outcome.COMPLETED, {"linked_issue_numbers": list(empty_pr_result.issue_numbers)})
             return processed_pr
 
         # Close Jules PRs that could not get CI green within the configured timeout.
@@ -669,6 +717,7 @@ def process_pull_request(
         if stale_jules_result.closed:
             processed_pr.actions_taken = stale_jules_result.actions
             processed_pr.priority = "close"
+            _record_pr_stage(pr_number, "pr.stale-jules-pr-recovery", f"pr#{pr_number} stale Jules PR recovery", Outcome.COMPLETED, {"linked_issue_numbers": list(stale_jules_result.issue_numbers)})
             return processed_pr
 
         # Skip immediately if PR already has @auto-coder label
@@ -684,6 +733,7 @@ def process_pull_request(
                 logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
                 get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - already processed", item_type="pr", item_number=pr_number, details={"skip_reason": "already_processed"})
                 processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
+                _record_pr_stage(pr_number, "pr.label-admission", f"pr#{pr_number} label admission", Outcome.SKIPPED, {"reason": "label_exists"})
                 return processed_pr
 
         # Check if we should skip this PR because it's waiting for Jules
@@ -691,6 +741,7 @@ def process_pull_request(
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
             get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
             processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
+            _record_pr_stage(pr_number, "pr.provider-wait", f"pr#{pr_number} provider wait", Outcome.DEFERRED, {"provider": "jules"})
             return processed_pr
 
         # Process Jules PRs to detect session IDs and update PR body
@@ -717,6 +768,7 @@ def process_pull_request(
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
             get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
             processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
+            _record_pr_stage(pr_number, "pr.provider-wait", f"pr#{pr_number} provider wait", Outcome.DEFERRED, {"provider": "jules"})
             return processed_pr
 
         # Extract PR information
@@ -2378,7 +2430,23 @@ def _handle_pr_merge(
             if config.ENABLE_MERGEABILITY_REMEDIATION:
                 remediation_actions = _start_mergeability_remediation(pr_number, merge_state_status, repo_name)
                 actions.extend(remediation_actions)
+                # Classified from the same action-string markers the
+                # production control flow itself already keys off elsewhere
+                # (e.g. ACTION_FLAG:SKIP_ANALYSIS, "Failed", "delegated") --
+                # not a new invented signal (REQ-006).
+                if any("delegated" in a.lower() for a in remediation_actions):
+                    remediation_outcome = Outcome.ACCEPTED_HANDOFF
+                elif any("Failed" in a for a in remediation_actions):
+                    remediation_outcome = Outcome.FAILED
+                elif any("Closed PR" in a for a in remediation_actions):
+                    remediation_outcome = Outcome.COMPLETED
+                elif "ACTION_FLAG:SKIP_ANALYSIS" in remediation_actions:
+                    remediation_outcome = Outcome.COMPLETED
+                else:
+                    remediation_outcome = Outcome.DEFERRED
+                _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", remediation_outcome, {"merge_state_status": state_text})
                 return actions
+            _record_pr_stage(pr_number, "pr.mergeability", f"pr#{pr_number} mergeability", Outcome.SKIPPED, {"merge_state_status": state_text, "reason": "mergeability remediation is disabled"})
 
         # Step 2: If checks are in progress, skip this PR
         if not should_continue:
@@ -2435,6 +2503,7 @@ def _handle_pr_merge(
                 if not claim.acquired:
                     logger.info(f"Dispatch claim not acquired for PR #{pr_number} ({dispatch_identity.key()}): {claim.reason}")
                     actions.append(f"Skipped triggering {workflow_id} for PR #{pr_number}: dispatch already claimed ({claim.reason})")
+                    _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.SKIPPED, {"workflow_id": workflow_id, "reason": claim.reason})
                     return actions
 
                 # Publish the restart-safe observation obligation before the
@@ -2448,10 +2517,12 @@ def _handle_pr_merge(
                 except Exception as exc:
                     logger.error(f"CI watch persistence blocked dispatch {dispatch_identity.key()}: {exc}")
                     actions.append(f"Blocked triggering {workflow_id} for PR #{pr_number}: durable CI watch unavailable")
+                    _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.BLOCKED, {"workflow_id": workflow_id, "reason": "durable CI watch unavailable"})
                     return actions
                 if not watch_created:
                     logger.error(f"CI watch identity was invalid for {dispatch_identity.key()}")
                     actions.append(f"Blocked triggering {workflow_id} for PR #{pr_number}: durable CI watch unavailable")
+                    _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.BLOCKED, {"workflow_id": workflow_id, "reason": "durable CI watch invalid"})
                     return actions
 
                 try:
@@ -2478,10 +2549,16 @@ def _handle_pr_merge(
                         actions.append(f"Created durable CI watch for {workflow_id}")
                         get_trace_logger().log("CI Trigger", f"Created durable CI watch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"workflow": workflow_id})
                         lm.keep_label()
+                        # Confirms only that the workflow_dispatch API call was
+                        # accepted, never that CI will subsequently pass
+                        # (REQ-006): the actual result arrives later via the
+                        # durable CI watch as its own evaluation.
+                        _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.ACCEPTED_HANDOFF, {"workflow_id": workflow_id, "head_sha": head_sha})
                         return actions
 
                     else:
                         actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number} (outcome={dispatch_result.outcome.value})")
+                        _record_pr_stage(pr_number, "pr.manual-ci-dispatch", f"pr#{pr_number} manual CI dispatch", Outcome.FAILED, {"workflow_id": workflow_id, "head_sha": head_sha, "dispatch_outcome": dispatch_result.outcome.value})
                         # Label will be removed by LabelManager exit
 
                 except Exception as e:
@@ -2527,6 +2604,7 @@ def _handle_pr_merge(
                     if processing_status is not None:
                         processing_status.error = claimed_thread_state.lookup_error
                         processing_status.outcome = PRProcessingOutcome.FAILED
+                    _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.FAILED, {"reason": claimed_thread_state.lookup_error})
                     return actions
                 if adv_enabled:
                     if claimed_thread_state.has_blocking_unresolved and not _is_dependabot_pr(pr_data):
@@ -2563,14 +2641,28 @@ def _handle_pr_merge(
                             unresolved_threads=repair_threads,
                         )
                         actions.extend(repair_result)
+                        # Delivery of a repair follow-up is accepted handoff,
+                        # never a completed repair (REQ-006): the provider has
+                        # only agreed to look, not fixed anything yet.
+                        _record_pr_stage(
+                            pr_number,
+                            "pr.review-thread-repair",
+                            f"pr#{pr_number} review-thread repair delegation",
+                            Outcome.ACCEPTED_HANDOFF if repair_result.delivered else Outcome.FAILED,
+                            {"unresolved_thread_count": len(repair_threads)},
+                        )
                         if not repair_result.delivered and processing_status is not None:
                             processing_status.error = repair_result[0] if repair_result else "Unresolved review repair was not delivered"
                             processing_status.outcome = PRProcessingOutcome.FAILED
+                    _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.BLOCKED, {"blocking_unresolved_count": len(claimed_thread_state.blocking_unresolved)})
                     return actions
 
                 claimed_review_threads = claimed_thread_state.claimed
                 if claimed_review_threads:
                     actions.append(f"PR #{pr_number} has {len(claimed_review_threads)} claimed-addressed review thread(s) pending independent validation")
+                _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.COMPLETED, {"claimed_review_thread_count": len(claimed_review_threads)})
+            else:
+                _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.SKIPPED, {"reason": "review-thread gate is disabled"})
 
             # Strong-model adversarial validation step. Issue-less PRs have no
             # independent specification oracle, so validation is not applicable.
@@ -2591,6 +2683,7 @@ def _handle_pr_merge(
                 if not adversarial_validation_applicable:
                     actions.append(f"Skipped adversarial validation for PR #{pr_number}: no linked Issue specification oracle")
                     logger.info(f"PR #{pr_number} has no linked Issue; adversarial validation is not applicable")
+                    _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SKIPPED, {"reason": "no linked Issue specification oracle"})
                 elif not thread_gate_enabled:
                     # When thread gate is disabled, adversarial validation may still read
                     # claimed threads for independent validation (REQ-004), but lookup errors
@@ -2631,6 +2724,10 @@ def _handle_pr_merge(
                             pr_number,
                             current_head_sha,
                         )
+                        # A reused saved verdict is not a fresh validation
+                        # (REQ-005): the fact carries the actual saved verdict
+                        # and examined head rather than a new attempt/outcome.
+                        _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SKIPPED, {"reason": "reached maximum adversarial review limit", "reused_saved_verdict": saved_status, "head_sha": current_head_sha})
                         if saved_status_error:
                             actions.append(f"Could not check unresolved specification gaps for PR #{pr_number}: {saved_status_error}; merge not attempted")
                             if processing_status is not None:
@@ -2726,6 +2823,7 @@ def _handle_pr_merge(
 
                     if published_status and not has_new_provenance_evidence and not force_adversarial_validation:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
+                        _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SKIPPED, {"reason": "already validated at this head", "reused_saved_verdict": published_status, "head_sha": head_sha})
                         if published_status == "ERROR":
                             saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
                             actions.adversarial_validation_error = saved_validation_error
@@ -2773,6 +2871,7 @@ def _handle_pr_merge(
                             lease = validation_admission.enter_context(adversarial_validation_scheduler.admit(repo_name, pr_number))
                             if not lease.acquired:
                                 actions.append(f"Skipped duplicate local adversarial-validation trigger for PR #{pr_number}")
+                                _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SKIPPED, {"reason": "duplicate trigger rejected by concurrency lease", "head_sha": head_sha})
                                 return actions
                         attempt_repository = AdversarialValidationAttemptRepository(repo_name)
                         attempt = attempt_repository.start(pr_number, head_sha)
@@ -2817,10 +2916,36 @@ def _handle_pr_merge(
                             val_result.publish_clarification_thread = False
                         val_result.provenance_thread_comment_ids = {thread.thread_id: thread.root_comment_database_id for thread in claimed_review_threads if thread.is_change_provenance and thread.root_comment_database_id is not None}
 
+                        # The fresh verdict this attempt actually produced,
+                        # with its examined head/attempt identity, regardless
+                        # of what publication/supersession decide next
+                        # (REQ-002, REQ-004, REQ-005).
+                        _record_pr_stage(
+                            pr_number,
+                            "pr.adversarial-validation",
+                            f"pr#{pr_number} adversarial validation",
+                            {
+                                "PASS": Outcome.COMPLETED,
+                                "NEEDS_FIX": Outcome.BLOCKED,
+                                "NEEDS_TESTS": Outcome.BLOCKED,
+                                "BLOCKED": Outcome.BLOCKED,
+                                "INCONCLUSIVE": Outcome.UNKNOWN,
+                                "ERROR": Outcome.FAILED,
+                            }.get(active_attempt_status, Outcome.UNKNOWN),
+                            {
+                                "verdict": active_attempt_status,
+                                "head_sha": head_sha,
+                                "attempt_id": attempt.attempt_id,
+                                "attempt_sequence": attempt.sequence,
+                                "diagnostic_category": val_result.diagnostic_category,
+                            },
+                        )
+
                         with attempt_repository.serialized_transition():
                             attempt_is_superseded = attempt_repository.latest_sequence(pr_number, head_sha) > attempt.sequence
                             if attempt_is_superseded:
                                 actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
+                                _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"head_sha": head_sha, "attempt_id": attempt.attempt_id, "attempt_sequence": attempt.sequence})
                                 return actions
                             resolved_thread_ids: List[str] = []
                             # Independent thread-completion validation (REQ-001..REQ-010): this
@@ -2890,6 +3015,7 @@ def _handle_pr_merge(
                             attempt_repository.mark_published(attempt.attempt_id)
                             if attempt_repository.latest_published_sequence(pr_number, head_sha) > attempt.sequence:
                                 actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
+                                _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"head_sha": head_sha, "attempt_id": attempt.attempt_id, "attempt_sequence": attempt.sequence, "stage": "post-publication"})
                                 return actions
                     if published_status == "PASS":
                         pass
@@ -3036,8 +3162,12 @@ def _handle_pr_merge(
             actions.extend(feedback_result.actions)
             if feedback_result.delivered:
                 actions.append(f"Codex Cloud will handle fixing PR #{pr_number}, skipping local fixes")
+                # A provider accepting the continuation is not proof of
+                # repaired code or passing CI (REQ-006).
+                _record_pr_stage(pr_number, "pr.provider-repair", f"pr#{pr_number} provider CI repair", Outcome.ACCEPTED_HANDOFF, {"provider": "codex-cloud"})
             else:
                 actions.append(f"Codex Cloud repair request for PR #{pr_number} was not delivered; retry is required and local fixes remain disabled")
+                _record_pr_stage(pr_number, "pr.provider-repair", f"pr#{pr_number} provider CI repair", Outcome.FAILED, {"provider": "codex-cloud", "reason": "continuation request not delivered"})
             return actions
 
         # Check if we are already on the PR branch before checkout.
@@ -3069,22 +3199,26 @@ def _handle_pr_merge(
             jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
             actions.extend(jules_feedback_actions)
             actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
+            _record_pr_stage(pr_number, "pr.provider-repair", f"pr#{pr_number} provider CI repair", Outcome.ACCEPTED_HANDOFF, {"provider": "jules"})
             return actions
 
         # Step 5: Skip to process PR if it is dependabot PR
         if _is_dependabot_pr(pr_data):
             actions.append(f"PR #{pr_number} is a dependabot PR, skipping fixes")
+            _record_pr_stage(pr_number, "pr.local-repair", f"pr#{pr_number} local CI repair", Outcome.SKIPPED, {"reason": "dependabot PR"})
             return actions
 
         # Step 6: Only PRs created by local LLM execution (or explicit local checkout) are fixed by local LLM
         if not _is_local_llm_pr(pr_data) and not already_on_pr_branch:
             actions.append(f"PR #{pr_number} was not created by local LLM, skipping local LLM fixes")
+            _record_pr_stage(pr_number, "pr.local-repair", f"pr#{pr_number} local CI repair", Outcome.SKIPPED, {"reason": "not a local-LLM PR"})
             return actions
 
         # If automatic test fixing is disabled and we're not already on the PR branch,
         # skip checkout and test-failure repair entirely to avoid mutating the workspace.
         if not _is_automatic_test_fix_enabled(config, repo_name) and not already_on_pr_branch:
             actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping test-failure repair")
+            _record_pr_stage(pr_number, "pr.local-repair", f"pr#{pr_number} local CI repair", Outcome.SKIPPED, {"reason": "automatic test fix is disabled"})
             return actions
 
         # Step 7: Checkout PR branch for non-Jules PRs
@@ -3109,6 +3243,16 @@ def _handle_pr_merge(
                     github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
                     fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
                     actions.extend(fix_actions)
+                    # A push is not a confirmed fix (REQ-006): classified from
+                    # the same "Failed"/push-confirmation markers this
+                    # function's own action strings already carry.
+                    _record_pr_stage(
+                        pr_number,
+                        "pr.local-repair",
+                        f"pr#{pr_number} local CI repair",
+                        Outcome.FAILED if any("Failed" in a or "CANNOT_FIX" in a for a in fix_actions) else Outcome.COMPLETED,
+                        {"failed_check_count": len(failed_checks)},
+                    )
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
 
@@ -3159,6 +3303,13 @@ def _handle_pr_merge(
                         github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
                         fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
                         actions.extend(fix_actions)
+                        _record_pr_stage(
+                            pr_number,
+                            "pr.local-repair",
+                            f"pr#{pr_number} local CI repair",
+                            Outcome.FAILED if any("Failed" in a or "CANNOT_FIX" in a for a in fix_actions) else Outcome.COMPLETED,
+                            {"failed_check_count": len(failed_checks)},
+                        )
                     else:
                         actions.append(f"No specific failed checks found for PR #{pr_number}")
                 else:
@@ -5316,8 +5467,14 @@ def _finalize_merge_success(repo_name: str, pr_number: int, method: str) -> bool
     """
     get_trace_logger().log("Merging", f"Successfully merged PR #{pr_number}", item_type="pr", item_number=pr_number, details={"method": method})
     log_action(f"Successfully merged PR #{pr_number} (method: {method})")
+    _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.COMPLETED, {"method": method})
     _close_linked_issues(repo_name, pr_number)
     _archive_jules_session(repo_name, pr_number)
+    # _close_linked_issues/_archive_jules_session swallow their own failures
+    # internally (per this function's docstring) rather than reporting them,
+    # so this cleanup record reflects that both were attempted, not that
+    # every linked Issue was confirmed closed (REQ-006, REQ-007).
+    _record_pr_stage(pr_number, "pr.cleanup", f"pr#{pr_number} post-merge cleanup", Outcome.COMPLETED, {"method": method})
     return True
 
 
@@ -5361,10 +5518,12 @@ def _merge_pr(
             if review_thread_state.lookup_error:
                 logger.info(f"PR #{pr_number} review threads could not be checked. Skipping merge.")
                 log_action(f"Skipping merge for PR #{pr_number} because review threads could not be checked: {review_thread_state.lookup_error}")
+                _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"reason": review_thread_state.lookup_error})
                 return False
             if review_thread_state.has_unresolved:
                 logger.info(f"PR #{pr_number} has unresolved review threads. Skipping merge.")
                 log_action(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
+                _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.BLOCKED, {"reason": "unresolved review threads at merge-time re-check"})
                 return False
 
         token = client.token
@@ -5424,6 +5583,7 @@ def _merge_pr(
         approval_effect = result.operation.effect(EffectName.APPROVAL)
         if needs_approval and approval_effect.state not in (EffectState.NOT_NEEDED, EffectState.CONFIRMED_COMPLETE):
             log_action(f"Auto-approval not completed for PR #{pr_number}: {_describe_merge_operation_outcome(result)}")
+            _record_pr_stage(pr_number, "pr.approval-delivery", f"pr#{pr_number} approval delivery", _ADAPTER_OUTCOME_TO_TRACE_OUTCOME.get(result.kind, Outcome.UNKNOWN), {"head_sha": head_sha, "outcome": _describe_merge_operation_outcome(result)})
             return False
 
         # Anything short of a definitive, cause-specified rejection is a
@@ -5435,6 +5595,11 @@ def _merge_pr(
         # retries it once its own deadline has passed.
         if result.kind is not AdapterOutcomeKind.DEFINITIVE_REJECTION:
             log_action(f"Merge not completed for PR #{pr_number}: {_describe_merge_operation_outcome(result)}")
+            # Never collapsed to a plain merge failure (REQ-006): a
+            # mutation-spacing defer, real throttle, operational block,
+            # indeterminate delivery, or superseded head each keep their own
+            # distinct outcome rather than becoming a fabricated rejection.
+            _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", _ADAPTER_OUTCOME_TO_TRACE_OUTCOME.get(result.kind, Outcome.UNKNOWN), {"head_sha": head_sha, "outcome": _describe_merge_operation_outcome(result)})
             return False
 
         # A definitive, cause-specified rejection: only now may current
@@ -5505,6 +5670,7 @@ def _handle_definitive_merge_rejection(
                 if alt_result.operation.effect(EffectName.MERGE).state is EffectState.CONFIRMED_COMPLETE:
                     return _finalize_merge_success(repo_name, pr_number, alt)
             log_action(f"Failed to merge PR #{pr_number} with any currently allowed merge method", False, "Merge API failed")
+            _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.BLOCKED, {"reason": "no currently allowed merge method succeeded"})
             return False
 
         log_action(f"Failed to merge PR #{pr_number}", False, "Merge API failed (not conflict)")
@@ -5513,6 +5679,7 @@ def _handle_definitive_merge_rejection(
             _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed")
         except Exception:
             pass
+        _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.BLOCKED, {"reason": "definitive rejection, not a conflict"})
         return False
 
     logger.info(f"PR #{pr_number} has merge conflicts, attempting to resolve...")
@@ -5530,6 +5697,7 @@ def _handle_definitive_merge_rejection(
                 jules_client.send_message(session_id, prompt)
                 logger.info(f"Requested Jules to resolve merge conflict in session {session_id}")
                 log_action(f"Requested Jules to resolve merge conflicts for PR #{pr_number}")
+                _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.ACCEPTED_HANDOFF, {"provider": "jules", "reason": "merge conflict delegated"})
                 return False
             else:
                 logger.warning(f"Jules PR #{pr_number} has merge conflicts but no session ID found. Cannot delegate.")
@@ -5541,6 +5709,7 @@ def _handle_definitive_merge_rejection(
     if _is_dependabot_pr(pr_info):
         logger.info(f"PR #{pr_number} is a dependency-bot PR with merge conflicts. Skipping conflict resolution.")
         log_action(f"Skipped merge conflict resolution for dependency-bot PR #{pr_number}")
+        _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.SKIPPED, {"reason": "dependency-bot PR merge conflict"})
         return False
 
     cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_info, client)
@@ -5548,6 +5717,9 @@ def _handle_definitive_merge_rejection(
         if cloud_delegation.accepted_action:
             log_action(cloud_delegation.accepted_action)
         log_action(f"Delegated merge-conflict repair for PR #{pr_number} to its existing cloud session")
+        # The provider accepted the follow-up, not proof the conflict is
+        # resolved (REQ-006).
+        _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.ACCEPTED_HANDOFF, {"reason": "merge conflict delegated to existing cloud session"})
         return False
 
     if not _resolve_pr_merge_conflicts(repo_name, pr_number, config):
@@ -5557,6 +5729,7 @@ def _handle_definitive_merge_rejection(
             _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (resolution failed)")
         except Exception:
             pass
+        _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"reason": "local merge-conflict resolution failed"})
         return False
 
     logger.info(f"Conflicts resolved for PR #{pr_number}, waiting for GitHub to update mergeable state")
@@ -5584,6 +5757,7 @@ def _handle_definitive_merge_rejection(
 
     if retry_result.kind is not AdapterOutcomeKind.DEFINITIVE_REJECTION:
         log_action(f"Merge not completed for PR #{pr_number} after conflict resolution: {_describe_merge_operation_outcome(retry_result)}")
+        _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", _ADAPTER_OUTCOME_TO_TRACE_OUTCOME.get(retry_result.kind, Outcome.UNKNOWN), {"head_sha": new_head_sha, "outcome": _describe_merge_operation_outcome(retry_result), "stage": "post-conflict-resolution-retry"})
         return False
 
     logger.warning(f"Merge failed for PR #{pr_number} even after conflict resolution")
@@ -5603,6 +5777,7 @@ def _handle_definitive_merge_rejection(
         _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution exhausted)")
     except Exception:
         pass
+    _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.BLOCKED, {"reason": "definitive rejection persisted after conflict resolution and allowed alternate methods"})
     return False
 
 

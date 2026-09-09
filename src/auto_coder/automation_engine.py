@@ -182,6 +182,68 @@ def _map_candidate_result_outcome(result: "CandidateProcessingResult") -> Outcom
     return Outcome.UNKNOWN
 
 
+def _record_pr_stage_result(
+    item_number: int,
+    stage_id: str,
+    label: str,
+    outcome: Outcome,
+    facts: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record a PR stage-result event using whatever execution scope is active.
+
+    Sibling of ``_record_issue_stage_result`` with identical ambient-scope
+    and non-interference behavior (REQ-002, REQ-008); kept as a separate
+    function so PR- and Issue-side stage identifiers remain independently
+    discoverable and neither side's call sites need to pass an item type.
+    """
+    try:
+        get_trace_collector().record_event(
+            EventKind.STAGE_RESULT,
+            stage_id=stage_id,
+            origin=stage_id,
+            label=label,
+            outcome=outcome,
+            facts=facts,
+        )
+    except Exception:
+        logger.opt(exception=True).debug("Diagnostic trace recording failed for pr#{} stage {}; continuing", item_number, stage_id)
+
+
+def _record_pr_resumption_gate_outcome(
+    repo_name: str,
+    pr_number: int,
+    origin: str,
+    stage_id: str,
+    label: str,
+    outcome: Outcome,
+    facts: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Emit a fresh, self-contained execution for a resumption gate reached before common processing.
+
+    A strict head-refresh failure or a changed-head "superseded" exit,
+    reached while resuming pending PR work or a durable merge operation, is
+    its own diagnostic evaluation (REQ-001, REQ-007) distinct from whatever
+    execution common processing opens afterward if the gate lets it through
+    -- resumption always mints a fresh identity rather than reusing one from
+    the deferred/superseded attempt. Recorder failures are caught so they
+    never affect the resumption decision itself (REQ-008).
+    """
+    try:
+        collector = get_trace_collector()
+        with collector.start_execution(
+            repository=repo_name,
+            item_type="pr",
+            item_number=pr_number,
+            origin=origin,
+            stage_id=stage_id,
+            label=label,
+        ) as handle:
+            collector.record_event(EventKind.STAGE_RESULT, stage_id=stage_id, origin=origin, label=label, outcome=outcome, facts=facts)
+            handle.set_outcome(outcome)
+    except Exception:
+        logger.opt(exception=True).debug("Diagnostic trace recording failed for pr#{} resumption gate {}; continuing", pr_number, stage_id)
+
+
 class _StartupReconciliationHandler:
     """Retries the durable startup-recovery obligation via the pending-work scheduler.
 
@@ -252,6 +314,15 @@ class _PrProcessingStageHandler:
         try:
             raw_pr = engine.github.get_pull_request_metadata_strict(self._repo_name, pr_number)
         except GitHubRequestError as exc:
+            _record_pr_resumption_gate_outcome(
+                self._repo_name,
+                pr_number,
+                "pr-pending-work-resumption",
+                "pr.pending-work-resumption",
+                f"pr#{pr_number} pending-work resumption",
+                Outcome.FAILED,
+                {"reason": "pull-request-metadata-refresh-failed", "error": str(exc)},
+            )
             return StageOutcome(error=exc)
         pr_data = engine.github.get_pr_details(raw_pr)
         current_head = str((pr_data.get("head") or {}).get("sha") or "")
@@ -261,6 +332,15 @@ class _PrProcessingStageHandler:
         # its own terms rather than fabricating a re-evaluation here
         # (REQ-003, REQ-006).
         if obligation.identity.revision and current_head != obligation.identity.revision:
+            _record_pr_resumption_gate_outcome(
+                self._repo_name,
+                pr_number,
+                "pr-pending-work-resumption",
+                "pr.pending-work-resumption",
+                f"pr#{pr_number} pending-work resumption",
+                Outcome.SUPERSEDED,
+                {"expected_revision": obligation.identity.revision, "current_head": current_head},
+            )
             return StageOutcome(superseded=True)
         result = engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0), origin="pr-pending-work-resumption")
         if result.target_outcome is ExplicitTargetOutcome.DEFERRED:
@@ -298,6 +378,15 @@ class _MergeOperationResumeHandler:
             raw_pr = engine.github.get_pull_request_metadata_strict(self._repo_name, pr_number)
         except GitHubRequestError as exc:
             logger.info("Could not refresh PR #{} for merge-operation resumption: {}", pr_number, exc)
+            _record_pr_resumption_gate_outcome(
+                self._repo_name,
+                pr_number,
+                "merge-operation-resumption",
+                "pr.merge-operation-resumption",
+                f"pr#{pr_number} merge-operation resumption",
+                Outcome.FAILED,
+                {"reason": "pull-request-metadata-refresh-failed", "error": str(exc)},
+            )
             return
         pr_data = engine.github.get_pr_details(raw_pr)
         current_head = str((pr_data.get("head") or {}).get("sha") or "")
@@ -305,10 +394,20 @@ class _MergeOperationResumeHandler:
             # A newer head invalidates this operation's own execution
             # permission; normal invalidation/webhook handling evaluates the
             # new head on its own terms rather than this handler fabricating
-            # a re-evaluation for it (REQ-006).
+            # a re-evaluation for it (REQ-006). Visible as superseded, not a
+            # merge, per REQ-007.
             from .merge_operation_state import get_merge_operation_store
 
             get_merge_operation_store().supersede(operation.identity)
+            _record_pr_resumption_gate_outcome(
+                self._repo_name,
+                pr_number,
+                "merge-operation-resumption",
+                "pr.merge-operation-resumption",
+                f"pr#{pr_number} merge-operation resumption",
+                Outcome.SUPERSEDED,
+                {"expected_head_sha": operation.expected_head_sha, "current_head": current_head},
+            )
             return
         engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0), origin="merge-operation-resumption")
 
@@ -3159,6 +3258,7 @@ class AutomationEngine:
             logger.info(f"Skipping PR #{item_number} - author not in PR allowlist")
             result.target_outcome = ExplicitTargetOutcome.SKIPPED
             result.target_reason = "PR author is not in the allowlist"
+            _record_pr_stage_result(item_number, "pr.author-admission", f"pr#{item_number} author admission", Outcome.SKIPPED, {"reason": result.target_reason})
             return result
         if candidate.type == "issue":
             collected_candidate = candidate
@@ -3973,10 +4073,12 @@ class AutomationEngine:
                     result.actions = list(unsafe_branch_result.actions)
                     result.success = True
                     result.target_outcome = ExplicitTargetOutcome.SUCCESS
+                    _record_pr_stage_result(item_number, "pr.unsafe-codex-cloud-recovery", f"pr#{item_number} unsafe Codex Cloud PR recovery", Outcome.COMPLETED, {"actions": list(unsafe_branch_result.actions)})
                     return result
                 if unsafe_branch_result.metadata_error:
                     result.actions = list(unsafe_branch_result.actions)
                     result.error = unsafe_branch_result.metadata_error
+                    _record_pr_stage_result(item_number, "pr.unsafe-codex-cloud-recovery", f"pr#{item_number} unsafe Codex Cloud PR recovery", Outcome.FAILED, {"reason": str(unsafe_branch_result.metadata_error)})
                     return result
                 candidate.data = unsafe_branch_result.authoritative_pr_data or candidate.data
 
@@ -4021,6 +4123,11 @@ class AutomationEngine:
                         result.actions.extend(self._process_unlocked_issue(repo_name, issue_number, config, jules_mode))
                     result.success = True
                     result.target_outcome = ExplicitTargetOutcome.SUCCESS
+                    # Identifies the source Issue(s) this recovery effect
+                    # touched as a fact, without fabricating a new Issue
+                    # evaluation or attempt beyond the real increment already
+                    # performed by _close_empty_pr (REQ-007).
+                    _record_pr_stage_result(item_number, "pr.empty-pr-recovery", f"pr#{item_number} empty-PR recovery", Outcome.COMPLETED, {"linked_issue_numbers": list(empty_pr_result.issue_numbers)})
                     return result
 
                 stale_jules_result = _close_stale_jules_pr(self.github, repo_name, candidate.data, config)
@@ -4033,6 +4140,7 @@ class AutomationEngine:
                         result.actions.extend(self._process_unlocked_issue(repo_name, issue_number, config, jules_mode))
                     result.success = True
                     result.target_outcome = ExplicitTargetOutcome.SUCCESS
+                    _record_pr_stage_result(item_number, "pr.stale-jules-pr-recovery", f"pr#{item_number} stale Jules PR recovery", Outcome.COMPLETED, {"linked_issue_numbers": list(stale_jules_result.issue_numbers)})
                     return result
 
             # Use LabelManager context manager to handle @auto-coder label automatically
@@ -4051,6 +4159,8 @@ class AutomationEngine:
                     get_trace_logger().log("Skip", f"Skipping {item_type} #{item_number} - already processing", item_type=item_type, item_number=item_number, details={"reason": "label_exists"})
                     result.target_outcome = ExplicitTargetOutcome.SKIPPED
                     result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
+                    if item_type == "pr":
+                        _record_pr_stage_result(item_number, "pr.label-admission", f"pr#{item_number} label admission", Outcome.SKIPPED, {"reason": "label_exists"})
                     return result
 
                 if item_type == "issue":
@@ -4134,6 +4244,20 @@ class AutomationEngine:
                         PRProcessingOutcome.DEFERRED: ExplicitTargetOutcome.DEFERRED,
                         PRProcessingOutcome.FAILED: ExplicitTargetOutcome.FAILED,
                     }[pr_result.outcome]
+                    # Sourced from process_pull_request's own returned
+                    # outcome, not the unconditional post-dispatch success
+                    # flag other branches set (REQ-006).
+                    _record_pr_stage_result(
+                        item_number,
+                        "pr.dispatch",
+                        f"pr#{item_number} dispatch",
+                        {
+                            PRProcessingOutcome.SUCCESS: Outcome.COMPLETED,
+                            PRProcessingOutcome.DEFERRED: Outcome.DEFERRED,
+                            PRProcessingOutcome.FAILED: Outcome.FAILED,
+                        }[pr_result.outcome],
+                        {"outcome": pr_result.outcome.value, "actions_count": len(pr_result.actions_taken)},
+                    )
 
         except AutoCoderRetryableBackendError as e:
             diagnostic = str(e)

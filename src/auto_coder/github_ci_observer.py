@@ -25,12 +25,60 @@ from .ci_observation import (
     WorkflowExecutionIdentity,
     WorkflowObservation,
 )
+from .execution_trace import EventKind, Outcome, get_trace_collector
 from .logger_config import get_logger
 from .util.github_request_outcome import GitHubRequestError
 
 logger = get_logger(__name__)
 T = TypeVar("T")
 _PAGE_SIZE = 100
+
+# Availability is preserved as its own dimension (REQ-004): an unavailable or
+# partial read is neither a CI failure nor a passing/empty result, so it maps
+# to DEFERRED/UNKNOWN rather than FAILED, and a fenced/stale read is visible
+# as SUPERSEDED rather than silently reused.
+_AVAILABILITY_TO_TRACE_OUTCOME = {
+    ObservationAvailability.KNOWN: Outcome.COMPLETED,
+    ObservationAvailability.KNOWN_EMPTY: Outcome.COMPLETED,
+    ObservationAvailability.PARTIAL: Outcome.UNKNOWN,
+    ObservationAvailability.UNAVAILABLE: Outcome.DEFERRED,
+    ObservationAvailability.THROTTLED: Outcome.DEFERRED,
+    ObservationAvailability.SUPERSEDED: Outcome.SUPERSEDED,
+}
+
+
+def _record_ci_observation(pr_number: int, snapshot: CIObservationSnapshot, *, reason: str) -> None:
+    """Record a PR CI-observation stage-result using the ambient execution scope.
+
+    Availability is recorded distinctly from any aggregate eligibility
+    verdict a caller derives from ``snapshot.facts`` (REQ-004); the observed
+    head, read-cycle identity, and invalidation epoch travel as facts so a
+    late/superseded read remains attributable to its own examined revision.
+    A diagnostic-recorder failure is caught here and never affects the
+    observation being recorded (REQ-008).
+    """
+    try:
+        get_trace_collector().record_event(
+            EventKind.STAGE_RESULT,
+            stage_id="pr.ci-observation",
+            origin="pr.ci-observation",
+            label=f"pr#{pr_number} CI observation",
+            outcome=_AVAILABILITY_TO_TRACE_OUTCOME.get(snapshot.availability, Outcome.UNKNOWN),
+            facts={
+                "pr_number": pr_number,
+                "availability": snapshot.availability.value,
+                "head_sha": snapshot.subject.head_sha,
+                "cycle_id": snapshot.cycle_id,
+                "invalidation_epoch": snapshot.invalidation_epoch,
+                "fact_count": len(snapshot.facts),
+                "unavailable_reason": snapshot.unavailable_reason,
+                "reason": reason,
+            },
+        )
+    except Exception:
+        logger.debug(f"Diagnostic trace recording failed for pr#{pr_number} CI observation; continuing", exc_info=True)
+
+
 _ADVISORY_WORKFLOW_PATHS = frozenset(
     {
         ".github/workflows/prompt-regression.yml",
@@ -139,6 +187,7 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
         cached = phase.cache.get(key)
         if cached is not None:
             logger.debug(f"CI observation cycle={cached.cycle_id} epoch={cached.invalidation_epoch} repo={repository} pr={pr_number} head={head_sha} availability={cached.availability.value} reason=phase-reuse")
+            _record_ci_observation(pr_number, cached, reason="phase-reuse")
             return cached
         cycle = str(uuid4())
         facts: list[CheckObservation | WorkflowObservation] = []
@@ -187,6 +236,7 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
             snapshot = CIObservationSnapshot(subject, request, cycle, captured_epoch, ObservationAvailability.SUPERSEDED, unavailable_reason="completion was fenced by newer webhook evidence", diagnostic_facts=snapshot.facts or snapshot.diagnostic_facts)
         phase.cache[key] = snapshot
         logger.debug(f"CI observation cycle={cycle} epoch={phase.epoch} repo={repository} pr={pr_number} head={head_sha} availability={snapshot.availability.value} reason=network-fetch")
+        _record_ci_observation(pr_number, snapshot, reason="network-fetch")
         return snapshot
 
 
