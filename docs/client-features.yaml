@@ -104,9 +104,14 @@ continue observation without minting a replacement task or reminder budget.
 ## Durable per-Issue Objective anchors
 
 Every supported individual or complete direct-child-set specification review
-captures one repository-and-Issue-number-scoped Objective anchor after normative
-manifest validation. The first valid individual baseline takes precedence for
-legacy migration; otherwise the first admitted current snapshot wins atomically.
+captures one repository-and-Issue-number-scoped Objective anchor once the
+reviewed member is structurally valid for its role (Issue #1953): a contract-free
+tracking parent needs only its required Objective, not a valid implementation
+Requirements manifest, while a direct child still needs its own valid explicit
+Requirements contract; the set as a whole reaches Objective-evidence capture only
+once every member, parent included, passes its own role-aware structural check.
+The first valid individual baseline takes precedence for legacy migration;
+otherwise the first admitted current snapshot wins atomically.
 Anchored text and explicit legacy absence survive edits, relationship changes,
 concurrent review work, and restart. Individual and decomposition prompts receive
 the immutable original state separately from the current structural extraction,
@@ -123,8 +128,9 @@ Complete-set review preserves a distinct fixed purpose for the parent and every
 direct child. It checks both each child's scope and whether their explicitly
 contracted outcomes compose to the parent's purpose; tracking parents coordinate
 missing ownership rather than receiving a final implementation pass. Set findings
-support `objective_conflict` without weakening explicit parent-Requirement oracles,
-and unchanged-purpose restoration is an in-place repair.
+support `objective_conflict` in addition to the Objective-coverage categories that
+replaced the former explicit parent-Requirement oracles, and unchanged-purpose
+restoration is an in-place repair.
 
 ## Native sibling dependency reconciliation
 
@@ -2298,3 +2304,11 @@ role-aware-issue-structural-assessment:
     - "A tracking parent is `BLOCKED` with reason `parent_objective_required` when its body has zero, more than one, or an empty authored Objective section (same heading recognition, title Objective); an intact, long Objective is never rejected for exceeding the short-authoring recommendation. Independently detected Requirements and Objective defects are both reported rather than short-circuited."
     - "An implementation child is `BLOCKED` with reason `child_requirements_invalid` whenever the supplied manifest's explicit Requirements contract is absent or invalid (missing, empty, duplicate IDs, malformed entries); a valid contract is `VALID` regardless of title wording. This role performs no Objective check."
     - "A valid tracking parent's manifest requirements remain empty (no fabricated implementation contract), and an invalid child's declarations are never exposed as trusted Requirements; results never mutate the supplied body or manifest."
+
+contract-free-parent-production-lifecycle-admission:
+  description: "Wires the role-aware structural assessment (Issue #1951) and Objective-coverage decomposition analyzer (Issue #1952) into `DecompositionValidationLifecycle`'s durable production decision, so a real contract-free tracking parent reaches ordinary Objective-evidence acquisition and set analysis instead of being excluded by a stale all-manifests-valid prerequisite (Issue #1953)."
+  documentation: "src/auto_coder/decomposition_validation_lifecycle.py"
+  behavior:
+    - "`DecompositionValidationLifecycle.decide` gates durable baseline/Objective-evidence capture on each supplied member's own role-aware structural validity (`assess_role_structure`, parent assessed as `tracking_parent`, each child as `implementation_child`) rather than requiring every member, parent included, to carry a valid implementation Requirements manifest; a structurally valid contract-free parent with one nonempty Objective now reaches the durable history baseline, per-member Objective-anchor capture, and the `objective_conflict` integrity check on the same path as a legacy parent that happened to carry Requirements."
+    - "A structurally invalid family (a forbidden parent Requirements declaration, a missing/duplicate/empty parent Objective, or an invalid child Requirements contract) still skips evidence capture and reaches the analyzer directly, which reports the same `invalid_issue_structure` `BLOCKED` finding it always did; this change only widens which structurally valid families receive durable Objective evidence, it does not relax any structural defect."
+    - "An assessment `ERROR` (unavailable or contradictory role evidence) fails the decision closed as `ERROR` with a diagnostic reason rather than being treated as a structural defect or silently defaulting to unvalidated analysis."

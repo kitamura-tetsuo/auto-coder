@@ -25,6 +25,7 @@ from .decomposition_analyzer import (
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
+from .role_structural_assessment import ROLE_IMPLEMENTATION_CHILD, ROLE_TRACKING_PARENT, assess_role_structure
 from .runtime_locks import ensure_lock_directory, lock_path
 from .specification_repair_rounds import SpecificationRepairRoundStore
 from .specification_validation_lifecycle import specification_digest
@@ -260,7 +261,17 @@ class DecompositionValidationLifecycle:
     def decide(self, identity: DecompositionIdentity, parent: DecompositionIssue, children: Sequence[DecompositionIssue]) -> DecompositionDecision:
         with self.store.locked(identity.key):
             members = (parent, *children)
-            valid = all(item.manifest.explicit_contract_present and item.manifest.explicit_contract_valid for item in members)
+            member_roles = ((parent, ROLE_TRACKING_PARENT), *((child, ROLE_IMPLEMENTATION_CHILD) for child in children))
+            structural_errors: list[str] = []
+            valid = True
+            for item, role in member_roles:
+                assessment = assess_role_structure(item.manifest, item.body, role)
+                if assessment.status == "ERROR":
+                    structural_errors.append(assessment.error or f"Issue #{item.manifest.issue_number} structural assessment failed")
+                elif assessment.status != "VALID":
+                    valid = False
+            if structural_errors:
+                return DecompositionDecision(identity, "ERROR", remediation_reason="; ".join(structural_errors))
             evidence: Optional[DecompositionReviewEvidence] = None
             if valid:
                 try:

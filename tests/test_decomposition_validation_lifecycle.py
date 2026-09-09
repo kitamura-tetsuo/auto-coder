@@ -16,7 +16,7 @@ from auto_coder.specification_analyzer import SpecificationAnalysisResult, Speci
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.util.gh_cache import GitHubClient, is_implementation_ready
 
-PARENT_BODY = "## Requirements\n- REQ-001: Deliver both child behaviors."
+PARENT_BODY = "## Objective\nCoordinate the tracked child behaviors."
 CHILD_BODY = "## Requirements\n- REQ-001: Deliver the first behavior."
 SET_FINDING = DecompositionFinding(
     "missing_requirement_ownership",
@@ -44,22 +44,6 @@ def decomposition_issues(parent, children):
         return DecompositionIssue(build_normative_issue_manifest(item["number"], item["title"], item["body"]), item["body"])
 
     return adapt(parent), [adapt(child) for child in children]
-
-
-def _contract_free_parent(item):
-    """A structurally valid stand-in for exercising the real analyzer.
-
-    decomposition_validation_lifecycle.py still gates baseline/Objective capture
-    on every supplied member (parent included) having a legacy valid
-    Requirements contract, while the tracking-parent role instead requires no
-    Requirements at all (Issue #1952). Reconciling that lifecycle gate is
-    tracked separately by Issue #1953, so this substitutes a minimal,
-    correctly-shaped parent only for the analyzer call; the lifecycle's own
-    baseline/history bookkeeping still observes the original supplied parent.
-    """
-    body = "## Objective\nCoordinate the tracked child behaviors."
-    manifest = build_normative_issue_manifest(item.manifest.issue_number, item.manifest.title, body)
-    return DecompositionIssue(manifest, body)
 
 
 def configured_engine(tmp_path, github, set_result, child_result):
@@ -139,8 +123,7 @@ def test_production_lifecycle_preserves_first_set_baseline_and_passes_applied_hi
     ]
 
     def analyze(parent_input, child_inputs):
-        fresh_parent = _contract_free_parent(parent_input)
-        return analyze_issue_decomposition(fresh_parent, child_inputs, prompt_runner=lambda prompt: prompts.append(prompt) or responses.pop(0))
+        return analyze_issue_decomposition(parent_input, child_inputs, prompt_runner=lambda prompt: prompts.append(prompt) or responses.pop(0))
 
     gate = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", analyze)
     parent_input, child_inputs = decomposition_issues(parent, children)
@@ -162,6 +145,32 @@ def test_production_lifecycle_preserves_first_set_baseline_and_passes_applied_hi
     assert history["baseline"].count("Original parent") == 1
     assert "Edited parent" not in history["baseline"]
     assert len(history["applied_outcomes"]) == 1
+
+
+def test_contract_free_parent_reaches_objective_evidence_capture_without_workaround(tmp_path):
+    """A structurally valid, contract-free parent reaches ordinary decomposition
+    validation and Objective-evidence acquisition without requiring every
+    supplied member, including the parent, to carry a valid implementation
+    Requirements manifest (Issue #1953, REQ-003)."""
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    calls = Mock(return_value=DecompositionAnalysisResult("READY"))
+    gate = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", calls)
+    identity = gate.identity(parent, children)
+    assert gate.decide(identity, parent_input, child_inputs).verdict == "READY"
+
+    anchor_state = gate.objective_store._read()["10"]["objective_anchor"]
+    assert anchor_state["state"] == "ANCHORED"
+    assert anchor_state["original_text"] == "Coordinate the tracked child behaviors."
+
+    changed_parent = {**parent, "body": "## Objective\nA different purpose entirely."}
+    changed_parent_input, _ = decomposition_issues(changed_parent, children)
+    changed_identity = gate.identity(changed_parent, children)
+    decision = gate.decide(changed_identity, changed_parent_input, child_inputs)
+    assert decision.verdict == "BLOCKED"
+    assert decision.findings[0].category == "objective_conflict"
+    assert decision.findings[0].affected_issues[0].issue_number == 10
 
 
 def test_decomposition_repair_budget_is_generation_bound_and_independent_from_child(tmp_path):
