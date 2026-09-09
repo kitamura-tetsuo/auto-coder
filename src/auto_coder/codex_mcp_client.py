@@ -475,12 +475,13 @@ class CodexMCPClient(LLMClientBase):
         try:
             if self.proc is not None:
                 try:
-                    # Try a graceful wait first (short)
-                    self.proc.wait(timeout=0.2)
-                except Exception:
-                    pass
-                try:
-                    self.proc.terminate()
+                    if self.proc.poll() is None:
+                        self.proc.terminate()
+                        try:
+                            self.proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            self.proc.kill()
+                            self.proc.wait(timeout=2)
                 except Exception:
                     pass
         finally:

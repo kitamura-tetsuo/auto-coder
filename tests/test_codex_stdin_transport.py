@@ -114,7 +114,9 @@ def test_mcp_unavailable_fallback_uses_separate_exec_stdin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mcp = tmp_path / "mcp-server"
-    mcp.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    # Replace the shell instead of leaving an orphaned sleep process holding
+    # the captured MCP pipes open after ``client.close()`` terminates it.
+    mcp.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
     mcp.chmod(0o755)
     monkeypatch.setenv("AUTOCODER_MCP_COMMAND", str(mcp))
     monkeypatch.setenv("AUTOCODER_MCP_HANDSHAKE_TIMEOUT", "0.01")

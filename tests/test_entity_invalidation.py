@@ -556,7 +556,7 @@ def test_real_startup_scan_preserves_recent_issue_stabilization(tmp_path: Path, 
     async def startup():
         task = asyncio.create_task(engine.start_automation("owner/repo", concurrency=1))
         for _ in range(200):
-            if engine.startup_reconciled:
+            if engine.startup_reconciled and engine._invalidation_wake_event is not None:
                 break
             await asyncio.sleep(0.01)
         assert processed == []
