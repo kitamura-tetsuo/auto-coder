@@ -28,6 +28,8 @@ from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
+ANTIGRAVITY_TASK_INPUT_OPTIONS = frozenset({"-p", "--print", "--prompt"})
+
 
 class GeminiClient(LLMClientBase):
     """Gemini client that uses google.generativeai SDK primarily in tests and a CLI fallback."""
@@ -130,6 +132,33 @@ class GeminiClient(LLMClientBase):
         """Escape @ characters in prompt for Gemini."""
         return prompt.replace("@", "\\@").strip()
 
+    @staticmethod
+    def _ensure_stdin_input_mode(command: List[str]) -> List[str]:
+        """Select Antigravity's finite text-stdin mode without competing input."""
+        normalized: List[str] = []
+        index = 0
+        while index < len(command):
+            option = str(command[index])
+            option_name, separator, inline_value = option.partition("=")
+            if option_name in ANTIGRAVITY_TASK_INPUT_OPTIONS:
+                raise ValueError(f"Antigravity task input option {option_name} conflicts with text stdin")
+            if option_name == "--input-format":
+                if separator:
+                    input_format = inline_value
+                    index += 1
+                else:
+                    if index + 1 >= len(command):
+                        raise ValueError("Antigravity --input-format requires a value")
+                    input_format = str(command[index + 1])
+                    index += 2
+                if input_format != "text":
+                    raise ValueError(f"Antigravity input format {input_format!r} conflicts with text stdin")
+                continue
+            normalized.append(command[index])
+            index += 1
+        normalized.extend(["--input-format", "text"])
+        return normalized
+
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run antigravity CLI with the given prompt and show real-time output."""
         start_time = time.time()
@@ -164,8 +193,7 @@ class GeminiClient(LLMClientBase):
             if extra_args:
                 cmd.extend(extra_args)
 
-            # Prompt should be last argument
-            cmd.append(escaped_prompt)
+            cmd = self._ensure_stdin_input_mode(cmd)
 
             logger.warning("LLM invocation: antigravity CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running antigravity CLI with prompt length: {len(prompt)} characters")
@@ -179,6 +207,7 @@ class GeminiClient(LLMClientBase):
                 stream_output=True,
                 idle_timeout=1800,
                 env_overrides={"GEMINI_CLI_TRUST_WORKSPACE": "true"},
+                stdin_text=escaped_prompt,
             )
 
             logger.info("=" * 60)
@@ -229,8 +258,12 @@ class GeminiClient(LLMClientBase):
             raise
         except AutoCoderTimeoutError:
             # Re-raise timeout errors
+            status = "error"
+            error_message = full_output or "Antigravity CLI timed out"
             raise
         except Exception as e:
+            status = "error"
+            error_message = str(e)
             raise RuntimeError(f"Failed to run Antigravity CLI: {e}")
         finally:
             # Always log the interaction and print summary
