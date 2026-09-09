@@ -272,6 +272,14 @@ cancellation, launch errors, and cleanup errors are not retried. Attempt logs
 are retained separately, retry reports start clean, and an eight-minute Actions
 step limit provides an independent safety boundary.
 
+Shard output includes individual test names and emits Python thread stacks when
+a test phase exceeds 30 seconds, so line-buffered collection cannot disguise a
+later stalled test as the last completed file. Codex MCP fallback regressions
+exercise finite stdin and real subprocess EOF and assert reader-thread cleanup;
+unbounded mock streams must not leak busy readers into subsequent tests.
+This is test infrastructure only: production processing, structured trace events,
+and dashboard projections are unchanged.
+
 ## Release and beta deployment channels
 
 Successful `main` builds publish one immutable GHCR image tagged by commit and

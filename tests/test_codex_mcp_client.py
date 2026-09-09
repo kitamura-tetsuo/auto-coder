@@ -1,3 +1,6 @@
+import subprocess
+import sys
+import threading
 import types
 from unittest import mock
 
@@ -103,109 +106,52 @@ def test_options_applied_to_mcp_session(monkeypatch):
     assert cmd == ["codex", "mcp", "--custom-flag", "--another-flag"]
 
 
-def test_fallback_exec_uses_options(monkeypatch):
-    """Test that fallback exec calls use configured options."""
+@pytest.mark.parametrize("options", [["--custom-exec-flag", "--another-exec-flag"], None])
+@pytest.mark.timeout(10)
+def test_fallback_exec_uses_configured_options_and_finishes_streams(monkeypatch, _use_real_commands, options):
+    """Exercise finite stdin and real EOF without leaving mock reader loops alive."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
-
-    # Track all Popen calls
+    original_popen = subprocess.Popen
+    threads_before = set(threading.enumerate())
     popen_calls = []
+    children = []
 
     def track_popen(*args, **kwargs):
         popen_calls.append((args, kwargs))
-        # Return appropriate mock based on command
         if len(popen_calls) == 1:
-            # First call is for MCP session
             return _make_fake_popen()
-        else:
-            # Second call is for fallback exec
-            fake_proc = mock.MagicMock()
-            fake_proc.communicate.return_value = ("test output", None)
-            fake_proc.returncode = 0
-            fake_proc.stdout = mock.MagicMock()
-            return fake_proc
+        # Keep the executor's real pipes and stdin writer, substituting only the CLI.
+        child = original_popen(
+            [sys.executable, "-c", "import sys; data = sys.stdin.read(); sys.stdout.write(data)"],
+            **kwargs,
+        )
+        children.append(child)
+        return child
 
-    with mock.patch("src.auto_coder.codex_mcp_client.subprocess.Popen", side_effect=track_popen):
-        with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
-            # Mock config with custom options
-            mock_config = mock.MagicMock()
-            mock_backend = mock.MagicMock()
-            mock_backend.model = "codex-mcp"
-            mock_backend.options = ["--custom-exec-flag", "--another-exec-flag"]
-            mock_config.get_backend_config.return_value = mock_backend
-            monkeypatch.setattr("src.auto_coder.codex_mcp_client.get_llm_config", mock.MagicMock(return_value=mock_config))
+    mock_config = mock.MagicMock()
+    mock_backend = mock.MagicMock()
+    mock_backend.model = "codex-mcp"
+    mock_backend.options = options
+    mock_config.get_backend_config.return_value = mock_backend
+    monkeypatch.setattr("src.auto_coder.codex_mcp_client.get_llm_config", mock.MagicMock(return_value=mock_config))
 
-            client = CodexMCPClient()
-            try:
-                # Call _run_llm_cli to trigger fallback exec
-                client._run_llm_cli("test prompt")
-            except Exception:
-                # Ignore errors from the test setup
-                pass
-
-    # Verify exec command includes configured options
-    assert len(popen_calls) >= 2
-    args, _ = popen_calls[1]
-    cmd = args[0]
-    assert cmd[:2] == ["codex", "exec"]
-    # Check that custom options are included
-    assert "--custom-exec-flag" in cmd
-    assert "--another-exec-flag" in cmd
-    # Check that default options are not present when custom options are configured
-    assert "-s" not in cmd
-    assert "workspace-write" not in cmd
-    assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
-
-
-def test_fallback_exec_uses_no_options_when_none_configured(monkeypatch):
-    """Test that fallback exec uses no options when none are configured."""
-    fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
-
-    # Track all Popen calls
-    popen_calls = []
-
-    def track_popen(*args, **kwargs):
-        popen_calls.append((args, kwargs))
-        # Return appropriate mock based on command
-        if len(popen_calls) == 1:
-            # First call is for MCP session
-            return _make_fake_popen()
-        else:
-            # Second call is for fallback exec
-            fake_proc = mock.MagicMock()
-            fake_proc.communicate.return_value = ("test output", None)
-            fake_proc.returncode = 0
-            fake_proc.stdout = mock.MagicMock()
-            return fake_proc
-
-    with mock.patch("src.auto_coder.codex_mcp_client.subprocess.Popen", side_effect=track_popen):
-        with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
-            # Mock config without options
-            mock_config = mock.MagicMock()
-            mock_backend = mock.MagicMock()
-            mock_backend.model = "codex-mcp"
-            mock_backend.options = None
-            mock_config.get_backend_config.return_value = mock_backend
-            monkeypatch.setattr("src.auto_coder.codex_mcp_client.get_llm_config", mock.MagicMock(return_value=mock_config))
-
-            client = CodexMCPClient()
-            try:
-                # Call _run_llm_cli to trigger fallback exec
-                client._run_llm_cli("test prompt")
-            except Exception:
-                # Ignore errors from the test setup
-                pass
-
-    # Verify exec command does not include hardcoded default options
-    assert len(popen_calls) >= 2
-    args, _ = popen_calls[1]
-    cmd = args[0]
-    assert cmd == ["codex", "exec", "-"]
-    # Verify no hardcoded options are present
-    assert "-s" not in cmd
-    assert "workspace-write" not in cmd
-    assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+    try:
+        with mock.patch("src.auto_coder.codex_mcp_client.subprocess.Popen", side_effect=track_popen):
+            with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
+                client = CodexMCPClient()
+                output = client._run_llm_cli("test prompt")
+        assert output == "test prompt"
+        assert len(popen_calls) == 2
+        args, _ = popen_calls[1]
+        assert args[0] == ["codex", "exec", *(options or []), "-"]
+        assert [child.poll() for child in children] == [0]
+        assert {thread for thread in threading.enumerate() if thread.name.startswith("CommandStream-")} <= threads_before
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
 
 
 def test_rpc_call_times_out_without_stdout_ready(monkeypatch):

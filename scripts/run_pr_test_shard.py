@@ -120,7 +120,9 @@ def _stop_group(process: subprocess.Popen[bytes], pgid: int, grace: float) -> bo
 
 
 def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir: Path) -> str:
-    command = ["bash", "scripts/test.sh", "--splits", "4", "--group", str(group)]
+    # Emit a complete line per test so the line-oriented collector does not hide
+    # progress within a file. Dump blocked threads before the outer deadline.
+    command = ["bash", "scripts/test.sh", "--splits", "4", "--group", str(group), "-vv", "-o", "faulthandler_timeout=30"]
     supervisor_log = log_dir / f"attempt-{attempt}.supervisor.log"
     sink = logger.add(
         supervisor_log,

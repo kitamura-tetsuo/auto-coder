@@ -40,7 +40,7 @@ def test_production_step_passes_correct_shard_once(tmp_path, group):
     )
 
     assert result.returncode == 0
-    assert (tmp_path / "invocations").read_text().splitlines() == [f"--splits 4 --group {group}"]
+    assert (tmp_path / "invocations").read_text().splitlines() == [f"--splits 4 --group {group} -vv -o faulthandler_timeout=30"]
     assert "shard-output" in result.stdout
     assert (tmp_path / f"pr-test-logs/shard-{group}/attempt-1.stdout.log").exists()
     assert not (tmp_path / f"pr-test-logs/shard-{group}/attempt-2.stdout.log").exists()
