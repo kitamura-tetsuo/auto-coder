@@ -50,18 +50,67 @@ The main dashboard view provides an overview of the current system state:
 
 ### Detail View
 
-Clicking on an item in the Active Workers or Queue list (or using the Search) takes you to the Detail View for that specific Issue or PR.
+Clicking on an item in the Active Workers or Queue list (or using the Search) takes you to the Detail View for that specific Issue or PR, at `/dashboard/detail/{item_type}/{item_number}`.
 
-The Detail View provides:
+The Detail View is a read-only projection of the automation process's own
+locally retained diagnostic evidence (the schema-version-1 structured
+trace collected by `execution_trace.TraceCollector`), scoped to this
+dashboard's single configured repository. It never queries GitHub or any
+other provider, and it never asserts that what it shows is current
+GitHub/provider state -- everything displayed is an *observation*, with
+its own observation timestamp, not a live status.
 
-*   **Metrics**:
-    *   **Mergeability**: Indicates if the PR is mergeable (True/False/Unknown).
-    *   **CI Status**: Shows the status of CI checks (Success/Failure/In Progress).
-*   **Decision Log**: A chronological log of decisions and actions taken by the automation engine for this item. This includes:
-    *   Time of the event.
-    *   Category (e.g., Merge Check, CI Status, Decision).
-    *   Message description.
-    *   Detailed JSON data associated with the event.
+#### Executions, not a static workflow
+
+An **execution** is one controller evaluation of the selected Issue/PR.
+The page does not maintain a hand-drawn flowchart of "the" Issue/PR
+workflow and does not infer which steps ran from log message text --
+instead it renders exactly the structured events the producing code
+actually recorded for the selected execution, in the order they were
+published. Previously unseen stage identifiers and outcomes show up
+automatically; repeated occurrences of the same stage remain individually
+visible.
+
+*   **Follow latest** (the default): the page follows whichever execution
+    has the newest execution-start sequence currently retained, and
+    switches automatically as new executions start.
+*   **Pinned**: using the older/newer navigation pins one exact execution
+    identity. A pinned selection does not move when new executions start,
+    and a late event for an older execution never promotes it to "latest".
+    Use **Follow latest** to return to automatic following.
+*   If a pinned execution's evidence is later evicted by this process's
+    bounded retention, the page reports that it is no longer retained --
+    it never silently substitutes whatever execution now occupies that
+    execution's former position in the list.
+
+The local view refreshes every second while connected; polling and any
+page-owned timers stop automatically when the page is closed or the
+client disconnects. Empty or truncated local history is shown explicitly
+and is not evidence that no earlier work happened, nor that any
+in-progress remote work (e.g. a cloud handoff) has finished.
+
+#### Sections
+
+*   **Processing Path**: a Mermaid diagram of the selected execution's
+    observed events in publication order. Arrows are labeled "observed
+    order" -- they describe recording order only, not an inferred
+    control-flow or causal edge. All event text is rendered as inert,
+    escaped content, so unusual or adversarial characters in a label
+    cannot alter the diagram. "Copy Mermaid Code" always copies the
+    diagram currently shown for the selected execution.
+*   **Observed Evidence**: one row per recorded stage-result/execution
+    outcome for the selected execution, with its own explicit outcome
+    (`unknown` when none was recorded -- never coerced to success or
+    failure) and the facts that stage actually reported. Evidence from
+    different executions or revisions is never merged into a synthetic
+    combined state.
+*   **Decision Log**: every recorded event for the selected execution,
+    newest first.
+*   **Unscoped / legacy diagnostic evidence**: structured events recorded
+    without an execution identity, and any remaining pre-migration
+    `TraceLogger` text entries for this item. These are shown as raw,
+    inert diagnostic text and are never assigned a guessed execution or a
+    successful outcome.
 
 ## Configuration
 

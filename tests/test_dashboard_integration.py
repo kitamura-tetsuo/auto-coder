@@ -47,7 +47,7 @@ def test_init_dashboard_registration(mock_ui):
     app = FastAPI()
     engine = MagicMock(spec=AutomationEngine)
 
-    init_dashboard(app, engine)
+    init_dashboard(app, engine, "owner/repo")
 
     # Verify ui.page was called
     mock_ui.page.assert_any_call("/")

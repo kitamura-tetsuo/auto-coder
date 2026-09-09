@@ -95,7 +95,7 @@ class TestDashboardReachability:
         # Initialize dashboard with REAL nicegui
         # Note: nicegui uses global state, so we need to be careful.
         # However, for a simple reachability test, it should be fine if run once or in isolation.
-        init_dashboard(app, mock_engine)
+        init_dashboard(app, mock_engine, "owner/repo")
 
         client = TestClient(app)
 

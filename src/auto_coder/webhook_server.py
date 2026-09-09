@@ -300,6 +300,6 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
         await process_github_payload(event_type, payload, engine, repo_name, delivery_id)
         return {"status": "received"}
 
-    init_dashboard(app, engine)
+    init_dashboard(app, engine, repo_name)
 
     return app
