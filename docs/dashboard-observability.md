@@ -43,31 +43,42 @@ also mount and refresh the detail view from that snapshot.
 
 | Production origin | Runnable checks |
 | --- | --- |
-| Normal/explicit Issue processing and pre-worker admission | `tests/test_dashboard_observability.py::test_issue_admission_reaches_mounted_detail_view`; `tests/test_issue_production_instrumentation.py::TestPreAdmissionGateVisible::test_author_disallowed_issue_records_skip_without_dispatch` |
+| Normal/explicit Issue processing and pre-worker admission | `tests/test_dashboard_observability.py::test_issue_admission_reaches_mounted_detail_view`; `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_explicit_single_target_origin_is_recorded`; `tests/test_issue_production_instrumentation.py::TestPreAdmissionGateVisible::test_author_disallowed_issue_records_skip_without_dispatch` |
 | Normal/explicit PR processing | `tests/test_dashboard_observability.py::test_pr_admission_reaches_mounted_detail_view`; `tests/test_pr_production_instrumentation.py::TestPrAdmissionGateVisible::test_author_disallowed_pr_records_skip_without_dispatch` |
-| Individual/decomposition validation jobs | `tests/test_issue_production_instrumentation.py::TestValidationJobsGetTheirOwnExecutionIdentity::test_traced_validation_job_does_not_borrow_ambient_worker_scope`; `tests/test_issue_production_instrumentation.py::TestValidationJobsGetTheirOwnExecutionIdentity::test_disabled_decomposition_validation_is_distinguishable_from_blocked` |
+| Individual/decomposition validation jobs | `tests/test_issue_production_instrumentation.py::TestValidationJobsGetTheirOwnExecutionIdentity::test_traced_validation_job_does_not_borrow_ambient_worker_scope`; `tests/test_issue_production_instrumentation.py::TestValidationJobsGetTheirOwnExecutionIdentity::test_disabled_decomposition_validation_is_distinguishable_from_blocked`; `tests/test_dashboard_observability.py::TestOutcomeMatrixCoverage::test_queued_validation_is_distinguishable_from_disabled_and_blocked`; `tests/test_dashboard_observability.py::TestJoinedProductionToView::test_validation_scheduler_job_is_a_distinct_execution_from_the_worker` |
 | Issue pending-work resumption | `tests/test_issue_production_instrumentation.py::TestDurableResumptionCreatesAnotherExecution::test_resumption_origin_and_identity_differ_from_a_fresh_evaluation` |
-| Validation-publication resumption | `tests/test_validation_publication_resumption.py::test_validation_publication_stage_handler_resumes_after_restart_without_readiness_label` |
-| PR pending-work resumption | `tests/test_pr_production_instrumentation.py::TestPrResumptionSupersededHead::test_pending_work_resumption_records_superseded_on_changed_head` |
-| Merge-operation resumption | `tests/test_pr_production_instrumentation.py::TestMergeOperationResumeSupersededHead::test_merge_operation_resumption_records_superseded_on_changed_head` |
-| Asynchronous PR adversarial validation | `tests/test_adversarial_validation_pr_flow.py::test_take_pr_actions_preserves_structured_adversarial_failure` |
+| Validation-publication resumption | `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_validation_publication_resumption_origin_is_recorded` (drives `_ValidationPublicationStageHandler` and reads the real `TraceCollector` snapshot back); `tests/test_validation_publication_resumption.py::test_validation_publication_stage_handler_resumes_after_restart_without_readiness_label` (same production handler, asserts the durable-effect/no-duplicate-delivery contract rather than the diagnostic trace) |
+| PR pending-work resumption | `tests/test_pr_production_instrumentation.py::TestPrResumptionSupersededHead::test_pending_work_resumption_records_superseded_on_changed_head`; `tests/test_dashboard_observability.py::TestJoinedProductionToView::test_pr_pending_work_resumption_reaches_detail_view_as_superseded` |
+| Merge-operation resumption | `tests/test_pr_production_instrumentation.py::TestMergeOperationResumeSupersededHead::test_merge_operation_resumption_records_superseded_on_changed_head`; `tests/test_dashboard_observability.py::TestJoinedProductionToView::test_merge_operation_resumption_reaches_detail_view_as_superseded` |
+| Asynchronous PR adversarial validation | `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_asynchronous_pr_adversarial_validation_origin_is_recorded` (drives `_handle_pr_merge` through the real `AdversarialValidationScheduler` admission and reads the real `pr.adversarial-validation` event back; `test_take_pr_actions_preserves_structured_adversarial_failure` mocks `_handle_pr_merge` itself, so it does not exercise this emission) |
 
 The broader outcome matrix is kept by the production suites above plus
 `TestDispatchRouteRecorded`, `TestDispatchOutcomesAreHonest`,
-`TestCiObservationAvailabilityIsNotABoolean`, the durable resumption suites, and
-`tests/test_dashboard_detail_logic.py`. Together they cover admission without
-dispatch; disabled/queued/blocked validation; local, Jules, Claude Routine, and
-Codex Cloud routing (ordinary and high-score); handoff without publication;
-known, known-empty, partial, unavailable, throttled, and superseded CI evidence;
-corrective acceptance without a repair claim; ambiguous merge delivery and
-idempotent resumption; pinned retention; recorder failure; repeated and unknown
-stages; and non-mutating dashboard refreshes.
+`TestCiObservationAvailabilityIsNotABoolean` (`known`, `unavailable`, and a
+`known` -> `unavailable` -> `known` sequence),
+`tests/test_dashboard_observability.py::TestOutcomeMatrixCoverage` (`known_empty`,
+`partial`, `throttled`, and `superseded` CI availability; ordinary-cloud routing to
+Claude Routine and Codex Cloud backend types; corrective work accepted without a
+repair claim), the durable resumption suites, and `tests/test_dashboard_detail_logic.py`.
+Together they cover admission without dispatch; disabled/queued/blocked validation;
+local, Jules, Claude Routine, and Codex Cloud routing (ordinary and high-score);
+handoff without publication; known, known-empty, partial, unavailable, throttled,
+and superseded CI evidence; corrective acceptance without a repair claim; ambiguous
+merge delivery and idempotent resumption; pinned retention; recorder failure;
+repeated and unknown stages; and non-mutating dashboard refreshes.
 
 ## Negative controls
 
-The joined suite suppresses a required producer emission and proves the
-production-to-view assertion rejects it. Scope-isolation tests swap/concurrently
-propagate execution contexts and reject reattribution. CI availability tests reject
-boolean coercion, and handoff/publication tests reject invented completion. Generic
-unknown-stage and display-format tests ensure those semantic controls do not become
-a touched-file or static-diagram rule.
+`tests/test_dashboard_observability.py::test_missing_producer_emission_is_rejected_by_joined_oracle`
+suppresses a required producer emission and proves the production-to-view assertion
+rejects it. `TestAdditionalNegativeAndMutationControls::test_concurrent_items_never_share_or_swap_execution_identity`
+drives two different Issues through the real worker entrypoint concurrently and
+asserts their execution identities and event scopes stay fully disjoint -- proving
+scope reattribution across concurrently propagated execution contexts is rejected,
+not merely asserted at the unit level. CI availability tests
+(`TestOutcomeMatrixCoverage` and `TestAdditionalNegativeAndMutationControls::test_unavailable_ci_evidence_is_never_rendered_as_success_or_failure`,
+the latter through the mounted detail view) reject boolean coercion, and
+handoff/publication tests (`TestJoinedProductionToView::test_accepted_handoff_reaches_detail_view_without_pr_publication`)
+reject invented completion. Generic unknown-stage and display-format tests in
+`tests/test_dashboard_detail_logic.py` and `tests/test_execution_trace.py` ensure
+those semantic controls do not become a touched-file or static-diagram rule.
