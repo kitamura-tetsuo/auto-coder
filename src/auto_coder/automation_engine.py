@@ -156,6 +156,36 @@ def _record_issue_stage_result(
         logger.opt(exception=True).debug("Diagnostic trace recording failed for issue#{} stage {}; continuing", item_number, stage_id)
 
 
+def _record_pr_stage_result(
+    pr_number: int,
+    stage_id: str,
+    label: str,
+    outcome: Outcome,
+    facts: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record a PR stage-result event for a boundary reached before any execution scope opens.
+
+    ``_PrProcessingStageHandler`` and ``_MergeOperationResumeHandler`` can
+    discover a superseded/stale head and discard the obligation before ever
+    calling ``AutomationEngine._process_single_candidate`` (REQ-001 of Issue
+    #1946: strict-refresh failures or superseded-head exits before common
+    processing must still emit their own execution-scoped evidence). A
+    diagnostic-recorder failure here is caught and never affects the
+    resumption decision it describes (REQ-008).
+    """
+    try:
+        get_trace_collector().record_event(
+            EventKind.STAGE_RESULT,
+            stage_id=stage_id,
+            origin=stage_id,
+            label=label,
+            outcome=outcome,
+            facts=facts,
+        )
+    except Exception:
+        logger.opt(exception=True).debug("Diagnostic trace recording failed for pr#{} stage {}; continuing", pr_number, stage_id)
+
+
 def _map_candidate_result_outcome(result: "CandidateProcessingResult") -> Outcome:
     """Derive an honest execution outcome from what the boundary actually reported.
 
@@ -238,7 +268,6 @@ class _PrProcessingStageHandler:
         return self._run(obligation)
 
     def _run(self, obligation: PendingObligation) -> StageOutcome:
-        engine = self._engine
         entity = obligation.identity.entity
         pr_number: Optional[int] = None
         if entity.startswith("pr:"):
@@ -249,10 +278,48 @@ class _PrProcessingStageHandler:
         if pr_number is None:
             logger.warning("Malformed PR pending-work identity {!r}; discarding obligation", entity)
             return StageOutcome(superseded=True)
+        # Opening this resumption's own execution scope here -- before the
+        # strict-refresh read and the superseded-head check -- gives it a
+        # fresh execution identity even when it never reaches
+        # ``_process_single_candidate`` (REQ-001 of Issue #1946). When that
+        # call is reached, ``_process_single_candidate_unified`` detects it
+        # is already nested in this same (repository, "pr", pr_number) scope
+        # and continues it rather than opening a second one.
+        try:
+            handle_cm = get_trace_collector().start_execution(
+                repository=self._repo_name,
+                item_type="pr",
+                item_number=pr_number,
+                origin="pr-pending-work-resumption",
+                stage_id="pr.pending-work-resume",
+                label=f"pr#{pr_number} pending-work resumption",
+            )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed opening execution scope for pr#{}; continuing untraced", pr_number)
+            outcome, _result = self._run_impl(obligation, pr_number)
+            return outcome
+        with handle_cm as handle:
+            outcome, result = self._run_impl(obligation, pr_number)
+            try:
+                if result is not None:
+                    handle.set_outcome(_map_candidate_result_outcome(result))
+                elif outcome.superseded:
+                    handle.set_outcome(Outcome.SUPERSEDED)
+                elif outcome.error is not None:
+                    handle.set_outcome(Outcome.DEFERRED)
+                else:
+                    handle.set_outcome(Outcome.UNKNOWN)
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed finishing execution scope for pr#{}; continuing", pr_number)
+            return outcome
+
+    def _run_impl(self, obligation: PendingObligation, pr_number: int) -> tuple[StageOutcome, Optional["CandidateProcessingResult"]]:
+        engine = self._engine
         try:
             raw_pr = engine.github.get_pull_request_metadata_strict(self._repo_name, pr_number)
         except GitHubRequestError as exc:
-            return StageOutcome(error=exc)
+            _record_pr_stage_result(pr_number, "pr.strict-refresh", f"pr#{pr_number} strict refresh", Outcome.DEFERRED, {"reason": str(exc), "phase": "pending-work-resumption"})
+            return StageOutcome(error=exc), None
         pr_data = engine.github.get_pr_details(raw_pr)
         current_head = str((pr_data.get("head") or {}).get("sha") or "")
         # A changed head since deferral means the retained observations no
@@ -261,14 +328,21 @@ class _PrProcessingStageHandler:
         # its own terms rather than fabricating a re-evaluation here
         # (REQ-003, REQ-006).
         if obligation.identity.revision and current_head != obligation.identity.revision:
-            return StageOutcome(superseded=True)
+            _record_pr_stage_result(
+                pr_number,
+                "pr.pending-work-resume-refresh",
+                f"pr#{pr_number} pending-work resume refresh",
+                Outcome.SUPERSEDED,
+                {"expected_head": obligation.identity.revision, "current_head": current_head},
+            )
+            return StageOutcome(superseded=True), None
         result = engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0), origin="pr-pending-work-resumption")
         if result.target_outcome is ExplicitTargetOutcome.DEFERRED:
             # The resumed evaluation hit another operational failure and has
             # already re-persisted its own obligation through the same defer
             # path; nothing further to apply here.
-            return StageOutcome()
-        return StageOutcome(completed_effects=obligation.unfinished_effects)
+            return StageOutcome(), result
+        return StageOutcome(completed_effects=obligation.unfinished_effects), result
 
 
 class _MergeOperationResumeHandler:
@@ -292,13 +366,39 @@ class _MergeOperationResumeHandler:
         self._repo_name = repo_name
 
     def __call__(self, operation: MergeOperation) -> None:
-        engine = self._engine
         pr_number = operation.identity.pr_number
+        # As with ``_PrProcessingStageHandler``, this resumption's own scope
+        # is opened here so a strict-refresh failure or a superseded-head
+        # exit -- both before ``_process_single_candidate`` is ever called --
+        # still carries a fresh execution identity (REQ-001 of Issue #1946).
+        try:
+            handle_cm = get_trace_collector().start_execution(
+                repository=self._repo_name,
+                item_type="pr",
+                item_number=pr_number,
+                origin="merge-operation-resumption",
+                stage_id="pr.merge-operation-resume",
+                label=f"pr#{pr_number} merge-operation resumption",
+            )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed opening execution scope for pr#{}; continuing untraced", pr_number)
+            self._run_impl(operation, pr_number)
+            return
+        with handle_cm as handle:
+            outcome = self._run_impl(operation, pr_number)
+            try:
+                handle.set_outcome(outcome)
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed finishing execution scope for pr#{}; continuing", pr_number)
+
+    def _run_impl(self, operation: MergeOperation, pr_number: int) -> Outcome:
+        engine = self._engine
         try:
             raw_pr = engine.github.get_pull_request_metadata_strict(self._repo_name, pr_number)
         except GitHubRequestError as exc:
             logger.info("Could not refresh PR #{} for merge-operation resumption: {}", pr_number, exc)
-            return
+            _record_pr_stage_result(pr_number, "pr.strict-refresh", f"pr#{pr_number} strict refresh", Outcome.DEFERRED, {"reason": str(exc), "phase": "merge-operation-resumption"})
+            return Outcome.DEFERRED
         pr_data = engine.github.get_pr_details(raw_pr)
         current_head = str((pr_data.get("head") or {}).get("sha") or "")
         if current_head and current_head != operation.expected_head_sha:
@@ -309,8 +409,16 @@ class _MergeOperationResumeHandler:
             from .merge_operation_state import get_merge_operation_store
 
             get_merge_operation_store().supersede(operation.identity)
-            return
-        engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0), origin="merge-operation-resumption")
+            _record_pr_stage_result(
+                pr_number,
+                "pr.merge-operation-resume-refresh",
+                f"pr#{pr_number} merge-operation resume refresh",
+                Outcome.SUPERSEDED,
+                {"expected_head": operation.expected_head_sha, "current_head": current_head},
+            )
+            return Outcome.SUPERSEDED
+        result = engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0), origin="merge-operation-resumption")
+        return _map_candidate_result_outcome(result)
 
 
 class _IssueProcessingStageHandler:
@@ -3159,6 +3267,7 @@ class AutomationEngine:
             logger.info(f"Skipping PR #{item_number} - author not in PR allowlist")
             result.target_outcome = ExplicitTargetOutcome.SKIPPED
             result.target_reason = "PR author is not in the allowlist"
+            _record_pr_stage_result(item_number, "pr.author-admission", f"pr#{item_number} author admission", Outcome.SKIPPED, {"reason": result.target_reason})
             return result
         if candidate.type == "issue":
             collected_candidate = candidate

@@ -28,6 +28,7 @@ from auto_coder.progress_decorators import progress_stage
 from ..automation_config import AutomationConfig
 from ..ci_observation import CheckObservation, CIConclusion, ObservationAvailability, WorkflowObservation
 from ..dispatch_claim_store import DispatchOutcome
+from ..execution_trace import EventKind, Outcome, get_trace_collector
 from ..github_ci_observer import approve_waiting_deployment, end_ci_read_phase, observe_ci
 from ..logger_config import get_logger
 from ..security_utils import redact_string
@@ -438,6 +439,29 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
         return []
 
 
+def _record_ci_observation_stage(pr_number: Any, outcome: Outcome, facts: Dict[str, Any]) -> None:
+    """Record a CI-observation stage-result preserving availability distinctly (REQ-004 of Issue #1946).
+
+    Uses whatever ``ExecutionScope`` is already bound by ``AutomationEngine``
+    around the enclosing PR evaluation; when none is bound the event is
+    retained as legacy/unscoped by ``TraceCollector`` rather than inventing
+    one. A diagnostic-recorder failure never affects the CI-eligibility
+    decision it describes (REQ-008).
+    """
+    try:
+        merged_facts = {"pr_number": pr_number, **facts}
+        get_trace_collector().record_event(
+            EventKind.STAGE_RESULT,
+            stage_id="pr.ci-observation",
+            origin="pr.ci-observation",
+            label=f"pr#{pr_number} CI observation",
+            outcome=outcome,
+            facts=merged_facts,
+        )
+    except Exception:
+        logger.debug(f"Diagnostic trace recording failed for pr#{pr_number} CI observation; continuing", exc_info=True)
+
+
 @progress_stage("Checking GitHub Actions")
 def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, github_client: Optional[GitHubClient] = None) -> GitHubActionsStatusResult:
     """Evaluate a complete, exact-head immutable CI observation.
@@ -455,9 +479,22 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         return GitHubActionsStatusResult(success=False, error="GitHub credential is unavailable")
     api = get_ghapi_client(token)
     snapshot = observe_ci(api, token, repo_name, pr_number, head_sha)
+    observation_facts = {
+        "examined_head": head_sha,
+        "availability": snapshot.availability.value,
+        "cycle_id": snapshot.cycle_id,
+        "invalidation_epoch": snapshot.invalidation_epoch,
+    }
     if not snapshot.complete:
+        # Unavailable/throttled/partial/superseded evidence is never a CI
+        # failure or a passing/empty result (REQ-004): a superseded read is
+        # reported as such, and every other incomplete availability stays an
+        # explicit UNKNOWN rather than being collapsed into "failed".
+        outcome = Outcome.SUPERSEDED if snapshot.availability is ObservationAvailability.SUPERSEDED else Outcome.UNKNOWN
+        _record_ci_observation_stage(pr_number, outcome, {**observation_facts, "reason": snapshot.unavailable_reason})
         return GitHubActionsStatusResult(success=False, error=snapshot.unavailable_reason or snapshot.availability.value)
     if snapshot.availability is ObservationAvailability.KNOWN_EMPTY:
+        _record_ci_observation_stage(pr_number, Outcome.DEFERRED, {**observation_facts, "reason": "no current CI observations"})
         return GitHubActionsStatusResult(success=False, in_progress=True, error="No current CI observations")
 
     # A newer explicit attempt makes earlier evidence for that run ineligible.
@@ -471,6 +508,13 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
     failing = any(fact.conclusion not in {CIConclusion.SUCCESS, CIConclusion.SKIPPED, CIConclusion.NEUTRAL} for fact in current_facts)
     run_ids = sorted({int(fact.execution.run_id) for fact in current_facts if isinstance(fact, WorkflowObservation)})
     waiting_runs = [(int(fact.execution.run_id), int(fact.execution.attempt), head_sha) for fact in current_facts if isinstance(fact, WorkflowObservation) and fact.waiting_for_deployment and fact.execution.attempt is not None]
+    if pending:
+        eligibility_outcome = Outcome.DEFERRED
+    elif failing:
+        eligibility_outcome = Outcome.BLOCKED
+    else:
+        eligibility_outcome = Outcome.COMPLETED
+    _record_ci_observation_stage(pr_number, eligibility_outcome, {**observation_facts, "run_ids": run_ids})
     return GitHubActionsStatusResult(success=not failing, ids=run_ids, in_progress=pending, waiting_runs=waiting_runs)
 
 
