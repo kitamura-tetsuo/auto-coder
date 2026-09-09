@@ -204,3 +204,13 @@ When encountering Python dependency-related errors (`ImportError`, `ModuleNotFou
 * Individual-child review, implementation, and PR prompts that receive parent context must treat the parent as coordination/scope evidence with no implementation Requirements. Only the target child's own current explicit Requirements define its merge-blocking implementation contract. Report an Objective-only or aggregate gap as a specification/decomposition concern rather than a fabricated parent REQ ID, an invented child code/test obligation, a blanket waiver of an explicit child defect, or an instruction to implement the parent.
 * A historical tracking parent that carries Requirements is rejected, never grandfathered or silently stripped. Before a user-authorized correction removes them, identify which statements are coordination-only and which describe real behavior that needs explicit child ownership, preserve the parent's fixed Objective verbatim, and surface any unresolved choice rather than guessing it. A tracking parent missing its Objective needs an explicitly supplied purpose, not an inferred one; legacy child Objective-absence handling is unchanged. Marking a parent family implementation-ready submits its children for execution; it never authorizes implementing the parent itself.
 * This is prompt-level authoring/repair guidance, distinct from hard runtime structural enforcement (see `requirement_contract.py`, `decomposition_analyzer.py`, `decomposition_validation_lifecycle.py`). It must not be cited as proof of semantic model compliance, and it must not reactivate a disabled mandatory prompt-evaluation gate or turn an advisory prompt-regression result into a merge/wait/repair condition.
+
+## Dashboard observability change checklist
+
+Changes to processing origins, admission gates, outcomes, provider routing, durable
+resumption paths, or structured event schemas must assess and update the production
+trace emissions, the affected entries and runnable tests in
+`docs/dashboard-observability.md`, and the dashboard documentation in the same
+change. If no update is required, record a concrete observability-neutral reason in
+the change description; co-modifying files, accepting a generated diagram, or an
+LLM approval is not evidence that the production-to-view contract still works.

@@ -2324,3 +2324,14 @@ contract-free-parent-production-lifecycle-admission:
     - "`DecompositionValidationLifecycle.decide` gates durable baseline/Objective-evidence capture on each supplied member's own role-aware structural validity (`assess_role_structure`, parent assessed as `tracking_parent`, each child as `implementation_child`) rather than requiring every member, parent included, to carry a valid implementation Requirements manifest; a structurally valid contract-free parent with one nonempty Objective now reaches the durable history baseline, per-member Objective-anchor capture, and the `objective_conflict` integrity check on the same path as a legacy parent that happened to carry Requirements."
     - "A structurally invalid family (a forbidden parent Requirements declaration, a missing/duplicate/empty parent Objective, or an invalid child Requirements contract) still skips evidence capture and reaches the analyzer directly, which reports the same `invalid_issue_structure` `BLOCKED` finding it always did; this change only widens which structurally valid families receive durable Objective evidence, it does not relax any structural defect."
     - "An assessment `ERROR` (unavailable or contradictory role evidence) fails the decision closed as `ERROR` with a diagnostic reason rather than being treated as a structural defect or silently defaulting to unvalidated analysis."
+
+## Mandatory production-to-view dashboard observability regressions
+
+Dashboard observability is protected by deterministic tests in the ordinary PR
+shards and by a documented `scripts/test.sh` invocation. The maintained coverage
+inventory maps processing, validation, resumption, CI, merge, and asynchronous
+origins to concrete collected tests. Joined regressions execute production entry
+points, consume the real structured collector snapshot through the mounted detail
+view, and independently assert business outcomes. Negative controls reject missing
+emissions, scope reattribution, evidence coercion, and false completion while the
+generic renderer continues to accept new or repeated stages without a node map.
