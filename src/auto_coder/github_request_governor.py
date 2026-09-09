@@ -23,6 +23,22 @@ MUTATIONS_PER_HOUR = 400
 MUTATION_SPACING_SECONDS = 1.0
 RECOVERY_COOLDOWN_SECONDS = 60.0
 SCHEMA_VERSION = 1
+ADMISSION_WAIT_BUDGET_SECONDS = 90.0
+ADMISSION_POLL_CEILING_SECONDS = 0.5
+ADMISSION_POLL_FLOOR_SECONDS = 0.01
+# Deferrals this governor imposes on itself, every one of which resolves
+# without any further GitHub cooperation: an attempt completing, one second of
+# mutation spacing elapsing, or a rolling window edge passing. They describe
+# when a request may be sent, never that it may not be sent at all.
+SELF_RESOLVING_DEFERRALS = frozenset(
+    {
+        "request_in_flight",
+        "mutation_spacing",
+        "request_rolling_window",
+        "mutation_minute_window",
+        "mutation_hour_window",
+    }
+)
 
 
 class GitHubRequestDeferred(GitHubRequestRefused):
@@ -57,10 +73,21 @@ def default_governor_path() -> Path:
 class GitHubRequestGovernor:
     """One synchronized, durable rolling-window governor for all credentials."""
 
-    def __init__(self, *, monotonic: Callable[[], float] = time.monotonic, wall_time: Callable[[], float] = time.time, store_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        wall_time: Callable[[], float] = time.time,
+        store_path: Path | None = None,
+        wait_budget: float = ADMISSION_WAIT_BUDGET_SECONDS,
+        waiter: Callable[[float], None] | None = None,
+    ) -> None:
         self._monotonic = monotonic
         self._wall_time = wall_time
         self.path = store_path or default_governor_path()
+        self._wait_budget = wait_budget
+        self._waiter = waiter
+        self._admission_wake = threading.Condition()
         self._lock = threading.RLock()
         self._connection: sqlite3.Connection | None = None
         self._unavailable_reason: str | None = None
@@ -181,8 +208,14 @@ class GitHubRequestGovernor:
         self._connection.execute("DELETE FROM reservations WHERE admitted_utc <= ?", (now - 3600.0,))
         self._connection.execute("DELETE FROM origin_state WHERE cooldown_until_utc <= ? AND COALESCE(last_mutation_completion_utc, 0) <= ? AND throttle_count=0 AND origin NOT IN (SELECT origin FROM reservations)", (now, now - MUTATION_SPACING_SECONDS))
 
-    def admit(self, context: GitHubRequestContext) -> bool:
-        """Durably reserve one actual attempt before transport may send it."""
+    def admit(self, context: GitHubRequestContext, announce_deferral: bool = True) -> bool:
+        """Durably reserve one actual attempt before transport may send it.
+
+        This is a single atomic attempt at the reservation: it never waits.
+        ``announce_deferral`` exists only so a caller that is already waiting
+        out a self-resolving deferral does not re-log the same decision on
+        every poll; the decision itself is unaffected.
+        """
         origin = normalize_api_origin(context.api_origin)
         with self._lock:
             if self._unavailable_reason is not None:
@@ -218,7 +251,8 @@ class GitHubRequestGovernor:
                         self._connection.execute("INSERT INTO reservations(origin, attempt_id, kind, admitted_utc, post_cooldown) VALUES (?, ?, ?, ?, ?)", (origin, context.attempt_id, context.kind, now, int(state.episode_active and now >= state.cooldown_until)))
                     self._checkpoint(now)
                 if reason:
-                    self._diagnostic(origin, context.attempt_id, "deferred", reason, eligible, now)
+                    if announce_deferral:
+                        self._diagnostic(origin, context.attempt_id, "deferred", reason, eligible, now)
                     raise GitHubRequestDeferred(context, reason, self._retry_at(eligible, now))
                 self._diagnostic(origin, context.attempt_id, "admitted", "eligible", now, now)
                 return True
@@ -268,6 +302,62 @@ class GitHubRequestGovernor:
                     self._diagnostic(origin, outcome.context.attempt_id, "cooldown", cooldown_reason, cooldown, now)
             except Exception as exc:
                 self._fail_closed(f"outcome persistence failed: {exc}", origin)
+            self._wake_waiters()
+
+    def admit_blocking(self, context: GitHubRequestContext) -> bool:
+        """Wait out this governor's own pacing instead of failing the caller.
+
+        The controller runs several workers against one origin, so momentary
+        self-imposed deferrals are the normal case rather than an error: an
+        attempt is in flight, mutation spacing has not elapsed, a rolling
+        window edge has not passed.  Raising those out of the transport turns
+        ordinary pacing into spurious request failures for every concurrent
+        read.  Waiting for the stated eligibility instead preserves the pacing
+        policy exactly while keeping the caller's request truthful.
+
+        Deferrals that are not self-resolving still propagate untouched:
+        ``rate_limit_cooldown`` is real GitHub backpressure and
+        ``governor_state_unavailable`` is unusable state, and their callers own
+        durable resumption rather than an in-process wait.
+        """
+        deadline = self._wall_time() + self._wait_budget
+        announce = True
+        while True:
+            try:
+                return self.admit(context, announce_deferral=announce)
+            except GitHubRequestDeferred as deferred:
+                now = self._wall_time()
+                remaining = deadline - now
+                if deferred.reason not in SELF_RESOLVING_DEFERRALS or remaining <= 0:
+                    if not announce:
+                        self._exhausted(context, deferred)
+                    raise
+                announce = False
+                self._wait_for_capacity(min(max(deferred.retry_at - now, ADMISSION_POLL_FLOOR_SECONDS), ADMISSION_POLL_CEILING_SECONDS, remaining))
+
+    def _wait_for_capacity(self, seconds: float) -> None:
+        if self._waiter is not None:
+            self._waiter(seconds)
+            return
+        # A resolved reservation notifies immediately; the bounded timeout is
+        # what covers another process resolving one in the shared store.
+        with self._admission_wake:
+            self._admission_wake.wait(seconds)
+
+    def _wake_waiters(self) -> None:
+        with self._admission_wake:
+            self._admission_wake.notify_all()
+
+    def _exhausted(self, context: GitHubRequestContext, deferred: GitHubRequestDeferred) -> None:
+        diagnostic: dict[str, object] = {
+            "decision": "wait_exhausted",
+            "state_path": str(self.path),
+            "origin": normalize_api_origin(context.api_origin),
+            "attempt": context.attempt_id,
+            "delay_reason": deferred.reason,
+            "waited_seconds": self._wait_budget,
+        }
+        logger.bind(github_governor=diagnostic).warning("github_governor_diagnostic {}", json.dumps(diagnostic, sort_keys=True))
 
     def _retry_at(self, logical_deadline: float, logical_now: float) -> float:
         return self._wall_time() + max(0.0, logical_deadline - logical_now)

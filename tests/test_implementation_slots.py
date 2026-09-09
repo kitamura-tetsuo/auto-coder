@@ -1255,3 +1255,37 @@ def test_same_owner_serialization_is_reentrant(tmp_path):
     with slots.serialize(owner):
         with slots.serialize(owner):
             assert owner.key == "issue:100"
+
+
+class UnavailablePullRequests(GitHubState):
+    """`GitHubClient.get_pull_request` reports an unavailable read as None."""
+
+    def get_pull_request(self, _repo, _number):
+        return None
+
+
+def test_unavailable_pr_read_retains_its_slot_under_its_own_cause(tmp_path):
+    """An unreadable PR is not terminal evidence and must not release capacity.
+
+    A refused or throttled read returns None, which previously reached the
+    lifecycle comparison as a PR with no state and surfaced as
+    "'NoneType' object has no attribute 'lower'" instead of naming the
+    unavailable read.
+    """
+    slots = repository(tmp_path, limit=2)
+    pr_owner = ImplementationOwner("pr", 200)
+    issue_owner = ImplementationOwner("issue", 100)
+    assert slots.reserve(pr_owner) is True
+    assert slots.reserve(issue_owner) is True
+    github = UnavailablePullRequests(issues={100: {"state": "closed"}}, linked_prs={100: [105]})
+
+    with patch("auto_coder.implementation_slots.logger") as slot_logger:
+        slots.reconcile(github)
+
+    assert set(slots.active_owners()) == {pr_owner, issue_owner}
+    retained = [str(call.args[0]) for call in slot_logger.warning.call_args_list]
+    assert len(retained) == 2
+    for message in retained:
+        assert "retaining its slot" in message
+        assert "Could not read pull request" in message
+        assert "NoneType" not in message

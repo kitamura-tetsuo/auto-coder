@@ -209,6 +209,16 @@ cannot enter immediately receives a typed, definitely-not-sent deferral carrying
 the reason and earliest known retry time, allowing webhook and local work to
 continue without quota sleeper tasks.
 
+The two kinds of deferral are separated at the request boundary. Deferrals the
+governor imposes on itself -- one in-flight request, mutation spacing, and the
+rolling attempt/mutation windows -- resolve without any GitHub cooperation, so a
+request waits for its stated eligibility (bounded, currently 90 seconds) and is
+then sent, rather than failing a concurrent worker's read. Throttle cooldowns and
+unusable governor state are not waited out: they propagate immediately as typed
+deferrals to the callers that own durable resumption for them. Exhausting the
+wait budget emits a `wait_exhausted` governor diagnostic and re-raises the
+original deferral.
+
 Admission reservations, rolling budgets, mutation-completion spacing, throttle
 episodes, and cooldown deadlines are durably recorded in the controller-wide
 `~/.auto-coder/runtime/github/request_governor.sqlite3` store. Restart recovery

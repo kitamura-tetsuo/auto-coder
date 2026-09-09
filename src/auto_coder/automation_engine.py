@@ -413,7 +413,10 @@ class AutomationEngine:
         """Initialize automation engine."""
         self.github = github_client
         self.github_request_governor = GitHubRequestGovernor()
-        configure_github_request_boundary(self.github_request_governor.admit, self.github_request_governor.observe)
+        # The boundary installs the waiting admission form: this controller runs
+        # several workers against one origin, so its own pacing deferrals must
+        # delay a request rather than fail it.
+        configure_github_request_boundary(self.github_request_governor.admit_blocking, self.github_request_governor.observe)
         self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store())
         self.merge_operation_scheduler = get_merge_operation_scheduler()
         self.config = config or AutomationConfig()

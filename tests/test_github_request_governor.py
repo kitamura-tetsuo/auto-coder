@@ -379,3 +379,136 @@ def test_corrupt_and_invalid_timing_state_fail_network_admission_closed(tmp_path
     with pytest.raises(GitHubRequestDeferred) as invalid_refusal:
         reopened.admit(context(3))
     assert invalid_refusal.value.reason == "governor_state_unavailable"
+
+
+def test_blocking_admission_waits_out_a_concurrent_attempt(tmp_path, monkeypatch) -> None:
+    """The controller's own pacing must delay a concurrent request, not fail it.
+
+    `admit` refuses a second attempt while one is in flight. With that refusal
+    installed as the process-wide boundary, every concurrent worker read failed
+    as `GitHub request failed: refused`. `admit_blocking` keeps the same
+    single-flight policy but makes the second caller wait for its turn, so both
+    requests are actually sent.
+    """
+    governor = GitHubRequestGovernor(store_path=tmp_path / "waiting.sqlite3")
+    entered = threading.Event()
+    release = threading.Event()
+    sends: list[str] = []
+    sends_lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with sends_lock:
+            sends.append(request.url.path)
+        entered.set()
+        release.wait(timeout=5)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    monkeypatch.setattr(
+        "auto_coder.util.gh_cache.get_caching_client",
+        lambda *args, **kwargs: httpx.Client(
+            transport=DiagnosticTransport(
+                httpx.MockTransport(handler),
+                admission_hook=governor.admit_blocking,
+                observation_hook=governor.observe,
+            )
+        ),
+    )
+    configure_github_request_boundary(governor.admit_blocking, governor.observe)
+    errors: list[BaseException] = []
+
+    def request(path: str) -> None:
+        try:
+            get_ghapi_client("token")(path)
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=request, args=("/repos/acme/one",))
+    first.start()
+    try:
+        assert entered.wait(timeout=5)
+        second = threading.Thread(target=request, args=("/repos/acme/two",))
+        second.start()
+        # The second attempt is held at admission, not sent alongside the first.
+        second.join(timeout=0.5)
+        assert second.is_alive()
+        with sends_lock:
+            assert sends == ["/repos/acme/one"]
+        release.set()
+        second.join(timeout=5)
+        assert not second.is_alive()
+    finally:
+        release.set()
+        first.join(timeout=5)
+        configure_github_request_boundary()
+    assert errors == []
+    assert sends == ["/repos/acme/one", "/repos/acme/two"]
+    # Both reservations resolved, so an unrelated admission is still eligible.
+    assert governor.admit(context(3)) is True
+
+
+def test_blocking_admission_gives_up_on_a_stuck_attempt(tmp_path) -> None:
+    """Waiting is bounded: an attempt that never completes still defers."""
+    clock = Clock()
+    waits: list[float] = []
+
+    def waiter(seconds: float) -> None:
+        waits.append(seconds)
+        clock.advance(seconds)
+
+    governor = GitHubRequestGovernor(
+        monotonic=clock.monotonic,
+        wall_time=clock.wall,
+        store_path=tmp_path / "stuck.sqlite3",
+        wait_budget=2.0,
+        waiter=waiter,
+    )
+    assert governor.admit(context(1)) is True
+
+    with pytest.raises(GitHubRequestDeferred) as exhausted:
+        governor.admit_blocking(context(2))
+    assert exhausted.value.reason == "request_in_flight"
+    assert sum(waits) == pytest.approx(2.0)
+    assert waits and max(waits) <= 0.5
+
+
+def test_blocking_admission_does_not_wait_out_real_backpressure(tmp_path) -> None:
+    """Throttle cooldown and unusable state stay immediate, durable deferrals."""
+    clock = Clock()
+    waits: list[float] = []
+    path = tmp_path / "cooldown.sqlite3"
+    governor = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path, waiter=waits.append)
+    first = context(1)
+    governor.admit(first)
+    governor.observe(outcome(first, GitHubApiOutcome.SECONDARY_THROTTLED, GitHubResponseMetadata(retry_after_seconds=600)))
+
+    with pytest.raises(GitHubRequestDeferred) as throttled:
+        governor.admit_blocking(context(2))
+    assert throttled.value.reason == "rate_limit_cooldown"
+    assert throttled.value.retry_at == clock.wall_value + 600
+    assert waits == []
+
+    corrupt = tmp_path / "corrupt.sqlite3"
+    corrupt.write_bytes(b"not a sqlite database")
+    unavailable = GitHubRequestGovernor(store_path=corrupt, waiter=waits.append)
+    with pytest.raises(GitHubRequestDeferred) as refused:
+        unavailable.admit_blocking(context(3))
+    assert refused.value.reason == "governor_state_unavailable"
+    assert waits == []
+
+
+def test_blocking_admission_waits_out_mutation_spacing(tmp_path) -> None:
+    """Self-imposed spacing delays the mutation and then admits it."""
+    clock = Clock()
+    waits: list[float] = []
+
+    def waiter(seconds: float) -> None:
+        waits.append(seconds)
+        clock.advance(seconds)
+
+    governor = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=tmp_path / "spacing.sqlite3", waiter=waiter)
+    first = context(1, "mutation")
+    governor.admit(first)
+    governor.observe(outcome(first))
+
+    assert governor.admit_blocking(context(2, "mutation")) is True
+    assert sum(waits) == pytest.approx(1.0)

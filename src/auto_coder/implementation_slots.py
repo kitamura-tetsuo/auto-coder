@@ -801,7 +801,7 @@ class ImplementationSlotRepository:
                     linked_pr_numbers.update(recorded_prs)
                     linked_prs_terminal = True
                     for pr_number in linked_pr_numbers:
-                        pull_request = github_client.get_pull_request(self.repo_name, pr_number)
+                        pull_request = self._authoritative_pull_request(github_client, pr_number)
                         pr_details = github_client.get_pr_details(pull_request)
                         if pr_details.get("state", "").lower() != "closed" and pr_details.get("merged") is not True:
                             linked_prs_terminal = False
@@ -809,7 +809,7 @@ class ImplementationSlotRepository:
                     if linked_prs_terminal and self._release_if_idle(owner, tuple(recorded_prs)):
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
                 elif owner.kind == "pr":
-                    item = github_client.get_pull_request(self.repo_name, owner.number)
+                    item = self._authoritative_pull_request(github_client, owner.number)
                     details = github_client.get_pr_details(item)
                     if (details.get("state", "").lower() == "closed" or details.get("merged") is True) and self._release_if_idle(owner):
                         logger.info(f"Released terminal logical implementation slot {owner.key}")
@@ -820,6 +820,19 @@ class ImplementationSlotRepository:
                     continue
             except Exception as exc:
                 logger.warning(f"Could not reconcile logical implementation {owner.key}; retaining its slot: {exc}")
+
+    def _authoritative_pull_request(self, github_client: Any, pr_number: int) -> Any:
+        """Return PR lifecycle evidence, or raise rather than read absence into it.
+
+        ``get_pull_request`` reports an unavailable read as ``None``.  Releasing
+        a slot needs positive terminal evidence, so an unavailable read must
+        retain the slot under its own cause instead of reaching the lifecycle
+        comparison as a PR with no state.
+        """
+        pull_request = github_client.get_pull_request(self.repo_name, pr_number)
+        if pull_request is None:
+            raise ImplementationSlotUnavailable(f"Could not read pull request #{pr_number} lifecycle from {self.repo_name}")
+        return pull_request
 
     @contextmanager
     def serialize(self, owner: ImplementationOwner) -> Iterator[None]:
