@@ -43,10 +43,13 @@ from src.auto_coder.util.gh_cache import GitHubClient
 
 # Test stabilization: eliminate external environment variables and user HOME influence (to ensure consistent CLI behavior)
 @pytest.fixture(autouse=True)
-def mock_sleep_globally(monkeypatch):
+def mock_sleep_globally(monkeypatch, request):
     """Mock time.sleep and asyncio.sleep globally to speed up tests."""
     import asyncio
     import time
+
+    if "_use_real_sleep" in request.fixturenames:
+        return
 
     mock_sleep = Mock()
     monkeypatch.setattr(time, "sleep", mock_sleep)
@@ -174,6 +177,17 @@ def _use_real_home():
 
     Tests using this fixture will not have their HOME directory mocked.
     This is useful for integration tests that need to access real configuration files.
+    """
+    pass
+
+
+@pytest.fixture
+def _use_real_sleep():
+    """Marker fixture to indicate that a test needs real time.sleep/asyncio.sleep.
+
+    Tests using this fixture will not have sleeping mocked/sped up. This is
+    required for real-browser/timer-boundary integration tests where wall-clock
+    delays are the thing under test (e.g. NiceGUI's 1s refresh timer).
     """
     pass
 

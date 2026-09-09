@@ -94,7 +94,18 @@ class TestDashboardReachability:
 
         # Initialize dashboard with REAL nicegui
         # Note: nicegui uses global state, so we need to be careful.
-        # However, for a simple reachability test, it should be fine if run once or in isolation.
+        # `tests/test_dashboard_detail_scroll_stability.py` also does a real
+        # (non-mocked) init_dashboard() elsewhere in this process; whichever
+        # test runs second would otherwise hit Starlette's one-time
+        # "Cannot add middleware after an application has started" guard on
+        # NiceGUI's process-wide `core.app` singleton. Resetting its already-
+        # built middleware stack re-enables `add_middleware()` without
+        # changing the app's real routing/behavior (the same fixed set of
+        # NiceGUI middlewares gets re-added, not new ones).
+        from nicegui import core as _nicegui_core
+
+        if _nicegui_core.app.middleware_stack is not None:
+            _nicegui_core.app.middleware_stack = None
         init_dashboard(app, mock_engine, "owner/repo")
 
         client = TestClient(app)
