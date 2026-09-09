@@ -309,7 +309,7 @@ class TestGetOpenIssuesJsonFallback:
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     @patch.object(GitHubClient, "add_sub_issue")
-    @patch.object(GitHubClient, "get_linked_prs", return_value=[])
+    @patch.object(GitHubClient, "get_connected_prs", return_value=[])
     def test_get_open_issues_json_synchronizes_fallback_sub_issues(self, mock_linked_prs, mock_add_sub_issue, mock_get_ghapi, mock_github_token):
         mock_api = MagicMock()
         mock_get_ghapi.return_value = mock_api
@@ -366,7 +366,7 @@ class TestGetOpenIssuesJsonFallback:
 
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     @patch.object(GitHubClient, "add_sub_issue")
-    @patch.object(GitHubClient, "get_linked_prs", return_value=[])
+    @patch.object(GitHubClient, "get_connected_prs", return_value=[])
     def test_younger_parent_issue_prescanned_before_construction(self, mock_linked_prs, mock_add_sub_issue, mock_get_ghapi, mock_github_token):
         """When parent issue #10 appears first in open issues list, pre-scanning ensures it knows about children #20 and #30."""
         mock_api = MagicMock()
@@ -437,7 +437,7 @@ class TestGetOpenIssuesJsonFallback:
     @patch.object(AutomationEngine, "_is_issue_author_allowed", return_value=True)
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     @patch.object(GitHubClient, "add_sub_issue")
-    @patch.object(GitHubClient, "get_linked_prs", return_value=[])
+    @patch.object(GitHubClient, "get_connected_prs", return_value=[])
     def test_younger_parent_issue_candidate_order(self, mock_linked_prs, mock_add_sub_issue, mock_get_ghapi, mock_author_allowed, mock_label_manager, mock_github_token):
         """When younger issue #10 is parent of #20 and #30, #20 is processed first, skipping #10 and #30."""
         mock_api = MagicMock()

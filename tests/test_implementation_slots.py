@@ -48,7 +48,7 @@ class GitHubState:
     def get_pr_details(self, pr):
         return pr
 
-    def get_linked_prs(self, _repo, issue_number, strict=False):
+    def get_connected_prs(self, _repo, issue_number, strict=False):
         return self.linked_prs.get(issue_number, [])
 
     def get_open_pull_requests(self, _repo):
@@ -741,7 +741,10 @@ def test_reconciliation_retains_slot_when_production_timeline_is_unavailable(tmp
     assert slots.reserve(ImplementationOwner("issue", 200)) is False
 
 
-def test_reconciliation_reads_all_timeline_pages_before_releasing_slot(tmp_path, monkeypatch):
+def test_reconciliation_reads_all_connected_pr_pages_before_releasing_slot(tmp_path, monkeypatch):
+    """Reconciliation's strict connected-PR lookup must read every page, and a
+    same-repository mention (never returned by the native connection reader)
+    must not be mistaken for a genuine connection retaining the slot."""
     slots = repository(tmp_path)
     issue_owner = ImplementationOwner("issue", 100)
     assert slots.reserve(issue_owner) is True
@@ -756,57 +759,49 @@ def test_reconciliation_reads_all_timeline_pages_before_releasing_slot(tmp_path,
     monkeypatch.setattr(
         github,
         "get_pull_request",
-        lambda _repo, number: {"number": number, "state": "open", "merged": False},
+        lambda _repo, number: {"number": number, "state": "closed", "merged": True},
     )
     monkeypatch.setattr(github, "get_pr_details", lambda pr: pr)
 
-    first_url = "https://api.github.com/repos/owner/repo/issues/100/timeline?per_page=100"
-    second_url = f"{first_url}&page=2"
-
-    class TimelineResponse:
-        def __init__(self, url, events, next_url=None):
-            self.events = events
-            self.links = {"next": {"url": next_url}} if next_url else {}
-            self.request = httpx.Request("GET", url)
-            self.status_code = 200
-            self.headers: dict[str, str] = {}
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return self.events
-
-    class PaginatedTimeline:
-        def __init__(self):
-            self.requested_urls = []
-
-        def request(self, method, url, headers=None, extensions=None):
-            self.requested_urls.append(url)
-            if url == first_url:
-                return TimelineResponse(url, [{"event": "commented"}] * 100, second_url)
-            assert url == second_url
-            return TimelineResponse(
-                url,
-                [
-                    {
-                        "event": "cross-referenced",
-                        "source": {"issue": {"number": 108, "pull_request": {}}},
+    def _page_response(nodes, has_next_page, end_cursor=None):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "closedByPullRequestsReferences": {
+                            "pageInfo": {"hasNextPage": has_next_page, "endCursor": end_cursor},
+                            "nodes": nodes,
+                        }
                     }
-                ],
-            )
+                }
+            }
+        }
+        return response
 
-    timeline = PaginatedTimeline()
-    monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda: timeline)
+    def _pr_node(number):
+        return {"number": number, "repository": {"owner": {"login": "owner"}, "name": "repo"}}
 
-    slots.reconcile(github)
+    responses = [
+        _page_response([_pr_node(101)], has_next_page=True, end_cursor="cursor-1"),
+        _page_response([_pr_node(102)], has_next_page=False),
+    ]
+    requested = []
 
-    assert timeline.requested_urls == [first_url, second_url]
-    assert slots.active_owners() == (issue_owner,)
-    assert slots.reserve(ImplementationOwner("issue", 200)) is False
-    sibling_owner = slots.resolve_owner("pr", {"number": 108, "body": "Fixes #100"}, github)
-    assert sibling_owner == issue_owner
-    assert slots.reserve(sibling_owner) is True
+    def _post(url, headers=None, json=None, timeout=None):
+        requested.append(json["variables"].get("cursor"))
+        return responses.pop(0)
+
+    with patch("httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value.__enter__.return_value.post.side_effect = _post
+        slots.reconcile(github)
+
+    assert requested == [None, "cursor-1"]
+    # Both connected PRs (101, 102) are terminal, and no cross-reference or
+    # mention ever entered the result, so the closed source Issue releases.
+    assert slots.active_owners() == ()
+    assert slots.reserve(ImplementationOwner("issue", 200)) is True
 
 
 def test_reconciliation_retains_branch_linked_pr_absent_from_timeline(tmp_path, monkeypatch):
@@ -826,25 +821,23 @@ def test_reconciliation_retains_branch_linked_pr_absent_from_timeline(tmp_path, 
     )
     monkeypatch.setattr(github, "get_pr_details", lambda pr: pr)
 
-    class EmptyTimelineResponse:
-        links: dict = {}
-        status_code = 200
-        headers: dict = {}
+    def _empty_connected_prs_response(url, headers=None, json=None, timeout=None):
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "closedByPullRequestsReferences": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        }
+                    }
+                }
+            }
+        }
+        return response
 
-        def __init__(self, url):
-            self.request = httpx.Request("GET", url)
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return []
-
-    class EmptyTimeline:
-        def request(self, method, url, headers=None, extensions=None):
-            return EmptyTimelineResponse(url)
-
-    monkeypatch.setattr("auto_coder.util.gh_cache.get_caching_client", lambda: EmptyTimeline())
     branch_linked_pr = {
         "number": 108,
         "title": "Implementation",
@@ -856,7 +849,9 @@ def test_reconciliation_retains_branch_linked_pr_absent_from_timeline(tmp_path, 
     assert slots.reserve(issue_owner, implementation_pr=108) is True
 
     restarted_slots = repository(tmp_path)
-    restarted_slots.reconcile(github)
+    with patch("httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value.__enter__.return_value.post.side_effect = _empty_connected_prs_response
+        restarted_slots.reconcile(github)
 
     assert restarted_slots.active_owners() == (issue_owner,)
     assert restarted_slots.reserve(ImplementationOwner("issue", 200)) is False
@@ -1149,7 +1144,7 @@ def test_pr_membership_recorded_during_reconciliation_prevents_owner_release(tmp
             super().__init__(issues={100: {"number": 100, "state": "closed"}}, linked_prs={100: []})
             self.requested_prs = []
 
-        def get_linked_prs(self, _repo, issue_number, strict=False):
+        def get_connected_prs(self, _repo, issue_number, strict=False):
             assert issue_number == owner.number
             assert strict is True
             linked_pr_lookup_started.set()

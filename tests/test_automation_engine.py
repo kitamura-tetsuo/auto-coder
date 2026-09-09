@@ -812,7 +812,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         GitHubClient.reset_singleton()
         github = GitHubClient.get_instance(token="test-token")
         github.get_open_prs_json = Mock(return_value=[])
-        github.get_linked_prs = Mock(return_value=[])
+        github.get_connected_prs = Mock(return_value=[])
         github.get_open_sub_issues_strict = Mock(return_value=[])
         github.get_parent_issue_number_strict = Mock(return_value=None)
         github.get_issue_comments_strict = Mock(return_value=[])
@@ -989,7 +989,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             def get_issue_details(self, issue):
                 return issue
 
-            def get_linked_prs(self, _repo_name, _issue_number, strict=False):
+            def get_connected_prs(self, _repo_name, _issue_number, strict=False):
                 assert strict is True
                 return []
 
@@ -1082,7 +1082,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             def get_issue_details(self, issue):
                 return issue
 
-            def get_linked_prs(self, _repo_name, _issue_number, strict=False):
+            def get_connected_prs(self, _repo_name, _issue_number, strict=False):
                 assert strict is True
                 return []
 
