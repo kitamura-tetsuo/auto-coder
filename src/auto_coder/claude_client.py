@@ -24,6 +24,7 @@ from .utils import CommandExecutor
 logger = get_logger(__name__)
 
 CLAUDE_CONFIG_FILENAME = ".claude.json"
+CLAUDE_TASK_INPUT_OPTIONS = {"--prompt", "--prompt-file", "--input-file"}
 
 
 def get_claude_config_paths() -> Tuple[Path, Path]:
@@ -203,6 +204,56 @@ class ClaudeClient(LLMClientBase):
         """Escape special characters that may confuse shell/CLI."""
         return prompt.replace("@", "\\@").strip()
 
+    @staticmethod
+    def _ensure_stdin_input_mode(command: List[str]) -> List[str]:
+        """Return a command configured for one unambiguous text-stdin task.
+
+        Claude's print mode accepts its task either as a positional argument or on
+        stdin.  Configured input selectors must not be allowed to compete with the
+        stdin payload, and stream-json would reinterpret that payload.
+        """
+        normalized: List[str] = []
+        index = 0
+        while index < len(command):
+            option = str(command[index])
+            option_name, separator, inline_value = option.partition("=")
+            if option_name in CLAUDE_TASK_INPUT_OPTIONS:
+                raise ValueError(f"Claude task input option {option_name} conflicts with text stdin")
+            if option_name == "--input-format":
+                if separator:
+                    input_format = inline_value
+                    index += 1
+                else:
+                    if index + 1 >= len(command):
+                        raise ValueError("Claude --input-format requires a value")
+                    input_format = str(command[index + 1])
+                    index += 2
+                if input_format != "text":
+                    raise ValueError(f"Claude input format {input_format!r} conflicts with text stdin")
+                continue
+            normalized.append(command[index])
+            index += 1
+        normalized.extend(["--input-format", "text"])
+        return normalized
+
+    @staticmethod
+    def _enforce_noedit_policy(command: List[str]) -> List[str]:
+        """Force exactly one plan permission mode and remove permission bypass."""
+        sanitized: List[str] = []
+        index = 0
+        while index < len(command):
+            option = str(command[index])
+            if option == "--permission-mode":
+                index += 2
+                continue
+            if option.startswith("--permission-mode=") or option == "--dangerously-skip-permissions":
+                index += 1
+                continue
+            sanitized.append(command[index])
+            index += 1
+        sanitized.extend(["--permission-mode", "plan"])
+        return sanitized
+
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run claude CLI with the given prompt and show real-time output."""
         check_claude_usage_or_raise(
@@ -352,26 +403,17 @@ class ClaudeClient(LLMClientBase):
             # - Remove --dangerously-skip-permissions
             # - Force exactly --permission-mode plan
             if is_noedit:
-                sanitized_cmd = []
-                i = 0
-                while i < len(cmd):
-                    opt_str = str(cmd[i])
-                    if opt_str == "--permission-mode":
-                        # Skip flag and its subsequent value
-                        i += 2
-                        continue
-                    if opt_str.startswith("--permission-mode="):
-                        i += 1
-                        continue
-                    if opt_str == "--dangerously-skip-permissions":
-                        i += 1
-                        continue
-                    sanitized_cmd.append(cmd[i])
-                    i += 1
-                sanitized_cmd.extend(["--permission-mode", "plan"])
-                cmd = sanitized_cmd
+                cmd = self._enforce_noedit_policy(cmd)
 
-            cmd.append(escaped_prompt)
+            # The prompt is deliberately not added to argv.  Normalize the input
+            # mode only after configured and continuation options are assembled so
+            # no option can supersede the finite stdin task.
+            cmd = self._ensure_stdin_input_mode(cmd)
+            retry_cmd = self._ensure_stdin_input_mode(base_cmd)
+
+            if is_noedit:
+                # Apply the policy to the separately launched retry as well.
+                retry_cmd = self._enforce_noedit_policy(retry_cmd)
 
             # Prepare environment variables for subprocess
             env = os.environ.copy()
@@ -419,6 +461,7 @@ class ClaudeClient(LLMClientBase):
                     env=env if len(env) > len(os.environ) else None,
                     dot_format=True,
                     idle_timeout=1800,
+                    stdin_text=escaped_prompt,
                 )
                 logger.info("=" * 60)
                 stdout = (result.stdout or "").strip()
@@ -432,9 +475,8 @@ class ClaudeClient(LLMClientBase):
 
             result, full_output, low, usage_limit_detected = run_cli(cmd)
 
-            if result.returncode != 0 and extra_args and not getattr(self, "_explicit_continuation", False) and not usage_limit_detected:
+            if result.returncode not in (0, -1) and extra_args and not getattr(self, "_explicit_continuation", False) and not usage_limit_detected:
                 logger.info("claude CLI failed with extra args; retrying without them")
-                retry_cmd = base_cmd + [escaped_prompt]
                 result, full_output, low, usage_limit_detected = run_cli(retry_cmd)
 
             # Store output for session ID extraction
@@ -459,6 +501,10 @@ class ClaudeClient(LLMClientBase):
         except AutoCoderUsageLimitError as exc:
             status = "error"
             error_message = str(exc)
+            raise
+        except KeyboardInterrupt:
+            status = "error"
+            error_message = "Claude CLI invocation interrupted"
             raise
         except Exception as e:
             status = "error"
