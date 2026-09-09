@@ -370,6 +370,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             candidate,
             engine.config,
             True,
+            origin="explicit-single-target",
         )
         assert result["issues_processed"][0]["actions_taken"] == ["Started Codex Cloud task"]
 
@@ -386,7 +387,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
             result = engine.process_single("owner/repo", "issue", 100, explicit_only=True, force=True)
 
-        engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True)
+        engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True, origin="explicit-single-target")
         engine._preflight_explicit_issue_relationships.assert_called_once_with("owner/repo", 100)
         assert result["issues_processed"][0]["actions_taken"] == ["started"]
         assert result["target_outcome"] == "success"

@@ -19,6 +19,7 @@ from .backend_manager import BackendManager, get_llm_backend_manager, parse_llm_
 from .branch_manager import BranchManager
 from .cloud_manager import CloudManager
 from .exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError
+from .execution_trace import EventKind, Outcome, get_trace_collector
 from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
@@ -59,6 +60,36 @@ def generate_work_branch_name(issue_number: int, attempt: int) -> str:
     if attempt > 0:
         return f"issue-{issue_number}_attempt-{attempt}"
     return f"issue-{issue_number}"
+
+
+def _record_dispatch_stage(
+    issue_number: int,
+    stage_id: str,
+    label: str,
+    outcome: Outcome,
+    facts: Optional[Dict[str, Any]] = None,
+    kind: EventKind = EventKind.STAGE_RESULT,
+) -> None:
+    """Record a dispatch/implementation stage event using the ambient execution scope.
+
+    The scope is bound by ``AutomationEngine`` before this module's dispatch
+    functions run (REQ-002); when none is bound, ``TraceCollector`` retains
+    the event as legacy/unscoped instead of inventing one. A diagnostic-
+    recorder failure is caught here and never propagates into the dispatch
+    decision it is describing (REQ-008).
+    """
+    try:
+        merged_facts = {"issue_number": issue_number, **(facts or {})}
+        get_trace_collector().record_event(
+            kind,
+            stage_id=stage_id,
+            origin=stage_id,
+            label=label,
+            outcome=outcome,
+            facts=merged_facts,
+        )
+    except Exception:
+        logger.debug(f"Diagnostic trace recording failed for issue#{issue_number} stage {stage_id}; continuing", exc_info=True)
 
 
 def _take_issue_actions(
@@ -179,6 +210,7 @@ def _process_issue_jules_mode(
         )
 
         if not new_work_allowed():
+            _record_dispatch_stage(issue_number, "issue.dispatch.jules", f"issue#{issue_number} Jules dispatch", Outcome.DEFERRED, {"backend": "jules", "reason": "graceful shutdown is draining"})
             return [f"Deferred Jules session for issue #{issue_number}: graceful shutdown is draining"]
 
         logger.info(f"Starting Jules session for issue #{issue_number}")
@@ -188,7 +220,12 @@ def _process_issue_jules_mode(
 
         # Start Jules session
         session_title = f"{issue_title} (#{issue_number})"
-        session_id = jules_client.start_session(action_prompt, repo_name, base_branch, title=session_title)
+        try:
+            session_id = jules_client.start_session(action_prompt, repo_name, base_branch, title=session_title)
+        except Exception:
+            _record_dispatch_stage(issue_number, "issue.dispatch.jules", f"issue#{issue_number} Jules dispatch", Outcome.FAILED, {"backend": "jules"})
+            raise
+        _record_dispatch_stage(issue_number, "issue.dispatch.jules", f"issue#{issue_number} Jules dispatch", Outcome.ACCEPTED_HANDOFF, {"backend": "jules", "session_id": session_id})
 
         # Store session ID in cloud.csv
         cloud_manager = CloudManager(repo_name)
@@ -280,6 +317,7 @@ def _process_issue_claude_routine_mode(
         )
 
         if not new_work_allowed():
+            _record_dispatch_stage(issue_number, "issue.dispatch.claude-routine", f"issue#{issue_number} Claude Routine dispatch", Outcome.DEFERRED, {"backend": "claude-routine", "reason": "graceful shutdown is draining"})
             return [f"Deferred Claude Routine session for issue #{issue_number}: graceful shutdown is draining"]
 
         logger.info(f"Starting Claude Routine session for issue #{issue_number}")
@@ -287,7 +325,15 @@ def _process_issue_claude_routine_mode(
         base_branch = config.MAIN_BRANCH
 
         session_title = f"{issue_title} (#{issue_number})"
-        session_id, session_url = routine_client.fire_routine(action_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+        try:
+            session_id, session_url = routine_client.fire_routine(action_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+        except AutoCoderUsageLimitError:
+            _record_dispatch_stage(issue_number, "issue.dispatch.claude-routine", f"issue#{issue_number} Claude Routine dispatch", Outcome.DEFERRED, {"backend": "claude-routine", "reason": "usage limit"})
+            raise
+        except Exception:
+            _record_dispatch_stage(issue_number, "issue.dispatch.claude-routine", f"issue#{issue_number} Claude Routine dispatch", Outcome.FAILED, {"backend": "claude-routine"})
+            raise
+        _record_dispatch_stage(issue_number, "issue.dispatch.claude-routine", f"issue#{issue_number} Claude Routine dispatch", Outcome.ACCEPTED_HANDOFF, {"backend": "claude-routine", "session_id": session_id})
 
         cloud_manager = CloudManager(repo_name)
         success = cloud_manager.add_session(
@@ -388,6 +434,7 @@ def _process_issue_codex_cloud_mode(
             return [f"Accepted Codex Cloud task '{existing_run.task_id}' for issue #{issue_number}, but tracking is incomplete: {exc}"]
         if label_context:
             label_context.keep_label()
+        _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.SKIPPED, {"backend": "codex-cloud", "task_id": existing_run.task_id, "reason": "duplicate dispatch"})
         return [f"Codex Cloud task '{existing_run.task_id}' already running for issue #{issue_number} attempt {attempt}; skipped duplicate dispatch"]
     if csv_binding is not None:
         return [f"Deferred Codex Cloud task for issue #{issue_number}: legacy cloud.csv ownership has no authoritative Issue attempt; operator attention required"]
@@ -442,6 +489,7 @@ def _process_issue_codex_cloud_mode(
         claim.submission_outcome = "definitely-not-submitted"
         cloud_run_repo.update_claim(claim)
         cloud_run_repo.release_definitely_not_submitted(issue_number, attempt)
+        _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.DEFERRED, {"backend": "codex-cloud", "reason": "usage limit"})
         raise
     claim.submission_outcome = submission.outcome.value
     claim.task_id = submission.task_id
@@ -452,8 +500,10 @@ def _process_issue_codex_cloud_mode(
         return [f"Deferred Codex Cloud task for issue #{issue_number}: submission outcome could not be persisted and is indeterminate: {exc}"]
     if submission.outcome is CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED:
         cloud_run_repo.release_definitely_not_submitted(issue_number, attempt)
+        _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.FAILED, {"backend": "codex-cloud", "reason": "definitely not submitted"})
         return [f"Deferred Codex Cloud task for issue #{issue_number}: definitely not submitted: {submission.diagnostic}"]
     if submission.outcome is CodexSubmissionOutcome.INDETERMINATE:
+        _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.UNKNOWN, {"backend": "codex-cloud", "reason": "indeterminate submission"})
         return [f"Deferred Codex Cloud task for issue #{issue_number}: submission is indeterminate and requires operator attention: {submission.diagnostic}"]
 
     task_id = submission.task_id
@@ -462,6 +512,7 @@ def _process_issue_codex_cloud_mode(
         if not cloud_manager.ensure_binding(issue_number, binding):
             raise OSError("cloud.csv write failed")
     except Exception as exc:
+        _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.ACCEPTED_HANDOFF, {"backend": "codex-cloud", "task_id": task_id, "tracking_incomplete": True})
         return [f"Accepted Codex Cloud task '{task_id}' for issue #{issue_number}, but tracking is incomplete: {exc}"]
 
     task_url = submission.task_url
@@ -479,6 +530,7 @@ def _process_issue_codex_cloud_mode(
         item_number=issue_number,
         details={"task_id": task_id, "task_url": task_url},
     )
+    _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.ACCEPTED_HANDOFF, {"backend": "codex-cloud", "task_id": task_id})
     return [f"Started Codex Cloud task '{task_id}' for issue #{issue_number}"]
 
 
@@ -522,6 +574,15 @@ def _process_issue_high_score_cloud(
     for backend_name in candidates:
         b_cfg = llm_config.get_backend_config(backend_name)
         backend_type = (b_cfg and b_cfg.backend_type) or backend_name
+        issue_number = issue_data["number"]
+        _record_dispatch_stage(
+            issue_number,
+            "issue.dispatch.selection",
+            f"issue#{issue_number} dispatch candidate selected",
+            Outcome.UNKNOWN,
+            {"candidate_pool": "high-score-cloud", "backend_type": backend_type, "backend_name": backend_name},
+            kind=EventKind.STAGE_STARTED,
+        )
 
         try:
             if backend_type == "claude-routine":
@@ -620,6 +681,15 @@ def _process_issue_cloud_backend(
     for backend_name in candidates:
         b_cfg = llm_config.get_backend_config(backend_name)
         backend_type = (b_cfg and b_cfg.backend_type) or backend_name
+        issue_number = issue_data["number"]
+        _record_dispatch_stage(
+            issue_number,
+            "issue.dispatch.selection",
+            f"issue#{issue_number} dispatch candidate selected",
+            Outcome.UNKNOWN,
+            {"candidate_pool": "cloud", "backend_type": backend_type, "backend_name": backend_name},
+            kind=EventKind.STAGE_STARTED,
+        )
 
         try:
             if backend_type == "claude-routine":
@@ -1020,6 +1090,7 @@ def _create_pr_for_issue(
             validate_issue_references(pr_body, github_client, repo_name)
         except ValueError as e:
             logger.error(f"Validation failed for issue PR: {e}")
+            _record_dispatch_stage(issue_number, "issue.pr-publication", f"issue#{issue_number} PR publication", Outcome.BLOCKED, {"reason": str(e)})
             return f"Validation failed for issue PR: {e}"
 
         # Create PR using GhApi
@@ -1036,6 +1107,7 @@ def _create_pr_for_issue(
                     raise RuntimeError(f"Could not retain ownership for existing PR #{pr_number}")
                 pr_url = existing_pr.get("html_url", f"https://github.com/{repo_name}/pull/{pr_number}")
                 logger.info(f"PR already exists for issue #{issue_number}: {pr_url}")
+                _record_dispatch_stage(issue_number, "issue.pr-publication", f"issue#{issue_number} PR publication", Outcome.COMPLETED, {"pr_number": pr_number, "pr_url": pr_url, "already_existed": True})
                 return f"PR already exists for issue #{issue_number}: {pr_url}"
 
             # Create the PR
@@ -1115,13 +1187,16 @@ def _create_pr_for_issue(
                 else:
                     logger.info(f"Verified: PR #{pr_number} is correctly linked to issue #{issue_number}")
 
+            _record_dispatch_stage(issue_number, "issue.pr-publication", f"issue#{issue_number} PR publication", Outcome.COMPLETED, {"pr_number": pr_number, "pr_url": pr_url})
             return f"Successfully created PR for issue #{issue_number}: {pr_title}"
         except Exception as e:
             logger.error(f"Failed to create PR via GhApi for issue #{issue_number}: {e}")
+            _record_dispatch_stage(issue_number, "issue.pr-publication", f"issue#{issue_number} PR publication", Outcome.FAILED, {"reason": str(e)})
             return f"Failed to create PR for issue #{issue_number}: {e}"
 
     except Exception as e:
         logger.error(f"Error creating PR for issue #{issue_number}: {e}")
+        _record_dispatch_stage(issue_number, "issue.pr-publication", f"issue#{issue_number} PR publication", Outcome.FAILED, {"reason": str(e)})
         return f"Error creating PR for issue #{issue_number}: {e}"
 
 
@@ -1241,6 +1316,13 @@ def _apply_issue_actions_directly(
         assert target_branch is not None, "target_branch must be set before using branch_context"
 
         get_trace_logger().log("Branch Setup", f"Determined work branch for issue #{issue_number}", item_type="issue", item_number=issue_number, details={"target_branch": target_branch})
+        _record_dispatch_stage(
+            issue_number,
+            "issue.local-branch-preparation",
+            f"issue#{issue_number} local branch preparation",
+            Outcome.COMPLETED,
+            {"target_branch": target_branch, "create_new_work_branch": create_new_work_branch},
+        )
 
         with LabelManager(
             github_client,
@@ -1306,6 +1388,7 @@ def _apply_issue_actions_directly(
                     actions.append(f"Deferred local implementation for issue #{issue_number}: graceful shutdown is draining")
                     return actions
 
+                _record_dispatch_stage(issue_number, "issue.local-implementation", f"issue#{issue_number} local implementation", Outcome.UNKNOWN, kind=EventKind.STAGE_STARTED)
                 response = (backend_manager or get_llm_backend_manager())._run_llm_cli(action_prompt)
 
                 # Parse the response
@@ -1334,6 +1417,13 @@ def _apply_issue_actions_directly(
                         actions.append(commit_action)
 
                     get_trace_logger().log("Apply Changes", f"Committed changes for issue #{issue_number}", item_type="issue", item_number=issue_number)
+                    if commit_action.startswith("Successfully"):
+                        commit_outcome = Outcome.COMPLETED
+                    elif commit_action == "No changes to commit":
+                        commit_outcome = Outcome.SKIPPED
+                    else:
+                        commit_outcome = Outcome.FAILED
+                    _record_dispatch_stage(issue_number, "issue.local-commit-push", f"issue#{issue_number} local commit/push", commit_outcome, {"message": commit_action})
 
                     # Create PR if this is a regular issue (not a PR)
                     if "head_branch" not in issue_data and target_branch:

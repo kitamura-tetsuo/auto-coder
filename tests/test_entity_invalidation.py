@@ -211,7 +211,7 @@ def test_five_webhooks_before_worker_cause_one_fetch_and_decision(tmp_path: Path
         return _candidate(*args)
 
     monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
-    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate, **_kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
     monkeypatch.setattr("src.auto_coder.automation_engine.is_item_closed_on_github", lambda *args: False)
 
     async def scenario():
@@ -266,7 +266,7 @@ def test_fetch_failure_remains_durable_and_restart_retries(tmp_path: Path, monke
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", MagicMock(return_value=response))
     restarted = AutomationEngine(GitHubClient("test-token"), AutomationConfig())
     processed = []
-    monkeypatch.setattr(restarted, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
+    monkeypatch.setattr(restarted, "_process_single_candidate", lambda repo, candidate, **_kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
     monkeypatch.setattr("src.auto_coder.automation_engine.is_item_closed_on_github", lambda *args: False)
 
     async def retry():
@@ -289,7 +289,7 @@ def test_start_automation_recovers_before_steady_state(tmp_path: Path, monkeypat
     restarted = AutomationEngine(MagicMock(), AutomationConfig())
     processed = []
     monkeypatch.setattr(restarted, "_create_candidate_from_single", _candidate)
-    monkeypatch.setattr(restarted, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
+    monkeypatch.setattr(restarted, "_process_single_candidate", lambda repo, candidate, **_kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
     monkeypatch.setattr(restarted, "_get_implementation_slots", lambda repo: MagicMock())
     monkeypatch.setattr(restarted, "_producer_loop", lambda repo: asyncio.Event().wait())
     monkeypatch.setattr("src.auto_coder.automation_engine.is_item_closed_on_github", lambda *args: False)
@@ -323,7 +323,7 @@ def test_startup_reconciliation_recovers_missed_issue_through_worker_path(tmp_pa
     monkeypatch.setattr(
         engine,
         "_process_single_candidate",
-        lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=1725, success=True),
+        lambda repo, candidate, **_kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=1725, success=True),
     )
     monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())
     monkeypatch.setattr(engine, "_producer_loop", lambda repo: asyncio.Event().wait())
@@ -384,7 +384,7 @@ def test_startup_admission_deferral_retries_durably_without_terminating_daemon(t
     monkeypatch.setattr(engine, "_create_candidate_from_single", _candidate)
     monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())
     monkeypatch.setattr(engine, "_producer_loop", lambda repo: asyncio.Event().wait())
-    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate, **_kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
     monkeypatch.setattr("src.auto_coder.automation_engine.install_asyncio_diagnostics", lambda loop: None)
     monkeypatch.setattr("src.auto_coder.automation_engine.get_health_monitor", MagicMock())
 
@@ -462,7 +462,7 @@ def test_webhook_during_startup_reconciliation_is_not_cleared(tmp_path: Path, mo
     allow_completion = asyncio.Event()
     event_loop = None
 
-    def process(repo, candidate):
+    def process(repo, candidate, **_kwargs):
         observed.append(candidate.data["number"])
         if len(observed) == 1:
             event_loop.call_soon_threadsafe(processing_started.set)
@@ -548,7 +548,7 @@ def test_real_startup_scan_preserves_recent_issue_stabilization(tmp_path: Path, 
     monkeypatch.setattr(
         engine,
         "_process_single_candidate",
-        lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=1725, success=True),
+        lambda repo, candidate, **_kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=1725, success=True),
     )
     monkeypatch.setattr("src.auto_coder.automation_engine.install_asyncio_diagnostics", lambda loop: None)
     monkeypatch.setattr("src.auto_coder.automation_engine.get_health_monitor", MagicMock())
@@ -612,7 +612,7 @@ def test_http_duplicate_delivery_causes_one_execution(tmp_path: Path, monkeypatc
     engine = AutomationEngine(MagicMock(), AutomationConfig())
     processed = []
     monkeypatch.setattr(engine, "_create_candidate_from_single", _candidate)
-    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate, **_kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
     monkeypatch.setattr("src.auto_coder.automation_engine.is_item_closed_on_github", lambda *args: False)
 
     with patch("src.auto_coder.webhook_server.init_dashboard"):
@@ -654,7 +654,7 @@ def test_out_of_order_http_webhooks_reconcile_one_authoritative_pr_state(tmp_pat
     monkeypatch.setattr(
         engine,
         "_process_single_candidate",
-        lambda repo, candidate: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="pr", number=100, success=True),
+        lambda repo, candidate, **_kwargs: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="pr", number=100, success=True),
     )
 
     with patch("src.auto_coder.webhook_server.init_dashboard"):
@@ -700,7 +700,7 @@ def test_webhook_during_active_processing_forces_later_reevaluation(tmp_path: Pa
     def fetch(repo_name, entity_type, number, propagate_errors=False):
         return Candidate(type=entity_type, data={"number": number, "state": next(states)}, priority=0)
 
-    def process(repo_name, candidate):
+    def process(repo_name, candidate, **_kwargs):
         observed.append(candidate.data["state"])
         if candidate.data["state"] == "first":
             event_loop.call_soon_threadsafe(processing_started.set)
@@ -740,7 +740,7 @@ def test_authoritative_pr_not_found_completes_invalidation(tmp_path: Path, monke
     not_found = httpx.Response(404, request=request)
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", lambda *args, **kwargs: not_found)
     processed = []
-    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate, **_kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
 
     async def scenario():
         await process_github_payload("pull_request", {"action": "opened", "pull_request": {"number": 100}}, engine, "owner/repo", "not-found")
@@ -770,7 +770,7 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
     github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[], pull_requests=[]))
     engine = AutomationEngine(github, AutomationConfig())
     processed = []
-    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate: processed.append(candidate.data) or CandidateProcessingResult(type="issue", number=42, success=True))
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate, **_kwargs: processed.append(candidate.data) or CandidateProcessingResult(type="issue", number=42, success=True))
     monkeypatch.setattr("src.auto_coder.automation_engine.is_item_closed_on_github", lambda *args: False)
 
     async def scenario():
@@ -803,7 +803,7 @@ def test_dependency_close_http_delivery_discovers_dependent_through_worker(tmp_p
     monkeypatch.setattr(
         engine,
         "_process_single_candidate",
-        lambda _repo, candidate: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=candidate.data["number"], success=True),
+        lambda _repo, candidate, **_kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=candidate.data["number"], success=True),
     )
 
     payload = {
@@ -1033,7 +1033,7 @@ def test_reopened_invalidation_does_not_consult_cached_closed_state(tmp_path: Pa
     monkeypatch.setattr(
         engine,
         "_process_single_candidate",
-        lambda repo, candidate: processed.append(candidate.data["state"]) or CandidateProcessingResult(type=entity_type, number=100, success=True),
+        lambda repo, candidate, **_kwargs: processed.append(candidate.data["state"]) or CandidateProcessingResult(type=entity_type, number=100, success=True),
     )
 
     async def scenario():
@@ -1061,7 +1061,7 @@ def test_delayed_webhook_expires_through_consumer_and_fetches_final_state(tmp_pa
     monkeypatch.setattr(
         engine,
         "_process_single_candidate",
-        lambda repo, candidate: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="issue", number=200, success=True),
+        lambda repo, candidate, **_kwargs: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="issue", number=200, success=True),
     )
 
     async def scenario():
@@ -1107,7 +1107,7 @@ def test_urgent_label_transition_preserves_retryable_admission_obligation(tmp_pa
     monkeypatch.setattr(
         engine,
         "_process_single_candidate",
-        lambda _repo, candidate: processed.append(candidate.urgent_admission)
+        lambda _repo, candidate, **_kwargs: processed.append(candidate.urgent_admission)
         or CandidateProcessingResult(
             type="issue",
             number=1767,
@@ -1156,7 +1156,7 @@ def test_sentry_created_issue_waits_then_fetches_current_state(tmp_path: Path, m
     monkeypatch.setattr(
         engine,
         "_process_single_candidate",
-        lambda repo, candidate: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="issue", number=200, success=True),
+        lambda repo, candidate, **_kwargs: processed.append(candidate.data.copy()) or CandidateProcessingResult(type="issue", number=200, success=True),
     )
 
     async def scenario():
