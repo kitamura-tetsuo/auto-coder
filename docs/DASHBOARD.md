@@ -112,6 +112,77 @@ in-progress remote work (e.g. a cloud handoff) has finished.
     inert diagnostic text and are never assigned a guessed execution or a
     successful outcome.
 
+## Keeping observability accurate
+
+The detail view only ever displays what production code actually recorded
+into `execution_trace.TraceCollector`. There is no second, hand-maintained
+model of "the" Issue/PR workflow to keep in sync -- stage labels, kinds,
+outcomes, and facts all come from the producing boundary itself (see
+`_record_pr_stage` in `pr_processor.py` and the equivalent Issue-side
+helpers in `issue_processor.py` / `automation_engine.py` for where these are
+emitted). That also means the page **cannot** verify that instrumentation is
+complete: it can only render events that were actually published. A stage
+that stops running, or a boundary that stops calling `record_event`/
+`start_execution`, simply disappears from the page -- and touching
+`dashboard.py`, editing the diagram, or getting an LLM to approve a
+generated Mermaid snapshot proves none of that, because all three can
+succeed with the underlying production emission removed or wrong. The only
+way to catch that class of regression is a test that drives the real
+production entrypoint and reads the result back from the real
+`TraceCollector` (and, for page-level regressions, through the real mounted
+`/dashboard/detail/{item_type}/{item_number}` page) -- see
+`docs/DASHBOARD_OBSERVABILITY_COVERAGE.md`.
+
+Run the deterministic observability regression suite locally with:
+
+```bash
+bash scripts/test.sh tests/test_issue_production_instrumentation.py \
+  tests/test_pr_production_instrumentation.py \
+  tests/test_dashboard_observability_joined.py \
+  tests/test_execution_trace.py \
+  tests/test_dashboard_detail_logic.py \
+  tests/test_dashboard_detail.py
+```
+
+This suite requires no live GitHub/provider credentials and makes no LLM
+calls; it is part of the normal `PR Tests` collection (plain `pytest` files
+under `tests/`), so it runs on every PR without extra configuration.
+
+**When to update instrumentation, coverage, or this document.** Whenever a
+change touches a processing origin, an admission/validation gate, an
+outcome a stage can report, provider/backend routing, a resumption path
+(pending-work, validation-publication, merge-operation, adversarial
+validation), or the diagnostic event schema itself, the same change must
+either:
+
+* assess whether the production boundary needs a new/updated
+  `record_event`/`start_execution` call, add or update the corresponding
+  entry in `docs/DASHBOARD_OBSERVABILITY_COVERAGE.md` and its test, and
+  update this document if the observable behavior it describes changed; or
+* record a concrete, specific reason the change is observability-neutral
+  (e.g. "pure refactor of an internal helper, no change to what is
+  recorded, verified by the existing suite still passing unmodified").
+
+A display-label-only change to an existing stage, or a new stage identifier
+the generic renderer has never seen before, does **not** require editing
+`dashboard.py`'s Mermaid rendering: the page already renders any stage it is
+given (see `dashboard_detail.build_observed_path_diagram`) -- co-modifying
+`dashboard.py` for its own sake is not evidence of correct instrumentation,
+and its absence is not evidence of a missed update.
+
+**What counts as observed evidence.** Every displayed fact is an
+observation, not current GitHub/provider state: it carries the execution
+that produced it, an explicit outcome (`unknown` when none was recorded --
+never coerced to a boolean), and, for CI evidence specifically, an
+availability value (`known`, `known_empty`, `partial`, `unavailable`,
+`throttled`, `superseded`) kept distinct from any pass/fail verdict. Stage
+labels/facts are emitted at the boundary that owns the fact (e.g.
+`_check_github_actions_status` in `util/github_action.py` for CI
+observation, `_record_pr_stage` call sites in `pr_processor.py` for PR
+stages, and the `_record_*_stage` helpers in `automation_engine.py` /
+`issue_processor.py` for Issue stages) -- never reconstructed from a
+worker's overall return value or an actions string.
+
 ## Configuration
 
 The dashboard uses NiceGUI and FastAPI. You can configure the host and port via CLI arguments:

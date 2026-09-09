@@ -151,6 +151,33 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
   * `status`: checks for prerequisite commands (e.g., `uv`) and displays setup hints.
 * Does not perform actual installation—only assists with configuration for the user’s local environment (Windsurf/Claude).
 
+### Dashboard Observability Update Policy
+
+* A change to a processing origin, an admission/validation gate, an outcome
+  a stage can report, provider/backend routing, a resumption path
+  (pending-work, validation-publication, merge-operation, adversarial
+  validation), or the diagnostic event schema (`execution_trace.py`) must,
+  in the same change, either:
+  * assess whether production emissions (`record_event`/`start_execution`
+    call sites) need adding or updating, update the affected entries and
+    tests in `docs/DASHBOARD_OBSERVABILITY_COVERAGE.md`, and update
+    `docs/DASHBOARD.md` if the observable behavior it documents changed; or
+  * record a concrete, specific reason the change is observability-neutral.
+* Touching `dashboard.py`, editing its Mermaid rendering, or getting an LLM
+  to approve a generated snapshot/diagram is never sufficient verification
+  on its own: the dashboard only renders what production code actually
+  recorded, so a missing or incorrect production emission is invisible to a
+  code-review pass over `dashboard.py` alone. The only way to catch that
+  class of regression is a test that drives the real production entrypoint
+  and reads the result back from the real `TraceCollector` (see
+  `tests/test_dashboard_observability_joined.py` and
+  `docs/DASHBOARD_OBSERVABILITY_COVERAGE.md`).
+* A display-label-only change, or a new stage identifier the generic
+  renderer has never seen before, does not require editing
+  `dashboard.py`'s rendering code or `docs/DASHBOARD_OBSERVABILITY_COVERAGE.md`'s
+  Mermaid/graph logic -- the renderer is generic by design.
+* Run `bash scripts/test.sh tests/test_issue_production_instrumentation.py tests/test_pr_production_instrumentation.py tests/test_dashboard_observability_joined.py tests/test_execution_trace.py tests/test_dashboard_detail_logic.py tests/test_dashboard_detail.py` locally before relying on CI for this area; it requires no live GitHub/provider credentials and makes no LLM calls.
+
 ## Main Features
 
 * Retrieve issues and PRs via the GitHub API (sorted by oldest first).
