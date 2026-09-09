@@ -1,11 +1,145 @@
+import hashlib
 import os
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.auto_coder import utils
+
+
+def _stdin_digest_command():
+    return [
+        sys.executable,
+        "-c",
+        ("import hashlib,os,sys; data=sys.stdin.buffer.read(); " "print(sys.stdin.isatty()); print(len(data)); print(hashlib.sha256(data).hexdigest()); " "print(os.getcwd()); print(os.getenv('COMMAND_EXECUTOR_INPUT_TEST', 'missing'))"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "stdin_text",
+    [
+        "",
+        " 日本語 😀 '@' \\\r\nno-final-newline ",
+        "payload-" * (2 * 1024 * 1024 // len("payload-")),
+    ],
+    ids=["empty", "unicode-and-special-characters", "two-megabytes"],
+)
+def test_run_command_delivers_exact_finite_utf8_stdin(stdin_text, tmp_path):
+    result = utils.CommandExecutor.run_command(
+        _stdin_digest_command(),
+        stdin_text=stdin_text,
+        cwd=str(tmp_path),
+        env_overrides={"COMMAND_EXECUTOR_INPUT_TEST": "isolated"},
+        timeout=10,
+        stream_output=False,
+    )
+
+    lines = result.stdout.splitlines()
+    expected = stdin_text.encode("utf-8")
+    assert result.success is True
+    assert result.stderr == ""
+    assert lines == [
+        "False",
+        str(len(expected)),
+        hashlib.sha256(expected).hexdigest(),
+        str(tmp_path),
+        "isolated",
+    ]
+
+
+@pytest.mark.parametrize("stream_output", [True, False])
+def test_run_command_drains_output_while_delivering_large_stdin(stream_output):
+    output_size = 256 * 1024
+    payload = "input-data-" * (2 * 1024 * 1024 // len("input-data-"))
+    observations = []
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import hashlib,sys,time; size=int(sys.argv[1]); "
+            "sys.stdout.write('o'*size+'\\n'); sys.stdout.flush(); "
+            "sys.stderr.write('e'*size+'\\n'); sys.stderr.flush(); "
+            "data=bytearray(); "
+            "\nwhile True:\n chunk=sys.stdin.buffer.read(4096)\n if not chunk: break\n data.extend(chunk)\n time.sleep(.0001)\n"
+            "print(hashlib.sha256(data).hexdigest())"
+        ),
+        str(output_size),
+    ]
+
+    result = utils.CommandExecutor.run_command(
+        command,
+        stdin_text=payload,
+        timeout=15,
+        stream_output=stream_output,
+        on_stream=lambda stream, chunk: observations.append((stream, chunk)),
+    )
+
+    assert result.success is True
+    assert result.stdout.startswith("o" * output_size + "\n")
+    assert result.stdout.endswith(hashlib.sha256(payload.encode()).hexdigest() + "\n")
+    assert result.stderr == "e" * output_size + "\n"
+    assert observations
+
+
+@pytest.mark.parametrize("timeout_argument", ["timeout", "idle_timeout"])
+def test_run_command_timeout_bounds_pending_input(timeout_argument):
+    command = [sys.executable, "-c", "import time; time.sleep(30)"]
+    started = time.monotonic()
+
+    result = utils.CommandExecutor.run_command(
+        command,
+        stdin_text="x" * (2 * 1024 * 1024),
+        stream_output=False,
+        **{timeout_argument: 1},
+    )
+
+    assert result.success is False
+    assert result.returncode == -1
+    assert "timed out" in result.stderr
+    assert time.monotonic() - started < 5
+
+
+def test_run_command_reports_incomplete_input_delivery():
+    command = [sys.executable, "-c", "import os,sys,time; os.close(sys.stdin.fileno()); time.sleep(.2)"]
+
+    result = utils.CommandExecutor.run_command(
+        command,
+        stdin_text="x" * (2 * 1024 * 1024),
+        timeout=5,
+        stream_output=False,
+    )
+
+    assert result.success is False
+    assert result.returncode == -1
+    assert "stdin input delivery failed" in result.stderr
+
+
+def test_run_command_rejects_pty_input_before_launch(tmp_path):
+    marker = tmp_path / "started"
+    result = utils.CommandExecutor.run_command(
+        [sys.executable, "-c", "from pathlib import Path; Path(sys.argv[1]).touch()", str(marker)],
+        stdin_text="input",
+        use_pty=True,
+    )
+
+    assert result == utils.CommandResult(False, "", "stdin_text is incompatible with use_pty", -1)
+    assert marker.exists() is False
+
+
+def test_run_command_rejects_unencodable_input_before_launch(tmp_path):
+    marker = tmp_path / "started"
+    result = utils.CommandExecutor.run_command(
+        [sys.executable, "-c", "from pathlib import Path; Path(sys.argv[1]).touch()", str(marker)],
+        stdin_text="\ud800",
+    )
+
+    assert result.success is False
+    assert result.returncode == -1
+    assert "stdin input preparation failed" in result.stderr
+    assert marker.exists() is False
 
 
 def test_run_command_respects_stream_flag(monkeypatch):

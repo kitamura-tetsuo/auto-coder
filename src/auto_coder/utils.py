@@ -439,6 +439,7 @@ class CommandExecutor:
         idle_timeout: Optional[int] = None,
         log_output: bool = True,
         use_pty: bool = False,
+        stdin_bytes: Optional[bytes] = None,
     ) -> Tuple[int, str, str]:
         """Run a command while streaming stdout/stderr to the logger.
 
@@ -451,6 +452,8 @@ class CommandExecutor:
         """
         process: "subprocess.Popen[Any]"
         pty_master: Optional[int] = None
+        stdin_write_fd: Optional[int] = None
+        stdin_reader_fd: Optional[int] = None
         if use_pty and hasattr(os, "openpty"):
             pty_master, pty_slave = os.openpty()
             cls._set_pty_window_size(pty_master)
@@ -476,15 +479,41 @@ class CommandExecutor:
                 except OSError:
                     pass
         else:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                cwd=cwd,
-                env=env,
-            )
+            if stdin_bytes is not None:
+                stdin_reader_fd, stdin_write_fd = os.pipe()
+            try:
+                if stdin_reader_fd is None:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        bufsize=1,
+                        cwd=cwd,
+                        env=env,
+                    )
+                else:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdin=stdin_reader_fd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        bufsize=1,
+                        cwd=cwd,
+                        env=env,
+                    )
+            except BaseException:
+                for fd in (stdin_reader_fd, stdin_write_fd):
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                raise
+            if stdin_reader_fd is not None:
+                os.close(stdin_reader_fd)
+                stdin_reader_fd = None
 
         stdout_lines: List[str] = []
         stderr_lines: List[str] = []
@@ -492,6 +521,8 @@ class CommandExecutor:
         streams_active: set[str] = set()
         output_queue: "queue.Queue[Tuple[str, Optional[str]]]" = queue.Queue()
         readers: List[threading.Thread] = []
+        input_errors: "queue.Queue[str]" = queue.Queue(maxsize=1)
+        input_writer: Optional[threading.Thread] = None
 
         if pty_master is not None:
             streams_active.add("stdout")
@@ -504,12 +535,42 @@ class CommandExecutor:
                 streams_active.add("stderr")
                 readers.append(cls._spawn_reader(process.stderr, "stderr", output_queue))
 
+        if stdin_write_fd is not None:
+            writer_fd = stdin_write_fd
+
+            def _write_input() -> None:
+                written = 0
+                try:
+                    assert stdin_bytes is not None
+                    input_view = memoryview(stdin_bytes)
+                    while written < len(stdin_bytes):
+                        written += os.write(writer_fd, input_view[written:])
+                except BaseException as exc:
+                    if written < len(stdin_bytes or b""):
+                        input_errors.put(f"stdin input delivery failed after {written} bytes: {exc}")
+                finally:
+                    try:
+                        os.close(writer_fd)
+                    except OSError as exc:
+                        if input_errors.empty():
+                            input_errors.put(f"stdin input cleanup failed: {exc}")
+
+            input_writer = threading.Thread(target=_write_input, name="CommandInput-writer", daemon=True)
+            input_writer.start()
+
         start = time.monotonic()
         last_output_time = time.monotonic()
         dots_printed = 0
+        input_error: Optional[str] = None
 
         try:
             while True:
+                if input_error is None:
+                    try:
+                        input_error = input_errors.get_nowait()
+                        process.kill()
+                    except queue.Empty:
+                        pass
                 now = time.monotonic()
                 if timeout is not None:
                     elapsed = now - start
@@ -601,9 +662,21 @@ class CommandExecutor:
                 if process.poll() is not None and not streams_active and output_queue.empty():
                     break
 
+            if input_writer is not None:
+                input_writer.join()
+
+            if input_error is None:
+                try:
+                    input_error = input_errors.get_nowait()
+                except queue.Empty:
+                    pass
+
             return_code = process.returncode
             stdout = "".join(stdout_lines)
             stderr = "".join(stderr_lines)
+            if input_error is not None:
+                diagnostic = input_error + "\n"
+                return -1, stdout, stderr + diagnostic
             return return_code, stdout, stderr
         except KeyboardInterrupt:
             process.send_signal(signal.SIGINT)
@@ -611,6 +684,7 @@ class CommandExecutor:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+                process.wait()
             raise
         finally:
             # Ensure process is terminated to unblock pipes
@@ -639,6 +713,11 @@ class CommandExecutor:
                     reader.join(timeout=1)
                 except Exception:
                     pass
+            if input_writer is not None:
+                try:
+                    input_writer.join(timeout=1)
+                except Exception:
+                    pass
             if pty_master is not None:
                 try:
                     os.close(pty_master)
@@ -659,12 +738,21 @@ class CommandExecutor:
         dot_format: bool = False,
         idle_timeout: Optional[int] = None,
         use_pty: bool = False,
+        stdin_text: Optional[str] = None,
     ) -> CommandResult:
         """Run a command with consistent error handling.
 
         use_pty: attach the command to a pseudo terminal, for CLIs that refuse to
         run without an interactive terminal.
+        stdin_text: finite text delivered as UTF-8 followed by EOF. ``None`` keeps
+        the existing inherited-stdin behavior.
         """
+        if stdin_text is not None and use_pty:
+            return CommandResult(False, "", "stdin_text is incompatible with use_pty", -1)
+        try:
+            stdin_bytes = stdin_text.encode("utf-8") if stdin_text is not None else None
+        except UnicodeEncodeError as exc:
+            return CommandResult(False, "", f"stdin input preparation failed: {exc}", -1)
         if cwd is None:
             cwd = _COMMAND_EXECUTION_CWD.get()
         if timeout is None:
@@ -709,6 +797,7 @@ class CommandExecutor:
                     idle_timeout=idle_timeout,
                     log_output=True,
                     use_pty=use_pty,
+                    stdin_bytes=stdin_bytes,
                 )
             else:
                 # Use _run_with_streaming even when not streaming to logger,
@@ -723,6 +812,7 @@ class CommandExecutor:
                     idle_timeout=idle_timeout,
                     log_output=False,
                     use_pty=use_pty,
+                    stdin_bytes=stdin_bytes,
                 )
 
             # Auto-resolve git dubious ownership in container / multi-user environments
@@ -746,6 +836,7 @@ class CommandExecutor:
                         idle_timeout=idle_timeout,
                         log_output=should_stream,
                         use_pty=use_pty,
+                        stdin_bytes=stdin_bytes,
                     )
                 except Exception as ex:
                     logger.debug(f"Failed to auto-configure safe.directory: {ex}")
