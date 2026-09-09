@@ -1303,6 +1303,10 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
   options_for_noedit = []
   ```
   - Typical use: Anthropic Claude API
+  - Local print-mode tasks deliver the complete prepared prompt as finite UTF-8 stdin
+    (including retries and explicit session continuations), never as an argv or
+    environment payload. Conflicting task-input selectors and non-text input formats
+    are rejected before the task is launched.
   - Automatic flags: `--print`, `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`
   - Custom options: Path to settings file, debug modes
   - Cloud sessions: when `options` contain `--cloud` (or `--cloud=<description>`), the run is

@@ -2,8 +2,10 @@
 Tests for Claude client functionality.
 """
 
+import hashlib
 import json
 import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -187,6 +189,125 @@ class TestClaudeClient:
 
         escaped = client._escape_prompt("  Hello world  ")
         assert escaped == "Hello world"
+
+    @pytest.mark.parametrize("configured_format", ["stream-json", "json"])
+    def test_rejects_non_text_input_format(self, configured_format):
+        with pytest.raises(ValueError, match="conflicts with text stdin"):
+            ClaudeClient._ensure_stdin_input_mode(["claude", "--input-format", configured_format])
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    def test_large_unicode_prompt_reaches_real_cli_only_through_stdin(self, mock_get_config, tmp_path, monkeypatch):
+        """The production adapter must stream a large exact payload to a child."""
+        executable = tmp_path / "claude_probe.py"
+        executable.write_text(
+            """import hashlib, json, os, sys
+if '--version' in sys.argv:
+    print('probe 1.0')
+    raise SystemExit(0)
+payload = sys.stdin.buffer.read()
+print(json.dumps({'argv': sys.argv[1:], 'size': len(payload),
+                  'digest': hashlib.sha256(payload).hexdigest(),
+                  'payload_in_env': any(payload.decode() == value for value in os.environ.values())}))
+""",
+            encoding="utf-8",
+        )
+        backend = MagicMock()
+        backend.model = "sonnet"
+        backend.settings = None
+        backend.options = []
+        backend.options_for_noedit = []
+        backend.usage_markers = []
+        backend.api_key = None
+        backend.base_url = None
+        backend.openai_api_key = None
+        backend.openai_base_url = None
+        backend.claude_code_oauth_token = None
+        backend.validate_required_options.return_value = []
+        backend.replace_placeholders.return_value = {"options": [], "options_for_noedit": []}
+        config = MagicMock()
+        config.get_backend_config.return_value = backend
+        mock_get_config.return_value = config
+        monkeypatch.setenv("AUTOCODER_CLAUDE_CLI", f"{sys.executable} {executable}")
+
+        prompt = "  日本語🙂 @value '$(echo unsafe)'\r\n" + ("x" * (2 * 1024 * 1024)) + "  "
+        prepared = prompt.replace("@", "\\@").strip()
+        response = json.loads(ClaudeClient()._run_llm_cli(prompt))
+
+        assert response["argv"] == ["--print", "--model", "sonnet", "--input-format", "text"]
+        assert response["size"] == len(prepared.encode("utf-8"))
+        assert response["digest"] == hashlib.sha256(prepared.encode("utf-8")).hexdigest()
+        assert response["payload_in_env"] is False
+
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    def test_retry_replays_stdin_and_reapplies_noedit_policy(self, mock_get_config, mock_run, mock_command):
+        backend = MagicMock()
+        backend.model = "sonnet"
+        backend.settings = None
+        backend.options = []
+        backend.options_for_noedit = ["--permission-mode", "bypassPermissions", "--dangerously-skip-permissions"]
+        backend.usage_markers = []
+        backend.api_key = None
+        backend.base_url = None
+        backend.openai_api_key = None
+        backend.openai_base_url = None
+        backend.claude_code_oauth_token = None
+        backend.validate_required_options.return_value = []
+        backend.replace_placeholders.return_value = {
+            "options": [],
+            "options_for_noedit": backend.options_for_noedit,
+        }
+        config = MagicMock()
+        config.get_backend_config.return_value = backend
+        mock_get_config.return_value = config
+        mock_run.return_value.returncode = 0
+        mock_command.side_effect = [
+            MagicMock(returncode=2, stdout="", stderr="ordinary failure"),
+            MagicMock(returncode=0, stdout="complete", stderr=""),
+        ]
+        client = ClaudeClient()
+        client.set_extra_args(["--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])
+
+        assert client._run_llm_cli("  retry @payload  ", is_noedit=True) == "complete"
+
+        assert mock_command.call_count == 2
+        first_command = mock_command.call_args_list[0].args[0]
+        retry_command = mock_command.call_args_list[1].args[0]
+        assert "--resume" in first_command
+        assert "--resume" not in retry_command
+        for command_call in mock_command.call_args_list:
+            command = command_call.args[0]
+            assert command.count("--permission-mode") == 1
+            assert command[command.index("--permission-mode") + 1] == "plan"
+            assert "--dangerously-skip-permissions" not in command
+            assert "retry \\@payload" not in command
+            assert command_call.kwargs["stdin_text"] == "retry \\@payload"
+
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    def test_launch_failure_with_extra_args_is_not_retried(self, mock_get_config, mock_run, mock_command):
+        backend = MagicMock()
+        backend.model = "sonnet"
+        backend.settings = None
+        backend.options = []
+        backend.options_for_noedit = []
+        backend.usage_markers = []
+        backend.validate_required_options.return_value = []
+        backend.replace_placeholders.return_value = {"options": [], "options_for_noedit": []}
+        config = MagicMock()
+        config.get_backend_config.return_value = backend
+        mock_get_config.return_value = config
+        mock_run.return_value.returncode = 0
+        mock_command.return_value = MagicMock(returncode=-1, stdout="", stderr="launch failed")
+        client = ClaudeClient()
+        client.set_extra_args(["--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])
+
+        with pytest.raises(RuntimeError, match="launch failed"):
+            client._run_llm_cli("task")
+
+        assert mock_command.call_count == 1
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
@@ -447,8 +568,10 @@ class TestClaudeClient:
             "sonnet",
             "--resume",
             "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-            "test prompt",
+            "--input-format",
+            "text",
         ]
+        assert mock_cmd_exec.call_args.kwargs["stdin_text"] == "test prompt"
 
         # Check that extra args were cleared
         assert client._extra_args == []
@@ -596,8 +719,10 @@ class TestClaudeClient:
             "sonnet",
             "--dangerously-skip-permissions",
             "--allow-dangerously-skip-permissions",
-            "test prompt",
+            "--input-format",
+            "text",
         ]
+        assert mock_cmd_exec.call_args.kwargs["stdin_text"] == "test prompt"
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
@@ -650,8 +775,10 @@ class TestClaudeClient:
             "sonnet",
             "--settings",
             settings_path,
-            "test prompt",
+            "--input-format",
+            "text",
         ]
+        assert mock_cmd_exec.call_args.kwargs["stdin_text"] == "test prompt"
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
@@ -736,7 +863,8 @@ class TestClaudeClient:
         assert "/path/to/settings.json" in called_cmd
         assert "--resume" in called_cmd
         assert "test-session-id" in called_cmd
-        assert "test prompt" in called_cmd
+        assert "test prompt" not in called_cmd
+        assert mock_cmd_exec.call_args.kwargs["stdin_text"] == "test prompt"
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
@@ -813,7 +941,8 @@ class TestClaudeClient:
         assert "--print" in called_cmd
         assert "--model" in called_cmd
         assert "sonnet" in called_cmd
-        assert "test prompt" in called_cmd
+        assert "test prompt" not in called_cmd
+        assert mock_cmd_exec.call_args.kwargs["stdin_text"] == "test prompt"
         # Verify optional components are NOT in the executed command
         assert "--settings" not in called_cmd
         assert "--resume" not in called_cmd
@@ -860,7 +989,8 @@ class TestClaudeClient:
         assert "--settings" in actual_cmd
         assert "/custom/settings.json" in actual_cmd
         assert "--verbose" in actual_cmd
-        assert "my test prompt" in actual_cmd
+        assert "my test prompt" not in actual_cmd
+        assert mock_cmd_exec.call_args.kwargs["stdin_text"] == "my test prompt"
 
 
 class TestClaudeClientSessionExtraction:
