@@ -124,7 +124,7 @@ class TestGitHubClientREST:
         client._open_issues_cache = None
 
         # Mock the helper methods that are called for each issue
-        with patch.object(client, "get_linked_prs", return_value=[1, 2]) as mock_linked, patch.object(client, "get_open_sub_issues", return_value=[10, 11]) as mock_sub:
+        with patch.object(client, "get_connected_prs", return_value=[1, 2]) as mock_linked, patch.object(client, "get_open_sub_issues", return_value=[10, 11]) as mock_sub:
             # Execute
             result = client.get_open_issues_json("owner/repo")
 
@@ -166,7 +166,7 @@ class TestGitHubClientREST:
         client = GitHubClient.get_instance(mock_github_token)
         client._open_issues_cache = None
 
-        with patch.object(client, "get_linked_prs", return_value=[]):
+        with patch.object(client, "get_connected_prs", return_value=[]):
             result = client.get_open_issues_json("owner/repo", labels=["urgent"])
 
         mock_api.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100, labels="urgent", page=1)
@@ -243,7 +243,7 @@ class TestGitHubClientREST:
         }
 
         with (
-            patch.object(client, "get_linked_prs", return_value=[]),
+            patch.object(client, "get_connected_prs", return_value=[]),
             patch(
                 "src.auto_coder.util.github_action._check_github_actions_status",
                 return_value=GitHubActionsStatusResult(success=True, ids=[]),

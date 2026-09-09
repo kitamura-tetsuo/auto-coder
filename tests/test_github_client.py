@@ -484,7 +484,7 @@ class TestGitHubClient:
         assert result is False
         mock_api.issues.add_labels.assert_not_called()
 
-    @patch("src.auto_coder.util.gh_cache.GitHubClient.get_linked_prs")
+    @patch("src.auto_coder.util.gh_cache.GitHubClient.get_connected_prs")
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_has_linked_pr_with_linked_pr(self, mock_get_client, mock_get_linked, mock_github_token):
         """Test has_linked_pr returns True when PR references issue."""
@@ -502,7 +502,7 @@ class TestGitHubClient:
         assert result is True
         mock_api.pulls.get.assert_called_once_with("test", "repo", 456)
 
-    @patch("src.auto_coder.util.gh_cache.GitHubClient.get_linked_prs")
+    @patch("src.auto_coder.util.gh_cache.GitHubClient.get_connected_prs")
     @patch("src.auto_coder.util.gh_cache.GitHubClient.get_open_pull_requests")
     def test_has_linked_pr_via_text_fallback(self, mock_get_open_prs, mock_get_linked, mock_github_token):
         """Test has_linked_pr via text fallback."""

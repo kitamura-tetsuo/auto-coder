@@ -715,7 +715,7 @@ def test_reconciliation_edit_is_rechecked_before_retry_ownership(tmp_path):
         def get_issue_details(self, issue):
             return issue
 
-        def get_linked_prs(self, _repo, _number, strict=False):
+        def get_connected_prs(self, _repo, _number, strict=False):
             assert strict is True
             return []
 

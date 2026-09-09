@@ -383,7 +383,7 @@ def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_
     api.issues.list_for_repo.return_value = [parent]
     GitHubClient.reset_singleton()
     github = GitHubClient.get_instance("token")
-    github.get_linked_prs = Mock(return_value=[])
+    github.get_connected_prs = Mock(return_value=[])
     github.get_open_sub_issues = Mock(return_value=[])
     with patch("auto_coder.util.gh_cache.get_ghapi_client", return_value=api):
         normalized = github.get_open_issues_json("owner/repo")

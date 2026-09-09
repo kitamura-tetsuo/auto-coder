@@ -1229,8 +1229,8 @@ class GitHubClient:
                 nb = i["number"]
 
                 # Fetch extended details via REST (N+1 calls, but cached via ETag)
-                # linked_prs via timeline
-                linked_prs_ids = self.get_linked_prs(repo_name, nb)
+                # linked_prs via native connections
+                linked_prs_ids = self.get_connected_prs(repo_name, nb)
 
                 # open_sub_issue_numbers via sub_issues endpoint + pre-scanned fallback sub-issues
                 sub_issues_summary = i.get("sub_issues_summary")
@@ -1560,49 +1560,128 @@ class GitHubClient:
                 raise
             return []
 
-    def get_linked_prs(self, repo_name: str, issue_number: int, strict: bool = False) -> List[int]:
-        """Get PRs linked to this issue via REST Timeline.
+    _CONNECTED_PRS_QUERY = """
+    query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          closedByPullRequestsReferences(first: 50, after: $cursor, includeClosedPrs: true) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              number
+              repository {
+                owner {
+                  login
+                }
+                name
+              }
+            }
+          }
+        }
+      }
+    }
+    """
 
-        Replaces get_linked_prs_via_graphql.
-        Look for 'connected' (closing) or 'cross-referenced' (mention) events.
+    def get_connected_prs(self, repo_name: str, issue_number: int, strict: bool = False) -> List[int]:
+        """Return unique repository-local PR numbers natively connected to this Issue.
+
+        A native connection is a GitHub-tracked "closes" relationship: either a
+        manually established Issue/PR Development link or a recognized PR-body
+        closing association (``closedByPullRequestsReferences``). An ordinary
+        mention or historical cross-reference event is never connection
+        evidence and is not consulted here.
+
+        With ``strict=True``, evidence is read fresh (bypassing reusable cached
+        responses) across every page required for a complete result; any
+        unreadable, partial, or ambiguous response raises instead of returning
+        an incomplete list. With ``strict=False`` a lookup failure is logged and
+        an empty list is returned as a non-authoritative diagnostic fallback.
         """
         try:
-            timeline = self._get_issue_timeline(repo_name, issue_number, raise_on_error=strict)
-            pr_numbers = set()
-
-            for event in timeline:
-                event_type = event.get("event")
-                # 'connected' means it was linked as closing (fix/close keyword or sidebar)
-                # 'cross-referenced' means it was mentioned
-                if event_type in ["connected", "cross-referenced"]:
-                    source = event.get("source", {})
-                    # For cross-referenced, source implies who mentioned it.
-                    # For connected, source is the PR that was connected.
-
-                    # Structure for cross-referenced: source.issue.number (if from a PR/issue)
-                    # Structure for connected: source.issue.number
-
-                    # It might vary. Let's inspect 'source'.
-                    # Usually source -> issue -> number
-                    if "issue" in source:
-                        # Check if it is a PR
-                        issue_obj = source["issue"]
-                        if "pull_request" in issue_obj:
-                            pr_numbers.add(issue_obj["number"])
-
-                # NOTE: Timeline logic can be complex.
-                # cross-referenced source might be just the issue object directly in some API versions?
-                # REST API docs say: source: { type: "issue", issue: { ... } }
-
-            return list(pr_numbers)
-
+            return self._get_connected_prs(repo_name, issue_number, strict=strict)
         except Exception as e:
-            logger.error(f"Failed to get linked PRs for issue #{issue_number}: {e}")
+            logger.error(f"Failed to get connected PRs for issue #{issue_number}: {e}")
             if strict:
                 raise
             return []
 
-    # Deprecated/Removed: get_linked_prs_via_graphql
+    @retry_with_backoff()
+    def _get_connected_prs(self, repo_name: str, issue_number: int, strict: bool) -> List[int]:
+        owner, repo = repo_name.split("/")
+        numbers: set[int] = set()
+        cursor: Optional[str] = None
+        for _page in range(TIMELINE_MAX_PAGES):
+            variables = {"owner": owner, "name": repo, "number": issue_number, "cursor": cursor}
+            response = self._connected_prs_graphql_request(variables, strict=strict)
+            if "errors" in response:
+                error_messages = [err.get("message", "Unknown error") for err in response["errors"]]
+                raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} returned GraphQL errors: {', '.join(error_messages)}")
+            issue_data = response.get("data", {}).get("repository", {}).get("issue")
+            if not isinstance(issue_data, dict):
+                raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} did not resolve the Issue")
+            connection = issue_data.get("closedByPullRequestsReferences")
+            if not isinstance(connection, dict):
+                raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} did not contain the connection")
+            nodes = connection.get("nodes")
+            if not isinstance(nodes, list):
+                raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} returned an invalid node list")
+            for node in nodes:
+                local_number = self._validate_connected_pr_node(repo_name, issue_number, node)
+                if local_number is not None:
+                    numbers.add(local_number)
+            page_info = connection.get("pageInfo")
+            if not isinstance(page_info, dict):
+                raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} did not contain page info")
+            if not page_info.get("hasNextPage"):
+                return sorted(numbers)
+            cursor = page_info.get("endCursor")
+            if not isinstance(cursor, str) or not cursor:
+                raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} claimed another page without a cursor")
+        raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} exceeded {TIMELINE_MAX_PAGES} pages")
+
+    @staticmethod
+    def _validate_connected_pr_node(repo_name: str, issue_number: int, node: object) -> Optional[int]:
+        """Validate one connected-PR node, returning its local number or ``None`` if foreign.
+
+        A confirmed foreign-repository PR is excluded rather than treated as an
+        error, and must never be conflated with a same-numbered local PR.
+        """
+        if not isinstance(node, dict):
+            raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} returned an invalid PR node")
+        number = node.get("number")
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} returned an invalid PR number")
+        repository = node.get("repository")
+        if not isinstance(repository, dict):
+            raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} PR #{number} had no repository identity")
+        owner_field = repository.get("owner")
+        node_owner = owner_field.get("login") if isinstance(owner_field, dict) else None
+        node_name = repository.get("name")
+        if not isinstance(node_owner, str) or not node_owner or not isinstance(node_name, str) or not node_name:
+            raise RuntimeError(f"Connected-PR lookup for issue #{issue_number} PR #{number} had an ambiguous repository identity")
+        expected_owner, expected_name = repo_name.split("/")
+        if node_owner.lower() != expected_owner.lower() or node_name.lower() != expected_name.lower():
+            return None
+        return number
+
+    def _connected_prs_graphql_request(self, variables: Dict[str, Any], strict: bool) -> Dict[str, Any]:
+        """Issue one connected-PR GraphQL request, bypassing the cache when strict."""
+        if not strict:
+            return self.graphql_query(self._CONNECTED_PRS_QUERY, variables)
+        headers = {
+            "Authorization": f"bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"query": self._CONNECTED_PRS_QUERY, "variables": variables}
+        with github_http_client(subsystem="controller-strict") as client:
+            response = client.post("https://api.github.com/graphql", headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("Connected-PR lookup returned a non-object GraphQL response")
+        return data
 
     def get_pr_closing_issues(self, repo_name: str, pr_number: int) -> List[int]:
         """Get issues that will be closed by this PR via GraphQL.
@@ -1889,8 +1968,8 @@ class GitHubClient:
             owner, repo = repo_name.split("/")
             api = get_ghapi_client(self.token)
 
-            # First try REST Timeline (replaces GraphQL)
-            linked_prs = self.get_linked_prs(repo_name, issue_number)
+            # First try native connections
+            linked_prs = self.get_connected_prs(repo_name, issue_number)
             if linked_prs:
                 # We need to check if any of these are OPEN.
                 for pr_num in linked_prs:
