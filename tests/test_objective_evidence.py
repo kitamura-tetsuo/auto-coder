@@ -21,6 +21,16 @@ def issue(number: int, objective: str) -> DecompositionIssue:
     return DecompositionIssue(build_normative_issue_manifest(number, f"Issue {number}", value), value)
 
 
+def parent_body(objective: str) -> str:
+    """A structurally valid tracking-parent body: Objective only, no Requirements."""
+    return f"## Objective\n{objective}"
+
+
+def parent_issue(number: int, objective: str) -> DecompositionIssue:
+    value = parent_body(objective)
+    return DecompositionIssue(build_normative_issue_manifest(number, f"Issue {number}", value), value)
+
+
 def test_structural_extraction_preserves_prose_and_rejects_examples_and_duplicates():
     prose = "Use v1.2 for e.g. identifiers。\n  Keep interior spacing."
     assert extract_objective(f"```\n## Objective\nignored\n```\n> ## Objective\nquoted\n- ## Objective\nlisted\n## Objective  \t\n {prose} \r\n## Requirements\nx").text == prose
@@ -54,7 +64,7 @@ def test_individual_production_lifecycle_keeps_original_and_current_separate(tmp
 
 
 def test_complete_set_captures_each_identity_and_restart_individual_reuses_child_anchor(tmp_path):
-    parent, child = issue(100, "Parent purpose"), issue(101, "Child purpose")
+    parent, child = parent_issue(100, "Parent purpose"), issue(101, "Child purpose")
     parent_snapshot = {"id": 1000, "number": 100, "title": "Issue 100", "body": parent.body}
     child_snapshot = {"id": 1010, "number": 101, "title": "Issue 101", "body": child.body}
     set_gate = DecompositionValidationLifecycle("owner/repo", "model", tmp_path / "sets.json", lambda _parent, _children: DecompositionAnalysisResult("READY"))
@@ -68,7 +78,7 @@ def test_complete_set_captures_each_identity_and_restart_individual_reuses_child
 
 
 def test_complete_set_rejects_parent_or_child_objective_tampering_before_cached_ready(tmp_path):
-    parent, child = issue(200, "Coordinate preview without applying it."), issue(201, "Project the draft without applying it.")
+    parent, child = parent_issue(200, "Coordinate preview without applying it."), issue(201, "Project the draft without applying it.")
     snapshots = lambda p, c: (
         {"id": 2000, "number": 200, "title": "Parent", "body": p.body},
         [{"id": 2010, "number": 201, "title": "Child", "body": c.body}],
@@ -84,7 +94,7 @@ def test_complete_set_rejects_parent_or_child_objective_tampering_before_cached_
     assert gate.decide(gate.identity(*original_snapshots), parent, [child]).verdict == "READY"
 
     for changed_parent, changed_child, affected in (
-        (issue(200, "Coordinate preview and apply it."), child, 200),
+        (parent_issue(200, "Coordinate preview and apply it."), child, 200),
         (parent, issue(201, "Persist and project the draft."), 201),
     ):
         current = snapshots(changed_parent, changed_child)
