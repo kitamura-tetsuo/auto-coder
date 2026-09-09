@@ -25,6 +25,7 @@ from .decomposition_validation_lifecycle import DecompositionDecision, Decomposi
 from .deployment_channel import repository_dispatch_authority
 from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity, issue_stabilization_deadline
 from .exceptions import AutoCoderRetryableBackendError
+from .execution_trace import EventKind, Outcome, current_scope, get_trace_collector
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
 from .git_commit import git_push
@@ -118,6 +119,69 @@ def _issue_content_revision(issue_data: Dict[str, Any]) -> str:
     return hashlib.sha256(f"{title}\x1f{body}".encode("utf-8", "surrogatepass")).hexdigest()
 
 
+_TARGET_OUTCOME_TO_TRACE_OUTCOME = {
+    ExplicitTargetOutcome.SUCCESS: Outcome.COMPLETED,
+    ExplicitTargetOutcome.DEFERRED: Outcome.DEFERRED,
+    ExplicitTargetOutcome.SKIPPED: Outcome.SKIPPED,
+    ExplicitTargetOutcome.BLOCKED: Outcome.BLOCKED,
+    ExplicitTargetOutcome.FAILED: Outcome.FAILED,
+}
+
+
+def _record_issue_stage_result(
+    item_number: int,
+    stage_id: str,
+    label: str,
+    outcome: Outcome,
+    facts: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record an Issue stage-result event using whatever execution scope is active.
+
+    Uses the ambient ``ExecutionScope`` bound by the enclosing candidate
+    evaluation (REQ-002); when none is bound the event is retained as
+    legacy/unscoped by ``TraceCollector`` rather than inventing one. A
+    diagnostic-recorder failure is caught here and never propagates into the
+    admission/dispatch decision it is describing (REQ-008).
+    """
+    try:
+        get_trace_collector().record_event(
+            EventKind.STAGE_RESULT,
+            stage_id=stage_id,
+            origin=stage_id,
+            label=label,
+            outcome=outcome,
+            facts=facts,
+        )
+    except Exception:
+        logger.opt(exception=True).debug("Diagnostic trace recording failed for issue#{} stage {}; continuing", item_number, stage_id)
+
+
+def _map_candidate_result_outcome(result: "CandidateProcessingResult") -> Outcome:
+    """Derive an honest execution outcome from what the boundary actually reported.
+
+    Only fields the producing code already set are consulted (REQ-007): an
+    explicit ``target_outcome`` is authoritative when present, otherwise the
+    ordinary success/error/deferral flags decide. Anything this mapping
+    cannot classify from real evidence stays UNKNOWN rather than defaulting
+    to a successful outcome (REQ-001).
+    """
+    target_outcome = result.target_outcome
+    if isinstance(target_outcome, str):
+        try:
+            target_outcome = ExplicitTargetOutcome(target_outcome)
+        except ValueError:
+            target_outcome = None
+    if target_outcome is not None and target_outcome in _TARGET_OUTCOME_TO_TRACE_OUTCOME:
+        return _TARGET_OUTCOME_TO_TRACE_OUTCOME[target_outcome]
+    if result.capacity_deferred or result.refill_retry_required:
+        return Outcome.DEFERRED
+    if result.error:
+        return Outcome.FAILED
+    if result.success:
+        return Outcome.COMPLETED
+    return Outcome.UNKNOWN
+
+
 class _StartupReconciliationHandler:
     """Retries the durable startup-recovery obligation via the pending-work scheduler.
 
@@ -198,7 +262,7 @@ class _PrProcessingStageHandler:
         # (REQ-003, REQ-006).
         if obligation.identity.revision and current_head != obligation.identity.revision:
             return StageOutcome(superseded=True)
-        result = engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0))
+        result = engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0), origin="pr-pending-work-resumption")
         if result.target_outcome is ExplicitTargetOutcome.DEFERRED:
             # The resumed evaluation hit another operational failure and has
             # already re-persisted its own obligation through the same defer
@@ -246,7 +310,7 @@ class _MergeOperationResumeHandler:
 
             get_merge_operation_store().supersede(operation.identity)
             return
-        engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0))
+        engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0), origin="merge-operation-resumption")
 
 
 class _IssueProcessingStageHandler:
@@ -291,7 +355,7 @@ class _IssueProcessingStageHandler:
         if obligation.identity.revision and current_revision != obligation.identity.revision:
             return StageOutcome(superseded=True)
         candidate = Candidate(type="issue", data=fresh_issue, priority=0, issue_number=issue_number)
-        result = engine._process_single_candidate(self._repo_name, candidate)
+        result = engine._process_single_candidate(self._repo_name, candidate, origin="issue-pending-work-resumption")
         if result.target_outcome is ExplicitTargetOutcome.DEFERRED:
             return StageOutcome()
         return StageOutcome(completed_effects=obligation.unfinished_effects)
@@ -327,7 +391,6 @@ class _ValidationPublicationStageHandler:
         return self._run(obligation)
 
     def _run(self, obligation: PendingObligation) -> StageOutcome:
-        engine = self._engine
         repo_name = self._repo_name
         entity = obligation.identity.entity
         issue_number: Optional[int] = None
@@ -339,6 +402,36 @@ class _ValidationPublicationStageHandler:
         if issue_number is None:
             logger.warning("Malformed validation-publication pending-work identity {!r}; discarding obligation", entity)
             return StageOutcome(superseded=True)
+        try:
+            handle_cm = get_trace_collector().start_execution(
+                repository=repo_name,
+                item_type="issue",
+                item_number=issue_number,
+                origin="validation-publication-resumption",
+                stage_id="issue.validation-publication-resume",
+                label=f"issue#{issue_number} validation-publication resumption",
+            )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed opening execution scope for issue#{}; continuing untraced", issue_number)
+            return self._run_impl(obligation, issue_number)
+        with handle_cm as handle:
+            outcome = self._run_impl(obligation, issue_number)
+            try:
+                if outcome.error is not None:
+                    handle.set_outcome(Outcome.DEFERRED)
+                elif outcome.superseded:
+                    handle.set_outcome(Outcome.SUPERSEDED)
+                elif outcome.completed_effects:
+                    handle.set_outcome(Outcome.COMPLETED)
+                else:
+                    handle.set_outcome(Outcome.DEFERRED)
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed finishing execution scope for issue#{}; continuing", issue_number)
+            return outcome
+
+    def _run_impl(self, obligation: PendingObligation, issue_number: int) -> StageOutcome:
+        engine = self._engine
+        repo_name = self._repo_name
         try:
             fresh_issue = engine.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
         except GitHubRequestError as exc:
@@ -800,33 +893,44 @@ class AutomationEngine:
         child_decisions: dict[int, ValidationDecision],
     ) -> tuple[bool, str]:
         """Close an exactly validated, fully completed parent specification set."""
+
+        def record(completed: bool, reason: str) -> tuple[bool, str]:
+            _record_issue_stage_result(
+                parent_number,
+                "issue.container-parent-completion",
+                f"issue#{parent_number} container-parent completion",
+                Outcome.COMPLETED if completed else Outcome.DEFERRED,
+                {"parent_number": parent_number, "reason": reason},
+            )
+            return completed, reason
+
         try:
             current = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
             if current is None:
-                return False, "authoritative parent/direct-child state is unavailable"
+                return record(False, "authoritative parent/direct-child state is unavailable")
             parent, children = current
             if not self._is_open_issue(parent) or not is_implementation_ready(parent):
-                return False, "parent is no longer open and submitted"
+                return record(False, "parent is no longer open and submitted")
             decomposition = self._get_decomposition_validator(repo_name)
             if decomposition_decision.verdict != "READY" or decomposition.identity(parent, children) != decomposition_decision.identity:
-                return False, "decomposition validation identity is stale or is not READY"
+                return record(False, "decomposition validation identity is stale or is not READY")
             individual = self._get_specification_validator(repo_name)
             for child in children:
                 number = child.get("number")
                 if not isinstance(number, int) or child.get("state") != "closed":
-                    return False, "a direct child is no longer closed"
+                    return record(False, "a direct child is no longer closed")
                 decision = child_decisions.get(number)
                 relationship = self._child_review_context(parent, children, number)
                 identity = individual.identity(number, str(child.get("title") or ""), str(child.get("body") or ""), relationship)
                 if decision is None or decision.verdict != "READY" or decision.identity != identity:
-                    return False, f"individual validation for child #{number} is stale or is not READY"
+                    return record(False, f"individual validation for child #{number} is stale or is not READY")
             self.github.close_issue(repo_name, parent_number)
             closed = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
             if not isinstance(closed, dict) or closed.get("state") != "closed":
-                return False, "GitHub did not confirm parent closure"
-            return True, "Completed - closed container parent after all direct children completed"
+                return record(False, "GitHub did not confirm parent closure")
+            return record(True, "Completed - closed container parent after all direct children completed")
         except Exception as exc:
-            return False, f"authoritative parent completion failed: {exc}"
+            return record(False, f"authoritative parent completion failed: {exc}")
 
     def _get_authoritative_parent_number(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[int]:
         """Resolve the current native parent without trusting collected hints."""
@@ -848,8 +952,10 @@ class AutomationEngine:
             return False
         deadline = issue_stabilization_deadline(created_at)
         if deadline is None or deadline <= time.time():
+            _record_issue_stage_result(number, "issue.creation-stabilization", f"issue#{number} creation stabilization", Outcome.COMPLETED, {"issue_number": number})
             return False
         self.invalidations.invalidate(EntityIdentity(repo_name, "issue", number), not_before=deadline)
+        _record_issue_stage_result(number, "issue.creation-stabilization", f"issue#{number} creation stabilization", Outcome.DEFERRED, {"issue_number": number, "deadline": deadline})
         return True
 
     def _reconcile_parent_issue(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -1185,6 +1291,69 @@ class AutomationEngine:
         except Exception as exc:
             raise ParentOperationalError(f"explicit relationship preflight failed: {exc}") from exc
 
+    @staticmethod
+    def _traced_validation_job(
+        repo_name: str,
+        item_number: int,
+        stage_id: str,
+        label: str,
+        facts: Optional[Dict[str, Any]],
+        fn: Any,
+    ) -> Any:
+        """Run a validation-scheduler operation inside its own fresh execution scope.
+
+        ``ValidationScheduler.submit`` copies the submitting thread's
+        contextvars into the worker-pool thread that runs ``fn``, which
+        would otherwise make this asynchronous job's diagnostic evidence
+        appear to belong to whichever worker most recently opened a scope
+        for the parent Issue. Opening a fresh ``ExecutionScope`` here, before
+        calling ``fn``, gives the job its own execution identity (REQ-002)
+        instead of borrowing the caller's.
+
+        A diagnostic-recorder failure (opening the scope or recording the
+        result) is caught and logged rather than allowed to prevent ``fn``
+        from running or to change the decision it returns (REQ-008).
+        """
+        collector = get_trace_collector()
+        try:
+            handle_cm = collector.start_execution(
+                repository=repo_name,
+                item_type="issue",
+                item_number=item_number,
+                origin="validation-scheduler",
+                stage_id=stage_id,
+                label=label,
+                facts=facts,
+            )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed opening validation scope for issue#{}; continuing untraced", item_number)
+            return fn()
+        with handle_cm as handle:
+            try:
+                decision = fn()
+            except BaseException:
+                try:
+                    handle.set_outcome(Outcome.FAILED)
+                except Exception:
+                    logger.opt(exception=True).debug("Diagnostic trace recording failed for issue#{} validation job; continuing", item_number)
+                raise
+            verdict = getattr(decision, "verdict", None)
+            verdict_outcomes = {"READY": Outcome.COMPLETED, "BLOCKED": Outcome.BLOCKED, "ERROR": Outcome.FAILED}
+            outcome = verdict_outcomes.get(verdict, Outcome.UNKNOWN) if isinstance(verdict, str) else Outcome.UNKNOWN
+            try:
+                handle.set_outcome(outcome)
+                collector.record_event(
+                    EventKind.STAGE_RESULT,
+                    stage_id=stage_id,
+                    origin="validation-scheduler",
+                    label=label,
+                    outcome=outcome,
+                    facts={**(facts or {}), "verdict": verdict},
+                )
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed for issue#{} validation job; continuing", item_number)
+            return decision
+
     def _schedule_parent_validations(
         self,
         repo_name: str,
@@ -1194,6 +1363,8 @@ class AutomationEngine:
     ) -> tuple[Optional[ValidationJob[DecompositionDecision]], dict[int, ValidationJob[ValidationDecision]]]:
         """Eagerly submit a stable parent generation under the shared bound."""
         parent, children = authoritative_set
+        parent_number = int(parent["number"])
+        member_numbers = sorted(int(child["number"]) for child in children)
         set_job: Optional[ValidationJob[DecompositionDecision]] = None
         if self._is_issue_decomposition_validation_enabled(repo_name, config):
             decomposition = self._get_decomposition_validator(repo_name)
@@ -1208,7 +1379,22 @@ class AutomationEngine:
             ]
             set_job = self.validation_scheduler.submit(
                 f"decomposition:{set_identity.key}",
-                lambda: decomposition.decide(set_identity, DecompositionIssue(parent_manifest, str(parent.get("body") or "")), child_inputs),
+                lambda: self._traced_validation_job(
+                    repo_name,
+                    parent_number,
+                    "issue.decomposition-validation-job",
+                    f"issue#{parent_number} decomposition validation job",
+                    {"parent_number": parent_number, "member_issue_numbers": member_numbers},
+                    lambda: decomposition.decide(set_identity, DecompositionIssue(parent_manifest, str(parent.get("body") or "")), child_inputs),
+                ),
+            )
+        else:
+            _record_issue_stage_result(
+                parent_number,
+                "issue.decomposition-validation-job",
+                f"issue#{parent_number} decomposition validation job",
+                Outcome.SKIPPED,
+                {"parent_number": parent_number, "member_issue_numbers": member_numbers, "reason": "decomposition validation is disabled"},
             )
         child_jobs: dict[int, ValidationJob[ValidationDecision]] = {}
         if self._is_issue_specification_validation_enabled(repo_name, config):
@@ -1224,7 +1410,15 @@ class AutomationEngine:
                 identity = individual.identity(number, title, body, relationship_context)
                 child_jobs[number] = self.validation_scheduler.submit(
                     f"individual:{identity.key}",
-                    partial(individual.decide, manifest, title, body, relationship_context),
+                    partial(
+                        self._traced_validation_job,
+                        repo_name,
+                        number,
+                        "issue.individual-validation-job",
+                        f"issue#{number} individual validation job",
+                        {"issue_number": number},
+                        partial(individual.decide, manifest, title, body, relationship_context),
+                    ),
                 )
         return set_job, child_jobs
 
@@ -1924,7 +2118,7 @@ class AutomationEngine:
                     return True
                 result = await self._run_local_critical(
                     f"capacity refill issue #{candidate.issue_number}",
-                    self._process_single_candidate,
+                    partial(self._process_single_candidate, origin="capacity-refill-intake"),
                     repo_name,
                     candidate,
                 )
@@ -2029,7 +2223,7 @@ class AutomationEngine:
                     # Process candidate
                     result = await self._run_local_critical(
                         f"worker {worker_id} {candidate.type} #{item_number}",
-                        self._process_single_candidate,
+                        partial(self._process_single_candidate, origin="durable-invalidation-worker"),
                         repo_name,
                         candidate,
                     )
@@ -2845,6 +3039,83 @@ class AutomationEngine:
         advance_issue_attempt: bool = False,
         generation_serialized: bool = False,
         authoritative_parent_number: Optional[int] = None,
+        origin: str = "worker",
+    ) -> CandidateProcessingResult:
+        """Open (or continue) an execution-scoped trace, then dispatch to the real implementation.
+
+        A fresh top-level execution is opened whenever this call is not
+        already nested inside a matching (repository, item_type, item_number)
+        scope -- covering every origin listed in REQ-001 as well as a
+        recursive dispatch into a *different* Issue (e.g. a container
+        parent's open child, REQ-002: separate items always have separate
+        execution scopes). A call that is already inside a matching scope
+        (e.g. the ``generation_serialized`` re-entry for the same owner, or
+        a validation-triggered continuation) is nested work that keeps
+        participating in the caller's execution instead (REQ-002).
+        """
+        item_number = candidate.data.get("number")
+        ambient = current_scope()
+        already_scoped = ambient is not None and ambient.repository == repo_name and ambient.item_type == candidate.type and ambient.item_number == item_number
+        if not isinstance(item_number, int) or isinstance(item_number, bool) or already_scoped:
+            return self._process_single_candidate_unified_impl(
+                repo_name,
+                candidate,
+                config,
+                jules_mode,
+                explicit_only,
+                force,
+                continue_execution,
+                advance_issue_attempt,
+                generation_serialized,
+                authoritative_parent_number,
+                origin,
+            )
+        impl_args = (
+            repo_name,
+            candidate,
+            config,
+            jules_mode,
+            explicit_only,
+            force,
+            continue_execution,
+            advance_issue_attempt,
+            generation_serialized,
+            authoritative_parent_number,
+            origin,
+        )
+        try:
+            handle_cm = get_trace_collector().start_execution(
+                repository=repo_name,
+                item_type=candidate.type,
+                item_number=item_number,
+                origin=origin,
+                stage_id=f"{candidate.type}.execution",
+                label=f"{candidate.type}#{item_number} execution",
+            )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed opening execution scope for {}#{}; continuing untraced", candidate.type, item_number)
+            return self._process_single_candidate_unified_impl(*impl_args)
+        with handle_cm as handle:
+            result = self._process_single_candidate_unified_impl(*impl_args)
+            try:
+                handle.set_outcome(_map_candidate_result_outcome(result))
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed finishing execution scope for {}#{}; continuing", candidate.type, item_number)
+            return result
+
+    def _process_single_candidate_unified_impl(
+        self,
+        repo_name: str,
+        candidate: Candidate,
+        config: AutomationConfig,
+        jules_mode: bool = False,
+        explicit_only: bool = False,
+        force: bool = False,
+        continue_execution: bool = False,
+        advance_issue_attempt: bool = False,
+        generation_serialized: bool = False,
+        authoritative_parent_number: Optional[int] = None,
+        origin: str = "worker",
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -2859,6 +3130,9 @@ class AutomationEngine:
             jules_mode: Whether to use Jules mode for processing (default: False)
             continue_execution: Whether this is an internal lifecycle transition that
                 must continue the caller's execution for the same logical owner.
+            origin: Diagnostic label propagated to a recursive dispatch into a
+                different Issue (e.g. a container parent's open child); does
+                not affect processing behavior.
 
         Returns:
             Processing result
@@ -2892,6 +3166,7 @@ class AutomationEngine:
                 logger.info(f"Skipping Issue #{item_number} - author not in Issue allowlist")
                 result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.target_reason = "Issue author is not in the allowlist"
+                _record_issue_stage_result(item_number, "issue.author-admission", f"issue#{item_number} author admission", Outcome.SKIPPED, {"reason": result.target_reason})
                 return result
             if isinstance(self.github, GitHubClient):
                 try:
@@ -2917,12 +3192,14 @@ class AutomationEngine:
                     result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
+                    _record_issue_stage_result(item_number, "issue.parent-reconciliation", f"issue#{item_number} parent reconciliation", Outcome.BLOCKED, {"reason": str(exc)})
                     return result
                 except ParentOperationalError as exc:
                     result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
                     result.refill_retry_required = True
+                    _record_issue_stage_result(item_number, "issue.parent-reconciliation", f"issue#{item_number} parent reconciliation", Outcome.DEFERRED, {"reason": str(exc)})
                     return result
             # A submitted parent represents its whole direct-child contract, not
             # a standalone coding target. Numeric order is only a deterministic
@@ -2995,14 +3272,17 @@ class AutomationEngine:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
                             result.target_outcome = ExplicitTargetOutcome.BLOCKED
                             result.actions = ["Rejected - blocked parent/child decomposition"]
+                            _record_issue_stage_result(item_number, "issue.decomposition-validation", f"issue#{item_number} decomposition validation", Outcome.BLOCKED, {"member_issue_numbers": sorted(child_decisions)})
                         elif decomposition_enabled and parent_decision is not None and parent_decision.verdict == "ERROR":
                             result.error = "Decomposition validation failed; parent readiness was preserved for retry"
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - decomposition validation error"]
+                            _record_issue_stage_result(item_number, "issue.decomposition-validation", f"issue#{item_number} decomposition validation", Outcome.FAILED, {"member_issue_numbers": sorted(child_decisions)})
                         elif any(decision.verdict == "ERROR" for decision in child_decisions.values()):
                             result.error = "Individual validation failed; parent readiness was preserved for retry"
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - child specification validation error"]
+                            _record_issue_stage_result(item_number, "issue.individual-validation", f"issue#{item_number} individual validation", Outcome.FAILED, {"member_issue_numbers": sorted(child_decisions)})
                         elif any(decision.verdict == "BLOCKED" for decision in child_decisions.values()):
                             blocked = next(decision for decision in child_decisions.values() if decision.verdict == "BLOCKED")
                             validator = self._get_specification_validator(repo_name)
@@ -3017,6 +3297,7 @@ class AutomationEngine:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
                             result.target_outcome = ExplicitTargetOutcome.BLOCKED
                             result.actions = ["Rejected - blocked child specification"]
+                            _record_issue_stage_result(item_number, "issue.individual-validation", f"issue#{item_number} individual validation", Outcome.BLOCKED, {"member_issue_numbers": sorted(child_decisions)})
                         elif decomposition_enabled and parent_decision is not None:
                             complete, message = self._complete_container_parent(repo_name, item_number, parent_decision, child_decisions)
                             if complete:
@@ -3047,6 +3328,7 @@ class AutomationEngine:
                             continue_execution,
                             advance_issue_attempt,
                             authoritative_parent_number=item_number,
+                            origin=origin,
                         )
                         if child_result.success:
                             return child_result
@@ -3057,6 +3339,7 @@ class AutomationEngine:
                         return last_refusal
                 result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.actions = [f"Skipped - parent submission is missing {IMPLEMENTATION_READY_LABEL} label"]
+                _record_issue_stage_result(item_number, "issue.hierarchy-admission", f"issue#{item_number} hierarchy admission", Outcome.SKIPPED, {"reason": result.actions[0]})
                 return result
 
             live_parent_number = authoritative_parent_number or self._get_authoritative_parent_number(repo_name, item_number, candidate.data)
@@ -3174,6 +3457,7 @@ class AutomationEngine:
                         advance_issue_attempt,
                         generation_serialized=True,
                         authoritative_parent_number=authoritative_parent_number,
+                        origin=origin,
                     )
             try:
                 current_issue = self._reconcile_validation_snapshot(
@@ -3248,6 +3532,7 @@ class AutomationEngine:
                 logger.info(f"Skipping Issue #{item_number} - missing {IMPLEMENTATION_READY_LABEL} label")
                 result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.actions = [f"Skipped - missing {IMPLEMENTATION_READY_LABEL} label"]
+                _record_issue_stage_result(item_number, "issue.readiness-admission", f"issue#{item_number} readiness admission", Outcome.SKIPPED, {"reason": result.actions[0]})
                 return result
 
             if inherited_ready:
@@ -3278,6 +3563,9 @@ class AutomationEngine:
                         result.error = "Decomposition validation failed; parent readiness was preserved for retry"
                         result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - decomposition validation error"]
+                        # This child observes the parent's decomposition-job gate
+                        # from its own execution scope; it did not run that job.
+                        _record_issue_stage_result(item_number, "issue.decomposition-gate-observed", f"issue#{item_number} decomposition gate observed", Outcome.FAILED, {"parent_number": inherited_parent_number})
                         return result
                     if decomposition_decision.verdict == "BLOCKED":
                         try:
@@ -3293,6 +3581,7 @@ class AutomationEngine:
                         result.actions = ["Rejected - blocked parent/child decomposition"]
                         if side_effect_error:
                             result.error += f"; GitHub side effect failed: {side_effect_error}"
+                        _record_issue_stage_result(item_number, "issue.decomposition-gate-observed", f"issue#{item_number} decomposition gate observed", Outcome.BLOCKED, {"parent_number": inherited_parent_number})
                         return result
                 if spec_validation_enabled:
                     for eager_decision in eager_child_decisions.values():
@@ -3300,6 +3589,7 @@ class AutomationEngine:
                             result.error = "Individual validation failed; parent readiness was preserved for retry"
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - child specification validation error"]
+                            _record_issue_stage_result(item_number, "issue.individual-validation", f"issue#{item_number} individual validation", Outcome.FAILED, {"issue_number": item_number})
                             return result
             current_body = str(current_issue.get("body") or "")
             current_title = str(current_issue.get("title") or "")
@@ -3330,6 +3620,7 @@ class AutomationEngine:
                 result.target_outcome = ExplicitTargetOutcome.BLOCKED
                 result.actions = [f"Rejected - invalid requirement contract: {contract.error}"]
                 result.error = contract.error
+                _record_issue_stage_result(item_number, "issue.normative-contract-check", f"issue#{item_number} normative contract check", Outcome.BLOCKED, {"reason": contract.error})
                 return result
 
             # Semantic readiness is a durable authorization for this exact title,
@@ -3777,6 +4068,7 @@ class AutomationEngine:
                         # For difficult issues, bypass Jules and delegate to backend_with_high_score_cloud directly
                         logger.info(f"Issue #{item_number} has 'difficult' label. Delegating to backend_with_high_score_cloud.")
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to High Score Cloud Backend (difficult label)", item_type="issue", item_number=item_number, details={"mode": "high_score_cloud"})
+                        _record_issue_stage_result(item_number, "issue.dispatch-route", f"issue#{item_number} dispatch route", Outcome.COMPLETED, {"route": "high-score-cloud"})
                         from .issue_processor import _process_issue_high_score_cloud
 
                         result.actions = _process_issue_high_score_cloud(
@@ -3790,6 +4082,7 @@ class AutomationEngine:
                     elif jules_mode:
                         # Use Cloud mode (backend_cloud, defaulting to Jules) for issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Cloud Mode (backend_cloud)", item_type="issue", item_number=item_number, details={"mode": "cloud"})
+                        _record_issue_stage_result(item_number, "issue.dispatch-route", f"issue#{item_number} dispatch route", Outcome.COMPLETED, {"route": "cloud"})
                         from .issue_processor import _process_issue_cloud_backend
 
                         result.actions = _process_issue_cloud_backend(
@@ -3804,6 +4097,7 @@ class AutomationEngine:
                     else:
                         # Regular issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode", item_type="issue", item_number=item_number, details={"mode": "local"})
+                        _record_issue_stage_result(item_number, "issue.dispatch-route", f"issue#{item_number} dispatch route", Outcome.COMPLETED, {"route": "local"})
                         result.actions = self._take_issue_actions(repo_name, candidate.data)
 
                     # Cloud launchers persist the authoritative provider task in
@@ -3979,18 +4273,21 @@ class AutomationEngine:
             jules_mode=jules_mode,
             continue_execution=True,
             advance_issue_attempt=advance_attempt,
+            origin="stale-provider-session-reassignment",
         )
         actions = [f"Started a new attempt for issue #{issue_number}"] + list(issue_result.actions)
         if issue_result.error:
             actions.append(f"Error processing issue #{issue_number}: {issue_result.error}")
         return actions
 
-    def _process_single_candidate(self, repo_name: str, candidate: Candidate) -> CandidateProcessingResult:
+    def _process_single_candidate(self, repo_name: str, candidate: Candidate, origin: str = "worker") -> CandidateProcessingResult:
         """Process a single candidate (issue/PR).
 
         Args:
             repo_name: Repository name
             candidate: Target candidate to process
+            origin: Diagnostic label for what triggered this evaluation
+                (REQ-001); does not affect processing behavior.
 
         Returns:
             Processing result
@@ -4005,6 +4302,7 @@ class AutomationEngine:
             candidate,
             self.config,
             jules_mode=jules_mode,
+            origin=origin,
         )
 
     def run(self, repo_name: str) -> Dict[str, Any]:
@@ -4087,7 +4385,7 @@ class AutomationEngine:
                         heartbeat("run:processing", f"{candidate.type} #{candidate.data.get('number', 'N/A')}")
 
                         # Process the candidate
-                        result = self._process_single_candidate(repo_name, candidate)
+                        result = self._process_single_candidate(repo_name, candidate, origin="batch-scan-worker")
 
                         # Track results
                         # Convert dataclass to dict for backward compatibility with existing code
@@ -4262,9 +4560,10 @@ class AutomationEngine:
                             *processing_args,
                             explicit_only=True,
                             force=force,
+                            origin="explicit-single-target",
                         )
                     else:
-                        processing_result = self._process_single_candidate_unified(*processing_args)
+                        processing_result = self._process_single_candidate_unified(*processing_args, origin="explicit-single-target")
 
                     if explicit_only:
                         result.target_actions = list(processing_result.actions)

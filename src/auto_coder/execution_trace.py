@@ -45,7 +45,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Deque, Dict, Iterator, List, Optional
+from typing import Any, Deque, Dict, Iterator, List, Literal, Optional
 
 from loguru import logger
 
@@ -210,7 +210,7 @@ class ExecutionHandle:
         self._token = _current_scope.set(self.scope)
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> "Literal[False]":
         try:
             if not self._finished:
                 outcome = self._pending_outcome

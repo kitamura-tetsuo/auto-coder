@@ -25,7 +25,7 @@ def test_external_capacity_release_refills_fresh_ranking_past_rejection(monkeypa
     assert engine.implementation_slots.reserve_new(occupying)
     attempted = []
 
-    def process(_repo, candidate):
+    def process(_repo, candidate, **_kwargs):
         attempted.append(candidate.issue_number)
         if candidate.issue_number == 20:
             assert engine.implementation_slots.reserve_new(ImplementationOwner("issue", 20))
@@ -90,7 +90,7 @@ def test_dispatch_authority_failure_keeps_refill_pending(monkeypatch, tmp_path):
     engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
     attempts = 0
 
-    def process(_repo, _candidate):
+    def process(_repo, _candidate, **_kwargs):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -124,7 +124,7 @@ def test_release_during_refill_causes_second_fresh_enumeration(monkeypatch, tmp_
     dispatch_started = threading.Event()
     dispatch_can_finish = threading.Event()
 
-    def process(_repo, candidate):
+    def process(_repo, candidate, **_kwargs):
         owner = ImplementationOwner("issue", candidate.issue_number)
         assert engine.implementation_slots.reserve_new(owner)
         if candidate.issue_number == 20:

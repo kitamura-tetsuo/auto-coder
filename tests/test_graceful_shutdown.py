@@ -31,7 +31,7 @@ def test_worker_drain_owns_real_to_thread_operation_until_durable_completion(mon
     authoritative = Candidate(type="issue", data={"number": 1777, "state": "open"}, priority=0, issue_number=1777)
     monkeypatch.setattr(engine, "_create_candidate_from_single", lambda *_args: authoritative)
 
-    def blocking_processing(_repo, candidate):
+    def blocking_processing(_repo, candidate, **_kwargs):
         nonlocal commits, dispatches
         entered.set()
         assert release.wait(5)
@@ -87,7 +87,7 @@ def test_child_parent_validation_remains_owned_through_worker_drain(monkeypatch,
         assert release.wait(5)
         validations += 1
 
-    def dispatch(*_args):
+    def dispatch(*_args, **_kwargs):
         nonlocal dispatches
         dispatches += 1
         return CandidateProcessingResult(type="issue", number=22, success=True)
@@ -324,7 +324,7 @@ def test_parent_routing_snapshot_failure_cannot_abandon_validation_batch(monkeyp
             {22: engine.validation_scheduler.submit("individual:routing", individual)},
         ),
     )
-    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, current: engine._process_single_candidate_unified(repo, current, config))
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, current, **kwargs: engine._process_single_candidate_unified(repo, current, config, **kwargs))
 
     async def scenario():
         assert await engine.invalidate_entity("owner/repo", "issue", 1, "parent-routing")
