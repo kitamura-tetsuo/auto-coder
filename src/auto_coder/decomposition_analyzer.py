@@ -12,6 +12,12 @@ from .backend_manager import BackendManager, run_llm_prompt
 from .objective_evidence import ObjectiveAnchor, objective_evidence_json
 from .prompt_loader import render_prompt
 from .requirement_contract import NormativeIssueManifest
+from .role_structural_assessment import (
+    ROLE_IMPLEMENTATION_CHILD,
+    ROLE_TRACKING_PARENT,
+    StructuralDefect,
+    assess_role_structure,
+)
 from .specification_analyzer import _reject_duplicate_json_members
 
 DECOMPOSITION_FINDING_CATEGORIES = frozenset(
@@ -22,10 +28,17 @@ DECOMPOSITION_FINDING_CATEGORIES = frozenset(
         "boundary_semantics_conflict",
         "decomposition_false_success",
         "objective_conflict",
+        "invalid_issue_structure",
     }
 )
 
-PARENT_REQUIREMENT_FINDING_CATEGORIES = frozenset({"missing_requirement_ownership", "decomposition_false_success"})
+PARENT_COVERAGE_FINDING_CATEGORIES = frozenset({"missing_requirement_ownership", "decomposition_false_success"})
+
+_STRUCTURAL_DEFECT_CLARIFICATIONS = {
+    "parent_requirements_forbidden": "Remove the Requirements heading and every REQ-NNN declaration from this tracking parent; implementation Requirements belong only in its direct children.",
+    "parent_objective_required": "Give this tracking parent exactly one nonempty authored Objective section.",
+    "child_requirements_invalid": "Give this implementation child an explicit, nonempty Requirements contract with unique REQ-NNN identifiers.",
+}
 
 
 @dataclass(frozen=True)
@@ -144,6 +157,36 @@ def _membership(parent: DecompositionIssue, children: Sequence[DecompositionIssu
     return membership
 
 
+def _structural_defect_finding(issue_number: int, defect: StructuralDefect) -> DecompositionFinding:
+    location_text = "; ".join(f"line {location.line_number}: {location.text}" for location in defect.locations)
+    detail = f"{defect.detail} ({location_text})" if location_text else defect.detail
+    clarification = _STRUCTURAL_DEFECT_CLARIFICATIONS[defect.reason]
+    return DecompositionFinding("invalid_issue_structure", (AffectedIssue(issue_number, ()),), detail, clarification)
+
+
+def _structural_assessment_result(
+    parent: DecompositionIssue,
+    children: Sequence[DecompositionIssue],
+) -> Optional[DecompositionAnalysisResult]:
+    """Fail closed on role-aware structural defects before any model use.
+
+    Uses the shared assessment from :mod:`role_structural_assessment` as the
+    single structural oracle: a contract-free tracking parent with exactly one
+    nonempty Objective and no Requirements is valid, and each implementation
+    child must carry a valid explicit Requirements contract.
+    """
+    findings: list[DecompositionFinding] = []
+    members = ((parent, ROLE_TRACKING_PARENT), *((child, ROLE_IMPLEMENTATION_CHILD) for child in children))
+    for issue, role in members:
+        assessment = assess_role_structure(issue.manifest, issue.body, role)
+        if assessment.status == "ERROR":
+            return _error(assessment.error or f"Issue #{issue.manifest.issue_number} structural assessment failed")
+        findings.extend(_structural_defect_finding(issue.manifest.issue_number, defect) for defect in assessment.defects)
+    if not findings:
+        return None
+    return DecompositionAnalysisResult("BLOCKED", tuple(findings), remediation="EDIT_IN_PLACE")
+
+
 def parse_decomposition_analysis_response(
     response: str,
     parent: DecompositionIssue,
@@ -198,13 +241,13 @@ def parse_decomposition_analysis_response(
                 return _error("Finding contains invalid Requirement IDs for an affected Issue")
             seen_issues.add(issue_number)
             affected.append(AffectedIssue(issue_number, tuple(requirement_ids)))
-        if category in PARENT_REQUIREMENT_FINDING_CATEGORIES:
+        if category in PARENT_COVERAGE_FINDING_CATEGORIES:
             parent_reference = next(
                 (item for item in affected if item.issue_number == parent.manifest.issue_number),
                 None,
             )
-            if parent_reference is None or not parent_reference.requirement_ids:
-                return _error(f"{category} finding must identify the parent and an applicable Requirement")
+            if parent_reference is None or parent_reference.requirement_ids:
+                return _error(f"{category} finding must identify the parent with an empty Requirement list")
         findings.append(DecompositionFinding(category, tuple(affected), explanation.strip(), clarification.strip()))
 
     if (verdict == "READY" and findings) or (verdict == "BLOCKED" and not findings):
@@ -216,18 +259,24 @@ def analyze_issue_decomposition(
     parent: DecompositionIssue,
     children: Sequence[DecompositionIssue],
     *,
-    parent_implemented_independently: bool = False,
     backend_manager: Optional[BackendManager] = None,
     prompt_runner: Optional[Callable[[str], str]] = None,
     review_evidence: Optional[DecompositionReviewEvidence] = None,
 ) -> DecompositionAnalysisResult:
-    """Analyze exactly the supplied parent and complete direct-child set."""
+    """Analyze exactly the supplied parent and complete direct-child set.
+
+    The parent is a contract-free tracking coordinator: it must carry no
+    Requirements and exactly one nonempty Objective, and always contributes
+    an empty implementation-Requirements manifest. Each child must carry a
+    valid explicit Requirements contract. These role-aware structural
+    defects are checked deterministically, before any model use.
+    """
     membership = _membership(parent, children)
     if membership is None:
         return _error("Decomposition membership contains duplicate Issue identities")
-    for manifest in membership.values():
-        if not manifest.explicit_contract_present or not manifest.explicit_contract_valid:
-            return _error(manifest.error or f"Issue #{manifest.issue_number} requires a valid explicit normative Requirement manifest")
+    structural = _structural_assessment_result(parent, children)
+    if structural is not None:
+        return structural
 
     def issue_payload(issue: DecompositionIssue) -> dict[str, object]:
         return {
@@ -240,7 +289,6 @@ def analyze_issue_decomposition(
     review_evidence = review_evidence or _REVIEW_EVIDENCE.get()
     prompt = render_prompt(
         "issue.adversarial_decomposition_analysis",
-        parent_implemented_independently=json.dumps(parent_implemented_independently),
         parent_specification=json.dumps(issue_payload(parent), ensure_ascii=False, indent=2),
         direct_child_specifications=json.dumps([issue_payload(child) for child in children], ensure_ascii=False, indent=2),
         durable_decomposition_baseline=review_evidence.baseline if review_evidence else "(No earlier decomposition baseline is available.)",
