@@ -1392,7 +1392,8 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
   ```
   - Typical use: AugmentCode Auggie CLI
   - Automatic flags: `--print`
-  - Custom options: Debug modes, output formatting
+  - Task instructions are passed as exact UTF-8 through a private, external `--instruction-file`; the file is removed after the direct CLI child exits.
+  - Custom options: Debug modes, output formatting (configured instruction-source options are rejected)
 
 - **Jules Backend** (`backend_type = "jules"`):
   ```toml

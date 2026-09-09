@@ -4,8 +4,7 @@ Auggie CLI client for Auto-Coder.
 Design: mimic GeminiClient/CodexClient interface so the automation engine can
 swap backends transparently. The Auggie CLI is assumed to be installed via
 `npm install -g @augmentcode/auggie` and supports non-interactive invocation
-using `--print` together with `--model` and the prompt as a positional
-argument.
+using `--print` together with `--model` and an instruction file.
 """
 
 from __future__ import annotations
@@ -13,7 +12,9 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import stat
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -30,6 +31,7 @@ logger = get_logger(__name__)
 _USAGE_STATE_ENV = "AUTO_CODER_AUGGIE_USAGE_DIR"
 _USAGE_FILENAME = "auggie_usage.json"
 _DAILY_LIMIT = 20000
+_TASK_INPUT_OPTIONS = frozenset({"--instruction", "--instruction-file"})
 
 
 class AuggieClient(LLMClientBase):
@@ -161,9 +163,67 @@ class AuggieClient(LLMClientBase):
         """Escape characters that can confuse shell commands."""
         return prompt.replace("@", "\\@").strip()
 
+    @staticmethod
+    def _is_within(path: Path, parent: Path) -> bool:
+        try:
+            path.resolve().relative_to(parent.resolve())
+            return True
+        except ValueError:
+            return False
+
+    def _safe_instruction_directory(self) -> Path:
+        """Choose an existing temporary directory outside the target worktree."""
+        cwd = Path.cwd().resolve()
+        worktree = next((parent for parent in (cwd, *cwd.parents) if (parent / ".git").exists()), cwd)
+        candidates = [Path(tempfile.gettempdir()), Path("/var/tmp"), Path("/tmp")]
+        for candidate in candidates:
+            resolved = candidate.expanduser().resolve()
+            if resolved.is_dir() and not self._is_within(resolved, worktree):
+                return resolved
+        raise RuntimeError("No safe temporary directory outside the target worktree is available")
+
+    @staticmethod
+    def _validate_task_options(options: List[str]) -> None:
+        for option in options:
+            name = option.split("=", 1)[0]
+            if name in _TASK_INPUT_OPTIONS:
+                raise RuntimeError(f"Auggie option {name} conflicts with the adapter-owned instruction file")
+        if options.count("--print") > 1:
+            raise RuntimeError("Auggie options contain more than one --print flag")
+
+    def _write_instruction_file(self, instruction: str) -> Path:
+        """Create and finish a private instruction file before task launch."""
+        path: Optional[Path] = None
+        fd: Optional[int] = None
+        try:
+            fd, raw_path = tempfile.mkstemp(prefix="auto-coder-auggie-", suffix=".txt", dir=self._safe_instruction_directory())
+            path = Path(raw_path)
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise RuntimeError("Auggie instruction path is not a regular file")
+            os.fchmod(fd, 0o600)
+            payload = instruction.encode("utf-8")
+            with os.fdopen(fd, "wb") as instruction_file:
+                fd = None
+                instruction_file.write(payload)
+                instruction_file.flush()
+                os.fsync(instruction_file.fileno())
+            return path
+        except Exception:
+            if fd is not None:
+                os.close(fd)
+            if path is not None:
+                path.unlink(missing_ok=True)
+            raise
+
+    @staticmethod
+    def _stop_and_reap(process: subprocess.Popen[str]) -> None:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+
     def _run_auggie_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Execute Auggie CLI and stream output via logger."""
-        self._check_and_increment_usage()
         escaped_prompt = self._escape_prompt(prompt)
 
         override = os.environ.get("AUTOCODER_AUGGIE_CLI")
@@ -188,14 +248,21 @@ class AuggieClient(LLMClientBase):
         extra_args = self.consume_extra_args()
         if extra_args:
             cmd.extend(extra_args)
+        self._validate_task_options(cmd[1:])
+        if "--print" not in cmd[1:]:
+            cmd.append("--print")
 
-        cmd.append(escaped_prompt)
+        self._check_and_increment_usage()
+        instruction_path = self._write_instruction_file(escaped_prompt)
+        cmd.extend(["--instruction-file", str(instruction_path)])
 
         logger.warning("LLM invocation: auggie CLI is being called. Keep LLM calls minimized.")
         logger.debug(f"Running auggie CLI with prompt length: {len(prompt)} characters")
-        logger.info("🤖 Running: auggie --model %s [prompt]" % self.model_name)
+        logger.info("🤖 Running: auggie --model %s --instruction-file [private file]" % self.model_name)
         logger.info("=" * 60)
 
+        process: Optional[subprocess.Popen[str]] = None
+        primary_error: Optional[BaseException] = None
         try:
             process = subprocess.Popen(
                 cmd,
@@ -235,10 +302,26 @@ class AuggieClient(LLMClientBase):
             if usage_limit_detected:
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
-        except subprocess.TimeoutExpired:
-            if process:
-                process.kill()
-            raise AutoCoderTimeoutError("auggie CLI timed out after 7200 seconds")
+        except subprocess.TimeoutExpired as exc:
+            primary_error = AutoCoderTimeoutError("auggie CLI timed out after 7200 seconds")
+            if process is not None:
+                self._stop_and_reap(process)
+            raise primary_error from exc
+        except BaseException as exc:
+            primary_error = exc
+            if process is not None:
+                self._stop_and_reap(process)
+            raise
+        finally:
+            try:
+                instruction_path.unlink()
+            except OSError as cleanup_error:
+                message = f"Failed to remove Auggie instruction file {instruction_path}: {cleanup_error}"
+                logger.error(message)
+                if primary_error is not None:
+                    primary_error.add_note(message)
+                else:
+                    raise RuntimeError(message) from cleanup_error
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Execute LLM with the given prompt.

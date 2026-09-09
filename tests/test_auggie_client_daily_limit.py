@@ -139,7 +139,8 @@ def test_auggie_client_options_from_config(mock_get_config, monkeypatch):
     assert "--model" in cmd
     assert "GPT-5" in cmd
     assert "--print" in cmd
-    assert "test prompt" in cmd
+    assert "test prompt" not in cmd
+    assert cmd.count("--instruction-file") == 1
 
 
 @patch("src.auto_coder.auggie_client.get_llm_config")
@@ -177,7 +178,8 @@ def test_auggie_client_multiple_options_from_config(mock_get_config, monkeypatch
     assert "--print" in cmd
     assert "--debug" in cmd
     assert "--verbose" in cmd
-    assert "test prompt" in cmd
+    assert "test prompt" not in cmd
+    assert cmd.count("--instruction-file") == 1
 
 
 @patch("src.auto_coder.auggie_client.get_llm_config")
@@ -210,11 +212,12 @@ def test_auggie_client_empty_options_default(mock_get_config, monkeypatch):
     assert len(RecordingPopen.calls) == 1
     cmd = RecordingPopen.calls[0]
     assert cmd[0] == "auggie"
-    # Should not have --model, --print or other extra options
+    # Non-interactive print mode is adapter-owned even without configured options
     assert "--model" not in cmd
-    assert "--print" not in cmd
+    assert cmd.count("--print") == 1
     assert "--debug" not in cmd
-    assert "test prompt" in cmd
+    assert "test prompt" not in cmd
+    assert cmd.count("--instruction-file") == 1
 
 
 @patch("src.auto_coder.auggie_client.get_llm_config")
@@ -235,10 +238,11 @@ def test_auggie_client_no_backend_config_default(mock_get_config, monkeypatch):
     assert len(RecordingPopen.calls) == 1
     cmd = RecordingPopen.calls[0]
     assert cmd[0] == "auggie"
-    # Should not have --model or --print options when config_backend is None
+    # Non-interactive print mode is adapter-owned even without backend config
     assert "--model" not in cmd
-    assert "--print" not in cmd
-    assert "test prompt" in cmd
+    assert cmd.count("--print") == 1
+    assert "test prompt" not in cmd
+    assert cmd.count("--instruction-file") == 1
 
 
 @patch("src.auto_coder.auggie_client.get_llm_config")
@@ -309,4 +313,5 @@ def test_auggie_client_placeholder_replacement(mock_get_config, monkeypatch):
     # Verify placeholder was replaced, not used literally
     assert "[model_name]" not in cmd
     assert "--print" in cmd
-    assert "test prompt" in cmd
+    assert "test prompt" not in cmd
+    assert cmd.count("--instruction-file") == 1
