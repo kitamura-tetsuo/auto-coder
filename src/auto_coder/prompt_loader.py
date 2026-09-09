@@ -66,6 +66,10 @@ def _prepend_contract_policy(key: str, template: str, prompts: Dict[str, Any]) -
         boundary = policies.get("objective_requirements_boundary")
         if isinstance(boundary, str):
             fragments.append(boundary.rstrip())
+    if key in _ISSUE_POLICY_PROMPTS or key in _PR_CONTRACT_POLICY_PROMPTS:
+        parent_child_boundary = policies.get("parent_child_contract_boundary")
+        if isinstance(parent_child_boundary, str):
+            fragments.append(parent_child_boundary.rstrip())
     return "\n\n".join([*fragments, template])
 
 
