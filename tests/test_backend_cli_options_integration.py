@@ -116,7 +116,9 @@ class TestBackendCLIOptions:
 
         # Verify the command starts with expected elements
         assert cmd[0] == "codex"
-        # Note: "exec" subcommand has been removed
+        assert cmd.count("exec") == 1
+        assert cmd[-1] == "-"
+        assert mock_run_command.call_args.kwargs["stdin_text"] == "test prompt"
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")

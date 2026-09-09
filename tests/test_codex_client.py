@@ -279,7 +279,9 @@ class TestCodexClient:
         called_cmd = mock_run_command.call_args.args[0]
         assert called_cmd.count("exec") == 1
         assert called_cmd.index("resume") == called_cmd.index("exec") + 1
-        assert called_cmd[-2:] == ["session-123", "review current head"]
+        assert called_cmd[called_cmd.index("exec") + 1 : called_cmd.index("exec") + 3] == ["resume", "session-123"]
+        assert called_cmd[-1] == "-"
+        assert mock_run_command.call_args.kwargs["stdin_text"] == "review current head"
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -294,7 +296,8 @@ class TestCodexClient:
         _ = client._run_llm_cli("hello world")
 
         called_cmd = mock_run_command.call_args[0][0]
-        assert called_cmd[-1] == "hello world"
+        assert called_cmd[-1] == "-"
+        assert mock_run_command.call_args.kwargs["stdin_text"] == "hello world"
         assert called_cmd[-3:-1] == ["--resume", "abc123"]
 
     @patch("subprocess.run")
@@ -328,7 +331,7 @@ class TestCodexClient:
             'approvals_reviewer="user"',
             "exec",
             "--json",
-            "review this",
+            "-",
         ]
         assert "--dangerously-bypass-approvals-and-sandbox" not in noedit_cmd
 
@@ -661,10 +664,11 @@ class TestCodexClient:
 
             # Verify command structure
             assert cmd[0] == "codex"
-            assert "test prompt" in cmd
+            assert "test prompt" not in cmd
+            assert mock_run_command.call_args.kwargs["stdin_text"] == "test prompt"
 
         # Verify command does not contain "exec" subcommand
-        assert "exec" not in cmd
+        assert cmd.count("exec") == 1
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -883,7 +887,8 @@ class TestCodexClient:
         # Verify command structure is correct (no extra elements)
         assert cmd[0] == "codex"
         # Next should be either an option or the prompt
-        assert cmd[-1] == "test prompt"
+        assert cmd[-1] == "-"
+        assert mock_run_command.call_args.kwargs["stdin_text"] == "test prompt"
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -922,9 +927,10 @@ class TestCodexClient:
             # Options should be in the middle
             assert "--dangerously-bypass-approvals-and-sandbox" in cmd
             # Prompt should be at the end
-            assert cmd[-1] == "test prompt"
+            assert cmd[-1] == "-"
+            assert mock_run_command.call_args.kwargs["stdin_text"] == "test prompt"
             # Command should not contain "exec"
-            assert "exec" not in cmd
+            assert cmd.count("exec") == 1
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -1025,7 +1031,8 @@ class TestCodexClient:
         assert cmd[0] == "codex"
         assert "--json" in cmd
         assert "--dangerously-bypass-approvals-and-sandbox" in cmd
-        assert cmd[-1] == "test prompt"
+        assert cmd[-1] == "-"
+        assert mock_run_command.call_args.kwargs["stdin_text"] == "test prompt"
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -1068,7 +1075,7 @@ class TestCodexClient:
             assert "--json" in cmd
             assert "--dangerously-bypass-approvals-and-sandbox" in cmd
             # Command should not contain "exec" subcommand
-            assert "exec" not in cmd
+            assert cmd.count("exec") == 1
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -1106,7 +1113,7 @@ class TestCodexClient:
                 'approvals_reviewer="user"',
                 "exec",
                 "--json",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1146,7 +1153,7 @@ class TestCodexClient:
             'approvals_reviewer="user"',
             "exec",
             "--json",
-            "test prompt",
+            "-",
         ]
 
     @patch("subprocess.run")
@@ -1184,7 +1191,7 @@ class TestCodexClient:
                 "-c",
                 'approvals_reviewer="user"',
                 "exec",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1225,7 +1232,7 @@ class TestCodexClient:
                 'approvals_reviewer="user"',
                 "exec",
                 "--json",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1258,7 +1265,7 @@ class TestCodexClient:
             assert "--sandbox" not in called_cmd
             assert "--ask-for-approval" not in called_cmd
             assert 'approvals_reviewer="user"' not in called_cmd
-            assert called_cmd == ["codex", "exec", "--json", "test prompt"]
+            assert called_cmd == ["codex", "exec", "--json", "-"]
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -1300,7 +1307,7 @@ class TestCodexClient:
                 "--json",
                 "--profile",
                 "custom-profile",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1342,7 +1349,7 @@ class TestCodexClient:
                 "exec",
                 "exec",
                 "--json",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1382,7 +1389,7 @@ class TestCodexClient:
                 'approvals_reviewer="user"',
                 "exec",
                 "--json",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1423,7 +1430,7 @@ class TestCodexClient:
                 'approvals_reviewer="user"',
                 "exec",
                 "--json",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1463,7 +1470,7 @@ class TestCodexClient:
                 'approvals_reviewer="user"',
                 "exec",
                 "--json",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1504,7 +1511,7 @@ class TestCodexClient:
                 'approvals_reviewer="user"',
                 "exec",
                 "--json",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1561,7 +1568,7 @@ class TestCodexClient:
                 'some_setting="approval_policy"',
                 "exec",
                 "--json",
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1611,6 +1618,6 @@ class TestCodexClient:
                 "--json",
                 '-cmodel="sandbox_mode"',
                 '--config=other="approval_policy"',
-                "test prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd

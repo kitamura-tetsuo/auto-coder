@@ -1650,7 +1650,7 @@ class TestBuildAdversarialValidationContext:
                 'approvals_reviewer="user"',
                 "exec",
                 "--json",
-                "prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1695,7 +1695,7 @@ class TestBuildAdversarialValidationContext:
                 "-c",
                 'approvals_reviewer="user"',
                 "exec",
-                "prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 
@@ -1741,7 +1741,7 @@ class TestBuildAdversarialValidationContext:
                 "-c",
                 'approvals_reviewer="user"',
                 "exec",
-                "prompt",
+                "-",
             ]
             assert called_cmd == expected_cmd
 

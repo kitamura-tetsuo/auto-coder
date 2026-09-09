@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .codex_cli_args import build_codex_exec_command
 from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
@@ -274,8 +275,6 @@ class CodexClient(LLMClientBase):
 
         try:
             escaped_prompt = self._escape_prompt(prompt)
-            cmd = ["codex"]
-
             # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
             if self.config_backend:
@@ -288,24 +287,16 @@ class CodexClient(LLMClientBase):
                 # Fallback if config_backend is not available
                 options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
 
-            # Add configured options from config
-            if options_to_use:
-                cmd.extend(options_to_use)
-
             resume_session_id = self._resume_session_id
             self._resume_session_id = None
-            if resume_session_id:
-                try:
-                    exec_index = cmd.index("exec")
-                except ValueError:
-                    cmd.extend(["exec", "resume"])
-                else:
-                    cmd.insert(exec_index + 1, "resume")
 
             # Append any one-time extra arguments (e.g., resume flags)
             extra_args = self.consume_extra_args()
-            if extra_args:
-                cmd.extend(extra_args)
+            cmd = build_codex_exec_command(
+                options_to_use or [],
+                extra_args,
+                session_id=resume_session_id,
+            )
 
             # When is_noedit is True, enforce Codex read-only sandboxing client-level invariant
             # against the final combined command (including configured options and extra args):
@@ -411,11 +402,8 @@ class CodexClient(LLMClientBase):
                 )
                 final_message_path = Path(final_message_file.name)
                 final_message_file.close()
-                cmd.extend(["--output-last-message", str(final_message_path)])
+                cmd[-1:-1] = ["--output-last-message", str(final_message_path)]
 
-            if resume_session_id:
-                cmd.append(resume_session_id)
-            cmd.append(escaped_prompt)
             # Use configured usage_markers if available, otherwise fall back to defaults
             if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
                 usage_markers = self.usage_markers
@@ -445,6 +433,7 @@ class CodexClient(LLMClientBase):
                 env=env if len(env) > len(os.environ) else None,
                 dot_format=True,
                 idle_timeout=1800,
+                stdin_text=escaped_prompt,
             )
 
             stdout = (result.stdout or "").strip()
@@ -487,7 +476,10 @@ class CodexClient(LLMClientBase):
                 raise AutoCoderUsageLimitError(full_output)
 
             if final_message_path is not None:
-                final_message = final_message_path.read_text(encoding="utf-8").strip()
+                try:
+                    final_message = final_message_path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    final_message = ""
                 if final_message:
                     return final_message
 
@@ -496,15 +488,21 @@ class CodexClient(LLMClientBase):
             # parser remains a fail-closed fallback when Codex did not write a
             # final-message file.
             return response_output
-        except AutoCoderUsageLimitError:
-            # Re-raise without catching
+        except AutoCoderUsageLimitError as e:
+            status = "error"
+            error_message = str(e)
             raise
-        except AutoCoderTimeoutError:
-            # Re-raise timeout errors
+        except AutoCoderTimeoutError as e:
+            status = "error"
+            error_message = str(e)
             raise
-        except AutoCoderRetryableBackendError:
+        except AutoCoderRetryableBackendError as e:
+            status = "error"
+            error_message = str(e)
             raise
         except Exception as e:
+            status = "error"
+            error_message = str(e)
             raise RuntimeError(f"Failed to run codex CLI: {e}")
         finally:
             if final_message_path is not None:
