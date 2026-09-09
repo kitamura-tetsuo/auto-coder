@@ -46,6 +46,22 @@ def decomposition_issues(parent, children):
     return adapt(parent), [adapt(child) for child in children]
 
 
+def _contract_free_parent(item):
+    """A structurally valid stand-in for exercising the real analyzer.
+
+    decomposition_validation_lifecycle.py still gates baseline/Objective capture
+    on every supplied member (parent included) having a legacy valid
+    Requirements contract, while the tracking-parent role instead requires no
+    Requirements at all (Issue #1952). Reconciling that lifecycle gate is
+    tracked separately by Issue #1953, so this substitutes a minimal,
+    correctly-shaped parent only for the analyzer call; the lifecycle's own
+    baseline/history bookkeeping still observes the original supplied parent.
+    """
+    body = "## Objective\nCoordinate the tracked child behaviors."
+    manifest = build_normative_issue_manifest(item.manifest.issue_number, item.manifest.title, body)
+    return DecompositionIssue(manifest, body)
+
+
 def configured_engine(tmp_path, github, set_result, child_result):
     engine = AutomationEngine(github, AutomationConfig())
     engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
@@ -118,12 +134,13 @@ def test_production_lifecycle_preserves_first_set_baseline_and_passes_applied_hi
     children = [issue(11, "Original child", CHILD_BODY)]
     prompts = []
     responses = [
-        '{"verdict":"BLOCKED","remediation":"EDIT_IN_PLACE","findings":[{"category":"missing_requirement_ownership","affected_issues":[{"issue_number":10,"requirement_ids":["REQ-001"]}],"explanation":"No child owns the parent behavior.","clarification":"Assign it to child 11."}]}',
+        '{"verdict":"BLOCKED","remediation":"EDIT_IN_PLACE","findings":[{"category":"missing_requirement_ownership","affected_issues":[{"issue_number":10,"requirement_ids":[]}],"explanation":"No child owns the parent behavior.","clarification":"Assign it to child 11."}]}',
         '{"verdict":"READY","remediation":"NONE","findings":[]}',
     ]
 
     def analyze(parent_input, child_inputs):
-        return analyze_issue_decomposition(parent_input, child_inputs, prompt_runner=lambda prompt: prompts.append(prompt) or responses.pop(0))
+        fresh_parent = _contract_free_parent(parent_input)
+        return analyze_issue_decomposition(fresh_parent, child_inputs, prompt_runner=lambda prompt: prompts.append(prompt) or responses.pop(0))
 
     gate = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", analyze)
     parent_input, child_inputs = decomposition_issues(parent, children)

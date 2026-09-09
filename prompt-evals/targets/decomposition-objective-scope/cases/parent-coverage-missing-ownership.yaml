@@ -1,0 +1,24 @@
+- description: AS-002 — no-write preview gap has no explicit child owner
+  vars: &base
+    parent_specification: '{"issue_number":2001,"title":"Preview","requirements":[]}'
+    direct_child_specifications: '[{"issue_number":2002,"title":"Draft renderer","requirements":[{"requirement_id":"REQ-001","text":"Produce a rendered preview of the saved draft and return it to the presentation child."}]},{"issue_number":2003,"title":"Presentation","requirements":[{"requirement_id":"REQ-001","text":"Display the rendered preview returned by child 2002."}]}]'
+    objective_evidence: '[{"issue_number":2001,"state":"ANCHORED","original_text":"Preview a saved draft without applying it. Leave live configuration unchanged.","source_identity":"issue:2001:creation:v1","current":{"status":"PRESENT","text":"Preview a saved draft without applying it. Leave live configuration unchanged."}},{"issue_number":2002,"state":"ANCHORED","original_text":"Render a saved draft.","source_identity":"issue:2002:creation:v1","current":{"status":"PRESENT","text":"Render a saved draft."}},{"issue_number":2003,"state":"ANCHORED","original_text":"Display a supplied rendered preview.","source_identity":"issue:2003:creation:v1","current":{"status":"PRESENT","text":"Display a supplied rendered preview."}}]'
+    durable_decomposition_baseline: (none)
+    prior_applied_decomposition_outcomes: (none)
+  assert:
+    - type: is-json
+    - type: javascript
+      value: |
+        const r = JSON.parse(output);
+        const f = r.findings?.find(x => x.category === 'missing_requirement_ownership' || x.category === 'decomposition_false_success');
+        return r.verdict === 'BLOCKED' && !!f && /without applying it/.test(f.explanation) && f.affected_issues.some(x => x.issue_number === 2001 && x.requirement_ids.length === 0);
+
+- description: AS-002 paired sufficient case — explicit no-application ownership composes to READY
+  vars:
+    <<: *base
+    direct_child_specifications: '[{"issue_number":2002,"title":"Draft renderer","requirements":[{"requirement_id":"REQ-001","text":"Produce a rendered preview of the saved draft without applying or writing it to live configuration, and return the preview to the presentation child."}]},{"issue_number":2003,"title":"Presentation","requirements":[{"requirement_id":"REQ-001","text":"Display the rendered preview returned by child 2002."}]}]'
+  assert:
+    - type: is-json
+    - type: javascript
+      value: |
+        const r = JSON.parse(output); return r.verdict === 'READY' && r.remediation === 'NONE' && r.findings.length === 0;

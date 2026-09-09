@@ -174,7 +174,10 @@ def test_executor_preserves_repository_context_through_real_analyzer_factories(t
         analyze_issue_specification,
     )
     github = Mock()
-    parent, children = issue(10), [issue(20), issue(30)]
+    # The tracking parent must be contract-free (Issue #1952): no Requirements,
+    # exactly one Objective. Children keep their explicit Requirements contract.
+    parent = {**issue(10), "body": "## Objective\nCoordinate the tracked child behaviors."}
+    children = [issue(20), issue(30)]
     snapshots = {10: parent, 20: children[0], 30: children[1]}
     github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
     github.get_direct_sub_issues_strict.return_value = [dict(child) for child in children]
