@@ -898,6 +898,76 @@ def test_pr_resolution_failure_is_not_treated_as_standalone(tmp_path):
         slots.resolve_owner("pr", {"number": 105, "body": "Closes #100"}, github)
 
 
+def test_mention_only_pr_does_not_acquire_issue_ownership(tmp_path):
+    """REQ-001/AS-001: ordinary references never establish ownership, even for
+    a retained closed Issue owner with no real native connection."""
+    slots = repository(tmp_path, limit=2)
+    issue_owner = ImplementationOwner("issue", 100)
+    assert slots.reserve(issue_owner) is True
+    github = GitHubState(issues={100: {"number": 100, "state": "closed"}}, linked_prs={100: []})
+
+    for body in ("See #100 for context", "Related issue: #100", "Issue #100"):
+        owner = slots.resolve_owner("pr", {"number": 200, "title": "Implementation", "body": body}, github)
+        assert owner == ImplementationOwner("pr", 200)
+
+
+def test_foreign_qualified_directive_is_excluded_without_touching_local_issue(tmp_path):
+    """REQ-003/AS-003: a foreign owner/repo directive must not be rebound to a
+    same-numbered local Issue, and must be excluded without even attempting a
+    local Issue lookup for that number."""
+    slots = repository(tmp_path)
+    github = GitHubState()  # No local issue #100 registered; a lookup would raise.
+    owner = slots.resolve_owner("pr", {"number": 200, "body": "Fixes other/repo#100"}, github)
+    assert owner == ImplementationOwner("pr", 200)
+
+
+def test_native_connection_only_attributes_to_an_already_active_issue_owner(tmp_path):
+    """REQ-002/REQ-005/AS-002: a live native connection with no textual
+    directive still grants ownership when the Issue is already active, but
+    never authorizes discovering a brand-new Issue owner via unbounded scan."""
+    slots = repository(tmp_path, limit=2)
+    issue_owner = ImplementationOwner("issue", 100)
+    assert slots.reserve(issue_owner) is True
+
+    github = GitHubState(linked_prs={100: [200]})
+    owner = slots.resolve_owner("pr", {"number": 200, "body": "No directive here"}, github)
+    assert owner == issue_owner
+
+    # Issue #300 is not an active owner, so the same kind of live connection
+    # must not discover it as brand-new ownership.
+    other_github = GitHubState(linked_prs={300: [200]})
+    other = slots.resolve_owner("pr", {"number": 200, "body": "No directive here"}, other_github)
+    assert other == ImplementationOwner("pr", 200)
+
+
+def test_startup_discovery_cannot_launder_a_mention_into_durable_ownership(tmp_path):
+    """AS-001: a retained closed owner with a terminal recorded PR must still
+    release through the real startup-discovery + reconciliation path, and an
+    unrelated open PR that only mentions its number must resolve standalone
+    rather than being appended to the Issue's durable membership."""
+    slots = repository(tmp_path, limit=1)
+    issue_owner = ImplementationOwner("issue", 100)
+    assert slots.reserve(issue_owner, implementation_pr=105) is True
+
+    class StartupGitHub(GitHubState):
+        def get_open_pull_requests(self, _repo):
+            return [{"number": 200, "title": "Unrelated work", "body": "See #100 for background"}]
+
+    github = StartupGitHub(
+        issues={100: {"number": 100, "state": "closed"}},
+        prs={105: {"number": 105, "state": "closed", "merged": True}},
+        linked_prs={100: []},
+    )
+
+    slots.reconcile(github, discover_open_prs=True)
+
+    assert slots.active_owners() == ()
+    restarted = repository(tmp_path, limit=1)
+    assert restarted.active_owners() == ()
+    assert restarted.resolve_owner("pr", {"number": 200, "body": "See #100 for background"}, github) == ImplementationOwner("pr", 200)
+    assert restarted.reserve(ImplementationOwner("issue", 200)) is True
+
+
 def test_atomic_reservation_never_exceeds_limit(tmp_path):
     owners = [ImplementationOwner("issue", number) for number in range(10)]
 

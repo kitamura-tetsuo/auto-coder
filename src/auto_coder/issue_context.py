@@ -62,6 +62,43 @@ def extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
     return unique_issues
 
 
+# Restricted to GitHub's own closing keywords. Unlike the broader review-context
+# extraction above, "related issue", "relates to" and similar prose are never
+# lifecycle-ownership evidence (see resolve_owner in implementation_slots.py).
+_LIFECYCLE_DIRECTIVE_KEYWORDS = r"(?:close|closes|closed|closing|fix|fixes|fixed|resolve|resolves|resolved|resolving)"
+_LIFECYCLE_DIRECTIVE_PATTERN = rf"\b{_LIFECYCLE_DIRECTIVE_KEYWORDS}\b:?\s+([a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)?#(\d+)"
+
+
+def extract_lifecycle_directive_issue_references(pr_body: str) -> List[Tuple[Optional[str], int]]:
+    """Extract repository-local implementation-directive Issue references.
+
+    Returns ``(qualifier, number)`` pairs in body order, where ``qualifier`` is
+    the optional ``owner/repo`` prefix (``None`` for a bare ``#N`` token). Only
+    GitHub's own closing keywords count; an ordinary mention or "related"/
+    "relates to" prose is not extracted here.
+    """
+    if not pr_body:
+        return []
+    return [(match.group(1), int(match.group(2))) for match in re.finditer(_LIFECYCLE_DIRECTIVE_PATTERN, pr_body, re.IGNORECASE)]
+
+
+def extract_lifecycle_branch_issue_number(branch_name: str) -> Optional[int]:
+    """Extract an Issue number from an Issue-bearing PR head-branch marker.
+
+    Recognizes ``(issue|feat|fix)[-_/]<digits>`` and a leading ``<digits>[-_]``
+    prefix, matching the branch conventions Auto-Coder itself creates.
+    """
+    if not branch_name:
+        return None
+    match = re.search(r"(?:issue|feat|fix)[-_/](\d+)", branch_name, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    match = re.match(r"^(\d+)[-_]", branch_name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def validate_issue_references(pr_body: str, github_client: Any, repo_name: str) -> None:
     """Validate that issue references in PR body point to Issues, not PRs.
 
