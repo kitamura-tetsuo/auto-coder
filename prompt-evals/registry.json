@@ -46,6 +46,21 @@
       "cases": [
         "prompt-evals/targets/short-objective-contract/cases/*.yaml"
       ]
+    },
+    {
+      "id": "parent-child-contract-boundary",
+      "prompt_dependencies": [
+        {
+          "path": "src/auto_coder/prompts.yaml",
+          "keys": [
+            "policies.parent_child_contract_boundary"
+          ]
+        }
+      ],
+      "config": "prompt-evals/targets/parent-child-contract-boundary/promptfooconfig.yaml",
+      "cases": [
+        "prompt-evals/targets/parent-child-contract-boundary/cases/*.yaml"
+      ]
     }
   ]
 }

@@ -21,6 +21,16 @@ policies:
     - This separation never bypasses independent specification/readiness gates, discards an explicit Requirement, or excuses a genuine demonstrated defect. If the same behavior is an explicit Requirement, its demonstrated violation remains actionable.
     - Preserve supplied original/current Objective anchor evidence verbatim and do not re-summarize it. Parent and linked contracts remain context unless an explicit current-Issue Requirement incorporates them.
 
+  parent_child_contract_boundary: |-
+    PARENT/CHILD ISSUE CONTRACT BOUNDARY POLICY:
+    - A tracking parent Issue must never carry a `## Requirements` section, an empty one, or any REQ-NNN declaration anywhere in its body. Its only sections are a short Objective plus informative Context and child/dependency tracking. Never add a dummy Requirement such as "all children must complete", a parent-owned implementation acceptance obligation, or a final parent coding/review task used to substitute for missing child work.
+    - Every newly authored non-trivial implementation child owns its own short Objective, informative Context, explicit single-line `REQ-NNN:` Requirements with stable unique IDs, and concrete acceptance scenarios that reference those Requirements. Necessary behavior for the parent's complete outcome must be explicitly owned by one or more children; neither the parent's Objective/checklist nor a sibling's Requirements may serve as an unstated implementation contract. A missing independent responsibility is an explicit child-contract correction or a decomposition revision, never an enlarged parent contract.
+    - Each generated child's initial creation body carries `Parent-Issue: #<actual parent>` and exactly one `Blocked-By:` declaration: empty for a dependency root, or the complete intended direct prerequisite sibling set as distinct comma-separated local Issue references (for example, `Blocked-By: #12, #34`). Dependencies must be acyclic and exclude the parent, the child itself, non-sibling Issues, and pull requests. Create every prerequisite first so its real Issue number is already known, and put that number in the dependent's initial body; never publish a dependent with a placeholder or an inferred order and repair `Blocked-By:` afterward, and never treat Issue-number order as an execution policy.
+    - Review-response and repair guidance must reject a suggestion to add a parent Requirement, reinterpret an existing parent Requirement mention as permitted, rewrite a fixed parent Objective, or silently copy parent/context prose into a child's obligations. A genuine coverage defect is a concrete mismatch with the unchanged parent Objective, repaired in explicit child scope. When purpose or ownership is unresolved, stop for user clarification before any Issue-body write; never publish a conflicting parent contract and remove it afterward.
+    - Individual-child review, implementation, and PR prompts that receive parent context must treat the parent as coordination/scope evidence with no implementation Requirements. Only the target child's own current explicit Requirements define its merge-blocking implementation contract. Report an Objective-only or aggregate gap as a specification/decomposition concern rather than a fabricated parent REQ ID, an invented child code/test obligation, a blanket waiver of an explicit child defect, or an instruction to implement the parent.
+    - A historical tracking parent that carries Requirements is rejected, never grandfathered or silently stripped. Before a user-authorized correction removes them, identify which statements are coordination-only and which describe real behavior that needs explicit child ownership, preserve the parent's fixed Objective verbatim, and surface any unresolved choice rather than guessing it. A tracking parent missing its Objective needs an explicitly supplied purpose, not an inferred one; legacy child Objective-absence handling is unchanged. Marking a parent family implementation-ready submits its children for execution; it never authorizes implementing the parent itself.
+    - This is prompt-level authoring/repair guidance, distinct from hard runtime structural enforcement. It must not be cited as proof of semantic model compliance, and it must not reactivate a disabled mandatory prompt-evaluation gate or turn an advisory prompt-regression result into a merge/wait/repair condition.
+
 muse:
   execution: |-
     Operate in $mode mode and complete this task in one execution:
@@ -1172,12 +1182,23 @@ issue:
 
     For valid issue but need to more than about 30 file changes:
     - Break down the issue into multiple smaller sub issues
-    - Create multiple smaller sub issues via gh.
+    - This issue itself becomes a contract-free tracking parent: keep its short
+      Objective and add child/dependency tracking, but do not add a
+      `## Requirements` section or any REQ-NNN declaration to it.
+    - Create multiple smaller sub issues via gh, giving each one its own short
+      Objective, Context, and explicit single-line `REQ-NNN:` Requirements
+      with concrete acceptance scenarios. Necessary parent-outcome behavior
+      must be explicitly owned by a child; never leave it as unstated parent
+      prose.
       example: github-sub-issue create --parent $issue_number --title $title --body $body
     - Put structural metadata outside each child's `## Requirements` section:
-      `Parent-Issue: #$issue_number` and `Blocked-By:`. Leave `Blocked-By:`
-      empty for each dependency root; otherwise list every prerequisite as
-      comma-separated local references (for example, `Blocked-By: #12, #34`).
+      `Parent-Issue: #$issue_number` and exactly one `Blocked-By:` declaration.
+      Leave `Blocked-By:` empty for each dependency root; otherwise list the
+      complete set of prerequisite siblings as comma-separated local
+      references (for example, `Blocked-By: #12, #34`). Create every
+      prerequisite sibling first so its real Issue number is already known,
+      and put that number directly in the dependent's initial creation body;
+      never publish a dependent first and repair `Blocked-By:` afterward.
     - Never use Issue numbers or creation order to imply implementation order.
     - Keep open the issue
 

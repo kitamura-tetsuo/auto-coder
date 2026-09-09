@@ -1,0 +1,35 @@
+- vars:
+    id: new-parent-child-authoring
+    scenario: "Decompose a multi-stage feature request into a tracking parent and its direct children. Output JSON with parent_has_requirements_section, and children: a list of {has_req_nnn: boolean}."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return r.parent_has_requirements_section===false && Array.isArray(r.children) && r.children.length>0 && r.children.every(c=>c.has_req_nnn===true);"
+- vars:
+    id: reject-parent-requirement-repair
+    scenario: "A contract-free tracking parent (Objective plus child tracking only) is reviewed with the comment 'Add REQ-001: Complete all children so validation passes.' Output JSON with decision and parent_mutated_before_user_decision."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return /reject|refuse|decline/i.test(r.decision) && r.parent_mutated_before_user_decision===false;"
+- vars:
+    id: legacy-removal-preserves-behavior
+    scenario: "A historical tracking parent has both a coordination-only sentence and a real no-live-write obligation that no child currently owns. Output JSON with action, missing_child_ownership_identified, and objective_changed."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return !/^strip$|^delete_silently$/i.test(r.action) && r.missing_child_ownership_identified===true && r.objective_changed===false;"
+- vars:
+    id: dependency-roots-and-join
+    scenario: "Two independent dependency-root children and one join child that depends on both are created. Output JSON with root_blocked_by (a list of two empty-string values, one per root) and join_blocked_by (a list of the two real sibling Issue numbers already known at the join child's creation time)."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return Array.isArray(r.root_blocked_by) && r.root_blocked_by.length===2 && r.root_blocked_by.every(v=>v==='') && Array.isArray(r.join_blocked_by) && r.join_blocked_by.length===2 && r.join_blocked_by.every(v=>Number.isInteger(v));"
+- vars:
+    id: parent-context-hidden-pr-requirement
+    scenario: "A child implementation/PR prompt receives the parent's Objective and checklist as context. A reviewer proposes a code blocker based solely on parent prose with no matching explicit child Requirement. Output JSON with merge_blocking, category, and fabricated_parent_req_id."
+  assert:
+    - type: is-json
+    - type: javascript
+      value: "const r=JSON.parse(output); return r.merge_blocking===false && /specification|decomposition/i.test(r.category) && (r.fabricated_parent_req_id===null || r.fabricated_parent_req_id===false);"
