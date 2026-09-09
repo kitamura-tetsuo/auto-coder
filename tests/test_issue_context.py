@@ -2,7 +2,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from auto_coder.issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles
+from auto_coder.issue_context import (
+    extract_lifecycle_branch_issue_number,
+    extract_lifecycle_directive_issue_references,
+    extract_linked_issues_from_pr_body,
+    get_linked_issues_context,
+    resolve_issue_oracles,
+)
 
 
 def test_extract_linked_issues():
@@ -18,6 +24,32 @@ def test_extract_linked_issues():
 
     body4 = ""
     assert extract_linked_issues_from_pr_body(body4) == []
+
+
+def test_extract_lifecycle_directive_issue_references_excludes_mentions():
+    # Restricted keywords with an optional owner/repo qualifier are extracted.
+    assert extract_lifecycle_directive_issue_references("Fixes #100") == [(None, 100)]
+    assert extract_lifecycle_directive_issue_references("Closes owner/repo#100") == [("owner/repo", 100)]
+    assert extract_lifecycle_directive_issue_references("Closing: #7") == [(None, 7)]
+
+    # Ordinary mentions and "related"/"relates" prose are never lifecycle evidence.
+    assert extract_lifecycle_directive_issue_references("See #100 for context") == []
+    assert extract_lifecycle_directive_issue_references("Related issue: #100") == []
+    assert extract_lifecycle_directive_issue_references("Relates to #100") == []
+    assert extract_lifecycle_directive_issue_references("Issue #100") == []
+    assert extract_lifecycle_directive_issue_references("") == []
+
+    # An exact number token must not match a numeric prefix.
+    assert extract_lifecycle_directive_issue_references("Fixes #1000") == [(None, 1000)]
+
+
+def test_extract_lifecycle_branch_issue_number():
+    assert extract_lifecycle_branch_issue_number("issue-100-fix") == 100
+    assert extract_lifecycle_branch_issue_number("feat/issue-100") == 100
+    assert extract_lifecycle_branch_issue_number("fix-42-typo") == 42
+    assert extract_lifecycle_branch_issue_number("100-cleanup") == 100
+    assert extract_lifecycle_branch_issue_number("main") is None
+    assert extract_lifecycle_branch_issue_number("") is None
 
 
 def test_get_linked_issues_context():

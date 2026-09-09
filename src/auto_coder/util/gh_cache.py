@@ -1958,58 +1958,26 @@ class GitHubClient:
             raise RuntimeError(f"GitHub did not confirm review thread {thread_id} as unresolved")
 
     def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:
-        """Check if an issue has a linked pull request.
+        """Return whether this Issue currently has an open, natively connected PR.
 
-        First tries REST Timeline API, then falls back to searching PR titles/bodies.
-
-        Returns True if there is an open PR that references this issue.
+        Only ``get_connected_prs``'s repository-qualified native connection
+        evidence (a manual Development link or a recognized PR-body closing
+        association) is consulted. An ordinary title/body mention is never
+        connection evidence. Because a ``False`` result here authorizes
+        lifecycle mutation (stale-session replacement), the connection lookup
+        is strict: an unreadable or ambiguous response raises instead of being
+        reported as "no linked PR", and callers must defer the affected
+        lifecycle action rather than treat the exception as a found or
+        missing PR.
         """
-        try:
-            owner, repo = repo_name.split("/")
-            api = get_ghapi_client(self.token)
-
-            # First try native connections
-            linked_prs = self.get_connected_prs(repo_name, issue_number)
-            if linked_prs:
-                # We need to check if any of these are OPEN.
-                for pr_num in linked_prs:
-                    try:
-                        pr_data = api.pulls.get(owner, repo, pr_num)
-                        if pr_data.get("state") == "open":
-                            return True
-                    except:
-                        continue
-
-            # Fallback: Search for PRs that reference this issue in title/body
-            # Use already migrated get_open_pull_requests
-            try:
-                prs = self.get_open_pull_requests(repo_name)
-            except Exception:
-                prs = []
-
-            issue_ref_patterns = [
-                f"#{issue_number}",
-                f"issue #{issue_number}",
-                f"fixes #{issue_number}",
-                f"closes #{issue_number}",
-                f"resolves #{issue_number}",
-            ]
-
-            for pr in prs:
-                # pr is AttrDict or dict
-                title = pr.get("title", "")
-                body = pr.get("body", "") or ""
-                pr_text = f"{title} {body}".lower()
-
-                if any(pattern.lower() in pr_text for pattern in issue_ref_patterns):
-                    logger.info(f"Found linked PR #{pr.get('number')} for issue #{issue_number} (via text search)")
-                    return True
-
-            return False
-
-        except Exception as e:
-            logger.error(f"Failed to check linked PRs for issue #{issue_number}: {e}")
-            return False
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        linked_prs = self.get_connected_prs(repo_name, issue_number, strict=True)
+        for pr_num in linked_prs:
+            pr_data = api.pulls.get(owner, repo, pr_num)
+            if pr_data.get("state") == "open":
+                return True
+        return False
 
     def find_closing_pr(self, repo_name: str, issue_number: int) -> Optional[int]:
         """Find a PR that closes the given issue.

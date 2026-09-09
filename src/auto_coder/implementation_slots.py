@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, NoReturn, Optional
 
-from .issue_context import resolve_issue_oracles
+from .issue_context import extract_lifecycle_branch_issue_number, extract_lifecycle_directive_issue_references
 from .logger_config import get_logger
 from .runtime_locks import ensure_lock_directory, lock_path
 
@@ -89,17 +89,102 @@ class ImplementationSlotRepository:
         if candidate_type != "pr":
             raise ImplementationOwnerResolutionError(f"Unsupported candidate type: {candidate_type}")
 
-        resolution = resolve_issue_oracles(github_client, self.repo_name, pr_data=data)
-        if resolution.error:
-            raise ImplementationOwnerResolutionError(resolution.error)
-        if resolution.issues:
-            # A PR can mention several Issues, but the authoritative/root owner is
-            # the first relationship selected by the shared hierarchical resolver.
-            return ImplementationOwner("issue", resolution.issues[0].number)
+        issue_owner = self._lifecycle_issue_owner_for_pr(number, data, github_client)
+        if issue_owner is not None:
+            return issue_owner
         provider_owner = self._provider_owner_for_pr(number, data.get("body", ""))
         if provider_owner is not None:
             return provider_owner
         return ImplementationOwner("pr", number)
+
+    def _lifecycle_issue_owner_for_pr(self, pr_number: int, pr_data: Dict[str, Any], github_client: Any) -> Optional[ImplementationOwner]:
+        """Resolve a PR's Issue owner from restricted, non-mention lifecycle evidence.
+
+        Ordinary cross-references and general body/title mentions never reach
+        here (see ``issue_context.extract_lifecycle_directive_issue_references``
+        and ``extract_lifecycle_branch_issue_number``): only an explicit
+        closing-keyword directive, an Issue-bearing branch marker, or a live
+        GitHub native connection to an already-active Issue owner can identify
+        ownership.
+        """
+        body = pr_data.get("body") or ""
+        for qualifier, candidate in extract_lifecycle_directive_issue_references(str(body)):
+            resolved = self._validated_lifecycle_issue_reference(pr_number, candidate, qualifier, github_client)
+            if resolved is not None:
+                return ImplementationOwner("issue", resolved)
+
+        head = pr_data.get("head")
+        branch = head.get("ref") if isinstance(head, dict) else None
+        branch_candidate = extract_lifecycle_branch_issue_number(str(branch or ""))
+        if branch_candidate is not None:
+            resolved = self._validated_lifecycle_issue_reference(pr_number, branch_candidate, None, github_client)
+            if resolved is not None:
+                return ImplementationOwner("issue", resolved)
+
+        return self._native_connection_issue_owner(pr_number, github_client)
+
+    def _validated_lifecycle_issue_reference(
+        self,
+        pr_number: int,
+        candidate: int,
+        qualifier: Optional[str],
+        github_client: Any,
+    ) -> Optional[int]:
+        """Validate one candidate Issue number, raising only on genuine uncertainty.
+
+        A confirmed foreign repository, a confirmed pull request, or an exact
+        number that fails to resolve at all is excluded quietly (it is
+        definitive, not uncertain). An unreadable lookup instead raises, so the
+        caller cannot silently discard or fabricate an owner from it.
+        """
+        if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate <= 0 or candidate == pr_number:
+            return None
+        if qualifier is not None:
+            try:
+                candidate_owner, candidate_name = qualifier.split("/")
+            except ValueError:
+                return None
+            expected_owner, expected_name = self.repo_name.split("/")
+            if candidate_owner.lower() != expected_owner.lower() or candidate_name.lower() != expected_name.lower():
+                return None
+
+        strict_getter = getattr(type(github_client), "get_issue_strict", None)
+        try:
+            if callable(strict_getter):
+                issue = github_client.get_issue_strict(self.repo_name, candidate)
+            else:
+                issue = github_client.get_issue(self.repo_name, candidate)
+        except Exception as exc:
+            raise ImplementationOwnerResolutionError(f"Cannot verify referenced Issue #{candidate}: {exc}") from exc
+        if not issue:
+            return None
+        if isinstance(issue, dict):
+            if issue.get("pull_request") is not None or issue.get("number") != candidate:
+                return None
+        else:
+            raw_data = getattr(issue, "_rawData", None)
+            if isinstance(raw_data, dict) and raw_data.get("pull_request") is not None:
+                return None
+            if getattr(issue, "number", None) != candidate:
+                return None
+        return candidate
+
+    def _native_connection_issue_owner(self, pr_number: int, github_client: Any) -> Optional[ImplementationOwner]:
+        """Attribute *pr_number* to an already-active Issue via its live native connection.
+
+        Bounded to currently active Issue owners: a PR with no explicit
+        directive or branch marker can still be genuinely, natively linked
+        (GitHub's Development panel, or a recognized closing association) to
+        an Issue that is already tracked here. This is never consulted to
+        discover brand-new ownership from an unbounded scan of every Issue.
+        """
+        getter = getattr(github_client, "get_connected_prs", None)
+        if not callable(getter):
+            return None
+        for owner in self.active_owners():
+            if owner.kind == "issue" and pr_number in getter(self.repo_name, owner.number):
+                return owner
+        return None
 
     def _provider_owner_for_pr(self, pr_number: int, body: object) -> Optional[ImplementationOwner]:
         """Resolve a source-less PR from durable provider-run membership."""

@@ -487,7 +487,7 @@ class TestGitHubClient:
     @patch("src.auto_coder.util.gh_cache.GitHubClient.get_connected_prs")
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
     def test_has_linked_pr_with_linked_pr(self, mock_get_client, mock_get_linked, mock_github_token):
-        """Test has_linked_pr returns True when PR references issue."""
+        """Test has_linked_pr returns True when a native connection is open."""
         mock_get_linked.return_value = [456]
 
         mock_api = Mock()
@@ -500,12 +500,13 @@ class TestGitHubClient:
         result = client.has_linked_pr("test/repo", 123)
 
         assert result is True
+        mock_get_linked.assert_called_once_with("test/repo", 123, strict=True)
         mock_api.pulls.get.assert_called_once_with("test", "repo", 456)
 
-    @patch("src.auto_coder.util.gh_cache.GitHubClient.get_connected_prs")
     @patch("src.auto_coder.util.gh_cache.GitHubClient.get_open_pull_requests")
-    def test_has_linked_pr_via_text_fallback(self, mock_get_open_prs, mock_get_linked, mock_github_token):
-        """Test has_linked_pr via text fallback."""
+    @patch("src.auto_coder.util.gh_cache.GitHubClient.get_connected_prs")
+    def test_has_linked_pr_ignores_ordinary_mention_with_no_fallback(self, mock_get_linked, mock_get_open_prs, mock_github_token):
+        """An ordinary title/body mention must never substitute for a native connection."""
         mock_get_linked.return_value = []
 
         pr = AttrDict({"number": 789, "title": "Fixes #123", "body": "description"})
@@ -515,7 +516,18 @@ class TestGitHubClient:
 
         result = client.has_linked_pr("test/repo", 123)
 
-        assert result is True
+        assert result is False
+        mock_get_open_prs.assert_not_called()
+
+    @patch("src.auto_coder.util.gh_cache.GitHubClient.get_connected_prs")
+    def test_has_linked_pr_defers_on_unavailable_native_connection(self, mock_get_linked, mock_github_token):
+        """An unavailable strict lookup must raise rather than report no linked PR."""
+        mock_get_linked.side_effect = RuntimeError("connection lookup offline")
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        with pytest.raises(RuntimeError, match="connection lookup offline"):
+            client.has_linked_pr("test/repo", 123)
 
     @patch("src.auto_coder.util.gh_cache.GitHubClient._get_issue_timeline")
     @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
