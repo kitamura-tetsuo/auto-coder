@@ -30,7 +30,7 @@ from playwright.sync_api import Browser, Page, sync_playwright
 
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.dashboard import init_dashboard
-from src.auto_coder.execution_trace import EventKind, ExecutionHandle, Outcome, TraceCollector, get_trace_collector
+from src.auto_coder.execution_trace import EventKind, ExecutionHandle, Outcome, TraceCollector, _current_scope, get_trace_collector
 from src.auto_coder.trace_logger import TraceLogger
 
 REPO = "owner/repo"
@@ -40,7 +40,16 @@ REPO = "owner/repo"
 def reset_singletons() -> Iterator[None]:
     TraceCollector._instance = None
     TraceLogger._instance = None
+    # This file drives real threads/subprocesses (a uvicorn server thread, a
+    # headless Chromium process) via Playwright's sync API, whose internal
+    # greenlet/thread bridging can leave `execution_trace._current_scope`
+    # (a contextvars.ContextVar) non-None after a test even though every
+    # ExecutionHandle used here is properly entered/exited. Force it back to
+    # unset on both sides so this file can never leak an ambient execution
+    # scope into an unrelated test elsewhere in the same pytest process.
+    _current_scope.set(None)
     yield
+    _current_scope.set(None)
     TraceCollector._instance = None
     TraceLogger._instance = None
 
@@ -151,34 +160,36 @@ def test_unchanged_snapshot_preserves_scroll_dom_identity_and_pagination(_use_re
     move the scroll position, must not tear down and recreate already
     rendered table elements, and must not reset table pagination."""
     handle = _seed_execution(101, stage_count=15)
-    with _headless_page() as page:
-        page.goto(f"{dashboard_base_url}/detail/pr/101")
-        page.wait_for_selector("text=Decision Log", timeout=10000)
-        time.sleep(0.3)
+    try:
+        with _headless_page() as page:
+            page.goto(f"{dashboard_base_url}/detail/pr/101")
+            page.wait_for_selector("text=Decision Log", timeout=10000)
+            time.sleep(0.3)
 
-        logs_table = page.locator(".q-table__container").nth(1)
-        logs_table.locator("button[aria-label='Next page']").last.click()
-        time.sleep(0.2)
-        assert "pr.stage-0" in logs_table.inner_text(), "expected to be on the older-events page after clicking Next"
+            logs_table = page.locator(".q-table__container").nth(1)
+            logs_table.locator("button[aria-label='Next page']").last.click()
+            time.sleep(0.2)
+            assert "pr.stage-0" in logs_table.inner_text(), "expected to be on the older-events page after clicking Next"
 
-        page.evaluate("window.scrollTo(0, 200)")
-        scroll_before = page.evaluate("window.scrollY")
-        page.evaluate("window.__evidenceTable = document.querySelectorAll('table')[0]")
-        page.evaluate("window.__logsTable = document.querySelectorAll('table')[1]")
+            page.evaluate("window.scrollTo(0, 200)")
+            scroll_before = page.evaluate("window.scrollY")
+            page.evaluate("window.__evidenceTable = document.querySelectorAll('table')[0]")
+            page.evaluate("window.__logsTable = document.querySelectorAll('table')[1]")
 
-        time.sleep(2.2)  # >= two 1s timer ticks with an unchanged snapshot
+            time.sleep(2.2)  # >= two 1s timer ticks with an unchanged snapshot
 
-        scroll_after = page.evaluate("window.scrollY")
-        assert scroll_after == scroll_before, "an unchanged refresh must not move the document scroll position"
+            scroll_after = page.evaluate("window.scrollY")
+            assert scroll_after == scroll_before, "an unchanged refresh must not move the document scroll position"
 
-        same_evidence_node = page.evaluate("document.querySelectorAll('table')[0] === window.__evidenceTable")
-        same_logs_node = page.evaluate("document.querySelectorAll('table')[1] === window.__logsTable")
-        assert same_evidence_node, "evidence table was torn down and recreated on an unchanged tick (flicker)"
-        assert same_logs_node, "decision log table was torn down and recreated on an unchanged tick (flicker)"
+            same_evidence_node = page.evaluate("document.querySelectorAll('table')[0] === window.__evidenceTable")
+            same_logs_node = page.evaluate("document.querySelectorAll('table')[1] === window.__logsTable")
+            assert same_evidence_node, "evidence table was torn down and recreated on an unchanged tick (flicker)"
+            assert same_logs_node, "decision log table was torn down and recreated on an unchanged tick (flicker)"
 
-        assert "pr.stage-0" in logs_table.inner_text(), "table pagination must not reset when nothing changed"
-    handle.set_outcome(Outcome.COMPLETED)
-    handle.__exit__(None, None, None)
+            assert "pr.stage-0" in logs_table.inner_text(), "table pagination must not reset when nothing changed"
+    finally:
+        handle.set_outcome(Outcome.COMPLETED)
+        handle.__exit__(None, None, None)
 
 
 def test_new_evidence_updates_without_resetting_scroll_or_pagination(_use_real_sleep, dashboard_base_url) -> None:
@@ -187,26 +198,28 @@ def test_new_evidence_updates_without_resetting_scroll_or_pagination(_use_real_s
     resetting the decision log's current pagination page."""
     handle = _seed_execution(102, stage_count=15)
     collector = get_trace_collector()
-    with _headless_page() as page:
-        page.goto(f"{dashboard_base_url}/detail/pr/102")
-        page.wait_for_selector("text=Decision Log", timeout=10000)
-        time.sleep(0.3)
+    try:
+        with _headless_page() as page:
+            page.goto(f"{dashboard_base_url}/detail/pr/102")
+            page.wait_for_selector("text=Decision Log", timeout=10000)
+            time.sleep(0.3)
 
-        logs_table = page.locator(".q-table__container").nth(1)
-        logs_table.locator("button[aria-label='Next page']").last.click()
-        time.sleep(0.2)
-        assert "pr.stage-0" in logs_table.inner_text()
+            logs_table = page.locator(".q-table__container").nth(1)
+            logs_table.locator("button[aria-label='Next page']").last.click()
+            time.sleep(0.2)
+            assert "pr.stage-0" in logs_table.inner_text()
 
-        collector.record_event(EventKind.STAGE_RESULT, stage_id="pr.new-stage", origin="test", outcome=Outcome.COMPLETED, facts={"n": 999})
-        time.sleep(1.3)  # next timer tick observes the new event
+            collector.record_event(EventKind.STAGE_RESULT, stage_id="pr.new-stage", origin="test", outcome=Outcome.COMPLETED, facts={"n": 999})
+            time.sleep(1.3)  # next timer tick observes the new event
 
-        assert "pr.new-stage" in page.content(), "newly observed evidence must appear by the next successful refresh"
-        scroll_after = page.evaluate("window.scrollY")
-        assert scroll_after != 0, "an update that adds evidence must not force the document back to the page origin"
-        assert "pr.stage-0" in logs_table.inner_text(), "the previously selected pagination page must survive an in-place row update"
-        assert "pr.new-stage" not in logs_table.inner_text(), "the new (newest) event belongs on page 1, not the still-selected older page"
-    handle.set_outcome(Outcome.COMPLETED)
-    handle.__exit__(None, None, None)
+            assert "pr.new-stage" in page.content(), "newly observed evidence must appear by the next successful refresh"
+            scroll_after = page.evaluate("window.scrollY")
+            assert scroll_after != 0, "an update that adds evidence must not force the document back to the page origin"
+            assert "pr.stage-0" in logs_table.inner_text(), "the previously selected pagination page must survive an in-place row update"
+            assert "pr.new-stage" not in logs_table.inner_text(), "the new (newest) event belongs on page 1, not the still-selected older page"
+    finally:
+        handle.set_outcome(Outcome.COMPLETED)
+        handle.__exit__(None, None, None)
 
 
 def test_pinned_execution_survives_new_execution_starting(_use_real_sleep, dashboard_base_url) -> None:
@@ -265,39 +278,41 @@ def test_snapshot_failure_preserves_rendered_view_and_recovers(_use_real_sleep, 
     handle = _seed_execution(104, stage_count=1)
     collector = get_trace_collector()
     real_get_snapshot = collector.get_snapshot
-    with _headless_page() as page:
-        page.goto(f"{dashboard_base_url}/detail/pr/104")
-        page.wait_for_selector("text=Execution:", timeout=10000)
-        time.sleep(0.3)
+    try:
+        with _headless_page() as page:
+            page.goto(f"{dashboard_base_url}/detail/pr/104")
+            page.wait_for_selector("text=Execution:", timeout=10000)
+            time.sleep(0.3)
 
-        page.evaluate("window.scrollTo(0, 150)")
-        scroll_before = page.evaluate("window.scrollY")
-        exec_label_before = page.locator("text=Execution:").first.inner_text()
+            page.evaluate("window.scrollTo(0, 150)")
+            scroll_before = page.evaluate("window.scrollY")
+            exec_label_before = page.locator("text=Execution:").first.inner_text()
 
-        should_fail = {"value": True}
+            should_fail = {"value": True}
 
-        def flaky_get_snapshot(*args, **kwargs):
-            if should_fail["value"]:
-                should_fail["value"] = False
-                raise RuntimeError("simulated snapshot read failure")
-            return real_get_snapshot(*args, **kwargs)
+            def flaky_get_snapshot(*args, **kwargs):
+                if should_fail["value"]:
+                    should_fail["value"] = False
+                    raise RuntimeError("simulated snapshot read failure")
+                return real_get_snapshot(*args, **kwargs)
 
-        collector.get_snapshot = flaky_get_snapshot
-        try:
-            time.sleep(1.3)  # the failing tick
+            collector.get_snapshot = flaky_get_snapshot
+            try:
+                time.sleep(1.3)  # the failing tick
 
-            assert page.locator("text=Snapshot read failed").count() > 0
-            exec_label_during = page.locator("text=Execution:").first.inner_text()
-            assert exec_label_during == exec_label_before, "previously rendered evidence must remain in place after a failed refresh"
-            scroll_during = page.evaluate("window.scrollY")
-            assert scroll_during == scroll_before, "a failed refresh must not disturb the viewport"
+                assert page.locator("text=Snapshot read failed").count() > 0
+                exec_label_during = page.locator("text=Execution:").first.inner_text()
+                assert exec_label_during == exec_label_before, "previously rendered evidence must remain in place after a failed refresh"
+                scroll_during = page.evaluate("window.scrollY")
+                assert scroll_during == scroll_before, "a failed refresh must not disturb the viewport"
 
-            time.sleep(1.3)  # the recovering tick
+                time.sleep(1.3)  # the recovering tick
 
-            assert page.locator("text=Snapshot read failed").count() == 0, "status must recover on the next successful refresh"
-            scroll_after = page.evaluate("window.scrollY")
-            assert scroll_after == scroll_before, "recovery must not force the viewport back to the page origin"
-        finally:
-            collector.get_snapshot = real_get_snapshot
-    handle.set_outcome(Outcome.COMPLETED)
-    handle.__exit__(None, None, None)
+                assert page.locator("text=Snapshot read failed").count() == 0, "status must recover on the next successful refresh"
+                scroll_after = page.evaluate("window.scrollY")
+                assert scroll_after == scroll_before, "recovery must not force the viewport back to the page origin"
+            finally:
+                collector.get_snapshot = real_get_snapshot
+    finally:
+        handle.set_outcome(Outcome.COMPLETED)
+        handle.__exit__(None, None, None)
