@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Lock
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -36,6 +37,7 @@ def issue(number, title, body, *, ready=False, state="open", issue_id=None):
         "state": state,
         "labels": [{"name": "implementation-ready"}] if ready else [],
         "sub_issues_summary": {"total": 0},
+        "created_at": "2020-01-01T00:00:00Z",
     }
 
 
@@ -385,6 +387,7 @@ def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_
     github = GitHubClient.get_instance("token")
     github.get_connected_prs = Mock(return_value=[])
     github.get_open_sub_issues = Mock(return_value=[])
+    github.get_open_entities_strict = Mock(return_value=SimpleNamespace(issues=[SimpleNamespace(number=10)]))
     with patch("auto_coder.util.gh_cache.get_ghapi_client", return_value=api):
         normalized = github.get_open_issues_json("owner/repo")
     assert normalized[0]["has_open_sub_issues"] is False

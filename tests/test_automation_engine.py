@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Event
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -814,6 +815,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         github.get_open_prs_json = Mock(return_value=[])
         github.get_connected_prs = Mock(return_value=[])
         github.get_open_sub_issues_strict = Mock(return_value=[])
+        github.get_open_entities_strict = Mock(return_value=SimpleNamespace(issues=[SimpleNamespace(number=1684)]))
         github.get_parent_issue_number_strict = Mock(return_value=None)
         github.get_issue_comments_strict = Mock(return_value=[])
         github.add_comment_to_issue = Mock()
