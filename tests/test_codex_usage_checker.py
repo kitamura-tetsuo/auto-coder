@@ -1,13 +1,11 @@
 import base64
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import httpx
 import pytest
 
 from auto_coder.codex_usage_checker import (
-    CODEX_USAGE_URL,
     codex_cloud_quota_allows_task,
     get_codex_weekly_usage,
     load_codex_oauth_credentials,
@@ -19,16 +17,16 @@ NOW = datetime(2026, 8, 23, 12, tzinfo=timezone.utc)
 
 def _payload(remaining: float, reset_delta: timedelta) -> dict[str, object]:
     return {
-        "rate_limit": {
-            "primary_window": {
-                "used_percent": 1,
-                "limit_window_seconds": 18_000,
-                "reset_at": (NOW + timedelta(hours=2)).timestamp(),
+        "rateLimits": {
+            "primary": {
+                "usedPercent": 1,
+                "windowDurationMins": 300,
+                "resetsAt": (NOW + timedelta(hours=2)).timestamp(),
             },
-            "secondary_window": {
-                "used_percent": 100 - remaining,
-                "limit_window_seconds": 604_800,
-                "reset_at": (NOW + reset_delta).timestamp(),
+            "secondary": {
+                "usedPercent": 100 - remaining,
+                "windowDurationMins": 10_080,
+                "resetsAt": (NOW + reset_delta).timestamp(),
             },
         }
     }
@@ -66,7 +64,7 @@ def test_quota_facts_separate_remaining_quota_from_reserve_threshold():
 
 def test_burst_rejects_confirmed_exhaustion_without_using_reset_credit():
     payload = _payload(0, timedelta(days=2))
-    payload["rate_limit_reset_credits"] = {"available_count": 1}
+    payload["rateLimitResetCredits"] = {"availableCount": 1}
     usage = parse_codex_weekly_usage(payload, now=NOW)
     assert usage.has_remaining_quota is False
     assert usage.allows_task("burst") is False
@@ -82,9 +80,9 @@ def test_cloud_quota_guard_uses_strategy(strategy, expected):
 
 def test_primary_window_is_used_when_it_is_weekly():
     payload = _payload(80, timedelta(days=2))
-    rate_limit = payload["rate_limit"]
+    rate_limit = payload["rateLimits"]
     assert isinstance(rate_limit, dict)
-    rate_limit["primary_window"], rate_limit["secondary_window"] = rate_limit["secondary_window"], None
+    rate_limit["primary"], rate_limit["secondary"] = rate_limit["secondary"], None
     usage = parse_codex_weekly_usage(payload, now=NOW)
     assert usage.remaining_percent == 80
 
@@ -92,7 +90,7 @@ def test_primary_window_is_used_when_it_is_weekly():
 @pytest.mark.parametrize("count", [3, 0])
 def test_reset_credit_count_is_parsed_without_an_extra_request(count):
     payload = _payload(80, timedelta(days=2))
-    payload["rate_limit_reset_credits"] = {"available_count": count}
+    payload["rateLimitResetCredits"] = {"availableCount": count}
     usage = parse_codex_weekly_usage(payload, now=NOW)
     assert usage.reset_credits.available_count == count
     assert usage.reset_credits.status == "available"
@@ -104,10 +102,10 @@ def test_missing_reset_credit_data_is_unavailable_not_zero():
     assert usage.reset_credits.status == "missing"
 
 
-@pytest.mark.parametrize("credits", [{"available_count": "1"}, {"available_count": -1}, "bad"])
+@pytest.mark.parametrize("credits", [{"availableCount": "1"}, {"availableCount": -1}, "bad"])
 def test_malformed_reset_credit_data_does_not_destroy_valid_quota(credits):
     payload = _payload(80, timedelta(days=2))
-    payload["rate_limit_reset_credits"] = credits
+    payload["rateLimitResetCredits"] = credits
     usage = parse_codex_weekly_usage(payload, now=NOW)
     assert usage.remaining_percent == 80
     assert usage.reset_credits.available_count is None
@@ -116,7 +114,7 @@ def test_malformed_reset_credit_data_does_not_destroy_valid_quota(credits):
 
 def test_missing_weekly_window_is_rejected():
     with pytest.raises(ValueError, match="weekly"):
-        parse_codex_weekly_usage({"rate_limit": {"primary_window": {"used_percent": 10, "limit_window_seconds": 18_000, "reset_at": 1}}}, now=NOW)
+        parse_codex_weekly_usage({"rateLimits": {"primary": {"usedPercent": 10, "windowDurationMins": 300, "resetsAt": 1}}}, now=NOW)
 
 
 def _jwt(expiry: datetime) -> str:
@@ -139,65 +137,69 @@ def test_expired_credentials_are_rejected(tmp_path, monkeypatch):
     assert load_codex_oauth_credentials(now=NOW) is None
 
 
-@pytest.mark.parametrize("status_code", [401, 403])
-def test_auth_rejection_does_not_retry_with_api_key(status_code, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "api-key-must-not-be-sent")
-    response = MagicMock(status_code=status_code)
-    with (
-        patch("auto_coder.codex_usage_checker.load_codex_oauth_credentials") as load_credentials,
-        patch("auto_coder.codex_usage_checker.httpx.get", return_value=response) as get,
-    ):
-        load_credentials.return_value.access_token = "oauth-token"
-        load_credentials.return_value.account_id = "account-id"
-        assert get_codex_weekly_usage(now=NOW) is None
-        get.assert_called_once()
-        headers = get.call_args.kwargs["headers"]
-        assert get.call_args.args[0] == CODEX_USAGE_URL
-        assert headers == {
-            "Authorization": "Bearer oauth-token",
-            "ChatGPT-Account-Id": "account-id",
-            "Accept": "application/json",
-            "User-Agent": "codex_cli_rs",
-            "originator": "codex_cli_rs",
-        }
-        assert "api-key-must-not-be-sent" not in str(get.call_args)
-
-
-def test_fetch_failure_fails_closed():
-    with (
-        patch("auto_coder.codex_usage_checker.load_codex_oauth_credentials") as load_credentials,
-        patch("auto_coder.codex_usage_checker.httpx.get", side_effect=httpx.ConnectError("offline")),
-    ):
-        load_credentials.return_value.access_token = "oauth-token"
-        load_credentials.return_value.account_id = "account-id"
+@pytest.mark.parametrize("error", [FileNotFoundError(), TimeoutError(), EOFError(), ValueError("secret"), OSError()])
+def test_fetch_failure_fails_closed(error):
+    with patch("auto_coder.codex_usage_checker.read_account_data", side_effect=error):
         assert get_codex_weekly_usage(now=NOW) is None
 
 
 def test_successful_usage_retrieval_preserves_reset_credits_in_one_request():
-    response = MagicMock(status_code=200)
     payload = _payload(75, timedelta(days=2))
-    payload["rate_limit_reset_credits"] = {"available_count": 2}
-    response.json.return_value = payload
-    with (
-        patch("auto_coder.codex_usage_checker.load_codex_oauth_credentials") as load_credentials,
-        patch("auto_coder.codex_usage_checker.httpx.get", return_value=response) as get,
-    ):
-        load_credentials.return_value.access_token = "oauth-token"
-        load_credentials.return_value.account_id = "account-id"
+    payload["rateLimitResetCredits"] = {"availableCount": 2}
+    with patch("auto_coder.codex_usage_checker.read_account_data", return_value=payload) as read:
         usage = get_codex_weekly_usage(now=NOW)
-
     assert usage is not None
+    assert usage.remaining_percent == 75
     assert usage.reset_credits.available_count == 2
-    get.assert_called_once()
+    read.assert_called_once_with("account/rateLimits/read")
 
 
 def test_malformed_response_fails_closed():
-    response = MagicMock(status_code=200)
-    response.json.return_value = {"unexpected": True}
-    with (
-        patch("auto_coder.codex_usage_checker.load_codex_oauth_credentials") as load_credentials,
-        patch("auto_coder.codex_usage_checker.httpx.get", return_value=response),
-    ):
-        load_credentials.return_value.access_token = "oauth-token"
-        load_credentials.return_value.account_id = "account-id"
+    with patch("auto_coder.codex_usage_checker.read_account_data", return_value={"unexpected": True}):
         assert get_codex_weekly_usage(now=NOW) is None
+
+
+def test_codex_bucket_is_selected_over_other_model_and_legacy_view():
+    payload = _payload(10, timedelta(days=2))
+    payload["rateLimitsByLimitId"] = {"codex_other": payload["rateLimits"], "codex": _payload(80, timedelta(days=2))["rateLimits"]}
+    assert parse_codex_weekly_usage(payload, now=NOW).remaining_percent == 80
+
+
+def test_missing_codex_bucket_does_not_use_another_models_quota():
+    payload = _payload(80, timedelta(days=2))
+    payload["rateLimitsByLimitId"] = {"codex_other": payload["rateLimits"]}
+    with pytest.raises(ValueError, match="missing Codex"):
+        parse_codex_weekly_usage(payload, now=NOW)
+
+
+@pytest.mark.parametrize("field", ["usedPercent", "windowDurationMins", "resetsAt"])
+@pytest.mark.parametrize("value", [None, True, "10", float("nan"), float("inf")])
+def test_invalid_weekly_values_are_unavailable(field, value):
+    payload = _payload(80, timedelta(days=2))
+    payload["rateLimits"]["secondary"][field] = value
+    with patch("auto_coder.codex_usage_checker.read_account_data", return_value=payload):
+        assert get_codex_weekly_usage(now=NOW) is None
+
+
+def test_app_server_usage_does_not_read_auth_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    with patch("auto_coder.codex_usage_checker.read_account_data", return_value=_payload(80, timedelta(days=2))):
+        assert get_codex_weekly_usage(now=NOW).remaining_percent == 80
+    assert not (tmp_path / "auth.json").exists()
+
+
+def test_private_server_errors_are_not_logged():
+    with (
+        patch("auto_coder.codex_usage_checker.read_account_data", side_effect=ValueError("private token")),
+        patch("auto_coder.codex_usage_checker.logger.warning") as warning,
+    ):
+        assert get_codex_weekly_usage() is None
+    warning.assert_called_once_with("Codex app-server weekly usage check failed: ValueError")
+
+
+@pytest.mark.parametrize("buckets", [[], "invalid", 1])
+def test_malformed_bucket_map_is_not_treated_as_absent(buckets):
+    payload = _payload(80, timedelta(days=2))
+    payload["rateLimitsByLimitId"] = buckets
+    with pytest.raises(ValueError, match="invalid Codex quota buckets"):
+        parse_codex_weekly_usage(payload, now=NOW)

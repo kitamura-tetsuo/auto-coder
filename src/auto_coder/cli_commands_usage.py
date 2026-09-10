@@ -13,7 +13,7 @@ from typing import List, Optional
 import click
 
 from .claude_usage_checker import acquire_claude_usage_credential, check_claude_usage
-from .codex_usage_checker import get_codex_weekly_usage, load_codex_oauth_credentials
+from .codex_usage_checker import get_codex_weekly_usage
 from .logger_config import setup_logger
 
 
@@ -169,20 +169,12 @@ def _get_claude_usage_report(
 
 def _get_codex_usage_report() -> CodexUsageReport:
     """Fetch and construct Codex usage report."""
-    credentials = load_codex_oauth_credentials()
-    if credentials is None:
-        return CodexUsageReport(
-            available=False,
-            status="missing_credentials",
-            message="Codex OAuth credentials are missing, expired, or invalid. Please login via Codex CLI.",
-        )
-
     usage = get_codex_weekly_usage()
     if usage is None:
         return CodexUsageReport(
             available=False,
             status="fetch_failed",
-            message="Failed to retrieve Codex weekly quota from ChatGPT API.",
+            message="Codex weekly quota is unavailable. Check Codex CLI installation and ChatGPT login.",
         )
 
     status_str = "ok" if usage.can_start_task else "quota_insufficient"

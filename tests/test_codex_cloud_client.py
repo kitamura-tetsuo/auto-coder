@@ -308,14 +308,14 @@ environment_id = "env_from_toml"
         now = datetime.now(timezone.utc)
         usage = parse_codex_weekly_usage(
             {
-                "rate_limit": {
-                    "secondary_window": {
-                        "used_percent": 88,
-                        "limit_window_seconds": 604_800,
-                        "reset_at": (now + timedelta(days=2)).timestamp(),
+                "rateLimits": {
+                    "secondary": {
+                        "usedPercent": 88,
+                        "windowDurationMins": 10_080,
+                        "resetsAt": (now + timedelta(days=2)).timestamp(),
                     }
                 },
-                "rate_limit_reset_credits": {"available_count": 1},
+                "rateLimitResetCredits": {"availableCount": 1},
             },
             now=now,
         )

@@ -615,3 +615,40 @@ class TestAdditionalNegativeAndMutationControls:
         assert "outcome: false" not in diagram
         assert "outcome: completed" not in diagram
         assert "outcome: failed" not in diagram
+
+
+@patch("auto_coder.dashboard.ui")
+def test_codex_app_server_failure_remains_deferred_in_detail_view(mock_ui, tmp_path):
+    """An unavailable account read cannot submit work or become a handoff."""
+    from pathlib import Path
+
+    from auto_coder.cloud_run import CloudRunRepository
+    from auto_coder.exceptions import AutoCoderUsageLimitError
+    from auto_coder.issue_processor import _process_issue_codex_cloud_mode
+    from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+
+    backend_config = LLMBackendConfiguration(backends={"codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud", environment_id="env-test")})
+    github = MagicMock()
+    collector = get_trace_collector()
+    with (
+        patch.object(Path, "home", return_value=tmp_path),
+        patch("auto_coder.codex_cloud_client.get_llm_config", return_value=backend_config),
+        patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+        patch("auto_coder.issue_processor.get_current_attempt", return_value=0),
+        patch("auto_coder.codex_usage_checker.read_account_data", side_effect=TimeoutError()),
+        patch("auto_coder.codex_cloud_client.CommandExecutor.run_command") as submit,
+        collector.start_execution("owner/repo", "issue", 3501, origin="worker"),
+    ):
+        with pytest.raises(AutoCoderUsageLimitError):
+            _process_issue_codex_cloud_mode("owner/repo", {"number": 3501, "title": "Fix", "body": "", "labels": []}, AutomationConfig(), github, "codex-cloud")
+        assert CloudRunRepository("owner/repo").get(3501, 0) is None
+    submit.assert_not_called()
+    github.add_comment_to_issue.assert_not_called()
+    snapshot = collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=3501)
+    events = [event for event in snapshot.events if event.stage_id == "issue.dispatch.codex-cloud"]
+    assert len(events) == 1
+    assert events[0].outcome == Outcome.DEFERRED.value
+    assert events[0].facts == {"backend": "codex-cloud", "reason": "usage limit", "issue_number": 3501}
+    diagram = _mounted_detail(mock_ui, "issue", 3501)
+    _assert_required_stage_visible(diagram, "Codex Cloud dispatch")
+    assert "deferred" in diagram.lower()

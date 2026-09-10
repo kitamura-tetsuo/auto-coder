@@ -13,7 +13,7 @@ from auto_coder.claude_usage_checker import (
     ClaudeUsageWindow,
 )
 from auto_coder.cli import main
-from auto_coder.codex_usage_checker import CodexOAuthCredentials, CodexResetCredits, CodexWeeklyUsage
+from auto_coder.codex_usage_checker import CodexResetCredits, CodexWeeklyUsage
 
 
 def _mock_claude_quota(insufficient: bool = False, reason: str = "") -> ClaudeUsageQuota:
@@ -66,7 +66,6 @@ class TestUsageAmountCLI:
         with (
             patch("auto_coder.cli_commands_usage.acquire_claude_usage_credential", return_value=ClaudeCredentialResolution("valid-token", "resolved")),
             patch("auto_coder.cli_commands_usage.check_claude_usage", return_value=_mock_claude_quota()),
-            patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=CodexOAuthCredentials("token", "acct")),
             patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(True)),
         ):
             result = runner.invoke(main, ["usage-amount"])
@@ -107,10 +106,7 @@ class TestUsageAmountCLI:
     def test_usage_amount_codex_only_target_arg(self):
         """Test usage-amount codex only outputs Codex usage."""
         runner = CliRunner()
-        with (
-            patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=CodexOAuthCredentials("token", "acct")),
-            patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(True)),
-        ):
+        with (patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(True)),):
             result = runner.invoke(main, ["usage-amount", "codex"])
             assert result.exit_code == 0
             assert "Codex Usage (ChatGPT OAuth)" in result.output
@@ -119,10 +115,7 @@ class TestUsageAmountCLI:
     def test_usage_amount_codex_only_backend_option(self):
         """Test usage-amount -b codex only outputs Codex usage."""
         runner = CliRunner()
-        with (
-            patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=CodexOAuthCredentials("token", "acct")),
-            patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(True)),
-        ):
+        with (patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(True)),):
             result = runner.invoke(main, ["usage-amount", "-b", "codex"])
             assert result.exit_code == 0
             assert "Codex Usage (ChatGPT OAuth)" in result.output
@@ -134,7 +127,6 @@ class TestUsageAmountCLI:
         with (
             patch("auto_coder.cli_commands_usage.acquire_claude_usage_credential", return_value=ClaudeCredentialResolution("valid-token", "resolved")),
             patch("auto_coder.cli_commands_usage.check_claude_usage", return_value=_mock_claude_quota()),
-            patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=CodexOAuthCredentials("token", "acct")),
             patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(True)),
         ):
             result = runner.invoke(main, ["usage-amount", "--json"])
@@ -151,16 +143,12 @@ class TestUsageAmountCLI:
 
     def test_codex_text_output_distinguishes_zero_from_missing_reset_credits(self):
         runner = CliRunner()
-        credentials = CodexOAuthCredentials("token", "acct")
         cases = (
             (CodexResetCredits(0, "available"), "Reset Credits: 0", "Unavailable"),
             (CodexResetCredits(None, "missing"), "Reset Credits: Unavailable (missing)", "Reset Credits: 0"),
         )
         for credits, expected, forbidden in cases:
-            with (
-                patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=credentials),
-                patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(reset_credits=credits)),
-            ):
+            with (patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(reset_credits=credits)),):
                 result = runner.invoke(main, ["usage-amount", "codex"], env={"NO_COLOR": "1"})
             assert result.exit_code == 0
             assert expected in result.output
@@ -168,16 +156,12 @@ class TestUsageAmountCLI:
 
     def test_codex_json_output_distinguishes_zero_from_missing_reset_credits(self):
         runner = CliRunner()
-        credentials = CodexOAuthCredentials("token", "acct")
         cases = (
             (CodexResetCredits(0, "available"), 0, "available"),
             (CodexResetCredits(None, "missing"), None, "missing"),
         )
         for credits, expected_count, expected_status in cases:
-            with (
-                patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=credentials),
-                patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(reset_credits=credits)),
-            ):
+            with (patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(reset_credits=credits)),):
                 result = runner.invoke(main, ["usage-amount", "codex", "--json"])
             assert result.exit_code == 0
             report = json.loads(result.output)["codex"]
@@ -240,12 +224,12 @@ class TestUsageAmountCLI:
         assert "claude auth login" not in result.output
 
     def test_usage_amount_codex_missing_credentials(self):
-        """Test usage-amount when Codex OAuth credentials are missing."""
+        """Test usage-amount when Codex weekly quota is unavailable."""
         runner = CliRunner()
-        with (patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=None),):
+        with (patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=None),):
             result = runner.invoke(main, ["usage-amount", "codex"])
             assert result.exit_code == 0
-            assert "Codex OAuth credentials are missing" in result.output
+            assert "Codex weekly quota is unavailable" in result.output
 
     def test_usage_amount_insufficient_quota_displays_warning(self):
         """Test usage-amount displays warning when quota is insufficient."""
@@ -254,7 +238,6 @@ class TestUsageAmountCLI:
         with (
             patch("auto_coder.cli_commands_usage.acquire_claude_usage_credential", return_value=ClaudeCredentialResolution("valid-token", "resolved")),
             patch("auto_coder.cli_commands_usage.check_claude_usage", return_value=insufficient_quota),
-            patch("auto_coder.cli_commands_usage.load_codex_oauth_credentials", return_value=CodexOAuthCredentials("token", "acct")),
             patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(can_start=False)),
         ):
             result = runner.invoke(main, ["usage-amount"])

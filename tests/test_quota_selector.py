@@ -353,14 +353,14 @@ class TestQuotaSurplusSelection:
         reset_at = fixed_now + timedelta(days=2)
         usage = parse_codex_weekly_usage(
             {
-                "rate_limit": {
-                    "secondary_window": {
-                        "used_percent": 88,
-                        "limit_window_seconds": 604_800,
-                        "reset_at": reset_at.timestamp(),
+                "rateLimits": {
+                    "secondary": {
+                        "usedPercent": 88,
+                        "windowDurationMins": 10_080,
+                        "resetsAt": reset_at.timestamp(),
                     }
                 },
-                "rate_limit_reset_credits": {"available_count": 1},
+                "rateLimitResetCredits": {"availableCount": 1},
             },
             now=fixed_now,
         )
@@ -545,11 +545,11 @@ class TestHighScoreBackendManagerIntegration:
         )
         usage = parse_codex_weekly_usage(
             {
-                "rate_limit": {
-                    "secondary_window": {
-                        "used_percent": 100,
-                        "limit_window_seconds": 604_800,
-                        "reset_at": (now + timedelta(days=2)).timestamp(),
+                "rateLimits": {
+                    "secondary": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 10_080,
+                        "resetsAt": (now + timedelta(days=2)).timestamp(),
                     }
                 }
             },
@@ -585,11 +585,11 @@ class TestHighScoreBackendManagerIntegration:
         )
         usage = parse_codex_weekly_usage(
             {
-                "rate_limit": {
-                    "secondary_window": {
-                        "used_percent": 100,
-                        "limit_window_seconds": 604_800,
-                        "reset_at": (now + timedelta(days=2)).timestamp(),
+                "rateLimits": {
+                    "secondary": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 10_080,
+                        "resetsAt": (now + timedelta(days=2)).timestamp(),
                     }
                 }
             },
@@ -664,3 +664,29 @@ class TestHighScoreBackendManagerIntegration:
             "jules",
         ]
         assert call_args["primary_backend"] == "codex-cloud-spark"
+
+
+@pytest.mark.parametrize("account_type,failed", [("apiKey", False), ("chatgpt", True), (None, True)])
+def test_local_codex_only_confirmed_api_key_usage_is_unmetered(account_type, failed):
+    with (
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=None),
+        patch("auto_coder.codex_usage_checker.get_codex_account_type", return_value=account_type) as read_account,
+    ):
+        result = evaluate_backend_quota("codex")
+    assert result.is_eligible is True
+    assert result.usage_retrieval_failed is failed
+    assert result.quota_surplus is None
+    read_account.assert_called_once_with()
+
+
+def test_local_codex_measured_quota_does_not_require_auth_json():
+    usage = CodexWeeklyUsage(remaining_percent=80, reset_at=datetime.now(timezone.utc) + timedelta(days=2), minimum_remaining_percent=15)
+    with (
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+        patch("auto_coder.codex_usage_checker.get_codex_account_type") as read_account,
+    ):
+        result = evaluate_backend_quota("codex")
+    assert result.is_eligible is True
+    assert result.usage_retrieval_failed is False
+    assert result.actual_remaining_ratio == 0.8
+    read_account.assert_not_called()

@@ -35,6 +35,21 @@ the evidence. The renderer is generic, so a valid new production-emitted stage a
 repeated stage occurrences require no static graph edit. Display-text-only changes
 likewise do not require meaningless producer changes.
 
+## Codex quota transport
+
+Codex quota reads use the app-server account API. This transport change does not
+introduce a new processing origin, provider dispatch, durable resumption path, or
+trace schema: quota retrieval still feeds the existing eligible, insufficient, and
+retrieval-failed branches. API-key fallback now requires a confirmed account type;
+unknown authentication takes the existing retrieval-failed branch. Cloud admission
+still emits `issue.dispatch.codex-cloud` with a deferred usage-limit outcome when
+quota cannot authorize submission. Dashboard rendering and production emissions
+therefore need no new stage or field for the transport itself.
+
+`tests/test_codex_app_server.py`, `tests/test_codex_usage_checker.py`, and
+`tests/test_quota_selector.py` exercise the new read boundary and its decisions;
+`tests/test_dashboard_observability.py::test_codex_app_server_failure_remains_deferred_in_detail_view` drives the real Cloud admission path from a failed account read to the mounted detail view and asserts that no task or comment is sent.
+
 ## Production-origin coverage inventory
 
 These are collected pytest node IDs, not future test plans. Producer tests assert
@@ -43,6 +58,7 @@ also mount and refresh the detail view from that snapshot.
 
 | Production origin | Runnable checks |
 | --- | --- |
+| Codex Cloud quota acquisition and admission | `tests/test_dashboard_observability.py::test_codex_app_server_failure_remains_deferred_in_detail_view` |
 | Normal/explicit Issue processing and pre-worker admission | `tests/test_dashboard_observability.py::test_issue_admission_reaches_mounted_detail_view`; `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_explicit_single_target_origin_is_recorded`; `tests/test_issue_production_instrumentation.py::TestPreAdmissionGateVisible::test_author_disallowed_issue_records_skip_without_dispatch` |
 | Normal/explicit PR processing | `tests/test_dashboard_observability.py::test_pr_admission_reaches_mounted_detail_view`; `tests/test_pr_production_instrumentation.py::TestPrAdmissionGateVisible::test_author_disallowed_pr_records_skip_without_dispatch`; `tests/test_pr_production_instrumentation.py::TestPrAdmissionGateVisible::test_dependency_bot_pr_admission_records_skip_without_dispatch` (Issue #1995: the common `pr.dependency-bot-admission` gate, reached by every PR-processing origin, not only the `_get_candidates` prefilter) |
 | Individual/decomposition validation jobs | `tests/test_issue_production_instrumentation.py::TestValidationJobsGetTheirOwnExecutionIdentity::test_traced_validation_job_does_not_borrow_ambient_worker_scope`; `tests/test_issue_production_instrumentation.py::TestValidationJobsGetTheirOwnExecutionIdentity::test_disabled_decomposition_validation_is_distinguishable_from_blocked`; `tests/test_dashboard_observability.py::TestOutcomeMatrixCoverage::test_queued_validation_is_distinguishable_from_disabled_and_blocked`; `tests/test_dashboard_observability.py::TestJoinedProductionToView::test_validation_scheduler_job_is_a_distinct_execution_from_the_worker` |

@@ -2,19 +2,18 @@
 
 import base64
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, TypeGuard
 
-import httpx
-
+from .codex_app_server import read_account_data
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
-CODEX_USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
 WEEK_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -109,43 +108,52 @@ def _mapping(value: object) -> Optional[Mapping[str, object]]:
     return value if isinstance(value, dict) else None
 
 
+def _finite_number(value: object) -> TypeGuard[int | float]:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def parse_codex_weekly_usage(payload: Mapping[str, object], now: Optional[datetime] = None) -> CodexWeeklyUsage:
     """Parse the longest rate-limit window as the weekly Codex quota window."""
-    rate_limit = _mapping(payload.get("rate_limit"))
+    buckets = _mapping(payload.get("rateLimitsByLimitId"))
+    if payload.get("rateLimitsByLimitId") is not None and buckets is None:
+        raise ValueError("invalid Codex quota buckets")
+    rate_limit = _mapping(buckets.get("codex")) if buckets is not None else _mapping(payload.get("rateLimits"))
+    if rate_limit is not None and rate_limit.get("limitId") not in (None, "codex"):
+        raise ValueError("Codex quota bucket is unavailable")
     if rate_limit is None:
-        raise ValueError("missing rate_limit")
+        raise ValueError("missing Codex rate limits")
 
     windows = []
-    for name in ("primary_window", "secondary_window"):
+    for name in ("primary", "secondary"):
         window = _mapping(rate_limit.get(name))
         if window is not None:
-            duration = window.get("limit_window_seconds")
-            if isinstance(duration, (int, float)):
+            duration = window.get("windowDurationMins")
+            if _finite_number(duration):
                 windows.append((float(duration), window))
     if not windows:
         raise ValueError("missing rate-limit windows")
 
     duration, weekly = max(windows, key=lambda item: item[0])
-    if duration < WEEK_SECONDS:
+    if duration < WEEK_SECONDS / 60:
         raise ValueError("weekly rate-limit window is unavailable")
-    used_percent = weekly.get("used_percent")
-    reset_timestamp = weekly.get("reset_at")
-    if not isinstance(used_percent, (int, float)) or not isinstance(reset_timestamp, (int, float)):
+    used_percent = weekly.get("usedPercent")
+    reset_timestamp = weekly.get("resetsAt")
+    if not _finite_number(used_percent) or not _finite_number(reset_timestamp):
         raise ValueError("invalid weekly usage values")
     if not 0 <= float(used_percent) <= 100:
-        raise ValueError("weekly used_percent is out of range")
+        raise ValueError("weekly usedPercent is out of range")
 
     reset_at = datetime.fromtimestamp(float(reset_timestamp), tz=timezone.utc)
     current_time = now or datetime.now(timezone.utc)
     days_until_reset = max(0, int((reset_at - current_time).total_seconds() // 86400))
     threshold = float((days_until_reset + 1) * 5)
-    credit_value = payload.get("rate_limit_reset_credits")
+    credit_value = payload.get("rateLimitResetCredits")
     credit_mapping = _mapping(credit_value)
     if credit_mapping is None:
         credit_status = "missing" if credit_value is None else "malformed"
         reset_credits = CodexResetCredits(status=credit_status)
     else:
-        available_count = credit_mapping.get("available_count")
+        available_count = credit_mapping.get("availableCount")
         if isinstance(available_count, int) and not isinstance(available_count, bool) and available_count >= 0:
             reset_credits = CodexResetCredits(available_count=available_count, status="available")
         else:
@@ -160,31 +168,22 @@ def parse_codex_weekly_usage(payload: Mapping[str, object], now: Optional[dateti
     )
 
 
-def get_codex_weekly_usage(now: Optional[datetime] = None) -> Optional[CodexWeeklyUsage]:
-    """Fetch weekly usage. Any auth, HTTP, or parsing failure denies task creation."""
-    credentials = load_codex_oauth_credentials(now=now)
-    if credentials is None:
-        logger.warning("Codex ChatGPT OAuth credentials are unavailable; skipping Codex Cloud")
-        return None
-    headers = {
-        "Authorization": f"Bearer {credentials.access_token}",
-        "ChatGPT-Account-Id": credentials.account_id,
-        "Accept": "application/json",
-        "User-Agent": "codex_cli_rs",
-        "originator": "codex_cli_rs",
-    }
+def get_codex_account_type() -> Optional[str]:
+    """Distinguish confirmed API-key authentication from unavailable usage."""
     try:
-        response = httpx.get(CODEX_USAGE_URL, headers=headers, timeout=15.0)
-        if response.status_code in (401, 403):
-            logger.warning("Codex usage authentication was rejected; skipping Codex Cloud")
-            return None
-        response.raise_for_status()
-        data = response.json()
-        if not isinstance(data, dict):
-            return None
-        return parse_codex_weekly_usage(data, now=now)
-    except (httpx.HTTPError, json.JSONDecodeError, ValueError, TypeError) as error:
-        logger.warning(f"Codex weekly usage check failed; skipping Codex Cloud: {type(error).__name__}")
+        account = _mapping(read_account_data("account/read").get("account"))
+        account_type = account.get("type") if account is not None else None
+        return account_type if isinstance(account_type, str) else None
+    except (OSError, EOFError, ValueError, TypeError):
+        return None
+
+
+def get_codex_weekly_usage(now: Optional[datetime] = None) -> Optional[CodexWeeklyUsage]:
+    """Read weekly usage through Codex-managed authentication; fail closed."""
+    try:
+        return parse_codex_weekly_usage(read_account_data("account/rateLimits/read"), now=now)
+    except (OSError, EOFError, ValueError, TypeError, OverflowError) as error:
+        logger.warning(f"Codex app-server weekly usage check failed: {type(error).__name__}")
         return None
 
 

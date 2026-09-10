@@ -148,47 +148,45 @@ def evaluate_backend_quota(
             reason="Eligible",
         )
 
-    # Standard Codex backend check - check if OAuth weekly quota is available
+    # Only a confirmed API-key account is treated as unmetered.
     if backend_type == "codex":
-        from .codex_usage_checker import get_codex_weekly_usage, load_codex_oauth_credentials
+        from .codex_usage_checker import get_codex_account_type, get_codex_weekly_usage
 
-        creds = load_codex_oauth_credentials(now=current_time)
-        if creds is not None:
-            usage = get_codex_weekly_usage(now=current_time)
-            if usage is not None:
-                if not usage.allows_task(strategy):
-                    credit_count = usage.reset_credits.available_count
-                    return BackendQuotaEvaluation(
-                        backend_name=backend_name,
-                        is_eligible=False,
-                        actual_remaining_ratio=usage.remaining_percent / 100.0,
-                        reset_at=usage.reset_at,
-                        reset_credit_count=credit_count,
-                        reset_credit_available=None if credit_count is None else credit_count > 0,
-                        reason=_codex_ineligible_reason("Codex", usage.remaining_percent, usage.minimum_remaining_percent, strategy),
-                    )
-                actual_ratio = usage.remaining_percent / 100.0
-                reset_at = usage.reset_at if usage.reset_at.tzinfo else usage.reset_at.replace(tzinfo=timezone.utc)
-                time_until_reset = max(0.0, (reset_at - current_time).total_seconds())
-                planned_ratio = curve_fn(time_until_reset, quota_period_seconds)
-                surplus = calculate_quota_surplus(actual_ratio, planned_ratio)
+        usage = get_codex_weekly_usage(now=current_time)
+        if usage is not None:
+            if not usage.allows_task(strategy):
+                credit_count = usage.reset_credits.available_count
                 return BackendQuotaEvaluation(
                     backend_name=backend_name,
-                    is_eligible=True,
-                    actual_remaining_ratio=actual_ratio,
-                    time_until_reset_seconds=time_until_reset,
-                    planned_remaining_ratio=planned_ratio,
-                    quota_surplus=surplus,
-                    reset_at=reset_at,
-                    reason="Eligible",
+                    is_eligible=False,
+                    actual_remaining_ratio=usage.remaining_percent / 100.0,
+                    reset_at=usage.reset_at,
+                    reset_credit_count=credit_count,
+                    reset_credit_available=None if credit_count is None else credit_count > 0,
+                    reason=_codex_ineligible_reason("Codex", usage.remaining_percent, usage.minimum_remaining_percent, strategy),
                 )
-            else:
-                return BackendQuotaEvaluation(
-                    backend_name=backend_name,
-                    is_eligible=True,
-                    usage_retrieval_failed=True,
-                    reason="Codex OAuth usage data could not be retrieved",
-                )
+            actual_ratio = usage.remaining_percent / 100.0
+            reset_at = usage.reset_at if usage.reset_at.tzinfo else usage.reset_at.replace(tzinfo=timezone.utc)
+            time_until_reset = max(0.0, (reset_at - current_time).total_seconds())
+            planned_ratio = curve_fn(time_until_reset, quota_period_seconds)
+            surplus = calculate_quota_surplus(actual_ratio, planned_ratio)
+            return BackendQuotaEvaluation(
+                backend_name=backend_name,
+                is_eligible=True,
+                actual_remaining_ratio=actual_ratio,
+                time_until_reset_seconds=time_until_reset,
+                planned_remaining_ratio=planned_ratio,
+                quota_surplus=surplus,
+                reset_at=reset_at,
+                reason="Eligible",
+            )
+        elif get_codex_account_type() != "apiKey":
+            return BackendQuotaEvaluation(
+                backend_name=backend_name,
+                is_eligible=True,
+                usage_retrieval_failed=True,
+                reason="Codex OAuth usage data could not be retrieved",
+            )
 
         # Unmetered / API key Codex
         return BackendQuotaEvaluation(

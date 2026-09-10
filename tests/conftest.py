@@ -669,6 +669,10 @@ def stub_git_and_gh_commands(monkeypatch, request):
         env=None,
         **kwargs,
     ):
+        # Generic command tests have no authenticated app-server. Transport tests
+        # supply their own stdio peer; never contact a real account from this stub.
+        if isinstance(cmd, (list, tuple)) and list(cmd[:2]) == ["codex", "app-server"]:
+            raise FileNotFoundError("Codex app-server is unavailable in the generic command stub")
         try:
             program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
             if program in ("git", "gh", "antigravity", "codex", "uv", "node"):
