@@ -61,6 +61,16 @@ already running Issue is not interrupted. The real enqueue/worker/restart and
 queue-status contract is covered by
 `tests/test_candidate_queue.py::test_durable_prs_overtake_issue_backlog_without_losing_generations`.
 
+Authoritative-refresh admission deferrals remain before candidate processing and
+therefore do not open or finish an implementation execution. This is deliberately
+trace-neutral: the existing durable-invalidation-worker origin begins only after a
+current authoritative candidate exists, so representing a definitely-not-sent read
+as a successful, failed, or completed execution would invent an outcome. The durable
+reason, API origin, generation, and deadline are operational queue diagnostics, and
+`tests/test_entity_invalidation.py::test_worker_persists_real_strict_refresh_deferral_without_dispatch`
+drives the production worker and strict-read adapter and verifies that processing is
+not dispatched.
+
 These are collected pytest node IDs, not future test plans. Producer tests assert
 business results/effect counts and the real structured snapshot. The joined tests
 also mount and refresh the detail view from that snapshot.

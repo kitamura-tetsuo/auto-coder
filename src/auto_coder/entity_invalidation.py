@@ -1,5 +1,6 @@
 """Durable, coalescing invalidations for authoritative GitHub reevaluation."""
 
+import math
 import sqlite3
 import threading
 import time
@@ -44,6 +45,17 @@ class ClaimedInvalidation:
 
 
 @dataclass(frozen=True)
+class DeferredInvalidation:
+    """Persisted admission wait for one authoritative reevaluation."""
+
+    identity: EntityIdentity
+    generation: int
+    retry_not_before: float
+    reason: str
+    api_origin: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class GitHubDeliveryMetadata:
     delivery_id: str
     identity: EntityIdentity
@@ -82,6 +94,9 @@ class DurableInvalidationQueue:
                 claimed_generation INTEGER,
                 state TEXT NOT NULL CHECK(state IN ('dirty', 'queued', 'processing')),
                 not_before REAL,
+                retry_not_before REAL,
+                deferral_reason TEXT,
+                deferral_api_origin TEXT,
                 urgent_admission INTEGER NOT NULL DEFAULT 0 CHECK(urgent_admission IN (0, 1)),
                 PRIMARY KEY(repository, entity_type, entity_number)
             );
@@ -196,6 +211,12 @@ class DurableInvalidationQueue:
             self._connection.execute("ALTER TABLE entity_invalidations ADD COLUMN not_before REAL")
         if "urgent_admission" not in invalidation_columns:
             self._connection.execute("ALTER TABLE entity_invalidations ADD COLUMN urgent_admission INTEGER NOT NULL DEFAULT 0")
+        if "retry_not_before" not in invalidation_columns:
+            self._connection.execute("ALTER TABLE entity_invalidations ADD COLUMN retry_not_before REAL")
+        if "deferral_reason" not in invalidation_columns:
+            self._connection.execute("ALTER TABLE entity_invalidations ADD COLUMN deferral_reason TEXT")
+        if "deferral_api_origin" not in invalidation_columns:
+            self._connection.execute("ALTER TABLE entity_invalidations ADD COLUMN deferral_api_origin TEXT")
 
         delivery_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(github_deliveries)")}
         if "entity_type" not in delivery_columns:
@@ -526,10 +547,11 @@ class DurableInvalidationQueue:
                        SELECT rowid FROM entity_invalidations
                        WHERE repository = ? AND state = 'dirty'
                          AND (not_before IS NULL OR not_before <= ?)
+                         AND (retry_not_before IS NULL OR retry_not_before <= ?)
                        ORDER BY rowid LIMIT 1
                    ) AND state = 'dirty'
                    RETURNING entity_type, entity_number, generation, urgent_admission""",
-                (repository, time.time()),
+                (repository, time.time(), time.time()),
             ).fetchone()
             if row is None:
                 return None
@@ -540,8 +562,9 @@ class DurableInvalidationQueue:
         """Return the delay until the earliest dirty invalidation is eligible."""
         with self._lock:
             row = self._connection.execute(
-                """SELECT MIN(not_before) FROM entity_invalidations
-                   WHERE repository = ? AND state = 'dirty' AND not_before IS NOT NULL""",
+                """SELECT MIN(MAX(COALESCE(not_before, 0), COALESCE(retry_not_before, 0)))
+                   FROM entity_invalidations WHERE repository = ? AND state = 'dirty'
+                     AND (not_before IS NOT NULL OR retry_not_before IS NOT NULL)""",
                 (repository,),
             ).fetchone()
         if row is None or row[0] is None:
@@ -573,7 +596,8 @@ class DurableInvalidationQueue:
                 return False
             if row[0] > claim.generation:
                 self._connection.execute(
-                    """UPDATE entity_invalidations SET state = 'dirty', claimed_generation = NULL
+                    """UPDATE entity_invalidations SET state = 'dirty', claimed_generation = NULL,
+                           retry_not_before = NULL, deferral_reason = NULL, deferral_api_origin = NULL
                        WHERE repository = ? AND entity_type = ? AND entity_number = ?""",
                     (identity.repository, identity.entity_type, identity.number),
                 )
@@ -594,6 +618,59 @@ class DurableInvalidationQueue:
                      AND state = 'processing' AND claimed_generation = ?""",
                 (identity.repository, identity.entity_type, identity.number, claim.generation),
             )
+
+    def defer(
+        self,
+        claim: ClaimedInvalidation,
+        reason: str,
+        retry_at: Optional[float],
+        api_origin: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> DeferredInvalidation:
+        """Atomically retain a claimed reevaluation behind a durable retry guard."""
+        handled_at = time.time() if now is None else now
+        supplied = retry_at if retry_at is not None and math.isfinite(retry_at) and retry_at >= 0 else 0.0
+        identity = claim.identity
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                """SELECT generation, not_before, retry_not_before FROM entity_invalidations
+                   WHERE repository = ? AND entity_type = ? AND entity_number = ?
+                     AND state = 'processing' AND claimed_generation = ?""",
+                (identity.repository, identity.entity_type, identity.number, claim.generation),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("invalidation deferral claim is no longer current")
+            generation, stabilization, retained_retry = row
+            deadline = max(
+                handled_at + 1.0,
+                supplied,
+                float(stabilization or 0.0),
+                float(retained_retry or 0.0),
+            )
+            cursor = self._connection.execute(
+                """UPDATE entity_invalidations
+                   SET state = 'dirty', claimed_generation = NULL, retry_not_before = ?,
+                       deferral_reason = ?, deferral_api_origin = ?
+                   WHERE repository = ? AND entity_type = ? AND entity_number = ?
+                     AND state = 'processing' AND claimed_generation = ?""",
+                (deadline, reason, api_origin, identity.repository, identity.entity_type, identity.number, claim.generation),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("invalidation deferral transition was not committed")
+        return DeferredInvalidation(identity, int(generation), deadline, reason, api_origin)
+
+    def get_deferred(self, identity: EntityIdentity) -> Optional[DeferredInvalidation]:
+        """Return persisted retry metadata for diagnostics and tests."""
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT generation, retry_not_before, deferral_reason, deferral_api_origin
+                   FROM entity_invalidations WHERE repository = ? AND entity_type = ? AND entity_number = ?
+                     AND retry_not_before IS NOT NULL""",
+                (identity.repository, identity.entity_type, identity.number),
+            ).fetchone()
+        if row is None:
+            return None
+        return DeferredInvalidation(identity, int(row[0]), float(row[1]), str(row[2]), row[3])
 
     def pending_count(self, repository: str) -> int:
         with self._lock:
