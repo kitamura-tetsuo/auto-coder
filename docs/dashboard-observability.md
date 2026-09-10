@@ -59,6 +59,7 @@ also mount and refresh the detail view from that snapshot.
 | Production origin | Runnable checks |
 | --- | --- |
 | Codex Cloud quota acquisition and admission | `tests/test_dashboard_observability.py::test_codex_app_server_failure_remains_deferred_in_detail_view` |
+| Standalone sibling-dependency admission (empty vs nonempty declaration) | `tests/test_dashboard_observability.py::test_standalone_dependency_gate_reaches_mounted_detail_view` |
 | Normal/explicit Issue processing and pre-worker admission | `tests/test_dashboard_observability.py::test_issue_admission_reaches_mounted_detail_view`; `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_explicit_single_target_origin_is_recorded`; `tests/test_issue_production_instrumentation.py::TestPreAdmissionGateVisible::test_author_disallowed_issue_records_skip_without_dispatch` |
 | Normal/explicit PR processing | `tests/test_dashboard_observability.py::test_pr_admission_reaches_mounted_detail_view`; `tests/test_pr_production_instrumentation.py::TestPrAdmissionGateVisible::test_author_disallowed_pr_records_skip_without_dispatch`; `tests/test_pr_production_instrumentation.py::TestPrAdmissionGateVisible::test_dependency_bot_pr_admission_records_skip_without_dispatch` (Issue #1995: the common `pr.dependency-bot-admission` gate, reached by every PR-processing origin, not only the `_get_candidates` prefilter) |
 | Individual/decomposition validation jobs | `tests/test_issue_production_instrumentation.py::TestValidationJobsGetTheirOwnExecutionIdentity::test_traced_validation_job_does_not_borrow_ambient_worker_scope`; `tests/test_issue_production_instrumentation.py::TestValidationJobsGetTheirOwnExecutionIdentity::test_disabled_decomposition_validation_is_distinguishable_from_blocked`; `tests/test_dashboard_observability.py::TestOutcomeMatrixCoverage::test_queued_validation_is_distinguishable_from_disabled_and_blocked`; `tests/test_dashboard_observability.py::TestJoinedProductionToView::test_validation_scheduler_job_is_a_distinct_execution_from_the_worker` |
@@ -98,3 +99,14 @@ handoff/publication tests (`TestJoinedProductionToView::test_accepted_handoff_re
 reject invented completion. Generic unknown-stage and display-format tests in
 `tests/test_dashboard_detail_logic.py` and `tests/test_execution_trace.py` ensure
 those semantic controls do not become a touched-file or static-diagram rule.
+
+## Standalone dependency admission
+
+The final Issue dispatch boundary emits `issue.sibling-dependency-gate`. A
+completed gate means the dependency check passed, not that implementation
+finished. Empty `Blocked-By:` on an authoritatively parentless Issue can pass;
+nonempty or malformed parentless declarations and unavailable relationship
+evidence remain deferred. Native child validation remains unchanged. The joined
+regression above uses the production reconciliation path, checks whether dispatch
+is reached independently, and renders the actual collector event in the detail
+view. No static diagram mapping or new dashboard request is needed.

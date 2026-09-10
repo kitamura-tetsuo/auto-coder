@@ -300,7 +300,7 @@ class ImplementationSlotRepository:
             self._raise_permission_error(path, exc)
 
     @staticmethod
-    def _raise_permission_error(path: Path, exc: OSError) -> NoReturn:
+    def _raise_permission_error(path: Path, exc: OSError | RuntimeError) -> NoReturn:
         raise ImplementationSlotUnavailable(f"Cannot safely establish or use implementation slot shared-state permissions for '{path}': {exc}") from exc
 
     @staticmethod

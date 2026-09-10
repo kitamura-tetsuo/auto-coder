@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, FrozenSet, Optional, Set, Union
+from typing import Dict, FrozenSet, Optional, Set, Union, cast
 
 from .parent_issue_reconciliation import ParentDeclarationStatus, parse_parent_declaration
 
@@ -83,7 +83,7 @@ _BLOCKED_BY_CANDIDATE = re.compile(r"^blocked-by:(.*)$", re.IGNORECASE)
 _BLOCKED_BY_DEPENDENCY = re.compile(r"^#([1-9][0-9]*)$")
 
 
-def parse_blocked_by_declaration(body: object, parent_status: ParentDeclarationStatus) -> BlockedByDeclaration:
+def parse_blocked_by_declaration(body: object, parent_status: ParentDeclarationStatus, *, standalone: bool = False) -> BlockedByDeclaration:
     if not isinstance(body, str):
         return BlockedByDeclaration(BlockedByDeclarationStatus.ABSENT)
 
@@ -128,6 +128,9 @@ def parse_blocked_by_declaration(body: object, parent_status: ParentDeclarationS
         if decl != first_decl:
             return BlockedByDeclaration(BlockedByDeclarationStatus.INVALID, reason="conflicting Blocked-By declarations")
 
+    if standalone and parent_status is ParentDeclarationStatus.ABSENT and not first_decl:
+        return BlockedByDeclaration(BlockedByDeclarationStatus.SUPPORTED, dependencies=first_decl)
+
     if parent_status != ParentDeclarationStatus.SUPPORTED:
         return BlockedByDeclaration(BlockedByDeclarationStatus.INVALID, reason="Blocked-By declaration requires a supported Parent-Issue declaration")
 
@@ -170,7 +173,7 @@ def evaluate_family_graph(evidence_map: Dict[int, IssueEvidence], target_parent:
                 validity = GraphValidity.UNRESOLVED
                 reason = "native dependencies unavailable"
             else:
-                desired_deps = child_ev.observed_native_dependencies
+                desired_deps = cast(FrozenSet[int], child_ev.observed_native_dependencies)
 
         if validity == GraphValidity.VALID and desired_deps is not None:
             for dep in desired_deps:
@@ -229,7 +232,7 @@ def evaluate_family_graph(evidence_map: Dict[int, IssueEvidence], target_parent:
 
     for start_node in desired_graph:
         visited = set()
-        path = []
+        path: list[int] = []
 
         def dfs(node):
             if node in path:
@@ -266,7 +269,7 @@ def evaluate_family_graph(evidence_map: Dict[int, IssueEvidence], target_parent:
         if child_ev.observed_native_dependencies is UNAVAILABLE:
             is_sync = UNAVAILABLE
         elif desired_deps is not None:
-            is_sync = set(desired_deps) == set(child_ev.observed_native_dependencies or frozenset())
+            is_sync = set(desired_deps) == set(cast(FrozenSet[int], child_ev.observed_native_dependencies) or frozenset())
         elif validity == GraphValidity.INVALID:
             is_sync = UNAVAILABLE
 

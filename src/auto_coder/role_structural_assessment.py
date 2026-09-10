@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple, cast
 
 from .requirement_contract import NormativeIssueManifest
 
@@ -149,7 +149,7 @@ def _find_objective_defect(body: str) -> Optional[StructuralDefect]:
             level = len(heading_match.group(1))
             title = heading_match.group(2).strip()
             is_target = title.casefold() == "objective"
-            if current is not None and (is_target or level <= current_level):
+            if current is not None and (is_target or level <= cast(int, current_level)):
                 close_section()
             if is_target:
                 current, current_level, current_start = [], level, index

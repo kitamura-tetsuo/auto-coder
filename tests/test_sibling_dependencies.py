@@ -181,3 +181,24 @@ def test_as007_semantic_layer_no_side_effects():
     # Assert nothing in evidence changed
     assert evidence == evidence_copy
     assert graph.results[101].satisfaction == DependencySatisfaction.SATISFIED
+
+
+@pytest.mark.parametrize("body", ["Blocked-By:", "blocked-by:   ", "Blocked-By:\nBlocked-By:"])
+def test_confirmed_standalone_accepts_only_empty_dependencies(body):
+    result = parse_blocked_by_declaration(body, ParentDeclarationStatus.ABSENT, standalone=True)
+    assert result.status is BlockedByDeclarationStatus.SUPPORTED
+    assert result.dependencies == frozenset()
+    assert result.reason is None
+    assert parse_blocked_by_declaration(body, ParentDeclarationStatus.ABSENT).status is BlockedByDeclarationStatus.INVALID
+
+
+@pytest.mark.parametrize("body", ["Blocked-By: #205", "Blocked-By: #bad", "Blocked-By:\nBlocked-By: #205"])
+def test_standalone_does_not_relax_nonempty_or_malformed_declarations(body):
+    result = parse_blocked_by_declaration(body, ParentDeclarationStatus.ABSENT, standalone=True)
+    assert result.status is BlockedByDeclarationStatus.INVALID
+    assert result.dependencies is None
+
+
+def test_standalone_flag_does_not_override_invalid_parent_metadata():
+    result = parse_blocked_by_declaration("Blocked-By:", ParentDeclarationStatus.INVALID, standalone=True)
+    assert result.status is BlockedByDeclarationStatus.INVALID

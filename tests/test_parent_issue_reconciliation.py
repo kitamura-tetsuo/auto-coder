@@ -727,3 +727,37 @@ def test_ready_completion_defers_parent_discovered_during_analysis(tmp_path: Pat
     assert analyzed.count(("individual", 1)) == 2
     assert analyzed.count(("set", github.issues[3]["body"])) == 1
     assert second.actions == ["Completed - closed container parent after all direct children completed"]
+
+
+@pytest.mark.parametrize("body", ["Blocked-By:", "", "blocked-by:   "])
+def test_standalone_dependency_reconciliation_accepts_empty_declaration(body):
+    from src.auto_coder.sibling_dependencies import DependencySatisfaction
+
+    issue = graph_issue(1998, body, ready=True)
+    github = GraphGitHub({1998: issue}, {}, {})
+    engine = AutomationEngine(github, AutomationConfig())
+    assert engine._reconcile_sibling_dependencies("o/r", 1998, issue) is DependencySatisfaction.SATISFIED
+    assert github.events == []
+    assert github.comments == []
+    assert github.removals == []
+
+
+def test_empty_dependency_declaration_does_not_bypass_native_child_validation():
+    from src.auto_coder.sibling_dependencies import DependencySatisfaction
+
+    issue = graph_issue(1998, "Blocked-By:", ready=True)
+    github = GraphGitHub({1998: issue, 100: graph_issue(100, "## Objective\nTrack work.", ready=True)}, {1998: 100}, {100: [1998]})
+    engine = AutomationEngine(github, AutomationConfig())
+    assert engine._reconcile_sibling_dependencies("o/r", 1998, issue) is DependencySatisfaction.INVALID
+    assert [number for number, _, _ in github.removals] == [1998, 100]
+    assert len(github.comments) == 1
+
+
+def test_empty_dependency_declaration_requires_available_parent_evidence():
+    issue = graph_issue(1998, "Blocked-By:", ready=True)
+    github = GraphGitHub({1998: issue}, {}, {})
+    github.get_parent_issue_details_strict = MagicMock(side_effect=RuntimeError("read unavailable"))
+    engine = AutomationEngine(github, AutomationConfig())
+    with pytest.raises(RuntimeError, match="read unavailable"):
+        engine._reconcile_sibling_dependencies("o/r", 1998, issue)
+    assert github.removals == []

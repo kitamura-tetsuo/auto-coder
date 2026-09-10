@@ -190,7 +190,16 @@ every dependency to be a distinct direct sibling Issue, validates the complete
 family (including closed children) for cycles, and then reconciles GitHub using
 stable Issue IDs with complete incoming/reverse pagination and authoritative
 readback. Removing the declaration leaves native dependencies unmanaged, while
-an explicitly empty declaration clears them.
+an explicitly empty declaration clears them for a supported child declaration.
+A standalone Issue may carry an empty `Blocked-By:` to mean no sibling
+prerequisites only when its parent declaration is absent and a strict GitHub
+read confirms no native parent. Nonempty/malformed declarations, invalid parent
+metadata, native children without supported parent declarations, and unavailable
+parent reads do not receive this exception. This avoids indefinitely waiting for
+an undeclared parent on otherwise eligible standalone Issues. The final dispatch
+check emits `issue.sibling-dependency-gate` with completed (dependency check
+satisfied), blocked (invalid), or deferred (waiting/unavailable); satisfaction
+alone is not implementation completion.
 
 Malformed, conflicting, non-sibling, nonexistent, pull-request, and cyclic
 declarations are rejected before implementation ownership. A marked actionable

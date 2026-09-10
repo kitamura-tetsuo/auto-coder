@@ -987,7 +987,7 @@ class AutomationEngine:
             raise ParentSpecificationError(f"Issue #{parent_number} is both a child and a parent; nested hierarchies are unsupported")
         for child in children:
             number = child.get("number")
-            descendants = child_reader(repo_name, int(number))
+            descendants = child_reader(repo_name, int(cast(int, number)))
             if not isinstance(descendants, list):
                 raise ParentOperationalError(f"cannot establish direct-child membership for Issue #{number}")
             if descendants:
@@ -1184,11 +1184,15 @@ class AutomationEngine:
     def _reconcile_sibling_dependencies(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> DependencySatisfaction:
         """Materialize and gate a complete sibling dependency family from live REST evidence."""
         parent_decl = parse_parent_declaration(snapshot.get("body"))
-        declaration = parse_blocked_by_declaration(snapshot.get("body"), parent_decl.status)
         if parent_decl.status is ParentDeclarationStatus.SUPPORTED:
             snapshot = self._reconcile_parent_issue(repo_name, issue_number, snapshot)
+        parent_decl = parse_parent_declaration(snapshot.get("body"))
         native_parent = self.github.get_parent_issue_details_strict(repo_name, issue_number)
         parent_number = native_parent.get("number") if isinstance(native_parent, dict) else None
+        standalone = native_parent is None and parent_decl.status is ParentDeclarationStatus.ABSENT
+        declaration = parse_blocked_by_declaration(snapshot.get("body"), parent_decl.status, standalone=standalone)
+        if standalone and declaration.status is BlockedByDeclarationStatus.SUPPORTED and declaration.dependencies == frozenset():
+            return DependencySatisfaction.SATISFIED
         if declaration.status is BlockedByDeclarationStatus.INVALID and isinstance(parent_number, int):
             self._reject_sibling_dependency(repo_name, issue_number, parent_number, str(snapshot.get("body") or ""), declaration.reason or "invalid Blocked-By declaration")
             return DependencySatisfaction.INVALID
@@ -1746,7 +1750,7 @@ class AutomationEngine:
         if manifest.error:
             return None
         validator = self._get_specification_validator(repo_name)
-        relationship_context = self._child_review_context(*authoritative_set, issue_number) if parent_number is not None else None
+        relationship_context = self._child_review_context(*cast(tuple[dict, list[dict]], authoritative_set), issue_number) if parent_number is not None else None
         individual_identity = validator.identity(issue_number, title, body, relationship_context)
         spec_validation_enabled = self._is_issue_specification_validation_enabled(repo_name)
         decision: Optional[ValidationDecision] = None
@@ -1803,7 +1807,7 @@ class AutomationEngine:
                     return None
         elif not is_implementation_ready(refreshed):
             return None
-        refreshed_relationship = self._child_review_context(*refreshed_set, issue_number) if parent_number is not None else None
+        refreshed_relationship = self._child_review_context(*cast(tuple[dict, list[dict]], refreshed_set), issue_number) if parent_number is not None else None
         identity = validator.identity(issue_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""), refreshed_relationship)
         expected_identity = decision.identity if spec_validation_enabled and decision is not None else individual_identity
         if identity != expected_identity:
@@ -3839,10 +3843,13 @@ class AutomationEngine:
                 try:
                     dependency_satisfaction = self._reconcile_sibling_dependencies(repo_name, item_number, dispatch_snapshot)
                 except Exception as exc:
+                    _record_issue_stage_result(item_number, "issue.sibling-dependency-gate", f"issue#{item_number} sibling dependency gate", Outcome.DEFERRED, {"reason": "relationship reconciliation unavailable"})
                     result.error = f"Sibling dependency reconciliation is unresolved: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = ["Deferred - unresolved sibling dependency reconciliation"]
                     return result
+                dependency_outcome = Outcome.COMPLETED if dependency_satisfaction is DependencySatisfaction.SATISFIED else Outcome.BLOCKED if dependency_satisfaction is DependencySatisfaction.INVALID else Outcome.DEFERRED
+                _record_issue_stage_result(item_number, "issue.sibling-dependency-gate", f"issue#{item_number} sibling dependency gate", dependency_outcome, {"satisfaction": dependency_satisfaction.value})
                 if dependency_satisfaction is DependencySatisfaction.INVALID:
                     result.error = "Sibling dependency declaration is invalid"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED

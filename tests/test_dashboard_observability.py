@@ -652,3 +652,62 @@ def test_codex_app_server_failure_remains_deferred_in_detail_view(mock_ui, tmp_p
     diagram = _mounted_detail(mock_ui, "issue", 3501)
     _assert_required_stage_visible(diagram, "Codex Cloud dispatch")
     assert "deferred" in diagram.lower()
+
+
+@pytest.mark.parametrize("declaration, expected", [("Blocked-By:", Outcome.COMPLETED), ("Blocked-By: #205", Outcome.DEFERRED)])
+@patch("auto_coder.dashboard.ui")
+def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_path, declaration, expected):
+    from auto_coder.automation_config import CandidateProcessingResult
+    from auto_coder.implementation_slots import ImplementationSlotRepository
+    from auto_coder.specification_analyzer import SpecificationAnalysisResult
+    from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+    from auto_coder.util.gh_cache import GitHubClient
+
+    issue = {
+        "number": 1998,
+        "id": 199800,
+        "title": "Resume deferred work",
+        "body": declaration + "\n\n## Requirements\nREQ-001: Resume eligible work.",
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+        "user": {"id": 1},
+        "created_at": "2020-01-01T00:00:00Z",
+    }
+    github = MagicMock(spec=GitHubClient)
+    github.token = "test-token"
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda *_: dict(issue)
+    github.get_parent_issue_details_strict.return_value = None
+    github.get_direct_sub_issues_strict.return_value = []
+    github.get_open_sub_issues_strict.return_value = []
+    github.get_issue_comments_strict.return_value = []
+    github.get_connected_prs.return_value = []
+    github.get_parent_issue_number_strict.return_value = None
+    github.get_issue_hierarchy_generation_strict.return_value = "standalone-generation"
+    config = AutomationConfig()
+    config.ISSUE_ALLOWLIST = [1]
+    engine = AutomationEngine(github, config)
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    analyzer = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "test/model", tmp_path / "spec.json", analyzer)
+    with patch.object(engine, "_process_single_candidate_reserved", return_value=CandidateProcessingResult("issue", 1998, issue["title"], True, ["implementation reached"])) as dispatch:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", dict(issue), 0), config)
+
+    analyzer.assert_called_once()
+    if expected is Outcome.COMPLETED:
+        assert result.success is True, result.error
+        dispatch.assert_called_once()
+        assert result.actions == ["implementation reached"]
+    else:
+        dispatch.assert_not_called()
+        assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+        assert result.actions == ["Deferred - unresolved sibling dependency reconciliation"]
+    github.add_sub_issue_strict.assert_not_called()
+    github.add_comment_to_issue.assert_not_called()
+    github.remove_labels.assert_not_called()
+    snapshot = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=1998)
+    events = [event for event in snapshot.events if event.stage_id == "issue.sibling-dependency-gate"]
+    assert len(events) == 1
+    assert events[0].outcome == expected.value
+    diagram = _mounted_detail(mock_ui, "issue", 1998)
+    _assert_required_stage_visible(diagram, "sibling dependency gate")
+    assert expected.value in diagram
