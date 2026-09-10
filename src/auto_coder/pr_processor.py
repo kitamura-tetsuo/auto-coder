@@ -41,7 +41,7 @@ from .adversarial_validator import (
     run_adversarial_validation,
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
-from .automation_config import AutomationConfig, EmptyPRResult, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
+from .automation_config import AutomationConfig, EmptyPRResult, ExplicitTargetOutcome, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
 from .branch_manager import BranchManager
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
@@ -869,6 +869,229 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
         # Best-effort detection only; never fail hard here
         return False
     return False
+
+
+@dataclass(frozen=True)
+class DependencyBotAdmissionDecision:
+    """Outcome of the common dependency-bot processing-policy gate (Issue #1995).
+
+    ``allowed`` is False exactly when the evaluated PR must not acquire an
+    implementation reservation; ``outcome``/``reason`` then describe the
+    refusal so the caller can produce a specific ``SKIPPED``/``DEFERRED``
+    result instead of success or a capacity-limit explanation.
+    """
+
+    allowed: bool
+    outcome: Optional[ExplicitTargetOutcome] = None
+    reason: str = ""
+
+
+def _dependency_bot_flag_decision(
+    is_dependency_bot: bool,
+    ignore_dependabot_prs: bool,
+    auto_merge_dependabot_prs: bool,
+) -> Optional[DependencyBotAdmissionDecision]:
+    """Classification/configuration portion of the dependency-bot gate.
+
+    Shared by ``evaluate_dependency_bot_admission`` (the mandatory common
+    admission gate) and the optional collector prefilter in
+    ``AutomationEngine._get_candidates`` (Issue #1995, REQ-008). Returns a
+    final decision for a positively identified non-bot PR, an
+    ``IGNORE_DEPENDABOT_PRS``-excluded dependency-bot PR, or a dependency-bot
+    PR under neither restrictive flag (ordinary processing, including normal
+    repair of failing CI). Returns ``None`` when the dependency-bot PR
+    additionally requires the readiness confirmation gated by
+    ``AUTO_MERGE_DEPENDABOT_PRS``.
+    """
+    if not is_dependency_bot:
+        return DependencyBotAdmissionDecision(allowed=True)
+    if ignore_dependabot_prs:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.SKIPPED,
+            reason="dependency-bot PR excluded by IGNORE_DEPENDABOT_PRS",
+        )
+    if not auto_merge_dependabot_prs:
+        return DependencyBotAdmissionDecision(allowed=True)
+    return None
+
+
+def _dependency_bot_readiness_decision(
+    *,
+    is_open: Optional[bool],
+    mergeable: Any,
+    ci_error: Optional[str],
+    ci_pending: bool,
+    ci_success: bool,
+) -> DependencyBotAdmissionDecision:
+    """Readiness portion of the dependency-bot gate for ``AUTO_MERGE_DEPENDABOT_PRS``.
+
+    Pure function shared by ``evaluate_dependency_bot_admission`` (which
+    supplies fresh, same-HEAD facts) and the optional ``_get_candidates``
+    prefilter (which supplies facts it already collected for priority
+    calculation), so both apply identical readiness semantics (Issue #1995,
+    REQ-002, REQ-003, REQ-006, REQ-008). ``is_open=None`` and a non-boolean
+    ``mergeable`` are treated as not-yet-known rather than failing, so
+    unavailable evidence defers instead of skipping.
+    """
+    if is_open is False:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.SKIPPED,
+            reason="dependency-bot PR is no longer open",
+        )
+    if is_open is None:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.DEFERRED,
+            reason="dependency-bot PR open state is not yet known",
+        )
+    if not isinstance(mergeable, bool):
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.DEFERRED,
+            reason="dependency-bot PR mergeability is not yet known",
+        )
+    if mergeable is not True:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.SKIPPED,
+            reason="dependency-bot PR is not mergeable",
+        )
+    if ci_error is not None:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.DEFERRED,
+            reason=f"dependency-bot PR CI observation is unavailable ({ci_error})",
+        )
+    if ci_pending or not ci_success:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.SKIPPED,
+            reason="dependency-bot PR CI is not passing",
+        )
+    return DependencyBotAdmissionDecision(allowed=True)
+
+
+def _fetch_authoritative_dependency_bot_pr(
+    client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    pr_number: int,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Fetch cache-bypassing PR metadata when the client supports it (REQ-005).
+
+    A client without ``get_pull_request_metadata_strict`` (e.g. a lightweight
+    test double) falls back to the caller-supplied ``pr_data`` unchanged;
+    production ``GitHubClient`` always implements strict retrieval.
+    """
+    getter = getattr(type(client), "get_pull_request_metadata_strict", None)
+    if not callable(getter):
+        return pr_data, None
+    try:
+        refreshed = client.get_pull_request_metadata_strict(repo_name, pr_number)
+    except Exception as exc:
+        return None, str(exc)
+    if not isinstance(refreshed, dict):
+        return None, "GitHub returned malformed PR metadata"
+    return refreshed, None
+
+
+def evaluate_dependency_bot_admission(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+) -> DependencyBotAdmissionDecision:
+    """Common dependency-bot processing-policy gate.
+
+    This is the mandatory common admission boundary in
+    ``AutomationEngine._process_single_candidate_unified_impl`` (Issue #1995,
+    REQ-004). It must run before any logical implementation reservation, new
+    execution, or admission-related PR membership is created for a PR
+    candidate, and it always obtains fresh, same-HEAD facts rather than
+    reusing whatever the caller's candidate data already carries (REQ-005).
+    """
+    flag_decision = _dependency_bot_flag_decision(_is_dependabot_pr(pr_data), config.IGNORE_DEPENDABOT_PRS, config.AUTO_MERGE_DEPENDABOT_PRS)
+    if flag_decision is not None:
+        return flag_decision
+
+    pr_number = pr_data.get("number")
+    if not isinstance(pr_number, int) or isinstance(pr_number, bool):
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.DEFERRED,
+            reason="dependency-bot PR number is unavailable for readiness evaluation",
+        )
+
+    client = github_client or GitHubClient.get_instance()
+
+    def _fetch() -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        return _fetch_authoritative_dependency_bot_pr(client, repo_name, pr_data, pr_number)
+
+    refreshed, fetch_error = _fetch()
+    if fetch_error is not None or refreshed is None:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.DEFERRED,
+            reason=f"authoritative dependency-bot PR metadata is unavailable ({fetch_error})",
+        )
+
+    def _is_open(pr: Dict[str, Any]) -> Optional[bool]:
+        state = pr.get("state")
+        return None if state is None else state == "open"
+
+    pre_ci_decision = _dependency_bot_readiness_decision(
+        is_open=_is_open(refreshed),
+        mergeable=refreshed.get("mergeable"),
+        ci_error=None,
+        ci_pending=False,
+        ci_success=True,
+    )
+    if not pre_ci_decision.allowed:
+        return pre_ci_decision
+
+    head = refreshed.get("head")
+    head_sha = head.get("sha") if isinstance(head, dict) else None
+    if not isinstance(head_sha, str) or not head_sha:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.DEFERRED,
+            reason="dependency-bot PR head SHA is unavailable",
+        )
+
+    ci_result = _check_github_actions_status(repo_name, refreshed, config, client)
+    ci_error = ci_result.error if (not ci_result.success and not ci_result.in_progress) else None
+    readiness_decision = _dependency_bot_readiness_decision(
+        is_open=_is_open(refreshed),
+        mergeable=refreshed.get("mergeable"),
+        ci_error=ci_error,
+        ci_pending=ci_result.in_progress,
+        ci_success=ci_result.success,
+    )
+    if not readiness_decision.allowed:
+        return readiness_decision
+
+    # Re-confirm the same-HEAD open/mergeable facts after the CI read
+    # completes: a change accepted during the read must fence this older
+    # evidence rather than let it authorize admission (REQ-005 of Issue #1995).
+    reconfirmed, reconfirm_error = _fetch()
+    if reconfirm_error is not None or reconfirmed is None:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.DEFERRED,
+            reason=f"authoritative dependency-bot PR metadata is unavailable ({reconfirm_error})",
+        )
+    reconfirmed_head = reconfirmed.get("head")
+    reconfirmed_sha = reconfirmed_head.get("sha") if isinstance(reconfirmed_head, dict) else None
+    if _is_open(reconfirmed) is not True or reconfirmed.get("mergeable") is not True or reconfirmed_sha != head_sha:
+        return DependencyBotAdmissionDecision(
+            allowed=False,
+            outcome=ExplicitTargetOutcome.DEFERRED,
+            reason="dependency-bot PR state changed during readiness evaluation",
+        )
+
+    return DependencyBotAdmissionDecision(allowed=True)
 
 
 def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: Dict[str, Any], config: Optional[AutomationConfig] = None) -> bool:

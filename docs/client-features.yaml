@@ -747,6 +747,25 @@ extraction.
 
 ## Structured PR processing outcomes
 
+The dependency-bot processing policy (`IGNORE_DEPENDABOT_PRS`,
+`AUTO_MERGE_DEPENDABOT_PRS`) is enforced by one shared decision
+(`evaluate_dependency_bot_admission` in `src/auto_coder/pr_processor.py`) at
+the common PR-processing boundary in
+`AutomationEngine._process_single_candidate_unified_impl`, immediately after
+the PR author-allowlist check and before any implementation reservation,
+execution, or admission-related PR membership is created. This applies to
+every PR-processing origin -- startup-discovered and webhook-invalidated
+PRs, synchronous `run()` candidates, explicit single-target processing, and
+pending-work/merge-operation resumption -- not only the optional prefilter
+retained in `AutomationEngine._get_candidates` for priority scheduling. When
+`AUTO_MERGE_DEPENDABOT_PRS` is enabled, the common gate re-fetches
+cache-bypassing PR metadata and same-HEAD CI evidence for the current
+evaluation and reconfirms the PR's open/mergeable/HEAD facts again after
+that CI read, rather than reusing whatever the collector or an earlier
+evaluation already decided; a policy refusal is `SKIPPED` with a specific
+reason, while unavailable/incomplete evidence is retryable `DEFERRED`, and
+neither outcome disturbs an already-retained implementation owner.
+
 Codex Cloud pull requests whose authoritative remote head is the shared
 ``work`` branch are rejected at the common merge/review boundary before CI,
 adversarial validation, repair delivery, checkout, or merge work. PR metadata

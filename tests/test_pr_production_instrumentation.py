@@ -75,6 +75,38 @@ class TestPrAdmissionGateVisible:
         assert started.origin == "worker"
         assert started.repository == "owner/repo"
 
+    def test_dependency_bot_pr_admission_records_skip_without_dispatch(self):
+        """Issue #1995: the common dependency-bot gate is visible with no invented later stages."""
+        config = AutomationConfig()  # defaults: IGNORE_DEPENDABOT_PRS=False, AUTO_MERGE_DEPENDABOT_PRS=True
+        engine = AutomationEngine(MagicMock(), config)
+        candidate = Candidate(
+            type="pr",
+            data={
+                "number": 5318,
+                "title": "Bump some-package",
+                "body": "",
+                "state": "open",
+                "mergeable": False,
+                "labels": [],
+                "head": {"ref": "dependabot/npm_and_yarn/some-package-1.0.0", "sha": "a" * 40},
+                "author": "dependabot[bot]",
+                "user": {"login": "dependabot[bot]"},
+            },
+            priority=0,
+        )
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, config)
+
+        assert result.target_outcome is ExplicitTargetOutcome.SKIPPED
+        snapshot = get_trace_collector().get_snapshot(item_type="pr", item_number=5318)
+        kinds = [(e.kind, e.stage_id, e.outcome) for e in snapshot.events]
+        assert (EventKind.EXECUTION_STARTED.value, "pr.execution", None) in kinds
+        assert (EventKind.STAGE_RESULT.value, "pr.dependency-bot-admission", Outcome.SKIPPED.value) in kinds
+        assert (EventKind.EXECUTION_FINISHED.value, "execution", Outcome.SKIPPED.value) in kinds
+        # No later CI/merge/repair stage was ever reached: a refusal at this
+        # gate must not transiently acquire capacity before releasing it.
+        assert not any(e.stage_id.startswith("pr.ci-") or e.stage_id.startswith("pr.merge-") for e in snapshot.events)
+
 
 class TestPrResumptionSupersededHead:
     """AS-002/AS-007: a changed head since deferral is visible as superseded,
