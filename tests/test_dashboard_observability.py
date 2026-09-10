@@ -709,5 +709,9 @@ def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_pat
     assert len(events) == 1
     assert events[0].outcome == expected.value
     diagram = _mounted_detail(mock_ui, "issue", 1998)
-    _assert_required_stage_visible(diagram, "sibling dependency gate")
-    assert expected.value in diagram
+    # The validation producer is a later, independently navigable execution
+    # for this Issue. Follow-latest therefore displays its real READY result;
+    # the worker's dependency-gate evidence remains available as the older
+    # execution rather than being copied into the producer's scope.
+    _assert_required_stage_visible(diagram, "individual validation job")
+    assert "outcome: completed" in diagram

@@ -236,6 +236,39 @@ class TestValidationJobsGetTheirOwnExecutionIdentity:
         assert job_result.facts["member_issue_numbers"] == [901, 902]
         assert job_result.facts["verdict"] == "READY"
 
+    def test_standalone_submission_records_producer_and_consumer_ready(self):
+        """A production standalone submission cannot bypass the job wrapper."""
+
+        class _Identity:
+            key = "owner/repo:801:generation:policy"
+
+        class _Decision:
+            identity = _Identity()
+            verdict = "READY"
+
+        engine = AutomationEngine(MagicMock(), AutomationConfig())
+        with get_trace_collector().start_execution("owner/repo", "issue", 801, origin="worker") as worker:
+            job = engine._submit_individual_validation("owner/repo", 801, _Identity.key, _Decision, "standalone-intake")
+            decision = engine._consume_individual_validation(801, _Identity.key, job, "standalone-intake")
+
+        assert decision.verdict == "READY"
+        snapshot = get_trace_collector().get_snapshot(item_type="issue", item_number=801)
+        producer = next(event for event in snapshot.events if event.kind == EventKind.STAGE_RESULT.value and event.stage_id == "issue.individual-validation-job")
+        consumed = next(event for event in snapshot.events if event.stage_id == "issue.individual-validation-observation" and event.facts and event.facts.get("observation") == "consumed")
+        assert producer.execution_id != worker.scope.execution_id
+        assert producer.outcome == Outcome.COMPLETED.value
+        assert producer.facts["validation_identity"] == _Identity.key
+        assert consumed.execution_id == worker.scope.execution_id
+        assert consumed.outcome == Outcome.COMPLETED.value
+        assert consumed.facts == {
+            "review_kind": "individual",
+            "validation_identity": _Identity.key,
+            "decision_identity": _Identity.key,
+            "caller_origin": "standalone-intake",
+            "observation": "consumed",
+            "verdict": "READY",
+        }
+
     def test_disabled_decomposition_validation_is_distinguishable_from_blocked(self):
         config = AutomationConfig()
         engine = AutomationEngine(MagicMock(), config)
