@@ -292,7 +292,7 @@ def safe_error_details(response: httpx.Response, credentials: tuple[str, ...]) -
 def log_outcome(outcome: GitHubRequestOutcome, event: str) -> None:
     payload = asdict(outcome)
     payload["event"] = event
-    logger.bind(github_request=payload).info("github_request_diagnostic {}", json.dumps(payload, default=str, sort_keys=True))
+    logger.bind(github_request=payload).debug("github_request_diagnostic {}", json.dumps(payload, default=str, sort_keys=True))
 
 
 class DiagnosticTransport(httpx.BaseTransport):
@@ -334,7 +334,7 @@ class DiagnosticTransport(httpx.BaseTransport):
                 self._observation_hook(outcome)
             raise GitHubRequestRefused(outcome)
         started = time.monotonic()
-        logger.bind(github_request=asdict(context)).info("github_request_diagnostic wire_attempt")
+        logger.bind(github_request=asdict(context)).debug("github_request_diagnostic wire_attempt")
         try:
             response = self._transport.handle_request(request)
         except GitHubRequestError:
