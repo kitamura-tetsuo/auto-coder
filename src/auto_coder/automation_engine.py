@@ -1528,6 +1528,7 @@ class AutomationEngine:
             )
             raise
         verdict = decision.verdict
+        decision_identity = getattr(getattr(decision, "identity", None), "key", identity_key)
         outcome = {"READY": Outcome.COMPLETED, "BLOCKED": Outcome.BLOCKED, "ERROR": Outcome.FAILED}.get(verdict, Outcome.UNKNOWN)
         _record_issue_stage_result(
             item_number,
@@ -1537,7 +1538,7 @@ class AutomationEngine:
             {
                 "review_kind": "individual",
                 "validation_identity": identity_key,
-                "decision_identity": decision.identity.key,
+                "decision_identity": decision_identity,
                 "caller_origin": origin,
                 "observation": "consumed",
                 "verdict": verdict,
@@ -1640,14 +1641,19 @@ class AutomationEngine:
         if decomposition_job is not None:
             try:
                 decomposition_decision = decomposition_job.result()
+                decomposition_identity = getattr(decomposition_decision, "identity", None)
+                parent_identity = getattr(decomposition_identity, "parent", None)
+                ambient_scope = current_scope()
+                parent_number = getattr(parent_identity, "issue_number", ambient_scope.item_number if ambient_scope is not None else -1)
+                identity_key = getattr(decomposition_identity, "key", decomposition_job.identity_key.removeprefix("decomposition:"))
                 _record_issue_stage_result(
-                    decomposition_decision.identity.parent.issue_number,
+                    parent_number,
                     "issue.decomposition-validation-observation",
-                    f"issue#{decomposition_decision.identity.parent.issue_number} decomposition validation observation",
+                    f"issue#{parent_number} decomposition validation observation",
                     {"READY": Outcome.COMPLETED, "BLOCKED": Outcome.BLOCKED, "ERROR": Outcome.FAILED}.get(decomposition_decision.verdict, Outcome.UNKNOWN),
                     {
                         "review_kind": "decomposition",
-                        "validation_identity": decomposition_decision.identity.key,
+                        "validation_identity": identity_key,
                         "observation": "consumed",
                         "verdict": decomposition_decision.verdict,
                     },
