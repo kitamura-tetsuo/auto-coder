@@ -1,5 +1,13 @@
 # Auto-Coder Dashboard
 
+Specification-validation diagnostics include standalone, retained-owner, and
+parent/direct-child scheduling. Each producer has its own execution identity,
+while a waiting worker records consumption against the exact validation decision
+identity rather than claiming the producer's work. READY, BLOCKED, ERROR,
+cancellation, and disabled bypasses remain distinct. These events use bounded
+process-local trace retention; they are not durable review history and cannot be
+recovered after restart.
+
 The Auto-Coder Dashboard provides a real-time visualization of the automation engine's activities, including the queue status, active workers, and detailed logs for processed items (Issues and Pull Requests).
 
 ## Enabling the Dashboard

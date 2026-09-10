@@ -1523,11 +1523,92 @@ class AutomationEngine:
                     origin="validation-scheduler",
                     label=label,
                     outcome=outcome,
-                    facts={**(facts or {}), "verdict": verdict},
+                    facts={**(facts or {}), "verdict": verdict, "evaluation_source": getattr(decision, "evaluation_source", "unrecorded")},
                 )
             except Exception:
                 logger.opt(exception=True).debug("Diagnostic trace recording failed for issue#{} validation job; continuing", item_number)
             return decision
+
+    def _submit_individual_validation(
+        self,
+        repo_name: str,
+        item_number: int,
+        identity_key: str,
+        operation: Any,
+        origin: str,
+    ) -> ValidationJob[ValidationDecision]:
+        """Submit every individual review through the diagnostic job boundary.
+
+        The scheduler may return an existing future.  The producing operation is
+        therefore traced inside the submitted callable, while this caller records
+        only that it queued or joined the exact identity.  Diagnostic failures are
+        deliberately isolated by the existing collector APIs.
+        """
+        facts: Dict[str, Any] = {
+            "issue_number": item_number,
+            "review_kind": "individual",
+            "validation_identity": identity_key,
+            "caller_origin": origin,
+        }
+        _record_issue_stage_result(
+            item_number,
+            "issue.individual-validation-observation",
+            f"issue#{item_number} individual validation observation",
+            Outcome.DEFERRED,
+            {**facts, "observation": "submitted-or-joined"},
+        )
+        return self.validation_scheduler.submit(
+            f"individual:{identity_key}",
+            partial(
+                self._traced_validation_job,
+                repo_name,
+                item_number,
+                "issue.individual-validation-job",
+                f"issue#{item_number} individual validation job",
+                facts,
+                operation,
+            ),
+        )
+
+    @staticmethod
+    def _consume_individual_validation(
+        item_number: int,
+        identity_key: str,
+        job: ValidationJob[ValidationDecision],
+        origin: str,
+    ) -> ValidationDecision:
+        """Observe a shared result without claiming the producer's execution."""
+        try:
+            decision = job.result()
+        except BaseException as exc:
+            outcome = Outcome.CANCELLED if isinstance(exc, (asyncio.CancelledError, ValidationAdmissionDeferred)) else Outcome.FAILED
+            _record_issue_stage_result(
+                item_number,
+                "issue.individual-validation-observation",
+                f"issue#{item_number} individual validation observation",
+                outcome,
+                {"review_kind": "individual", "validation_identity": identity_key, "caller_origin": origin, "observation": "consume-error"},
+            )
+            raise
+        verdict = decision.verdict
+        decision_identity = getattr(getattr(decision, "identity", None), "key", identity_key)
+        outcome = {"READY": Outcome.COMPLETED, "BLOCKED": Outcome.BLOCKED, "ERROR": Outcome.FAILED}.get(verdict, Outcome.UNKNOWN)
+        _record_issue_stage_result(
+            item_number,
+            "issue.individual-validation-observation",
+            f"issue#{item_number} individual validation observation",
+            outcome,
+            {
+                "review_kind": "individual",
+                "validation_identity": identity_key,
+                "decision_identity": decision_identity,
+                "caller_origin": origin,
+                "observation": "consumed",
+                "verdict": verdict,
+                "evaluation_source": getattr(decision, "evaluation_source", "unrecorded"),
+            },
+        )
+        return decision
 
     def _schedule_parent_validations(
         self,
@@ -1595,17 +1676,12 @@ class AutomationEngine:
                 manifest = build_normative_issue_manifest(number, title, body)
                 relationship_context = self._child_review_context(parent, children, number)
                 identity = individual.identity(number, title, body, relationship_context)
-                child_jobs[number] = self.validation_scheduler.submit(
-                    f"individual:{identity.key}",
-                    partial(
-                        self._traced_validation_job,
-                        repo_name,
-                        number,
-                        "issue.individual-validation-job",
-                        f"issue#{number} individual validation job",
-                        {"issue_number": number},
-                        partial(individual.decide, manifest, title, body, relationship_context),
-                    ),
+                child_jobs[number] = self._submit_individual_validation(
+                    repo_name,
+                    number,
+                    identity.key,
+                    partial(individual.decide, manifest, title, body, relationship_context),
+                    "parent-child-scheduling",
                 )
         return set_job, child_jobs
 
@@ -1629,8 +1705,8 @@ class AutomationEngine:
         related = [contract(parent)] + [contract(child) for child in children if int(child["number"]) != issue_number]
         return IndividualRelationshipContext(role="child", related_contracts=json.dumps(related, ensure_ascii=False, indent=2))
 
-    @staticmethod
     def _join_parent_validations(
+        self,
         decomposition_job: Optional[ValidationJob[DecompositionDecision]],
         child_jobs: dict[int, ValidationJob[ValidationDecision]],
     ) -> tuple[Optional[DecompositionDecision], dict[int, ValidationDecision]]:
@@ -1641,11 +1717,29 @@ class AutomationEngine:
         if decomposition_job is not None:
             try:
                 decomposition_decision = decomposition_job.result()
+                decomposition_identity = getattr(decomposition_decision, "identity", None)
+                parent_identity = getattr(decomposition_identity, "parent", None)
+                ambient_scope = current_scope()
+                parent_number = getattr(parent_identity, "issue_number", ambient_scope.item_number if ambient_scope is not None else -1)
+                identity_key = getattr(decomposition_identity, "key", decomposition_job.identity_key.removeprefix("decomposition:"))
+                _record_issue_stage_result(
+                    parent_number,
+                    "issue.decomposition-validation-observation",
+                    f"issue#{parent_number} decomposition validation observation",
+                    {"READY": Outcome.COMPLETED, "BLOCKED": Outcome.BLOCKED, "ERROR": Outcome.FAILED}.get(decomposition_decision.verdict, Outcome.UNKNOWN),
+                    {
+                        "review_kind": "decomposition",
+                        "validation_identity": identity_key,
+                        "observation": "consumed",
+                        "verdict": decomposition_decision.verdict,
+                    },
+                )
             except BaseException as exc:
                 first_error = exc
         for number, job in child_jobs.items():
             try:
-                child_decisions[number] = job.result()
+                identity_key = job.identity_key.removeprefix("individual:")
+                child_decisions[number] = self._consume_individual_validation(number, identity_key, job, "parent-child-consumer")
             except BaseException as exc:
                 if first_error is None:
                     first_error = exc
@@ -1838,10 +1932,8 @@ class AutomationEngine:
             if parent_number is not None:
                 decision = joined_child_decisions[issue_number]
             else:
-                decision = self.validation_scheduler.submit(
-                    f"individual:{individual_identity.key}",
-                    lambda: validator.decide(manifest, title, body),
-                ).result()
+                job = self._submit_individual_validation(repo_name, issue_number, individual_identity.key, lambda: validator.decide(manifest, title, body), "standalone-intake")
+                decision = self._consume_individual_validation(issue_number, individual_identity.key, job, "standalone-intake")
             if decision.verdict == "BLOCKED":
                 if parent_number is not None:
 
@@ -3640,10 +3732,14 @@ class AutomationEngine:
                         if owned_manifest.error is None and self._is_issue_specification_validation_enabled(repo_name, config):
                             owned_validator = self._get_specification_validator(repo_name)
                             owned_identity = owned_validator.identity(item_number, owned_title, owned_body)
-                            owned_decision = self.validation_scheduler.submit(
-                                f"individual:{owned_identity.key}",
+                            owned_job = self._submit_individual_validation(
+                                repo_name,
+                                item_number,
+                                owned_identity.key,
                                 lambda: owned_validator.decide(owned_manifest, owned_title, owned_body),
-                            ).result()
+                                "retained-owner-reevaluation",
+                            )
+                            owned_decision = self._consume_individual_validation(item_number, owned_identity.key, owned_job, "retained-owner-reevaluation")
                             if owned_decision.verdict == "ERROR":
                                 result.error = "Specification validation failed; implementation-ready was preserved for retry"
                                 result.refill_retry_required = True
@@ -3875,10 +3971,14 @@ class AutomationEngine:
                     # READY completion order cannot bypass either authorization gate.
                     decision = eager_child_jobs[item_number].result()
                 else:
-                    decision = self.validation_scheduler.submit(
-                        f"individual:{individual_identity.key}",
+                    job = self._submit_individual_validation(
+                        repo_name,
+                        item_number,
+                        individual_identity.key,
                         lambda: validator.decide(contract, current_title, current_body),
-                    ).result()
+                        "normal-worker-processing",
+                    )
+                    decision = self._consume_individual_validation(item_number, individual_identity.key, job, "normal-worker-processing")
                 if decision.verdict == "ERROR":
                     result.error = "Specification validation failed; implementation-ready was preserved for retry"
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED

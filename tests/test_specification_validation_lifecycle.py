@@ -10,6 +10,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_trace_collector
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import IndividualRelationshipContext, SpecificationAnalysisResult, SpecificationFinding
@@ -661,6 +662,7 @@ def test_supported_alias_provider_change_invalidates_production_policy(monkeypat
 
 def test_async_logical_owner_allows_changed_generation_validation(tmp_path):
     """A remote implementation owner remains authoritative after launch execution returns."""
+    TraceCollector._instance = None
     state = {"body": BODY + " A"}
     analyzed = []
 
@@ -701,6 +703,11 @@ def test_async_logical_owner_allows_changed_generation_validation(tmp_path):
     assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
     assert analyzed == [BODY + " A", BODY + " B"]
     assert owner in engine.implementation_slots.active_owners()
+    trace_snapshot = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=1728)
+    retained_results = [event for event in trace_snapshot.events if event.kind == EventKind.STAGE_RESULT.value and event.stage_id == "issue.individual-validation-job" and event.facts and event.facts.get("caller_origin") == "retained-owner-reevaluation"]
+    assert len(retained_results) == 1
+    assert retained_results[0].outcome == Outcome.COMPLETED.value
+    assert retained_results[0].facts["evaluation_source"] == "model"
 
 
 def test_reconciliation_edit_is_rechecked_before_retry_ownership(tmp_path):
