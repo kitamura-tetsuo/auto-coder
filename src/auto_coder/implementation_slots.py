@@ -6,6 +6,7 @@ import copy
 import fcntl
 import io
 import json
+import math
 import os
 import re
 import threading
@@ -59,6 +60,61 @@ class ProcessIdentity:
     boot_id: str
     start_ticks: int
     state: str
+
+
+@dataclass(frozen=True)
+class ImplementationExecutionSnapshot:
+    """Recorded execution evidence without any liveness interpretation."""
+
+    execution_id: str
+    pid: Optional[int]
+    started_at: Optional[float]
+
+
+@dataclass(frozen=True)
+class ImplementationOwnerSnapshot:
+    """Detached public projection of one durable logical owner."""
+
+    kind: str
+    number: int
+    owner_key: str
+    emergency: bool
+    executions: tuple[ImplementationExecutionSnapshot, ...]
+    implementation_prs: tuple[int, ...]
+    provider_sessions: tuple[str, ...]
+    admission_pending: Optional[bool]
+    admission_established: Optional[bool]
+
+    @property
+    def owner(self) -> ImplementationOwner:
+        return ImplementationOwner(self.kind, self.number)
+
+
+@dataclass(frozen=True)
+class ImplementationSlotSnapshot:
+    """One known, coherent image of durable implementation-slot state."""
+
+    repository: str
+    storage_path: str
+    observed_at: float
+    normal_limit: int
+    owners: tuple[ImplementationOwnerSnapshot, ...]
+    normal_usage: int
+    normal_available: int
+    emergency_usage: int
+
+
+@dataclass(frozen=True)
+class ImplementationSlotSnapshotUnavailable:
+    """A read that could not produce authoritative occupancy values."""
+
+    repository: str
+    storage_path: str
+    normal_limit: int
+    diagnostic: str
+
+
+ImplementationSlotObservation = ImplementationSlotSnapshot | ImplementationSlotSnapshotUnavailable
 
 
 class ImplementationSlotRepository:
@@ -273,6 +329,173 @@ class ImplementationSlotRepository:
             raise ImplementationSlotUnavailable(f"Cannot safely parse implementation slot state at '{self.storage_path}': {exc}") from exc
         except OSError as exc:
             self._raise_permission_error(self.storage_path, exc)
+
+    def snapshot(self) -> ImplementationSlotObservation:
+        """Return a non-blocking, read-only image of this instance's store.
+
+        The observation deliberately does not use ``_state_lock``: that helper
+        creates and repairs coordination paths for writers.  An existing writer
+        lock is acquired without waiting, while an absent lock is compatible
+        with reading the atomically replaced state file directly.
+        """
+        source = str(self.storage_path.expanduser().resolve())
+        if not self._thread_lock.acquire(blocking=False):
+            return self._snapshot_unavailable(source, "implementation store is busy (process-local lock)")
+        lock_file: Optional[io.TextIOWrapper] = None
+        try:
+            try:
+                lock_fd = os.open(self.lock_path, os.O_RDWR)
+            except FileNotFoundError:
+                lock_fd = None
+            except OSError as exc:
+                return self._snapshot_unavailable(source, f"cannot open coordination lock '{self.lock_path}': {exc}")
+            if lock_fd is not None:
+                lock_file = os.fdopen(lock_fd, "a+", encoding="utf-8")
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return self._snapshot_unavailable(source, f"implementation store is busy at '{self.lock_path}'")
+                except OSError as exc:
+                    return self._snapshot_unavailable(source, f"cannot lock coordination source '{self.lock_path}': {exc}")
+            try:
+                owners = self._read_snapshot_image()
+                projected, normal_usage, emergency_usage = self._project_snapshot_owners(owners)
+            except (ImplementationSlotUnavailable, OSError) as exc:
+                return self._snapshot_unavailable(source, str(exc))
+            return ImplementationSlotSnapshot(
+                repository=self.repo_name,
+                storage_path=source,
+                observed_at=time.time(),
+                normal_limit=self.max_implementations,
+                owners=projected,
+                normal_usage=normal_usage,
+                normal_available=max(0, self.max_implementations - normal_usage),
+                emergency_usage=emergency_usage,
+            )
+        finally:
+            if lock_file is not None:
+                lock_file.close()
+            self._thread_lock.release()
+
+    def _snapshot_unavailable(self, source: str, diagnostic: str) -> ImplementationSlotSnapshotUnavailable:
+        return ImplementationSlotSnapshotUnavailable(
+            repository=self.repo_name,
+            storage_path=source,
+            normal_limit=self.max_implementations,
+            diagnostic=diagnostic,
+        )
+
+    def _read_snapshot_image(self) -> Dict[str, object]:
+        """Read one file descriptor without creating or repairing the store."""
+        try:
+            with io.open(self.storage_path, "r", encoding="utf-8") as state_file:
+                value = json.load(state_file)
+        except FileNotFoundError:
+            return {}
+        except (json.JSONDecodeError, UnicodeError, OSError) as exc:
+            raise ImplementationSlotUnavailable(f"cannot read implementation store '{self.storage_path}': {exc}") from exc
+        if not isinstance(value, dict):
+            raise ImplementationSlotUnavailable(f"invalid root in implementation store '{self.storage_path}': expected object")
+        return value
+
+    @staticmethod
+    def _project_snapshot_owners(owners: Dict[str, object]) -> tuple[tuple[ImplementationOwnerSnapshot, ...], int, int]:
+        projected: list[ImplementationOwnerSnapshot] = []
+        emergency_usage = 0
+        for key, untyped_record in owners.items():
+            field = f"owner {key!r}"
+            if not isinstance(key, str) or not isinstance(untyped_record, dict):
+                raise ImplementationSlotUnavailable(f"invalid {field}: expected object")
+            record = untyped_record
+            kind = record.get("kind")
+            number = record.get("number")
+            if kind not in {"issue", "pr"}:
+                raise ImplementationSlotUnavailable(f"invalid {field}.kind: expected issue or pr")
+            if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                raise ImplementationSlotUnavailable(f"invalid {field}.number: expected positive integer")
+            owner = ImplementationOwner(kind, number)
+            if key != owner.key:
+                raise ImplementationSlotUnavailable(f"invalid {field}: key does not match kind and number")
+
+            emergency = ImplementationSlotRepository._optional_bool(record, "emergency", False, field)
+            pending = ImplementationSlotRepository._optional_bool(record, "admission_pending", None, field)
+            established = ImplementationSlotRepository._optional_bool(record, "admission_established", None, field)
+            prs = ImplementationSlotRepository._positive_integer_list(record, "implementation_prs", field)
+            sessions = ImplementationSlotRepository._string_list(record, "provider_sessions", field)
+            executions = ImplementationSlotRepository._execution_snapshots(record, field)
+            if emergency:
+                emergency_usage += 1
+                if emergency_usage > 1:
+                    raise ImplementationSlotUnavailable("invalid emergency projection: multiple emergency owners")
+            projected.append(
+                ImplementationOwnerSnapshot(
+                    owner.kind,
+                    owner.number,
+                    owner.key,
+                    emergency,
+                    executions,
+                    prs,
+                    sessions,
+                    pending,
+                    established,
+                )
+            )
+        projected.sort(key=lambda value: (value.kind, value.number))
+        normal_usage = len(projected) - emergency_usage
+        return tuple(projected), normal_usage, emergency_usage
+
+    @staticmethod
+    def _optional_bool(record: Dict[str, object], name: str, absent: Optional[bool], field: str) -> Optional[bool]:
+        if name not in record:
+            return absent
+        value = record[name]
+        if not isinstance(value, bool):
+            raise ImplementationSlotUnavailable(f"invalid {field}.{name}: expected Boolean")
+        return value
+
+    @staticmethod
+    def _positive_integer_list(record: Dict[str, object], name: str, field: str) -> tuple[int, ...]:
+        values = record.get(name, [])
+        if not isinstance(values, list):
+            raise ImplementationSlotUnavailable(f"invalid {field}.{name}: expected list")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values):
+            raise ImplementationSlotUnavailable(f"invalid {field}.{name}: expected positive integer entries")
+        return tuple(values)
+
+    @staticmethod
+    def _string_list(record: Dict[str, object], name: str, field: str) -> tuple[str, ...]:
+        values = record.get(name, [])
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            raise ImplementationSlotUnavailable(f"invalid {field}.{name}: expected string list")
+        return tuple(values)
+
+    @staticmethod
+    def _execution_snapshots(record: Dict[str, object], field: str) -> tuple[ImplementationExecutionSnapshot, ...]:
+        values = record.get("executions", [])
+        if not isinstance(values, list):
+            raise ImplementationSlotUnavailable(f"invalid {field}.executions: expected list")
+        result: list[ImplementationExecutionSnapshot] = []
+        for index, value in enumerate(values):
+            execution_field = f"{field}.executions[{index}]"
+            if not isinstance(value, dict):
+                raise ImplementationSlotUnavailable(f"invalid {execution_field}: expected object")
+            execution_id = value.get("id")
+            if not isinstance(execution_id, str) or not execution_id:
+                raise ImplementationSlotUnavailable(f"invalid {execution_field}.id: expected non-empty string")
+            pid = value.get("pid")
+            if "pid" in value and (isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0):
+                raise ImplementationSlotUnavailable(f"invalid {execution_field}.pid: expected positive integer")
+            started_at = value.get("started_at")
+            if "started_at" in value and (isinstance(started_at, bool) or not isinstance(started_at, (int, float)) or not math.isfinite(started_at) or started_at < 0):
+                raise ImplementationSlotUnavailable(f"invalid {execution_field}.started_at: expected finite non-negative number")
+            result.append(
+                ImplementationExecutionSnapshot(
+                    execution_id=execution_id,
+                    pid=pid if isinstance(pid, int) else None,
+                    started_at=float(started_at) if isinstance(started_at, (int, float)) else None,
+                )
+            )
+        return tuple(result)
 
     def _write(self, owners: Dict[str, Dict[str, object]]) -> None:
         temporary = self.storage_path.with_suffix(".tmp")

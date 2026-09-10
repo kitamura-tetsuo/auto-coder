@@ -20,6 +20,8 @@ from auto_coder.implementation_slots import (
     ImplementationOwner,
     ImplementationOwnerResolutionError,
     ImplementationSlotRepository,
+    ImplementationSlotSnapshot,
+    ImplementationSlotSnapshotUnavailable,
     ImplementationSlotUnavailable,
 )
 from auto_coder.llm_backend_config import get_max_concurrent_implementations_from_config
@@ -57,6 +59,129 @@ class GitHubState:
 
 def repository(tmp_path, limit=1):
     return ImplementationSlotRepository("owner/repo", limit, tmp_path / "slots.json")
+
+
+def test_snapshot_projects_one_detached_complete_owner_image(tmp_path):
+    slots = repository(tmp_path, limit=1)
+    issue = ImplementationOwner("issue", 10)
+    first_execution = slots.start_execution(issue)
+    assert first_execution is not None
+    assert slots.record_implementation_pr(issue, 11)
+    assert slots.record_provider_session(issue, "session-a")
+    second_execution = slots.start_execution(issue, bypass_active_execution=True)
+    assert second_execution is not None
+    assert slots.start_execution(ImplementationOwner("pr", 20), bypass_capacity=True)
+    assert slots.start_execution(ImplementationOwner("issue", 30), allow_urgent_emergency=True)
+
+    snapshot = slots.snapshot()
+    assert isinstance(snapshot, ImplementationSlotSnapshot)
+    assert snapshot.repository == "owner/repo"
+    assert snapshot.storage_path == str((tmp_path / "slots.json").resolve())
+    assert snapshot.normal_limit == 1
+    assert (snapshot.normal_usage, snapshot.normal_available, snapshot.emergency_usage) == (2, 0, 1)
+    assert tuple(row.owner.key for row in snapshot.owners) == ("issue:10", "issue:30", "pr:20")
+    issue_row = snapshot.owners[0]
+    assert tuple(item.execution_id for item in issue_row.executions) == (first_execution, second_execution)
+    assert issue_row.implementation_prs == (11,)
+    assert issue_row.provider_sessions == ("session-a",)
+    assert issue_row.admission_pending is None
+    assert issue_row.admission_established is None
+
+    slots.finish_execution(issue, first_execution)
+    later = slots.snapshot()
+    assert isinstance(later, ImplementationSlotSnapshot)
+    assert tuple(item.execution_id for item in issue_row.executions) == (first_execution, second_execution)
+    assert tuple(item.execution_id for item in later.owners[0].executions) == (second_execution,)
+
+
+def test_snapshot_absent_store_is_known_empty_and_creates_nothing(tmp_path):
+    path = tmp_path / "missing" / "slots.json"
+    slots = ImplementationSlotRepository("owner/repo", 4, path)
+
+    snapshot = slots.snapshot()
+
+    assert isinstance(snapshot, ImplementationSlotSnapshot)
+    assert snapshot.owners == ()
+    assert (snapshot.normal_usage, snapshot.normal_available, snapshot.emergency_usage) == (0, 4, 0)
+    assert not path.exists()
+    assert not path.parent.exists()
+    assert not slots.lock_path.exists()
+
+
+@pytest.mark.parametrize(
+    "record,diagnostic",
+    [
+        ({"kind": "other", "number": 1}, ".kind"),
+        ({"kind": "issue", "number": True}, ".number"),
+        ({"kind": "issue", "number": 1, "implementation_prs": None}, ".implementation_prs"),
+        ({"kind": "issue", "number": 1, "provider_sessions": [1]}, ".provider_sessions"),
+        ({"kind": "issue", "number": 1, "emergency": None}, ".emergency"),
+        ({"kind": "issue", "number": 1, "admission_pending": "false"}, ".admission_pending"),
+        ({"kind": "issue", "number": 1, "executions": [{"id": ""}]}, ".id"),
+        ({"kind": "issue", "number": 1, "executions": [{"id": "x", "pid": 0}]}, ".pid"),
+        ({"kind": "issue", "number": 1, "executions": [{"id": "x", "started_at": float("inf")}]}, ".started_at"),
+    ],
+)
+def test_snapshot_rejects_invalid_present_projected_fields(tmp_path, record, diagnostic):
+    slots = repository(tmp_path)
+    slots.storage_path.write_text(json.dumps({"issue:1": record}), encoding="utf-8")
+
+    snapshot = slots.snapshot()
+
+    assert isinstance(snapshot, ImplementationSlotSnapshotUnavailable)
+    assert diagnostic in snapshot.diagnostic
+    assert not hasattr(snapshot, "normal_usage")
+    assert not hasattr(snapshot, "observed_at")
+
+
+def test_snapshot_rejects_corrupt_root_key_and_multiple_emergency_owners(tmp_path):
+    slots = repository(tmp_path, limit=2)
+    invalid_images = (
+        "not-json",
+        "[]",
+        json.dumps({"issue:2": {"kind": "issue", "number": 1}}),
+        json.dumps(
+            {
+                "issue:1": {"kind": "issue", "number": 1, "emergency": True},
+                "pr:2": {"kind": "pr", "number": 2, "emergency": True},
+            }
+        ),
+    )
+    for image in invalid_images:
+        slots.storage_path.write_text(image, encoding="utf-8")
+        before = slots.storage_path.read_bytes()
+        snapshot = slots.snapshot()
+        assert isinstance(snapshot, ImplementationSlotSnapshotUnavailable)
+        assert snapshot.diagnostic
+        assert slots.storage_path.read_bytes() == before
+
+
+def test_snapshot_returns_busy_without_waiting_or_mutating_lock(tmp_path):
+    slots = repository(tmp_path)
+    assert slots.reserve_new(ImplementationOwner("issue", 1))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hold_writer_lock():
+        with slots._state_lock():
+            entered.set()
+            assert release.wait(timeout=5)
+
+    thread = threading.Thread(target=hold_writer_lock)
+    thread.start()
+    assert entered.wait(timeout=5)
+    started = time.monotonic()
+    snapshot = slots.snapshot()
+    elapsed = time.monotonic() - started
+    release.set()
+    thread.join(timeout=5)
+
+    assert isinstance(snapshot, ImplementationSlotSnapshotUnavailable)
+    assert "busy" in snapshot.diagnostic
+    assert elapsed < 1
+    known = slots.snapshot()
+    assert isinstance(known, ImplementationSlotSnapshot)
+    assert known.normal_usage == 1
 
 
 class AuthoritativeHierarchy:
