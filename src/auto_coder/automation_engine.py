@@ -2632,6 +2632,8 @@ class AutomationEngine:
         from .pr_processor import (
             _close_empty_pr,
             _close_stale_jules_pr,
+            _dependency_bot_flag_decision,
+            _dependency_bot_readiness_decision,
             _is_dependabot_pr,
             _is_jules_pr,
             _reject_unsafe_codex_cloud_pr,
@@ -2816,35 +2818,29 @@ class AutomationEngine:
 
                 mergeable = pr_data.get("mergeable", True)
 
-                # Handle dependency-bot PRs based on configuration
-                is_dependency_bot = _is_dependabot_pr(pr_data)
-                if is_dependency_bot:
-                    # Get author information for logging
-                    author = pr_data.get("author", "unknown")
-                    logger.debug(f"PR #{pr_number}: Detected as dependency-bot PR (author: {author})")
-
-                    # Log the current configuration values
-                    logger.debug(f"PR #{pr_number}: IGNORE_DEPENDABOT_PRS={self.config.IGNORE_DEPENDABOT_PRS}, AUTO_MERGE_DEPENDABOT_PRS={self.config.AUTO_MERGE_DEPENDABOT_PRS}")
-
-                    # Log GitHub Actions check results
-                    logger.debug(f"PR #{pr_number}: checks.success={checks.success}, mergeable={mergeable}")
-
-                    if self.config.IGNORE_DEPENDABOT_PRS:
-                        # When IGNORE_DEPENDABOT_PRS is True: Skip ALL Dependabot PRs
-                        logger.debug(f"Skipping dependency-bot PR #{pr_number} - IGNORE_DEPENDABOT_PRS is enabled")
-                        continue
-                    elif self.config.AUTO_MERGE_DEPENDABOT_PRS:
-                        # When AUTO_MERGE_DEPENDABOT_PRS is True:
-                        # - If passing & mergeable: Process (allow auto-merge)
-                        # - Else: Skip (ignore)
-                        if not (checks.success and bool(mergeable)):
-                            logger.debug(f"Skipping dependency-bot PR #{pr_number} - checks not passing (success={checks.success}) or not mergeable (mergeable={mergeable})")
-                            continue
-                        else:
-                            logger.info(f"Processing dependency-bot PR #{pr_number} - checks passed and mergeable")
-                    # If both flags are False: Process all Dependabot PRs (try to fix failing)
-
-                    # If both flags are False: Process all Dependabot PRs (try to fix failing)
+                # Handle dependency-bot PRs based on configuration, using the
+                # same flag/readiness decisions as the mandatory common
+                # admission gate in `_process_single_candidate_unified_impl`
+                # (Issue #1995, REQ-008). This is an optional, non-authoritative
+                # prefilter over facts already collected in this loop (this
+                # PR is already known-open from `get_open_prs_json`, and
+                # `checks` was already computed above): it can never
+                # substitute for that mandatory boundary's own fresh,
+                # same-HEAD confirmation (REQ-005).
+                dependency_bot_flag_decision = _dependency_bot_flag_decision(_is_dependabot_pr(pr_data), self.config.IGNORE_DEPENDABOT_PRS, self.config.AUTO_MERGE_DEPENDABOT_PRS)
+                if dependency_bot_flag_decision is None:
+                    dependency_bot_decision = _dependency_bot_readiness_decision(
+                        is_open=True,
+                        mergeable=mergeable,
+                        ci_error=checks.error if (not checks.success and not checks.in_progress) else None,
+                        ci_pending=checks.in_progress,
+                        ci_success=checks.success,
+                    )
+                else:
+                    dependency_bot_decision = dependency_bot_flag_decision
+                if not dependency_bot_decision.allowed:
+                    logger.debug(f"Skipping dependency-bot PR #{pr_number} at collector prefilter: {dependency_bot_decision.reason}")
+                    continue
 
                 # Check if PR is created by Jules and waiting for Jules update
                 if pr_data.get("author") == "jules":
@@ -3269,6 +3265,29 @@ class AutomationEngine:
             result.target_reason = "PR author is not in the allowlist"
             _record_pr_stage_result(item_number, "pr.author-admission", f"pr#{item_number} author admission", Outcome.SKIPPED, {"reason": result.target_reason})
             return result
+        if candidate.type == "pr":
+            # Common dependency-bot processing-policy gate (Issue #1995):
+            # every PR-processing origin funnels through this impl before any
+            # implementation reservation, execution, or admission-related PR
+            # membership is created, so a startup/webhook-discovered candidate
+            # cannot bypass the policy that `_get_candidates()` also applies.
+            from .pr_processor import evaluate_dependency_bot_admission
+
+            dependency_bot_decision = evaluate_dependency_bot_admission(self.github, repo_name, candidate.data, config)
+            if not dependency_bot_decision.allowed:
+                logger.info(f"Refusing PR #{item_number} at dependency-bot admission gate: {dependency_bot_decision.reason}")
+                result.target_outcome = dependency_bot_decision.outcome
+                result.target_reason = dependency_bot_decision.reason
+                _record_pr_stage_result(
+                    item_number,
+                    "pr.dependency-bot-admission",
+                    f"pr#{item_number} dependency-bot admission",
+                    Outcome(dependency_bot_decision.outcome.value) if dependency_bot_decision.outcome else Outcome.SKIPPED,
+                    {"reason": dependency_bot_decision.reason},
+                )
+                if dependency_bot_decision.outcome is ExplicitTargetOutcome.DEFERRED:
+                    result.refill_retry_required = True
+                return result
         if candidate.type == "issue":
             collected_candidate = candidate
             if not self._is_issue_author_allowed(candidate.data):
