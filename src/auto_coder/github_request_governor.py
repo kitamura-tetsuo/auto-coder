@@ -389,4 +389,4 @@ class GitHubRequestGovernor:
         }
         if refusal:
             diagnostic["refusal_reason"] = refusal
-        logger.bind(github_governor=diagnostic).info("github_governor_diagnostic {}", json.dumps(diagnostic, sort_keys=True))
+        logger.bind(github_governor=diagnostic).debug("github_governor_diagnostic {}", json.dumps(diagnostic, sort_keys=True))
