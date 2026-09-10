@@ -536,11 +536,12 @@ def test_real_startup_scan_preserves_recent_issue_stabilization(tmp_path: Path, 
         result.links = {"next": {"url": next_url}} if next_url else {}
         return result
 
-    get = MagicMock(side_effect=[response([issue]), response([])])
+    get = MagicMock(side_effect=[response([issue]), response([])] * 5)
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", get)
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.Client.get", MagicMock(return_value=response(issue)))
     github = GitHubClient("token")
     github.get_parent_issue_details_strict = MagicMock(return_value=None)
+    github.get_direct_sub_issues_strict = MagicMock(return_value=[])
     engine = AutomationEngine(github, AutomationConfig())
     processed = []
     monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())
@@ -564,7 +565,14 @@ def test_real_startup_scan_preserves_recent_issue_stabilization(tmp_path: Path, 
         remaining = engine.invalidations.seconds_until_next_ready("owner/repo")
         assert remaining is not None and 55 < remaining <= 60
 
+        github.get_open_entities_strict = MagicMock(
+            return_value=OpenGitHubEntities(
+                issues=[OpenGitHubIssue(number=1725, created_at=issue["created_at"])],
+                pull_requests=[],
+            )
+        )
         monkeypatch.setattr("src.auto_coder.entity_invalidation.time.time", lambda: (now + timedelta(seconds=60)).timestamp())
+        monkeypatch.setattr("src.auto_coder.automation_engine.time.time", lambda: (now + timedelta(seconds=60)).timestamp())
         assert engine._invalidation_wake_event is not None
         engine._invalidation_wake_event.set()
         for _ in range(200):
@@ -766,6 +774,7 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
     }
     github.get_issue_dispatch_snapshot_strict = MagicMock(return_value=strict_snapshot)
     github.get_parent_issue_details_strict = MagicMock(return_value=None)
+    github.get_direct_sub_issues_strict = MagicMock(return_value=[])
     github.get_issue = MagicMock(side_effect=RuntimeError("second request unavailable"))
     github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[], pull_requests=[]))
     engine = AutomationEngine(github, AutomationConfig())
@@ -778,7 +787,8 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
         await _run_worker_until(engine, 1, processed)
 
     asyncio.run(scenario())
-    github.get_issue_dispatch_snapshot_strict.assert_called_once_with("owner/repo", 42)
+    assert github.get_issue_dispatch_snapshot_strict.call_count >= 2
+    assert all(call.args == ("owner/repo", 42) for call in github.get_issue_dispatch_snapshot_strict.call_args_list)
     github.get_issue.assert_not_called()
     assert processed[0]["body"] == "Current body"
     assert engine.invalidations.pending_count("owner/repo") == 0

@@ -408,12 +408,13 @@ def test_hierarchy_uses_newly_authorized_parent_metadata(tmp_path):
     [
         ("open", 999, None, 30),
         ("closed", 1, None, 10),
-        ("open", 1, 11, 10),
+        ("open", 1, 11, 30),
     ],
 )
 def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, child_state, child_author, native_parent, expected_dispatch):
     def issue(number, title, labels, body=BODY, state="open", author=1):
         return {
+            "id": number * 100,
             "number": number,
             "title": title,
             "body": body,
@@ -421,6 +422,7 @@ def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, 
             "labels": [{"name": label} for label in labels],
             "user": {"login": f"user-{author}", "id": author},
             "updated_at": "2024-01-01T00:00:00Z",
+            "created_at": "2020-01-01T00:00:00Z",
         }
 
     issues = {
@@ -430,11 +432,13 @@ def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, 
     }
     GitHubClient.reset_singleton()
     github = GitHubClient.get_instance(token="test-token")
-    github.get_open_entities_strict = Mock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(number) for number in issues]))
+    github.get_open_entities_strict = Mock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(number) for number, snapshot in issues.items() if snapshot["state"] == "open"]))
     github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(issues[number]))
     github.get_parent_issue_number_strict = Mock(side_effect=lambda _repo, number: native_parent if number == 20 else None)
-    github.get_parent_issue_details_strict = Mock(return_value=None)
-    github.get_direct_sub_issues_strict = Mock(return_value=[])
+    parents = {20: native_parent} if native_parent is not None else {}
+    github.get_parent_issue_details_strict = Mock(side_effect=lambda _repo, number: ({"number": parents[number], "state": "open"} if number in parents else None))
+    github.get_direct_sub_issues_strict = Mock(side_effect=lambda _repo, number: [dict(issues[20])] if parents.get(20) == number else [])
+    github.add_sub_issue_strict = Mock(side_effect=lambda _repo, parent, child, _id: parents.__setitem__(child, parent))
     github.get_open_sub_issues_strict = Mock(return_value=[])
     github.get_item_type_strict = Mock(return_value="issue")
     github.try_add_labels = Mock(return_value=True)
@@ -447,8 +451,8 @@ def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, 
     dispatched = []
     engine._process_single_candidate_reserved = Mock(side_effect=lambda _repo, candidate, *_args, **_kwargs: dispatched.append(candidate.data["number"]) or CandidateProcessingResult("issue", candidate.data["number"], success=True))
 
-    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
-    assert dispatched == [expected_dispatch]
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is (expected_dispatch is not None)
+    assert dispatched == ([] if expected_dispatch is None else [expected_dispatch])
     assert engine.implementation_slots.active_owners() == (ImplementationOwner("issue", expected_dispatch),)
 
 

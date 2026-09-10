@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -679,6 +680,7 @@ def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_pat
     github.get_parent_issue_details_strict.return_value = None
     github.get_direct_sub_issues_strict.return_value = []
     github.get_open_sub_issues_strict.return_value = []
+    github.get_open_entities_strict.return_value = SimpleNamespace(issues=[SimpleNamespace(number=1998)])
     github.get_issue_comments_strict.return_value = []
     github.get_connected_prs.return_value = []
     github.get_parent_issue_number_strict.return_value = None

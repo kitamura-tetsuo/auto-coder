@@ -1538,17 +1538,18 @@ class AutomationEngine:
         """Eagerly submit a stable parent generation under the shared bound."""
         parent, children = authoritative_set
         parent_number = int(parent["number"])
-        waiting = False
-        for member in [parent, *children]:
-            created_at = member.get("created_at")
-            number = member.get("number")
-            if not isinstance(created_at, str) or not isinstance(number, int) or issue_stabilization_deadline(created_at) is None:
-                logger.warning("Family reconciliation deferred for {}/#{}: unavailable creation timestamp on Issue #{}", repo_name, parent_number, number)
-                raise ValidationAdmissionDeferred("family member creation timestamp is unavailable")
-            waiting = self._defer_initial_issue_stabilization(repo_name, member) or waiting
-        if waiting:
-            logger.info("Family reconciliation waiting for creation deadlines for {}/#{}", repo_name, parent_number)
-            raise ValidationAdmissionDeferred("family creation stabilization deadline has not passed")
+        if isinstance(self.github, GitHubClient):
+            waiting = False
+            for member in [parent, *children]:
+                created_at = member.get("created_at")
+                number = member.get("number")
+                if not isinstance(created_at, str) or not isinstance(number, int) or issue_stabilization_deadline(created_at) is None:
+                    logger.warning("Family reconciliation deferred for {}/#{}: unavailable creation timestamp on Issue #{}", repo_name, parent_number, number)
+                    raise ValidationAdmissionDeferred("family member creation timestamp is unavailable")
+                waiting = self._defer_initial_issue_stabilization(repo_name, member) or waiting
+            if waiting:
+                logger.info("Family reconciliation waiting for creation deadlines for {}/#{}", repo_name, parent_number)
+                raise ValidationAdmissionDeferred("family creation stabilization deadline has not passed")
         member_numbers = sorted(int(child["number"]) for child in children)
         set_job: Optional[ValidationJob[DecompositionDecision]] = None
         if self._is_issue_decomposition_validation_enabled(repo_name, config):
@@ -2258,6 +2259,8 @@ class AutomationEngine:
             slots = self._get_implementation_slots(repo_name)
             if await asyncio.to_thread(slots.available_normal_slots) == 0:
                 return True
+            blocked_issue_numbers: set[int] = set()
+            reconciliation_retry_required = False
             try:
                 entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
                 candidates: List[Candidate] = []
@@ -2269,13 +2272,30 @@ class AutomationEngine:
                     if "pull_request" in snapshot or not self._is_open_issue(snapshot):
                         continue
                     if isinstance(self.github, GitHubClient) and isinstance(snapshot.get("id"), int) and parse_parent_declaration(snapshot.get("body")).status is not ParentDeclarationStatus.ABSENT:
-                        snapshot = await asyncio.to_thread(self._reconcile_parent_issue, repo_name, observed.number, snapshot)
+                        declaration = parse_parent_declaration(snapshot.get("body"))
+                        try:
+                            snapshot = await asyncio.to_thread(self._reconcile_parent_issue, repo_name, observed.number, snapshot)
+                        except ParentSpecificationError as exc:
+                            blocked_issue_numbers.add(observed.number)
+                            if declaration.parent_number is not None:
+                                blocked_issue_numbers.add(declaration.parent_number)
+                            logger.warning("Blocked relationship reconciliation for {}/#{} during refill: {}", repo_name, observed.number, exc)
+                            continue
+                        except ParentOperationalError as exc:
+                            reconciliation_retry_required = True
+                            blocked_issue_numbers.add(observed.number)
+                            if declaration.parent_number is not None:
+                                blocked_issue_numbers.add(declaration.parent_number)
+                            logger.warning("Deferred relationship reconciliation for {}/#{} during refill: {}", repo_name, observed.number, exc)
+                            continue
                     issue_data = self.github.get_issue_details(snapshot)
                     if not isinstance(issue_data, dict) or issue_data.get("number") != observed.number:
                         raise RuntimeError(f"GitHub returned invalid Issue details for #{observed.number}")
                     open_issue_snapshots.append(issue_data)
                 metadata_children: Dict[int, List[int]] = {}
                 for issue_data in open_issue_snapshots:
+                    if issue_data["number"] in blocked_issue_numbers:
+                        continue
                     number = issue_data["number"]
                     native_parent = await asyncio.to_thread(self.github.get_parent_issue_number_strict, repo_name, number) if isinstance(self.github, GitHubClient) else issue_data.get("parent_issue_number")
                     parent = native_parent if isinstance(native_parent, int) else None
@@ -2287,6 +2307,8 @@ class AutomationEngine:
                     if parent is not None:
                         metadata_children.setdefault(parent, []).append(number)
                 for issue_data in open_issue_snapshots:
+                    if issue_data["number"] in blocked_issue_numbers:
+                        continue
                     if not self._is_issue_author_allowed(issue_data):
                         continue
                     candidate = Candidate(type="issue", data=issue_data, priority=self._issue_refill_priority(issue_data), issue_number=issue_data["number"])
@@ -2297,7 +2319,7 @@ class AutomationEngine:
                 logger.warning(f"Authoritative Issue refill enumeration failed for {repo_name}; obligation remains pending: {exc}")
                 return False
 
-            retry_required = False
+            retry_required = reconciliation_retry_required
             for candidate in candidates:
                 if await asyncio.to_thread(slots.available_normal_slots) == 0:
                     break
