@@ -20,6 +20,7 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .adversarial_validation_scheduler import AdversarialValidationScheduler
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
+from .candidate_queue import CandidateQueue
 from .decomposition_analyzer import DecompositionIssue
 from .decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
 from .deployment_channel import repository_dispatch_authority
@@ -622,7 +623,7 @@ class AutomationEngine:
         self.merge_operation_scheduler = get_merge_operation_scheduler()
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
-        self.queue: asyncio.Queue[Candidate] = asyncio.Queue()
+        self.queue: asyncio.Queue[Candidate] = CandidateQueue()
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
         self._invalidation_drain_lock = asyncio.Lock()
@@ -2535,7 +2536,7 @@ class AutomationEngine:
                 candidate = Candidate(
                     type=claim.identity.entity_type,
                     data={"number": claim.identity.number},
-                    priority=0,
+                    priority=1 if claim.identity.entity_type == "pr" else 0,
                     issue_number=claim.identity.number if claim.identity.entity_type == "issue" else None,
                     invalidation_generation=claim.generation,
                     urgent_admission=claim.urgent_admission,

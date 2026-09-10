@@ -11,6 +11,15 @@ does not veto a family, while malformed metadata on a native member fails the
 family closed. Validation waits for every discovered member's original
 creation-plus-60-seconds deadline through durable invalidations; linking and
 editing do not create a sliding delay.
+## PR priority in live durable processing
+
+The live worker queue serves discovered PRs before waiting Issue and dependency
+work, including PRs handed off by Codex Cloud recovery after startup. Equal
+priorities retain arrival order. Restart recovery uses the same ordering and
+preserves durable generations and delivery coalescing. Running work is not
+interrupted; PR priority takes effect at the next worker boundary.
+The dashboard queue snapshot exposes this service order and priority (PR: 1,
+Issue/dependency: 0); queued work is not an observed processing execution.
 
 ## Muse prompt-file transport
 
