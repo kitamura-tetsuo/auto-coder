@@ -3,6 +3,10 @@ Custom exceptions used across Auto-Coder.
 """
 
 
+class CloudSubmissionNotStartedError(RuntimeError):
+    """Cloud dispatch conclusively ended without submitting remote work."""
+
+
 class AutoCoderUsageLimitError(RuntimeError):
     """Raised by an LLM client when the provider usage/rate limit is reached.
 

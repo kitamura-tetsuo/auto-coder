@@ -928,6 +928,7 @@ class CandidateProcessingResult:
     outcome: "PRProcessingOutcome" = field(default_factory=lambda: PRProcessingOutcome.SUCCESS)
     refill_retry_required: bool = False
     capacity_deferred: bool = False
+    cloud_submission_not_started: bool = False
     target_outcome: Optional[ExplicitTargetOutcome] = None
     target_reason: Optional[str] = None
 

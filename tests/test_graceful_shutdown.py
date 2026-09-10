@@ -220,6 +220,38 @@ def test_queued_child_validation_is_not_started_during_drain(monkeypatch, tmp_pa
     assert engine.invalidations.pending_count("owner/repo") == 1
 
 
+def test_supervisor_cancellation_waits_for_owned_work_then_stops_caller(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    continued = []
+
+    def operation():
+        entered.set()
+        assert release.wait(5)
+        return "finished"
+
+    async def caller():
+        await engine._run_local_critical("supervisor cancellation regression", operation)
+        continued.append("unexpected next work")
+
+    async def scenario():
+        task = asyncio.create_task(caller())
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        assert list(engine._critical_operations.values()) == ["supervisor cancellation regression"]
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert engine._critical_operations == {}
+        assert continued == []
+
+    asyncio.run(scenario())
+
+
 def test_stale_parent_authorization_joins_child_validation_during_drain(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     config = AutomationConfig()

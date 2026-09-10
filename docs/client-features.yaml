@@ -1,5 +1,18 @@
 # Client Features Documentation
 
+## Failed Cloud submission capacity recovery
+
+Ordinary and difficult-Issue Cloud dispatch tries the remaining configured Cloud
+candidates after a confirmed pre-submission rejection. If every candidate rejects
+submission (including unavailable quota), dispatch returns a deferred outcome
+without retrying the exhausted Cloud backends through the local fallback.
+After its execution ends, the Issue releases its slot atomically only if no other
+execution, provider session, or implementation PR remains. This also applies to
+an existing empty reservation retried by the current dispatch. Accepted tasks,
+indeterminate submissions, and unreadable submission journals retain ownership.
+The dashboard records `issue.cloud-submission-slot-release` with `slot_released`
+to distinguish recovered capacity from ownership retained for other work.
+
 ## Declaration-complete specification validation
 
 Before standalone, child, or decomposition validation is admitted, Auto-Coder
@@ -62,6 +75,16 @@ command explicitly, and payload input is rejected for pseudo-terminal runs so
 the existing interactive terminal contract remains unambiguous.
 
 ## Webhook-first durable CI reconciliation
+
+If another CI delivery arrives while its SHA-to-PR lookup is running, the older
+lookup result is discarded and the newer durable correlation retains its quiet
+window for retry. This expected supersession does not terminate the invalidation
+controller, apply stale PR membership, or prevent other ready PR batches from
+being promoted. The pending correlation survives restart.
+If a companion controller does fail, supervisor cancellation waits for owned
+local work to finish and then propagates, preventing cancelled workers from
+continuing or leaving daemon shutdown waiting forever. Explicit graceful drains
+still finalize the owned operation's result through their existing checkpoints.
 
 Manual workflow dispatch now publishes a durable repository, pull request,
 exact-head and workflow watch before making the external request.  CI webhook
@@ -1223,7 +1246,7 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
   - Configuration file: "~/.auto-coder/llm_config.toml"
   - Optional field: Defaults to general backend configuration if not specified
 
-- **Issue discovery and implementation admission**: Ordinary open Issues are collected on every candidate scan, independently of the number, priority, mergeability, or review state of open PRs. Existing candidate priorities still determine scheduling order after discovery. Starting Issue work remains separately controlled by the durable `[process_issues].max_concurrent_implementations` slots. Issue retries, provider sessions, and linked PRs share one persisted Issue-owned slot; standalone PRs own separate slots. Slots survive restarts, remain held during asynchronous and CI/review waits, and are released only after authoritative terminal GitHub state is observed. The state and lock files inherit the containing runtime directory's group and retain group read/write access (without world access) across every atomic replacement, allowing intentionally shared execution identities to coordinate safely. Permission or ownership setup failures are distinct fail-closed errors and never reset durable state. The `urgent` label retains its single durable emergency slot beyond normal capacity, and explicit `--only` / `--force` overrides retain their existing admission semantics.
+- **Issue discovery and implementation admission**: Ordinary open Issues are collected on every candidate scan, independently of the number, priority, mergeability, or review state of open PRs. Existing candidate priorities still determine scheduling order after discovery. Starting Issue work remains separately controlled by the durable `[process_issues].max_concurrent_implementations` slots. Issue retries, provider sessions, and linked PRs share one persisted Issue-owned slot; standalone PRs own separate slots. Slots survive restarts, remain held during asynchronous and CI/review waits, and are normally released after authoritative terminal GitHub state is observed. Confirmed pre-submission Cloud rejection also releases unbound idle ownership, as described above. The state and lock files inherit the containing runtime directory's group and retain group read/write access (without world access) across every atomic replacement, allowing intentionally shared execution identities to coordinate safely. Permission or ownership setup failures are distinct fail-closed errors and never reset durable state. The `urgent` label retains its single durable emergency slot beyond normal capacity, and explicit `--only` / `--force` overrides retain their existing admission semantics.
 - **Event-driven implementation-capacity refill**: A running daemon observes its cross-process implementation-slot repository. When normal capacity changes from full to available, it obtains a new authoritative open-Issue enumeration, strictly refreshes and priority-ranks every candidate, and sends candidates through the ordinary dispatch checks until capacity is full or the snapshot is exhausted. Rejected candidates do not consume the refill opportunity. Failed enumeration remains a level-triggered obligation and is retried, while idle steady state never polls GitHub for candidates.
 
 - **Adversarial-review-blocked PR priority (issue #1731)**: Deprioritizes PRs that cannot make progress at their unchanged HEAD

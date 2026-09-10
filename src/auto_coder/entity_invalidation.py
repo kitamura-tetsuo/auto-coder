@@ -357,16 +357,21 @@ class DurableInvalidationQueue:
             ).fetchone()
             return str(row[0]) if row else None
 
-    def finish_ci_correlation(self, repository: str, sha: str, numbers: list[int]) -> None:
+    def finish_ci_correlation(self, repository: str, sha: str, numbers: list[int]) -> bool:
         """Fan a completely resolved correlation into recoverable delivery targets."""
         with self._lock, self._connection:
             scope = self._connection.execute(
-                """SELECT observation_epoch, first_seen, latest_seen, eligible_at
-                   FROM ci_correlations WHERE repository = ? AND head_sha = ? AND state = 'processing'""",
+                """SELECT observation_epoch, first_seen, latest_seen, eligible_at, state
+                   FROM ci_correlations WHERE repository = ? AND head_sha = ?""",
                 (repository, sha),
             ).fetchone()
             if scope is None:
                 raise RuntimeError("CI correlation claim is no longer current")
+            if scope[4] == "pending":
+                # A delivery received during the lookup supersedes its result.
+                # Retain that delivery's quiet window and durable retry instead
+                # of terminating the controller or applying stale PR membership.
+                return False
             deliveries = self._connection.execute(
                 """SELECT delivery_id FROM ci_webhook_deliveries
                    WHERE repository = ? AND head_sha = ? AND NOT EXISTS
@@ -380,7 +385,7 @@ class DurableInvalidationQueue:
                         "INSERT OR IGNORE INTO ci_delivery_targets(repository, delivery_id, pr_number) VALUES (?, ?, ?)",
                         (repository, delivery_id, number),
                     )
-            epoch, first_seen, latest_seen, eligible_at = scope
+            epoch, first_seen, latest_seen, eligible_at, _ = scope
             for number in sorted(set(numbers)):
                 self._connection.execute(
                     """INSERT INTO ci_pending_prs(repository, pr_number, observation_epoch,
@@ -392,6 +397,7 @@ class DurableInvalidationQueue:
                     (repository, number, epoch, first_seen, latest_seen, eligible_at),
                 )
             self._connection.execute("DELETE FROM ci_correlations WHERE repository = ? AND head_sha = ?", (repository, sha))
+            return True
 
     def release_ci_correlation(self, repository: str, sha: str, retry_after: float = 60) -> None:
         with self._lock, self._connection:

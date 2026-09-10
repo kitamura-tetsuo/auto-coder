@@ -571,7 +571,9 @@ class TestHighScoreBackendManagerIntegration:
         ],
     )
     def test_direct_issue_processing_does_not_restore_all_ineligible_candidates(self, config_section, processor):
-        """Direct issue routing must preserve an empty quota-ranked failover list."""
+        """An exhausted Cloud pool defers so the caller can return idle capacity."""
+        from auto_coder.exceptions import CloudSubmissionNotStartedError
+
         now = datetime.now(timezone.utc)
         config = LLMBackendConfiguration.load_from_dict(
             {
@@ -595,23 +597,22 @@ class TestHighScoreBackendManagerIntegration:
             },
             now=now,
         )
-        fallback_actions = ["Used default backend"]
         with (
             patch("auto_coder.llm_backend_config.get_llm_config", return_value=config),
             patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
             patch("auto_coder.issue_processor._process_issue_codex_cloud_mode") as codex_dispatch,
             patch("auto_coder.issue_processor._process_issue_jules_mode") as jules_dispatch,
-            patch("auto_coder.issue_processor._take_issue_actions", return_value=fallback_actions) as default_dispatch,
+            patch("auto_coder.issue_processor._take_issue_actions") as default_dispatch,
             patch("auto_coder.cli_helpers.create_high_score_cloud_backend_manager", return_value=None),
             patch("auto_coder.cli_helpers.create_high_score_backend_manager", return_value=None),
             patch("auto_coder.cli_helpers.create_cloud_backend_manager", return_value=None),
         ):
-            actions = processor("owner/repo", {"number": 1685}, AutomationConfig(), MagicMock())
+            with pytest.raises(CloudSubmissionNotStartedError, match="No configured .*Cloud backend is eligible to submit work"):
+                processor("owner/repo", {"number": 1685}, AutomationConfig(), MagicMock())
 
-        assert actions == fallback_actions
         codex_dispatch.assert_not_called()
         jules_dispatch.assert_not_called()
-        default_dispatch.assert_called_once()
+        default_dispatch.assert_not_called()
 
     @patch("auto_coder.cli_helpers.get_llm_config")
     @patch("auto_coder.cli_helpers.build_backend_manager")

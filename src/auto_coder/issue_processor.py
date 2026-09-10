@@ -18,7 +18,7 @@ from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessRe
 from .backend_manager import BackendManager, get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
 from .branch_manager import BranchManager
 from .cloud_manager import CloudManager
-from .exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError, CloudSubmissionNotStartedError
 from .execution_trace import EventKind, Outcome, get_trace_collector
 from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
@@ -501,7 +501,7 @@ def _process_issue_codex_cloud_mode(
     if submission.outcome is CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED:
         cloud_run_repo.release_definitely_not_submitted(issue_number, attempt)
         _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.FAILED, {"backend": "codex-cloud", "reason": "definitely not submitted"})
-        return [f"Deferred Codex Cloud task for issue #{issue_number}: definitely not submitted: {submission.diagnostic}"]
+        raise CloudSubmissionNotStartedError(f"Codex Cloud task for issue #{issue_number} definitely not submitted: {submission.diagnostic}")
     if submission.outcome is CodexSubmissionOutcome.INDETERMINATE:
         _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.UNKNOWN, {"backend": "codex-cloud", "reason": "indeterminate submission"})
         return [f"Deferred Codex Cloud task for issue #{issue_number}: submission is indeterminate and requires operator attention: {submission.diagnostic}"]
@@ -570,7 +570,10 @@ def _process_issue_high_score_cloud(
         from .quota_selector import rank_high_score_backends_by_quota
 
         candidates = rank_high_score_backends_by_quota(candidates, llm_config)
+        if not candidates:
+            raise CloudSubmissionNotStartedError("No configured high-score Cloud backend is eligible to submit work")
 
+    rejected_submissions = 0
     for backend_name in candidates:
         b_cfg = llm_config.get_backend_config(backend_name)
         backend_type = (b_cfg and b_cfg.backend_type) or backend_name
@@ -611,12 +614,16 @@ def _process_issue_high_score_cloud(
                     github_client,
                     label_context=label_context,
                 )
-        except AutoCoderUsageLimitError as e:
-            logger.warning(f"Cloud backend '{backend_name}' hit usage limit: {e}. Trying next backend.")
+        except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError) as e:
+            rejected_submissions += 1
+            logger.warning(f"Cloud backend '{backend_name}' rejected submission: {e}. Trying next backend.")
             continue
         except Exception as e:
             logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
             continue
+
+    if candidates and rejected_submissions == len(candidates):
+        raise CloudSubmissionNotStartedError("All configured high-score Cloud backends rejected submission before remote work started")
 
     from .cli_helpers import create_high_score_backend_manager, create_high_score_cloud_backend_manager
 
@@ -677,7 +684,10 @@ def _process_issue_cloud_backend(
     from .quota_selector import rank_high_score_backends_by_quota
 
     candidates = rank_high_score_backends_by_quota(priority_candidates, llm_config)
+    if priority_candidates and not candidates:
+        raise CloudSubmissionNotStartedError("No configured Cloud backend is eligible to submit work")
 
+    rejected_submissions = 0
     for backend_name in candidates:
         b_cfg = llm_config.get_backend_config(backend_name)
         backend_type = (b_cfg and b_cfg.backend_type) or backend_name
@@ -718,12 +728,16 @@ def _process_issue_cloud_backend(
                     github_client,
                     label_context=label_context,
                 )
-        except AutoCoderUsageLimitError as e:
-            logger.warning(f"Cloud backend '{backend_name}' hit usage limit: {e}. Trying next backend.")
+        except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError) as e:
+            rejected_submissions += 1
+            logger.warning(f"Cloud backend '{backend_name}' rejected submission: {e}. Trying next backend.")
             continue
         except Exception as e:
             logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
             continue
+
+    if candidates and rejected_submissions == len(candidates):
+        raise CloudSubmissionNotStartedError("All configured Cloud backends rejected submission before remote work started")
 
     from .cli_helpers import create_cloud_backend_manager
 
