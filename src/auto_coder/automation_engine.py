@@ -1460,7 +1460,7 @@ class AutomationEngine:
                     origin="validation-scheduler",
                     label=label,
                     outcome=outcome,
-                    facts={**(facts or {}), "verdict": verdict},
+                    facts={**(facts or {}), "verdict": verdict, "evaluation_source": getattr(decision, "evaluation_source", "unrecorded")},
                 )
             except Exception:
                 logger.opt(exception=True).debug("Diagnostic trace recording failed for issue#{} validation job; continuing", item_number)
@@ -1542,6 +1542,7 @@ class AutomationEngine:
                 "caller_origin": origin,
                 "observation": "consumed",
                 "verdict": verdict,
+                "evaluation_source": getattr(decision, "evaluation_source", "unrecorded"),
             },
         )
         return decision

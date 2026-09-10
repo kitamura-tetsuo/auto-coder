@@ -103,6 +103,7 @@ class ValidationDecision:
     readiness_removed: bool = False
     remediation: str = "NONE"
     remediation_reason: Optional[str] = None
+    evaluation_source: str = "model"
 
 
 def _contract_evidence(manifest: NormativeIssueManifest, title: str, body: str) -> str:
@@ -253,7 +254,16 @@ class SpecificationValidationStore:
             return None
         findings = tuple(SpecificationFinding(**item) for item in raw.get("findings", []) if isinstance(item, dict))
         remediation = str(raw.get("remediation", "NONE"))
-        return ValidationDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")), remediation, raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None)
+        return ValidationDecision(
+            identity,
+            str(raw["verdict"]),
+            findings,
+            bool(raw.get("findings_published")),
+            bool(raw.get("readiness_removed")),
+            remediation,
+            raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None,
+            "stored-decision-reuse",
+        )
 
     def save(self, decision: ValidationDecision) -> None:
         if decision.verdict not in {"READY", "BLOCKED"}:
@@ -322,10 +332,10 @@ class SpecificationValidationLifecycle:
                     objective = self.objective_store.capture(manifest.issue_number, body, "individual-current-snapshot:v1")
                     evidence = IndividualReviewEvidence(history.baseline, history.prior_applied_outcomes, objective)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    return ValidationDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}")
+                    return ValidationDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}", evaluation_source="local-only")
                 integrity = objective_integrity_result(evidence, manifest.issue_number)
                 if integrity is not None:
-                    decision = ValidationDecision(identity, integrity.verdict, integrity.findings, remediation=integrity.remediation)
+                    decision = ValidationDecision(identity, integrity.verdict, integrity.findings, remediation=integrity.remediation, evaluation_source="local-only")
                     if integrity.verdict == "BLOCKED":
                         self.store.save(decision)
                     return decision

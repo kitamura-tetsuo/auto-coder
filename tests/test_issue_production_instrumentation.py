@@ -267,6 +267,7 @@ class TestValidationJobsGetTheirOwnExecutionIdentity:
             "caller_origin": "standalone-intake",
             "observation": "consumed",
             "verdict": "READY",
+            "evaluation_source": "unrecorded",
         }
 
     def test_disabled_decomposition_validation_is_distinguishable_from_blocked(self):

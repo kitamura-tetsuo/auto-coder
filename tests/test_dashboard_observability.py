@@ -667,7 +667,7 @@ def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_pat
         "number": 1998,
         "id": 199800,
         "title": "Resume deferred work",
-        "body": declaration + "\n\n## Requirements\nREQ-001: Resume eligible work.",
+        "body": declaration + "\n\n## Objective\n\nResume eligible work.\n\n## Requirements\nREQ-001: Resume eligible work.",
         "state": "open",
         "labels": [{"name": "implementation-ready"}],
         "user": {"id": 1},
@@ -715,3 +715,30 @@ def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_pat
     # execution rather than being copied into the producer's scope.
     _assert_required_stage_visible(diagram, "individual validation job")
     assert "outcome: completed" in diagram
+
+    if expected is Outcome.COMPLETED:
+        # Re-enter the real worker path with the same authoritative input. The
+        # lifecycle must reuse the durable decision without another analyzer
+        # call, and the producer evidence must say so explicitly.
+        repeated_engine = AutomationEngine(github, config)
+        repeated_engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "repeated-slots.json")
+        repeated_engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "test/model", tmp_path / "spec.json", analyzer)
+        with patch.object(
+            repeated_engine,
+            "_process_single_candidate_reserved",
+            return_value=CandidateProcessingResult("issue", 1998, issue["title"], True, ["implementation reached"]),
+        ):
+            repeated = repeated_engine._process_single_candidate_unified("owner/repo", Candidate("issue", dict(issue), 0), config)
+        assert repeated.success is True
+        analyzer.assert_called_once()
+
+        issue["body"] = issue["body"].replace("Resume eligible work.", "Change the established purpose.", 1)
+        local_engine = AutomationEngine(github, config)
+        local_engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "local-slots.json")
+        local_engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "test/model", tmp_path / "spec.json", analyzer)
+        local_only = local_engine._process_single_candidate_unified("owner/repo", Candidate("issue", dict(issue), 0), config)
+        assert local_only.target_outcome is ExplicitTargetOutcome.BLOCKED
+        analyzer.assert_called_once()
+        repeated_snapshot = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=1998)
+        producer_results = [event for event in repeated_snapshot.events if event.stage_id == "issue.individual-validation-job" and event.kind == EventKind.STAGE_RESULT.value]
+        assert [event.facts["evaluation_source"] for event in producer_results] == ["model", "stored-decision-reuse", "local-only"]
