@@ -52,6 +52,15 @@ therefore need no new stage or field for the transport itself.
 
 ## Production-origin coverage inventory
 
+Live durable candidates are scheduled with PRs ahead of waiting Issues and
+dependency work, preserving arrival order within each priority. The dashboard's
+queue snapshot reports that order and priority; it does not imply processing has
+started. This scheduling change is trace-neutral: processing origins, execution
+scope creation, admission gates, and terminal emissions are unchanged, and an
+already running Issue is not interrupted. The real enqueue/worker/restart and
+queue-status contract is covered by
+`tests/test_candidate_queue.py::test_durable_prs_overtake_issue_backlog_without_losing_generations`.
+
 These are collected pytest node IDs, not future test plans. Producer tests assert
 business results/effect counts and the real structured snapshot. The joined tests
 also mount and refresh the detail view from that snapshot.

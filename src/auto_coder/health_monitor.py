@@ -598,7 +598,7 @@ class HealthMonitor:
         snapshot = self.snapshot(reason=reason)
         if self.baseline_rss_mb == 0.0:
             self.baseline_rss_mb = snapshot.rss_mb
-        logger.info(snapshot.format_summary())
+        logger.debug(snapshot.format_summary())
         self._write_record("snapshot", asdict(snapshot))
         self._log_tracemalloc_top()
         self._check_thresholds(snapshot)
