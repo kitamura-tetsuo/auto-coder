@@ -216,8 +216,8 @@ def test_parser_rejects_every_malformed_or_ambiguous_candidate(body: str):
 def test_webhook_child_reconciles_and_refetches_before_eager_validation(tmp_path: Path):
     """The supported invalidation origin preserves reconciliation ordering."""
     body = "## Requirements\n- REQ-001: Keep the graph authoritative."
-    initial_child = {"id": 202, "number": 2, "title": "Child", "body": body + "\nParent-Issue: #1", "state": "open", "labels": []}
-    parent = {"id": 101, "number": 1, "title": "Parent", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    initial_child = graph_issue(2, body + "\nParent-Issue: #1")
+    parent = graph_issue(1, body, ready=True)
     github = GraphGitHub({1: parent, 2: initial_child}, {}, {})
     events: list[str] = []
     original_link = github.add_sub_issue_strict
@@ -237,6 +237,44 @@ def test_webhook_child_reconciles_and_refetches_before_eager_validation(tmp_path
     assert events[0] == "linked"
     assert set(events[1:]) == {"decomposition", "individual"}
     assert github.parents == {2: 1}
+
+
+def test_ordinary_child_validation_discovers_all_declared_siblings(tmp_path: Path):
+    """A first child invalidation cannot admit a repeatedly stable native subset."""
+    body = "## Requirements\n- REQ-001: Keep the graph authoritative."
+    github = GraphGitHub(
+        {
+            1: graph_issue(1, body, ready=True),
+            2: graph_issue(2, body + "\nParent-Issue: #1"),
+            3: graph_issue(3, body + "\nparent_issue: 1"),
+            4: graph_issue(4, body + "\nPARENT ISSUE: #1"),
+            5: graph_issue(5, body, state="closed"),
+            99: graph_issue(99, "Parent-Issue: invalid"),
+        },
+        {2: 1, 5: 1},
+        {1: [2, 5]},
+    )
+    decompositions: list[tuple[int, ...]] = []
+    individuals: list[int] = []
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._decomposition_validators["o/r"] = DecompositionValidationLifecycle(
+        "o/r",
+        "provider/model",
+        tmp_path / "sets.json",
+        lambda _parent, children: decompositions.append(tuple(sorted(child.manifest.issue_number for child in children))) or DecompositionAnalysisResult("READY"),
+    )
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle(
+        "o/r",
+        "provider/model",
+        tmp_path / "issues.json",
+        lambda manifest, *_args: individuals.append(manifest.issue_number) or SpecificationAnalysisResult("READY"),
+    )
+
+    engine._validate_submitted_parent_generation_for_child("o/r", 2, github.issues[2])
+
+    assert sorted(github.children[1]) == [2, 3, 4, 5]
+    assert decompositions == [(2, 3, 4, 5)]
+    assert sorted(individuals) == [2, 3, 4, 5]
 
 
 def test_invalid_marker_blocks_common_dispatch_without_side_effects():
