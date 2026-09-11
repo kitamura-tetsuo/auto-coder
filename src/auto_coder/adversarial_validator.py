@@ -2595,7 +2595,7 @@ def run_adversarial_validation(
             and (prior_gaps_by_id[gap.gap_id].status == "OPEN" or (prior_gaps_by_id[gap.gap_id].resolution_head_sha or lifecycle_session.last_head_sha) != head_sha)
             for gap in result.test_oracle_gaps
         )
-        persist_proven_closure = has_proven_gap_closure and result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS", "INCONCLUSIVE"}
+        persist_proven_closure = has_proven_gap_closure and result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS", "INCONCLUSIVE", "BLOCKED"}
         persisted_head_sha = head_sha if lifecycle_completed or persist_proven_closure else lifecycle_session.last_head_sha if lifecycle_session else ""
         persisted_gaps = result.test_oracle_gaps if lifecycle_completed or persist_proven_closure else lifecycle_session.test_oracle_gaps if lifecycle_session else []
         checkpoint = ReviewerSession(

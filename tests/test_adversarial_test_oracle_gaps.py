@@ -15,6 +15,7 @@ from auto_coder.adversarial_validator import (
     _reconcile_test_oracle_gap_lifecycle,
     _stable_test_oracle_gap_id,
     format_adversarial_validation_comment,
+    format_test_oracle_gap_comment,
     parse_adversarial_validation_response,
     run_adversarial_validation,
 )
@@ -781,6 +782,79 @@ def test_deferred_production_checkpoint_does_not_eagerly_mutate_registry(tmp_pat
     assert unchanged.test_oracle_gaps[0].status == "OPEN"
     assert result.reviewer_session_checkpoint is not None
     assert result.reviewer_session_checkpoint.test_oracle_gaps[0].status == "RESOLVED"
+
+
+def test_current_gap_closure_persists_while_historical_gap_blocks_new_head(tmp_path) -> None:
+    first = parsed_result(gap_payload()).test_oracle_gaps[0]
+    historical = parsed_result(gap_payload(boundary="AuditMutation.commit")).test_oracle_gaps[0]
+    historical.status = "RESOLVED"
+    historical.resolution_evidence = "H1 independently proved the audit regression."
+    historical.resolution_head_sha = "sha-h1"
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    session = prior_session(first, "sha-h1")
+    session.test_oracle_gaps.append(historical)
+    registry.save(session)
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    root = format_test_oracle_gap_comment(first)
+    classification = classify_review_threads(
+        (
+            ReviewThread(
+                id="thread-first",
+                comments=[
+                    ReviewThreadComment(database_id=42, author_id=7, author_login="auto-coder-reviewer[bot]", body=root),
+                    ReviewThreadComment(
+                        database_id=43,
+                        author_id=8,
+                        author_login="agent[bot]",
+                        body=f"Added the focused regression.\n{REVIEW_ADDRESSED_MARKER}",
+                    ),
+                ],
+            ),
+        ),
+        {7},
+    )
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.return_value = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "The first regression is proven; current audit protection is unavailable.",
+            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Current implementation behavior is verified."}],
+            "findings": [],
+            "test_oracle_gaps": [],
+            "thread_dispositions": [
+                {
+                    "thread_id": "thread-first",
+                    "status": "ADDRESSED",
+                    "rationale": "The exact requested first-gap invariant is covered.",
+                    "evidence": "tests/test_grid.py exercises the authoritative boundary on sha-h2.",
+                }
+            ],
+        }
+    )
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-h2"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+            claimed_review_threads_section=render_claimed_review_threads_section(classification.claimed),
+            claimed_review_threads=classification.claimed,
+        )
+
+    saved = ReviewerSessionRegistry(registry.path).get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "BLOCKED"
+    assert result.diagnostic_category == "test_oracle_gap_current_head_evidence_missing"
+    assert saved is not None
+    saved_by_id = {gap.gap_id: gap for gap in saved.test_oracle_gaps}
+    assert saved_by_id[first.gap_id].status == "RESOLVED"
+    assert saved_by_id[first.gap_id].resolution_head_sha == "sha-h2"
+    assert saved_by_id[historical.gap_id].resolution_head_sha == "sha-h1"
+    assert saved_by_id[historical.gap_id].historical_resolution_head_sha == "sha-h1"
 
 
 def test_gap_persistence_failure_prevents_thread_projection_and_same_head_retry_recovers(tmp_path) -> None:
