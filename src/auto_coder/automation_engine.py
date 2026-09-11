@@ -5767,6 +5767,10 @@ class AutomationEngine:
                     priority=0,  # Single processing doesn't need priority
                     issue_number=number,
                 )
+        except GitHubRequestDeferred:
+            # Durable invalidation workers retain this typed, definitely-not-sent
+            # outcome. Do not flatten it before the worker commits its schedule.
+            raise
         except Exception as e:
             logger.error(f"Failed to create candidate for {target_type} #{number}: {e}")
             if propagate_errors:

@@ -1,4 +1,5 @@
 import asyncio
+import io
 import math
 import sqlite3
 import threading
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from loguru import logger as loguru_logger
 
 from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from src.auto_coder.automation_engine import AutomationEngine
@@ -17,7 +19,7 @@ from src.auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from src.auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
 from src.auto_coder.entity_invalidation import CIWebhookDelivery, DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
 from src.auto_coder.github_pending_work import PendingWorkScheduler, PendingWorkStore
-from src.auto_coder.github_request_governor import GitHubRequestDeferred
+from src.auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
 from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -30,6 +32,7 @@ from src.auto_coder.util.github_request_outcome import (
     GitHubRequestRefused,
     GitHubResponseMetadata,
     RequestProvenance,
+    configure_github_request_boundary,
 )
 from src.auto_coder.webhook_server import SentryWebhookPayload, create_app, process_github_payload, process_sentry_payload
 
@@ -48,6 +51,26 @@ def _github_deferral(reason: str, retry_at: float) -> GitHubRequestDeferred:
         strict_read=True,
     )
     return GitHubRequestDeferred(context, reason, retry_at)
+
+
+def _install_real_governor_cooldown(tmp_path: Path) -> tuple[GitHubRequestGovernor, float]:
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3")
+    admitted = _github_deferral("seed", 0).outcome.context
+    assert governor.admit(admitted)
+    retry_at = time.time() + 120.0
+    governor.observe(
+        GitHubRequestOutcome(
+            admitted,
+            429,
+            GitHubApiOutcome.THROTTLED,
+            RequestProvenance.NETWORK,
+            DeliveryCertainty.HTTP_RESPONSE_RECEIVED,
+            GitHubResponseMetadata(retry_after_seconds=120.0),
+            1.0,
+        )
+    )
+    configure_github_request_boundary(governor.admit_blocking, governor.observe)
+    return governor, retry_at
 
 
 def test_durable_refresh_deferral_uses_independent_latest_retry_guard(tmp_path: Path, monkeypatch):
@@ -80,35 +103,148 @@ def test_durable_refresh_deferral_uses_independent_latest_retry_guard(tmp_path: 
     assert restarted.claim("owner/repo") is not None
 
 
-def test_worker_persists_real_strict_refresh_deferral_without_dispatch(tmp_path: Path, monkeypatch, caplog):
+@pytest.mark.parametrize("entity_type", ["pr", "issue"])
+def test_worker_persists_real_strict_refresh_deferral_without_candidate_error(tmp_path: Path, monkeypatch, entity_type):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     github = GitHubClient("test-token")
     engine = AutomationEngine(github, AutomationConfig())
     processed = []
-    retry_at = time.time() + 120.0
-    deferred = _github_deferral("rate_limit_cooldown", retry_at)
-    monkeypatch.setattr(github, "get_pull_request_metadata_strict", MagicMock(side_effect=deferred))
     monkeypatch.setattr(engine, "_process_single_candidate", lambda *args, **kwargs: processed.append(args) or CandidateProcessingResult(type="pr", number=100, success=True))
+    _, retry_at = _install_real_governor_cooldown(tmp_path)
+    output = io.StringIO()
+    sink = loguru_logger.add(output, format="{level}|{message}")
 
     async def scenario():
-        await engine.invalidate_entity("owner/repo", "pr", 100)
+        await engine.invalidate_entity("owner/repo", entity_type, 100)
         worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
         for _ in range(200):
-            if engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100)):
+            if engine.invalidations.get_deferred(EntityIdentity("owner/repo", entity_type, 100)):
                 break
             await asyncio.sleep(0.01)
         worker.cancel()
         with pytest.raises(asyncio.CancelledError):
             await worker
 
-    asyncio.run(scenario())
-    retained = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "pr", 100))
+    try:
+        asyncio.run(scenario())
+    finally:
+        configure_github_request_boundary()
+        loguru_logger.remove(sink)
+    retained = engine.invalidations.get_deferred(EntityIdentity("owner/repo", entity_type, 100))
     assert retained is not None
     assert retained.reason == "rate_limit_cooldown"
-    assert retained.retry_not_before == retry_at
-    assert github.get_pull_request_metadata_strict.call_count == 1
+    assert retained.retry_not_before >= retry_at - 0.1
     assert processed == []
-    assert not any(record.levelname == "ERROR" for record in caplog.records)
+    logs = output.getvalue()
+    assert "WARNING|Authoritative refresh safely deferred" in logs
+    assert "Failed to create candidate" not in logs
+    assert "ERROR|Worker 0 error processing candidate" not in logs
+
+
+def test_malformed_strict_pr_metadata_remains_pending_error(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = GitHubClient("test-token")
+    engine = AutomationEngine(github, AutomationConfig())
+    response = httpx.Response(200, json={}, request=httpx.Request("GET", "https://api.github.com/repos/owner/repo/pulls/100"))
+    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", lambda *args, **kwargs: response)
+    processed = []
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda *args, **kwargs: processed.append(args))
+    output = io.StringIO()
+    sink = loguru_logger.add(output, format="{level}|{message}")
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "pr", 100)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        for _ in range(200):
+            if "did not return PR metadata" in output.getvalue():
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        loguru_logger.remove(sink)
+    assert processed == []
+    assert engine.invalidations.pending_count("owner/repo") == 1
+    assert "ERROR|Failed to create candidate for pr #100" in output.getvalue()
+    assert "did not return PR metadata" in output.getvalue()
+
+
+def test_invalidation_loop_automatically_retries_at_durable_deadline(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    github = GitHubClient("test-token")
+    engine = AutomationEngine(github, AutomationConfig())
+    attempts = []
+    processed = []
+    deferred = _github_deferral("request_in_flight", time.time())
+    raw_pr = {"number": 100, "title": "Current", "body": "", "state": "open", "user": {"login": "contributor", "id": 1}, "head": {"ref": "topic"}}
+
+    def strict_refresh(*args):
+        attempts.append(time.monotonic())
+        if len(attempts) == 1:
+            raise deferred
+        return raw_pr
+
+    monkeypatch.setattr(github, "get_pull_request_metadata_strict", strict_refresh)
+    monkeypatch.setattr(engine, "_is_pr_author_allowed", lambda data: True)
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda *args, **kwargs: processed.append(args[1].data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True))
+
+    async def scenario():
+        consumer = asyncio.create_task(engine._invalidation_loop("owner/repo"))
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        await engine.invalidate_entity("owner/repo", "pr", 100)
+        for _ in range(200):
+            if len(attempts) == 1:
+                break
+            await asyncio.sleep(0.01)
+        assert len(attempts) == 1
+        await asyncio.sleep(0.2)
+        assert len(attempts) == 1
+        for _ in range(250):
+            if processed == [100]:
+                break
+            await asyncio.sleep(0.01)
+        consumer.cancel()
+        worker.cancel()
+        await asyncio.gather(consumer, worker, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert processed == [100]
+    assert len(attempts) == 2
+    assert attempts[1] - attempts[0] >= 0.9
+
+
+def test_failed_deferral_transaction_stops_worker_and_preserves_recovery(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(GitHubClient("test-token"), AutomationConfig())
+    deferred = _github_deferral("rate_limit_cooldown", time.time() + 120.0)
+    monkeypatch.setattr(engine.github, "get_pull_request_metadata_strict", MagicMock(side_effect=deferred))
+    engine.invalidations._connection.execute(
+        """CREATE TRIGGER fail_deferral BEFORE UPDATE OF deferral_reason ON entity_invalidations
+           WHEN NEW.deferral_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'disk unavailable'); END"""
+    )
+    output = io.StringIO()
+    sink = loguru_logger.add(output, format="{level}|{message}")
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "pr", 100)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        await asyncio.wait_for(worker, timeout=2.0)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        loguru_logger.remove(sink)
+    assert engine.github.get_pull_request_metadata_strict.call_count == 1
+    assert engine.invalidations.pending_count("owner/repo") == 1
+    assert engine.invalidations.claim("owner/repo") is None
+    assert "Failed to persist authoritative-refresh deferral" in output.getvalue()
+    assert "Authoritative refresh safely deferred" not in output.getvalue()
+    engine.invalidations.recover("owner/repo")
+    assert engine.invalidations.claim("owner/repo") is not None
 
 
 def _candidate(repo_name, entity_type, number, propagate_errors=False):

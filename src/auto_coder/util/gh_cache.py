@@ -976,7 +976,7 @@ class GitHubClient:
         )
         response.raise_for_status()
         payload = response.json()
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or payload.get("number") != pr_number:
             raise RuntimeError(f"GitHub did not return PR metadata for PR #{pr_number} in {repo_name}")
         return payload
 

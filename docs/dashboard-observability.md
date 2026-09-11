@@ -67,7 +67,7 @@ trace-neutral: the existing durable-invalidation-worker origin begins only after
 current authoritative candidate exists, so representing a definitely-not-sent read
 as a successful, failed, or completed execution would invent an outcome. The durable
 reason, API origin, generation, and deadline are operational queue diagnostics, and
-`tests/test_entity_invalidation.py::test_worker_persists_real_strict_refresh_deferral_without_dispatch`
+`tests/test_entity_invalidation.py::test_worker_persists_real_strict_refresh_deferral_without_candidate_error`
 drives the production worker and strict-read adapter and verifies that processing is
 not dispatched.
 
