@@ -302,14 +302,26 @@ def test_returned_unavailable_after_success_preserves_stale_state(mock_ui, tmp_p
     banners_during_failure = _banner_texts(mock_ui)
     assert "STALE" in banners_during_failure[-1]
     assert f"observation {success_timestamp};" in banners_during_failure[-1]
-    assert ("Issue #8901", "/detail/issue/8901") in _link_calls(mock_ui)
-    assert not any("Normal: 0/2" in text for text in _label_texts(mock_ui))
+    # The DOM-presence claim ("the owner row/counters stay actually
+    # rendered, not just once-created") is deliberately NOT asserted here
+    # via `_link_calls`/`_label_texts`: those read a mock's cumulative
+    # `call_args_list`, which never shrinks even after the panel `.clear()`s
+    # and rebuilds a container, so `("Issue #8901", ...) in _link_calls(...)`
+    # would stay true even if a regression made the stale/failure branch
+    # wipe the panel entirely (e.g. calling `render_never_known` instead of
+    # preserving `known`) -- that branch doesn't call `ui.link` again either,
+    # so no new call is added, but the old one from the first successful
+    # render never leaves the mock's history. That genuine
+    # still-actually-rendered claim (and that recovery shows a newer
+    # successful timestamp, not just an absent stale flag) is proven
+    # against a real DOM instead, by
+    # `test_returned_unavailable_after_success_preserves_rendered_state` in
+    # `tests/test_dashboard_slots_scroll_stability.py`.
 
     state_path.write_bytes(original_bytes)
     asyncio.run(refresh_slots())
     banners_after_recovery = _banner_texts(mock_ui)
     assert "STALE" not in banners_after_recovery[-1]
-    assert ("Issue #8901", "/detail/issue/8901") in _link_calls(mock_ui)
 
 
 @patch("auto_coder.dashboard.ui")

@@ -33,7 +33,7 @@ from playwright.sync_api import Browser, Page, sync_playwright
 
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.dashboard import init_dashboard
-from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotSnapshotUnavailable
 
 REPO = "owner/repo"
 
@@ -449,3 +449,74 @@ def test_slot_observation_is_single_flight_across_timer_ticks(_use_real_sleep, _
         finally:
             release_first.set()
             engine.get_implementation_slot_snapshot = real_get_snapshot
+
+
+def test_returned_unavailable_after_success_preserves_rendered_state(_use_real_sleep, _use_real_home) -> None:
+    """REQ-004: a *returned* `ImplementationSlotSnapshotUnavailable` (the
+    real `ImplementationSlotRepository.snapshot()` catching a storage fault
+    and returning its typed unavailable result, not a raised exception)
+    after a prior success must preserve the *actually rendered* owner rows
+    with a stale indication and the unchanged last-successful-observation
+    timestamp -- then, once the file is restored, recovery must show a
+    genuinely newer successful timestamp with the stale indication cleared.
+
+    A mock-based equivalent
+    (`test_returned_unavailable_after_success_preserves_stale_state` in
+    `tests/test_dashboard_slots_observability.py`) cannot prove either
+    half: a mocked `ui.link`/`ui.label` container's `call_args_list` never
+    shrinks even after the panel `.clear()`s and rebuilds it, so "the link
+    is present somewhere in call history" stays true even if a regression
+    wiped the panel entirely (that branch doesn't call `ui.link` again
+    either, so no new call appears, but the original one from the first
+    successful render never leaves the mock's history) -- and nothing
+    stops a stale-then-recovered banner from silently keeping the *same*
+    timestamp. This drives the real DOM instead, where a cleared element is
+    actually gone and the displayed timestamp text is the only source of
+    truth.
+
+    Uses its own standalone server (its own `slots.json`): this test
+    corrupts the state file's bytes directly, which would otherwise wreck
+    the shared `dashboard_env` fixture's file for every other test in this
+    module.
+    """
+    with _standalone_dashboard_env("owner/repo-returned-unavailable") as (base_url, engine, slots):
+        owner = ImplementationOwner("issue", 9600)
+        assert slots.start_execution(owner) is not None
+        state_path = slots.storage_path
+
+        with _headless_page() as page:
+            page.goto(f"{base_url}/")
+            page.wait_for_selector("text=Issue #9600", timeout=10000)
+            page.wait_for_selector("text=Implementation slots as of", timeout=10000)
+            success_banner_text = page.locator("text=Implementation slots as of").inner_text()
+            success_timestamp = success_banner_text.split("as of ")[1].split(" (local")[0]
+
+            original_bytes = state_path.read_bytes()
+            state_path.write_text("{not valid json")
+            # Confirm directly (same real adapter the panel's own timer
+            # tick uses) that the corrupted file genuinely makes
+            # `get_implementation_slot_snapshot` *return*
+            # `ImplementationSlotSnapshotUnavailable`, not raise -- the
+            # exact branch a mock-only test cannot distinguish from the
+            # exception path.
+            direct_observation = engine.get_implementation_slot_snapshot("owner/repo-returned-unavailable")
+            assert isinstance(direct_observation, ImplementationSlotSnapshotUnavailable)
+
+            page.wait_for_selector("text=STALE", timeout=10000)
+            content_during_failure = page.content()
+            assert "Issue #9600" in content_during_failure, "the previously rendered owner row must remain actually visible while stale, not just once-created"
+            assert success_timestamp in content_during_failure, "the stale banner must keep the original last-successful timestamp"
+
+            time.sleep(1.5)  # ensure the recovered observation's second-granularity timestamp differs
+            state_path.write_bytes(original_bytes)
+
+            deadline = time.time() + 10
+            while "STALE" in page.content() and time.time() < deadline:
+                time.sleep(0.2)
+            content_after_recovery = page.content()
+            assert "STALE" not in content_after_recovery, "recovery must clear the stale indication"
+            assert "Issue #9600" in content_after_recovery
+
+            recovered_banner_text = page.locator("text=Implementation slots as of").inner_text()
+            recovered_timestamp = recovered_banner_text.split("as of ")[1].split(" (local")[0]
+            assert recovered_timestamp != success_timestamp, "recovery must show a genuinely newer successful-observation timestamp, not silently keep the stale one"
