@@ -348,9 +348,22 @@ original deferral.
 Admission reservations, rolling budgets, mutation-completion spacing, throttle
 episodes, and cooldown deadlines are durably recorded in the controller-wide
 `~/.auto-coder/runtime/github/request_governor.sqlite3` store. Restart recovery
-conservatively charges unresolved attempts and adds a recovery cooldown; corrupt,
-incompatible, or unwritable state fails GitHub admission closed. Persisted records
-are origin-scoped and contain no credentials or request content.
+uses per-controller Linux lifetime locks: another live or paused controller retains
+its reservation, while a released lifetime is recovered once on a survivor's next
+admission evaluation. Recovery conservatively retains the attempt charge and adds
+an origin-wide cooldown. Controllers for separate repositories share the same
+per-origin limits when their `AUTO_CODER_RUNTIME_ROOT` values name the same physical
+local directory; corrupt, incompatible, indeterminate-ownership, or unwritable
+state fails GitHub admission closed. Persisted records and safe diagnostics contain
+no credentials or request content. A participant that loses persistence after an
+admission retains its lifetime evidence so another participant cannot recover a
+possibly active transport. See `docs/github-governor-operations.md` for the supported
+topology and schema-version-1 upgrade procedure.
+Concurrent first use is protected by a short initialization lock that covers SQLite
+WAL setup and schema creation. Transient SQLite lock contention never authorizes a
+send or permanently poisons that participant: the same governor retries on subsequent
+admission calls and joins the completed shared store, while invalid durable state
+continues to fail closed.
 
 ## Crash-safe Codex Cloud submission ownership
 

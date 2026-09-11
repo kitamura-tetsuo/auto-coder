@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import math
 import os
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable
 
 from .logger_config import get_logger
 from .util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestContext, GitHubRequestOutcome, GitHubRequestRefused, GitHubResponseMetadata, RequestProvenance, normalize_api_origin
@@ -22,7 +24,7 @@ MUTATIONS_PER_MINUTE = 60
 MUTATIONS_PER_HOUR = 400
 MUTATION_SPACING_SECONDS = 1.0
 RECOVERY_COOLDOWN_SECONDS = 60.0
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ADMISSION_WAIT_BUDGET_SECONDS = 90.0
 ADMISSION_POLL_CEILING_SECONDS = 0.5
 ADMISSION_POLL_FLOOR_SECONDS = 0.01
@@ -37,6 +39,7 @@ SELF_RESOLVING_DEFERRALS = frozenset(
         "request_rolling_window",
         "mutation_minute_window",
         "mutation_hour_window",
+        "governor_initialization_contention",
     }
 )
 
@@ -90,13 +93,20 @@ class GitHubRequestGovernor:
         self._admission_wake = threading.Condition()
         self._lock = threading.RLock()
         self._connection: sqlite3.Connection | None = None
+        self._incarnation_id = uuid.uuid4().hex
+        self._lifetime_file: BinaryIO | None = None
+        self._ownership_active = False
+        self._initialization_pending_reason: str | None = None
         self._unavailable_reason: str | None = None
         self._base_monotonic = self._checked_time(monotonic(), "monotonic clock")
         self._base_wall = self._checked_time(wall_time(), "UTC clock")
         try:
             self._open_and_recover()
         except Exception as exc:
-            self._fail_closed(f"state initialization failed: {exc}")
+            if self._is_initialization_contention(exc):
+                self._defer_initialization(exc)
+            else:
+                self._fail_closed(f"state initialization failed: {exc}")
 
     @staticmethod
     def _checked_time(value: float, name: str) -> float:
@@ -109,6 +119,10 @@ class GitHubRequestGovernor:
         if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) < 0:
             raise GovernorStateError(f"invalid stored {label}")
         return float(value)
+
+    @staticmethod
+    def _valid_owner_id(value: object) -> bool:
+        return isinstance(value, str) and len(value) == 32 and all(character in "0123456789abcdef" for character in value)
 
     def _now(self) -> float:
         elapsed = self._checked_time(self._monotonic(), "monotonic clock") - self._base_monotonic
@@ -132,60 +146,167 @@ class GitHubRequestGovernor:
         return self._Transaction(self)
 
     def _open_and_recover(self) -> None:
-        existed = self.path.exists()
-        if not existed:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(str(self.path), timeout=30, isolation_level=None, check_same_thread=False)
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=FULL")
-        if existed:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lifetime_dir = self.path.parent / "owners"
+        lifetime_dir.mkdir(mode=0o770, exist_ok=True)
+        if self._lifetime_file is None:
+            lifetime_path = lifetime_dir / f"{self._incarnation_id}.lock"
+            lifetime = open(lifetime_path, "a+b")
+            fcntl.flock(lifetime.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            self._lifetime_file = lifetime
+        initialization_lock = open(self.path.parent / "initialization.lock", "a+b")
+        try:
+            # This lock covers PRAGMA setup as well as schema creation.  It is
+            # intentionally short-lived and never serializes controller work.
+            fcntl.flock(initialization_lock.fileno(), fcntl.LOCK_EX)
+            connection = sqlite3.connect(str(self.path), timeout=30, isolation_level=None, check_same_thread=False)
+            self._connection = connection
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=FULL")
             if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                 raise GovernorStateError("SQLite integrity check failed")
-            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if "governor_metadata" not in tables:
-                raise GovernorStateError("existing store has no supported schema")
-        self._connection = connection
-        if not existed:
-            self._initialize_schema()
-        row = connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata WHERE singleton=1").fetchone()
-        if row is None or row[0] != SCHEMA_VERSION:
-            raise GovernorStateError("incompatible governor schema")
-        self._base_wall = max(self._base_wall, self._stored_number(row[1], "UTC checkpoint"))
-        now = self._now()
-        with self._transaction():
-            unresolved = connection.execute("SELECT origin, attempt_id FROM reservations WHERE resolved=0 AND recovered=0").fetchall()
-            for origin, attempt_id in unresolved:
-                state = self._read_state(str(origin))
-                deadline = max(state.cooldown_until, now + RECOVERY_COOLDOWN_SECONDS)
-                connection.execute("UPDATE origin_state SET cooldown_until_utc=?, cooldown_reason=? WHERE origin=?", (deadline, "unresolved_attempt_recovery", origin))
-                connection.execute("UPDATE reservations SET recovered=1 WHERE origin=? AND attempt_id=?", (origin, attempt_id))
-                self._diagnostic(str(origin), str(attempt_id), "recovered", "unresolved_attempt_recovery", deadline, now)
-            self._checkpoint(now)
+            self._initialize_or_migrate()
+            row = connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata WHERE singleton=1").fetchone()
+            if row is None or row[0] != SCHEMA_VERSION:
+                raise GovernorStateError("incompatible governor schema")
+            current_monotonic = self._checked_time(self._monotonic(), "monotonic clock")
+            elapsed = current_monotonic - self._base_monotonic
+            if elapsed < 0:
+                raise GovernorStateError("monotonic clock moved backward")
+            self._base_wall = max(self._base_wall + elapsed, self._stored_number(row[1], "UTC checkpoint"))
+            self._base_monotonic = current_monotonic
+            with self._transaction():
+                self._checkpoint(self._now())
+            self._ownership_active = True
+            self._initialization_pending_reason = None
+        finally:
+            initialization_lock.close()
 
-    def _initialize_schema(self) -> None:
+    @staticmethod
+    def _is_initialization_contention(exc: Exception) -> bool:
+        return isinstance(exc, sqlite3.OperationalError) and any(marker in str(exc).lower() for marker in ("locked", "busy"))
+
+    def _defer_initialization(self, exc: Exception) -> None:
+        self._initialization_pending_reason = str(exc)
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except sqlite3.Error:
+                pass
+            self._connection = None
+        logger.bind(github_governor={"state_path": str(self.path), "delay_reason": "governor_initialization_contention"}).warning("GitHub governor initialization is waiting for shared coordination")
+
+    def _ensure_initialized(self, context: GitHubRequestContext, origin: str) -> None:
+        if self._initialization_pending_reason is None:
+            return
+        try:
+            self._open_and_recover()
+        except Exception as exc:
+            if self._is_initialization_contention(exc):
+                self._defer_initialization(exc)
+                now = self._now()
+                self._diagnostic(origin, context.attempt_id, "deferred", "governor_initialization_contention", now + ADMISSION_POLL_CEILING_SECONDS, now)
+                raise GitHubRequestDeferred(context, "governor_initialization_contention", self._wall_time() + ADMISSION_POLL_CEILING_SECONDS)
+            self._fail_closed(f"state initialization failed: {exc}", origin)
+
+    def _initialize_or_migrate(self) -> None:
         assert self._connection is not None
-        self._connection.executescript(
-            """BEGIN IMMEDIATE;
-                CREATE TABLE governor_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL, last_logical_utc REAL NOT NULL);
-                CREATE TABLE origin_state (
+        connection = self._connection
+        connection.execute("BEGIN EXCLUSIVE")
+        try:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not tables:
+                statements = (
+                    "CREATE TABLE governor_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL, last_logical_utc REAL NOT NULL)",
+                    """CREATE TABLE origin_state (
                     origin TEXT PRIMARY KEY, cooldown_until_utc REAL NOT NULL DEFAULT 0,
                     cooldown_reason TEXT NOT NULL DEFAULT '', throttle_count INTEGER NOT NULL DEFAULT 0,
                     episode_active INTEGER NOT NULL DEFAULT 0 CHECK(episode_active IN (0,1)),
                     last_mutation_completion_utc REAL
-                );
-                CREATE TABLE reservations (
+                )""",
+                    """CREATE TABLE reservations (
                     origin TEXT NOT NULL, attempt_id TEXT NOT NULL,
                     kind TEXT NOT NULL CHECK(kind IN ('read','mutation')), admitted_utc REAL NOT NULL,
                     resolved INTEGER NOT NULL DEFAULT 0 CHECK(resolved IN (0,1)),
                     recovered INTEGER NOT NULL DEFAULT 0 CHECK(recovered IN (0,1)),
                     post_cooldown INTEGER NOT NULL DEFAULT 0 CHECK(post_cooldown IN (0,1)),
+                    owner_id TEXT,
                     PRIMARY KEY(origin, attempt_id)
-                );
-                CREATE INDEX reservations_budget ON reservations(origin, admitted_utc);
-                COMMIT;"""
-        )
-        with self._transaction():
-            self._connection.execute("INSERT INTO governor_metadata VALUES (1, ?, ?)", (SCHEMA_VERSION, self._base_wall))
+                )""",
+                    "CREATE INDEX reservations_budget ON reservations(origin, admitted_utc)",
+                )
+                for statement in statements:
+                    connection.execute(statement)
+                connection.execute("INSERT INTO governor_metadata VALUES (1, ?, ?)", (SCHEMA_VERSION, self._base_wall))
+            else:
+                if "governor_metadata" not in tables:
+                    raise GovernorStateError("existing store has no supported schema")
+                metadata = connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata WHERE singleton=1").fetchone()
+                if metadata is None or metadata[0] not in (1, SCHEMA_VERSION):
+                    raise GovernorStateError("incompatible governor schema")
+                self._stored_number(metadata[1], "UTC checkpoint")
+                if metadata[0] == 1:
+                    self._validate_legacy_store(tables)
+                    connection.execute("ALTER TABLE reservations ADD COLUMN owner_id TEXT")
+                    now = max(self._now(), float(metadata[1]))
+                    for origin, attempt_id in connection.execute("SELECT origin, attempt_id FROM reservations WHERE resolved=0 AND recovered=0").fetchall():
+                        state = self._read_state(str(origin))
+                        deadline = max(state.cooldown_until, now + RECOVERY_COOLDOWN_SECONDS)
+                        connection.execute("UPDATE origin_state SET cooldown_until_utc=?, cooldown_reason='unresolved_attempt_recovery' WHERE origin=?", (deadline, origin))
+                        connection.execute("UPDATE reservations SET recovered=1 WHERE origin=? AND attempt_id=?", (origin, attempt_id))
+                    connection.execute("UPDATE governor_metadata SET schema_version=?, last_logical_utc=MAX(last_logical_utc, ?)", (SCHEMA_VERSION, now))
+                self._validate_current_store(tables)
+            connection.execute("COMMIT")
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+
+    def _validate_legacy_store(self, tables: set[str]) -> None:
+        required = {"governor_metadata", "origin_state", "reservations"}
+        if not required.issubset(tables):
+            raise GovernorStateError("legacy store is missing required tables")
+        assert self._connection is not None
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(reservations)")}
+        if not {"origin", "attempt_id", "kind", "admitted_utc", "resolved", "recovered", "post_cooldown"}.issubset(columns):
+            raise GovernorStateError("legacy store is missing required columns")
+        for origin, attempt, kind, admitted, resolved, recovered, post in self._connection.execute("SELECT origin, attempt_id, kind, admitted_utc, resolved, recovered, post_cooldown FROM reservations"):
+            if not isinstance(origin, str) or normalize_api_origin(origin) != origin or not isinstance(attempt, str) or kind not in ("read", "mutation") or resolved not in (0, 1) or recovered not in (0, 1) or post not in (0, 1):
+                raise GovernorStateError("invalid legacy reservation")
+            self._stored_number(admitted, "reservation timestamp")
+            if self._connection.execute("SELECT 1 FROM origin_state WHERE origin=?", (origin,)).fetchone() is None:
+                raise GovernorStateError("legacy reservation has no origin state")
+        for origin in (row[0] for row in self._connection.execute("SELECT origin FROM origin_state")):
+            self._read_state(str(origin))
+
+    def _validate_current_store(self, tables: set[str]) -> None:
+        assert self._connection is not None
+        if not {"governor_metadata", "origin_state", "reservations"}.issubset(tables):
+            raise GovernorStateError("current store is missing required tables")
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(reservations)")}
+        if "owner_id" not in columns:
+            raise GovernorStateError("current store is missing ownership schema")
+        metadata_count = self._connection.execute("SELECT COUNT(*) FROM governor_metadata").fetchone()
+        if metadata_count != (1,):
+            raise GovernorStateError("current store has invalid metadata")
+        for origin, attempt, kind, admitted, resolved, recovered, post, owner in self._connection.execute("SELECT origin, attempt_id, kind, admitted_utc, resolved, recovered, post_cooldown, owner_id FROM reservations"):
+            if (
+                not isinstance(origin, str)
+                or normalize_api_origin(origin) != origin
+                or not isinstance(attempt, str)
+                or kind not in ("read", "mutation")
+                or resolved not in (0, 1)
+                or recovered not in (0, 1)
+                or post not in (0, 1)
+                or (resolved == 0 and recovered == 0 and not self._valid_owner_id(owner))
+            ):
+                raise GovernorStateError("invalid current reservation")
+            self._stored_number(admitted, "reservation timestamp")
+            if self._connection.execute("SELECT 1 FROM origin_state WHERE origin=?", (origin,)).fetchone() is None:
+                raise GovernorStateError("current reservation has no origin state")
+        for (origin,) in self._connection.execute("SELECT origin FROM origin_state").fetchall():
+            if not isinstance(origin, str) or normalize_api_origin(origin) != origin:
+                raise GovernorStateError("invalid stored origin")
+            self._read_state(origin)
 
     def _read_state(self, origin: str) -> _OriginState:
         assert self._connection is not None
@@ -205,8 +326,75 @@ class GitHubRequestGovernor:
 
     def _cleanup(self, now: float) -> None:
         assert self._connection is not None
-        self._connection.execute("DELETE FROM reservations WHERE admitted_utc <= ?", (now - 3600.0,))
+        self._connection.execute("DELETE FROM reservations WHERE admitted_utc <= ? AND (resolved=1 OR recovered=1)", (now - 3600.0,))
         self._connection.execute("DELETE FROM origin_state WHERE cooldown_until_utc <= ? AND COALESCE(last_mutation_completion_utc, 0) <= ? AND throttle_count=0 AND origin NOT IN (SELECT origin FROM reservations)", (now, now - MUTATION_SPACING_SECONDS))
+
+    def _recover_terminated(self, now: float) -> None:
+        """Recover only reservations whose incarnation lifetime lock is released."""
+        assert self._connection is not None
+        rows = self._connection.execute("SELECT DISTINCT owner_id FROM reservations WHERE resolved=0 AND recovered=0").fetchall()
+        for (owner_id,) in rows:
+            if not self._valid_owner_id(owner_id):
+                raise GovernorStateError("unresolved reservation has indeterminate ownership")
+            assert isinstance(owner_id, str)
+            owner_path = self.path.parent / "owners" / f"{owner_id}.lock"
+            try:
+                owner_file = open(owner_path, "rb")
+            except OSError as exc:
+                raise GovernorStateError(f"ownership evidence unavailable for {owner_id}") from exc
+            try:
+                try:
+                    fcntl.flock(owner_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    for origin, attempt in self._connection.execute(
+                        "SELECT origin, attempt_id FROM reservations WHERE owner_id=? AND resolved=0 AND recovered=0",
+                        (owner_id,),
+                    ):
+                        self._diagnostic(str(origin), str(attempt), "deferred", "live_owner_contention", now, now, incarnation=owner_id)
+                    continue
+                owned = self._connection.execute(
+                    "SELECT origin, attempt_id FROM reservations WHERE owner_id=? AND resolved=0 AND recovered=0",
+                    (owner_id,),
+                ).fetchall()
+                for origin, attempt in owned:
+                    state = self._read_state(str(origin))
+                    deadline = max(state.cooldown_until, now + RECOVERY_COOLDOWN_SECONDS)
+                    self._connection.execute(
+                        "UPDATE origin_state SET cooldown_until_utc=?, cooldown_reason='unresolved_attempt_recovery' WHERE origin=?",
+                        (deadline, origin),
+                    )
+                    self._connection.execute(
+                        "UPDATE reservations SET recovered=1 WHERE origin=? AND attempt_id=? AND owner_id=? AND resolved=0 AND recovered=0",
+                        (origin, attempt, owner_id),
+                    )
+                    self._diagnostic(str(origin), str(attempt), "recovered", "confirmed_orphan_recovery", deadline, now, incarnation=owner_id)
+            except OSError as exc:
+                raise GovernorStateError(f"ownership verification failed for {owner_id}") from exc
+            finally:
+                owner_file.close()
+
+    def close(self) -> None:
+        """Release this controller incarnation after its process work has stopped."""
+        with self._lock:
+            release_lifetime = not self._ownership_active
+            if self._connection is not None:
+                try:
+                    unresolved = self._connection.execute(
+                        "SELECT 1 FROM reservations WHERE owner_id=? AND resolved=0 AND recovered=0 LIMIT 1",
+                        (self._incarnation_id,),
+                    ).fetchone()
+                    release_lifetime = unresolved is None
+                except sqlite3.Error:
+                    release_lifetime = False
+                self._connection.close()
+                self._connection = None
+            # Once this incarnation has admitted work, losing database access
+            # cannot prove that its transports have stopped.  Keep lifetime
+            # evidence until process termination rather than allowing another
+            # participant to recover a possibly live request.
+            if self._lifetime_file is not None and release_lifetime:
+                self._lifetime_file.close()
+                self._lifetime_file = None
 
     def admit(self, context: GitHubRequestContext, announce_deferral: bool = True) -> bool:
         """Durably reserve one actual attempt before transport may send it.
@@ -218,12 +406,14 @@ class GitHubRequestGovernor:
         """
         origin = normalize_api_origin(context.api_origin)
         with self._lock:
+            self._ensure_initialized(context, origin)
             if self._unavailable_reason is not None:
                 self._refuse_unavailable(context, origin)
             try:
                 now = self._now()
                 assert self._connection is not None
                 with self._transaction():
+                    self._recover_terminated(now)
                     self._cleanup(now)
                     state = self._read_state(origin)
                     rows = self._connection.execute("SELECT attempt_id, kind, admitted_utc, resolved, recovered FROM reservations WHERE origin=? ORDER BY admitted_utc", (origin,)).fetchall()
@@ -248,7 +438,7 @@ class GitHubRequestGovernor:
                         elif state.last_mutation_completion is not None and now < state.last_mutation_completion + MUTATION_SPACING_SECONDS:
                             reason, eligible = "mutation_spacing", state.last_mutation_completion + MUTATION_SPACING_SECONDS
                     if not reason:
-                        self._connection.execute("INSERT INTO reservations(origin, attempt_id, kind, admitted_utc, post_cooldown) VALUES (?, ?, ?, ?, ?)", (origin, context.attempt_id, context.kind, now, int(state.episode_active and now >= state.cooldown_until)))
+                        self._connection.execute("INSERT INTO reservations(origin, attempt_id, kind, admitted_utc, post_cooldown, owner_id) VALUES (?, ?, ?, ?, ?, ?)", (origin, context.attempt_id, context.kind, now, int(state.episode_active and now >= state.cooldown_until), self._incarnation_id))
                     self._checkpoint(now)
                 if reason:
                     if announce_deferral:
@@ -277,10 +467,10 @@ class GitHubRequestGovernor:
                 throttled = outcome.classification in {GitHubApiOutcome.PRIMARY_THROTTLED, GitHubApiOutcome.SECONDARY_THROTTLED, GitHubApiOutcome.THROTTLED}
                 with self._transaction():
                     state = self._read_state(origin)
-                    reservation = self._connection.execute("SELECT kind, post_cooldown FROM reservations WHERE origin=? AND attempt_id=? AND resolved=0", (origin, outcome.context.attempt_id)).fetchone()
+                    reservation = self._connection.execute("SELECT kind, post_cooldown FROM reservations WHERE origin=? AND attempt_id=? AND owner_id=? AND resolved=0 AND recovered=0", (origin, outcome.context.attempt_id, self._incarnation_id)).fetchone()
                     if reservation is None:
-                        raise GovernorStateError("completion has no unresolved reservation")
-                    self._connection.execute("UPDATE reservations SET resolved=1 WHERE origin=? AND attempt_id=?", (origin, outcome.context.attempt_id))
+                        return
+                    self._connection.execute("UPDATE reservations SET resolved=1 WHERE origin=? AND attempt_id=? AND owner_id=?", (origin, outcome.context.attempt_id, self._incarnation_id))
                     completion = now if reservation[0] == "mutation" else state.last_mutation_completion
                     cooldown, cooldown_reason, count, episode = state.cooldown_until, state.cooldown_reason, state.throttle_count, state.episode_active
                     if throttled:
@@ -375,9 +565,15 @@ class GitHubRequestGovernor:
             except sqlite3.Error:
                 pass
             self._connection = None
+        if self._lifetime_file is not None and not self._ownership_active:
+            try:
+                self._lifetime_file.close()
+            except OSError:
+                pass
+            self._lifetime_file = None
         logger.bind(github_governor={"state_path": str(self.path), "origin": origin, "refusal_reason": reason}).error("GitHub governor state unavailable; network admission is closed")
 
-    def _diagnostic(self, origin: str, attempt: str, decision: str, reason: str, eligible: float, now: float, refusal: str | None = None) -> None:
+    def _diagnostic(self, origin: str, attempt: str, decision: str, reason: str, eligible: float, now: float, refusal: str | None = None, incarnation: str | None = None) -> None:
         diagnostic: dict[str, object] = {
             "decision": decision,
             "state_path": str(self.path),
@@ -389,4 +585,6 @@ class GitHubRequestGovernor:
         }
         if refusal:
             diagnostic["refusal_reason"] = refusal
+        if incarnation:
+            diagnostic["incarnation"] = incarnation
         logger.bind(github_governor=diagnostic).debug("github_governor_diagnostic {}", json.dumps(diagnostic, sort_keys=True))

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import sqlite3
 import threading
 from dataclasses import dataclass
+from multiprocessing import get_context
+from multiprocessing.connection import Connection
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
@@ -64,6 +68,98 @@ def outcome(
 def admit_and_finish(governor: GitHubRequestGovernor, request_context: GitHubRequestContext) -> None:
     assert governor.admit(request_context) is True
     governor.observe(outcome(request_context))
+
+
+def _receive(channel: Connection, timeout: float = 10.0) -> object:
+    assert channel.poll(timeout), "timed out waiting for child process"
+    message = channel.recv()
+    if isinstance(message, tuple) and message and message[0] == "error":
+        pytest.fail(f"child process failed: {message[1]}")
+    return message
+
+
+def _hold_process_reservation(path: str, ready: Connection) -> None:
+    governor = GitHubRequestGovernor(store_path=Path(path))
+    governor.admit(context(900))
+    ready.send("admitted")
+    assert ready.poll(10)
+    ready.recv()
+
+
+def _create_legacy_store(path: Path, timestamp: float) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE governor_metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL, last_logical_utc REAL NOT NULL);
+            CREATE TABLE origin_state(
+                origin TEXT PRIMARY KEY,
+                cooldown_until_utc REAL NOT NULL DEFAULT 0,
+                cooldown_reason TEXT NOT NULL DEFAULT '',
+                throttle_count INTEGER NOT NULL DEFAULT 0,
+                episode_active INTEGER NOT NULL DEFAULT 0 CHECK(episode_active IN (0,1)),
+                last_mutation_completion_utc REAL
+            );
+            CREATE TABLE reservations(
+                origin TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('read','mutation')),
+                admitted_utc REAL NOT NULL,
+                resolved INTEGER NOT NULL DEFAULT 0 CHECK(resolved IN (0,1)),
+                recovered INTEGER NOT NULL DEFAULT 0 CHECK(recovered IN (0,1)),
+                post_cooldown INTEGER NOT NULL DEFAULT 0 CHECK(post_cooldown IN (0,1)),
+                PRIMARY KEY(origin, attempt_id)
+            );
+            CREATE INDEX reservations_budget ON reservations(origin, admitted_utc);
+            """
+        )
+        origin = "https://api.github.com"
+        connection.execute("INSERT INTO governor_metadata VALUES (1, 1, ?)", (timestamp,))
+        connection.execute("INSERT INTO origin_state(origin) VALUES (?)", (origin,))
+        connection.execute("INSERT INTO reservations(origin, attempt_id, kind, admitted_utc) VALUES (?, 'legacy-attempt', 'read', ?)", (origin, timestamp))
+
+
+def _initialize_and_send_process(path: str, channel: Connection, role: str) -> None:
+    try:
+        if role == "leader":
+            original_initialize = GitHubRequestGovernor._initialize_or_migrate
+
+            def held_initialize(governor: GitHubRequestGovernor) -> None:
+                channel.send("initialization_held")
+                assert channel.poll(10)
+                assert channel.recv() == "release_initialization"
+                original_initialize(governor)
+
+            GitHubRequestGovernor._initialize_or_migrate = held_initialize
+        else:
+            original_flock = fcntl.flock
+
+            def observed_flock(fd: int, operation: int) -> None:
+                if operation == fcntl.LOCK_EX:
+                    channel.send("initialization_lock_attempted")
+                original_flock(fd, operation)
+
+            fcntl.flock = observed_flock
+
+        channel.send("constructing")
+        governor = GitHubRequestGovernor(store_path=Path(path), wait_budget=5)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            channel.send("transport_started")
+            if role == "leader":
+                assert channel.poll(10)
+                assert channel.recv() == "release_transport"
+            return httpx.Response(200, json={"ok": True}, request=request)
+
+        with github_http_client(
+            subsystem="controller-strict",
+            transport=httpx.MockTransport(handler),
+            admission_hook=governor.admit_blocking,
+            observation_hook=governor.observe,
+        ) as client:
+            client.get(f"https://api.github.com/repos/{role}/widgets")
+        channel.send("completed")
+    except BaseException as exc:
+        channel.send(("error", repr(exc)))
 
 
 def test_rolling_attempt_and_mutation_budgets_use_attempt_times(tmp_path) -> None:
@@ -343,19 +439,264 @@ def test_production_transport_cooldown_and_episode_survive_fresh_instance(tmp_pa
 
 
 def test_unresolved_reservation_recovery_is_charged_and_not_replayed(tmp_path) -> None:
-    """AS-003: a crash marker adds cooldown without producing network activity."""
+    """AS-003: a live join and premature close retain the reservation."""
     clock = Clock()
     path = tmp_path / "request_governor.sqlite3"
     first = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
     assert first.admit(context(1, "mutation")) is True
 
     restarted = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
-    with pytest.raises(GitHubRequestDeferred) as recovered:
+    with pytest.raises(GitHubRequestDeferred) as live:
         restarted.admit(context(2))
-    assert recovered.value.reason == "rate_limit_cooldown"
-    assert recovered.value.retry_at == clock.wall_value + 60
+    assert live.value.reason == "request_in_flight"
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT resolved, recovered FROM reservations WHERE attempt_id='attempt-1'").fetchone() == (0, 1)
+        assert connection.execute("SELECT resolved, recovered FROM reservations WHERE attempt_id='attempt-1'").fetchone() == (0, 0)
+
+    first.close()
+    with pytest.raises(GitHubRequestDeferred) as still_live:
+        restarted.admit(context(3))
+    assert still_live.value.reason == "request_in_flight"
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT resolved, recovered FROM reservations WHERE attempt_id='attempt-1'").fetchone() == (0, 0)
+
+
+def test_close_releases_only_an_incarnation_without_unresolved_work(tmp_path) -> None:
+    clock = Clock()
+    path = tmp_path / "incarnations.sqlite3"
+    old = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
+    old_attempt = context(1)
+    admit_and_finish(old, old_attempt)
+    old.close()
+    replacement = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
+    new_attempt = context(2)
+    replacement.admit(new_attempt)
+
+    # A stale completion carrying the same attempt identity cannot resolve a
+    # reservation owned by another controller incarnation.
+    stale = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
+    stale.observe(outcome(new_attempt))
+    with pytest.raises(GitHubRequestDeferred) as still_live:
+        stale.admit(context(3))
+    assert still_live.value.reason == "request_in_flight"
+
+
+def test_separate_process_lifetime_prevents_live_recovery(tmp_path) -> None:
+    """A real process lifetime, rather than a PID lookup or heartbeat, is authoritative."""
+    process_context = get_context("spawn")
+    parent, child = process_context.Pipe()
+    path = tmp_path / "process-shared.sqlite3"
+    participant = process_context.Process(target=_hold_process_reservation, args=(str(path), child))
+    participant.start()
+    assert _receive(parent) == "admitted"
+    survivor = GitHubRequestGovernor(store_path=path)
+    try:
+        with pytest.raises(GitHubRequestDeferred) as live:
+            survivor.admit(context(901))
+        assert live.value.reason == "request_in_flight"
+        with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT recovered FROM reservations WHERE attempt_id='attempt-900'").fetchone() == (0,)
+
+        participant.terminate()
+        participant.join(timeout=5)
+        assert not participant.is_alive()
+        with pytest.raises(GitHubRequestDeferred) as recovered:
+            survivor.admit(context(902))
+        assert recovered.value.reason == "rate_limit_cooldown"
+        with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT recovered FROM reservations WHERE attempt_id='attempt-900'").fetchone() == (1,)
+    finally:
+        if participant.is_alive():
+            parent.send("stop")
+            participant.join(timeout=5)
+
+
+def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -> None:
+    """REQ-001/003/004/005/007/008: real participants safely join one new store."""
+    process_context = get_context("spawn")
+    leader_parent, leader_child = process_context.Pipe()
+    joiner_parent, joiner_child = process_context.Pipe()
+    path = tmp_path / "simultaneous-first-use.sqlite3"
+    leader = process_context.Process(target=_initialize_and_send_process, args=(str(path), leader_child, "leader"))
+    joiner = process_context.Process(target=_initialize_and_send_process, args=(str(path), joiner_child, "joiner"))
+    leader.start()
+    try:
+        assert _receive(leader_parent) == "constructing"
+        assert _receive(leader_parent) == "initialization_held"
+        joiner.start()
+        assert _receive(joiner_parent) == "constructing"
+        # This message is emitted immediately before the real blocking flock,
+        # proving the joiner reached initialization while the leader held it.
+        assert _receive(joiner_parent) == "initialization_lock_attempted"
+        assert not joiner_parent.poll()
+
+        leader_parent.send("release_initialization")
+        assert _receive(leader_parent) == "transport_started"
+        with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
+            assert connection.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(0, 0)]
+            assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (0.0, "")
+
+        # The joiner is alive and initialized but cannot transmit while the
+        # leader's production-boundary transport owns the shared reservation.
+        assert not joiner_parent.poll()
+        leader_parent.send("release_transport")
+        assert _receive(leader_parent) == "completed"
+        assert _receive(joiner_parent) == "transport_started"
+        assert _receive(joiner_parent) == "completed"
+        leader.join(timeout=5)
+        joiner.join(timeout=5)
+        assert leader.exitcode == 0
+        assert joiner.exitcode == 0
+        with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT resolved, recovered FROM reservations ORDER BY admitted_utc").fetchall() == [(1, 0), (1, 0)]
+            assert connection.execute("SELECT COUNT(*) FROM reservations").fetchone() == (2,)
+    finally:
+        if leader.is_alive():
+            leader_parent.send("release_initialization")
+            leader_parent.send("release_transport")
+            leader.terminate()
+        if joiner.is_alive():
+            joiner.terminate()
+        leader.join(timeout=5)
+        if joiner.pid is not None:
+            joiner.join(timeout=5)
+
+
+def test_pre_schema_pragma_contention_recovers_same_governor_instance(tmp_path, monkeypatch) -> None:
+    """REQ-003/008: transient pre-schema contention is retryable, never fail-open."""
+    path = tmp_path / "pragma-contention.sqlite3"
+    real_connect = sqlite3.connect
+    contended_connections = 2
+
+    class ContendedConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+
+        def execute(self, statement: str, parameters: tuple[object, ...] = ()) -> sqlite3.Cursor:
+            nonlocal contended_connections
+            if statement == "PRAGMA journal_mode=WAL" and contended_connections:
+                contended_connections -= 1
+                raise sqlite3.OperationalError("database is locked")
+            return self.connection.execute(statement, parameters)
+
+        def close(self) -> None:
+            self.connection.close()
+
+    def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection | ContendedConnection:
+        connection = real_connect(*args, **kwargs)
+        return ContendedConnection(connection) if contended_connections else connection
+
+    monkeypatch.setattr(sqlite3, "connect", controlled_connect)
+    governor = GitHubRequestGovernor(store_path=path, wait_budget=0)
+    sends: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sends.append(request.url.path)
+        with real_connect(path) as observer:
+            assert observer.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(0, 0)]
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    def send(endpoint: str) -> None:
+        with github_http_client(
+            subsystem="controller-strict",
+            transport=httpx.MockTransport(handler),
+            admission_hook=governor.admit_blocking,
+            observation_hook=governor.observe,
+        ) as client:
+            client.get(f"https://api.github.com{endpoint}")
+
+    with pytest.raises(GitHubRequestDeferred) as contended:
+        send("/first")
+    assert contended.value.reason == "governor_initialization_contention"
+    assert sends == []
+    assert not path.exists() or path.stat().st_size == 0
+
+    send("/second")
+    assert sends == ["/second"]
+    with real_connect(path) as observer:
+        assert observer.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
+        assert observer.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(1, 0)]
+
+
+def test_coordination_failure_does_not_release_a_live_boundary_transport(tmp_path, monkeypatch) -> None:
+    """REQ-002/004/005/008: fail-closed state retains live lifetime evidence."""
+    clock = Clock()
+    path = tmp_path / "failed-owner.sqlite3"
+    owner = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
+    survivor = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path, wait_budget=0)
+    entered = threading.Event()
+    release = threading.Event()
+    sends: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sends.append(request.url.path)
+        if request.url.path == "/held":
+            entered.set()
+            release.wait(timeout=5)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    def request(governor: GitHubRequestGovernor, endpoint: str) -> None:
+        with github_http_client(
+            subsystem="controller-strict",
+            transport=httpx.MockTransport(handler),
+            admission_hook=governor.admit_blocking,
+            observation_hook=governor.observe,
+        ) as client:
+            client.get(f"https://api.github.com{endpoint}")
+
+    first = threading.Thread(target=request, args=(owner, "/held"))
+    first.start()
+    assert entered.wait(timeout=5)
+
+    class FailedTransaction:
+        def __enter__(self) -> None:
+            raise sqlite3.OperationalError("controlled persistence failure")
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(owner, "_transaction", lambda: FailedTransaction())
+    with pytest.raises(GitHubRequestDeferred) as unavailable:
+        request(owner, "/failed-admission")
+    assert unavailable.value.reason == "governor_state_unavailable"
+
+    clock.advance(120)
+    with pytest.raises(GitHubRequestDeferred) as protected:
+        request(survivor, "/must-not-send")
+    assert protected.value.reason == "request_in_flight"
+    assert sends == ["/held"]
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT recovered FROM reservations WHERE resolved=0").fetchone() == (0,)
+
+    release.set()
+    first.join(timeout=5)
+    assert not first.is_alive()
+
+
+def test_legacy_recovery_uses_logical_time_after_slow_initialization(tmp_path, monkeypatch) -> None:
+    """REQ-009/017/020: migration starts recovery at its evaluation time."""
+    clock = Clock()
+    path = tmp_path / "legacy.sqlite3"
+    _create_legacy_store(path, clock.wall_value)
+    original_validate = GitHubRequestGovernor._validate_legacy_store
+
+    def slow_validation(governor: GitHubRequestGovernor, tables: set[str]) -> None:
+        original_validate(governor, tables)
+        clock.advance(120)
+
+    monkeypatch.setattr(GitHubRequestGovernor, "_validate_legacy_store", slow_validation)
+    upgraded = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
+
+    with pytest.raises(GitHubRequestDeferred) as recovery:
+        upgraded.admit(context(903))
+    assert recovery.value.reason == "rate_limit_cooldown"
+    assert recovery.value.retry_at == clock.wall_value + 60
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata").fetchone() == (2, clock.wall_value)
+        assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (
+            clock.wall_value + 60,
+            "unresolved_attempt_recovery",
+        )
 
 
 def test_corrupt_and_invalid_timing_state_fail_network_admission_closed(tmp_path) -> None:

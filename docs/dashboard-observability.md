@@ -99,6 +99,22 @@ reason, API origin, generation, and deadline are operational queue diagnostics, 
 drives the production worker and strict-read adapter and verifies that processing is
 not dispatched.
 
+Shared-governor incarnation ownership changes the existing HTTP admission gate but is
+dashboard-observability neutral. Governor admission still occurs before an Issue or PR
+processing execution outcome becomes known, and the durable pending-work paths still
+record the same typed deferral; emitting a dashboard completion or failure for live-owner
+contention or orphan recovery would invent business progress. Secret-safe operational
+diagnostics and the SQLite state are the appropriate evidence. The production-boundary
+regressions are `tests/test_github_request_governor.py`, while
+`tests/test_entity_invalidation.py::test_worker_persists_real_strict_refresh_deferral_without_candidate_error`
+continues to cover the unchanged trace handoff.
+The short first-use initialization lock and same-instance contention retry are likewise
+trace-neutral: they occur inside the existing HTTP governor boundary and neither create
+an entity execution nor alter the typed pending-work handoff. The runnable production
+boundary checks are
+`tests/test_github_request_governor.py::test_simultaneous_first_use_converges_and_preserves_live_request`
+and `tests/test_github_request_governor.py::test_pre_schema_pragma_contention_recovers_same_governor_instance`.
+
 These are collected pytest node IDs, not future test plans. Producer tests assert
 business results/effect counts and the real structured snapshot. The joined tests
 also mount and refresh the detail view from that snapshot.
