@@ -39,6 +39,7 @@ SELF_RESOLVING_DEFERRALS = frozenset(
         "request_rolling_window",
         "mutation_minute_window",
         "mutation_hour_window",
+        "governor_initialization_contention",
     }
 )
 
@@ -95,13 +96,17 @@ class GitHubRequestGovernor:
         self._incarnation_id = uuid.uuid4().hex
         self._lifetime_file: BinaryIO | None = None
         self._ownership_active = False
+        self._initialization_pending_reason: str | None = None
         self._unavailable_reason: str | None = None
         self._base_monotonic = self._checked_time(monotonic(), "monotonic clock")
         self._base_wall = self._checked_time(wall_time(), "UTC clock")
         try:
             self._open_and_recover()
         except Exception as exc:
-            self._fail_closed(f"state initialization failed: {exc}")
+            if self._is_initialization_contention(exc):
+                self._defer_initialization(exc)
+            else:
+                self._fail_closed(f"state initialization failed: {exc}")
 
     @staticmethod
     def _checked_time(value: float, name: str) -> float:
@@ -144,29 +149,65 @@ class GitHubRequestGovernor:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lifetime_dir = self.path.parent / "owners"
         lifetime_dir.mkdir(mode=0o770, exist_ok=True)
-        lifetime_path = lifetime_dir / f"{self._incarnation_id}.lock"
-        lifetime = open(lifetime_path, "a+b")
-        fcntl.flock(lifetime.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
-        self._lifetime_file = lifetime
-        connection = sqlite3.connect(str(self.path), timeout=30, isolation_level=None, check_same_thread=False)
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=FULL")
-        self._connection = connection
-        if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
-            raise GovernorStateError("SQLite integrity check failed")
-        self._initialize_or_migrate()
-        row = connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata WHERE singleton=1").fetchone()
-        if row is None or row[0] != SCHEMA_VERSION:
-            raise GovernorStateError("incompatible governor schema")
-        current_monotonic = self._checked_time(self._monotonic(), "monotonic clock")
-        elapsed = current_monotonic - self._base_monotonic
-        if elapsed < 0:
-            raise GovernorStateError("monotonic clock moved backward")
-        self._base_wall = max(self._base_wall + elapsed, self._stored_number(row[1], "UTC checkpoint"))
-        self._base_monotonic = current_monotonic
-        with self._transaction():
-            self._checkpoint(self._now())
-        self._ownership_active = True
+        if self._lifetime_file is None:
+            lifetime_path = lifetime_dir / f"{self._incarnation_id}.lock"
+            lifetime = open(lifetime_path, "a+b")
+            fcntl.flock(lifetime.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            self._lifetime_file = lifetime
+        initialization_lock = open(self.path.parent / "initialization.lock", "a+b")
+        try:
+            # This lock covers PRAGMA setup as well as schema creation.  It is
+            # intentionally short-lived and never serializes controller work.
+            fcntl.flock(initialization_lock.fileno(), fcntl.LOCK_EX)
+            connection = sqlite3.connect(str(self.path), timeout=30, isolation_level=None, check_same_thread=False)
+            self._connection = connection
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=FULL")
+            if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                raise GovernorStateError("SQLite integrity check failed")
+            self._initialize_or_migrate()
+            row = connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata WHERE singleton=1").fetchone()
+            if row is None or row[0] != SCHEMA_VERSION:
+                raise GovernorStateError("incompatible governor schema")
+            current_monotonic = self._checked_time(self._monotonic(), "monotonic clock")
+            elapsed = current_monotonic - self._base_monotonic
+            if elapsed < 0:
+                raise GovernorStateError("monotonic clock moved backward")
+            self._base_wall = max(self._base_wall + elapsed, self._stored_number(row[1], "UTC checkpoint"))
+            self._base_monotonic = current_monotonic
+            with self._transaction():
+                self._checkpoint(self._now())
+            self._ownership_active = True
+            self._initialization_pending_reason = None
+        finally:
+            initialization_lock.close()
+
+    @staticmethod
+    def _is_initialization_contention(exc: Exception) -> bool:
+        return isinstance(exc, sqlite3.OperationalError) and any(marker in str(exc).lower() for marker in ("locked", "busy"))
+
+    def _defer_initialization(self, exc: Exception) -> None:
+        self._initialization_pending_reason = str(exc)
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except sqlite3.Error:
+                pass
+            self._connection = None
+        logger.bind(github_governor={"state_path": str(self.path), "delay_reason": "governor_initialization_contention"}).warning("GitHub governor initialization is waiting for shared coordination")
+
+    def _ensure_initialized(self, context: GitHubRequestContext, origin: str) -> None:
+        if self._initialization_pending_reason is None:
+            return
+        try:
+            self._open_and_recover()
+        except Exception as exc:
+            if self._is_initialization_contention(exc):
+                self._defer_initialization(exc)
+                now = self._now()
+                self._diagnostic(origin, context.attempt_id, "deferred", "governor_initialization_contention", now + ADMISSION_POLL_CEILING_SECONDS, now)
+                raise GitHubRequestDeferred(context, "governor_initialization_contention", self._wall_time() + ADMISSION_POLL_CEILING_SECONDS)
+            self._fail_closed(f"state initialization failed: {exc}", origin)
 
     def _initialize_or_migrate(self) -> None:
         assert self._connection is not None
@@ -365,6 +406,7 @@ class GitHubRequestGovernor:
         """
         origin = normalize_api_origin(context.api_origin)
         with self._lock:
+            self._ensure_initialized(context, origin)
             if self._unavailable_reason is not None:
                 self._refuse_unavailable(context, origin)
             try:

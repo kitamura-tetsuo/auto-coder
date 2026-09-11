@@ -108,6 +108,12 @@ diagnostics and the SQLite state are the appropriate evidence. The production-bo
 regressions are `tests/test_github_request_governor.py`, while
 `tests/test_entity_invalidation.py::test_worker_persists_real_strict_refresh_deferral_without_candidate_error`
 continues to cover the unchanged trace handoff.
+The short first-use initialization lock and same-instance contention retry are likewise
+trace-neutral: they occur inside the existing HTTP governor boundary and neither create
+an entity execution nor alter the typed pending-work handoff. The runnable production
+boundary checks are
+`tests/test_github_request_governor.py::test_simultaneous_first_use_converges_and_preserves_live_request`
+and `tests/test_github_request_governor.py::test_pre_schema_pragma_contention_recovers_same_governor_instance`.
 
 These are collected pytest node IDs, not future test plans. Producer tests assert
 business results/effect counts and the real structured snapshot. The joined tests

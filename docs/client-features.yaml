@@ -359,6 +359,11 @@ no credentials or request content. A participant that loses persistence after an
 admission retains its lifetime evidence so another participant cannot recover a
 possibly active transport. See `docs/github-governor-operations.md` for the supported
 topology and schema-version-1 upgrade procedure.
+Concurrent first use is protected by a short initialization lock that covers SQLite
+WAL setup and schema creation. Transient SQLite lock contention never authorizes a
+send or permanently poisons that participant: the same governor retries on subsequent
+admission calls and joins the completed shared store, while invalid durable state
+continues to fail closed.
 
 ## Crash-safe Codex Cloud submission ownership
 

@@ -19,6 +19,12 @@ instead of treating the request as an orphan. A controller that loses database
 coordination after admitting work keeps its lifetime lock: coordination failure is
 not evidence that its active transports terminated.
 
+First-use setup is serialized only across the short initialization window, beginning
+before SQLite WAL configuration and ending after schema validation or migration. A
+participant that encounters transient SQLite lock contention remains fail-closed and
+retries initialization on later admission calls using the same governor instance;
+corrupt, incompatible, invalid, and inaccessible stores remain permanently closed.
+
 ## Upgrading a version-1 store
 
 Stop **all** controllers that can write the version-1 store before starting upgraded
