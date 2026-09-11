@@ -374,3 +374,78 @@ def test_render_failure_does_not_leave_a_mixed_partial_dom_state(_use_real_sleep
             content_after_recovery = page.content()
             assert "Issue #9451" in content_after_recovery, "the new owner must appear once rendering succeeds again"
             assert page.locator("text=rendering failed").count() == 0
+
+
+def test_slot_observation_is_single_flight_across_timer_ticks(_use_real_sleep, _use_real_home) -> None:
+    """REQ-005/AS-005: `refresh_slots`'s own-tick guard
+    (`slots_state["refreshing"]`) must actually prevent an overlapping
+    observation-boundary call while a real observation is slow -- not just
+    be presumed correct because it reads a shared dict. Holds the real
+    observation boundary blocked across several elapsed 1s timer ticks and
+    counts entries/concurrency at that exact boundary: if the guard failed
+    to suppress a re-entrant tick, a later tick would start its own
+    overlapping call while the first was still pending, and this would
+    observe `max_concurrent > 1` and/or more than one `entries`. Then
+    releases the blocked call and proves the guard is not stuck forever: a
+    later tick can still enter the boundary once it is free again.
+
+    Uses its own standalone server (not the shared `dashboard_env`): this
+    test globally monkeypatches `engine.get_implementation_slot_snapshot`,
+    and a client left over from an earlier test (draining during NiceGUI's
+    `reconnect_timeout` grace period after its browser closed) would
+    otherwise also invoke the patched function through its own still-running
+    timer, inflating the entry/concurrency counts independently of this
+    test's own client.
+    """
+    with _standalone_dashboard_env("owner/repo-single-flight") as (base_url, engine, slots):
+        assert slots.start_execution(ImplementationOwner("issue", 9500)) is not None
+
+        lock = threading.Lock()
+        state = {"entries": 0, "concurrent": 0, "max_concurrent": 0}
+        release_first = threading.Event()
+        real_get_snapshot = engine.get_implementation_slot_snapshot
+
+        def _counting_get_snapshot(repo_name: str):
+            with lock:
+                state["entries"] += 1
+                state["concurrent"] += 1
+                state["max_concurrent"] = max(state["max_concurrent"], state["concurrent"])
+                entry_index = state["entries"]
+            try:
+                if entry_index == 1:
+                    release_first.wait(timeout=10)
+                return real_get_snapshot(repo_name)
+            finally:
+                with lock:
+                    state["concurrent"] -= 1
+
+        engine.get_implementation_slot_snapshot = _counting_get_snapshot
+        try:
+            with _headless_page() as page:
+                page.goto(f"{base_url}/")
+                page.wait_for_selector("text=Loading implementation slot occupancy", timeout=10000)
+
+                # Let several 1s timer ticks elapse while the first
+                # observation is still blocked.
+                time.sleep(3.5)
+                with lock:
+                    assert state["entries"] == 1, f"expected exactly one in-flight observation after 3+ elapsed ticks while blocked, saw {state['entries']} entries -- " "a later tick re-entered the observation boundary instead of being suppressed by the single-flight guard"
+                    assert state["max_concurrent"] == 1, f"observation boundary was entered concurrently: max_concurrent={state['max_concurrent']}"
+
+                # Release the blocked observation and prove the guard is
+                # not stuck forever: a later tick can enter the boundary
+                # again.
+                release_first.set()
+                page.wait_for_selector("text=Issue #9500", timeout=10000)
+                deadline = time.time() + 5
+                while True:
+                    with lock:
+                        if state["entries"] > 1 or time.time() >= deadline:
+                            break
+                    time.sleep(0.1)
+                with lock:
+                    assert state["entries"] > 1, "no later tick re-entered the observation boundary after release"
+                    assert state["max_concurrent"] == 1, f"observation boundary was entered concurrently after release: max_concurrent={state['max_concurrent']}"
+        finally:
+            release_first.set()
+            engine.get_implementation_slot_snapshot = real_get_snapshot

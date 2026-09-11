@@ -433,8 +433,18 @@ def test_render_failure_after_partial_update_remains_a_slot_panel_diagnostic(moc
 def test_no_external_calls_or_state_mutation_from_mount_refresh_and_navigation(mock_ui, tmp_path):
     """AS-006: loading, refreshing, and navigating away from the slot panel
     must never issue a GitHub/provider request, a liveness probe, or a
-    slot reservation/release/reconciliation call, and must never change
-    the durable implementation-state file's bytes or permissions."""
+    slot reservation/release/stale-cleanup/reconciliation call, and must
+    never change the durable implementation-state file's bytes or
+    permissions.
+
+    The oracle guards every mutation entry point on the repository, not
+    just the admission-side ones (`reserve`/`reserve_new`/
+    `start_execution`/`finish_execution`/`reconcile`): `release` and
+    `release_unbound_idle_owner` (the release path) and
+    `reclaim_stale_executions` (the stale-cleanup path) are guarded too, so
+    a panel change that started calling any of them would fail this test
+    immediately rather than only being caught later, indirectly, by a
+    byte-identity check on the state file."""
     state_path = tmp_path / "slots.json"
     slots = ImplementationSlotRepository(REPO, 3, state_path)
     owner = ImplementationOwner("issue", 8601)
@@ -448,7 +458,16 @@ def test_no_external_calls_or_state_mutation_from_mount_refresh_and_navigation(m
     engine = AutomationEngine(github_client)
     engine.implementation_slots = slots
 
-    mutating_methods = ["reserve", "reserve_new", "start_execution", "finish_execution", "reconcile"]
+    mutating_methods = [
+        "reserve",
+        "reserve_new",
+        "start_execution",
+        "finish_execution",
+        "reconcile",
+        "release",
+        "release_unbound_idle_owner",
+        "reclaim_stale_executions",
+    ]
     with patch.multiple(
         ImplementationSlotRepository,
         **{name: MagicMock(side_effect=AssertionError(f"{name} must not be called by the slot panel")) for name in mutating_methods},
