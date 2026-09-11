@@ -474,6 +474,13 @@ def test_returned_unavailable_after_success_preserves_rendered_state(_use_real_s
     actually gone and the displayed timestamp text is the only source of
     truth.
 
+    Also checks the `slots_summary_row` counters ("Normal: X/Y used, Z
+    available") stay actually rendered, not just the owner card and
+    banner: those live in a container separate from
+    `slots_owners_container`, so a regression that cleared only the
+    summary row while leaving the owner card and banner alone would pass a
+    check of owner-row/timestamp presence alone.
+
     Uses its own standalone server (its own `slots.json`): this test
     corrupts the state file's bytes directly, which would otherwise wreck
     the shared `dashboard_env` fixture's file for every other test in this
@@ -483,11 +490,13 @@ def test_returned_unavailable_after_success_preserves_rendered_state(_use_real_s
         owner = ImplementationOwner("issue", 9600)
         assert slots.start_execution(owner) is not None
         state_path = slots.storage_path
+        counters_text = "Normal: 1/30 used, 29 available"
 
         with _headless_page() as page:
             page.goto(f"{base_url}/")
             page.wait_for_selector("text=Issue #9600", timeout=10000)
             page.wait_for_selector("text=Implementation slots as of", timeout=10000)
+            page.wait_for_selector(f"text={counters_text}", timeout=10000)
             success_banner_text = page.locator("text=Implementation slots as of").inner_text()
             success_timestamp = success_banner_text.split("as of ")[1].split(" (local")[0]
 
@@ -506,6 +515,7 @@ def test_returned_unavailable_after_success_preserves_rendered_state(_use_real_s
             content_during_failure = page.content()
             assert "Issue #9600" in content_during_failure, "the previously rendered owner row must remain actually visible while stale, not just once-created"
             assert success_timestamp in content_during_failure, "the stale banner must keep the original last-successful timestamp"
+            assert counters_text in content_during_failure, "the retained capacity counters must remain actually visible while stale, not just the owner row/banner"
 
             time.sleep(1.5)  # ensure the recovered observation's second-granularity timestamp differs
             state_path.write_bytes(original_bytes)
@@ -516,6 +526,7 @@ def test_returned_unavailable_after_success_preserves_rendered_state(_use_real_s
             content_after_recovery = page.content()
             assert "STALE" not in content_after_recovery, "recovery must clear the stale indication"
             assert "Issue #9600" in content_after_recovery
+            assert counters_text in content_after_recovery, "recovery must show the correct capacity counters, not a cleared/empty summary row"
 
             recovered_banner_text = page.locator("text=Implementation slots as of").inner_text()
             recovered_timestamp = recovered_banner_text.split("as of ")[1].split(" (local")[0]
