@@ -173,6 +173,41 @@ def test_snapshot_rejects_corrupt_root_key_and_multiple_emergency_owners(tmp_pat
         assert slots.storage_path.read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    ("replacement", "diagnostic"),
+    [
+        ({"kind": [], "number": 1}, ".kind"),
+        ({"kind": {}, "number": 1}, ".kind"),
+        (
+            {
+                "kind": "issue",
+                "number": 1,
+                "executions": [{"id": "execution-1", "started_at": -(10**400)}],
+            },
+            ".started_at",
+        ),
+    ],
+)
+def test_snapshot_contains_projection_failures_and_recovers_after_store_repair(tmp_path, replacement, diagnostic):
+    slots = repository(tmp_path)
+    owner = ImplementationOwner("issue", 1)
+    assert slots.reserve_new(owner)
+    original = slots.storage_path.read_bytes()
+    corrupted = json.dumps({owner.key: replacement}).encode()
+    slots.storage_path.write_bytes(corrupted)
+
+    unavailable = slots.snapshot()
+
+    assert isinstance(unavailable, ImplementationSlotSnapshotUnavailable)
+    assert diagnostic in unavailable.diagnostic
+    assert slots.storage_path.read_bytes() == corrupted
+
+    slots.storage_path.write_bytes(original)
+    recovered = slots.snapshot()
+    assert isinstance(recovered, ImplementationSlotSnapshot)
+    assert tuple(row.owner_key for row in recovered.owners) == (owner.key,)
+
+
 def test_snapshot_returns_busy_without_waiting_or_mutating_lock(tmp_path):
     slots = repository(tmp_path)
     assert slots.reserve_new(ImplementationOwner("issue", 1))
@@ -199,6 +234,49 @@ def test_snapshot_returns_busy_without_waiting_or_mutating_lock(tmp_path):
     known = slots.snapshot()
     assert isinstance(known, ImplementationSlotSnapshot)
     assert known.normal_usage == 1
+
+
+def test_snapshot_does_not_wait_for_another_process_store_lock(tmp_path):
+    slots = repository(tmp_path)
+    owner = ImplementationOwner("issue", 1)
+    assert slots.reserve_new(owner)
+    child_code = """
+import sys
+from pathlib import Path
+from auto_coder.implementation_slots import ImplementationSlotRepository
+
+repository = ImplementationSlotRepository("owner/repo", 1, Path(sys.argv[1]))
+with repository._state_lock():
+    print("locked", flush=True)
+    sys.stdin.readline()
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(slots.storage_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "locked"
+        observer = repository(tmp_path)
+
+        started = time.monotonic()
+        unavailable = observer.snapshot()
+        elapsed = time.monotonic() - started
+
+        assert isinstance(unavailable, ImplementationSlotSnapshotUnavailable)
+        assert "busy" in unavailable.diagnostic
+        assert elapsed < 1
+        assert child.poll() is None
+    finally:
+        stdout, stderr = child.communicate("release\n", timeout=5)
+        assert child.returncode == 0, (stdout, stderr)
+
+    recovered = observer.snapshot()
+    assert isinstance(recovered, ImplementationSlotSnapshot)
+    assert tuple(row.owner_key for row in recovered.owners) == (owner.key,)
 
 
 class AuthoritativeHierarchy:

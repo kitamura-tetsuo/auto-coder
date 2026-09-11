@@ -68,7 +68,7 @@ class ImplementationExecutionSnapshot:
 
     execution_id: str
     pid: Optional[int]
-    started_at: Optional[float]
+    started_at: Optional[int | float]
 
 
 @dataclass(frozen=True)
@@ -409,7 +409,7 @@ class ImplementationSlotRepository:
             record = untyped_record
             kind = record.get("kind")
             number = record.get("number")
-            if kind not in {"issue", "pr"}:
+            if not isinstance(kind, str) or kind not in {"issue", "pr"}:
                 raise ImplementationSlotUnavailable(f"invalid {field}.kind: expected issue or pr")
             if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
                 raise ImplementationSlotUnavailable(f"invalid {field}.number: expected positive integer")
@@ -486,13 +486,13 @@ class ImplementationSlotRepository:
             if "pid" in value and (isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0):
                 raise ImplementationSlotUnavailable(f"invalid {execution_field}.pid: expected positive integer")
             started_at = value.get("started_at")
-            if "started_at" in value and (isinstance(started_at, bool) or not isinstance(started_at, (int, float)) or not math.isfinite(started_at) or started_at < 0):
+            if "started_at" in value and (isinstance(started_at, bool) or not isinstance(started_at, (int, float)) or started_at < 0 or (isinstance(started_at, float) and not math.isfinite(started_at))):
                 raise ImplementationSlotUnavailable(f"invalid {execution_field}.started_at: expected finite non-negative number")
             result.append(
                 ImplementationExecutionSnapshot(
                     execution_id=execution_id,
                     pid=pid if isinstance(pid, int) else None,
-                    started_at=float(started_at) if isinstance(started_at, (int, float)) else None,
+                    started_at=started_at if isinstance(started_at, (int, float)) and not isinstance(started_at, bool) else None,
                 )
             )
         return tuple(result)
