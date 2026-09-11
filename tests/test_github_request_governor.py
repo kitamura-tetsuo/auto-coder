@@ -3,6 +3,9 @@ from __future__ import annotations
 import sqlite3
 import threading
 from dataclasses import dataclass
+from multiprocessing import get_context
+from multiprocessing.connection import Connection
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
@@ -64,6 +67,13 @@ def outcome(
 def admit_and_finish(governor: GitHubRequestGovernor, request_context: GitHubRequestContext) -> None:
     assert governor.admit(request_context) is True
     governor.observe(outcome(request_context))
+
+
+def _hold_process_reservation(path: str, ready: Connection) -> None:
+    governor = GitHubRequestGovernor(store_path=Path(path))
+    governor.admit(context(900))
+    ready.send("admitted")
+    ready.recv()
 
 
 def test_rolling_attempt_and_mutation_budgets_use_attempt_times(tmp_path) -> None:
@@ -343,19 +353,79 @@ def test_production_transport_cooldown_and_episode_survive_fresh_instance(tmp_pa
 
 
 def test_unresolved_reservation_recovery_is_charged_and_not_replayed(tmp_path) -> None:
-    """AS-003: a crash marker adds cooldown without producing network activity."""
+    """AS-003/004: a live join is retained and a released lifetime is recovered."""
     clock = Clock()
     path = tmp_path / "request_governor.sqlite3"
     first = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
     assert first.admit(context(1, "mutation")) is True
 
     restarted = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
-    with pytest.raises(GitHubRequestDeferred) as recovered:
+    with pytest.raises(GitHubRequestDeferred) as live:
         restarted.admit(context(2))
+    assert live.value.reason == "request_in_flight"
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT resolved, recovered FROM reservations WHERE attempt_id='attempt-1'").fetchone() == (0, 0)
+
+    first.close()
+    with pytest.raises(GitHubRequestDeferred) as recovered:
+        restarted.admit(context(3))
     assert recovered.value.reason == "rate_limit_cooldown"
     assert recovered.value.retry_at == clock.wall_value + 60
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT resolved, recovered FROM reservations WHERE attempt_id='attempt-1'").fetchone() == (0, 1)
+
+
+def test_old_incarnation_cannot_complete_replacement_attempt(tmp_path) -> None:
+    clock = Clock()
+    path = tmp_path / "incarnations.sqlite3"
+    old = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
+    old_attempt = context(1)
+    old.admit(old_attempt)
+    old.close()
+    replacement = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
+    with pytest.raises(GitHubRequestDeferred):
+        replacement.admit(context(2))
+    clock.advance(60)
+    new_attempt = context(3)
+    replacement.admit(new_attempt)
+
+    # A stale completion carrying the same attempt identity cannot resolve a
+    # reservation owned by another controller incarnation.
+    stale = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=path)
+    stale.observe(outcome(new_attempt))
+    with pytest.raises(GitHubRequestDeferred) as still_live:
+        stale.admit(context(4))
+    assert still_live.value.reason == "request_in_flight"
+
+
+def test_separate_process_lifetime_prevents_live_recovery(tmp_path) -> None:
+    """A real process lifetime, rather than a PID lookup or heartbeat, is authoritative."""
+    process_context = get_context("spawn")
+    parent, child = process_context.Pipe()
+    path = tmp_path / "process-shared.sqlite3"
+    participant = process_context.Process(target=_hold_process_reservation, args=(str(path), child))
+    participant.start()
+    assert parent.recv() == "admitted"
+    survivor = GitHubRequestGovernor(store_path=path)
+    try:
+        with pytest.raises(GitHubRequestDeferred) as live:
+            survivor.admit(context(901))
+        assert live.value.reason == "request_in_flight"
+        with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT recovered FROM reservations WHERE attempt_id='attempt-900'").fetchone() == (0,)
+
+        participant.terminate()
+        participant.join(timeout=5)
+        assert not participant.is_alive()
+        with pytest.raises(GitHubRequestDeferred) as recovered:
+            survivor.admit(context(902))
+        assert recovered.value.reason == "rate_limit_cooldown"
+        with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT recovered FROM reservations WHERE attempt_id='attempt-900'").fetchone() == (1,)
+    finally:
+        if participant.is_alive():
+            parent.send("stop")
+            participant.join(timeout=5)
 
 
 def test_corrupt_and_invalid_timing_state_fail_network_admission_closed(tmp_path) -> None:
