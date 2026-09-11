@@ -1915,10 +1915,12 @@ def _reconcile_test_oracle_gap_lifecycle(
 
     for gap_id, prior in prior_by_id.items():
         current = current_by_id.pop(gap_id, None)
-        same_head = stored_session.last_head_sha == head_sha
+        accepted_head = prior.resolution_head_sha or stored_session.last_head_sha
+        same_head = accepted_head == head_sha
         current_matches = current is not None and _same_test_oracle_gap_scope(prior, current)
         if prior.status in {"RESOLVED", "INVALID"} and not same_head:
-            prior.historical_resolution_head_sha = prior.resolution_head_sha or stored_session.last_head_sha
+            prior.resolution_head_sha = accepted_head
+            prior.historical_resolution_head_sha = accepted_head
             prior.historical_resolution_evidence = prior.resolution_evidence
             if gap_id in addressed_gap_evidence:
                 prior.status = "RESOLVED"
@@ -2585,9 +2587,15 @@ def run_adversarial_validation(
         # the caller projects the disposition to GitHub.
         prior_gaps_by_id = {gap.gap_id: gap for gap in lifecycle_session.test_oracle_gaps} if lifecycle_session else {}
         has_proven_gap_closure = any(
-            prior_gaps_by_id.get(gap.gap_id) is not None and prior_gaps_by_id[gap.gap_id].status == "OPEN" and _same_test_oracle_gap_scope(prior_gaps_by_id[gap.gap_id], gap) and gap.status in {"RESOLVED", "INVALID"} and bool(gap.resolution_evidence) for gap in result.test_oracle_gaps
+            prior_gaps_by_id.get(gap.gap_id) is not None
+            and _same_test_oracle_gap_scope(prior_gaps_by_id[gap.gap_id], gap)
+            and gap.status in {"RESOLVED", "INVALID"}
+            and bool(gap.resolution_evidence)
+            and gap.resolution_head_sha == head_sha
+            and (prior_gaps_by_id[gap.gap_id].status == "OPEN" or (prior_gaps_by_id[gap.gap_id].resolution_head_sha or lifecycle_session.last_head_sha) != head_sha)
+            for gap in result.test_oracle_gaps
         )
-        persist_proven_closure = has_proven_gap_closure and result.result == "INCONCLUSIVE"
+        persist_proven_closure = has_proven_gap_closure and result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS", "INCONCLUSIVE"}
         persisted_head_sha = head_sha if lifecycle_completed or persist_proven_closure else lifecycle_session.last_head_sha if lifecycle_session else ""
         persisted_gaps = result.test_oracle_gaps if lifecycle_completed or persist_proven_closure else lifecycle_session.test_oracle_gaps if lifecycle_session else []
         checkpoint = ReviewerSession(

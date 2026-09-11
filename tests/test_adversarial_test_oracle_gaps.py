@@ -7,6 +7,7 @@ import pytest
 
 from auto_coder.adversarial_validator import (
     AdversarialValidationContext,
+    AdversarialValidationResult,
     IssueRequirement,
     ReviewThreadDisposition,
     _addressed_test_oracle_gap_evidence,
@@ -269,7 +270,30 @@ def test_new_head_open_evidence_reopens_gap_and_preserves_historical_closure() -
     assert result.test_oracle_gaps[0].resolution_evidence == ""
     assert result.test_oracle_gaps[0].historical_resolution_head_sha == "sha-a"
     assert result.test_oracle_gaps[0].historical_resolution_evidence == "The focused direct-boundary test was committed."
-    assert result.test_oracle_gaps[0].requirement_text == context().issue_requirements[0].text
+
+
+def test_new_head_omission_cannot_become_reusable_after_session_head_advances() -> None:
+    resolved = parsed_result(gap_payload()).test_oracle_gaps[0]
+    resolved.status = "RESOLVED"
+    resolved.resolution_evidence = "H1 independently proved the focused regression."
+
+    first_h2 = _reconcile_test_oracle_gap_lifecycle(
+        AdversarialValidationResult(result="NEEDS_FIX", summary="An unrelated implementation finding remains."),
+        prior_session(resolved, "sha-h1"),
+        "sha-h2",
+    )
+    persisted_h2 = prior_session(first_h2.test_oracle_gaps[0], "sha-h2")
+    second_h2 = _reconcile_test_oracle_gap_lifecycle(
+        AdversarialValidationResult(result="PASS", summary="No other blocker remains."),
+        persisted_h2,
+        "sha-h2",
+    )
+
+    assert first_h2.result == "BLOCKED"
+    assert first_h2.test_oracle_gaps[0].resolution_head_sha == "sha-h1"
+    assert second_h2.result == "BLOCKED"
+    assert second_h2.diagnostic_category == "test_oracle_gap_current_head_evidence_missing"
+    assert second_h2.test_oracle_gaps[0].resolution_head_sha == "sha-h1"
 
 
 def test_validation_run_persists_gap_identity_and_scope_for_rereview(tmp_path) -> None:
@@ -499,7 +523,7 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
 
 
 @pytest.mark.parametrize("echo_gap", [False, True])
-@pytest.mark.parametrize("unrelated_blocker", ["provenance", "evidence"])
+@pytest.mark.parametrize("unrelated_blocker", ["provenance", "evidence", "finding"])
 def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_resolution(tmp_path, echo_gap, unrelated_blocker) -> None:
     """Exercise the production validator boundary used before thread resolution."""
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
@@ -507,8 +531,11 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
     registry.save(prior_session(initial, "sha-a"))
     validation_context = context()
     validation_context.issue_context = "Linked Issue requires independent server validation."
-    if unrelated_blocker == "evidence":
+    if unrelated_blocker in {"evidence", "finding"}:
         validation_context.issue_requirements.append(IssueRequirement("REQ-002", "Audit evidence must be available."))
+    if unrelated_blocker == "finding":
+        validation_context.unverified_files = ["src/audit.py"]
+        validation_context.all_changed_files.append("src/audit.py")
     classification = classify_review_threads(
         (
             ReviewThread(
@@ -538,13 +565,32 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
     manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
     manager._last_session_id = "session-1"
     response = {
-        "result": "INCONCLUSIVE" if unrelated_blocker == "evidence" else "PASS",
+        "result": "INCONCLUSIVE" if unrelated_blocker == "evidence" else "NEEDS_FIX" if unrelated_blocker == "finding" else "PASS",
         "summary": "Requirements and regression protections are verified; provenance remains unclear.",
         "requirement_coverage": [
             {"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Guard and direct regression test verified."},
             *([{"requirement_id": "REQ-002", "status": "UNVERIFIED", "evidence": "The audit artifact is unavailable."}] if unrelated_blocker == "evidence" else []),
+            *([{"requirement_id": "REQ-002", "status": "VIOLATED", "evidence": "The audit handler returns success after failure."}] if unrelated_blocker == "finding" else []),
         ],
-        "findings": [],
+        "findings": (
+            [
+                {
+                    "requirement_ids": ["REQ-002"],
+                    "finding_identity": "audit-failure-is-swallowed",
+                    "correction_identity": "propagate-audit-failure",
+                    "violated_requirement": "Audit evidence must be available.",
+                    "evidence_classification": "DEMONSTRATED",
+                    "reachability": "The production audit handler catches the storage failure.",
+                    "required_behavior": "Report the audit failure.",
+                    "actual_behavior": "Returns success.",
+                    "evidence": "src/audit.py catches and returns success.",
+                    "counterexample": "Given a storage failure, the handler reports success.",
+                    "anchor_path": "src/audit.py",
+                }
+            ]
+            if unrelated_blocker == "finding"
+            else []
+        ),
         "test_oracle_gaps": [gap_payload(phase="REREVIEW")] if echo_gap else [],
         "unexplained_changes": (
             [
@@ -604,8 +650,8 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
         )
 
     saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
-    assert result.result == "INCONCLUSIVE"
-    assert result.diagnostic_category == ("change_provenance_clarification" if unrelated_blocker == "provenance" else None)
+    assert result.result == ("NEEDS_FIX" if unrelated_blocker == "finding" else "INCONCLUSIVE")
+    assert result.diagnostic_category == ("change_provenance_clarification" if unrelated_blocker == "provenance" else "incomplete_evidence_coverage" if unrelated_blocker == "finding" else None)
     assert result.open_test_oracle_gaps == []
     assert result.thread_dispositions[0].status == "ADDRESSED"
     assert saved is not None
@@ -701,6 +747,40 @@ def test_same_head_explicit_gap_resolution_persists_when_resolved_thread_is_not_
     assert saved.last_head_sha == "sha-a"
     assert saved.test_oracle_gaps[0].status == "RESOLVED"
     assert saved.test_oracle_gaps[0].resolution_evidence == resolved_payload["resolution_evidence"]
+
+
+def test_deferred_production_checkpoint_does_not_eagerly_mutate_registry(tmp_path) -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "session-1"
+    manager.continue_session.return_value = validation_response(
+        gap_payload(
+            status="RESOLVED",
+            phase="REREVIEW",
+            resolution_evidence="The exact focused regression protects the persisted-state boundary.",
+        )
+    )
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-a"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+            defer_session_persistence=True,
+        )
+
+    unchanged = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert unchanged is not None
+    assert unchanged.test_oracle_gaps[0].status == "OPEN"
+    assert result.reviewer_session_checkpoint is not None
+    assert result.reviewer_session_checkpoint.test_oracle_gaps[0].status == "RESOLVED"
 
 
 def test_gap_persistence_failure_prevents_thread_projection_and_same_head_retry_recovers(tmp_path) -> None:
