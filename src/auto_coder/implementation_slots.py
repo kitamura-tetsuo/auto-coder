@@ -247,6 +247,7 @@ class ImplementationSlotRepository:
         session_ids: set[str] = set()
         if isinstance(body, str):
             session_ids.update(re.findall(r"jules\.google\.com/(?:session|task)/([A-Za-z0-9_-]+)", body))
+            session_ids.update(re.findall(r"https://claude\.ai/code/(session_[A-Za-z0-9_-]+)(?=[\s/#?)]|$)", body))
             session_ids.update(re.findall(r"\bSession ID:\s*([A-Za-z0-9_-]+)", body, re.IGNORECASE))
         with self._state_lock():
             records = self._read()

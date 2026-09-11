@@ -1574,3 +1574,34 @@ def test_unavailable_pr_read_retains_its_slot_under_its_own_cause(tmp_path):
         assert "retaining its slot" in message
         assert "Could not read pull request" in message
         assert "NoneType" not in message
+
+
+@pytest.mark.parametrize("known_session", [True, False])
+def test_claude_pr_reuses_only_recorded_session_at_full_capacity(tmp_path, known_session):
+    slots = repository(tmp_path)
+    owner = ImplementationOwner("issue", 1993)
+    assert slots.reserve(owner)
+    assert slots.record_provider_session(owner, "session_recorded")
+    session = "session_recorded" if known_session else "session_unknown"
+    pr = {"number": 2027, "body": f"Implements Issue #1993\nhttps://claude.ai/code/{session}", "head": {"ref": "claude/implementation-slots-dashboard"}}
+    resolved = slots.resolve_owner("pr", pr, GitHubState())
+    assert resolved == (owner if known_session else ImplementationOwner("pr", 2027))
+    execution = slots.start_execution(resolved, implementation_pr=2027 if known_session else None)
+    assert (execution is not None) is known_session
+    assert slots.active_owners() == (owner,)
+    if known_session:
+        slots.finish_execution(owner, execution)
+        restarted = repository(tmp_path)
+        assert restarted.resolve_owner("pr", {"number": 2027, "body": ""}, GitHubState()) == owner
+        assert restarted.snapshot().normal_usage == 1
+
+
+def test_startup_discovers_claude_pr_from_recorded_session(tmp_path):
+    slots = repository(tmp_path)
+    owner = ImplementationOwner("issue", 1993)
+    assert slots.reserve(owner)
+    assert slots.record_provider_session(owner, "session_recorded")
+    github = GitHubState(issues={1993: {"state": "open"}}, prs={2027: {"state": "open"}}, open_prs=[{"number": 2027, "body": "https://claude.ai/code/session_recorded"}])
+    slots.reconcile(github, discover_open_prs=True)
+    assert repository(tmp_path).resolve_owner("pr", {"number": 2027, "body": ""}, GitHubState()) == owner
+    assert slots.active_owners() == (owner,)

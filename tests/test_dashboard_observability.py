@@ -834,3 +834,46 @@ def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_pat
         repeated_snapshot = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=1998)
         producer_results = [event for event in repeated_snapshot.events if event.stage_id == "issue.individual-validation-job" and event.kind == EventKind.STAGE_RESULT.value]
         assert [event.facts["evaluation_source"] for event in producer_results] == ["model", "stored-decision-reuse", "local-only"]
+
+
+@pytest.mark.parametrize("known_session", [True, False])
+@patch("auto_coder.dashboard.ui")
+def test_claude_pr_slot_admission_reaches_detail_view(mock_ui, tmp_path, known_session):
+    from auto_coder.automation_config import CandidateProcessingResult
+    from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+
+    config = AutomationConfig()
+    config.PR_ALLOWLIST = [1]
+    github = MagicMock()
+    github.get_connected_prs.return_value = []
+    github.get_issue.return_value = {"number": 1993, "state": "open"}
+    github.get_issue_details.side_effect = lambda issue: issue
+    github.get_pull_request.return_value = {"number": 2027, "state": "open"}
+    github.get_pr_details.side_effect = lambda pr: pr
+    engine = AutomationEngine(github, config)
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    owner = ImplementationOwner("issue", 1993)
+    assert slots.reserve(owner)
+    assert slots.record_provider_session(owner, "session_recorded")
+    session = "session_recorded" if known_session else "session_unknown"
+    pr = {"number": 2027, "title": "Dashboard", "body": f"https://claude.ai/code/{session}", "user": {"id": 1, "login": "developer"}, "labels": []}
+    with patch.object(engine, "_process_single_candidate_reserved", return_value=CandidateProcessingResult("pr", 2027, "Dashboard", True, ["processing reached"])) as dispatch:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("pr", pr, 0), config)
+    if known_session:
+        dispatch.assert_called_once()
+        assert result.success is True
+    else:
+        dispatch.assert_not_called()
+        assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+        assert result.capacity_deferred is True
+    assert slots.active_owners() == (owner,)
+    assert slots.snapshot().normal_usage == 1
+    snapshot = get_trace_collector().get_snapshot(repository="owner/repo", item_type="pr", item_number=2027)
+    events = [event for event in snapshot.events if event.stage_id == "pr.implementation-admission"]
+    assert len(events) == 1
+    assert events[0].outcome == ("completed" if known_session else "deferred")
+    assert events[0].facts["owner"] == ("issue:1993" if known_session else "pr:2027")
+    diagram = _mounted_detail(mock_ui, "pr", 2027)
+    _assert_required_stage_visible(diagram, "implementation admission")
+    assert ("outcome: completed" if known_session else "outcome: deferred") in diagram

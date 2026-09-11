@@ -4269,10 +4269,15 @@ class AutomationEngine:
                 return result
         if execution_id is None:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
+            if candidate.type == "pr":
+                _record_pr_stage_result(item_number, "pr.implementation-admission", f"pr#{item_number} implementation admission", Outcome.DEFERRED, {"owner": owner.key, "reason": reason})
             result.target_outcome = ExplicitTargetOutcome.DEFERRED
             result.actions = [f"Deferred - {reason} ({owner.key})"]
             result.capacity_deferred = not bool(slots.active_execution_ids(owner))
             return result
+
+        if candidate.type == "pr":
+            _record_pr_stage_result(item_number, "pr.implementation-admission", f"pr#{item_number} implementation admission", Outcome.COMPLETED, {"owner": owner.key, "reused_owner": owner_existed_before_admission})
 
         if candidate.type == "issue" and not inherited_execution:
             if not slots.record_validation_identity(owner, expected_identity.key):

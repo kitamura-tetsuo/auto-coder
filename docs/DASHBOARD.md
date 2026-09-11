@@ -134,3 +134,10 @@ auto-coder serve --port 8080
 ```
 
 Then access at `http://localhost:8080/dashboard/`.
+
+PR detail traces include **implementation admission**, identifying the logical
+owner whose slot is used. Claude Routine PRs with a session URL matching a
+recorded provider session reuse that owner's slot, including when capacity is
+full. Unknown sessions remain subject to ordinary capacity limits. A completed
+admission stage does not mean review or merge has completed; a deferred stage
+reports the admission reason.

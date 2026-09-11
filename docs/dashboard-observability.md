@@ -173,3 +173,14 @@ evidence remain deferred. Native child validation remains unchanged. The joined
 regression above uses the production reconciliation path, checks whether dispatch
 is reached independently, and renders the actual collector event in the detail
 view. No static diagram mapping or new dashboard request is needed.
+
+### Claude PR implementation admission
+
+`tests/test_dashboard_observability.py::test_claude_pr_slot_admission_reaches_detail_view`
+executes the unified PR admission boundary with a real, full slot store and
+mounts the resulting PR detail page. A Claude session URL matching recorded
+ownership reuses the Issue slot; an unknown session remains a standalone PR
+and is deferred. The `pr.implementation-admission` result reports the resolved
+`owner` and either `reused_owner` on admission or `reason` on deferral. Completion
+of this stage means admission passed, not that the PR merged. Both cases assert
+unchanged occupancy independently of the rendered outcome.
