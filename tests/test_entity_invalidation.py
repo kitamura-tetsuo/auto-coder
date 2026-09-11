@@ -416,6 +416,57 @@ def test_http_redelivery_after_migration_recognizes_former_adapter_suffix(tmp_pa
     assert engine.queue.qsize() == 0
 
 
+@pytest.mark.parametrize("phase", ["refresh", "parent_validation", "dependency"])
+def test_worker_status_owns_candidate_during_pre_dispatch(tmp_path: Path, monkeypatch, phase):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    release = threading.Event()
+    entity_type = "dependency" if phase == "dependency" else "issue"
+    processed = []
+
+    def pause():
+        entered.set()
+        assert release.wait(10), "Test did not release the pre-dispatch operation"
+
+    def fetch(*args):
+        if phase == "refresh":
+            pause()
+        return Candidate(type="issue", data={"number": 100, "title": "Fetched title", "state": "open"}, priority=0)
+
+    def validate(*args):
+        if phase == "parent_validation":
+            pause()
+
+    async def expand(*args):
+        await asyncio.to_thread(pause)
+
+    monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
+    monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", validate)
+    monkeypatch.setattr(engine, "_expand_dependency_obligation", expand)
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda *args, **kwargs: processed.append(100) or CandidateProcessingResult(type="issue", number=100, success=True))
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", entity_type, 100)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            status = engine.get_status()
+            assert status["active_workers"] == {0: {"type": entity_type, "number": 100, "title": "Fetched title" if phase == "parent_validation" else None}}
+            assert status["queue_items"] == []
+            release.set()
+            await asyncio.wait_for(engine.queue.join(), 5)
+            assert engine.get_status()["active_workers"] == {0: None}
+            assert engine.invalidations.pending_count("owner/repo") == 0
+        finally:
+            release.set()
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert processed == ([] if phase == "dependency" else [100])
+
+
 def test_five_webhooks_before_worker_cause_one_fetch_and_decision(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())

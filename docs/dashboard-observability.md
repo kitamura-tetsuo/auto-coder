@@ -9,6 +9,14 @@ identity; late evidence remains attached to the execution scope that produced it
 
 ## Updating observable processing
 
+Worker occupancy includes pre-dispatch GitHub refresh, submitted-parent validation,
+and dependency expansion. `test_worker_status_owns_candidate_during_pre_dispatch`
+in `tests/test_entity_invalidation.py` holds each production worker boundary open,
+checks the dashboard's `get_status()` projection, and verifies release and durable
+completion. This occupancy correction changes no processing origin, admission gate,
+outcome, or structured event schema; existing execution traces remain unchanged.
+Run it with `bash scripts/test.sh tests/test_entity_invalidation.py`.
+
 When changing a processing origin, gate, outcome, provider route, resumption handler,
 or event schema:
 

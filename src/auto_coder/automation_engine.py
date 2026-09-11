@@ -2493,6 +2493,10 @@ class AutomationEngine:
                 stop_after_persistence_failure = False
                 invalidation_claim: Optional[ClaimedInvalidation] = None
 
+                # Ownership starts at dequeue, including authoritative refresh
+                # and submitted-parent validation before ordinary dispatch.
+                self.active_workers[worker_id] = candidate
+                heartbeat(f"worker-{worker_id}:processing", f"{candidate.type} #{item_number}")
                 try:
                     if candidate.invalidation_generation is not None:
                         invalidation_claim = ClaimedInvalidation(
@@ -2515,6 +2519,7 @@ class AutomationEngine:
                         authoritative_candidate.invalidation_generation = candidate.invalidation_generation
                         authoritative_candidate.urgent_admission = candidate.urgent_admission
                         candidate = authoritative_candidate
+                        self.active_workers[worker_id] = candidate
 
                         if candidate.type == "issue":
                             await self._run_local_critical(
@@ -2527,7 +2532,6 @@ class AutomationEngine:
                             if self.is_draining:
                                 return
 
-                    self.active_workers[worker_id] = candidate
                     logger.info(f"Worker {worker_id} processing {candidate.type} #{item_number}")
                     heartbeat(f"worker-{worker_id}:processing", f"{candidate.type} #{item_number}")
 
