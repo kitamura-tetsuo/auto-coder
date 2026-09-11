@@ -169,6 +169,23 @@ def test_same_sha_current_head_evidence_can_resolve_a_stale_open_gap() -> None:
     assert result.test_oracle_gaps[0].status == "RESOLVED"
 
 
+def test_explicit_resolution_without_stored_gap_id_fails_closed() -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    resolved_payload = gap_payload(
+        status="RESOLVED",
+        phase="REREVIEW",
+        resolution_evidence="The direct-boundary regression is present.",
+    )
+    del resolved_payload["gap_id"]
+
+    result = parsed_result(resolved_payload)
+
+    assert result.result == "ERROR"
+    assert result.diagnostic_category == "schema_error"
+    assert "explicit gap_id" in (result.diagnostic_reason or "")
+    assert initial.status == "OPEN"
+
+
 def test_new_commit_with_focused_boundary_test_can_resolve_and_converge() -> None:
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
     resolved_payload = gap_payload(
@@ -219,7 +236,7 @@ def test_rereview_discards_unbounded_new_gap_but_accepts_required_exception() ->
     unrestricted_result = _reconcile_test_oracle_gap_lifecycle(unrestricted, prior_session(resolved), "sha-b")
     unrestricted_result = _apply_coverage_and_verdict_precedence(unrestricted_result, context())
 
-    assert unrestricted_result.result == "PASS"
+    assert unrestricted_result.result == "BLOCKED"
     assert [gap.status for gap in unrestricted_result.test_oracle_gaps] == ["RESOLVED"]
     assert "discarded newly invented test-oracle gaps" in unrestricted_result.summary
 
@@ -233,11 +250,11 @@ def test_rereview_discards_unbounded_new_gap_but_accepts_required_exception() ->
     permitted_result = _reconcile_test_oracle_gap_lifecycle(permitted, prior_session(resolved), "sha-b")
     permitted_result = _apply_coverage_and_verdict_precedence(permitted_result, context())
 
-    assert permitted_result.result == "NEEDS_TESTS"
+    assert permitted_result.result == "BLOCKED"
     assert len(permitted_result.open_test_oracle_gaps) == 1
 
 
-def test_resolved_gap_cannot_be_reopened_with_a_variant() -> None:
+def test_new_head_open_evidence_reopens_gap_and_preserves_historical_closure() -> None:
     resolved = parsed_result(gap_payload()).test_oracle_gaps[0]
     resolved.status = "RESOLVED"
     resolved.resolution_evidence = "The focused direct-boundary test was committed."
@@ -246,9 +263,12 @@ def test_resolved_gap_cannot_be_reopened_with_a_variant() -> None:
     result = _reconcile_test_oracle_gap_lifecycle(attempted_reopen, prior_session(resolved), "sha-c")
     result = _apply_coverage_and_verdict_precedence(result, context())
 
-    assert result.result == "PASS"
+    assert result.result == "NEEDS_TESTS"
     assert [gap.gap_id for gap in result.test_oracle_gaps] == [resolved.gap_id]
-    assert result.test_oracle_gaps[0].status == "RESOLVED"
+    assert result.test_oracle_gaps[0].status == "OPEN"
+    assert result.test_oracle_gaps[0].resolution_evidence == ""
+    assert result.test_oracle_gaps[0].historical_resolution_head_sha == "sha-a"
+    assert result.test_oracle_gaps[0].historical_resolution_evidence == "The focused direct-boundary test was committed."
     assert result.test_oracle_gaps[0].requirement_text == context().issue_requirements[0].text
 
 
@@ -479,13 +499,16 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
 
 
 @pytest.mark.parametrize("echo_gap", [False, True])
-def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_resolution(tmp_path, echo_gap) -> None:
+@pytest.mark.parametrize("unrelated_blocker", ["provenance", "evidence"])
+def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_resolution(tmp_path, echo_gap, unrelated_blocker) -> None:
     """Exercise the production validator boundary used before thread resolution."""
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
     registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
     registry.save(prior_session(initial, "sha-a"))
     validation_context = context()
     validation_context.issue_context = "Linked Issue requires independent server validation."
+    if unrelated_blocker == "evidence":
+        validation_context.issue_requirements.append(IssueRequirement("REQ-002", "Audit evidence must be available."))
     classification = classify_review_threads(
         (
             ReviewThread(
@@ -514,30 +537,60 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
     manager = MagicMock()
     manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
     manager._last_session_id = "session-1"
-    manager.continue_session.return_value = json.dumps(
-        {
-            "result": "PASS",
-            "summary": "Requirements and regression protections are verified; provenance remains unclear.",
-            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Guard and direct regression test verified."}],
-            "findings": [],
-            "test_oracle_gaps": [gap_payload(phase="REREVIEW")] if echo_gap else [],
-            "unexplained_changes": [
+    response = {
+        "result": "INCONCLUSIVE" if unrelated_blocker == "evidence" else "PASS",
+        "summary": "Requirements and regression protections are verified; provenance remains unclear.",
+        "requirement_coverage": [
+            {"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Guard and direct regression test verified."},
+            *([{"requirement_id": "REQ-002", "status": "UNVERIFIED", "evidence": "The audit artifact is unavailable."}] if unrelated_blocker == "evidence" else []),
+        ],
+        "findings": [],
+        "test_oracle_gaps": [gap_payload(phase="REREVIEW")] if echo_gap else [],
+        "unexplained_changes": (
+            [
                 {
                     "paths": ["docs/generated.md"],
                     "change_group": "Generated documentation contract update.",
                     "why_unexplained": "No source relationship is established.",
                 }
-            ],
-            "thread_dispositions": [
+            ]
+            if unrelated_blocker == "provenance"
+            else []
+        ),
+        "evidence_recovery": (
+            [
                 {
-                    "thread_id": "thread-gap",
-                    "status": "ADDRESSED",
-                    "rationale": "The exact requested persisted-state invariant is now covered.",
-                    "evidence": "tests/test_grid.py calls GridMutation directly and asserts rejection, unchanged state, and revision.",
+                    "path": "artifacts/audit.json",
+                    "source": "repository inspection",
+                    "status": "UNAVAILABLE",
+                    "evidence": "The required audit artifact is absent from the checkout.",
+                    "requirement_ids": ["REQ-002"],
                 }
-            ],
-        }
-    )
+            ]
+            if unrelated_blocker == "evidence"
+            else []
+        ),
+        "decision_critical_evidence_gaps": (
+            [
+                {
+                    "requirement_id": "REQ-002",
+                    "evidence_needed": "The generated audit artifact.",
+                    "recovery_attempts": ["Inspected the current checkout."],
+                }
+            ]
+            if unrelated_blocker == "evidence"
+            else []
+        ),
+        "thread_dispositions": [
+            {
+                "thread_id": "thread-gap",
+                "status": "ADDRESSED",
+                "rationale": "The exact requested persisted-state invariant is now covered.",
+                "evidence": "tests/test_grid.py calls GridMutation directly and asserts rejection, unchanged state, and revision.",
+            }
+        ],
+    }
+    manager.continue_session.return_value = json.dumps(response)
 
     with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
         result = run_adversarial_validation(
@@ -552,7 +605,7 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
 
     saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
     assert result.result == "INCONCLUSIVE"
-    assert result.diagnostic_category == "change_provenance_clarification"
+    assert result.diagnostic_category == ("change_provenance_clarification" if unrelated_blocker == "provenance" else None)
     assert result.open_test_oracle_gaps == []
     assert result.thread_dispositions[0].status == "ADDRESSED"
     assert saved is not None

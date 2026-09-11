@@ -1078,13 +1078,19 @@ class TestAdversarialValidationPRFlow:
         from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
 
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
-        mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Retried")
+        stale_registry = MagicMock()
+        mock_run_validation.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="Retried",
+            reviewer_session_checkpoint=MagicMock(),
+            reviewer_session_registry=stale_registry,
+        )
         attempt_repository = attempt_repository_type.return_value
         attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-v2", 2)
-        attempt_repository.latest_sequence.side_effect = [2, 3]
-        # V1 is authoritative immediately after publication. Before its final
-        # merge transition, newer V2 completes but has not published yet.
-        attempt_repository.latest_published_sequence.return_value = 2
+        attempt_repository.latest_sequence.return_value = 3
+        # A newer attempt registered while this validator was running. The
+        # stale result must be rejected before reviewer-state persistence or
+        # any publication effect.
         head_sha = "abc123456789"
         prior_body = format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Historical"), head_sha)
         client = MagicMock()
@@ -1101,11 +1107,12 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.assert_called_once()
         attempt_repository.start.assert_called_once_with(100, head_sha)
         attempt_repository.finish.assert_called_once_with("attempt-v2", "PASS")
-        attempt_repository.mark_published.assert_called_once_with("attempt-v2")
+        attempt_repository.mark_published.assert_not_called()
         assert client.get_pr_comments.return_value == [{"body": prior_body}]
         assert any("Forcing a new adversarial-validation attempt" in action for action in actions)
         mock_merge_pr.assert_not_called()
-        assert any("newer adversarial-validation attempt is applicable" in action for action in actions)
+        stale_registry.save.assert_not_called()
+        assert any("newer attempt is already applicable" in action for action in actions)
 
     @pytest.mark.parametrize("newer_state", ["PUBLISHED", "TERMINAL", "IN_PROGRESS"])
     def test_thread_disposition_uses_latest_completed_attempt(self, dedicated_reviewer_publication, tmp_path, newer_state):
@@ -2023,6 +2030,7 @@ class TestAdversarialValidationPRFlow:
             claimed_review_threads_section="(No claimed-addressed review threads for this run.)",
             claimed_review_threads=(),
             execution_cwd=mock_worktree.return_value.__enter__.return_value,
+            defer_session_persistence=True,
         )
         mock_merge_pr.assert_called_once()
 

@@ -3093,6 +3093,7 @@ def _handle_pr_merge(
                                     claimed_review_threads_section=claimed_review_threads_section,
                                     claimed_review_threads=claimed_review_threads,
                                     execution_cwd=validation_worktree,
+                                    defer_session_persistence=True,
                                 )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]
@@ -3126,6 +3127,28 @@ def _handle_pr_merge(
                                 actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
                                 _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "pre-publication"})
                                 return actions
+                            if val_result.reviewer_session_checkpoint is not None:
+                                try:
+                                    observed_head = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
+                                except Exception as e:
+                                    actions.append(f"Rejected adversarial-validation result for PR #{pr_number}: authoritative head could not be confirmed ({e})")
+                                    _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "gap-state-acceptance", "reason": "head observation unavailable"})
+                                    return actions
+                                if observed_head != head_sha:
+                                    actions.append(f"Ignored adversarial-validation attempt {attempt.attempt_id}: current head changed before durable acceptance")
+                                    _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "observed_head": observed_head, "phase": "gap-state-acceptance"})
+                                    return actions
+                                try:
+                                    registry = val_result.reviewer_session_registry or ReviewerSessionRegistry()
+                                    registry.save(val_result.reviewer_session_checkpoint)
+                                except Exception as e:
+                                    logger.error(f"Failed to commit reviewer-gap state for PR #{pr_number}: {e}")
+                                    val_result.result = "ERROR"
+                                    val_result.summary = "Reviewer-gap state could not be committed; independent closure effects were suppressed"
+                                    val_result.diagnostic_category = "reviewer_gap_persistence_failure"
+                                    val_result.diagnostic_reason = str(e)
+                                    val_result.thread_dispositions = []
+                                    active_attempt_status = "ERROR"
                             resolved_thread_ids: List[str] = []
                             # Independent thread-completion validation (REQ-001..REQ-010): this
                             # runs whenever the authoritative fresh validation produced

@@ -34,6 +34,9 @@ class TestOracleGap:
     rereview_exception_evidence: str = ""
     status: str = "OPEN"
     resolution_evidence: str = ""
+    resolution_head_sha: str = ""
+    historical_resolution_head_sha: str = ""
+    historical_resolution_evidence: str = ""
 
 
 @dataclass

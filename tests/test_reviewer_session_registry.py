@@ -41,7 +41,11 @@ def test_material_test_oracle_gap_identity_and_scope_survive_reload(tmp_path):
         requirement_id="REQ-001",
         authoritative_boundary="GridMutation.apply_candidate",
         invariant="Rejection preserves stored state and revision",
-        status="OPEN",
+        status="RESOLVED",
+        resolution_evidence="The focused regression protects the boundary.",
+        resolution_head_sha="sha-b",
+        historical_resolution_head_sha="sha-a",
+        historical_resolution_evidence="The earlier focused regression protected the boundary.",
     )
     session = ReviewerSession("owner/repo", 123, "codex", "codex", "gpt", "s1", "sha-a", [gap])
 
