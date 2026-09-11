@@ -41,7 +41,6 @@ _PR_CONTRACT_POLICY_PROMPTS = frozenset(
         "pr.github_actions_fix",
         "pr.github_actions_fix_direct",
         "pr.local_test_fix",
-        "pr.existing_pr_repair",
         "pr.merge_conflict_resolution",
         "pr.adversarial_validation",
         "pr.adversarial_validation_initial_review",
@@ -50,6 +49,14 @@ _PR_CONTRACT_POLICY_PROMPTS = frozenset(
         "pr.adversarial_validation_fix",
     }
 )
+# "pr.existing_pr_repair" is deliberately excluded: it is rendered exclusively
+# by pr_repair.build_existing_pr_repair_prompt(), whose only production
+# callers have already resolved an existing cloud implementation session
+# (task/session identity) and deliver via that session's follow-up/continuation
+# transport. That session already received the shared bootstrap policies on
+# its initial dispatch, so re-injecting them here would replay, not deliver,
+# them. Fresh/stateless PR prompts (review, github_actions_fix, local_test_fix,
+# merge_conflict_resolution, adversarial_validation*) stay in the set above.
 
 
 def _prepend_contract_policy(key: str, template: str, prompts: Dict[str, Any]) -> str:
