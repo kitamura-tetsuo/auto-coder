@@ -104,3 +104,38 @@ def test_get_implementation_slot_snapshot_observes_real_recorded_ownership(tmp_p
     assert [o.owner_key for o in observation.owners] == ["issue:321"]
     assert observation.normal_usage == 1
     assert observation.normal_available == 1
+
+
+def test_get_implementation_slot_snapshot_never_rebinds_to_a_different_repository(tmp_path):
+    """A diagnostic read for a repository OTHER than the one this controller
+    is already bound to must observe that other repository's own store
+    without mutating `self.implementation_slots` (REQ-006 of Issue #1993):
+    a read-only dashboard observation must never rebind the controller, and
+    its subsequent lifecycle target must remain the original repository."""
+    real_engine = AutomationEngine(MagicMock())
+    bound_slots = ImplementationSlotRepository("owner/repo-b", 2, tmp_path / "repo-b-slots.json")
+    bound_owner = ImplementationOwner("issue", 111)
+    assert bound_slots.start_execution(bound_owner) is not None
+    real_engine.implementation_slots = bound_slots
+
+    other_slots = ImplementationSlotRepository("owner/repo-a", 2, tmp_path / "repo-a-slots.json")
+    other_owner = ImplementationOwner("issue", 222)
+    assert other_slots.start_execution(other_owner) is not None
+
+    with patch("src.auto_coder.automation_engine.ImplementationSlotRepository") as mock_repo_class:
+        mock_repo_class.side_effect = lambda repo_name, limit: ImplementationSlotRepository(repo_name, limit, tmp_path / "repo-a-slots.json")
+
+        observation = real_engine.get_implementation_slot_snapshot("owner/repo-a")
+
+    # The observation itself is correct for the requested (mismatched) repo...
+    assert isinstance(observation, ImplementationSlotSnapshot)
+    assert observation.repository == "owner/repo-a"
+    assert [o.owner_key for o in observation.owners] == ["issue:222"]
+    # ...but the controller's actual binding and subsequent lifecycle target
+    # remain untouched: still the original repository/instance, not
+    # replaced, and no fallback/alternate store was substituted for it.
+    assert real_engine.implementation_slots is bound_slots
+    assert real_engine.implementation_slots.repo_name == "owner/repo-b"
+    assert real_engine._get_implementation_slots("owner/repo-b") is bound_slots
+    resumed = real_engine.get_implementation_slot_snapshot("owner/repo-b")
+    assert [o.owner_key for o in resumed.owners] == ["issue:111"]

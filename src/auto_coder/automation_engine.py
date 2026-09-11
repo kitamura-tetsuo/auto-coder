@@ -4632,16 +4632,38 @@ class AutomationEngine:
     def get_implementation_slot_snapshot(self, repo_name: str) -> ImplementationSlotObservation:
         """Public read-only occupancy observation for `repo_name`'s slot store.
 
-        Uses the same lazily-initialized, repository-bound
-        ``ImplementationSlotRepository`` instance as admission/lifecycle
-        operations (``_get_implementation_slots``), so a consumer such as the
-        dashboard observes this controller's actual effective store and
-        normal limit rather than a default or other-repository substitute,
-        including before any worker has run. This is a non-blocking
+        When this controller is not yet bound to any repository (before any
+        worker/admission call has run), or is already bound to exactly
+        `repo_name`, this reuses (and, only in the unbound case, lazily
+        establishes) the same instance admission/lifecycle operations use
+        (``_get_implementation_slots``), so the dashboard observes this
+        controller's actual effective store and normal limit rather than a
+        default substitute.
+
+        Deliberately does NOT go through ``_get_implementation_slots`` when
+        it is already bound to a *different* repository: that helper
+        replaces ``self.implementation_slots`` with a fresh instance on a
+        mismatch, which would rebind live controller state as a side
+        effect of a read-only diagnostic call (REQ-006). Establishing the
+        *first* binding from an unbound (`None`) controller is not a
+        rebind and remains via ``_get_implementation_slots`` as before, so
+        this diagnostic read can still be what lazily establishes the
+        binding admission/lifecycle operations reuse afterward. Only the
+        mismatched-existing-binding case instead constructs a standalone,
+        uncached repository object scoped to `repo_name` -- observing that
+        repository's own correctly-selected store without ever touching or
+        replacing the controller's actual binding. This is a non-blocking
         diagnostic read only; it never creates, repairs or mutates durable
         slot state.
         """
-        return self._get_implementation_slots(repo_name).snapshot()
+        cached = self.implementation_slots
+        if cached is None:
+            repository = self._get_implementation_slots(repo_name)
+        elif cached.repo_name == repo_name:
+            repository = cached
+        else:
+            repository = ImplementationSlotRepository(repo_name, self.config.MAX_CONCURRENT_IMPLEMENTATIONS)
+        return repository.snapshot()
 
     def _get_authoritative_item_type(self, repo_name: str, item_number: int) -> str:
         """Establish an issue-like target's authoritative GitHub type.

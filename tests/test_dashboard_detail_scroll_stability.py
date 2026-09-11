@@ -155,7 +155,7 @@ def _seed_execution(item_number: int, stage_count: int) -> ExecutionHandle:
     return handle
 
 
-def test_unchanged_snapshot_preserves_scroll_dom_identity_and_pagination(_use_real_sleep, dashboard_base_url) -> None:
+def test_unchanged_snapshot_preserves_scroll_dom_identity_and_pagination(_use_real_sleep, _use_real_home, dashboard_base_url) -> None:
     """AS-001 + AS-005: with no new data, two-plus refresh ticks must not
     move the scroll position, must not tear down and recreate already
     rendered table elements, and must not reset table pagination."""
@@ -192,7 +192,7 @@ def test_unchanged_snapshot_preserves_scroll_dom_identity_and_pagination(_use_re
         handle.__exit__(None, None, None)
 
 
-def test_new_evidence_updates_without_resetting_scroll_or_pagination(_use_real_sleep, dashboard_base_url) -> None:
+def test_new_evidence_updates_without_resetting_scroll_or_pagination(_use_real_sleep, _use_real_home, dashboard_base_url) -> None:
     """AS-002 + AS-005: new events for the followed execution must become
     visible without forcing the viewport to the page origin and without
     resetting the decision log's current pagination page."""
@@ -222,7 +222,7 @@ def test_new_evidence_updates_without_resetting_scroll_or_pagination(_use_real_s
         handle.__exit__(None, None, None)
 
 
-def test_pinned_execution_survives_new_execution_starting(_use_real_sleep, dashboard_base_url) -> None:
+def test_pinned_execution_survives_new_execution_starting(_use_real_sleep, _use_real_home, dashboard_base_url) -> None:
     """AS-003: pinning an older execution and scrolling must not be disturbed
     merely because a newer execution starts and periodic refresh observes it."""
     collector = get_trace_collector()
@@ -271,7 +271,7 @@ def test_pinned_execution_survives_new_execution_starting(_use_real_sleep, dashb
         assert scroll_after == scroll_before, "the viewport must not be reset merely because newer evidence exists"
 
 
-def test_snapshot_failure_preserves_rendered_view_and_recovers(_use_real_sleep, dashboard_base_url) -> None:
+def test_snapshot_failure_preserves_rendered_view_and_recovers(_use_real_sleep, _use_real_home, dashboard_base_url) -> None:
     """AS-004: a failed snapshot read must leave the last successfully
     rendered content and the viewport untouched, and a later successful
     refresh must recover without forcing the viewport to the page origin."""

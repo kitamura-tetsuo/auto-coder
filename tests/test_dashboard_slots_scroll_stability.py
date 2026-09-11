@@ -122,7 +122,60 @@ def dashboard_env() -> Iterator[Tuple[str, AutomationEngine, ImplementationSlotR
             os.environ["AUTO_CODER_RUNTIME_ROOT"] = previous_runtime_root
 
 
-def test_unchanged_slot_snapshot_preserves_scroll_and_dom_identity(_use_real_sleep, dashboard_env) -> None:
+@contextmanager
+def _standalone_dashboard_env(repo_name: str) -> Iterator[Tuple[str, AutomationEngine, ImplementationSlotRepository]]:
+    """Like `dashboard_env`, but a fresh, fully isolated engine/server used
+    by exactly one test.
+
+    NiceGUI's `reconnect_timeout` (a few seconds) keeps a disconnected
+    client's session -- and its `ui.timer` -- alive for a grace period
+    after its browser closes. A test that globally monkeypatches a pure
+    function shared by every client (e.g. `dashboard_slots.summarize`)
+    cannot tell its own client's calls apart from a still-draining client
+    left over from an earlier test on the same shared server, so it needs
+    its own server rather than the module-scoped `dashboard_env`.
+    """
+    tmp_dir = Path(tempfile.mkdtemp())
+    previous_runtime_root = os.environ.get("AUTO_CODER_RUNTIME_ROOT")
+    os.environ["AUTO_CODER_RUNTIME_ROOT"] = str(tmp_dir / "runtime-root")
+    try:
+        slots = ImplementationSlotRepository(repo_name, 30, tmp_dir / "slots.json")
+        engine = AutomationEngine(MagicMock())
+        engine.implementation_slots = slots
+
+        app = FastAPI()
+
+        from nicegui import core as _nicegui_core
+
+        if _nicegui_core.app.middleware_stack is not None:
+            _nicegui_core.app.middleware_stack = None
+
+        init_dashboard(app, engine, repo_name)
+
+        config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
+        server = uvicorn.Server(config)
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        try:
+            for _ in range(200):
+                if server.started:
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError("dashboard server did not start in time")
+            port = server.servers[0].sockets[0].getsockname()[1]
+            yield f"http://127.0.0.1:{port}/dashboard", engine, slots
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+    finally:
+        if previous_runtime_root is None:
+            os.environ.pop("AUTO_CODER_RUNTIME_ROOT", None)
+        else:
+            os.environ["AUTO_CODER_RUNTIME_ROOT"] = previous_runtime_root
+
+
+def test_unchanged_slot_snapshot_preserves_scroll_and_dom_identity(_use_real_sleep, _use_real_home, dashboard_env) -> None:
     """AS-005: with no new slot data, two-plus refresh ticks must not move
     the scroll position or tear down and recreate already-rendered owner
     rows."""
@@ -152,7 +205,7 @@ def test_unchanged_slot_snapshot_preserves_scroll_and_dom_identity(_use_real_sle
         assert "Issue #9111" in page.content()
 
 
-def test_membership_update_refreshes_without_full_panel_rebuild(_use_real_sleep, dashboard_env) -> None:
+def test_membership_update_refreshes_without_full_panel_rebuild(_use_real_sleep, _use_real_home, dashboard_env) -> None:
     """AS-005: a membership-only change (a newly recorded PR for an existing
     owner) must become visible without resetting the scroll position, and
     without tearing down an unrelated owner's row that did not change."""
@@ -191,7 +244,7 @@ def test_membership_update_refreshes_without_full_panel_rebuild(_use_real_sleep,
         assert same_sibling_card, "an unrelated owner's row must not be torn down by another owner's membership update"
 
 
-def test_slow_slot_observation_does_not_block_other_status_refresh(_use_real_sleep, dashboard_env) -> None:
+def test_slow_slot_observation_does_not_block_other_status_refresh(_use_real_sleep, _use_real_home, dashboard_env) -> None:
     """AS-005: a slow/delayed observation boundary must not block this
     page's event loop or pause the Active Workers/Queue/Open Items refresh,
     which runs on its own independent `ui.timer`."""
@@ -225,3 +278,99 @@ def test_slow_slot_observation_does_not_block_other_status_refresh(_use_real_sle
     finally:
         release.set()
         engine.get_implementation_slot_snapshot = real_get_snapshot
+
+
+def test_owner_and_pr_links_navigate_to_the_correct_detail_page(_use_real_sleep, _use_real_home, dashboard_env) -> None:
+    """AS-001: owner/PR links must actually navigate to the correct
+    repository-scoped detail target when followed, not just carry a
+    plausible-looking label (a mocked `ui.link` call cannot establish
+    this -- only a real click and a real resulting page can)."""
+    base_url, _engine, slots = dashboard_env
+    owner = ImplementationOwner("issue", 9400)
+    assert slots.start_execution(owner) is not None
+    assert slots.record_implementation_pr(owner, 9401)
+
+    with _headless_page() as page:
+        page.goto(f"{base_url}/")
+        page.wait_for_selector("text=Issue #9400", timeout=10000)
+
+        page.click("text=Issue #9400")
+        page.wait_for_selector("text=Detail View: Issue #9400", timeout=10000)
+        assert page.url.endswith("/detail/issue/9400")
+
+        page.go_back()
+        page.wait_for_selector("text=Issue #9400", timeout=10000)
+        page.click("text=#9401")
+        page.wait_for_selector("text=Detail View: Pr #9401", timeout=10000)
+        assert page.url.endswith("/detail/pr/9401")
+
+
+def test_render_failure_does_not_leave_a_mixed_partial_dom_state(_use_real_sleep, _use_real_home) -> None:
+    """REQ-004/REQ-006: a transient rendering failure must not leave a
+    mixed partial DOM (a new owner visible while counters/banner still
+    reflect the old state, or vice versa) -- the panel must show the
+    coherent last-known state with a stale indication instead, then
+    recover cleanly on the next successful render.
+
+    Uses its own standalone server (not the shared `dashboard_env`): this
+    test globally monkeypatches `dashboard_slots.summarize`, and a client
+    left over from an earlier test (draining during NiceGUI's
+    `reconnect_timeout` grace period after its browser closed) would
+    otherwise also observe the patch and race this test's own client for
+    which one "first" sees the newly added owner.
+    """
+    with _standalone_dashboard_env("owner/repo-render-failure") as (base_url, _engine, slots):
+        anchor = ImplementationOwner("issue", 9450)
+        assert slots.start_execution(anchor) is not None
+
+        with _headless_page() as page:
+            page.goto(f"{base_url}/")
+            page.wait_for_selector("text=Issue #9450", timeout=10000)
+            time.sleep(0.3)
+            assert "Issue #9451" not in page.content()
+
+            new_owner = ImplementationOwner("issue", 9451)
+            assert slots.start_execution(new_owner) is not None
+
+            from src.auto_coder import dashboard_slots as dashboard_slots_module
+
+            real_summarize = dashboard_slots_module.summarize
+            raised_once = {"done": False}
+
+            def flaky_summarize(snapshot):
+                # The dashboard's own `ui.timer` runs in a separate server
+                # thread with no synchronization against this test's writes,
+                # so tie the one simulated failure to *observing owner 9451
+                # for the first time* (a data condition) rather than to an
+                # absolute call count -- otherwise which tick actually sees
+                # the new owner races against when this patch takes effect.
+                has_new_owner = any(o.number == 9451 for o in snapshot.owners)
+                if has_new_owner and not raised_once["done"]:
+                    raised_once["done"] = True
+                    raise RuntimeError("simulated transient rendering failure")
+                return real_summarize(snapshot)
+
+            dashboard_slots_module.summarize = flaky_summarize
+            try:
+                # Poll (rather than a single fixed sleep) until the simulated
+                # failure has actually fired, since it races an independent
+                # server-thread timer tick.
+                for _ in range(50):
+                    if raised_once["done"]:
+                        break
+                    time.sleep(0.1)
+                assert raised_once["done"], "the simulated failure never fired -- the server thread never observed owner 9451"
+                time.sleep(0.2)  # let the compensating render (same tick) finish
+
+                content_during_failure = page.content()
+                assert "Issue #9451" not in content_during_failure, "a partially-rendered new owner must not remain visible after a failed render"
+                assert "Issue #9450" in content_during_failure
+                assert page.locator("text=rendering failed").count() > 0, "a rendering failure must surface as a slot-panel diagnostic"
+
+                time.sleep(1.3)  # the recovering tick (flaky_summarize now delegates to the real implementation)
+            finally:
+                dashboard_slots_module.summarize = real_summarize
+
+            content_after_recovery = page.content()
+            assert "Issue #9451" in content_after_recovery, "the new owner must appear once rendering succeeds again"
+            assert page.locator("text=rendering failed").count() == 0

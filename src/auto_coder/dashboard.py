@@ -30,7 +30,10 @@ from .dashboard_detail import (
 )
 from .execution_trace import get_trace_collector
 from .implementation_slots import ImplementationSlotSnapshot, ImplementationSlotSnapshotUnavailable
+from .logger_config import get_logger
 from .trace_logger import get_trace_logger
+
+logger = get_logger(__name__)
 
 
 def prepare_log_rows(logs: List[Dict[str, Any]]) -> List[Dict[str, str]]:
@@ -180,9 +183,16 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 slots_banner.classes(replace="text-sm text-gray-500 mb-1")
 
         def render_known(snapshot: ImplementationSlotSnapshot, stale: bool, diagnostic: Optional[str]) -> None:
+            # Both pure projections are computed FIRST, before either one
+            # touches the DOM: a failure in either (not just a storage read
+            # failure) then fails atomically, before `sync_owners` has
+            # mutated any owner row -- never leaving a partially-updated
+            # DOM mixing old and new state (REQ-004, REQ-006).
+            rows = dashboard_slots.owner_rows(snapshot)
+            summary = dashboard_slots.summarize(snapshot)
             slots_cache["panel_mode"] = "known"
-            sync_owners(dashboard_slots.owner_rows(snapshot))
-            render_summary(dashboard_slots.summarize(snapshot), stale, diagnostic)
+            sync_owners(rows)
+            render_summary(summary, stale, diagnostic)
 
         def render_never_known(diagnostic: str) -> None:
             # Before any successful observation: an explicit unavailable
@@ -199,23 +209,59 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 slots_cache["rows_by_key"] = {}
                 slots_cache["summary_sig"] = None
 
-        def apply_unavailable(diagnostic: str) -> None:
+        def safe_apply_unavailable(diagnostic: str) -> None:
+            # A rendering failure while displaying the unavailable/stale
+            # state itself must not be able to escape the refresh timer
+            # either (REQ-006): this is the last line of defense, so it
+            # only logs rather than re-raising.
             known = slots_state["known"]
-            if known is None:
-                render_never_known(diagnostic)
-            else:
-                # A read/validation/contention failure after a successful
-                # observation preserves that entire last-known snapshot
-                # (rows and counters together) with a stale indication; the
-                # last-successful observation time is never advanced here
-                # (REQ-004).
-                render_known(known, stale=True, diagnostic=diagnostic)
+            try:
+                if known is None:
+                    render_never_known(diagnostic)
+                else:
+                    # A read/validation/contention failure after a
+                    # successful observation preserves that entire
+                    # last-known snapshot (rows and counters together) with
+                    # a stale indication; the last-successful observation
+                    # time is never advanced here (REQ-004).
+                    render_known(known, stale=True, diagnostic=diagnostic)
+            except Exception:
+                logger.exception("Implementation Slots panel: failed to render unavailable/stale state")
+                # Last resort: even if the fuller re-render above itself
+                # failed, the banner text alone must still reach the user
+                # as a diagnostic (REQ-006) rather than silently keeping
+                # whatever text happened to be displayed before.
+                try:
+                    slots_banner.set_text(f"Implementation slot panel error: {diagnostic}")
+                    slots_banner.classes(replace="text-sm text-red-600 font-bold mb-1")
+                except Exception:
+                    logger.exception("Implementation Slots panel: failed to render the fallback banner text")
+
+        def safe_apply_known(observation: ImplementationSlotSnapshot) -> None:
+            # `slots_state["known"]` only advances to `observation` after
+            # `render_known` completes successfully -- a rendering/
+            # projection failure partway through (owner rows updated, then
+            # the summary/banner update raises, say) must not promote a
+            # partially-rendered snapshot to "last known", and must remain
+            # a slot-panel diagnostic rather than escaping this timer
+            # callback and disturbing the rest of the page (REQ-004, REQ-006).
+            try:
+                render_known(observation, stale=False, diagnostic=None)
+            except Exception as exc:
+                logger.exception("Implementation Slots panel: failed to render a known snapshot")
+                safe_apply_unavailable(f"slot panel rendering failed: {exc}")
+                return
+            slots_state["known"] = observation
 
         async def refresh_slots() -> None:
             # At most one observation request in flight per mounted page: a
             # timer tick that lands while the previous one is still awaiting
             # its background thread is a no-op, so refresh ticks never queue
-            # up or apply out of order (REQ-005).
+            # up or apply out of order (REQ-005). Nothing in this function
+            # body may raise past this `try`: an observation or rendering
+            # failure must remain a slot-panel diagnostic, never propagate
+            # into the timer/page or pause the independent Workers/Queue/
+            # Open Items refresh (REQ-006).
             if slots_state["refreshing"]:
                 return
             slots_state["refreshing"] = True
@@ -223,15 +269,14 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 try:
                     observation = await asyncio.to_thread(engine.get_implementation_slot_snapshot, repo_name)
                 except Exception as exc:
-                    apply_unavailable(f"slot observation raised: {exc}")
+                    safe_apply_unavailable(f"slot observation raised: {exc}")
                     return
                 if isinstance(observation, ImplementationSlotSnapshot):
-                    slots_state["known"] = observation
-                    render_known(observation, stale=False, diagnostic=None)
+                    safe_apply_known(observation)
                 elif isinstance(observation, ImplementationSlotSnapshotUnavailable):
-                    apply_unavailable(observation.diagnostic)
+                    safe_apply_unavailable(observation.diagnostic)
                 else:
-                    apply_unavailable("implementation slot observation returned an unrecognized result")
+                    safe_apply_unavailable("implementation slot observation returned an unrecognized result")
             finally:
                 slots_state["refreshing"] = False
 
