@@ -52,6 +52,34 @@ therefore need no new stage or field for the transport itself.
 
 ## Production-origin coverage inventory
 
+CI correlation supersession is covered by
+`tests/test_ci_webhook_intake.py::test_ci_drain_survives_delivery_during_lookup_and_promotes_other_prs`
+and `test_superseded_correlation_preserves_delivery_and_retry_across_restart`.
+A new delivery during SHA lookup retains the pending correlation, discards the
+stale lookup result, and lets independent PR batches proceed. This is trace-neutral:
+correlation occurs before an entity execution is opened, and its existing durable
+invalidation path still creates the worker execution and emits PR processing
+stages. The controller logs supersession instead of false correlation completion;
+no CI verdict, completed implementation, or synthetic dashboard execution is emitted
+from a webhook or lookup. Run these regressions with
+`bash scripts/test.sh tests/test_ci_webhook_intake.py tests/test_dashboard_observability.py`.
+The related supervisor-cancellation regression is
+`tests/test_graceful_shutdown.py::test_supervisor_cancellation_waits_for_owned_work_then_stops_caller`.
+Owned local work still reaches its real boundary before cancellation propagates;
+the existing worker cancellation and durable-claim cleanup paths remain the
+authority. This creates no new execution origin or trace schema, and an explicit
+graceful drain still finalizes its result through the existing checkpoints.
+
+Cloud submission rejection is covered by
+`tests/test_dashboard_observability.py::test_cloud_submission_slot_cleanup_reaches_detail_view`.
+It drives ordinary and high-score Cloud routing through the real submission
+journal and slot cleanup, checks capacity availability independently, and mounts
+the resulting detail view. The `issue.cloud-submission-slot-release` stage reports
+`slot_released=true` with `completed` only after atomic removal; retained work
+reports `slot_released=false` with `deferred`. Accepted and indeterminate
+submissions do not enter this cleanup path. A completed cleanup stage describes
+capacity recovery, not successful implementation; dispatch remains deferred.
+
 Live durable candidates are scheduled with PRs ahead of waiting Issues and
 dependency work, preserving arrival order within each priority. The dashboard's
 queue snapshot reports that order and priority; it does not imply processing has

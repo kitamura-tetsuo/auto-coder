@@ -28,6 +28,23 @@ from auto_coder.llm_backend_config import get_max_concurrent_implementations_fro
 from auto_coder.util.gh_cache import GitHubClient
 
 
+@pytest.mark.parametrize("retained_work", ["none", "execution", "session", "pr"])
+def test_failed_submission_cleanup_preserves_other_work(tmp_path, retained_work):
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    owner = ImplementationOwner("issue", 1982)
+    execution = slots.start_execution(owner)
+    assert execution is not None
+    assert slots.record_validation_identity(owner, "validated-generation") is True
+    if retained_work == "session":
+        assert slots.record_provider_session(owner, "existing-task") is True
+    if retained_work == "pr":
+        assert slots.record_implementation_pr(owner, 2005) is True
+    if retained_work != "execution":
+        slots.finish_execution(owner, execution)
+    assert slots.release_unbound_idle_owner(owner) is (retained_work == "none")
+    assert slots.active_owners() == (() if retained_work == "none" else (owner,))
+
+
 class GitHubState:
     def __init__(self, issues=None, prs=None, linked_prs=None, open_prs=None):
         self.issues = issues or {}

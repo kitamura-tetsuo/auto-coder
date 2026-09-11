@@ -655,6 +655,96 @@ def test_codex_app_server_failure_remains_deferred_in_detail_view(mock_ui, tmp_p
     assert "deferred" in diagram.lower()
 
 
+@pytest.mark.parametrize("route", ["cloud", "high-score-cloud"])
+@pytest.mark.parametrize("submission", ["quota", "rejected", "indeterminate", "accepted", "ineligible", "ineligible-existing"])
+@patch("auto_coder.dashboard.ui")
+def test_cloud_submission_slot_cleanup_reaches_detail_view(mock_ui, tmp_path, monkeypatch, route, submission):
+    from auto_coder.cloud_run import CloudRun, CloudRunRepository
+    from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
+    from auto_coder.exceptions import AutoCoderUsageLimitError
+    from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+    from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+    from auto_coder.specification_analyzer import SpecificationAnalysisResult
+    from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    labels = [{"name": "implementation-ready"}]
+    if route == "high-score-cloud":
+        labels.append({"name": "difficult"})
+    issue = {"number": 1982, "title": "Implement", "body": "## Requirements\nREQ-001: Return a value.", "state": "open", "labels": labels}
+    github = MagicMock(token="token")
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda *_: dict(issue)
+    github.get_item_type_strict.return_value = "issue"
+    github.get_parent_issue_details_strict.return_value = None
+    github.get_direct_sub_issues_strict.return_value = []
+    github.get_all_sub_issues.return_value = []
+    github.get_open_sub_issues.return_value = []
+    github.get_parent_issue_details.return_value = None
+    github.get_labels.return_value = []
+    github.try_add_labels.return_value = True
+    github.get_issue_details.return_value = dict(issue)
+    config = AutomationConfig()
+    engine = AutomationEngine(github, config)
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    engine.implementation_slots = slots
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "test", tmp_path / "spec.json", lambda *_: SpecificationAnalysisResult("READY"))
+    backend_config = LLMBackendConfiguration(
+        backends={"codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud", environment_id="env-test")},
+        backend_cloud_order=["codex-cloud"],
+        backend_with_high_score_cloud_order=["codex-cloud"],
+    )
+    collector = get_trace_collector()
+    ineligible = submission.startswith("ineligible")
+    if submission == "ineligible-existing":
+        assert CloudRunRepository("owner/repo").save(CloudRun("owner/repo", 1982, 0, "codex-cloud", submission_outcome="indeterminate"))
+    with (
+        patch("auto_coder.llm_backend_config.get_llm_config", return_value=backend_config),
+        patch("auto_coder.quota_selector.rank_high_score_backends_by_quota", side_effect=lambda values, _: [] if ineligible else values),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient") as client_type,
+        patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+        patch("auto_coder.issue_processor.get_current_attempt", return_value=0),
+        patch("auto_coder.issue_processor._take_issue_actions") as fallback,
+        collector.start_execution("owner/repo", "issue", 1982, origin="worker"),
+    ):
+        client = client_type.return_value
+        client.environment_id = "env-test"
+        if submission == "quota" or ineligible:
+            client.submit_task.side_effect = AutoCoderUsageLimitError("quota unavailable")
+        else:
+            outcome = {"rejected": CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED, "indeterminate": CodexSubmissionOutcome.INDETERMINATE, "accepted": CodexSubmissionOutcome.ACCEPTED}[submission]
+            client.submit_task.return_value = CodexSubmissionResult(outcome, "task-a" if submission == "accepted" else "", diagnostic="test submission")
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", dict(issue), 0), config, jules_mode=route == "cloud")
+    if ineligible:
+        client.submit_task.assert_not_called()
+    else:
+        client.submit_task.assert_called_once()
+    fallback.assert_not_called()
+    owner = ImplementationOwner("issue", 1982)
+    assert slots.active_execution_ids(owner) == ()
+    rejected = submission in ("quota", "rejected") or ineligible
+    released = rejected and submission != "ineligible-existing"
+    assert slots.active_owners() == (() if released else (owner,)), result
+    assert result.cloud_submission_not_started is rejected
+    if rejected:
+        assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+        assert result.success is False
+        github.add_comment_to_issue.assert_not_called()
+        events = collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=1982).events
+        cleanup = [event for event in events if event.stage_id == "issue.cloud-submission-slot-release"]
+        assert len(cleanup) == 1
+        assert cleanup[0].facts["slot_released"] is released
+        assert cleanup[0].outcome == (Outcome.COMPLETED.value if released else Outcome.DEFERRED.value)
+        _mounted_detail(mock_ui, "issue", 1982)
+        # Validation owns a newer execution. Navigate to the worker evidence.
+        older = next(call.kwargs["on_click"] for call in mock_ui.button.call_args_list if call.kwargs.get("icon") == "arrow_downward")
+        older()
+        _assert_required_stage_visible(mock_ui.mermaid.return_value.classes.return_value.set_content.call_args[0][0], "Cloud submission slot cleanup")
+        assert (slots.start_execution(ImplementationOwner("issue", 1983)) is not None) is released
+    else:
+        assert slots.start_execution(ImplementationOwner("issue", 1983)) is None
+        assert slots.has_provider_sessions(owner) is (submission == "accepted")
+
+
 @pytest.mark.parametrize("declaration, expected", [("Blocked-By:", Outcome.COMPLETED), ("Blocked-By: #205", Outcome.DEFERRED)])
 @patch("auto_coder.dashboard.ui")
 def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_path, declaration, expected):

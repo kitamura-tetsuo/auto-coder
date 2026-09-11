@@ -25,7 +25,7 @@ from .decomposition_analyzer import DecompositionIssue
 from .decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
 from .deployment_channel import repository_dispatch_authority
 from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity, issue_stabilization_deadline
-from .exceptions import AutoCoderRetryableBackendError
+from .exceptions import AutoCoderRetryableBackendError, CloudSubmissionNotStartedError
 from .execution_trace import EventKind, Outcome, current_scope, get_trace_collector
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_branch import extract_number_from_branch, git_commit_with_retry, git_pull
@@ -718,6 +718,12 @@ class AutomationEngine:
                 # ownership and its durable lifecycle until the real boundary.
                 if self.lifecycle is not EngineLifecycle.FORCED:
                     completed, value = await asyncio.shield(task)
+                    if not self.is_draining:
+                        # Supervisor cancellation after a companion loop fails
+                        # must stop this caller once its owned work finishes.
+                        # Only an explicit graceful drain consumes cancellation
+                        # so its callers can finalize the completed result.
+                        raise
                 else:
                     raise
             if completed:
@@ -2319,8 +2325,14 @@ class AutomationEngine:
                 logger.warning(f"CI correlation pending repository={repo_name} sha={sha[:12]} error={type(exc).__name__}")
                 await asyncio.to_thread(self.invalidations.release_ci_correlation, repo_name, sha)
                 break
-            await asyncio.to_thread(self.invalidations.finish_ci_correlation, repo_name, sha, numbers)
-            logger.info(f"CI correlation complete repository={repo_name} sha={sha[:12]} targets={len(numbers)}")
+            completed = await asyncio.to_thread(self.invalidations.finish_ci_correlation, repo_name, sha, numbers)
+            if completed:
+                logger.info(f"CI correlation complete repository={repo_name} sha={sha[:12]} targets={len(numbers)}")
+            else:
+                logger.info(f"CI correlation superseded repository={repo_name} sha={sha[:12]}; retained for reevaluation")
+                # A sustained burst may already have exhausted the bounded
+                # quiet window. Service ready PRs before retrying this SHA.
+                break
         promoted = await asyncio.to_thread(self.invalidations.promote_due_ci, repo_name)
         promoted += await asyncio.to_thread(self.invalidations.promote_due_ci_watches, repo_name)
         if promoted:
@@ -4261,6 +4273,22 @@ class AutomationEngine:
         finally:
             if not inherited_execution:
                 slots.finish_execution(owner, execution_id)
+                if result.cloud_submission_not_started:
+                    from .cloud_manager import CloudManager
+                    from .cloud_run import CloudRunRepository
+
+                    released = False
+                    # Quota filtering can reject dispatch before the provider
+                    # reads its journal. Preserve even unmirrored remote work.
+                    with slots.serialize(owner):
+                        try:
+                            runs = CloudRunRepository(repo_name).list_for_issue(owner.number)
+                            binding = CloudManager(repo_name).read_bindings_strict().get(str(owner.number))
+                            if not runs and binding is None:
+                                released = slots.release_unbound_idle_owner(owner)
+                        except Exception as exc:
+                            logger.warning(f"Retaining {owner.key} after rejected Cloud submission: cannot confirm absent provider ownership: {exc}")
+                    _record_issue_stage_result(owner.number, "issue.cloud-submission-slot-release", f"issue#{owner.number} Cloud submission slot cleanup", Outcome.COMPLETED if released else Outcome.DEFERRED, {"slot_released": released, "reason": "Cloud submission did not start"})
                 if not owner_existed_before_admission and result.actions == ["Skipped - another instance started processing (@auto-coder label added)"]:
                     slots.release_unbound_idle_owner(owner)
                 slots.reconcile(self.github)
@@ -4471,6 +4499,12 @@ class AutomationEngine:
                         PRProcessingOutcome.FAILED: ExplicitTargetOutcome.FAILED,
                     }[pr_result.outcome]
 
+        except CloudSubmissionNotStartedError as e:
+            result.cloud_submission_not_started = True
+            result.error = str(e)
+            result.actions = [f"Deferred: {e}"]
+            result.target_outcome = ExplicitTargetOutcome.DEFERRED
+            result.outcome = PRProcessingOutcome.DEFERRED
         except AutoCoderRetryableBackendError as e:
             diagnostic = str(e)
             result.actions.append(f"Deferred: {diagnostic}")
