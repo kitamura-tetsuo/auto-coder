@@ -40,6 +40,7 @@ from .implementation_slots import (
     ImplementationHierarchyUnavailable,
     ImplementationOwner,
     ImplementationOwnerResolutionError,
+    ImplementationSlotObservation,
     ImplementationSlotRepository,
 )
 from .issue_context import get_linked_issues_context
@@ -639,6 +640,12 @@ class AutomationEngine:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pr_merged_or_closed: bool = False
         self.implementation_slots: Optional[ImplementationSlotRepository] = None
+        # Guards check-then-act access to `self.implementation_slots` from
+        # `_get_implementation_slots`/`get_implementation_slot_snapshot`, so
+        # a read-only diagnostic observation racing a concurrent lifecycle
+        # binding call can never rebind (or be rebound past) the winner
+        # (REQ-006 of Issue #1993).
+        self._implementation_slots_lock = threading.Lock()
         self._specification_validators: Dict[str, SpecificationValidationLifecycle] = {}
         self._decomposition_validators: Dict[str, DecompositionValidationLifecycle] = {}
         self.validation_scheduler = ValidationScheduler(self.config.validation_concurrency)
@@ -4629,9 +4636,51 @@ class AutomationEngine:
         return result
 
     def _get_implementation_slots(self, repo_name: str) -> ImplementationSlotRepository:
-        if self.implementation_slots is None or self.implementation_slots.repo_name != repo_name:
-            self.implementation_slots = ImplementationSlotRepository(repo_name, self.config.MAX_CONCURRENT_IMPLEMENTATIONS)
-        return self.implementation_slots
+        with self._implementation_slots_lock:
+            if self.implementation_slots is None or self.implementation_slots.repo_name != repo_name:
+                self.implementation_slots = ImplementationSlotRepository(repo_name, self.config.MAX_CONCURRENT_IMPLEMENTATIONS)
+            return self.implementation_slots
+
+    def get_implementation_slot_snapshot(self, repo_name: str) -> ImplementationSlotObservation:
+        """Public read-only occupancy observation for `repo_name`'s slot store.
+
+        When this controller is not yet bound to any repository (before any
+        worker/admission call has run), or is already bound to exactly
+        `repo_name`, this reuses (and, only in the unbound case, lazily
+        establishes) the same instance admission/lifecycle operations use,
+        so the dashboard observes this controller's actual effective store
+        and normal limit rather than a default substitute.
+
+        Deliberately never lets this read *replace* an existing binding to
+        a *different* repository: that would rebind live controller state
+        as a side effect of a read-only diagnostic call (REQ-006).
+        Establishing the *first* binding from an unbound (`None`)
+        controller is not a rebind, so this diagnostic read can still be
+        what lazily establishes the binding admission/lifecycle operations
+        reuse afterward -- but that check-then-establish step shares
+        `_implementation_slots_lock` with `_get_implementation_slots`, so a
+        concurrent lifecycle call that wins the race to establish a
+        *different* repository's binding is never subsequently overwritten
+        by this observation once it resumes: this method re-reads the
+        binding under the same lock immediately before acting, rather than
+        trusting an earlier, possibly now-stale read. Only a genuine
+        mismatch (whether observed on the first read or discovered after
+        losing the race) constructs a standalone, uncached repository
+        object scoped to `repo_name` -- observing that repository's own
+        correctly-selected store without ever touching or replacing the
+        controller's actual binding. This is a non-blocking diagnostic
+        read only; it never creates, repairs or mutates durable slot state.
+        """
+        with self._implementation_slots_lock:
+            current = self.implementation_slots
+            if current is None:
+                self.implementation_slots = ImplementationSlotRepository(repo_name, self.config.MAX_CONCURRENT_IMPLEMENTATIONS)
+                repository = self.implementation_slots
+            elif current.repo_name == repo_name:
+                repository = current
+            else:
+                repository = ImplementationSlotRepository(repo_name, self.config.MAX_CONCURRENT_IMPLEMENTATIONS)
+        return repository.snapshot()
 
     def _get_authoritative_item_type(self, repo_name: str, item_number: int) -> str:
         """Establish an issue-like target's authoritative GitHub type.

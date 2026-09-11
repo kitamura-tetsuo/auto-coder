@@ -2,6 +2,7 @@
 Dashboard module for Auto-Coder using NiceGUI.
 """
 
+import asyncio
 import json
 import os
 from datetime import datetime
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 from nicegui import ui
 
+from . import dashboard_slots
 from .automation_engine import AutomationEngine
 from .dashboard_detail import (
     DetailSelection,
@@ -27,7 +29,11 @@ from .dashboard_detail import (
     unscoped_events_for_item,
 )
 from .execution_trace import get_trace_collector
+from .implementation_slots import ImplementationSlotSnapshot, ImplementationSlotSnapshotUnavailable
+from .logger_config import get_logger
 from .trace_logger import get_trace_logger
+
+logger = get_logger(__name__)
 
 
 def prepare_log_rows(logs: List[Dict[str, Any]]) -> List[Dict[str, str]]:
@@ -70,6 +76,213 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         # Active Workers Section
         ui.label("Active Workers").classes("text-xl font-bold mt-4")
         workers_container = ui.row().classes("w-full gap-4")
+
+        # Implementation Slots Section (Issue #1993).
+        #
+        # This is a distinct observation from Active Workers/Queue above: a
+        # remote handoff or a retained PR can occupy a durable implementation
+        # slot after every local worker for it has gone idle, so occupancy is
+        # read from the controller's own slot-snapshot boundary
+        # (`AutomationEngine.get_implementation_slot_snapshot`), not derived
+        # from local worker/queue state (REQ-001). The panel refreshes
+        # independently of `refresh_status()` below, in its own background
+        # thread via `asyncio.to_thread`, so a slow or lock-contended
+        # observation cannot block this page's event loop or the Workers/
+        # Queue/Open Items refresh (REQ-005, REQ-006).
+        ui.label("Implementation Slots").classes("text-xl font-bold mt-4")
+        slots_banner = ui.label("Loading implementation slot occupancy...").classes("text-sm text-gray-500 mb-1")
+        slots_summary_row = ui.row().classes("w-full gap-6 items-center mb-2")
+        slots_owners_container = ui.column().classes("w-full gap-2")
+
+        slots_state: Dict[str, Any] = {"refreshing": False, "known": None}
+        slots_cache: Dict[str, Any] = {}
+        slots_elements: Dict[str, Any] = {}
+
+        def render_owner_card_body(row: dashboard_slots.SlotOwnerRow) -> None:
+            with ui.row().classes("items-center gap-3"):
+                ui.link(f"{row.kind.capitalize()} #{row.number}", row.detail_path).classes("text-blue-500 font-bold")
+                class_classes = "text-xs uppercase font-bold " + ("text-red-600" if row.class_label == "emergency" else "text-gray-500")
+                ui.label(row.class_label).classes(class_classes)
+            if row.executions:
+                for execution in row.executions:
+                    ui.label(f"Execution {execution.execution_id} (pid: {execution.pid_display}, started_at: {execution.started_at_display})").classes("text-xs font-mono text-gray-600")
+            else:
+                ui.label("No recorded executions").classes("text-xs text-gray-400")
+            if row.implementation_prs:
+                with ui.row().classes("gap-2 items-center"):
+                    ui.label("Implementation PRs:").classes("text-xs text-gray-500")
+                    for pr_number in row.implementation_prs:
+                        ui.link(f"#{pr_number}", f"/detail/pr/{pr_number}").classes("text-xs text-blue-500")
+            if row.provider_sessions:
+                # Rendered as plain label text (never as a link or
+                # interpreted markup): a provider session identifier is
+                # opaque recorded evidence, not a navigable trace id
+                # (REQ-003, AS-006).
+                ui.label("Provider sessions: " + ", ".join(row.provider_sessions)).classes("text-xs font-mono text-gray-600")
+            ui.label(f"admission_pending: {row.admission_pending_display}; admission_established: {row.admission_established_display}").classes("text-xs text-gray-500")
+
+        def create_owner_card(row: dashboard_slots.SlotOwnerRow) -> Any:
+            card = ui.card().classes("w-full")
+            with card:
+                render_owner_card_body(row)
+            return card
+
+        def update_owner_card(card: Any, row: dashboard_slots.SlotOwnerRow) -> None:
+            card.clear()
+            with card:
+                render_owner_card_body(row)
+
+        def sync_owners(rows: tuple) -> None:
+            # Owners are patched by key, not rebuilt wholesale on every
+            # tick: an owner whose row is unchanged keeps its exact DOM
+            # node, and one owner's new membership/execution never tears
+            # down a sibling owner's card (REQ-005). A full rebuild of
+            # `slots_owners_container` only happens when the set or order
+            # of owner keys itself changes (admission/release, or the
+            # panel's very first data), matching the snapshot's own stable
+            # (kind, number) sort order.
+            current_keys = tuple(row.key for row in rows)
+            if current_keys != slots_cache.get("owner_keys"):
+                slots_owners_container.clear()
+                slots_elements.clear()
+                with slots_owners_container:
+                    if not rows:
+                        ui.label("No recorded implementation owners (known empty store).").classes("text-gray-400")
+                    else:
+                        for row in rows:
+                            slots_elements[row.key] = create_owner_card(row)
+                slots_cache["owner_keys"] = current_keys
+            else:
+                previous_rows_by_key = slots_cache.get("rows_by_key", {})
+                for row in rows:
+                    if previous_rows_by_key.get(row.key) != row:
+                        update_owner_card(slots_elements[row.key], row)
+            slots_cache["rows_by_key"] = {row.key: row for row in rows}
+
+        def render_summary(summary: dashboard_slots.SlotPanelSummary, stale: bool, diagnostic: Optional[str]) -> None:
+            # The summary row (repository/source/counters) is only cleared
+            # and rebuilt when those values actually change; the banner text
+            # is cheap to update every tick via `set_text`. Neither touches
+            # `slots_owners_container`, so an unchanged successful snapshot --
+            # or a stale-but-otherwise-unchanged one -- never rebuilds owner
+            # rows or resets page scroll (REQ-005).
+            summary_sig = (summary.repository, summary.storage_path, summary.normal_used, summary.normal_limit, summary.normal_available, summary.emergency_usage)
+            if summary_sig != slots_cache.get("summary_sig"):
+                slots_summary_row.clear()
+                with slots_summary_row:
+                    ui.label(f"Repository: {summary.repository}").classes("text-sm")
+                    ui.label(f"Source: {summary.storage_path}").classes("text-xs text-gray-500 font-mono")
+                    ui.label(f"Normal: {summary.normal_used}/{summary.normal_limit} used, {summary.normal_available} available").classes("text-sm font-bold")
+                    ui.label(f"Emergency: {summary.emergency_usage}").classes("text-sm")
+                slots_cache["summary_sig"] = summary_sig
+            if stale:
+                slots_banner.set_text(f"STALE - last successful observation {summary.observed_at_display}; current refresh unavailable: {diagnostic}")
+                slots_banner.classes(replace="text-sm text-red-600 font-bold mb-1")
+            else:
+                slots_banner.set_text(f"Implementation slots as of {summary.observed_at_display} (local recorded evidence, not live GitHub/provider status).")
+                slots_banner.classes(replace="text-sm text-gray-500 mb-1")
+
+        def render_known(snapshot: ImplementationSlotSnapshot, stale: bool, diagnostic: Optional[str]) -> None:
+            # Both pure projections are computed FIRST, before either one
+            # touches the DOM: a failure in either (not just a storage read
+            # failure) then fails atomically, before `sync_owners` has
+            # mutated any owner row -- never leaving a partially-updated
+            # DOM mixing old and new state (REQ-004, REQ-006).
+            rows = dashboard_slots.owner_rows(snapshot)
+            summary = dashboard_slots.summarize(snapshot)
+            slots_cache["panel_mode"] = "known"
+            sync_owners(rows)
+            render_summary(summary, stale, diagnostic)
+
+        def render_never_known(diagnostic: str) -> None:
+            # Before any successful observation: an explicit unavailable
+            # status only, never a fabricated zero/free capacity or an
+            # empty-success message (REQ-004).
+            slots_banner.set_text(f"Implementation slot occupancy unavailable: {diagnostic}")
+            slots_banner.classes(replace="text-sm text-red-600 font-bold mb-1")
+            if slots_cache.get("panel_mode") != "never-known":
+                slots_summary_row.clear()
+                slots_owners_container.clear()
+                slots_elements.clear()
+                slots_cache["panel_mode"] = "never-known"
+                slots_cache["owner_keys"] = None
+                slots_cache["rows_by_key"] = {}
+                slots_cache["summary_sig"] = None
+
+        def safe_apply_unavailable(diagnostic: str) -> None:
+            # A rendering failure while displaying the unavailable/stale
+            # state itself must not be able to escape the refresh timer
+            # either (REQ-006): this is the last line of defense, so it
+            # only logs rather than re-raising.
+            known = slots_state["known"]
+            try:
+                if known is None:
+                    render_never_known(diagnostic)
+                else:
+                    # A read/validation/contention failure after a
+                    # successful observation preserves that entire
+                    # last-known snapshot (rows and counters together) with
+                    # a stale indication; the last-successful observation
+                    # time is never advanced here (REQ-004).
+                    render_known(known, stale=True, diagnostic=diagnostic)
+            except Exception:
+                logger.exception("Implementation Slots panel: failed to render unavailable/stale state")
+                # Last resort: even if the fuller re-render above itself
+                # failed, the banner text alone must still reach the user
+                # as a diagnostic (REQ-006) rather than silently keeping
+                # whatever text happened to be displayed before.
+                try:
+                    slots_banner.set_text(f"Implementation slot panel error: {diagnostic}")
+                    slots_banner.classes(replace="text-sm text-red-600 font-bold mb-1")
+                except Exception:
+                    logger.exception("Implementation Slots panel: failed to render the fallback banner text")
+
+        def safe_apply_known(observation: ImplementationSlotSnapshot) -> None:
+            # `slots_state["known"]` only advances to `observation` after
+            # `render_known` completes successfully -- a rendering/
+            # projection failure partway through (owner rows updated, then
+            # the summary/banner update raises, say) must not promote a
+            # partially-rendered snapshot to "last known", and must remain
+            # a slot-panel diagnostic rather than escaping this timer
+            # callback and disturbing the rest of the page (REQ-004, REQ-006).
+            try:
+                render_known(observation, stale=False, diagnostic=None)
+            except Exception as exc:
+                logger.exception("Implementation Slots panel: failed to render a known snapshot")
+                safe_apply_unavailable(f"slot panel rendering failed: {exc}")
+                return
+            slots_state["known"] = observation
+
+        async def refresh_slots() -> None:
+            # At most one observation request in flight per mounted page: a
+            # timer tick that lands while the previous one is still awaiting
+            # its background thread is a no-op, so refresh ticks never queue
+            # up or apply out of order (REQ-005). Nothing in this function
+            # body may raise past this `try`: an observation or rendering
+            # failure must remain a slot-panel diagnostic, never propagate
+            # into the timer/page or pause the independent Workers/Queue/
+            # Open Items refresh (REQ-006).
+            if slots_state["refreshing"]:
+                return
+            slots_state["refreshing"] = True
+            try:
+                try:
+                    observation = await asyncio.to_thread(engine.get_implementation_slot_snapshot, repo_name)
+                except Exception as exc:
+                    safe_apply_unavailable(f"slot observation raised: {exc}")
+                    return
+                if isinstance(observation, ImplementationSlotSnapshot):
+                    safe_apply_known(observation)
+                elif isinstance(observation, ImplementationSlotSnapshotUnavailable):
+                    safe_apply_unavailable(observation.diagnostic)
+                else:
+                    safe_apply_unavailable("implementation slot observation returned an unrecognized result")
+            finally:
+                slots_state["refreshing"] = False
+
+        # Populates on initial load (immediate=True, the default) and every
+        # second thereafter, independently of `refresh_status()` below.
+        ui.timer(1.0, refresh_slots)
 
         # Queue Section
         ui.label("Queue").classes("text-xl font-bold mt-4")

@@ -35,6 +35,55 @@ the evidence. The renderer is generic, so a valid new production-emitted stage a
 repeated stage occurrences require no static graph edit. Display-text-only changes
 likewise do not require meaningless producer changes.
 
+## Implementation Slots panel (Issue #1993)
+
+The main dashboard's Implementation Slots section is a separate
+observation from the detail view's diagnostic trace: it projects
+`ImplementationSlotRepository.snapshot()` (Issue #1992's coherent
+read-only boundary) through `AutomationEngine.get_implementation_slot_snapshot`,
+not the worker/queue state `get_status()` already reports. A persisted
+execution, PR, or provider-session reference is recorded evidence of
+ownership, not a claim that the owning process is currently running or
+that a PR/session is still live -- the panel labels it as such rather than
+inferring a running/completed/free state.
+
+*   **Known vs. unavailable** are kept explicitly distinct, never coerced
+    into a zero/free display: before any successful read, an unavailable
+    observation shows only a diagnostic reason; after one, a later failure
+    preserves the entire last-known snapshot (rows and counters together)
+    with a stale indicator and an unchanged last-successful timestamp,
+    never a partial mix of old rows and new counters.
+*   **Capacity honesty**: normal usage counts each non-emergency owner
+    once regardless of how many executions/PRs/sessions it has recorded;
+    emergency usage is reported separately and excluded from normal usage;
+    usage above the configured limit is displayed, not clamped.
+*   **Non-interference**: loading, refreshing, or navigating from this
+    panel never issues a GitHub/provider request, a liveness probe, or a
+    slot reservation/release/reconciliation call -- it is display-only.
+
+Pure projection logic (`format_optional_bool`, `owner_row`, `summarize`,
+...) lives in `dashboard_slots.py` and is unit-tested directly in
+`tests/test_dashboard_slots.py`, independent of NiceGUI, matching
+`dashboard_detail.py`'s existing split for the detail view.
+
+Production-to-mounted-main-page regressions live in
+`tests/test_dashboard_slots_observability.py`: real `ImplementationSlotRepository`
+writes (admission, execution start/finish, PR/session membership, capacity
+override, emergency admission, legacy/absent-field records, storage
+read/parse failures) reach the mounted main page's actual `ui.timer`
+callback, distinguishing production ownership, capacity/emergency honesty,
+startup against the correctly-bound store, unknown-vs-empty, and
+legacy/falsy-field observation without repair. Real-browser scroll/DOM/
+non-blocking coverage (an unchanged tick, a membership-only update for one
+owner, and a delayed observation boundary) lives in
+`tests/test_dashboard_slots_scroll_stability.py`, mirroring the detail
+view's own `test_dashboard_detail_scroll_stability.py` pattern.
+
+This section does not add a new lifecycle/admission policy: the underlying
+recorded meaning of an owner, an execution, or an admission flag is
+entirely owned by `implementation_slots.py` and Issue #1992's snapshot
+contract; this panel only renders that already-defined observation.
+
 ## Codex quota transport
 
 Codex quota reads use the app-server account API. This transport change does not

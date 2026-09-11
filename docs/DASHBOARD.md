@@ -54,7 +54,54 @@ The main dashboard view provides an overview of the current system state:
 
 *   **Search Section**: Allows quick navigation to the detail view of a specific Issue or PR. Select the type (PR/Issue) and enter the number, then click "Go".
 *   **Active Workers**: Displays the currently active worker tasks. Each card shows the worker ID, the item being processed (with a link to details), and the current task description.
+*   **Implementation Slots**: A distinct, read-only view of durable
+    implementation-slot occupancy -- not derived from Active Workers or the
+    Queue below. A remote handoff or a retained PR can occupy a slot after
+    every local worker for it has gone idle, so this section is populated
+    from the controller's own slot-snapshot boundary
+    (`AutomationEngine.get_implementation_slot_snapshot`), refreshed on its
+    own one-second timer, independently of the rest of the page. See
+    [Implementation Slots panel](#implementation-slots-panel) below.
 *   **Queue**: Lists pending items in the processing queue. The table shows the item type, number, priority, and title.
+
+#### Implementation Slots panel
+
+Each row is one durably recorded owner (an Issue or a standalone PR), not a
+worker or a queue entry -- an owner with no active local worker (a
+finished execution, a remote provider handoff, or a process that exited
+without releasing it) still occupies its slot and is still shown.
+
+*   **Status line**: before any successful observation, an explicit
+    "unavailable" reason is shown -- never a fabricated zero/free capacity
+    or an empty-success message. After a successful observation, a later
+    read/validation/contention failure keeps showing that entire last-known
+    snapshot (rows and counters together) with a prominent "STALE" banner
+    and the unchanged last-successful observation time; the next
+    successful observation replaces it and clears the banner.
+*   **Counters**: repository/store identity, normal used/limit/available,
+    and emergency usage (0 or 1), shown separately from normal usage.
+    Several executions, PRs, or provider sessions recorded under one owner
+    still count as one slot; normal usage above the configured limit is
+    shown as-is, never clamped or hidden.
+*   **Owner rows**: issue/pr identity (linking to the same
+    `/detail/{item_type}/{item_number}` route as the rest of the
+    dashboard), normal/emergency class, every recorded execution ID with
+    its PID/`started_at` when recorded, every recorded implementation PR
+    number (also linked), provider-session identifiers (plain text, never
+    a link -- a session identifier is opaque recorded evidence, not a
+    navigable trace ID), and `admission_pending`/`admission_established`
+    with `false` shown distinctly from "not recorded". These are local
+    recorded facts, not a live running/completed/free assertion, and never
+    an inferred retention reason or provider identity.
+*   **Refresh behavior**: at most one observation request is in flight per
+    mounted page; a slow or lock-contended read runs in a background
+    thread and cannot block this page's event loop or pause the Active
+    Workers/Queue/Open Items refresh above. An unchanged tick, or a
+    membership-only change for one owner, never rebuilds unrelated owner
+    rows or resets page scroll. Loading, linking to, or refreshing this
+    panel never triggers GitHub/provider requests, liveness probes, CLI
+    dispatch, or any slot reservation/release/reconciliation -- it is a
+    read-only observation.
 
 ### Detail View
 

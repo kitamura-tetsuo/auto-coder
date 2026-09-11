@@ -1,3 +1,4 @@
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -5,6 +6,11 @@ from fastapi import FastAPI
 
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.dashboard import init_dashboard
+from src.auto_coder.implementation_slots import (
+    ImplementationOwner,
+    ImplementationSlotRepository,
+    ImplementationSlotSnapshot,
+)
 
 
 class MockCandidate:
@@ -58,3 +64,178 @@ def test_init_dashboard_registration(mock_ui):
     assert args[0] == app
     assert kwargs["mount_path"] == "/dashboard"
     assert kwargs["title"] == "Auto-Coder Dashboard"
+
+
+def test_get_implementation_slot_snapshot_lazily_binds_the_repository_bound_store(tmp_path):
+    """REQ-001 of Issue #1993: before any worker has run, `implementation_slots`
+    is `None`. `get_implementation_slot_snapshot` must still resolve and
+    observe this engine's own effective store for the requested repository
+    (via `_get_implementation_slots`'s existing lazy-initialization), not
+    substitute a default or another repository's store."""
+    real_engine = AutomationEngine(MagicMock())
+    assert real_engine.implementation_slots is None
+
+    with patch("src.auto_coder.automation_engine.ImplementationSlotRepository") as mock_repo_class:
+        mock_repo_class.side_effect = lambda repo_name, limit: ImplementationSlotRepository(repo_name, limit, tmp_path / "slots.json")
+
+        observation = real_engine.get_implementation_slot_snapshot("owner/repo")
+
+    assert isinstance(observation, ImplementationSlotSnapshot)
+    assert observation.repository == "owner/repo"
+    assert observation.owners == ()
+    assert observation.normal_usage == 0
+    # The now-bound repository instance is cached for later admission/
+    # lifecycle calls, not just this diagnostic read.
+    assert real_engine.implementation_slots is not None
+    assert real_engine.implementation_slots.repo_name == "owner/repo"
+
+
+def test_get_implementation_slot_snapshot_observes_real_recorded_ownership(tmp_path):
+    """The wrapper returns the same coherent observation the underlying
+    repository's own `snapshot()` produces for real recorded ownership."""
+    real_engine = AutomationEngine(MagicMock())
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    owner = ImplementationOwner("issue", 321)
+    assert slots.start_execution(owner) is not None
+    real_engine.implementation_slots = slots
+
+    observation = real_engine.get_implementation_slot_snapshot("owner/repo")
+
+    assert isinstance(observation, ImplementationSlotSnapshot)
+    assert [o.owner_key for o in observation.owners] == ["issue:321"]
+    assert observation.normal_usage == 1
+    assert observation.normal_available == 1
+
+
+def test_get_implementation_slot_snapshot_never_rebinds_to_a_different_repository(tmp_path):
+    """A diagnostic read for a repository OTHER than the one this controller
+    is already bound to must observe that other repository's own store
+    without mutating `self.implementation_slots` (REQ-006 of Issue #1993):
+    a read-only dashboard observation must never rebind the controller, and
+    its subsequent lifecycle target must remain the original repository."""
+    real_engine = AutomationEngine(MagicMock())
+    bound_slots = ImplementationSlotRepository("owner/repo-b", 2, tmp_path / "repo-b-slots.json")
+    bound_owner = ImplementationOwner("issue", 111)
+    assert bound_slots.start_execution(bound_owner) is not None
+    real_engine.implementation_slots = bound_slots
+
+    other_slots = ImplementationSlotRepository("owner/repo-a", 2, tmp_path / "repo-a-slots.json")
+    other_owner = ImplementationOwner("issue", 222)
+    assert other_slots.start_execution(other_owner) is not None
+
+    with patch("src.auto_coder.automation_engine.ImplementationSlotRepository") as mock_repo_class:
+        mock_repo_class.side_effect = lambda repo_name, limit: ImplementationSlotRepository(repo_name, limit, tmp_path / "repo-a-slots.json")
+
+        observation = real_engine.get_implementation_slot_snapshot("owner/repo-a")
+
+    # The observation itself is correct for the requested (mismatched) repo...
+    assert isinstance(observation, ImplementationSlotSnapshot)
+    assert observation.repository == "owner/repo-a"
+    assert [o.owner_key for o in observation.owners] == ["issue:222"]
+    # ...but the controller's actual binding and subsequent lifecycle target
+    # remain untouched: still the original repository/instance, not
+    # replaced, and no fallback/alternate store was substituted for it.
+    assert real_engine.implementation_slots is bound_slots
+    assert real_engine.implementation_slots.repo_name == "owner/repo-b"
+    assert real_engine._get_implementation_slots("owner/repo-b") is bound_slots
+    resumed = real_engine.get_implementation_slot_snapshot("owner/repo-b")
+    assert [o.owner_key for o in resumed.owners] == ["issue:111"]
+
+
+def test_concurrent_observation_and_lifecycle_binding_do_not_corrupt_each_other(tmp_path, monkeypatch):
+    """REQ-006: a real concurrent race between a read-only dashboard
+    observation for repo A and a real lifecycle/worker call establishing
+    the controller's binding to a different repo B -- both starting from
+    an unbound (`None`) controller -- must never let the two calls
+    interleave into a corrupted or flip-flopping binding.
+
+    This deterministically forces the exact TOCTOU ordering the race
+    depends on, rather than hoping a `Barrier`-started race happens to hit
+    it: thread A (observing repo-a) is paused *inside* the
+    `ImplementationSlotRepository` constructor call it makes after deciding
+    `self.implementation_slots is None`, via a monkeypatched constructor
+    that blocks on an `Event`. While A is paused there, thread B (binding
+    repo-b, the real lifecycle call) is started and given a short window to
+    run.
+
+    Under the fixed (lock-based) code, A's entire read-decide-construct-
+    assign sequence -- including the paused constructor call -- runs inside
+    `_implementation_slots_lock`, so B's attempt to acquire that same lock
+    in `_get_implementation_slots` must genuinely block: B cannot even
+    perform its own `is None` check until A finishes. So B must NOT
+    complete within the short window, and once both threads finish, B --
+    which could only run after A released the lock -- is the true last
+    writer, and the final binding must be repo-b.
+
+    Under the old unsynchronized code, B has nothing to wait for: it reads
+    `self.implementation_slots` (still `None`, since A hasn't assigned yet),
+    constructs and assigns repo-b immediately, and returns well within the
+    short window -- then A resumes from its own, now-stale `None` check and
+    unconditionally overwrites `self.implementation_slots` with repo-a,
+    silently clobbering B's already-established binding. Both the
+    mid-race blocking assertion and the final-binding assertion below catch
+    this corruption independently.
+    """
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(tmp_path / "runtime-root"))
+    engine = AutomationEngine(MagicMock())
+    assert engine.implementation_slots is None
+
+    a_entered_construction = threading.Event()
+    release_a_construction = threading.Event()
+    real_repository_class = ImplementationSlotRepository
+
+    def gated_repository_ctor(repo_name: str, limit: int) -> ImplementationSlotRepository:
+        if repo_name == "owner/repo-a":
+            a_entered_construction.set()
+            assert release_a_construction.wait(timeout=5), "test setup: release_a_construction was never set"
+        return real_repository_class(repo_name, limit)
+
+    monkeypatch.setattr("src.auto_coder.automation_engine.ImplementationSlotRepository", gated_repository_ctor)
+
+    results: dict = {}
+    errors: list = []
+
+    def observe_a() -> None:
+        try:
+            results["a"] = engine.get_implementation_slot_snapshot("owner/repo-a")
+        except Exception as exc:  # pragma: no cover - surfaced via `errors`
+            errors.append(exc)
+
+    def bind_b() -> None:
+        try:
+            results["b_repo_name"] = engine._get_implementation_slots("owner/repo-b").repo_name
+        except Exception as exc:  # pragma: no cover - surfaced via `errors`
+            errors.append(exc)
+
+    thread_a = threading.Thread(target=observe_a)
+    thread_a.start()
+    assert a_entered_construction.wait(timeout=5), "thread A never reached repository construction"
+
+    thread_b = threading.Thread(target=bind_b)
+    thread_b.start()
+    thread_b.join(timeout=0.5)
+    assert thread_b.is_alive(), (
+        "thread B (binding owner/repo-b) completed while thread A was still "
+        "mid-construction for owner/repo-a -- the two calls were not "
+        "mutually exclusive: a concurrent lifecycle bind raced ahead of an "
+        "in-flight observation's read-decide-act sequence instead of "
+        "blocking for it, which is the exact TOCTOU window REQ-006 forbids."
+    )
+
+    release_a_construction.set()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+
+    assert not errors, f"{errors}"
+    assert not thread_a.is_alive(), "thread A did not finish"
+    assert not thread_b.is_alive(), "thread B did not finish"
+
+    assert results["a"].repository == "owner/repo-a"
+    assert results["b_repo_name"] == "owner/repo-b"
+    # B's critical section could only run after A's released the lock (A
+    # held it throughout, including while paused in the constructor), so B
+    # -- running strictly later in real time -- is the true last writer.
+    # The final binding must faithfully reflect that real-time ordering,
+    # not an overwrite from a check A performed before B ever wrote.
+    assert engine.implementation_slots is not None
+    assert engine.implementation_slots.repo_name == "owner/repo-b"
