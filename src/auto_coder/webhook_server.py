@@ -248,7 +248,15 @@ async def process_github_payload(
             if isinstance(created_at, str):
                 not_before = issue_stabilization_deadline(created_at)
         invalidation_args = (repo_name, entity_type, number, delivery_id, event_type, action if isinstance(action, str) else None)
-        if urgent_admission:
+        issue_snapshot = payload.get("issue")
+        if entity_type == "issue" and isinstance(issue_snapshot, dict) and all(isinstance(issue_snapshot.get(key), str) for key in ("title", "body", "state", "updated_at")):
+            accepted = await engine.invalidate_entity(
+                *invalidation_args,
+                not_before=not_before,
+                urgent_admission=urgent_admission,
+                issue_snapshot=issue_snapshot,
+            )
+        elif urgent_admission:
             accepted = await engine.invalidate_entity(
                 *invalidation_args,
                 not_before=not_before,

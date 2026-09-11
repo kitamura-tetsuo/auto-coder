@@ -14,6 +14,7 @@ from auto_coder.automation_engine import AutomationEngine, _ValidationPublicatio
 from auto_coder.dashboard import init_dashboard
 from auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_trace_collector
 from auto_coder.github_pending_work import PendingObligation, PendingReason, WorkIdentity
+from auto_coder.reissue_required_store import ReissueRequiredStore
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 
 
@@ -42,6 +43,26 @@ def _mounted_detail(mock_ui, item_type: str, item_number: int):
 
 def _assert_required_stage_visible(diagram: str, display_text: str) -> None:
     assert display_text in diagram, f"required production stage {display_text!r} did not reach the mounted detail view"
+
+
+@patch("auto_coder.dashboard.ui")
+def test_cached_terminal_refusal_reaches_mounted_detail_without_github(mock_ui):
+    config = AutomationConfig(repo_name="owner/repo")
+    github = MagicMock()
+    engine = AutomationEngine(github, config)
+    store = ReissueRequiredStore("owner/repo")
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.mark(2000)
+    result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data={"number": 2000}, priority=0), config)
+    assert result.target_outcome is ExplicitTargetOutcome.BLOCKED
+    assert result.success is False
+    assert github.mock_calls == []
+    assert engine.implementation_slots is None
+    snapshot = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=2000)
+    stages = [event for event in snapshot.events if event.kind == EventKind.STAGE_RESULT.value]
+    assert [event.stage_id for event in stages] == ["issue.cached-blocked-admission"]
+    assert stages[0].outcome == Outcome.BLOCKED.value
+    _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 2000), "cached blocked admission")
 
 
 def _run_admission_to_view(mock_ui, item_type: str, item_number: int) -> None:

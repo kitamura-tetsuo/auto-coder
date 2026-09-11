@@ -43,6 +43,7 @@ from .implementation_slots import (
     ImplementationSlotObservation,
     ImplementationSlotRepository,
 )
+from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .jules_client import invalidate_jules_sessions_cache
@@ -59,6 +60,7 @@ from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
+from .reissue_required_store import ReissueRequiredStore
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
 from .shutdown_context import install_admission_check, reset_admission_check
 from .sibling_dependencies import (
@@ -627,6 +629,7 @@ class AutomationEngine:
         self.queue: asyncio.Queue[Candidate] = CandidateQueue()
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
+        self.issue_admission_cache = IssueAdmissionCache()
         self._invalidation_drain_lock = asyncio.Lock()
         self._invalidation_wake_event: Optional[asyncio.Event] = None
         self._refill_lock = asyncio.Lock()
@@ -2173,6 +2176,7 @@ class AutomationEngine:
         graceful shutdown remain responsive while recovery is incomplete. Any
         other exception is a genuine defect and continues to propagate.
         """
+        self.issue_admission_cache.invalidate(repo_name)
         identity = WorkIdentity(repo_name, "startup", STARTUP_RECONCILIATION_STAGE)
         try:
             await self._attempt_startup_reconciliation(repo_name)
@@ -2510,6 +2514,12 @@ class AutomationEngine:
                             await self._expand_dependency_obligation(repo_name)
                             decision_completed = True
                             continue
+                        if candidate.type == "issue":
+                            refusal = await asyncio.to_thread(self._cached_issue_refusal, repo_name, int(item_number), self.config)
+                            if refusal is not None:
+                                self._record_cached_issue_refusal(repo_name, refusal, "durable-invalidation-worker")
+                                decision_completed = True
+                                continue
                         authoritative_candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, candidate.type, int(item_number), True)
                         if authoritative_candidate is None:
                             # A successful authoritative read can decide that an
@@ -2522,6 +2532,12 @@ class AutomationEngine:
                         self.active_workers[worker_id] = candidate
 
                         if candidate.type == "issue":
+                            self.issue_admission_cache.observe(repo_name, candidate.data, authoritative=True)
+                            refusal = await asyncio.to_thread(self._cached_issue_refusal, repo_name, int(item_number), self.config)
+                            if refusal is not None:
+                                self._record_cached_issue_refusal(repo_name, refusal, "durable-invalidation-worker")
+                                decision_completed = True
+                                continue
                             await self._run_local_critical(
                                 f"worker {worker_id} submitted-parent validation for issue #{item_number}",
                                 self._validate_submitted_parent_generation_for_child,
@@ -2557,7 +2573,7 @@ class AutomationEngine:
                         repo_name,
                         candidate,
                     )
-                    decision_completed = not bool(result.error) and not (candidate.urgent_admission and result.capacity_deferred)
+                    decision_completed = (not bool(result.error) or result.blocked_cacheable) and not (candidate.urgent_admission and result.capacity_deferred)
 
                     if result.error:
                         logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
@@ -2653,8 +2669,14 @@ class AutomationEngine:
         action: Optional[str] = None,
         not_before: Optional[float] = None,
         urgent_admission: bool = False,
+        issue_snapshot: Optional[dict[str, object]] = None,
     ) -> bool:
         """Durably mark an entity dirty and arrange an authoritative reevaluation."""
+        # Fence in-flight negative decisions before yielding to queue I/O. These
+        # observations may stop work, but never replace authoritative admission.
+        self.issue_admission_cache.invalidate(repo_name)
+        if issue_snapshot is not None:
+            self.issue_admission_cache.observe(repo_name, issue_snapshot)
         accepted = await asyncio.to_thread(
             self.invalidations.invalidate,
             EntityIdentity(repo_name, entity_type, number),
@@ -3382,6 +3404,55 @@ class AutomationEngine:
             logger.warning(f"Failed to check open sub-issues for issue #{candidate.issue_number or issue_data.get('number', 'N/A')}: {e}")
             raise
 
+    def _issue_refusal_policy(self, repo_name: str, config: AutomationConfig) -> str:
+        return repr((config, self._is_issue_specification_validation_enabled(repo_name, config), self._is_issue_decomposition_validation_enabled(repo_name, config)))
+
+    def _cached_issue_refusal(self, repo_name: str, number: int, config: AutomationConfig) -> Optional[CandidateProcessingResult]:
+        """Return only a refusal; missing or positive evidence always falls through."""
+        cached = self.issue_admission_cache.get(repo_name, number, self._issue_refusal_policy(repo_name, config))
+        if cached is not None:
+            return cached
+        specification_enabled = self._is_issue_specification_validation_enabled(repo_name, config)
+        decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
+        reason: Optional[str] = None
+        # The stores share terminal Issue identities. With a disabled gate,
+        # defer role classification to the normal authoritative path.
+        specification = self._specification_validators.get(repo_name)
+        decomposition = self._decomposition_validators.get(repo_name)
+        specification_store = specification.reissue_store if specification is not None else ReissueRequiredStore(repo_name)
+        decomposition_store = decomposition.reissue_store if decomposition is not None else ReissueRequiredStore(repo_name)
+        if specification_enabled and decomposition_enabled and specification_store.contains(number) is True:
+            reason = "Specification requires a replacement Issue number"
+        observed = self.issue_admission_cache.snapshot(repo_name, number)
+        if reason is None and decomposition_enabled and observed is not None:
+            declaration = parse_parent_declaration(observed.get("body"))
+            parent_number = declaration.parent_number if declaration.status is ParentDeclarationStatus.SUPPORTED else observed.get("parent_issue_number")
+            if isinstance(parent_number, int) and not isinstance(parent_number, bool) and decomposition_store.contains(parent_number) is True:
+                reason = "Parent specification set requires a replacement Issue number"
+        if reason is None:
+            return None
+        return CandidateProcessingResult(type="issue", number=number, error=reason, actions=["Rejected - Issue or parent is durably reissue-required"], target_outcome=ExplicitTargetOutcome.BLOCKED, target_reason=reason, blocked_cacheable=True)
+
+    def _record_cached_issue_refusal(self, repo_name: str, result: CandidateProcessingResult, origin: str) -> None:
+        """Expose the negative-only boundary even when a worker skips refresh."""
+        number = result.number
+        if number is None:
+            return
+
+        def record() -> None:
+            _record_issue_stage_result(number, "issue.cached-blocked-admission", f"issue#{number} cached blocked admission", Outcome.BLOCKED, {"reason": result.error or result.target_reason or "cached refusal", "evidence_source": "local-negative-cache", "authorizes_execution": False})
+
+        ambient = current_scope()
+        if ambient is not None and ambient.repository == repo_name and ambient.item_type == "issue" and ambient.item_number == number:
+            record()
+        else:
+            try:
+                with get_trace_collector().start_execution(repository=repo_name, item_type="issue", item_number=number, origin=origin, stage_id="issue.execution", label=f"issue#{number} execution") as handle:
+                    record()
+                    handle.set_outcome(Outcome.BLOCKED)
+            except Exception:
+                logger.opt(exception=True).debug("Could not record cached Issue refusal")
+
     def _process_single_candidate_unified(
         self,
         repo_name: str,
@@ -3411,20 +3482,6 @@ class AutomationEngine:
         item_number = candidate.data.get("number")
         ambient = current_scope()
         already_scoped = ambient is not None and ambient.repository == repo_name and ambient.item_type == candidate.type and ambient.item_number == item_number
-        if not isinstance(item_number, int) or isinstance(item_number, bool) or already_scoped:
-            return self._process_single_candidate_unified_impl(
-                repo_name,
-                candidate,
-                config,
-                jules_mode,
-                explicit_only,
-                force,
-                continue_execution,
-                advance_issue_attempt,
-                generation_serialized,
-                authoritative_parent_number,
-                origin,
-            )
         impl_args = (
             repo_name,
             candidate,
@@ -3438,6 +3495,24 @@ class AutomationEngine:
             authoritative_parent_number,
             origin,
         )
+
+        def dispatch() -> CandidateProcessingResult:
+            cache_issue = candidate.type == "issue" and isinstance(item_number, int) and not isinstance(item_number, bool) and not continue_execution
+            if cache_issue:
+                observed = self.issue_admission_cache.observe(repo_name, candidate.data)
+                epoch = self.issue_admission_cache.epoch(repo_name)
+                policy = self._issue_refusal_policy(repo_name, config)
+                refusal = self._cached_issue_refusal(repo_name, item_number, config)
+                if refusal is not None:
+                    self._record_cached_issue_refusal(repo_name, refusal, origin)
+                    return refusal
+            result = self._process_single_candidate_unified_impl(*impl_args)
+            if cache_issue and observed:
+                self.issue_admission_cache.remember(repo_name, item_number, policy, epoch, result)
+            return result
+
+        if not isinstance(item_number, int) or isinstance(item_number, bool) or already_scoped:
+            return dispatch()
         try:
             handle_cm = get_trace_collector().start_execution(
                 repository=repo_name,
@@ -3449,9 +3524,9 @@ class AutomationEngine:
             )
         except Exception:
             logger.opt(exception=True).debug("Diagnostic trace recording failed opening execution scope for {}#{}; continuing untraced", candidate.type, item_number)
-            return self._process_single_candidate_unified_impl(*impl_args)
+            return dispatch()
         with handle_cm as handle:
-            result = self._process_single_candidate_unified_impl(*impl_args)
+            result = dispatch()
             try:
                 handle.set_outcome(_map_candidate_result_outcome(result))
             except Exception:
@@ -3553,6 +3628,12 @@ class AutomationEngine:
                     if not isinstance(observed, dict) or observed.get("number") != item_number or "pull_request" in observed:
                         result.error = f"Refusing Issue dispatch for {repo_name}#{item_number}: GitHub returned an ambiguous item snapshot"
                         return result
+                    if not continue_execution:
+                        self.issue_admission_cache.observe(repo_name, observed, authoritative=True)
+                        refusal = self._cached_issue_refusal(repo_name, item_number, config)
+                        if refusal is not None:
+                            self._record_cached_issue_refusal(repo_name, refusal, origin)
+                            return refusal
                     refreshed = self._reconcile_parent_issue(repo_name, item_number, observed) if parse_parent_declaration(observed.get("body")).status is not ParentDeclarationStatus.ABSENT else observed
                     refreshed_manifest = build_normative_issue_manifest(item_number, str(refreshed.get("title") or ""), str(refreshed.get("body") or ""))
                     if refreshed_manifest.error is None:
@@ -3651,6 +3732,7 @@ class AutomationEngine:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
                             result.target_outcome = ExplicitTargetOutcome.BLOCKED
                             result.actions = ["Rejected - blocked parent/child decomposition"]
+                            result.blocked_cacheable = not side_effect_error
                             _record_issue_stage_result(item_number, "issue.decomposition-validation", f"issue#{item_number} decomposition validation", Outcome.BLOCKED, {"member_issue_numbers": sorted(child_decisions)})
                         elif decomposition_enabled and parent_decision is not None and parent_decision.verdict == "ERROR":
                             result.error = "Decomposition validation failed; parent readiness was preserved for retry"
@@ -3676,6 +3758,7 @@ class AutomationEngine:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
                             result.target_outcome = ExplicitTargetOutcome.BLOCKED
                             result.actions = ["Rejected - blocked child specification"]
+                            result.blocked_cacheable = not side_effect_error
                             _record_issue_stage_result(item_number, "issue.individual-validation", f"issue#{item_number} individual validation", Outcome.BLOCKED, {"member_issue_numbers": sorted(child_decisions)})
                         elif decomposition_enabled and parent_decision is not None:
                             complete, message = self._complete_container_parent(repo_name, item_number, parent_decision, child_decisions)
@@ -3932,12 +4015,14 @@ class AutomationEngine:
                     result.error = "Parent specification set requires a replacement Issue number"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Rejected - parent set is durably reissue-required"]
+                    result.blocked_cacheable = True
                     return result
                 spec_validation_enabled = self._is_issue_specification_validation_enabled(repo_name, config)
                 if spec_validation_enabled and individual_validator.is_reissue_required(item_number) is True:
                     result.error = "Child specification requires a replacement Issue number"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Rejected - child is durably reissue-required"]
+                    result.blocked_cacheable = True
                     return result
                 decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config)
                 decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
@@ -3965,6 +4050,7 @@ class AutomationEngine:
                         if side_effect_error:
                             result.error += f"; GitHub side effect failed: {side_effect_error}"
                         _record_issue_stage_result(item_number, "issue.decomposition-gate-observed", f"issue#{item_number} decomposition gate observed", Outcome.BLOCKED, {"parent_number": inherited_parent_number})
+                        result.blocked_cacheable = not side_effect_error
                         return result
                 if spec_validation_enabled:
                     for eager_decision in eager_child_decisions.values():
@@ -4003,6 +4089,7 @@ class AutomationEngine:
                 result.target_outcome = ExplicitTargetOutcome.BLOCKED
                 result.actions = [f"Rejected - invalid requirement contract: {contract.error}"]
                 result.error = contract.error
+                result.blocked_cacheable = True
                 _record_issue_stage_result(item_number, "issue.normative-contract-check", f"issue#{item_number} normative contract check", Outcome.BLOCKED, {"reason": contract.error})
                 return result
 
@@ -4019,6 +4106,7 @@ class AutomationEngine:
                     result.error = "Specification requires a replacement Issue number"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Rejected - Issue is durably reissue-required"]
+                    result.blocked_cacheable = True
                     return result
                 if inherited_ready:
                     # This job was submitted alongside decomposition validation, so
@@ -4080,6 +4168,7 @@ class AutomationEngine:
                     result.error = "Specification validation found material defects"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED
                     result.actions = ["Rejected - blocked specification"]
+                    result.blocked_cacheable = True
                     return result
 
             # This is the final cache-bypassing check immediately before slot and

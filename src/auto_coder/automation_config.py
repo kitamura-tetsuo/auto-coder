@@ -931,6 +931,7 @@ class CandidateProcessingResult:
     cloud_submission_not_started: bool = False
     target_outcome: Optional[ExplicitTargetOutcome] = None
     target_reason: Optional[str] = None
+    blocked_cacheable: bool = False
 
 
 class PRProcessingOutcome(str, Enum):

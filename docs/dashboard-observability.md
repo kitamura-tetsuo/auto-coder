@@ -17,6 +17,24 @@ completion. This occupancy correction changes no processing origin, admission ga
 outcome, or structured event schema; existing execution traces remain unchanged.
 Run it with `bash scripts/test.sh tests/test_entity_invalidation.py`.
 
+Issue refusal caching emits `issue.cached-blocked-admission` with outcome
+`blocked`, the refusal reason, `evidence_source=local-negative-cache`, and
+`authorizes_execution=false`. A worker can reach this boundary before its first
+GitHub refresh; it still opens an Issue execution and finishes it as blocked.
+No validation, dispatch, or successful completion is inferred from a cache hit.
+`test_cached_terminal_refusal_reaches_mounted_detail_without_github` in
+`tests/test_dashboard_observability.py` joins the real admission path to the
+mounted detail view and asserts zero GitHub calls and no slot creation.
+
+The observation cache is separate from authoritative GitHub admission: relevant
+webhooks invalidate negative results for the entire repository, including parent,
+sibling, and reverse-dependency effects, and complete Issue payloads update the
+advisory body/label observation. Results from before an invalidation cannot be
+saved afterward. Ordinary cached refusals expire after 300 seconds and are lost
+on restart; this is an expiry bound, not a processing delay. Durable
+`reissue_required` markers remain terminal across body edits. Incomplete
+publication and operational retries remain outside the negative-result cache.
+
 When changing a processing origin, gate, outcome, provider route, resumption handler,
 or event schema:
 
@@ -178,6 +196,7 @@ also mount and refresh the detail view from that snapshot.
 
 | Production origin | Runnable checks |
 | --- | --- |
+| Cached negative Issue admission, before strict refresh or family enumeration | `tests/test_dashboard_observability.py::test_cached_terminal_refusal_reaches_mounted_detail_without_github`; `tests/test_issue_admission_cache.py::test_worker_acknowledges_terminal_refusal_without_strict_refresh_or_validation`; `tests/test_issue_admission_cache.py::test_completed_contract_refusal_is_reused_until_webhook_then_strictly_refreshed` |
 | Codex Cloud quota acquisition and admission | `tests/test_dashboard_observability.py::test_codex_app_server_failure_remains_deferred_in_detail_view` |
 | Standalone sibling-dependency admission (empty vs nonempty declaration) | `tests/test_dashboard_observability.py::test_standalone_dependency_gate_reaches_mounted_detail_view` |
 | Normal/explicit Issue processing and pre-worker admission | `tests/test_dashboard_observability.py::test_issue_admission_reaches_mounted_detail_view`; `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_explicit_single_target_origin_is_recorded`; `tests/test_issue_production_instrumentation.py::TestPreAdmissionGateVisible::test_author_disallowed_issue_records_skip_without_dispatch` |

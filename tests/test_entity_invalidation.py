@@ -118,7 +118,10 @@ def test_worker_persists_real_strict_refresh_deferral_without_candidate_error(tm
         await engine.invalidate_entity("owner/repo", entity_type, 100)
         worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
         for _ in range(200):
-            if engine.invalidations.get_deferred(EntityIdentity("owner/repo", entity_type, 100)):
+            # Persistence happens in a thread before the worker resumes to
+            # record its diagnostic. Wait for the worker's completion boundary
+            # rather than cancelling between the database write and its log.
+            if engine.invalidations.get_deferred(EntityIdentity("owner/repo", entity_type, 100)) and engine.active_workers.get(0) is None:
                 break
             await asyncio.sleep(0.01)
         worker.cancel()
