@@ -983,6 +983,13 @@ be reopened for input variants or stronger assertions outside their original
 boundary and invariant.
 Previously published gap identities reuse their existing unresolved review
 threads; insufficient corrective commits do not create duplicate root threads.
+An evidence-backed independent `ADDRESSED` disposition for a thread whose root
+identifies the exact persisted gap and requirement closes that gap even if the
+same validation payload repeats it as `OPEN`. The reconciled `RESOLVED` state is
+persisted before the corresponding GitHub thread mutation and remains distinct
+from unrelated non-passing findings or operational failures. A visible resolved
+thread, an implementer claim, malformed disposition evidence, or an ambiguous
+gap-to-requirement association never supplies this authority.
 
 The broad initial review independently traces every material requirement from a
 supported production origin across the parser/configuration, model, manager,

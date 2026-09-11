@@ -1921,8 +1921,16 @@ def _reconcile_test_oracle_gap_lifecycle(
         current.rereview_exception_evidence = prior.rereview_exception_evidence
         # Descriptive prose may be paraphrased by the reviewer. Preserve the
         # original authoritative scope while applying only lifecycle evidence.
-        prior.status = current.status
-        prior.resolution_evidence = current.resolution_evidence
+        if prior.status == "OPEN" and gap_id in addressed_gap_evidence:
+            # A disposition adjudicates the persisted finding, whereas the gap
+            # list is only the reviewer's lifecycle projection.  In particular,
+            # an OPEN echo must not undo an independently proven disposition for
+            # the exact thread represented by this gap.
+            prior.status = "RESOLVED"
+            prior.resolution_evidence = addressed_gap_evidence[gap_id]
+        else:
+            prior.status = current.status
+            prior.resolution_evidence = current.resolution_evidence
         reconciled.append(prior)
 
     for gap in current_by_id.values():
@@ -1948,17 +1956,21 @@ def _reconcile_test_oracle_gap_lifecycle(
 def _addressed_test_oracle_gap_evidence(
     result: AdversarialValidationResult,
     claimed_review_threads: Sequence["ClaimedReviewThread"],
+    recorded_gaps: Sequence[TestOracleGap] = (),
 ) -> dict[str, str]:
     """Map exact material-gap threads independently proven addressed this run."""
     dispositions = {disposition.thread_id: disposition for disposition in result.thread_dispositions if disposition.status == "ADDRESSED" and disposition.rationale and disposition.evidence}
+    gaps_by_id = {gap.gap_id: gap for gap in (*recorded_gaps, *result.test_oracle_gaps)}
     evidence_by_gap: dict[str, str] = {}
     for thread in claimed_review_threads:
         disposition = dispositions.get(thread.thread_id)
         if disposition is None:
             continue
-        match = re.search(r"^Gap identity:\s*`(TOG-[^`]+)`\s*$", thread.original_finding, re.MULTILINE)
-        if match:
-            evidence_by_gap[match.group(1)] = f"{disposition.rationale}\nEvidence: {disposition.evidence}"
+        gap_match = re.search(r"^Gap identity:\s*`(TOG-[^`]+)`\s*$", thread.original_finding, re.MULTILINE)
+        requirement_match = re.search(r"^`(REQ-[^`]+)`:\s*\S", thread.original_finding, re.MULTILINE)
+        current_gap = gaps_by_id.get(gap_match.group(1)) if gap_match else None
+        if gap_match and requirement_match and current_gap is not None and current_gap.requirement_id == requirement_match.group(1):
+            evidence_by_gap[gap_match.group(1)] = f"{disposition.rationale}\nEvidence: {disposition.evidence}"
     return evidence_by_gap
 
 
@@ -2408,7 +2420,16 @@ def run_adversarial_validation(
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
     result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
-    result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha, _addressed_test_oracle_gap_evidence(result, claimed_review_threads))
+    result = _reconcile_test_oracle_gap_lifecycle(
+        result,
+        lifecycle_session,
+        head_sha,
+        _addressed_test_oracle_gap_evidence(
+            result,
+            claimed_review_threads,
+            lifecycle_session.test_oracle_gaps if lifecycle_session else (),
+        ),
+    )
     result = _apply_coverage_and_verdict_precedence(result, context)
     current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files]
 
@@ -2473,7 +2494,16 @@ def run_adversarial_validation(
                 _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
                 result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
                 result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
-                result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha, _addressed_test_oracle_gap_evidence(result, claimed_review_threads))
+                result = _reconcile_test_oracle_gap_lifecycle(
+                    result,
+                    lifecycle_session,
+                    head_sha,
+                    _addressed_test_oracle_gap_evidence(
+                        result,
+                        claimed_review_threads,
+                        lifecycle_session.test_oracle_gaps if lifecycle_session else (),
+                    ),
+                )
                 result = _apply_coverage_and_verdict_precedence(result, context)
                 if initial_thread_dispositions and not result.thread_dispositions:
                     # The follow-up prompt explicitly asks for a final disposition

@@ -457,7 +457,8 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
     assert saved_after_retry.test_oracle_gaps[0].status == "RESOLVED"
 
 
-def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_resolution(tmp_path) -> None:
+@pytest.mark.parametrize("echo_gap", [False, True])
+def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_resolution(tmp_path, echo_gap) -> None:
     """Exercise the production validator boundary used before thread resolution."""
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
     registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
@@ -473,7 +474,7 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
                         database_id=42,
                         author_id=7,
                         author_login="auto-coder-reviewer[bot]",
-                        body=f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`",
+                        body=(f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`\n\n" f"**Issue requirement**\n\n`{initial.requirement_id}`: {context().issue_requirements[0].text}"),
                     ),
                     ReviewThreadComment(
                         database_id=43,
@@ -498,7 +499,7 @@ def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_r
             "summary": "Requirements and regression protections are verified; provenance remains unclear.",
             "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Guard and direct regression test verified."}],
             "findings": [],
-            "test_oracle_gaps": [],
+            "test_oracle_gaps": [gap_payload(phase="REREVIEW")] if echo_gap else [],
             "unexplained_changes": [
                 {
                     "paths": ["docs/generated.md"],
@@ -570,7 +571,7 @@ def test_same_head_explicit_gap_resolution_persists_when_resolved_thread_is_not_
                 database_id=42,
                 author_id=7,
                 author_login="auto-coder-reviewer[bot]",
-                body=f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`",
+                body=(f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`\n\n" f"**Issue requirement**\n\n`{initial.requirement_id}`: {context().issue_requirements[0].text}"),
             )
         ],
     )
@@ -638,7 +639,7 @@ def test_gap_persistence_failure_prevents_thread_projection_and_same_head_retry_
         thread_id="thread-gap",
         root_comment_database_id=42,
         root_author_login="auto-coder[bot]",
-        original_finding=f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`",
+        original_finding=(f"### Auto-Coder material test-oracle gap\n\nGap identity: `{initial.gap_id}`\n\n" f"**Issue requirement**\n\n`{initial.requirement_id}`: {context().issue_requirements[0].text}"),
         discussion="agent[bot]: Added the direct-boundary regression test.",
     )
     manager = MagicMock()
