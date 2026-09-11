@@ -40,6 +40,7 @@ from .implementation_slots import (
     ImplementationHierarchyUnavailable,
     ImplementationOwner,
     ImplementationOwnerResolutionError,
+    ImplementationSlotObservation,
     ImplementationSlotRepository,
 )
 from .issue_context import get_linked_issues_context
@@ -4627,6 +4628,20 @@ class AutomationEngine:
         if self.implementation_slots is None or self.implementation_slots.repo_name != repo_name:
             self.implementation_slots = ImplementationSlotRepository(repo_name, self.config.MAX_CONCURRENT_IMPLEMENTATIONS)
         return self.implementation_slots
+
+    def get_implementation_slot_snapshot(self, repo_name: str) -> ImplementationSlotObservation:
+        """Public read-only occupancy observation for `repo_name`'s slot store.
+
+        Uses the same lazily-initialized, repository-bound
+        ``ImplementationSlotRepository`` instance as admission/lifecycle
+        operations (``_get_implementation_slots``), so a consumer such as the
+        dashboard observes this controller's actual effective store and
+        normal limit rather than a default or other-repository substitute,
+        including before any worker has run. This is a non-blocking
+        diagnostic read only; it never creates, repairs or mutates durable
+        slot state.
+        """
+        return self._get_implementation_slots(repo_name).snapshot()
 
     def _get_authoritative_item_type(self, repo_name: str, item_number: int) -> str:
         """Establish an issue-like target's authoritative GitHub type.

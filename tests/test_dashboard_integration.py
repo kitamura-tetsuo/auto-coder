@@ -5,6 +5,11 @@ from fastapi import FastAPI
 
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.dashboard import init_dashboard
+from src.auto_coder.implementation_slots import (
+    ImplementationOwner,
+    ImplementationSlotRepository,
+    ImplementationSlotSnapshot,
+)
 
 
 class MockCandidate:
@@ -58,3 +63,44 @@ def test_init_dashboard_registration(mock_ui):
     assert args[0] == app
     assert kwargs["mount_path"] == "/dashboard"
     assert kwargs["title"] == "Auto-Coder Dashboard"
+
+
+def test_get_implementation_slot_snapshot_lazily_binds_the_repository_bound_store(tmp_path):
+    """REQ-001 of Issue #1993: before any worker has run, `implementation_slots`
+    is `None`. `get_implementation_slot_snapshot` must still resolve and
+    observe this engine's own effective store for the requested repository
+    (via `_get_implementation_slots`'s existing lazy-initialization), not
+    substitute a default or another repository's store."""
+    real_engine = AutomationEngine(MagicMock())
+    assert real_engine.implementation_slots is None
+
+    with patch("src.auto_coder.automation_engine.ImplementationSlotRepository") as mock_repo_class:
+        mock_repo_class.side_effect = lambda repo_name, limit: ImplementationSlotRepository(repo_name, limit, tmp_path / "slots.json")
+
+        observation = real_engine.get_implementation_slot_snapshot("owner/repo")
+
+    assert isinstance(observation, ImplementationSlotSnapshot)
+    assert observation.repository == "owner/repo"
+    assert observation.owners == ()
+    assert observation.normal_usage == 0
+    # The now-bound repository instance is cached for later admission/
+    # lifecycle calls, not just this diagnostic read.
+    assert real_engine.implementation_slots is not None
+    assert real_engine.implementation_slots.repo_name == "owner/repo"
+
+
+def test_get_implementation_slot_snapshot_observes_real_recorded_ownership(tmp_path):
+    """The wrapper returns the same coherent observation the underlying
+    repository's own `snapshot()` produces for real recorded ownership."""
+    real_engine = AutomationEngine(MagicMock())
+    slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    owner = ImplementationOwner("issue", 321)
+    assert slots.start_execution(owner) is not None
+    real_engine.implementation_slots = slots
+
+    observation = real_engine.get_implementation_slot_snapshot("owner/repo")
+
+    assert isinstance(observation, ImplementationSlotSnapshot)
+    assert [o.owner_key for o in observation.owners] == ["issue:321"]
+    assert observation.normal_usage == 1
+    assert observation.normal_available == 1
