@@ -983,6 +983,25 @@ be reopened for input variants or stronger assertions outside their original
 boundary and invariant.
 Previously published gap identities reuse their existing unresolved review
 threads; insufficient corrective commits do not create duplicate root threads.
+An evidence-backed independent `ADDRESSED` disposition for a thread whose root
+identifies the exact persisted gap and requirement closes that gap even if the
+same validation payload repeats it as `OPEN`. The reconciled `RESOLVED` state is
+persisted before the corresponding GitHub thread mutation and remains distinct
+from unrelated non-passing findings or operational failures. A visible resolved
+thread, an implementer claim, malformed disposition evidence, or an ambiguous
+gap-to-requirement association never supplies this authority.
+Accepted closures record the evaluated head. Unchanged-head observations reuse
+that evidence despite omitted or stale `OPEN` projections, while a later head
+keeps the prior evidence as historical only: explicit current `OPEN` evidence
+reopens the gap and missing current protection evidence blocks without inventing
+a new gap. Explicit structured closure entries must carry their stored gap ID.
+
+The owning PR attempt defers reviewer-session persistence until its serialized
+application transition has confirmed both the authoritative head and that no
+newer attempt was registered. It commits an accepted exact-gap closure before
+thread effects even when unrelated bounded evidence recovery leaves the overall
+review inconclusive; persistence failure suppresses those effects and reports a
+dedicated non-passing diagnostic.
 
 The broad initial review independently traces every material requirement from a
 supported production origin across the parser/configuration, model, manager,

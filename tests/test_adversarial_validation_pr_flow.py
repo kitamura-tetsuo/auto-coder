@@ -1078,13 +1078,19 @@ class TestAdversarialValidationPRFlow:
         from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
 
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
-        mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Retried")
+        stale_registry = MagicMock()
+        mock_run_validation.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="Retried",
+            reviewer_session_checkpoint=MagicMock(),
+            reviewer_session_registry=stale_registry,
+        )
         attempt_repository = attempt_repository_type.return_value
         attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-v2", 2)
-        attempt_repository.latest_sequence.side_effect = [2, 3]
-        # V1 is authoritative immediately after publication. Before its final
-        # merge transition, newer V2 completes but has not published yet.
-        attempt_repository.latest_published_sequence.return_value = 2
+        attempt_repository.latest_sequence.return_value = 3
+        # A newer attempt registered while this validator was running. The
+        # stale result must be rejected before reviewer-state persistence or
+        # any publication effect.
         head_sha = "abc123456789"
         prior_body = format_adversarial_validation_comment(AdversarialValidationResult(result="PASS", summary="Historical"), head_sha)
         client = MagicMock()
@@ -1101,11 +1107,128 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.assert_called_once()
         attempt_repository.start.assert_called_once_with(100, head_sha)
         attempt_repository.finish.assert_called_once_with("attempt-v2", "PASS")
-        attempt_repository.mark_published.assert_called_once_with("attempt-v2")
+        attempt_repository.mark_published.assert_not_called()
         assert client.get_pr_comments.return_value == [{"body": prior_body}]
         assert any("Forcing a new adversarial-validation attempt" in action for action in actions)
         mock_merge_pr.assert_not_called()
-        assert any("newer adversarial-validation attempt is applicable" in action for action in actions)
+        stale_registry.save.assert_not_called()
+        assert any("newer attempt is already applicable" in action for action in actions)
+
+    def test_real_validator_cannot_eagerly_persist_superseded_gap_closure(self, tmp_path):
+        """The owning attempt fence contains real parsing and reviewer storage."""
+        from contextlib import nullcontext
+
+        from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
+        from auto_coder.adversarial_validator import (
+            AdversarialValidationContext,
+            IssueRequirement,
+            _stable_test_oracle_gap_id,
+        )
+        from auto_coder.adversarial_validator import run_adversarial_validation as run_real_validation
+        from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
+
+        head_sha = "a" * 40
+        boundary = "GridMutation.apply_candidate"
+        invariant = "Rejected candidates preserve stored state."
+        gap_id = _stable_test_oracle_gap_id("REQ-001", boundary, invariant)
+        registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+        registry.save(
+            ReviewerSession(
+                repository="owner/repo",
+                pr_number=100,
+                backend_name="reviewer",
+                backend_type="codex",
+                model_name="strong",
+                session_id="session-1",
+                last_head_sha=head_sha,
+                test_oracle_gaps=[
+                    TestOracleGap(
+                        gap_id=gap_id,
+                        requirement_id="REQ-001",
+                        authoritative_boundary=boundary,
+                        invariant=invariant,
+                        status="OPEN",
+                    )
+                ],
+            )
+        )
+        attempt_repository = AdversarialValidationAttemptRepository("owner/repo", tmp_path / "attempts.json")
+        manager = MagicMock()
+        manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+        manager._last_session_id = "session-1"
+
+        def register_newer_attempt(*_args, **_kwargs):
+            attempt_repository.start(100, head_sha)
+            return json.dumps(
+                {
+                    "result": "PASS",
+                    "summary": "The focused regression is present.",
+                    "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Current-head behavior verified."}],
+                    "findings": [],
+                    "test_oracle_gaps": [
+                        {
+                            "gap_id": gap_id,
+                            "requirement_id": "REQ-001",
+                            "authoritative_boundary": boundary,
+                            "invariant": invariant,
+                            "plausible_incorrect_implementation": "Remove the rejection guard.",
+                            "why_tests_still_pass": "Other tests do not invoke this boundary.",
+                            "material_consequence": "Invalid state could be persisted.",
+                            "focused_regression_scenario": "Invoke the boundary and assert unchanged state.",
+                            "anchor_path": "src/grid.py",
+                            "discovery_phase": "REREVIEW",
+                            "status": "RESOLVED",
+                            "resolution_evidence": "The committed test invokes the exact boundary on this head.",
+                        }
+                    ],
+                }
+            )
+
+        manager.continue_session.side_effect = register_newer_attempt
+        validation_context = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Protect grid mutation",
+            pr_diff="diff --git a/tests/test_grid.py b/tests/test_grid.py\n+assert unchanged",
+            all_changed_files=["tests/test_grid.py"],
+            changed_tests=["tests/test_grid.py"],
+            issue_context="Issue requires direct regression protection.",
+            issue_requirements=[IssueRequirement("REQ-001", "Reject invalid candidates without changing stored state.")],
+        )
+
+        def invoke_real_validator(*args, **kwargs):
+            return run_real_validation(*args, **kwargs, backend_manager=manager, session_registry=registry)
+
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = []
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
+
+        with (
+            patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository", return_value=attempt_repository),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False),
+            patch("auto_coder.pr_processor.run_adversarial_validation", side_effect=invoke_real_validator),
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree", return_value=nullcontext(None)),
+            patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context),
+            patch("auto_coder.pr_processor.publish_adversarial_review") as publish_review,
+            patch("auto_coder.pr_processor._merge_pr") as merge_pr,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
+
+        durable = ReviewerSessionRegistry(registry.path).get("owner/repo", 100, "reviewer", "codex", "strong")
+        assert durable is not None
+        assert durable.test_oracle_gaps[0].status == "OPEN"
+        assert attempt_repository.latest_sequence(100, head_sha) == 2
+        assert any("newer attempt is already applicable" in action for action in actions)
+        publish_review.assert_not_called()
+        merge_pr.assert_not_called()
 
     @pytest.mark.parametrize("newer_state", ["PUBLISHED", "TERMINAL", "IN_PROGRESS"])
     def test_thread_disposition_uses_latest_completed_attempt(self, dedicated_reviewer_publication, tmp_path, newer_state):
@@ -2023,6 +2146,7 @@ class TestAdversarialValidationPRFlow:
             claimed_review_threads_section="(No claimed-addressed review threads for this run.)",
             claimed_review_threads=(),
             execution_cwd=mock_worktree.return_value.__enter__.return_value,
+            defer_session_persistence=True,
         )
         mock_merge_pr.assert_called_once()
 

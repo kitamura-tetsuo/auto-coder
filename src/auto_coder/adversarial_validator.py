@@ -276,6 +276,8 @@ class AdversarialValidationResult:
     provenance_thread_comment_ids: Dict[str, int] = field(default_factory=dict)
     attempt_id: str = ""
     attempt_sequence: int = 0
+    reviewer_session_checkpoint: Optional[ReviewerSession] = field(default=None, repr=False)
+    reviewer_session_registry: Optional[ReviewerSessionRegistry] = field(default=None, repr=False)
 
     @property
     def is_pass(self) -> bool:
@@ -1377,6 +1379,13 @@ def _extract_test_oracle_gaps(raw_value: object, raw_response: str) -> tuple[Lis
 
         derived_id = _stable_test_oracle_gap_id(values["requirement_id"], values["authoritative_boundary"], values["invariant"])
         supplied_id = str(item.get("gap_id", "")).strip()
+        if status in {"RESOLVED", "INVALID"} and not supplied_id:
+            return [], _parse_error(
+                raw_response,
+                "schema_error",
+                "Resolved test-oracle gap lacks its stored identity",
+                f"{status} requires an explicit gap_id",
+            )
         if supplied_id and supplied_id != derived_id:
             return [], _parse_error(raw_response, "schema_error", "Unstable test-oracle gap identity", f"gap_id must be {derived_id} for the supplied scope")
         if derived_id in seen_ids:
@@ -1906,14 +1915,48 @@ def _reconcile_test_oracle_gap_lifecycle(
 
     for gap_id, prior in prior_by_id.items():
         current = current_by_id.pop(gap_id, None)
-        if current is None or not _same_test_oracle_gap_scope(prior, current):
+        accepted_head = prior.resolution_head_sha or stored_session.last_head_sha
+        same_head = accepted_head == head_sha
+        current_matches = current is not None and _same_test_oracle_gap_scope(prior, current)
+        if prior.status in {"RESOLVED", "INVALID"} and not same_head:
+            prior.resolution_head_sha = accepted_head
+            prior.historical_resolution_head_sha = accepted_head
+            prior.historical_resolution_evidence = prior.resolution_evidence
+            if gap_id in addressed_gap_evidence:
+                prior.status = "RESOLVED"
+                prior.resolution_evidence = addressed_gap_evidence[gap_id]
+                prior.resolution_head_sha = head_sha
+                reconciled.append(prior)
+                continue
+            if current_matches and current.status in {"RESOLVED", "INVALID"}:
+                prior.status = current.status
+                prior.resolution_evidence = current.resolution_evidence
+                prior.resolution_head_sha = head_sha
+                reconciled.append(prior)
+                continue
+            if current_matches and current.status == "OPEN":
+                prior.status = "OPEN"
+                prior.resolution_evidence = ""
+                prior.resolution_head_sha = ""
+                reconciled.append(prior)
+                continue
+            # The old closure remains historical evidence, but omission is not
+            # affirmative proof that protection remains on a different head.
+            result.result = "BLOCKED"
+            result.diagnostic_category = "test_oracle_gap_current_head_evidence_missing"
+            result.diagnostic_reason = f"Current-head protection was not adjudicated for {gap_id} at {head_sha}"
+            reconciled.append(prior)
+            continue
+        if current is None or not current_matches:
             if prior.status == "OPEN" and gap_id in addressed_gap_evidence:
                 prior.status = "RESOLVED"
                 prior.resolution_evidence = addressed_gap_evidence[gap_id]
+                prior.resolution_head_sha = head_sha
             reconciled.append(prior)
             continue
         if prior.status in {"RESOLVED", "INVALID"}:
-            # Once independently closed, variants cannot reopen the same scope.
+            # An accepted closure remains reusable after unchanged-head
+            # confirmation; omission and stale OPEN echoes cannot revoke it.
             reconciled.append(prior)
             continue
         current.discovery_phase = prior.discovery_phase
@@ -1921,8 +1964,19 @@ def _reconcile_test_oracle_gap_lifecycle(
         current.rereview_exception_evidence = prior.rereview_exception_evidence
         # Descriptive prose may be paraphrased by the reviewer. Preserve the
         # original authoritative scope while applying only lifecycle evidence.
-        prior.status = current.status
-        prior.resolution_evidence = current.resolution_evidence
+        if prior.status == "OPEN" and gap_id in addressed_gap_evidence:
+            # A disposition adjudicates the persisted finding, whereas the gap
+            # list is only the reviewer's lifecycle projection.  In particular,
+            # an OPEN echo must not undo an independently proven disposition for
+            # the exact thread represented by this gap.
+            prior.status = "RESOLVED"
+            prior.resolution_evidence = addressed_gap_evidence[gap_id]
+            prior.resolution_head_sha = head_sha
+        else:
+            prior.status = current.status
+            prior.resolution_evidence = current.resolution_evidence
+            if current.status in {"RESOLVED", "INVALID"}:
+                prior.resolution_head_sha = head_sha
         reconciled.append(prior)
 
     for gap in current_by_id.values():
@@ -1948,17 +2002,21 @@ def _reconcile_test_oracle_gap_lifecycle(
 def _addressed_test_oracle_gap_evidence(
     result: AdversarialValidationResult,
     claimed_review_threads: Sequence["ClaimedReviewThread"],
+    recorded_gaps: Sequence[TestOracleGap] = (),
 ) -> dict[str, str]:
     """Map exact material-gap threads independently proven addressed this run."""
     dispositions = {disposition.thread_id: disposition for disposition in result.thread_dispositions if disposition.status == "ADDRESSED" and disposition.rationale and disposition.evidence}
+    gaps_by_id = {gap.gap_id: gap for gap in (*recorded_gaps, *result.test_oracle_gaps)}
     evidence_by_gap: dict[str, str] = {}
     for thread in claimed_review_threads:
         disposition = dispositions.get(thread.thread_id)
         if disposition is None:
             continue
-        match = re.search(r"^Gap identity:\s*`(TOG-[^`]+)`\s*$", thread.original_finding, re.MULTILINE)
-        if match:
-            evidence_by_gap[match.group(1)] = f"{disposition.rationale}\nEvidence: {disposition.evidence}"
+        gap_match = re.search(r"^Gap identity:\s*`(TOG-[^`]+)`\s*$", thread.original_finding, re.MULTILINE)
+        requirement_match = re.search(r"^`(REQ-[^`]+)`:\s*\S", thread.original_finding, re.MULTILINE)
+        current_gap = gaps_by_id.get(gap_match.group(1)) if gap_match else None
+        if gap_match and requirement_match and current_gap is not None and current_gap.requirement_id == requirement_match.group(1):
+            evidence_by_gap[gap_match.group(1)] = f"{disposition.rationale}\nEvidence: {disposition.evidence}"
     return evidence_by_gap
 
 
@@ -2216,6 +2274,7 @@ def run_adversarial_validation(
     claimed_review_threads_section: Optional[str] = None,
     claimed_review_threads: Sequence["ClaimedReviewThread"] = (),
     execution_cwd: Optional[str] = None,
+    defer_session_persistence: bool = False,
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
 
@@ -2408,7 +2467,16 @@ def run_adversarial_validation(
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
     result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
-    result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha, _addressed_test_oracle_gap_evidence(result, claimed_review_threads))
+    result = _reconcile_test_oracle_gap_lifecycle(
+        result,
+        lifecycle_session,
+        head_sha,
+        _addressed_test_oracle_gap_evidence(
+            result,
+            claimed_review_threads,
+            lifecycle_session.test_oracle_gaps if lifecycle_session else (),
+        ),
+    )
     result = _apply_coverage_and_verdict_precedence(result, context)
     current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files]
 
@@ -2473,7 +2541,16 @@ def run_adversarial_validation(
                 _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
                 result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
                 result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
-                result = _reconcile_test_oracle_gap_lifecycle(result, lifecycle_session, head_sha, _addressed_test_oracle_gap_evidence(result, claimed_review_threads))
+                result = _reconcile_test_oracle_gap_lifecycle(
+                    result,
+                    lifecycle_session,
+                    head_sha,
+                    _addressed_test_oracle_gap_evidence(
+                        result,
+                        claimed_review_threads,
+                        lifecycle_session.test_oracle_gaps if lifecycle_session else (),
+                    ),
+                )
                 result = _apply_coverage_and_verdict_precedence(result, context)
                 if initial_thread_dispositions and not result.thread_dispositions:
                     # The follow-up prompt explicitly asks for a final disposition
@@ -2510,35 +2587,43 @@ def run_adversarial_validation(
         # the caller projects the disposition to GitHub.
         prior_gaps_by_id = {gap.gap_id: gap for gap in lifecycle_session.test_oracle_gaps} if lifecycle_session else {}
         has_proven_gap_closure = any(
-            prior_gaps_by_id.get(gap.gap_id) is not None and prior_gaps_by_id[gap.gap_id].status == "OPEN" and _same_test_oracle_gap_scope(prior_gaps_by_id[gap.gap_id], gap) and gap.status in {"RESOLVED", "INVALID"} and bool(gap.resolution_evidence) for gap in result.test_oracle_gaps
+            prior_gaps_by_id.get(gap.gap_id) is not None
+            and _same_test_oracle_gap_scope(prior_gaps_by_id[gap.gap_id], gap)
+            and gap.status in {"RESOLVED", "INVALID"}
+            and bool(gap.resolution_evidence)
+            and gap.resolution_head_sha == head_sha
+            and (prior_gaps_by_id[gap.gap_id].status == "OPEN" or (prior_gaps_by_id[gap.gap_id].resolution_head_sha or lifecycle_session.last_head_sha) != head_sha)
+            for gap in result.test_oracle_gaps
         )
-        persist_proven_closure = has_proven_gap_closure and result.diagnostic_category == "change_provenance_clarification"
-        persisted_head_sha = head_sha if lifecycle_completed else lifecycle_session.last_head_sha if lifecycle_session else ""
+        persist_proven_closure = has_proven_gap_closure and result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS", "INCONCLUSIVE", "BLOCKED"}
+        persisted_head_sha = head_sha if lifecycle_completed or persist_proven_closure else lifecycle_session.last_head_sha if lifecycle_session else ""
         persisted_gaps = result.test_oracle_gaps if lifecycle_completed or persist_proven_closure else lifecycle_session.test_oracle_gaps if lifecycle_session else []
-        registry.save(
-            ReviewerSession(
-                repository=repo_name,
-                pr_number=pr_number,
-                backend_name=used_backend,
-                backend_type=used_type,
-                model_name=used_model,
-                session_id=persisted_session_id,
-                last_head_sha=persisted_head_sha,
-                test_oracle_gaps=persisted_gaps,
-                evidence_head_sha=head_sha,
-                recovered_file_evidence=[
-                    RecoveredFileEvidence(
-                        path=entry.path,
-                        source=entry.source,
-                        status=entry.status,
-                        evidence=entry.evidence,
-                        requirement_ids=list(entry.requirement_ids),
-                    )
-                    for entry in result.evidence_recovery
-                    if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files
-                ],
-            )
+        checkpoint = ReviewerSession(
+            repository=repo_name,
+            pr_number=pr_number,
+            backend_name=used_backend,
+            backend_type=used_type,
+            model_name=used_model,
+            session_id=persisted_session_id,
+            last_head_sha=persisted_head_sha,
+            test_oracle_gaps=persisted_gaps,
+            evidence_head_sha=head_sha,
+            recovered_file_evidence=[
+                RecoveredFileEvidence(
+                    path=entry.path,
+                    source=entry.source,
+                    status=entry.status,
+                    evidence=entry.evidence,
+                    requirement_ids=list(entry.requirement_ids),
+                )
+                for entry in result.evidence_recovery
+                if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files
+            ],
         )
+        result.reviewer_session_checkpoint = checkpoint
+        result.reviewer_session_registry = registry
+        if not defer_session_persistence:
+            registry.save(checkpoint)
 
     get_trace_logger().log(
         "Adversarial Validation Result",
