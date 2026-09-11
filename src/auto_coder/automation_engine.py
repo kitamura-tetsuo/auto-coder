@@ -33,7 +33,7 @@ from .git_commit import git_push
 from .git_info import get_current_branch
 from .github_ci_observer import ci_read_phase_method, end_ci_read_phase
 from .github_pending_work import PendingObligation, PendingWorkScheduler, StageOutcome, WorkIdentity, get_pending_work_store
-from .github_request_governor import GitHubRequestGovernor
+from .github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_slots import (
     ImplementationHierarchyConflict,
@@ -2482,6 +2482,8 @@ class AutomationEngine:
                     return
                 item_number = candidate.data.get("number", "N/A")
                 decision_completed = False
+                deferral_committed = False
+                stop_after_persistence_failure = False
                 invalidation_claim: Optional[ClaimedInvalidation] = None
 
                 try:
@@ -2557,6 +2559,32 @@ class AutomationEngine:
                     if self._check_if_pr_merged_or_closed(candidate, result):
                         self.notify_pr_merged_or_closed()
 
+                except GitHubRequestDeferred as deferred:
+                    if invalidation_claim is None:
+                        raise
+                    context = deferred.outcome.context
+                    try:
+                        retained = await asyncio.to_thread(
+                            self.invalidations.defer,
+                            invalidation_claim,
+                            deferred.reason,
+                            deferred.retry_at,
+                            context.api_origin,
+                        )
+                    except Exception as persistence_error:
+                        stop_after_persistence_failure = True
+                        logger.opt(exception=True).error("Failed to persist authoritative-refresh deferral " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={deferred.reason} api_origin={context.api_origin}: {persistence_error}")
+                        get_health_monitor().record_event(
+                            "worker_error",
+                            f"worker {worker_id}: deferral persistence failed: {type(persistence_error).__name__}",
+                            f"{candidate.type} #{item_number}",
+                        )
+                    else:
+                        deferral_committed = True
+                        log = logger.error if deferred.reason == "governor_state_unavailable" else logger.warning
+                        log("Authoritative refresh safely deferred " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={retained.reason} retry_at={retained.retry_not_before} " f"api_origin={retained.api_origin or 'unknown'}")
+                        if self._invalidation_wake_event is not None:
+                            self._invalidation_wake_event.set()
                 except asyncio.CancelledError:
                     logger.info(f"Worker {worker_id} cancelled")
                     get_health_monitor().record_event("worker_exit", f"worker {worker_id} cancelled", f"{candidate.type} #{item_number}")
@@ -2568,7 +2596,7 @@ class AutomationEngine:
                     if invalidation_claim is not None:
                         if decision_completed:
                             self.invalidations.complete(invalidation_claim)
-                        else:
+                        elif not deferral_committed and not stop_after_persistence_failure:
                             self.invalidations.release(invalidation_claim)
                             # Retry transient authoritative-fetch/processing
                             # failures independently of the maintenance loop,
@@ -2581,6 +2609,9 @@ class AutomationEngine:
                         await self._enqueue_pending_invalidations(repo_name)
                 if self.is_draining:
                     logger.info(f"Worker {worker_id} reached its graceful drain checkpoint")
+                    return
+                if stop_after_persistence_failure:
+                    logger.error(f"Worker {worker_id} stopped after deferral persistence failure")
                     return
 
     async def _expand_dependency_obligation(self, repo_name: str) -> None:
@@ -5766,6 +5797,10 @@ class AutomationEngine:
                     priority=0,  # Single processing doesn't need priority
                     issue_number=number,
                 )
+        except GitHubRequestDeferred:
+            # Durable invalidation workers retain this typed, definitely-not-sent
+            # outcome. Do not flatten it before the worker commits its schedule.
+            raise
         except Exception as e:
             logger.error(f"Failed to create candidate for {target_type} #{number}: {e}")
             if propagate_errors:

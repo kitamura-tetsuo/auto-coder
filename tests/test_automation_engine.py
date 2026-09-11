@@ -14,9 +14,11 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome, ProcessedPRResult, PRProcessingOutcome
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.github_request_governor import GitHubRequestDeferred
 from auto_coder.implementation_slots import ImplementationHierarchyConflict, ImplementationOwner, ImplementationSlotRepository
 from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from auto_coder.util.github_request_outcome import GitHubRequestContext
 
 """Tests for automation engine functionality."""
 
@@ -4796,6 +4798,34 @@ class TestUrgentLabelPropagation:
 
 class TestCheckAndHandleClosedBranch:
     """Test cases for _check_and_handle_closed_branch method."""
+
+    @patch("auto_coder.automation_engine.get_current_branch", return_value="issue-123")
+    @patch("auto_coder.automation_engine.extract_number_from_branch", return_value=123)
+    def test_governor_deferral_keeps_ordinary_closed_branch_error_semantics(
+        self,
+        mock_extract_number,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """A producer closed-branch read deferral does not escape this helper."""
+        context = GitHubRequestContext(
+            operation_id="closed-branch",
+            attempt_id="attempt",
+            subsystem="test",
+            api_origin="https://api.github.com",
+            method="GET",
+            kind="read",
+            endpoint_template="/repos/{owner}/{repo}/issues/{number}",
+            repository="test/repo",
+            item="issue#123",
+        )
+        mock_github_client.get_issue.side_effect = GitHubRequestDeferred(context, "rate_limit_cooldown", time.time() + 60)
+        engine = AutomationEngine(mock_github_client)
+
+        assert engine._check_and_handle_closed_branch("test/repo") is True
+        mock_get_current_branch.assert_called_once_with()
+        mock_extract_number.assert_called_once_with("issue-123")
 
     @patch("auto_coder.automation_engine.get_current_branch")
     @patch("auto_coder.automation_engine.extract_number_from_branch")
