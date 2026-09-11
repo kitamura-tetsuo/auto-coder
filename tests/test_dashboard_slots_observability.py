@@ -23,7 +23,7 @@ from fastapi import FastAPI
 from auto_coder.automation_config import AutomationConfig, Candidate
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.dashboard import init_dashboard
-from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotSnapshotUnavailable
 
 REPO = "owner/repo"
 
@@ -260,6 +260,56 @@ def test_unknown_is_never_free_and_recovery_returns_same_state(mock_ui, tmp_path
     banners_after_recovery = _banner_texts(mock_ui)
     assert "STALE" not in banners_after_recovery[-1]
     assert ("Issue #8001", "/detail/issue/8001") in _link_calls(mock_ui)
+
+
+@patch("auto_coder.dashboard.ui")
+def test_returned_unavailable_after_success_preserves_stale_state(mock_ui, tmp_path):
+    """REQ-004: a *returned* `ImplementationSlotSnapshotUnavailable` after a
+    prior success -- the real `ImplementationSlotRepository.snapshot()`
+    catching a storage fault and returning its typed unavailable result,
+    not an exception escaping `get_implementation_slot_snapshot` -- must
+    also preserve the last-known snapshot with a stale indication.
+    `test_unknown_is_never_free_and_recovery_returns_same_state` only
+    exercises `refresh_slots`'s `except Exception` branch (a patched raise);
+    this exercises the separate `elif isinstance(observation,
+    ImplementationSlotSnapshotUnavailable)` branch, which that test cannot
+    catch a regression in."""
+    state_path = tmp_path / "slots.json"
+    slots = ImplementationSlotRepository(REPO, 2, state_path)
+    owner = ImplementationOwner("issue", 8901)
+    assert slots.start_execution(owner) is not None
+
+    engine = AutomationEngine(MagicMock())
+    engine.implementation_slots = slots
+
+    _mount_main(mock_ui, engine, REPO)
+    refresh_slots = _slots_refresh_callback(mock_ui)
+    asyncio.run(refresh_slots())
+    assert ("Issue #8901", "/detail/issue/8901") in _link_calls(mock_ui)
+    assert not any("STALE" in text for text in _banner_texts(mock_ui))
+    success_banner = _banner_texts(mock_ui)[-1]
+    success_timestamp = success_banner.split("as of ")[1].split(" (local")[0]
+
+    # Corrupt the real state file so `ImplementationSlotRepository.snapshot()`
+    # itself *returns* `ImplementationSlotSnapshotUnavailable` -- confirmed
+    # directly below -- rather than a test-injected exception.
+    original_bytes = state_path.read_bytes()
+    state_path.write_text("{not valid json")
+    direct_observation = engine.get_implementation_slot_snapshot(REPO)
+    assert isinstance(direct_observation, ImplementationSlotSnapshotUnavailable)
+
+    asyncio.run(refresh_slots())
+    banners_during_failure = _banner_texts(mock_ui)
+    assert "STALE" in banners_during_failure[-1]
+    assert f"observation {success_timestamp};" in banners_during_failure[-1]
+    assert ("Issue #8901", "/detail/issue/8901") in _link_calls(mock_ui)
+    assert not any("Normal: 0/2" in text for text in _label_texts(mock_ui))
+
+    state_path.write_bytes(original_bytes)
+    asyncio.run(refresh_slots())
+    banners_after_recovery = _banner_texts(mock_ui)
+    assert "STALE" not in banners_after_recovery[-1]
+    assert ("Issue #8901", "/detail/issue/8901") in _link_calls(mock_ui)
 
 
 @patch("auto_coder.dashboard.ui")
