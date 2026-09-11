@@ -15,7 +15,9 @@ controller retains its lock and admission protection. When a process terminates,
 survivor detects the released lock during its next admission evaluation, retains the
 uncertain attempt's budget charge, and commits the one-time recovery cooldown before
 allowing another send. Missing or inaccessible ownership evidence closes admission
-instead of treating the request as an orphan.
+instead of treating the request as an orphan. A controller that loses database
+coordination after admitting work keeps its lifetime lock: coordination failure is
+not evidence that its active transports terminated.
 
 ## Upgrading a version-1 store
 

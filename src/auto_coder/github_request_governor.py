@@ -94,6 +94,7 @@ class GitHubRequestGovernor:
         self._connection: sqlite3.Connection | None = None
         self._incarnation_id = uuid.uuid4().hex
         self._lifetime_file: BinaryIO | None = None
+        self._ownership_active = False
         self._unavailable_reason: str | None = None
         self._base_monotonic = self._checked_time(monotonic(), "monotonic clock")
         self._base_wall = self._checked_time(wall_time(), "UTC clock")
@@ -157,9 +158,15 @@ class GitHubRequestGovernor:
         row = connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata WHERE singleton=1").fetchone()
         if row is None or row[0] != SCHEMA_VERSION:
             raise GovernorStateError("incompatible governor schema")
-        self._base_wall = max(self._base_wall, self._stored_number(row[1], "UTC checkpoint"))
+        current_monotonic = self._checked_time(self._monotonic(), "monotonic clock")
+        elapsed = current_monotonic - self._base_monotonic
+        if elapsed < 0:
+            raise GovernorStateError("monotonic clock moved backward")
+        self._base_wall = max(self._base_wall + elapsed, self._stored_number(row[1], "UTC checkpoint"))
+        self._base_monotonic = current_monotonic
         with self._transaction():
             self._checkpoint(self._now())
+        self._ownership_active = True
 
     def _initialize_or_migrate(self) -> None:
         assert self._connection is not None
@@ -200,7 +207,7 @@ class GitHubRequestGovernor:
                 if metadata[0] == 1:
                     self._validate_legacy_store(tables)
                     connection.execute("ALTER TABLE reservations ADD COLUMN owner_id TEXT")
-                    now = max(self._base_wall, float(metadata[1]))
+                    now = max(self._now(), float(metadata[1]))
                     for origin, attempt_id in connection.execute("SELECT origin, attempt_id FROM reservations WHERE resolved=0 AND recovered=0").fetchall():
                         state = self._read_state(str(origin))
                         deadline = max(state.cooldown_until, now + RECOVERY_COOLDOWN_SECONDS)
@@ -328,10 +335,23 @@ class GitHubRequestGovernor:
     def close(self) -> None:
         """Release this controller incarnation after its process work has stopped."""
         with self._lock:
+            release_lifetime = not self._ownership_active
             if self._connection is not None:
+                try:
+                    unresolved = self._connection.execute(
+                        "SELECT 1 FROM reservations WHERE owner_id=? AND resolved=0 AND recovered=0 LIMIT 1",
+                        (self._incarnation_id,),
+                    ).fetchone()
+                    release_lifetime = unresolved is None
+                except sqlite3.Error:
+                    release_lifetime = False
                 self._connection.close()
                 self._connection = None
-            if self._lifetime_file is not None:
+            # Once this incarnation has admitted work, losing database access
+            # cannot prove that its transports have stopped.  Keep lifetime
+            # evidence until process termination rather than allowing another
+            # participant to recover a possibly live request.
+            if self._lifetime_file is not None and release_lifetime:
                 self._lifetime_file.close()
                 self._lifetime_file = None
 
@@ -503,7 +523,7 @@ class GitHubRequestGovernor:
             except sqlite3.Error:
                 pass
             self._connection = None
-        if self._lifetime_file is not None:
+        if self._lifetime_file is not None and not self._ownership_active:
             try:
                 self._lifetime_file.close()
             except OSError:

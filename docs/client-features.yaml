@@ -355,8 +355,10 @@ an origin-wide cooldown. Controllers for separate repositories share the same
 per-origin limits when their `AUTO_CODER_RUNTIME_ROOT` values name the same physical
 local directory; corrupt, incompatible, indeterminate-ownership, or unwritable
 state fails GitHub admission closed. Persisted records and safe diagnostics contain
-no credentials or request content. See `docs/github-governor-operations.md` for the
-supported topology and schema-version-1 upgrade procedure.
+no credentials or request content. A participant that loses persistence after an
+admission retains its lifetime evidence so another participant cannot recover a
+possibly active transport. See `docs/github-governor-operations.md` for the supported
+topology and schema-version-1 upgrade procedure.
 
 ## Crash-safe Codex Cloud submission ownership
 
