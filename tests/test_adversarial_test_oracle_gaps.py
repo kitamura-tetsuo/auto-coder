@@ -8,6 +8,8 @@ import pytest
 from auto_coder.adversarial_validator import (
     AdversarialValidationContext,
     IssueRequirement,
+    ReviewThreadDisposition,
+    _addressed_test_oracle_gap_evidence,
     _apply_coverage_and_verdict_precedence,
     _reconcile_test_oracle_gap_lifecycle,
     _stable_test_oracle_gap_id,
@@ -101,6 +103,25 @@ def prior_session(gap: TestOracleGap, head_sha: str = "sha-a") -> ReviewerSessio
         last_head_sha=head_sha,
         test_oracle_gaps=[gap],
     )
+
+
+def test_addressed_gap_evidence_rejects_a_root_with_the_wrong_requirement() -> None:
+    gap = parsed_result(gap_payload()).test_oracle_gaps[0]
+    result = parsed_result(gap_payload())
+    result.thread_dispositions = [
+        ReviewThreadDisposition(
+            thread_id="thread-gap",
+            status="ADDRESSED",
+            rationale="The requested regression is present.",
+            evidence="tests/test_grid.py exercises the persisted-state invariant.",
+        )
+    ]
+    claimed = ClaimedReviewThread(
+        thread_id="thread-gap",
+        original_finding=(f"### Auto-Coder material test-oracle gap\n\nGap identity: `{gap.gap_id}`\n\n" "**Issue requirement**\n\n`REQ-OTHER`: unrelated requirement"),
+    )
+
+    assert _addressed_test_oracle_gap_evidence(result, (claimed,), (gap,)) == {}
 
 
 def test_initial_gap_is_separate_from_a_production_violation_and_blocks_merge() -> None:
