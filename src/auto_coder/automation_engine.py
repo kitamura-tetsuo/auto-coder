@@ -2833,10 +2833,6 @@ class AutomationEngine:
             logger.debug(f"{item_type.capitalize()} #{item_number} is open, continuing processing")
             return True
 
-        except GitHubRequestDeferred:
-            # The durable worker must retain the typed reason and deadline;
-            # generic candidate logging would flatten this to "refused".
-            raise
         except Exception as e:
             logger.warning(f"Failed to check/handle closed branch state: {e}")
             # Continue processing on error
