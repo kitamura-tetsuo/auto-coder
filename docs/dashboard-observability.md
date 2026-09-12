@@ -91,6 +91,9 @@ replacement observation is applied again at the outer merge gate.
 If a durable CI delivery fences that green refresh during the final head check,
 the controller emits the same stage with `phase=pre-merge-authority` and obtains
 one newer authoritative observation before allowing the merge mutation.
+CI delivery persistence/fencing and the final authority-check/merge mutation use
+one short authority barrier, so a delivery cannot become accepted in the gap
+between the proof and mutation. The barrier does not cover provider reads.
 
 ## Implementation Slots panel (Issue #1993)
 

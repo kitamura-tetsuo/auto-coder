@@ -61,6 +61,7 @@ class _Phase:
 _local = threading.local()
 _active_phases: list[_Phase] = []
 _active_phases_lock = threading.Lock()
+_ci_authority_barrier = threading.RLock()
 _approval_guard = threading.Lock()
 _approval_locks: dict[tuple[str, int], threading.Lock] = {}
 _confirmed_approvals: set[tuple[str, int, int, tuple[int, ...], str]] = set()
@@ -120,6 +121,22 @@ def fence_active_ci_observations(reason: str) -> None:
         phase.epoch += 1
         phase.cache.clear()
         logger.debug(f"CI observation phase={phase.identity} epoch={phase.epoch} fenced reason={reason}")
+
+
+def accept_and_fence_ci_delivery(accept: Callable[[], bool], reason: str) -> bool:
+    """Atomically persist CI knowledge and fence merge-decision authority."""
+    with _ci_authority_barrier:
+        accepted = accept()
+        if accepted:
+            fence_active_ci_observations(reason)
+        return accepted
+
+
+@contextmanager
+def ci_observation_merge_authority(snapshot: CIObservationSnapshot) -> Iterator[bool]:
+    """Prevent accepted CI invalidation between authority proof and merge."""
+    with _ci_authority_barrier:
+        yield is_current_ci_observation(snapshot)
 
 
 def is_current_ci_observation(snapshot: CIObservationSnapshot) -> bool:

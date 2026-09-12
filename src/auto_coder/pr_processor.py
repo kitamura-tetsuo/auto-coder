@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
-from auto_coder.github_ci_observer import end_ci_read_phase, is_current_ci_observation
+from auto_coder.github_ci_observer import ci_observation_merge_authority, end_ci_read_phase
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
@@ -3365,28 +3365,46 @@ def _handle_pr_merge(
                     _record_pr_stage(pr_number, "pr.head-refresh", f"pr#{pr_number} head refresh", Outcome.FAILED, {"reason": str(e)})
                     return actions
 
-                if post_validation_checks.observation is not None and not is_current_ci_observation(post_validation_checks.observation):
-                    post_validation_checks = _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client)
-                    if not post_validation_checks.success:
-                        reason = post_validation_checks.error or ("checks are pending" if post_validation_checks.in_progress else "checks are not passing")
-                        actions.append(f"Skipping merge for PR #{pr_number}: final CI authority refresh {reason}")
-                        _record_pr_stage(
-                            pr_number,
-                            "pr.ci-eligibility",
-                            f"pr#{pr_number} final CI authority refresh",
-                            Outcome.DEFERRED if post_validation_checks.in_progress else Outcome.BLOCKED,
-                            {"phase": "pre-merge-authority", "reason": reason},
-                        )
-                        return actions
+                def merge_current_head() -> bool:
+                    return _merge_pr(
+                        repo_name,
+                        pr_number,
+                        analysis,
+                        config,
+                        github_client=github_client,
+                        expected_head_sha=current_head_sha or head_sha or None,
+                    )
 
-                merge_result = _merge_pr(
-                    repo_name,
-                    pr_number,
-                    analysis,
-                    config,
-                    github_client=github_client,
-                    expected_head_sha=current_head_sha or head_sha or None,
-                )
+                merge_result = False
+                observation = post_validation_checks.observation
+                if observation is None:
+                    # Compatibility for callers whose status adapter predates
+                    # snapshots; production GitHub reads always carry one.
+                    merge_result = merge_current_head()
+                else:
+                    with ci_observation_merge_authority(observation) as current_authority:
+                        if current_authority:
+                            merge_result = merge_current_head()
+                    if not current_authority:
+                        post_validation_checks = _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client)
+                        observation = post_validation_checks.observation
+                        if not post_validation_checks.success or observation is None:
+                            reason = post_validation_checks.error or ("checks are pending" if post_validation_checks.in_progress else "checks are not passing")
+                            actions.append(f"Skipping merge for PR #{pr_number}: final CI authority refresh {reason}")
+                            _record_pr_stage(
+                                pr_number,
+                                "pr.ci-eligibility",
+                                f"pr#{pr_number} final CI authority refresh",
+                                Outcome.DEFERRED if post_validation_checks.in_progress else Outcome.BLOCKED,
+                                {"phase": "pre-merge-authority", "reason": reason},
+                            )
+                            return actions
+                        with ci_observation_merge_authority(observation) as refreshed_authority:
+                            if refreshed_authority:
+                                merge_result = merge_current_head()
+                        if not refreshed_authority:
+                            actions.append(f"Skipping merge for PR #{pr_number}: CI authority was invalidated repeatedly at the merge boundary")
+                            return actions
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
                 if processing_status is not None:
