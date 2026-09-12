@@ -1116,7 +1116,8 @@ def test_failed_terminal_watch_retirement_keeps_invalidation_retryable(tmp_path:
     assert engine.invalidations._connection.execute("SELECT active FROM ci_watches WHERE repository = 'owner/repo' AND pr_number = 100").fetchone() == (1,)
 
 
-def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("reopened_head", ["new-head", "old-head"])
+def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_path: Path, monkeypatch, reopened_head: str):
     """The production watch origin and webhook worker cross the admission gate."""
     path = tmp_path / "invalidations.sqlite3"
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(path))
@@ -1148,7 +1149,7 @@ def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_
     github.get_pull_request_metadata_strict = MagicMock(
         side_effect=[
             {**pr_data, "state": "closed"},
-            {**pr_data, "state": "open", "head": {"ref": "topic", "sha": "new-head"}},
+            {**pr_data, "state": "open", "head": {"ref": "topic", "sha": reopened_head}},
         ]
     )
     processed = []
@@ -1166,10 +1167,15 @@ def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_
         "SELECT head_sha, workflow_id, active FROM ci_watches WHERE repository = ? AND pr_number = ? ORDER BY head_sha, workflow_id",
         ("owner/repo", 100),
     ).fetchall()
-    assert watches == [("new-head", "", 1), ("old-head", "", 0), ("old-head", "ci.yml", 0)]
+    expected_watches = [("new-head", "", 1), ("old-head", "", 0), ("old-head", "ci.yml", 0)] if reopened_head == "new-head" else [("old-head", "", 1), ("old-head", "ci.yml", 1)]
+    assert watches == expected_watches
     assert engine.invalidations.pending_count("owner/repo") == 0
     assert github.get_pull_request_metadata_strict.call_count == 2
     assert processed == []
+    assert engine.invalidations.promote_due_ci_watches("owner/repo", now=time.time() + 600) == len([watch for watch in expected_watches if watch[2] == 1])
+    promoted = engine.invalidations.claim("owner/repo")
+    assert promoted is not None
+    assert promoted.identity == EntityIdentity("owner/repo", "pr", 100)
 
 
 def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: Path, monkeypatch):
