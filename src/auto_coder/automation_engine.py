@@ -23,6 +23,7 @@ from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm
 from .candidate_queue import CandidateQueue
 from .decomposition_analyzer import DecompositionIssue
 from .decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
+from .dependency_observation_cache import DEPENDENCY_OBSERVATION_TTL, DependencyObservationCache
 from .deployment_channel import repository_dispatch_authority
 from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity, issue_stabilization_deadline
 from .exceptions import AutoCoderRetryableBackendError, CloudSubmissionNotStartedError
@@ -630,6 +631,7 @@ class AutomationEngine:
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
         self.issue_admission_cache = IssueAdmissionCache()
+        self.dependency_observations = DependencyObservationCache()
         self._invalidation_drain_lock = asyncio.Lock()
         self._invalidation_wake_event: Optional[asyncio.Event] = None
         self._refill_lock = asyncio.Lock()
@@ -2177,6 +2179,7 @@ class AutomationEngine:
         other exception is a genuine defect and continues to propagate.
         """
         self.issue_admission_cache.invalidate(repo_name)
+        self.dependency_observations = DependencyObservationCache()
         identity = WorkIdentity(repo_name, "startup", STARTUP_RECONCILIATION_STAGE)
         try:
             await self._attempt_startup_reconciliation(repo_name)
@@ -2520,6 +2523,11 @@ class AutomationEngine:
                                 self._record_cached_issue_refusal(repo_name, refusal, "durable-invalidation-worker")
                                 decision_completed = True
                                 continue
+                            if await asyncio.to_thread(self._defer_observed_dependency_wait, repo_name, int(item_number), invalidation_claim):
+                                deferral_committed = True
+                                if self._invalidation_wake_event is not None:
+                                    self._invalidation_wake_event.set()
+                                continue
                         authoritative_candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, candidate.type, int(item_number), True)
                         if authoritative_candidate is None:
                             # A successful authoritative read can decide that an
@@ -2675,6 +2683,11 @@ class AutomationEngine:
         # Fence in-flight negative decisions before yielding to queue I/O. These
         # observations may stop work, but never replace authoritative admission.
         self.issue_admission_cache.invalidate(repo_name)
+        if entity_type == "issue" and event_type is not None:
+            if event_type == "issues" and action not in {"deleted", "transferred"} and issue_snapshot is not None and issue_snapshot.get("number") == number:
+                self.dependency_observations.observe(repo_name, issue_snapshot)
+            elif event_type != "issue_comment":
+                self.dependency_observations.invalidate(repo_name, number)
         if issue_snapshot is not None:
             self.issue_admission_cache.observe(repo_name, issue_snapshot)
         accepted = await asyncio.to_thread(
@@ -2686,11 +2699,50 @@ class AutomationEngine:
             not_before,
             urgent_admission,
         )
+        if accepted and entity_type == "issue" and event_type is not None:
+            await asyncio.to_thread(self.invalidations.wake_dependency_waiters, repo_name)
         if accepted and not self.is_draining:
             await self._enqueue_pending_invalidations(repo_name)
             if self._invalidation_wake_event is not None:
                 self._invalidation_wake_event.set()
         return accepted
+
+    def _defer_observed_dependency_wait(self, repo_name: str, number: int, claim: ClaimedInvalidation) -> bool:
+        """Avoid family validation for known waiting Issues, never authorize work."""
+        cache = self.dependency_observations
+
+        def observe_missing(target: int) -> None:
+            if cache.get(repo_name, target) is None:
+                version = cache.version(repo_name, target)
+                try:
+                    snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, target)
+                except httpx.HTTPStatusError as error:
+                    if error.response.status_code != 404:
+                        raise
+                    # Absence is not waiting evidence. Let normal admission
+                    # classify deleted targets and invalid prerequisite refs.
+                    cache.invalidate(repo_name, target)
+                    return
+                if isinstance(snapshot, dict) and snapshot.get("number") == target:
+                    cache.observe(repo_name, snapshot, version=version)
+
+        observe_missing(number)
+        for dependency in sorted(cache.dependencies(repo_name, number)):
+            observe_missing(dependency)
+        waiting = cache.waiting_on(repo_name, number)
+        if not waiting:
+            return False
+        retry_at = time.time() + DEPENDENCY_OBSERVATION_TTL
+        self.invalidations.defer(claim, "cached_dependency_wait", retry_at)
+        # A webhook may have woken waiters just before this wait was persisted.
+        # Recheck the negative evidence to avoid hiding that notification.
+        if cache.waiting_on(repo_name, number) != waiting:
+            self.invalidations.wake_dependency_waiters(repo_name)
+        logger.info(f"Deferring Issue #{number}: observed open dependencies {waiting}; recheck by {retry_at}")
+        with get_trace_collector().start_execution(repository=repo_name, item_type="issue", item_number=number, origin="durable-invalidation-worker", stage_id="issue.execution", label=f"issue#{number} execution") as handle:
+            _record_issue_stage_result(number, "issue.cached-dependency-wait", f"issue#{number} cached dependency wait", Outcome.DEFERRED, {"waiting_on": list(waiting), "retry_at": retry_at, "evidence_source": "local-issue-observation", "authorizes_execution": False})
+            handle.set_outcome(Outcome.DEFERRED)
+        return True
 
     async def _enqueue_pending_invalidations(self, repo_name: str) -> None:
         """Claim durable identities, fetch authoritative state, and queue decisions."""
