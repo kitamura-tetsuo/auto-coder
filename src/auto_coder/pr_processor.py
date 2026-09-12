@@ -3314,6 +3314,23 @@ def _handle_pr_merge(
                         actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
                         _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.COMPLETED, {"examined_head": head_sha, "result": val_result.result})
 
+            # Reviewer work can accept a newer complete CI observation than the
+            # one that originally admitted validation. Reapply the production
+            # gate after validation so that older green evidence cannot retain
+            # merge authority after a pending or failing replacement.
+            post_validation_checks = _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client)
+            if not post_validation_checks.success:
+                reason = post_validation_checks.error or ("checks are pending" if post_validation_checks.in_progress else "checks are not passing")
+                actions.append(f"Skipping merge for PR #{pr_number}: post-validation CI refresh {reason}")
+                _record_pr_stage(
+                    pr_number,
+                    "pr.ci-eligibility",
+                    f"pr#{pr_number} post-validation CI eligibility",
+                    Outcome.DEFERRED if post_validation_checks.in_progress else Outcome.BLOCKED,
+                    {"phase": "post-adversarial-validation", "reason": reason},
+                )
+                return actions
+
             # Verify remote PR head SHA hasn't changed since CI check and validation before merging (fail-closed)
             head_sha = pr_data.get("head", {}).get("sha", "")
             if not github_client:

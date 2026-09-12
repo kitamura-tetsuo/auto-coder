@@ -81,6 +81,14 @@ existing closed/absent lifecycle result remains the Dashboard authority; the
 regressions in `tests/test_entity_invalidation.py` instead verify the underlying
 database, restart, and due-promotion behavior that prevents phantom queue work.
 
+Post-adversarial CI refresh reuses the existing `pr.ci-eligibility` stage rather
+than introducing a new event schema. A newly pending observation emits `deferred`
+and a newly failing or unavailable observation emits `blocked`, both with
+`phase=post-adversarial-validation`; merge is not attempted. The production-path
+regression `test_new_nonpassing_ci_observation_after_validation_blocks_merge` in
+`tests/test_adversarial_validation_pr_flow.py` proves that a validator-accepted
+replacement observation is applied again at the outer merge gate.
+
 ## Implementation Slots panel (Issue #1993)
 
 The main dashboard's Implementation Slots section is a separate

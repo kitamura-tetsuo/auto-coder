@@ -2152,6 +2152,49 @@ class TestAdversarialValidationPRFlow:
         )
         mock_merge_pr.assert_called_once()
 
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_new_nonpassing_ci_observation_after_validation_blocks_merge(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        green = GitHubActionsStatusResult(success=True, ids=[10])
+        pending = GitHubActionsStatusResult(success=False, ids=[10, 11], in_progress=True)
+        mock_checks.side_effect = [green, pending, pending]
+
+        def validation_with_refresh(*args, **kwargs):
+            accepted = kwargs["refresh_ci_status"]()
+            assert accepted is pending
+            return AdversarialValidationResult(result="PASS", summary="Dynamic evidence passed")
+
+        mock_run_validation.side_effect = validation_with_refresh
+        head_sha = "current-head-h2"
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head-h1")]
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert mock_checks.call_count == 3
+        mock_merge_pr.assert_not_called()
+        assert any("post-validation CI refresh checks are pending" in action for action in actions)
+
 
 class TestAtomicMergeSHAPrecondition:
     """Test atomic SHA precondition enforcement in _merge_pr."""
