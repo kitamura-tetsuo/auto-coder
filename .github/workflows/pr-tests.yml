@@ -2,6 +2,7 @@ name: PR Tests
 
 'on':
   pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -25,7 +26,7 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
       - name: Install dependencies
         run: |
-          uv sync --dev
+          uv sync --extra dev
       - name: Check repository hygiene
         run: scripts/check_repository_hygiene.py --source head --repo .
       - name: Black (check)
@@ -34,8 +35,8 @@ jobs:
         run: uv run isort --check-only src/ tests/
       - name: Flake8
         run: uv run flake8 src/ tests/
-      # - name: Mypy
-      #   run: uv run mypy src/
+      - name: Mypy
+        run: uv run mypy --config-file pyproject.toml -p auto_coder
 
   tests-shard:
     name: Tests with Coverage (${{ matrix.group }}/4)

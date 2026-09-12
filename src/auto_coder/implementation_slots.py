@@ -396,7 +396,7 @@ class ImplementationSlotRepository:
             if key != owner.key:
                 raise ImplementationSlotUnavailable(f"invalid {field}: key does not match kind and number")
 
-            emergency = ImplementationSlotRepository._optional_bool(record, "emergency", False, field)
+            emergency = bool(ImplementationSlotRepository._optional_bool(record, "emergency", False, field))
             pending = ImplementationSlotRepository._optional_bool(record, "admission_pending", None, field)
             established = ImplementationSlotRepository._optional_bool(record, "admission_established", None, field)
             prs = ImplementationSlotRepository._positive_integer_list(record, "implementation_prs", field)

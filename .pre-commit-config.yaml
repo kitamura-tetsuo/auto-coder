@@ -45,5 +45,5 @@ repos:
       name: mypy
       language: system
       entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run mypy "$@"; else mypy "$@"; fi' --
-      args: ["-p", "auto_coder"]
+      args: ["--config-file", "pyproject.toml", "-p", "auto_coder"]
       pass_filenames: false

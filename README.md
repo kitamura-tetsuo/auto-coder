@@ -1547,12 +1547,14 @@ isort src/ tests/
 # Linting
 flake8 src/ tests/
 
-# Type checking
-mypy src/
-
-# Type checking via pre-commit (using uv)
-# Hooks are set up via pre-commit install
+# Type checking (canonical invocation, also used by CI and the pre-commit hook)
+mypy --config-file pyproject.toml -p auto_coder
 ```
+
+`pyproject.toml`'s `[tool.mypy]` section is the sole authoritative mypy configuration
+(Python 3.12, non-strict). Passing `--config-file pyproject.toml` explicitly avoids
+mypy silently preferring a stray `mypy.ini`/`setup.cfg` if one is ever reintroduced.
+
 
 ## Architecture
 

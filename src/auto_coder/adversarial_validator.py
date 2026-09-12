@@ -1928,13 +1928,13 @@ def _reconcile_test_oracle_gap_lifecycle(
                 prior.resolution_head_sha = head_sha
                 reconciled.append(prior)
                 continue
-            if current_matches and current.status in {"RESOLVED", "INVALID"}:
+            if current_matches and current is not None and current.status in {"RESOLVED", "INVALID"}:
                 prior.status = current.status
                 prior.resolution_evidence = current.resolution_evidence
                 prior.resolution_head_sha = head_sha
                 reconciled.append(prior)
                 continue
-            if current_matches and current.status == "OPEN":
+            if current_matches and current is not None and current.status == "OPEN":
                 prior.status = "OPEN"
                 prior.resolution_evidence = ""
                 prior.resolution_head_sha = ""
@@ -2592,7 +2592,7 @@ def run_adversarial_validation(
             and gap.status in {"RESOLVED", "INVALID"}
             and bool(gap.resolution_evidence)
             and gap.resolution_head_sha == head_sha
-            and (prior_gaps_by_id[gap.gap_id].status == "OPEN" or (prior_gaps_by_id[gap.gap_id].resolution_head_sha or lifecycle_session.last_head_sha) != head_sha)
+            and (prior_gaps_by_id[gap.gap_id].status == "OPEN" or (prior_gaps_by_id[gap.gap_id].resolution_head_sha or (lifecycle_session.last_head_sha if lifecycle_session else "")) != head_sha)
             for gap in result.test_oracle_gaps
         )
         persist_proven_closure = has_proven_gap_closure and result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS", "INCONCLUSIVE", "BLOCKED"}

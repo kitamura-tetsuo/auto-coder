@@ -3558,13 +3558,13 @@ class AutomationEngine:
                 observed = self.issue_admission_cache.observe(repo_name, candidate.data)
                 epoch = self.issue_admission_cache.epoch(repo_name)
                 policy = self._issue_refusal_policy(repo_name, config)
-                refusal = self._cached_issue_refusal(repo_name, item_number, config)
+                refusal = self._cached_issue_refusal(repo_name, cast(int, item_number), config)
                 if refusal is not None:
                     self._record_cached_issue_refusal(repo_name, refusal, origin)
                     return refusal
             result = self._process_single_candidate_unified_impl(*impl_args)
             if cache_issue and observed:
-                self.issue_admission_cache.remember(repo_name, item_number, policy, epoch, result)
+                self.issue_admission_cache.remember(repo_name, cast(int, item_number), policy, epoch, result)
             return result
 
         if not isinstance(item_number, int) or isinstance(item_number, bool) or already_scoped:

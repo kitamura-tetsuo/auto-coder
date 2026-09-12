@@ -69,6 +69,23 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
   * **Lint & Type Check** (black / isort / flake8 / mypy)
   * **Tests with Coverage** (pytest with coverage reports)
   * Target Python version: 3.12
+* The `Lint & Type Check` job installs the checked-out project's own quality tools on
+  a fresh runner with `uv sync --extra dev` (the `[project.optional-dependencies].dev`
+  extra: black, isort, flake8, mypy, and their typing dependencies) rather than relying
+  on preinstalled tools or a developer's local environment. It never installs commit
+  hooks, and it does not rewrite or commit source files.
+* The canonical mypy invocation, used identically by the `Lint & Type Check` job and
+  by the `mypy` pre-commit hook, is:
+  `mypy --config-file pyproject.toml -p auto_coder`
+  Root `pyproject.toml`'s `[tool.mypy]` section (Python 3.12, `mypy_path = "src"`,
+  namespace packages, explicit package bases, non-strict checking) is the sole
+  authoritative mypy configuration; there is no competing root `mypy.ini`. The
+  `--config-file` flag is passed explicitly so mypy cannot silently prefer a
+  different configuration file if one is ever reintroduced. This checks the whole
+  `auto_coder` package recursively (including newly added, otherwise-unimported
+  submodules), not just files changed in a PR or files already imported elsewhere.
+  A detected type error fails the gate even when the offending line is unrelated to
+  the PR's diff; there is no baseline/error-count allowance.
 * `PR Tests` excludes pytest tests marked `browser` (`-m "not browser"`) and does not
   install Playwright browser binaries. `Browser Tests` is a separate, independently
   triggered workflow that installs Playwright Chromium and runs exactly the tests
@@ -82,6 +99,12 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
   * `PR Tests / Tests with Coverage`
   * `Browser Tests / Browser Tests`
   * `Update Version / update-version` (for main branch)
+* A failing `Lint & Type Check` (or any other) status check is a red CI result only.
+  Whether that red result actually blocks merging or direct pushes to a branch is a
+  separate, server-side GitHub setting (branch protection rules / repository
+  rulesets required-status-checks configuration), not something this workflow file
+  controls. This change enables the mypy step itself; it does not enable, modify, or
+  otherwise touch branch protection or ruleset configuration.
 
 ### LLM Execution Policy (Important)
 
