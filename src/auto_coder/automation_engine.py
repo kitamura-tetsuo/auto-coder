@@ -627,7 +627,7 @@ class AutomationEngine:
         self.merge_operation_scheduler = get_merge_operation_scheduler()
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
-        self.queue: asyncio.Queue[Candidate] = CandidateQueue()
+        self.queue = CandidateQueue()
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
         self.issue_admission_cache = IssueAdmissionCache()
@@ -2012,11 +2012,11 @@ class AutomationEngine:
         return refreshed
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
-        """Start the automation engine with event-driven architecture."""
+        """Start independent Issue and PR pools with ``concurrency`` workers each."""
         if concurrency is None:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
-        logger.info(f"Starting automation for repository: {repo_name} with {concurrency} workers")
+        logger.info(f"Starting automation for repository: {repo_name} with {concurrency} Issue workers and {concurrency} PR workers")
         self.invalidations.recover(repo_name)
         await self._enqueue_pending_invalidations(repo_name)
 
@@ -2101,8 +2101,8 @@ class AutomationEngine:
         slot_repository = self._get_implementation_slots(repo_name)
         capacity_task = asyncio.create_task(self._capacity_refill_loop(repo_name), name="implementation-capacity-refill") if isinstance(slot_repository, ImplementationSlotRepository) else None
 
-        # Start workers
-        workers = [asyncio.create_task(self._worker_loop(repo_name, i), name=f"worker-{i}") for i in range(concurrency)]
+        # Reserve worker capacity for each type so either lane can make progress.
+        workers = [asyncio.create_task(self._worker_loop(repo_name, offset * concurrency + i, item_type), name=f"{item_type}-worker-{i}") for offset, item_type in enumerate(("issue", "pr")) for i in range(concurrency)]
 
         all_loop_tasks = [producer_task, invalidation_task, pending_work_task, merge_operation_task, *workers]
         if codex_recovery_task is not None:
@@ -2144,10 +2144,10 @@ class AutomationEngine:
                 # silent-stop boundary. Companion loops are deliberately
                 # cancelled because they otherwise wait indefinitely.
                 logger.warning("Automation engine stopped: producer and all workers exited without being cancelled")
-                get_health_monitor().record_event("engine_stop", "all engine tasks exited", f"workers={concurrency}")
+                get_health_monitor().record_event("engine_stop", "all engine tasks exited", f"workers={len(workers)}")
             else:
                 logger.warning("Automation engine stopped: an orchestration loop exited unexpectedly")
-                get_health_monitor().record_event("engine_stop", "engine task exited", f"workers={concurrency}")
+                get_health_monitor().record_event("engine_stop", "engine task exited", f"workers={len(workers)}")
         except asyncio.CancelledError:
             for task in all_loop_tasks:
                 task.cancel()
@@ -2479,15 +2479,15 @@ class AutomationEngine:
             delay = REFILL_RETRY_INTERVAL_SECONDS if refill_pending else CAPACITY_STATE_CHECK_INTERVAL_SECONDS
             await asyncio.sleep(delay)
 
-    async def _worker_loop(self, repo_name: str, worker_id: int) -> None:
-        """Worker loop that processes candidates from the queue."""
+    async def _worker_loop(self, repo_name: str, worker_id: int, item_type: Optional[str] = None) -> None:
+        """Process candidates from the selected queue lane."""
         with active_repo_context(repo_name):
             logger.info(f"Worker {worker_id} started")
             get_trace_logger().log("System", f"Worker {worker_id} started")
 
             while True:
                 heartbeat(f"worker-{worker_id}:idle", f"queue={self.queue.qsize()}")
-                candidate = await self.queue.get()
+                candidate = await self.queue.get_for_type(item_type)
                 if self.is_draining:
                     # Durable queued ownership remains recoverable by recover()
                     # on the next run; shutdown never executes it merely to

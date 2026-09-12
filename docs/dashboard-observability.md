@@ -207,14 +207,19 @@ reports `slot_released=false` with `deferred`. Accepted and indeterminate
 submissions do not enter this cleanup path. A completed cleanup stage describes
 capacity recovery, not successful implementation; dispatch remains deferred.
 
-Live durable candidates are scheduled with PRs ahead of waiting Issues and
-dependency work, preserving arrival order within each priority. The dashboard's
-queue snapshot reports that order and priority; it does not imply processing has
-started. This scheduling change is trace-neutral: processing origins, execution
+Live durable candidates are served by dedicated Issue and PR worker pools,
+each with MAX_CONCURRENT_TASKS workers, preserving arrival order within each
+priority and type. The dashboard queue snapshot groups PRs first for display;
+it does not imply a cross-pool execution order or that processing has started.
+Worker IDs remain unique across pools. This scheduling change is trace-neutral: processing origins, execution
 scope creation, admission gates, and terminal emissions are unchanged, and an
 already running Issue is not interrupted. The real enqueue/worker/restart and
 queue-status contract is covered by
 `tests/test_candidate_queue.py::test_durable_prs_overtake_issue_backlog_without_losing_generations`.
+Independent progress while either lane is busy is covered by
+`tests/test_candidate_queue.py::test_dedicated_workers_progress_while_other_type_is_busy`;
+cancellation without consuming another lane is covered by
+`tests/test_candidate_queue.py::test_typed_queue_waiters_cancel_without_consuming_other_lane`.
 
 Authoritative-refresh admission deferrals remain before candidate processing and
 therefore do not open or finish an implementation execution. This is deliberately

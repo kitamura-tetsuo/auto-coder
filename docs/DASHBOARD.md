@@ -20,6 +20,13 @@ recovered after restart.
 
 The Auto-Coder Dashboard provides a real-time visualization of the automation engine's activities, including the queue status, active workers, and detailed logs for processed items (Issues and Pull Requests).
 
+Issue and PR processing use separate worker pools, with one worker per pool by
+default. Worker IDs are unique across both pools. The queue lists PRs before
+Issues for display, but each pool advances independently: a busy Issue worker
+does not prevent a PR worker from starting, and vice versa. Shared implementation
+admission limits still apply. Queue membership is waiting work, not evidence that
+an execution has started; detail traces retain each item's own execution identity.
+
 ## Enabling the Dashboard
 
 The dashboard is integrated into the Auto-Coder daemon, which can be started in two ways:
