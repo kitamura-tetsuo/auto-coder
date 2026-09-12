@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, Mock, patch
 
 import httpx
@@ -14,6 +15,34 @@ from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
 class TestGitHubClientREST:
     """Test cases for GitHubClient REST API methods."""
+
+    @pytest.mark.parametrize("age_seconds", [300, 3599, 3600, 3601])
+    @patch("src.auto_coder.util.gh_cache.get_ghapi_client")
+    def test_open_issues_cache_expires_after_one_hour(self, mock_get_api, age_seconds):
+        """Reuse the list until one hour, then fetch a fresh complete list."""
+        GitHubClient.reset_singleton()
+        try:
+            client = GitHubClient.get_instance("test_token")
+            now = datetime(2026, 9, 12, 12, 0, 0)
+            client._open_issues_cache = [{"number": 123}]
+            client._open_issues_cache_repo = "owner/repo"
+            client._open_issues_cache_time = now - timedelta(seconds=age_seconds)
+            mock_get_api.return_value.issues.list_for_repo.return_value = []
+
+            with patch("src.auto_coder.util.gh_cache.datetime") as mock_datetime:
+                mock_datetime.now.return_value = now
+                result = client.get_open_issues_json("owner/repo")
+
+            if age_seconds < 3600:
+                assert result == [{"number": 123}]
+                mock_get_api.assert_not_called()
+            else:
+                assert result == []
+                mock_get_api.return_value.issues.list_for_repo.assert_called_once_with("owner", "repo", state="open", per_page=100, page=1)
+                assert client._open_issues_cache == []
+                assert client._open_issues_cache_time == now
+        finally:
+            GitHubClient.reset_singleton()
 
     @pytest.fixture
     def mock_github_token(self):

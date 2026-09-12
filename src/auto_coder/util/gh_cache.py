@@ -1136,7 +1136,7 @@ class GitHubClient:
         """Get open issues from repository using REST API.
 
         Matches the output format expected by automation engine.
-        Complete unfiltered results are cached. Label-filtered results bypass that
+        Complete unfiltered results are cached for one hour. Label-filtered results bypass that
         cache and are not cached as though they represented every open Issue.
         Uses N+1 calls if necessary, but tries to stay efficient.
         Note: Sub-issues and Linked PRs via timeline are expensive to fetch via REST for all issues.
@@ -1144,7 +1144,7 @@ class GitHubClient:
         """
         # Filtered requests always reach the REST label query.
         with self._open_issues_cache_lock:
-            if not labels and self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(minutes=5):
+            if not labels and self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(hours=1):
                 logger.info(f"Returning cached open issues for {repo_name} (age: {datetime.now() - self._open_issues_cache_time})")
                 return list(self._open_issues_cache)
 
