@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -35,6 +36,7 @@ from auto_coder.adversarial_validator import (
 )
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.ci_observation import CIConclusion, CIObservationSnapshot, ObservationAvailability, ObservationRequest, ObservationSubject, WorkflowExecutionIdentity, WorkflowObservation
+from auto_coder.github_ci_observer import ci_read_phase, observe_ci
 from auto_coder.issue_context import IssueOracleResolution, VerifiedIssueOracle
 from auto_coder.prompt_loader import render_prompt
 from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
@@ -191,6 +193,71 @@ def test_corrected_pass_fails_closed_when_known_ci_observation_is_replaced(mock_
     assert result.diagnostic_category == "validator_evidence_unavailable"
     assert '"cycle_id": "replacement"' in result.diagnostic_reason
     assert '"conclusion": "pending"' in result.diagnostic_reason
+
+
+@patch("auto_coder.adversarial_validator.run_llm_prompt")
+def test_corrected_complete_pass_accepts_fresh_observer_identity_with_identical_facts(mock_prompt) -> None:
+    class Actions:
+        def list_workflow_runs_for_repo(self, owner, repo, **kwargs):
+            return {
+                "workflow_runs": [
+                    {
+                        "id": 10,
+                        "workflow_id": 1,
+                        "run_attempt": 1,
+                        "head_sha": "b" * 40,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "name": "PR Tests",
+                        "path": ".github/workflows/pr-tests.yml",
+                    }
+                ]
+            }
+
+    class Checks:
+        def list_for_ref(self, owner, repo, **kwargs):
+            return {"check_runs": []}
+
+    api = SimpleNamespace(actions=Actions(), checks=Checks())
+    with ci_read_phase("correction-prompt"):
+        first = observe_ci(api, "credential", "owner/repo", 100, "b" * 40)
+    with ci_read_phase("corrected-decision"):
+        second = observe_ci(api, "credential", "owner/repo", 100, "b" * 40)
+    assert first.cycle_id != second.cycle_id
+    assert first.facts == second.facts
+
+    context = _dynamic_context()
+    context.issue_requirements = [IssueRequirement(requirement_id="REQ-004", text="Accept a valid corrected verdict")]
+    mock_prompt.return_value = '{"result":"INCONCLUSIVE","summary":"select","dynamic_check_requested":"prose target"}'
+    manager = MagicMock()
+    manager._last_session_id = "session"
+    manager.continue_session.return_value = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "Correction completed",
+            "requirement_coverage": [{"requirement_id": "REQ-004", "status": "VERIFIED", "evidence": "Current authoritative CI is unchanged"}],
+            "findings": [],
+        }
+    )
+    statuses = iter(
+        (
+            GitHubActionsStatusResult(success=True, ids=[10], observation=first),
+            GitHubActionsStatusResult(success=True, ids=[10], observation=second),
+        )
+    )
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=context), patch("auto_coder.adversarial_validator.CommandExecutor.run_command", return_value=CommandResult(True, "b" * 40, "", 0)):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "head_sha": "b" * 40},
+            AutomationConfig(),
+            backend_manager=manager,
+            execution_cwd=str(Path.cwd()),
+            refresh_ci_status=lambda: next(statuses),
+        )
+
+    assert result.result == "PASS"
+    assert result.diagnostic_category is None
 
 
 def test_exact_head_dynamic_check_bypasses_container_and_asserts_sha_before_and_after() -> None:
