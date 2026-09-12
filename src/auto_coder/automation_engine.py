@@ -2560,6 +2560,10 @@ class AutomationEngine:
                     if is_closed:
                         logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
                         if candidate.type == "pr":
+                            # This state came from the cache-bypassing read above.
+                            # A retirement failure leaves completion false, so
+                            # the generation remains durable and retryable.
+                            await asyncio.to_thread(self.invalidations.retire_ci_watches, repo_name, int(item_number))
                             self.notify_pr_merged_or_closed()
                         decision_completed = True
                         continue
@@ -5882,6 +5886,10 @@ class AutomationEngine:
                     except httpx.HTTPStatusError as error:
                         if error.response.status_code == 404:
                             logger.info(f"PR #{number} no longer exists in {repo_name}")
+                            # This strict 404 is authoritative terminal evidence.
+                            # Commit retirement before returning absence to the
+                            # durable worker, which may then complete generation.
+                            self.invalidations.retire_ci_watches(repo_name, number)
                             return None
                         raise
                 else:

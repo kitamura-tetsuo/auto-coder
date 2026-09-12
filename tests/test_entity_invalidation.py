@@ -1029,6 +1029,90 @@ def test_authoritative_pr_not_found_completes_invalidation(tmp_path: Path, monke
     assert engine.invalidations.pending_count("owner/repo") == 0
 
 
+@pytest.mark.parametrize("merged", [False, True])
+def test_authoritative_terminal_pr_retires_all_watches_before_completion(tmp_path: Path, monkeypatch, merged: bool):
+    path = tmp_path / "invalidations.sqlite3"
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(path))
+    github = GitHubClient("test-token")
+    github.get_pull_request_metadata_strict = MagicMock(return_value={"number": 100, "title": "Terminal", "body": "", "state": "closed", "merged": merged, "user": {"login": "contributor", "id": 1}, "head": {"ref": "topic", "sha": "new-head"}})
+    engine = AutomationEngine(github, AutomationConfig())
+    monkeypatch.setattr(engine, "_is_pr_author_allowed", lambda _data: True)
+    engine.invalidations.ensure_ci_watch("owner/repo", 100, "old-head", "old.yml", now=100)
+    engine.invalidations.ensure_ci_watch("owner/repo", 100, "new-head", "new.yml", now=100)
+    engine.invalidations.ensure_ci_watch("other/repo", 100, "other-head", "ci.yml", now=100)
+    engine.invalidations.ensure_ci_watch("owner/repo", 101, "neighbor-head", "ci.yml", now=100)
+    processed = []
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda *args, **kwargs: processed.append(args))
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "pr", 100)
+        await _run_worker_until(engine, 0, processed)
+
+    asyncio.run(scenario())
+    rows = engine.invalidations._connection.execute("SELECT repository, pr_number, head_sha, workflow_id, active FROM ci_watches ORDER BY repository, pr_number, head_sha").fetchall()
+    assert rows == [
+        ("other/repo", 100, "other-head", "ci.yml", 1),
+        ("owner/repo", 100, "new-head", "new.yml", 0),
+        ("owner/repo", 100, "old-head", "old.yml", 0),
+        ("owner/repo", 101, "neighbor-head", "ci.yml", 1),
+    ]
+    assert engine.invalidations.pending_count("owner/repo") == 0
+    reopened_store = DurableInvalidationQueue(path)
+    assert reopened_store.promote_due_ci_watches("owner/repo", now=1000) == 1
+    assert reopened_store.promote_due_ci_watches("other/repo", now=1000) == 1
+    assert processed == []
+
+
+def test_authoritative_pr_not_found_retires_watch(tmp_path: Path, monkeypatch):
+    path = tmp_path / "invalidations.sqlite3"
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(path))
+    github = GitHubClient("test-token")
+    engine = AutomationEngine(github, AutomationConfig())
+    engine.invalidations.ensure_ci_watch("owner/repo", 100, "head", "ci.yml", now=100)
+    request = httpx.Request("GET", "https://api.github.com/repos/owner/repo/pulls/100")
+    github.get_pull_request_metadata_strict = MagicMock(side_effect=httpx.HTTPStatusError("not found", request=request, response=httpx.Response(404, request=request)))
+    processed = []
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda *args, **kwargs: processed.append(args))
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "pr", 100)
+        await _run_worker_until(engine, 0, processed)
+
+    asyncio.run(scenario())
+    assert engine.invalidations.pending_count("owner/repo") == 0
+    assert DurableInvalidationQueue(path).promote_due_ci_watches("owner/repo", now=1000) == 0
+    assert processed == []
+
+
+def test_failed_terminal_watch_retirement_keeps_invalidation_retryable(tmp_path: Path, monkeypatch):
+    path = tmp_path / "invalidations.sqlite3"
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(path))
+    github = GitHubClient("test-token")
+    github.get_pull_request_metadata_strict = MagicMock(return_value={"number": 100, "title": "Closed", "body": "", "state": "closed", "user": {"login": "contributor", "id": 1}, "head": {"ref": "topic"}})
+    engine = AutomationEngine(github, AutomationConfig())
+    monkeypatch.setattr(engine, "_is_pr_author_allowed", lambda _data: True)
+    engine.invalidations.ensure_ci_watch("owner/repo", 100, "head", "ci.yml", now=100)
+    engine.invalidations._connection.execute(
+        """CREATE TRIGGER fail_watch_retirement BEFORE UPDATE OF active ON ci_watches
+           WHEN OLD.repository = 'owner/repo' AND OLD.pr_number = 100 AND NEW.active = 0
+           BEGIN SELECT RAISE(ABORT, 'disk unavailable'); END"""
+    )
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "pr", 100)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        for _ in range(200):
+            if github.get_pull_request_metadata_strict.call_count:
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert engine.invalidations.pending_count("owner/repo") == 1
+    assert engine.invalidations._connection.execute("SELECT active FROM ci_watches WHERE repository = 'owner/repo' AND pr_number = 100").fetchone() == (1,)
+
+
 def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     github = GitHubClient("test-token")

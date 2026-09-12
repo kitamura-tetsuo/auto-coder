@@ -61,6 +61,13 @@ the evidence. The renderer is generic, so a valid new production-emitted stage a
 repeated stage occurrences require no static graph edit. Display-text-only changes
 likewise do not require meaningless producer changes.
 
+Terminal PR CI-watch retirement is observability-neutral: it changes the durable
+producer's eligibility for future periodic invalidations, not a processing
+origin, trace outcome, provider route, or structured event schema. The worker's
+existing closed/absent lifecycle result remains the Dashboard authority; the
+regressions in `tests/test_entity_invalidation.py` instead verify the underlying
+database, restart, and due-promotion behavior that prevents phantom queue work.
+
 ## Implementation Slots panel (Issue #1993)
 
 The main dashboard's Implementation Slots section is a separate

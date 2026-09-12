@@ -148,6 +148,13 @@ the normal pull-request evaluation path; no per-PR polling thread, run-appearanc
 timeout, or monitor-owned merge path remains.  Dispatch claims remain a separate
 suppressing safety record when observations are missing or unavailable.
 
+An ordinary durable PR reevaluation retires every stored CI watch for that PR
+before completing its generation when its cache-bypassing GitHub read confirms
+the PR is closed, merged, or authoritatively absent. Operational read failures
+retain both the watch and reevaluation responsibility. Open and reopened PRs
+continue to retire only obsolete heads and activate the current-head watch, so
+periodic recovery resumes only after a fresh authoritative open observation.
+
 ## Causally scoped CI observation snapshots
 
 Transport-independent CI reads produce immutable snapshots scoped to the API
