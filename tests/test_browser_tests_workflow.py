@@ -336,7 +336,6 @@ def test_browser_tests_step_propagates_pytest_failure_and_has_no_continue_on_err
     workflow = _workflow(BROWSER_WORKFLOW)
     job = workflow["jobs"]["browser-tests"]
     test_step = next(step for step in job["steps"] if step["name"].startswith("Run browser-marked tests"))
-    assert test_step.get("continue-on-error") is not True, "the test step must not be configured to ignore failure"
 
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
@@ -357,3 +356,56 @@ def test_browser_tests_step_propagates_pytest_failure_and_has_no_continue_on_err
     )
 
     assert result.returncode != 0, "the step's shell must propagate a failing pytest invocation's exit status"
+
+
+def test_browser_tests_job_and_step_have_no_suppressing_control_flow():
+    """REQ-003, REQ-005: neither the `browser-tests` job nor the `Run
+    browser-marked tests` step may carry an `if` condition or a
+    `continue-on-error` escape hatch. The exit-status test above executes
+    the step's `run:` script directly, outside GitHub Actions' own
+    control-flow evaluation, so it cannot detect a workflow mutation that
+    bypasses the step or step failure entirely:
+
+    - `if: ${{ false }}` on the job or step would make Actions skip the
+      real browser-suite execution while this repository's regression
+      tests (which read the stored `run:` string and execute it manually)
+      keep passing, letting the check go green with the browser suite
+      never actually run.
+    - `continue-on-error: ${{ true }}` would let Actions tolerate a failing
+      step. PyYAML parses that value as the literal string `"${{ true }}"`,
+      not the Python boolean `True`, so a check written as
+      `.get("continue-on-error") is not True` does not catch it -- require
+      the key to be entirely absent instead.
+    """
+    workflow = _workflow(BROWSER_WORKFLOW)
+    job = workflow["jobs"]["browser-tests"]
+    assert "if" not in job, "the browser-tests job must not carry a suppressing 'if' condition"
+    assert "continue-on-error" not in job, "the browser-tests job must not have a continue-on-error escape hatch"
+
+    test_step = next(step for step in job["steps"] if step["name"].startswith("Run browser-marked tests"))
+    assert "if" not in test_step, "the test step must not carry a suppressing 'if' condition"
+    assert "continue-on-error" not in test_step, "the test step must not have a continue-on-error escape hatch"
+
+
+def test_browser_marker_is_registered_in_pytest_configuration():
+    """REQ-001: `browser` must be a *registered* pytest marker, not merely a
+    string that happens to select the right nodes today. Pytest accepts
+    and selects an unregistered mark by default (only emitting
+    `PytestUnknownMarkWarning`, exactly as this repository's own
+    unregistered `e2e`/`headless` marks already demonstrate), so a minimal
+    incorrect implementation could delete `browser`'s entry from
+    `[tool.pytest.ini_options].markers` in `pyproject.toml` while leaving
+    every `@pytest.mark.browser`/`pytestmark` use intact: `-m browser`
+    would still select the same nodes and the node-level classification
+    regression would still pass. Verify registration through the real
+    pytest configuration boundary instead: `pytest --markers` output.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--markers"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(line.startswith("@pytest.mark.browser:") for line in result.stdout.splitlines()), "expected 'browser' to be a registered pytest marker (an '@pytest.mark.browser:' line in " f"'pytest --markers' output); got:\n{result.stdout}"
