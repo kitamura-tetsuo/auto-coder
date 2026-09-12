@@ -1,3 +1,5 @@
+from threading import Event, Thread
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -5,6 +7,8 @@ import pytest
 from starlette.testclient import TestClient
 
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.github_ci_observer import accept_and_fence_ci_delivery as real_accept_and_fence_ci_delivery
+from src.auto_coder.github_ci_observer import ci_observation_merge_authority, ci_read_phase, observe_ci
 from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.webhook_server import create_app
 
@@ -53,6 +57,67 @@ class MockEngine:
     async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None, event_type=None, action=None, not_before=None):
         self.invalidations.append((repo_name, entity_type, number, delivery_id, event_type, action))
         return True
+
+
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_real_ci_webhook_route_waits_for_merge_authority_boundary(mock_init_dashboard):
+    engine = MockEngine()
+    app = create_app(engine, "owner/repo")
+    actions = MagicMock()
+    actions.list_workflow_runs_for_repo.return_value = {
+        "workflow_runs": [
+            {
+                "id": 10,
+                "workflow_id": 1,
+                "run_attempt": 1,
+                "head_sha": "head",
+                "status": "completed",
+                "conclusion": "success",
+                "path": ".github/workflows/pr-tests.yml",
+            }
+        ]
+    }
+    checks = MagicMock()
+    checks.list_for_ref.return_value = {"check_runs": []}
+    api = SimpleNamespace(actions=actions, checks=checks)
+    route_entered_barrier = Event()
+    response_finished = Event()
+    response_holder = []
+
+    def observed_accept_and_fence(accept, reason):
+        route_entered_barrier.set()
+        return real_accept_and_fence_ci_delivery(accept, reason)
+
+    with TestClient(app) as client, ci_read_phase("merge-boundary"):
+        snapshot = observe_ci(api, "credential", "owner/repo", 7, "head")
+
+        def post_delivery():
+            response_holder.append(
+                client.post(
+                    "/hooks/github",
+                    json={
+                        "action": "in_progress",
+                        "workflow_run": {"id": 11, "workflow_id": 1, "run_attempt": 1, "head_sha": "head", "pull_requests": [{"number": 7}]},
+                        "repository": {"full_name": "owner/repo"},
+                    },
+                    headers={"X-GitHub-Event": "workflow_run", "X-GitHub-Delivery": "race-delivery"},
+                )
+            )
+            response_finished.set()
+
+        with patch("src.auto_coder.webhook_server.accept_and_fence_ci_delivery", side_effect=observed_accept_and_fence):
+            with ci_observation_merge_authority(snapshot) as current:
+                assert current is True
+                thread = Thread(target=post_delivery)
+                thread.start()
+                assert route_entered_barrier.wait(2)
+                assert engine.invalidations == []
+                assert not response_finished.wait(0.1)
+            thread.join(2)
+
+    assert response_finished.is_set()
+    assert response_holder[0].status_code == 200
+    assert len(engine.invalidations) == 1
 
 
 @patch("src.auto_coder.webhook_server.init_dashboard")
