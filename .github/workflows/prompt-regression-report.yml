@@ -27,7 +27,7 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Validate identity, summarize, and publish immutable attempt report
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
         with:
