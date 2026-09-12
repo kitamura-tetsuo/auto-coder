@@ -16,7 +16,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
+
+from tests.support.browser_launch import headless_page
 
 ROOT = Path(__file__).resolve().parents[1]
 BROWSER_WORKFLOW = ROOT / ".github/workflows/browser-tests.yml"
@@ -96,6 +99,7 @@ def test_browser_marker_is_registered_and_selects_exactly_the_real_browser_tests
     assert files == {
         "tests/test_dashboard_detail_scroll_stability.py",
         "tests/test_dashboard_slots_scroll_stability.py",
+        "tests/test_browser_tests_workflow.py",
     }
 
     exclude = subprocess.run(
@@ -177,3 +181,69 @@ def test_real_launch_attempt():
     assert "1 failed" in result.stdout, result.stdout + result.stderr
     assert "skipped" not in result.stdout, "an unusable browser must fail, not skip, when AUTO_CODER_REQUIRE_BROWSER=1"
     assert "BrowserType.launch" in result.stdout or "Executable doesn't exist" in result.stdout, result.stdout
+
+
+def test_headless_page_helper_skips_instead_of_failing_when_browser_unusable_and_not_required(tmp_path):
+    """REQ-006: browser-test separation must not force an ordinary local or
+    non-dedicated pytest run to provision Chromium. Mirrors the strict-mode
+    test above but with `AUTO_CODER_REQUIRE_BROWSER` absent (the ordinary/
+    local default): an unusable browser must be a pytest skip, and the run
+    as a whole must still succeed, not fail the process."""
+    probe = tmp_path / "test_headless_page_probe_tolerant.py"
+    probe.write_text(
+        f"""
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+
+from tests.support.browser_launch import headless_page
+
+
+def test_real_launch_attempt():
+    with headless_page(viewport={{"width": 100, "height": 100}}):
+        pass
+""",
+        encoding="utf-8",
+    )
+
+    empty_browsers_dir = tmp_path / "no-browser-installed-here"
+    empty_browsers_dir.mkdir()
+    env = os.environ.copy()
+    env["PLAYWRIGHT_BROWSERS_PATH"] = str(empty_browsers_dir)
+    env.pop("AUTO_CODER_REQUIRE_BROWSER", None)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(probe), "-p", "no:cacheprovider", "-q"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 skipped" in result.stdout, result.stdout + result.stderr
+    assert "failed" not in result.stdout, "an unusable browser must not fail the run when AUTO_CODER_REQUIRE_BROWSER is unset"
+
+
+_HOME_AT_COLLECTION = os.environ.get("HOME")
+
+
+@pytest.mark.browser
+def test_headless_page_discovers_browser_despite_per_test_home_rewrite(monkeypatch):
+    """REQ-004: `headless_page`'s Chromium discovery (via `PLAYWRIGHT_BROWSERS_PATH`)
+    must remain valid even though `tests/conftest.py`'s autouse
+    `_clear_sensitive_env` fixture rewrites `$HOME` to a fresh temporary
+    directory for every test that does not request the `_use_real_home`
+    fixture. All of the current `browser`-marked dashboard tests *do*
+    request `_use_real_home`, so none of them actually exercises that
+    rewrite while launching a real browser -- this test deliberately omits
+    `_use_real_home` so the real per-test `HOME` rewrite is in effect, then
+    proves Chromium still launches through the real shared helper.
+    """
+    rewritten_home = os.environ.get("HOME")
+    assert rewritten_home != _HOME_AT_COLLECTION, "expected the autouse HOME rewrite to be in effect for this test"
+    assert rewritten_home is not None and "ac_test_home_" in rewritten_home, f"unexpected $HOME during test: {rewritten_home!r}"
+
+    monkeypatch.setenv("AUTO_CODER_REQUIRE_BROWSER", "1")
+    with headless_page(viewport={"width": 100, "height": 100}) as page:
+        page.goto("about:blank")
