@@ -1,9 +1,11 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from auto_coder.adversarial_validator import canonical_pr_tests_succeeded, focused_ci_target_succeeded, format_ci_execution_evidence, run_exact_head_dynamic_check, validate_dynamic_check_target
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.ci_observation import CIConclusion, CIObservationSnapshot, ObservationAvailability, ObservationRequest, ObservationSubject, WorkflowExecutionIdentity, WorkflowObservation
+from auto_coder.github_ci_observer import ci_read_phase, observe_ci
 from auto_coder.util.github_action import GitHubActionsStatusResult
 from auto_coder.utils import CommandResult
 
@@ -107,3 +109,31 @@ def test_focused_ci_reuse_requires_explicit_exact_target() -> None:
         ),
     )
     assert focused_ci_target_succeeded(aggregate_only, target) is False
+
+
+def test_standard_github_workflow_payload_cannot_impersonate_focused_target_evidence() -> None:
+    actions = SimpleNamespace(
+        list_workflow_runs_for_repo=lambda *args, **kwargs: {
+            "workflow_runs": [
+                {
+                    "id": 10,
+                    "workflow_id": 1,
+                    "run_attempt": 1,
+                    "head_sha": "a" * 40,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "name": "PR Tests",
+                    "path": ".github/workflows/pr-tests.yml",
+                }
+            ]
+        }
+    )
+    checks = SimpleNamespace(list_for_ref=lambda *args, **kwargs: {"check_runs": []})
+    with ci_read_phase("real-provider-shape"):
+        observation = observe_ci(SimpleNamespace(actions=actions, checks=checks), "credential", "owner/repo", 7, "a" * 40)
+    status = GitHubActionsStatusResult(success=True, ids=[10], observation=observation)
+
+    assert canonical_pr_tests_succeeded(status) is True
+    assert focused_ci_target_succeeded(status, "tests/test_feature.py::test_case") is False
+    workflow = next(fact for fact in observation.facts if isinstance(fact, WorkflowObservation))
+    assert workflow.successful_test_targets == ()
