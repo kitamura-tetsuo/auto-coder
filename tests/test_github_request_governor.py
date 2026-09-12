@@ -156,8 +156,9 @@ def _initialize_and_send_process(path: str, channel: Connection, role: str) -> N
         # Coverage instrumentation can keep the leader transport paused for
         # longer than the ordinary five-second test budget. Keep the joiner
         # blocked long enough for the parent-controlled release rather than
-        # turning scheduler slowness into a false admission-timeout failure.
-        governor = GitHubRequestGovernor(store_path=Path(path), wait_budget=30)
+        # turning coverage-instrumented initialization and scheduler slowness
+        # into a false admission-timeout failure.
+        governor = GitHubRequestGovernor(store_path=Path(path), wait_budget=90)
 
         def handler(request: httpx.Request) -> httpx.Response:
             channel.send("transport_started")
