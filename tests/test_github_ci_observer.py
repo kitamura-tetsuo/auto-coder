@@ -11,7 +11,20 @@ class Actions:
 
     def list_workflow_runs_for_repo(self, owner, repo, **kwargs):
         self.reads += 1
-        return {"workflow_runs": [{"id": 20, "workflow_id": 7, "run_attempt": 2, "head_sha": "head", "status": "completed", "conclusion": "success", "name": "CI"}]}
+        return {
+            "workflow_runs": [
+                {
+                    "id": 20,
+                    "workflow_id": 7,
+                    "run_attempt": 2,
+                    "head_sha": "head",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "name": "CI",
+                    "executed_test_targets": ["tests/test_feature.py::test_case"],
+                }
+            ]
+        }
 
     def get_workflow_run(self, owner, repo, run_id):
         return {"id": run_id, "run_attempt": 2, "head_sha": "head", "status": "waiting"}
@@ -43,6 +56,21 @@ def test_phase_reuses_real_targeted_adapter_reads_and_preserves_identity():
     assert api.checks.reads == 1
     workflow = next(f for f in first.facts if isinstance(f, WorkflowObservation))
     assert (workflow.execution.workflow_id, workflow.execution.run_id, workflow.execution.attempt) == ("7", "20", 2)
+    assert workflow.successful_test_targets == ("tests/test_feature.py::test_case",)
+
+
+def test_new_read_phase_changes_authority_identity_without_changing_provider_facts():
+    api = SimpleNamespace(actions=Actions(), checks=Checks())
+    with ci_read_phase("first-review-round"):
+        first = observe_ci(api, "credential", "owner/repo", 12, "head")
+    with ci_read_phase("corrected-review-round"):
+        second = observe_ci(api, "credential", "owner/repo", 12, "head")
+
+    assert first.cycle_id != second.cycle_id
+    assert first.subject == second.subject
+    assert first.facts == second.facts
+    assert api.actions.reads == 2
+    assert api.checks.reads == 2
 
 
 def test_partial_source_never_becomes_complete_or_cached_success():

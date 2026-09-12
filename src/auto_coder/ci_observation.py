@@ -110,6 +110,10 @@ class WorkflowObservation:
     conclusion: CIConclusion
     display_name: str = ""
     waiting_for_deployment: bool = False
+    workflow_path: str = ""
+    # Exact pytest targets are optional provider evidence.  An empty tuple must
+    # never be inferred from aggregate workflow success.
+    successful_test_targets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

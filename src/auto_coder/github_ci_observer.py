@@ -61,6 +61,7 @@ class _Phase:
 _local = threading.local()
 _active_phases: list[_Phase] = []
 _active_phases_lock = threading.Lock()
+_ci_authority_barrier = threading.RLock()
 _approval_guard = threading.Lock()
 _approval_locks: dict[tuple[str, int], threading.Lock] = {}
 _confirmed_approvals: set[tuple[str, int, int, tuple[int, ...], str]] = set()
@@ -122,6 +123,31 @@ def fence_active_ci_observations(reason: str) -> None:
         logger.debug(f"CI observation phase={phase.identity} epoch={phase.epoch} fenced reason={reason}")
 
 
+def accept_and_fence_ci_delivery(accept: Callable[[], bool], reason: str) -> bool:
+    """Atomically persist CI knowledge and fence merge-decision authority."""
+    with _ci_authority_barrier:
+        accepted = accept()
+        if accepted:
+            fence_active_ci_observations(reason)
+        return accepted
+
+
+@contextmanager
+def ci_observation_merge_authority(snapshot: CIObservationSnapshot) -> Iterator[bool]:
+    """Prevent accepted CI invalidation between authority proof and merge."""
+    with _ci_authority_barrier:
+        yield is_current_ci_observation(snapshot)
+
+
+def is_current_ci_observation(snapshot: CIObservationSnapshot) -> bool:
+    """Return whether a snapshot still has authority in the active read phase."""
+    phase = getattr(_local, "phase", None)
+    if phase is None:
+        return False
+    with phase.lock:
+        return snapshot.invalidation_epoch == phase.epoch and any(cached is snapshot for cached in phase.cache.values())
+
+
 def _credential_identity(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
@@ -164,7 +190,13 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
                             run_id, workflow_id, attempt = item.get("id"), item.get("workflow_id"), item.get("run_attempt")
                             if not run_id or not workflow_id or not isinstance(attempt, int) or attempt <= 0:
                                 raise ValueError("workflow run lacks id/workflow_id/run_attempt")
-                            facts.append(WorkflowObservation(WorkflowExecutionIdentity(str(workflow_id), str(run_id), attempt), _conclusion(str(item.get("status") or ""), item.get("conclusion")), str(item.get("name") or ""), str(item.get("status") or "").lower() == "waiting"))
+                            explicit_targets = item.get("executed_test_targets")
+                            successful_targets = tuple(target for target in explicit_targets if isinstance(target, str)) if isinstance(explicit_targets, list) else ()
+                            facts.append(
+                                WorkflowObservation(
+                                    WorkflowExecutionIdentity(str(workflow_id), str(run_id), attempt), _conclusion(str(item.get("status") or ""), item.get("conclusion")), str(item.get("name") or ""), str(item.get("status") or "").lower() == "waiting", workflow_path, successful_targets
+                                )
+                            )
                         else:
                             check_id = item.get("id")
                             app = item.get("app")

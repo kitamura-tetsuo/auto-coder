@@ -131,23 +131,27 @@ def _create_legacy_store(path: Path, timestamp: float) -> None:
 def _initialize_and_send_process(path: str, channel: Connection, role: str, leader_transport_active: EventType) -> None:
     try:
         if role == "leader":
-            original_initialize = GitHubRequestGovernor._initialize_or_migrate
+            original_flock = fcntl.flock
+            initialization_lock_held = False
 
-            def held_initialize(governor: GitHubRequestGovernor) -> None:
-                channel.send("initialization_held")
-                assert channel.poll(10)
-                assert channel.recv() == "release_initialization"
-                original_initialize(governor)
+            def held_flock(fd: int, operation: int) -> None:
+                nonlocal initialization_lock_held
+                original_flock(fd, operation)
+                if operation == fcntl.LOCK_EX and not initialization_lock_held:
+                    initialization_lock_held = True
+                    channel.send("initialization_held")
+                    assert channel.poll(10)
+                    assert channel.recv() == "release_initialization"
 
-            GitHubRequestGovernor._initialize_or_migrate = held_initialize
+            fcntl.flock = held_flock
         else:
             original_flock = fcntl.flock
-            initialization_lock_announced = False
+            initialization_lock_reported = False
 
             def observed_flock(fd: int, operation: int) -> None:
-                nonlocal initialization_lock_announced
-                if operation == fcntl.LOCK_EX and not initialization_lock_announced:
-                    initialization_lock_announced = True
+                nonlocal initialization_lock_reported
+                if operation == fcntl.LOCK_EX and not initialization_lock_reported:
+                    initialization_lock_reported = True
                     channel.send("initialization_lock_attempted")
                 original_flock(fd, operation)
 

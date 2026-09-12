@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from .automation_engine import AutomationEngine
 from .dashboard import init_dashboard
 from .entity_invalidation import ISSUE_STABILIZATION_SECONDS, CIWebhookDelivery, issue_stabilization_deadline
-from .github_ci_observer import fence_active_ci_observations
+from .github_ci_observer import accept_and_fence_ci_delivery
 from .label_manager import LEGACY_AUTO_CODER_LABEL
 from .logger_config import get_logger
 
@@ -168,12 +168,15 @@ async def process_github_payload(
             repo_name, delivery_id, event_type or "", action if isinstance(action, str) else None, numbers, head_sha, str(workflow_id) if workflow_id is not None else None, str(run_id) if run_id is not None else None, attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else None
         )
         try:
-            accepted = await asyncio.to_thread(engine.invalidations.accept_ci_delivery, delivery)
+            accepted = await asyncio.to_thread(
+                accept_and_fence_ci_delivery,
+                lambda: engine.invalidations.accept_ci_delivery(delivery),
+                f"webhook:{event_type}",
+            )
         except Exception as exc:
             logger.error(f"Failed CI intake repository={repo_name} delivery={delivery_id}: {type(exc).__name__}")
             raise HTTPException(status_code=503, detail="CI delivery persistence failed") from exc
         if accepted:
-            fence_active_ci_observations(f"webhook:{event_type}")
             wake_event = getattr(engine, "_invalidation_wake_event", None)
             if wake_event is not None:
                 wake_event.set()

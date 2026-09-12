@@ -114,6 +114,20 @@ existing closed/absent lifecycle result remains the Dashboard authority; the
 regressions in `tests/test_entity_invalidation.py` instead verify the underlying
 database, restart, and due-promotion behavior that prevents phantom queue work.
 
+Post-adversarial CI refresh reuses the existing `pr.ci-eligibility` stage rather
+than introducing a new event schema. A newly pending observation emits `deferred`
+and a newly failing or unavailable observation emits `blocked`, both with
+`phase=post-adversarial-validation`; merge is not attempted. The production-path
+regression `test_new_nonpassing_ci_observation_after_validation_blocks_merge` in
+`tests/test_adversarial_validation_pr_flow.py` proves that a validator-accepted
+replacement observation is applied again at the outer merge gate.
+If a durable CI delivery fences that green refresh during the final head check,
+the controller emits the same stage with `phase=pre-merge-authority` and obtains
+one newer authoritative observation before allowing the merge mutation.
+CI delivery persistence/fencing and the final authority-check/merge mutation use
+one short authority barrier, so a delivery cannot become accepted in the gap
+between the proof and mutation. The barrier does not cover provider reads.
+
 ## Implementation Slots panel (Issue #1993)
 
 The main dashboard's Implementation Slots section is a separate
@@ -330,3 +344,8 @@ and is deferred. The `pr.implementation-admission` result reports the resolved
 `owner` and either `reused_owner` on admission or `reason` on deferral. Completion
 of this stage means admission passed, not that the PR merged. Both cases assert
 unchanged occupancy independently of the rendered outcome.
+## Adversarial CI evidence reuse
+
+Canonical-suite evidence reuse consumes the existing `pr.ci-observation`
+decision without changing its trace schema or the production CI gate. Rejected
+dynamic targets are validator protocol diagnostics, not implementation defects.
