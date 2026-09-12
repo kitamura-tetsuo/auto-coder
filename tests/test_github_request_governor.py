@@ -561,12 +561,6 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
 
         leader_parent.send("release_initialization")
         assert _receive(leader_parent) == "transport_started"
-        # Do not inspect SQLite while the joiner is waiting in admission: under
-        # coverage its admission transaction can retain a database lock until
-        # the leader transport finishes, turning an observational read into a
-        # test-created deadlock. Transport ordering proves the live reservation
-        # exclusion, and the durable rows are inspected after both requests.
-        assert not joiner_parent.poll()
         # The process-shared event lets the joiner assert transport exclusion
         # without a scheduler-sensitive parent-side poll.
         leader_parent.send("release_transport")

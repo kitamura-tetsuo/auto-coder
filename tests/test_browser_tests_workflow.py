@@ -229,7 +229,7 @@ _HOME_AT_COLLECTION = os.environ.get("HOME")
 
 
 @pytest.mark.browser
-def test_headless_page_discovers_browser_despite_per_test_home_rewrite(monkeypatch):
+def test_headless_page_discovers_browser_despite_per_test_home_rewrite():
     """REQ-004: `headless_page`'s Chromium discovery (via `PLAYWRIGHT_BROWSERS_PATH`)
     must remain valid even though `tests/conftest.py`'s autouse
     `_clear_sensitive_env` fixture rewrites `$HOME` to a fresh temporary
@@ -239,11 +239,54 @@ def test_headless_page_discovers_browser_despite_per_test_home_rewrite(monkeypat
     rewrite while launching a real browser -- this test deliberately omits
     `_use_real_home` so the real per-test `HOME` rewrite is in effect, then
     proves Chromium still launches through the real shared helper.
+
+    Deliberately does *not* force `AUTO_CODER_REQUIRE_BROWSER=1` itself
+    (REQ-006): the dedicated `Browser Tests` workflow already supplies that
+    env var, which is what turns a launch failure here into a hard failure
+    there; an ordinary local run without it must still get the tolerant
+    skip from `headless_page` if Chromium is unusable. See
+    `test_headless_page_discovers_browser_despite_per_test_home_rewrite_is_skippable_locally`
+    below for the regression oracle proving that composed behavior.
     """
     rewritten_home = os.environ.get("HOME")
     assert rewritten_home != _HOME_AT_COLLECTION, "expected the autouse HOME rewrite to be in effect for this test"
     assert rewritten_home is not None and "ac_test_home_" in rewritten_home, f"unexpected $HOME during test: {rewritten_home!r}"
 
-    monkeypatch.setenv("AUTO_CODER_REQUIRE_BROWSER", "1")
     with headless_page(viewport={"width": 100, "height": 100}) as page:
         page.goto("about:blank")
+
+
+def test_headless_page_discovers_browser_despite_per_test_home_rewrite_is_skippable_locally(tmp_path):
+    """REQ-006: the REQ-004 regression above must not force strict mode on
+    itself. Run it as an isolated pytest subprocess with an empty
+    `PLAYWRIGHT_BROWSERS_PATH` and `AUTO_CODER_REQUIRE_BROWSER` absent (the
+    ordinary local/non-dedicated default) and require a skip, not a
+    failure -- a helper-level skip probe alone would miss a regression
+    where the *caller* (not `headless_page` itself) forces strict mode.
+    """
+    empty_browsers_dir = tmp_path / "no-browser-installed-here"
+    empty_browsers_dir.mkdir()
+    env = os.environ.copy()
+    env["PLAYWRIGHT_BROWSERS_PATH"] = str(empty_browsers_dir)
+    env.pop("AUTO_CODER_REQUIRE_BROWSER", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            f"{__file__}::test_headless_page_discovers_browser_despite_per_test_home_rewrite",
+            "-p",
+            "no:cacheprovider",
+            "-q",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 skipped" in result.stdout, result.stdout + result.stderr
+    assert "failed" not in result.stdout, "the REQ-004 test must not force a failure in an ordinary local run without a provisioned browser"
