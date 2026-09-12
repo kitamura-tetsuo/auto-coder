@@ -122,6 +122,15 @@ def fence_active_ci_observations(reason: str) -> None:
         logger.debug(f"CI observation phase={phase.identity} epoch={phase.epoch} fenced reason={reason}")
 
 
+def is_current_ci_observation(snapshot: CIObservationSnapshot) -> bool:
+    """Return whether a snapshot still has authority in the active read phase."""
+    phase = getattr(_local, "phase", None)
+    if phase is None:
+        return False
+    with phase.lock:
+        return snapshot.invalidation_epoch == phase.epoch and any(cached is snapshot for cached in phase.cache.values())
+
+
 def _credential_identity(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 

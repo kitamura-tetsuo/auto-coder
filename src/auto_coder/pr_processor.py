@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
-from auto_coder.github_ci_observer import end_ci_read_phase
+from auto_coder.github_ci_observer import end_ci_read_phase, is_current_ci_observation
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
@@ -3364,6 +3364,20 @@ def _handle_pr_merge(
                         processing_status.outcome = PRProcessingOutcome.FAILED
                     _record_pr_stage(pr_number, "pr.head-refresh", f"pr#{pr_number} head refresh", Outcome.FAILED, {"reason": str(e)})
                     return actions
+
+                if post_validation_checks.observation is not None and not is_current_ci_observation(post_validation_checks.observation):
+                    post_validation_checks = _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client)
+                    if not post_validation_checks.success:
+                        reason = post_validation_checks.error or ("checks are pending" if post_validation_checks.in_progress else "checks are not passing")
+                        actions.append(f"Skipping merge for PR #{pr_number}: final CI authority refresh {reason}")
+                        _record_pr_stage(
+                            pr_number,
+                            "pr.ci-eligibility",
+                            f"pr#{pr_number} final CI authority refresh",
+                            Outcome.DEFERRED if post_validation_checks.in_progress else Outcome.BLOCKED,
+                            {"phase": "pre-merge-authority", "reason": reason},
+                        )
+                        return actions
 
                 merge_result = _merge_pr(
                     repo_name,

@@ -88,6 +88,9 @@ and a newly failing or unavailable observation emits `blocked`, both with
 regression `test_new_nonpassing_ci_observation_after_validation_blocks_merge` in
 `tests/test_adversarial_validation_pr_flow.py` proves that a validator-accepted
 replacement observation is applied again at the outer merge gate.
+If a durable CI delivery fences that green refresh during the final head check,
+the controller emits the same stage with `phase=pre-merge-authority` and obtains
+one newer authoritative observation before allowing the merge mutation.
 
 ## Implementation Slots panel (Issue #1993)
 

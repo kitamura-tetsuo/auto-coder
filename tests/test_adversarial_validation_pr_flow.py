@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, Mock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from auto_coder.cloud_task_client_base import CloudTask, CloudTaskState
 from auto_coder.codex_cloud_client import CodexCloudClient
 from auto_coder.codex_wham_client import FollowUpDeliveryOutcome, FollowUpDeliveryResult
 from auto_coder.github_app_reviewer import ReviewPublicationResult
+from auto_coder.github_ci_observer import ci_read_phase, fence_active_ci_observations, observe_ci
 from auto_coder.pr_processor import (
     AdversarialValidationEligibility,
     ClaimedReviewThreadGateState,
@@ -2194,6 +2196,80 @@ class TestAdversarialValidationPRFlow:
         assert mock_checks.call_count == 3
         mock_merge_pr.assert_not_called()
         assert any("post-validation CI refresh checks are pending" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation", return_value=AdversarialValidationResult(result="PASS", summary="Passed"))
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_webhook_fence_after_green_final_refresh_forces_new_ci_gate(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        class Actions:
+            def list_workflow_runs_for_repo(self, owner, repo, **kwargs):
+                return {
+                    "workflow_runs": [
+                        {
+                            "id": 10,
+                            "workflow_id": 1,
+                            "run_attempt": 1,
+                            "head_sha": "current-head",
+                            "status": "completed",
+                            "conclusion": "success",
+                            "path": ".github/workflows/pr-tests.yml",
+                        }
+                    ]
+                }
+
+        class Checks:
+            def list_for_ref(self, owner, repo, **kwargs):
+                return {"check_runs": []}
+
+        api = SimpleNamespace(actions=Actions(), checks=Checks())
+        green = GitHubActionsStatusResult(success=True, ids=[10])
+        pending = GitHubActionsStatusResult(success=False, ids=[10, 11], in_progress=True)
+        calls = 0
+
+        def ci_status(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return green
+            if calls == 2:
+                snapshot = observe_ci(api, "credential", "owner/repo", 100, "current-head")
+                return GitHubActionsStatusResult(success=True, ids=[10], observation=snapshot)
+            return pending
+
+        mock_checks.side_effect = ci_status
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": "current-head"}}
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = [codex_review_summary("✅ **Completed**", reviewed_sha="old-head")]
+
+        def head_read(*args, **kwargs):
+            fence_active_ci_observations("accepted workflow_run in_progress delivery")
+            return {"head": {"sha": "current-head"}}
+
+        client.get_pull_request.side_effect = head_read
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        with ci_read_phase("production-pr-processing"):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        assert calls == 3
+        mock_merge_pr.assert_not_called()
+        assert any("final CI authority refresh checks are pending" in action for action in actions)
 
 
 class TestAtomicMergeSHAPrecondition:
