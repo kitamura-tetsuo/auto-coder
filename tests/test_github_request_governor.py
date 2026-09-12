@@ -141,9 +141,12 @@ def _initialize_and_send_process(path: str, channel: Connection, role: str) -> N
             GitHubRequestGovernor._initialize_or_migrate = held_initialize
         else:
             original_flock = fcntl.flock
+            initialization_lock_announced = False
 
             def observed_flock(fd: int, operation: int) -> None:
-                if operation == fcntl.LOCK_EX:
+                nonlocal initialization_lock_announced
+                if operation == fcntl.LOCK_EX and not initialization_lock_announced:
+                    initialization_lock_announced = True
                     channel.send("initialization_lock_attempted")
                 original_flock(fd, operation)
 
