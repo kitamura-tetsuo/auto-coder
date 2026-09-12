@@ -3,7 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Lock
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
@@ -812,7 +812,7 @@ def test_parent_generation_validates_despite_retained_first_child_owner(tmp_path
     [(False, "READY", True), (True, "BLOCKED", False)],
 )
 def test_stale_jules_inherited_readiness_and_blocked_effects(tmp_path, child_ready, child_verdict, replacement_expected):
-    """The real daemon inherits readiness and targets parent withdrawal."""
+    """The real daemon withdraws both explicit child and inherited readiness."""
     from auto_coder.implementation_slots import ImplementationOwner
 
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
@@ -860,7 +860,10 @@ def test_stale_jules_inherited_readiness_and_blocked_effects(tmp_path, child_rea
     assert increment.called is replacement_expected
     assert slots.active_execution_ids(owner) == ()
     if child_verdict == "BLOCKED":
-        github.remove_labels.assert_called_once_with("owner/repo", 10, ["implementation-ready"], item_type="issue")
+        assert github.remove_labels.call_args_list == [
+            call("owner/repo", 11, ["implementation-ready"], item_type="issue"),
+            call("owner/repo", 10, ["implementation-ready"], item_type="issue"),
+        ]
     else:
         github.remove_labels.assert_not_called()
         assert not is_implementation_ready(child)

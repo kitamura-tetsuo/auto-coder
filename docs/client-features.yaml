@@ -866,8 +866,11 @@ publishes one identity-marked set summary only after a fresh generation check;
 `ERROR` preserves the submission and is retried. Once the set is `READY`, the
 first eligible child in the existing sequential sibling order receives its own
 exact-generation specification validation without requiring or receiving a
-child `implementation-ready` label. Child `BLOCKED` similarly withdraws only a
-still-current parent submission, while child `ERROR` preserves it. Immediately
+child `implementation-ready` label. Child `BLOCKED` withdraws any explicit
+readiness label on that child before withdrawing the still-current parent
+submission. Both withdrawals require fresh specification and family checks;
+a failed child withdrawal preserves parent readiness for retry, and the durable
+withdrawal effect completes only after both succeed. Child `ERROR` preserves readiness. Immediately
 before ownership and dispatch, both the live parent set and child identities are
 re-fetched, and parent-label withdrawal, membership edits, or specification edits
 fail closed.

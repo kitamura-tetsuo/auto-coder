@@ -7,6 +7,17 @@ a handoff, not proof that a pull request was published or that implementation
 completed. Each top-level evaluation or durable resumption has a distinct execution
 identity; late evidence remains attached to the execution scope that produced it.
 
+Inherited specification BLOCKED publication withdraws an explicitly submitted
+child's readiness before the parent's readiness. The existing blocked outcome
+and incomplete-publication reporting remain authoritative; no new origin,
+provider route, or event schema is introduced. Readiness completion now includes
+both targets. Dashboard consumers must not infer label mutation from a BLOCKED
+verdict alone. Run
+`bash scripts/test.sh tests/test_specification_validation_lifecycle.py tests/test_validation_publication_resumption.py`
+for the production lifecycle regressions, including
+`test_inherited_blocked_withdraws_child_and_parent_with_restart_retry` and
+`test_inherited_blocked_edit_after_comment_preserves_both_labels`.
+
 ## Updating observable processing
 
 Family reconciliation emits `issue.family-discovery` after confirming related

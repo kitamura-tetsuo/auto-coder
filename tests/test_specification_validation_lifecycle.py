@@ -1165,3 +1165,54 @@ def test_daemon_replacement_pr_preserves_capacity_across_later_edit(monkeypatch,
     assert deferred.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
     assert analyzed == [BODY + " A", BODY + " B"]
     assert slots.start_execution(ImplementationOwner("issue", 99)) is None
+
+
+@pytest.mark.parametrize("child_ready", [True, False])
+@pytest.mark.parametrize("failed_target", [None, 1728, 1727])
+def test_inherited_blocked_withdraws_child_and_parent_with_restart_retry(tmp_path, child_ready, failed_target):
+    gate = lifecycle(tmp_path, "BLOCKED")
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    ready = {1727: True, 1728: child_ready}
+    removals = []
+
+    class FamilyGitHub(GitHubFlow):
+        def get_issue_dispatch_snapshot_strict(self, _repo, number):
+            return snapshot(ready=ready[number])
+
+        def remove_labels(self, repo, number, labels, item_type="issue"):
+            assert (repo, labels, item_type) == ("owner/repo", ["implementation-ready"], "issue")
+            if number == failed_target:
+                raise RuntimeError("label API unavailable")
+            removals.append(number)
+            ready[number] = False
+
+    github = FamilyGitHub([snapshot()])
+    error = gate.apply_inherited_blocked(github, decision, 1727, lambda: ready[1727])
+    failed = failed_target == 1727 or (failed_target == 1728 and child_ready)
+    assert error == ("readiness withdrawal failed: label API unavailable" if failed else None)
+    assert gate.store.get(decision.identity).readiness_removed is (not failed)
+    if failed:
+        assert ready[1727] is True
+        failed_target = None
+        restarted = lifecycle(tmp_path, "BLOCKED", Mock(side_effect=AssertionError("must reuse")))
+        assert restarted.apply_inherited_blocked(github, decision, 1727, lambda: ready[1727]) is None
+        assert restarted.store.get(decision.identity).readiness_removed is True
+    assert ready == {1727: False, 1728: False}
+    assert removals == ([1728, 1727] if child_ready else [1727])
+    assert len(github.comments) == 1
+
+
+def test_inherited_blocked_edit_after_comment_preserves_both_labels(tmp_path):
+    gate = lifecycle(tmp_path, "BLOCKED")
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+
+    class EditingGitHub(GitHubFlow):
+        def add_comment_to_issue(self, repo, number, body):
+            super().add_comment_to_issue(repo, number, body)
+            self.last = snapshot(body=BODY + " edited")
+
+    github = EditingGitHub([snapshot()])
+    assert gate.apply_inherited_blocked(github, decision, 1727, lambda: True) is None
+    assert github.removals == 0
+    assert len(github.comments) == 1
+    assert gate.store.get(decision.identity).readiness_removed is False
