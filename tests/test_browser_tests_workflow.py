@@ -80,11 +80,27 @@ def test_pr_tests_and_browser_tests_have_no_cross_workflow_dependency():
         assert "playwright install" not in step.get("run", "")
 
 
+REAL_BROWSER_MODULES = (
+    "tests/test_dashboard_detail_scroll_stability.py",
+    "tests/test_dashboard_slots_scroll_stability.py",
+)
+
+
 def test_browser_marker_is_registered_and_selects_exactly_the_real_browser_tests():
-    """AS-005: the `browser` marker is the actual CI selection boundary --
-    collect against the real pyproject.toml/conftest.py, not a synthetic
-    config, and confirm the marker selects precisely the files that launch a
-    real Chromium and nothing else."""
+    """AS-005, REQ-001, REQ-003: the `browser` marker is the actual CI
+    selection boundary -- collect against the real pyproject.toml/conftest.py,
+    not a synthetic config, and confirm the marker selects precisely the
+    files that launch a real Chromium and nothing else.
+
+    Compares full node IDs, not just filenames: a filename-only check would
+    still pass if a module's `pytestmark = pytest.mark.browser` were
+    replaced with `@pytest.mark.browser` on only one function in that
+    module -- the module would still appear in the selected file set, while
+    its other real-browser tests silently fell out of `Browser Tests` and
+    into the `not browser` selection's tolerant-skip fallback. Collecting
+    each real-browser module without any marker filter and requiring every
+    one of those nodes to appear in the `-m browser` selection catches that.
+    """
     collect = subprocess.run(
         [sys.executable, "-m", "pytest", "-m", "browser", "--collect-only", "-q"],
         cwd=ROOT,
@@ -97,10 +113,23 @@ def test_browser_marker_is_registered_and_selects_exactly_the_real_browser_tests
     assert collected_ids, "expected at least one browser-marked test to be collected"
     files = {node_id.split("::", 1)[0] for node_id in collected_ids}
     assert files == {
-        "tests/test_dashboard_detail_scroll_stability.py",
-        "tests/test_dashboard_slots_scroll_stability.py",
+        *REAL_BROWSER_MODULES,
         "tests/test_browser_tests_workflow.py",
     }
+
+    unfiltered = subprocess.run(
+        [sys.executable, "-m", "pytest", *REAL_BROWSER_MODULES, "--collect-only", "-q"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert unfiltered.returncode == 0, unfiltered.stdout + unfiltered.stderr
+    unfiltered_ids = {line.strip() for line in unfiltered.stdout.splitlines() if "::" in line}
+    assert unfiltered_ids, "expected the real-browser dashboard modules to contain collectible tests"
+    assert unfiltered_ids <= collected_ids, "every test node in the real-browser dashboard modules must be selected by '-m browser'; " f"missing from the browser selection: {unfiltered_ids - collected_ids}"
+
+    assert "tests/test_browser_tests_workflow.py::test_headless_page_discovers_browser_despite_per_test_home_rewrite" in collected_ids
 
     exclude = subprocess.run(
         [sys.executable, "-m", "pytest", "-m", "not browser", "--collect-only", "-q"],
@@ -290,3 +319,41 @@ def test_headless_page_discovers_browser_despite_per_test_home_rewrite_is_skippa
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 skipped" in result.stdout, result.stdout + result.stderr
     assert "failed" not in result.stdout, "the REQ-004 test must not force a failure in an ordinary local run without a provisioned browser"
+
+
+def test_browser_tests_step_propagates_pytest_failure_and_has_no_continue_on_error(tmp_path):
+    """REQ-005: the dedicated workflow's `Run browser-marked tests` step must
+    not swallow a non-zero pytest exit status. A minimal incorrect
+    implementation could append `|| true` to the step's `run:` script, or
+    set `continue-on-error: true` on the step -- either would let the
+    dedicated check go green while a browser-marked test actually failed.
+
+    Executes the step's real `run:` script verbatim (the same shell
+    GitHub Actions uses by default: `bash --noprofile --norc -eo pipefail`)
+    with a stub `uv` placed first on PATH that makes the pytest invocation
+    exit non-zero, and requires the step's shell to exit non-zero too.
+    """
+    workflow = _workflow(BROWSER_WORKFLOW)
+    job = workflow["jobs"]["browser-tests"]
+    test_step = next(step for step in job["steps"] if step["name"].startswith("Run browser-marked tests"))
+    assert test_step.get("continue-on-error") is not True, "the test step must not be configured to ignore failure"
+
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    stub_uv = stub_bin / "uv"
+    stub_uv.write_text("#!/bin/bash\necho 'stub uv: simulating a failing pytest invocation' >&2\nexit 7\n", encoding="utf-8")
+    stub_uv.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", test_step["run"]],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0, "the step's shell must propagate a failing pytest invocation's exit status"
