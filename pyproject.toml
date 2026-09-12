@@ -189,7 +189,6 @@ disallow_incomplete_defs = false
 check_untyped_defs = false
 disallow_untyped_decorators = false
 no_implicit_optional = false
-exclude = ["mcp_servers/", "tests/", "utils/"]
 # Use packages instead of files to avoid module path conflicts
 packages = ["auto_coder"]
 
@@ -203,17 +202,6 @@ module = [
     "dotenv.*",
 ]
 ignore_missing_imports = true
-
-# Skip test files and external modules
-[[tool.mypy.overrides]]
-module = "tests.*"
-ignore_errors = true
-
-[[tool.mypy.overrides]]
-module = [
-    "mcp_servers.*",
-]
-ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

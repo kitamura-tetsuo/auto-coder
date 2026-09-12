@@ -155,6 +155,12 @@ def test_no_competing_root_mypy_ini_and_pyproject_is_authoritative() -> None:
     assert config["ignore_missing_imports"] is True
     assert config["no_implicit_optional"] is False
     assert config["packages"] == ["auto_coder"]
+    # No directory-name-based exclusion/override that would silently skip a
+    # real or newly added nested submodule (REQ-002); see
+    # test_mypy_checks_nested_submodules_regardless_of_directory_name.
+    assert "exclude" not in config
+    override_modules = {module for override in config.get("overrides", []) for module in ([override["module"]] if isinstance(override["module"], str) else override["module"])}
+    assert override_modules.isdisjoint({"tests.*", "mcp_servers.*"})
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +338,38 @@ def test_mypy_detects_seeded_errors_in_unimported_and_nested_modules(lint_fixtur
     assert "_lint_gate_regression_leaf.py" in result.stdout
     assert "_lint_gate_regression_pkg/leaf.py" in result.stdout
     assert "error" in result.stdout
+
+
+def test_mypy_checks_nested_submodules_regardless_of_directory_name(lint_fixture_repo: Path, mypy_cache_dir: Path) -> None:
+    """No directory name anywhere under auto_coder silently escapes checking.
+
+    Regression for a real gap: the package's mypy configuration used to carry
+    an unanchored ``exclude = ["mcp_servers/", "tests/", "utils/"]`` plus
+    "ignore_errors" overrides for those module names. That silently skipped
+    the real, already-checked-out ``src/auto_coder/mcp_servers`` submodule
+    and would have silently skipped any *newly added* submodule that merely
+    happened to be named ``tests`` or ``utils`` too -- exactly the kind of
+    gap REQ-002 ("including newly added and otherwise unimported
+    submodules") forbids. Both directory names are exercised here.
+    """
+    repo = lint_fixture_repo
+    assert (repo / "src/auto_coder/mcp_servers").is_dir(), "fixture must carry the real mcp_servers submodule"
+
+    # A brand-new submodule that happens to be named "utils" -- the exact
+    # shape a directory-name-based exclude would silently swallow.
+    write(repo, "src/auto_coder/utils/__init__.py", "")
+    write(repo, "src/auto_coder/utils/leaf.py", "value: int = 'wrong'\n")
+    # A new file inside the real, already-checked-out mcp_servers submodule.
+    write(repo, "src/auto_coder/mcp_servers/test_watcher/_lint_gate_regression_probe.py", "value: int = 'wrong'\n")
+
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "seed errors under directory names an unanchored exclude would hide")
+
+    result = _run(_mypy_argv(repo, cache_dir=mypy_cache_dir), cwd=repo)
+
+    assert result.returncode != 0
+    assert "src/auto_coder/utils/leaf.py" in result.stdout
+    assert "mcp_servers/test_watcher/_lint_gate_regression_probe.py" in result.stdout
 
 
 # ---------------------------------------------------------------------------
