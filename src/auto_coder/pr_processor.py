@@ -25,8 +25,9 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
+from auto_coder.github_ci_observer import end_ci_read_phase
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
-from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from .adversarial_validation_scheduler import AdversarialValidationScheduler
@@ -2554,6 +2555,17 @@ def isolated_pr_head_worktree(repo_name: str, pr_number: int, head_sha: Optional
                 logger.warning(f"Failed to clean up worktree dir {worktree_dir}: {e}")
 
 
+def _refresh_adversarial_ci_status(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: Any,
+) -> GitHubActionsStatusResult:
+    """Fence the carried read and obtain current authority after reviewer work."""
+    end_ci_read_phase("adversarial reviewer round trip")
+    return _check_github_actions_status(repo_name, pr_data, config, github_client)
+
+
 def _handle_pr_merge(
     github_client: Any,
     repo_name: str,
@@ -3095,6 +3107,7 @@ def _handle_pr_merge(
                                     execution_cwd=validation_worktree,
                                     defer_session_persistence=True,
                                     ci_status=github_checks,
+                                    refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
                                 )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]

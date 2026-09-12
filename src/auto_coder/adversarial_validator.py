@@ -12,7 +12,7 @@ import json
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager, run_llm_prompt
@@ -2326,6 +2326,7 @@ def run_adversarial_validation(
     execution_cwd: Optional[str] = None,
     defer_session_persistence: bool = False,
     ci_status: Optional["GitHubActionsStatusResult"] = None,
+    refresh_ci_status: Optional[Callable[[], "GitHubActionsStatusResult"]] = None,
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
 
@@ -2537,18 +2538,49 @@ def run_adversarial_validation(
     if result.dynamic_check_requested and result.dynamic_check_requested.strip() and not result.needs_fix and not result.needs_tests:
         check_target = result.dynamic_check_requested.strip()
         logger.info(f"Adversarial reviewer requested dynamic validation check: {check_target}")
+        # The initial reviewer round trip is an external-work boundary.  Never
+        # use the carried observation to suppress execution unless production
+        # can freshly prove it is still current.
+        if refresh_ci_status is not None:
+            ci_status = refresh_ci_status()
         target_error = validate_dynamic_check_target(check_target, Path(execution_cwd).resolve()) if execution_cwd else None
         if target_error:
-            result.result = "ERROR"
-            result.summary = "Reviewer requested an invalid dynamic-check target; no test process was launched"
-            result.diagnostic_category = "dynamic_check_target_protocol_error"
-            result.diagnostic_reason = target_error
-            result.dynamic_check_requested = None
-        elif check_target == "all" and canonical_pr_tests_succeeded(ci_status):
+            availability = ci_status.observation.availability.value if ci_status and ci_status.observation else "unavailable"
+            correction_prompt = render_prompt(
+                "pr.adversarial_validation_target_correction",
+                invalid_target=check_target,
+                target_diagnostic=target_error,
+                ci_evidence=f"availability={availability}; canonical_suite_success={canonical_pr_tests_succeeded(ci_status)}",
+            )
+            correction_session_id = getattr(backend_manager, "_last_session_id", None)
+            if not isinstance(correction_session_id, str) or not correction_session_id:
+                result = AdversarialValidationResult(
+                    result="ERROR",
+                    summary="Reviewer target correction could not continue without an explicit session",
+                    diagnostic_category="dynamic_check_target_protocol_error",
+                    diagnostic_reason=target_error,
+                )
+            else:
+                correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
+                if refresh_ci_status is not None:
+                    ci_status = refresh_ci_status()
+                result = parse_adversarial_validation_response(correction_response)
+                _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_correction")
+                corrected_target = (result.dynamic_check_requested or "").strip()
+                repeated_error = validate_dynamic_check_target(corrected_target, Path(execution_cwd).resolve()) if corrected_target and execution_cwd else None
+                if repeated_error:
+                    result = AdversarialValidationResult(
+                        result="ERROR",
+                        summary="Reviewer repeated an invalid dynamic-check target after the bounded correction step",
+                        diagnostic_category="dynamic_check_target_protocol_error",
+                        diagnostic_reason=repeated_error,
+                    )
+                check_target = corrected_target
+        if check_target == "all" and canonical_pr_tests_succeeded(ci_status):
             logger.info("Reusing successful exact-head canonical PR Tests evidence instead of rerunning the suite")
             result.dynamic_check_requested = None
             result.summary = f"{result.summary} Reused successful exact-head {CANONICAL_PR_TESTS_WORKFLOW} evidence."
-        else:
+        elif check_target and result.dynamic_check_requested:
             try:
                 test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
                 if test_res.verification_error:

@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import ANY, MagicMock, Mock, patch
 
 import pytest
 
@@ -2148,6 +2148,7 @@ class TestAdversarialValidationPRFlow:
             execution_cwd=mock_worktree.return_value.__enter__.return_value,
             defer_session_persistence=True,
             ci_status=mock_checks.return_value,
+            refresh_ci_status=ANY,
         )
         mock_merge_pr.assert_called_once()
 

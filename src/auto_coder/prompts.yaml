@@ -541,6 +541,16 @@ pr:
   adversarial_validation: |-
     You are an expert adversarial software correctness reviewer with deep domain expertise.
 
+    EXECUTION EVIDENCE PROTOCOL: Authoritative exact-head CI execution evidence
+    can prove that an identified suite or target executed successfully, but it
+    never proves semantic Requirement coverage and never hides a demonstrated
+    violation. The canonical repository suite identity is the verified workflow
+    path `.github/workflows/pr-tests.yml`, not a display name. A dynamic target
+    must be exactly `all`, or one repository-relative existing `.py` file or
+    directory inside `tests/`; an optional pytest `::` selector is allowed only
+    after a `.py` file and every selector component must be non-empty. Never use
+    prose, options, shell syntax, absolute paths, or traversal as a target.
+
     $review_policy
 
     COUNTEREXAMPLE STANDARD:
@@ -843,6 +853,20 @@ pr:
     forward, and there is no related regression or new material demonstrated
     violation, allow the rereview to PASS. These incremental rules apply only to
     rereviews; the initial validation remains a full-coverage, fail-closed review.
+
+  adversarial_validation_target_correction: |-
+    Your requested dynamic-check target was rejected before any test process ran.
+
+    Invalid target: $invalid_target
+    Protocol diagnostic: $target_diagnostic
+    Current exact-head CI evidence: $ci_evidence
+
+    Return the complete adversarial JSON response again. This is the only
+    protocol-correction step. `dynamic_check_requested` may be null, exactly
+    `all`, or one repository-relative existing `.py` file/directory inside
+    `tests/`, optionally followed by non-empty pytest `::` selector components.
+    Do not convert this protocol error into an implementation finding,
+    test-oracle gap, or Requirement UNVERIFIED status.
 
   adversarial_validation_followup: |-
     You are an expert adversarial software correctness reviewer.
