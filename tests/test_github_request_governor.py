@@ -49,6 +49,15 @@ def context(attempt: int, kind: str = "read", origin: str = "https://API.GITHUB.
     return GitHubRequestContext("operation", f"attempt-{attempt}", "test", origin, "GET" if kind == "read" else "POST", kind, "/endpoint")
 
 
+def test_deferral_message_preserves_local_reason_and_retry_deadline() -> None:
+    deferred = GitHubRequestDeferred(context(1), "governor_state_unavailable", 1800000060.0)
+    assert str(deferred) == "GitHub request deferred before sending: governor_state_unavailable; retry_at=1800000060.0 (Unix seconds)"
+    assert deferred.reason == "governor_state_unavailable"
+    assert deferred.retry_at == 1800000060.0
+    assert deferred.outcome.classification is GitHubApiOutcome.REFUSED
+    assert deferred.outcome.delivery is DeliveryCertainty.DEFINITELY_NOT_SENT
+
+
 def outcome(
     request_context: GitHubRequestContext,
     classification: GitHubApiOutcome = GitHubApiOutcome.SUCCESS,

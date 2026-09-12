@@ -51,6 +51,7 @@ class GitHubRequestDeferred(GitHubRequestRefused):
         self.reason = reason
         self.retry_at = retry_at
         super().__init__(GitHubRequestOutcome(context, None, GitHubApiOutcome.REFUSED, RequestProvenance.NETWORK, DeliveryCertainty.DEFINITELY_NOT_SENT, GitHubResponseMetadata(), 0.0, message=reason))
+        self.args = (f"GitHub request deferred before sending: {reason}; retry_at={retry_at} (Unix seconds)",)
 
 
 class GovernorStateError(RuntimeError):

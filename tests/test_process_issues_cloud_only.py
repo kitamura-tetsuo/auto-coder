@@ -79,6 +79,23 @@ def test_process_issues_only_passes_configured_cloud_mode():
 @pytest.mark.parametrize(
     ("processing_result", "expected_status"),
     [
+        *[
+            (
+                {
+                    "target_number": number,
+                    "target_type": None,
+                    "target_outcome": outcome,
+                    "errors": errors,
+                },
+                "Failed",
+            )
+            for number, outcome, errors in [
+                (5266, "failed", ["GitHub request deferred before sending: governor_state_unavailable"]),
+                (9999, "failed", ["Lookup failed"]),
+                (5266, "success", []),
+                (5266, "failed", []),
+            ]
+        ],
         (
             {
                 "repository": "owner/repo",
@@ -202,6 +219,14 @@ def test_process_issues_only_completion_status_uses_target_outcome(processing_re
     assert result.exit_code == 0
     assert completion.call_args.args[0] == "Processing Complete"
     assert completion.call_args.args[1]["Status"] == expected_status
+    if processing_result.get("target_type") is None:
+        errors = completion.call_args.args[1]["Errors"]
+        if processing_result["target_number"] != 5266:
+            assert errors == ["Lookup failed", "Explicit result target mismatch: requested #5266, received #9999"]
+        elif processing_result["errors"]:
+            assert errors == processing_result["errors"]
+        else:
+            assert errors == ["Explicit result did not provide an authoritative target type for #5266"]
     if expected_status != "Success":
         assert "Processed single" not in result.output
 
