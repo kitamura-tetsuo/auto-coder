@@ -665,6 +665,17 @@ class DurableInvalidationQueue:
                 raise RuntimeError("invalidation deferral transition was not committed")
         return DeferredInvalidation(identity, int(generation), deadline, reason, api_origin)
 
+    def wake_dependency_waiters(self, repository: str) -> None:
+        """Issue notifications may release advisory waits, never GitHub cooldowns."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """UPDATE entity_invalidations
+                   SET retry_not_before = NULL, deferral_reason = NULL
+                   WHERE repository = ? AND state = 'dirty'
+                     AND deferral_reason = 'cached_dependency_wait'""",
+                (repository,),
+            )
+
     def get_deferred(self, identity: EntityIdentity) -> Optional[DeferredInvalidation]:
         """Return persisted retry metadata for diagnostics and tests."""
         with self._lock:

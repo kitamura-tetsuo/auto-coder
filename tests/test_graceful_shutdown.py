@@ -324,7 +324,8 @@ def test_parent_routing_snapshot_failure_cannot_abandon_validation_batch(monkeyp
     parent = {"number": 1, "state": "open", "labels": [{"name": "implementation-ready"}]}
     child = {"number": 22, "state": "open"}
     github.get_direct_sub_issues_strict.return_value = [child]
-    github.get_issue_dispatch_snapshot_strict.side_effect = [parent, RuntimeError("snapshot unavailable")]
+    # The cold dependency observation precedes the parent-routing reads.
+    github.get_issue_dispatch_snapshot_strict.side_effect = [parent, parent, RuntimeError("snapshot unavailable")]
     engine = AutomationEngine(github, config)
     candidate = Candidate(type="issue", data=parent.copy(), priority=0, issue_number=1)
     decomposition_started = threading.Event()
