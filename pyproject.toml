@@ -37,7 +37,7 @@ dependencies = [
     "tomli-w>=1.0.0",
     "google-auth>=2.57.0",
     "httpx>=0.27.0",
-    "hishel[sqlite]>=1.0.0",
+    "hishel[sqlite]>=1.3.1",
     "ghapi>=1.0.0,<2.0.0",
     # fastcore is a transitive dep of ghapi with no upper bound in ghapi's own
     # metadata. fastcore>=2.0 removed L.starmap(), which ghapi<2.0's
