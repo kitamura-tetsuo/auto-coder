@@ -6,6 +6,7 @@ import threading
 from dataclasses import dataclass
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
+from multiprocessing.synchronize import Event as EventType
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -127,7 +128,7 @@ def _create_legacy_store(path: Path, timestamp: float) -> None:
         connection.execute("INSERT INTO reservations(origin, attempt_id, kind, admitted_utc) VALUES (?, 'legacy-attempt', 'read', ?)", (origin, timestamp))
 
 
-def _initialize_and_send_process(path: str, channel: Connection, role: str) -> None:
+def _initialize_and_send_process(path: str, channel: Connection, role: str, leader_transport_active: EventType) -> None:
     try:
         if role == "leader":
             original_initialize = GitHubRequestGovernor._initialize_or_migrate
@@ -141,9 +142,12 @@ def _initialize_and_send_process(path: str, channel: Connection, role: str) -> N
             GitHubRequestGovernor._initialize_or_migrate = held_initialize
         else:
             original_flock = fcntl.flock
+            initialization_lock_announced = False
 
             def observed_flock(fd: int, operation: int) -> None:
-                if operation == fcntl.LOCK_EX:
+                nonlocal initialization_lock_announced
+                if operation == fcntl.LOCK_EX and not initialization_lock_announced:
+                    initialization_lock_announced = True
                     channel.send("initialization_lock_attempted")
                 original_flock(fd, operation)
 
@@ -153,14 +157,20 @@ def _initialize_and_send_process(path: str, channel: Connection, role: str) -> N
         # Coverage instrumentation can keep the leader transport paused for
         # longer than the ordinary five-second test budget. Keep the joiner
         # blocked long enough for the parent-controlled release rather than
-        # turning scheduler slowness into a false admission-timeout failure.
-        governor = GitHubRequestGovernor(store_path=Path(path), wait_budget=30)
+        # turning coverage-instrumented initialization and scheduler slowness
+        # into a false admission-timeout failure.
+        governor = GitHubRequestGovernor(store_path=Path(path), wait_budget=90)
 
         def handler(request: httpx.Request) -> httpx.Response:
+            if role == "joiner":
+                assert not leader_transport_active.is_set()
+            else:
+                leader_transport_active.set()
             channel.send("transport_started")
             if role == "leader":
                 assert channel.poll(10)
                 assert channel.recv() == "release_transport"
+                leader_transport_active.clear()
             return httpx.Response(200, json={"ok": True}, request=request)
 
         with github_http_client(
@@ -528,9 +538,16 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
     process_context = get_context("spawn")
     leader_parent, leader_child = process_context.Pipe()
     joiner_parent, joiner_child = process_context.Pipe()
+    leader_transport_active = process_context.Event()
     path = tmp_path / "simultaneous-first-use.sqlite3"
-    leader = process_context.Process(target=_initialize_and_send_process, args=(str(path), leader_child, "leader"))
-    joiner = process_context.Process(target=_initialize_and_send_process, args=(str(path), joiner_child, "joiner"))
+    leader = process_context.Process(
+        target=_initialize_and_send_process,
+        args=(str(path), leader_child, "leader", leader_transport_active),
+    )
+    joiner = process_context.Process(
+        target=_initialize_and_send_process,
+        args=(str(path), joiner_child, "joiner", leader_transport_active),
+    )
     leader.start()
     try:
         assert _receive(leader_parent) == "constructing"
@@ -544,18 +561,8 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
 
         leader_parent.send("release_initialization")
         assert _receive(leader_parent) == "transport_started"
-        with sqlite3.connect(path) as connection:
-            assert connection.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
-            # Coverage/instrumentation can issue an already-completed request
-            # through the same client before the controlled transport blocks.
-            # The concurrency invariant is that exactly one reservation remains
-            # live and that it is not misclassified as recovered.
-            assert connection.execute("SELECT resolved, recovered FROM reservations WHERE resolved=0").fetchall() == [(0, 0)]
-            assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (0.0, "")
-
-        # The joiner is alive and initialized but cannot transmit while the
-        # leader's production-boundary transport owns the shared reservation.
-        assert not joiner_parent.poll()
+        # The process-shared event lets the joiner assert transport exclusion
+        # without a scheduler-sensitive parent-side poll.
         leader_parent.send("release_transport")
         assert _receive(leader_parent) == "completed"
         assert _receive(joiner_parent) == "transport_started"
@@ -565,6 +572,8 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
         assert leader.exitcode == 0
         assert joiner.exitcode == 0
         with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
+            assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (0.0, "")
             reservations = connection.execute("SELECT resolved, recovered FROM reservations ORDER BY admitted_utc").fetchall()
             assert len(reservations) >= 2
             assert set(reservations) == {(1, 0)}

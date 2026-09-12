@@ -2568,6 +2568,10 @@ class AutomationEngine:
                     if is_closed:
                         logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
                         if candidate.type == "pr":
+                            # This state came from the cache-bypassing read above.
+                            # A retirement failure leaves completion false, so
+                            # the generation remains durable and retryable.
+                            await asyncio.to_thread(self.invalidations.retire_ci_watches, repo_name, int(item_number))
                             self.notify_pr_merged_or_closed()
                         decision_completed = True
                         continue
@@ -5934,6 +5938,10 @@ class AutomationEngine:
                     except httpx.HTTPStatusError as error:
                         if error.response.status_code == 404:
                             logger.info(f"PR #{number} no longer exists in {repo_name}")
+                            # This strict 404 is authoritative terminal evidence.
+                            # Commit retirement before returning absence to the
+                            # durable worker, which may then complete generation.
+                            self.invalidations.retire_ci_watches(repo_name, number)
                             return None
                         raise
                 else:
@@ -5942,6 +5950,15 @@ class AutomationEngine:
                 if not pr_data or not pr_data.get("number"):
                     logger.error(f"PR #{number} not found in {repo_name}")
                     return None
+                if propagate_errors:
+                    if pr_data.get("state") == "closed":
+                        self.invalidations.retire_ci_watches(repo_name, number)
+                    elif pr_data.get("state") == "open":
+                        self.invalidations.restore_ci_watches_for_open_lifecycle(
+                            repo_name,
+                            number,
+                            str(pr_data.get("head", {}).get("sha") or ""),
+                        )
                 if not self._is_pr_author_allowed(pr_data):
                     logger.info(f"Skipping PR #{number} - author not in PR allowlist")
                     return None
