@@ -142,7 +142,9 @@ def test_runtime_target_correction_reuses_refreshed_canonical_ci(mock_check, moc
     manager = MagicMock()
     manager._last_session_id = "session"
     manager.continue_session.return_value = '{"result":"PASS","summary":"retry","dynamic_check_requested":"all"}'
-    green = _ci_status("green", _workflow("10", CIConclusion.SUCCESS, ".github/workflows/pr-tests.yml"))
+    facts = (_workflow("10", CIConclusion.SUCCESS, ".github/workflows/pr-tests.yml"),)
+    green = _ci_status("green", *facts)
+    refreshed = iter((_ci_status("read-1", *facts), _ci_status("read-2", *facts), _ci_status("read-3", *facts)))
 
     with patch("auto_coder.adversarial_validator.CommandExecutor.run_command", return_value=CommandResult(True, "b" * 40, "", 0)):
         result = run_adversarial_validation(
@@ -152,7 +154,7 @@ def test_runtime_target_correction_reuses_refreshed_canonical_ci(mock_check, moc
             backend_manager=manager,
             execution_cwd=str(Path.cwd()),
             ci_status=green,
-            refresh_ci_status=lambda: green,
+            refresh_ci_status=lambda: next(refreshed),
         )
 
     assert mock_check.call_count == 1

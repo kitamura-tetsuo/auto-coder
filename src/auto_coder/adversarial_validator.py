@@ -158,6 +158,23 @@ def focused_ci_target_succeeded(status: Optional["GitHubActionsStatusResult"], t
     )
 
 
+def _ci_decision_evidence_equivalent(presented: Optional["GitHubActionsStatusResult"], current: Optional["GitHubActionsStatusResult"]) -> bool:
+    """Compare execution facts while allowing fresh authority/read identities."""
+    if presented is None or current is None or presented.observation is None or current.observation is None:
+        return False
+    before = presented.observation
+    after = current.observation
+    return (
+        before.availability is ObservationAvailability.KNOWN
+        and after.availability is ObservationAvailability.KNOWN
+        and before.subject == after.subject
+        and sorted(repr(fact) for fact in before.facts) == sorted(repr(fact) for fact in after.facts)
+        and presented.success == current.success
+        and presented.in_progress == current.in_progress
+        and presented.error == current.error
+    )
+
+
 def format_ci_execution_evidence(status: Optional["GitHubActionsStatusResult"]) -> str:
     """Serialize the authoritative observation without flattening provider facts."""
     if status is None or status.observation is None:
@@ -2645,6 +2662,7 @@ def run_adversarial_validation(
         correction_used = False
         if target_error:
             correction_used = True
+            correction_ci_status = ci_status
             correction_ci_evidence = format_ci_execution_evidence(ci_status)
             correction_prompt = render_prompt(
                 "pr.adversarial_validation_target_correction",
@@ -2676,7 +2694,7 @@ def run_adversarial_validation(
                         diagnostic_reason=repeated_error,
                     )
                 check_target = corrected_target
-                if result.result.strip().upper() == "PASS" and (ci_status is None or ci_status.observation is None or ci_status.observation.availability is not ObservationAvailability.KNOWN or format_ci_execution_evidence(ci_status) != correction_ci_evidence):
+                if result.result.strip().upper() == "PASS" and not _ci_decision_evidence_equivalent(correction_ci_status, ci_status):
                     return AdversarialValidationResult(
                         result="INCONCLUSIVE",
                         summary="Current exact-head CI evidence is unavailable or changed after target correction",
@@ -2701,6 +2719,7 @@ def run_adversarial_validation(
                     correction_used = True
                     if refresh_ci_status is not None:
                         ci_status = refresh_ci_status()
+                    correction_ci_status = ci_status
                     correction_ci_evidence = format_ci_execution_evidence(ci_status)
                     correction_prompt = render_prompt(
                         "pr.adversarial_validation_target_correction",
@@ -2723,7 +2742,7 @@ def run_adversarial_validation(
                     _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_selection_correction")
                     corrected_target = (result.dynamic_check_requested or "").strip()
                     if not corrected_target:
-                        if result.result.strip().upper() == "PASS" and (ci_status is None or ci_status.observation is None or ci_status.observation.availability is not ObservationAvailability.KNOWN or format_ci_execution_evidence(ci_status) != correction_ci_evidence):
+                        if result.result.strip().upper() == "PASS" and not _ci_decision_evidence_equivalent(correction_ci_status, ci_status):
                             return AdversarialValidationResult(
                                 result="INCONCLUSIVE",
                                 summary="Current exact-head CI evidence is unavailable or changed after target correction",

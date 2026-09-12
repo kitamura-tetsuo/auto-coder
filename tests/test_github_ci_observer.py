@@ -59,6 +59,20 @@ def test_phase_reuses_real_targeted_adapter_reads_and_preserves_identity():
     assert workflow.successful_test_targets == ("tests/test_feature.py::test_case",)
 
 
+def test_new_read_phase_changes_authority_identity_without_changing_provider_facts():
+    api = SimpleNamespace(actions=Actions(), checks=Checks())
+    with ci_read_phase("first-review-round"):
+        first = observe_ci(api, "credential", "owner/repo", 12, "head")
+    with ci_read_phase("corrected-review-round"):
+        second = observe_ci(api, "credential", "owner/repo", 12, "head")
+
+    assert first.cycle_id != second.cycle_id
+    assert first.subject == second.subject
+    assert first.facts == second.facts
+    assert api.actions.reads == 2
+    assert api.checks.reads == 2
+
+
 def test_partial_source_never_becomes_complete_or_cached_success():
     api = SimpleNamespace(actions=Actions(), checks=Checks())
     api.actions.list_workflow_runs_for_repo = lambda *args, **kwargs: {"wrong": []}
