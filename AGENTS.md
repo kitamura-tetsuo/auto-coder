@@ -63,14 +63,24 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * Make PR checks via GitHub Actions mandatory.
 * Workflow files:
   * `.github/workflows/pr-tests.yml` (name: `PR Tests`)
+  * `.github/workflows/browser-tests.yml` (name: `Browser Tests`)
   * `.github/workflows/update-version.yml` (name: `Update Version`)
 * Required jobs in `PR Tests`:
   * **Lint & Type Check** (black / isort / flake8 / mypy)
   * **Tests with Coverage** (pytest with coverage reports)
   * Target Python version: 3.12
+* `PR Tests` excludes pytest tests marked `browser` (`-m "not browser"`) and does not
+  install Playwright browser binaries. `Browser Tests` is a separate, independently
+  triggered workflow that installs Playwright Chromium and runs exactly the tests
+  marked `@pytest.mark.browser` (real headless-browser regressions such as
+  `tests/test_dashboard_detail_scroll_stability.py`). Classify any new pytest test
+  whose correctness oracle requires launching and driving a real browser with
+  `@pytest.mark.browser` (or module-level `pytestmark = pytest.mark.browser`) so it
+  is picked up automatically by `Browser Tests` and excluded from `PR Tests`.
 * Branch protection should include the following required status checks:
   * `PR Tests / Lint & Type Check`
   * `PR Tests / Tests with Coverage`
+  * `Browser Tests / Browser Tests`
   * `Update Version / update-version` (for main branch)
 
 ### LLM Execution Policy (Important)

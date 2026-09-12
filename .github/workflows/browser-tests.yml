@@ -1,0 +1,64 @@
+name: Browser Tests
+
+'on':
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-tests:
+    name: Browser Tests
+    runs-on: ubuntu-latest
+    env:
+      # Absolute and workspace-rooted so browser installation stays
+      # discoverable even though the pytest test harness rewrites `HOME` to a
+      # fresh temporary directory for most individual tests.
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Sync dependencies with uv
+        run: |
+          uv sync --dev --extra test
+
+      - name: Install Playwright Chromium
+        run: |
+          uv run playwright install --with-deps chromium
+
+      - name: Preflight - verify a real headless Chromium launches
+        run: |
+          uv run python scripts/browser_preflight.py
+
+      - name: Run browser-marked tests
+        env:
+          # Turn tests/support/browser_launch.py's environment-tolerant
+          # `pytest.skip(...)` fallback into a hard failure here: a missing or
+          # broken browser must fail this check, never report success by
+          # skipping the tests it exists to run.
+          AUTO_CODER_REQUIRE_BROWSER: "1"
+        run: |
+          uv run pytest -m browser -vv
+
+      - name: Upload browser test diagnostics
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: browser-test-diagnostics-${{ github.run_attempt }}
+          path: |
+            htmlcov/
+            .pytest_cache/
+          if-no-files-found: ignore
