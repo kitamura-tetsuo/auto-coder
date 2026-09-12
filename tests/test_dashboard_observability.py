@@ -47,6 +47,26 @@ def _assert_required_stage_visible(diagram: str, display_text: str) -> None:
 
 
 @patch("auto_coder.dashboard.ui")
+def test_family_discovery_scope_reaches_mounted_detail(mock_ui):
+    github = MagicMock()
+    github.get_open_issues_json.return_value = [{"number": 900, "body": "Parent-Issue: #899"}]
+    github.get_direct_sub_issues_strict.return_value = [{"number": 101}]
+    github.get_issue_dispatch_snapshot_strict.return_value = {"number": 101, "body": ""}
+    engine = AutomationEngine(github, AutomationConfig(repo_name="owner/repo"))
+    collector = get_trace_collector()
+
+    with collector.start_execution("owner/repo", "issue", 100, origin="worker"):
+        engine._reconcile_declared_family("owner/repo", 100)
+
+    assert [call.args for call in github.get_issue_dispatch_snapshot_strict.call_args_list] == [("owner/repo", 101), ("owner/repo", 101)]
+    github.get_open_entities_strict.assert_not_called()
+    events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=100).events if event.stage_id == "issue.family-discovery"]
+    assert len(events) == 1
+    assert events[0].facts == {"discovery_source": "cached-open-issue-list", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": [], "authorizes_execution": False}
+    _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 100), "family discovery")
+
+
+@patch("auto_coder.dashboard.ui")
 def test_cached_terminal_refusal_reaches_mounted_detail_without_github(mock_ui):
     config = AutomationConfig(repo_name="owner/repo")
     github = MagicMock()
@@ -812,6 +832,7 @@ def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_pat
     github.get_direct_sub_issues_strict.return_value = []
     github.get_open_sub_issues_strict.return_value = []
     github.get_open_entities_strict.return_value = SimpleNamespace(issues=[SimpleNamespace(number=1998)])
+    github.get_open_issues_json.return_value = [dict(issue)]
     github.get_issue_comments_strict.return_value = []
     github.get_connected_prs.return_value = []
     github.get_parent_issue_number_strict.return_value = None

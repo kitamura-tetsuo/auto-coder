@@ -100,17 +100,30 @@ indeterminate submissions, and unreadable submission journals retain ownership.
 The dashboard records `issue.cloud-submission-slot-release` with `slot_released`
 to distinguish recovered capacity from ownership retained for other work.
 
-## Declaration-complete specification validation
+## Family-scoped specification validation
 
 Before standalone, child, or decomposition validation is admitted, Auto-Coder
-enumerates the repository's current open Issues and reconciles every supported
-`Parent-Issue` declaration belonging to the affected family. Native membership
-is then re-read as the downstream authority, and a repeated declaration-aware
-pass fences concurrent additions or body changes. Unrelated malformed metadata
+uses the existing one-hour open-Issue list cache to discover supported
+`Parent-Issue` declarations belonging to the affected family. Only those
+candidate children and native direct children are refreshed without cache;
+unrelated Issues are not individually refreshed. Native membership is re-read
+as the downstream authority, and a repeated family-local pass checks current
+declarations. A body-only child absent from cached discovery and native membership
+is discovered after list refresh; cached bodies never authorize linking or
+implementation. One pre-dispatch generation check reuses its live family set
+for both individual and decomposition identity comparisons. Unrelated malformed metadata
 does not veto a family, while malformed metadata on a native member fails the
 family closed. Validation waits for every discovered member's original
 creation-plus-60-seconds deadline through durable invalidations; linking and
 editing do not create a sliding delay.
+Explicit `--only` startup remains an exception: it enumerates and refreshes all
+open Issues without cache, then materializes related declarations even when
+the initial list cache omits them. Subsequent normal family checks remain scoped.
+The dashboard records `issue.family-discovery` with the cached discovery source,
+live relationship scope, confirmed declared children, and
+`authorizes_execution=false`; completion of discovery is not implementation readiness.
+The explicit startup pass records `issue.explicit-relationship-discovery` with
+`discovery_source=live-open-issue-list` and `live_scope=all-open-issues`.
 ## PR priority in live durable processing
 
 The live worker queue serves discovered PRs before waiting Issue and dependency

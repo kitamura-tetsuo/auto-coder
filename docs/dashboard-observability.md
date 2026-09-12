@@ -9,6 +9,28 @@ identity; late evidence remains attached to the execution scope that produced it
 
 ## Updating observable processing
 
+Family reconciliation emits `issue.family-discovery` after confirming related
+declarations against live GitHub reads. Its facts identify
+`discovery_source=cached-open-issue-list`,
+`live_scope=related-declarations-and-native-children`,
+`declared_issue_numbers`, and `authorizes_execution=false`. The one-hour list
+cache discovers candidates; only family members bypass it for confirmation.
+This completed stage does not claim complete live repository discovery or
+implementation readiness. The production-path regression
+`tests/test_parent_issue_reconciliation.py::test_family_discovery_refreshes_only_related_issues_and_records_scope`
+checks both the bounded GitHub calls and the actual collector event; stale
+declarations and uncached native-member conflicts are covered in the same file.
+`tests/test_dashboard_observability.py::test_family_discovery_scope_reaches_mounted_detail`
+joins that production event to the mounted detail view without issuing any
+repository-wide strict discovery request.
+The `--only` startup exception emits `issue.explicit-relationship-discovery`
+with `discovery_source=live-open-issue-list`, `live_scope=all-open-issues`, and
+`authorizes_execution=false`.
+`tests/test_parent_issue_reconciliation.py::test_only_parent_reconciles_every_declared_child_before_unified_processing`
+uses a stale cache omitting children and proves that the real explicit entry
+point refreshes all Issues, including an unrelated Issue, before materializing
+the target family.
+
 Early dependency waiting emits `issue.cached-dependency-wait` as `deferred`
 before authoritative refresh/family validation. The Issue execution includes
 `waiting_on`, `retry_at`, `evidence_source=local-issue-observation`, and

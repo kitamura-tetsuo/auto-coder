@@ -534,6 +534,7 @@ def test_real_controller_admission_origin_reaches_mounted_page(mock_ui, tmp_path
     from types import SimpleNamespace
 
     github.get_open_entities_strict.return_value = SimpleNamespace(issues=[SimpleNamespace(number=9001)])
+    github.get_open_issues_json.return_value = [dict(issue)]
     github.get_issue_comments_strict.return_value = []
     github.get_connected_prs.return_value = []
     github.get_parent_issue_number_strict.return_value = None

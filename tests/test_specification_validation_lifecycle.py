@@ -434,6 +434,7 @@ def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, 
     GitHubClient.reset_singleton()
     github = GitHubClient.get_instance(token="test-token")
     github.get_open_entities_strict = Mock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(number) for number, snapshot in issues.items() if snapshot["state"] == "open"]))
+    github.get_open_issues_json = Mock(side_effect=lambda _repo: [dict(snapshot) for snapshot in issues.values() if snapshot["state"] == "open"])
     github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(issues[number]))
     github.get_parent_issue_number_strict = Mock(side_effect=lambda _repo, number: native_parent if number == 20 else None)
     parents = {20: native_parent} if native_parent is not None else {}

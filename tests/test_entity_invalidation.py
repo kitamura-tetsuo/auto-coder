@@ -813,6 +813,7 @@ def test_real_startup_scan_preserves_recent_issue_stabilization(tmp_path: Path, 
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", get)
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.Client.get", MagicMock(return_value=response(issue)))
     github = GitHubClient("token")
+    github.get_open_issues_json = MagicMock(return_value=[dict(issue)])
     github.get_parent_issue_details_strict = MagicMock(return_value=None)
     github.get_direct_sub_issues_strict = MagicMock(return_value=[])
     engine = AutomationEngine(github, AutomationConfig())
@@ -1196,6 +1197,7 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
     github.get_direct_sub_issues_strict = MagicMock(return_value=[])
     github.get_issue = MagicMock(side_effect=RuntimeError("second request unavailable"))
     github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[], pull_requests=[]))
+    github.get_open_issues_json = MagicMock(return_value=[])
     engine = AutomationEngine(github, AutomationConfig())
     processed = []
     monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate, **_kwargs: processed.append(candidate.data) or CandidateProcessingResult(type="issue", number=42, success=True))

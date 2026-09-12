@@ -987,35 +987,40 @@ class AutomationEngine:
         return parent, authoritative_children
 
     def _reconcile_declared_family(self, repo_name: str, parent_number: int) -> None:
-        """Discover and materialize all open declarations for one parent.
+        """Discover related declarations from the cached list, then verify live.
 
-        Native sub-issue reads cannot prove that a separately-created sibling
-        has not already declared the parent.  Therefore each pass starts from
-        the complete authoritative open-Issue enumeration.  A second pass
-        fences concurrent body and membership changes before any caller may
-        construct a validation identity.
+        The list is only a discovery hint. Unrelated Issues are never individually
+        refreshed here; native members and cached declarations for this parent
+        are checked without cache before they can affect validation or dispatch.
+        Body-only additions absent from the list are discovered after its refresh.
         """
-        enumerator = getattr(self.github, "get_open_entities_strict", None)
+        enumerator = getattr(self.github, "get_open_issues_json", None)
         if not callable(enumerator):
-            raise ParentOperationalError("authoritative open-Issue enumeration is unavailable")
+            raise ParentOperationalError("cached open-Issue discovery is unavailable")
 
         previous: Optional[dict[int, str]] = None
         for _attempt in range(5):
             try:
-                entities = enumerator(repo_name)
-                open_entities = getattr(entities, "issues", None)
+                open_entities = enumerator(repo_name)
                 if not isinstance(open_entities, list):
-                    raise ParentOperationalError("authoritative open-Issue enumeration was malformed")
+                    raise ParentOperationalError("cached open-Issue discovery was malformed")
                 discovered: dict[int, tuple[Dict[str, Any], str]] = {}
                 seen: set[int] = set()
                 for entity in open_entities:
-                    number = getattr(entity, "number", None)
+                    if not isinstance(entity, dict):
+                        raise ParentOperationalError("cached open-Issue discovery was malformed")
+                    hint = parse_parent_declaration(entity.get("body"))
+                    if hint.status is not ParentDeclarationStatus.SUPPORTED or hint.parent_number != parent_number:
+                        continue
+                    number = entity.get("number")
                     if not isinstance(number, int) or isinstance(number, bool) or number in seen:
-                        raise ParentOperationalError("authoritative open-Issue enumeration contained an invalid or duplicate Issue")
+                        raise ParentOperationalError("cached family discovery contained an invalid or duplicate Issue")
                     seen.add(number)
                     snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
-                    if not isinstance(snapshot, dict) or snapshot.get("number") != number or "pull_request" in snapshot or not self._is_open_issue(snapshot):
+                    if not isinstance(snapshot, dict) or snapshot.get("number") != number or "pull_request" in snapshot:
                         raise ParentOperationalError(f"authoritative open Issue #{number} could not be confirmed")
+                    if not self._is_open_issue(snapshot):
+                        continue
                     declaration = parse_parent_declaration(snapshot.get("body"))
                     if declaration.status is ParentDeclarationStatus.SUPPORTED and declaration.parent_number == parent_number:
                         discovered[number] = (snapshot, str(snapshot.get("body") or ""))
@@ -1038,6 +1043,13 @@ class AutomationEngine:
                     self._reconcile_parent_issue(repo_name, number, snapshot)
                 generation = {number: body for number, (_snapshot, body) in discovered.items()}
                 if previous == generation:
+                    _record_issue_stage_result(
+                        parent_number,
+                        "issue.family-discovery",
+                        f"issue#{parent_number} family discovery",
+                        Outcome.COMPLETED,
+                        {"discovery_source": "cached-open-issue-list", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": sorted(discovered), "authorizes_execution": False},
+                    )
                     return
                 previous = generation
             except (ParentSpecificationError, ParentOperationalError):
@@ -1382,51 +1394,38 @@ class AutomationEngine:
                     raise ParentOperationalError("dependency declaration changed during reconciliation")
             return graph.results.get(issue_number, next(iter(graph.results.values()))).satisfaction
 
-    def _preflight_explicit_issue_relationships(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
-        """Complete the hierarchy containing an explicit ``--only`` target.
+    def _preflight_explicit_issue_relationships(self, repo_name: str, issue_number: int, *, refresh_all: bool = False) -> Dict[str, Any]:
+        """Complete the target hierarchy, refreshing every Issue at --only startup.
 
         This deliberately performs no validation or implementation work.  The
-        repository-wide enumeration is used only to find declarations which can
+        repository-wide discovery only finds declarations which can
         change the target's native direct-child set; all policy decisions happen
-        later, from a fresh authoritative read.
+        later, from a fresh authoritative read. Normal callers use cached discovery;
+        explicit startup cannot assume that this process's list cache is current.
         """
-        enumerator = getattr(self.github, "get_open_entities_strict", None)
+        enumerator = getattr(self.github, "get_open_entities_strict" if refresh_all else "get_open_issues_json", None)
         if not callable(enumerator):
-            raise ParentOperationalError("authoritative open-Issue enumeration is unavailable")
+            raise ParentOperationalError("open-Issue discovery is unavailable")
         try:
-            entities = enumerator(repo_name)
-            open_entities = getattr(entities, "issues", None)
+            discovery = enumerator(repo_name)
+            open_entities = getattr(discovery, "issues", None) if refresh_all else discovery
             if not isinstance(open_entities, list):
-                raise ParentOperationalError("authoritative open-Issue enumeration was malformed")
-            numbers: list[int] = []
-            for entity in open_entities:
-                number = getattr(entity, "number", None)
-                if not isinstance(number, int) or isinstance(number, bool):
-                    raise ParentOperationalError("authoritative open-Issue enumeration contained an invalid Issue")
-                numbers.append(number)
-            if len(numbers) != len(set(numbers)):
-                raise ParentOperationalError("authoritative open-Issue enumeration contained duplicate Issues")
-
-            snapshots: dict[int, Dict[str, Any]] = {}
+                raise ParentOperationalError("open-Issue discovery was malformed")
             declarations = {}
-            for number in numbers:
-                snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
-                if not isinstance(snapshot, dict) or snapshot.get("number") != number or "pull_request" in snapshot or not self._is_open_issue(snapshot):
-                    raise ParentOperationalError(f"authoritative open Issue #{number} could not be confirmed")
-                declaration = parse_parent_declaration(snapshot.get("body"))
-                snapshots[number] = snapshot
-                declarations[number] = declaration
-            if issue_number not in snapshots:
-                target_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
-                if not isinstance(target_snapshot, dict) or target_snapshot.get("number") != issue_number or "pull_request" in target_snapshot:
-                    raise ParentOperationalError(f"explicit Issue #{issue_number} could not be confirmed")
-                target_declaration = parse_parent_declaration(target_snapshot.get("body"))
-                if target_declaration.status is ParentDeclarationStatus.INVALID:
-                    raise ParentSpecificationError(f"Issue #{issue_number}: {target_declaration.reason or 'invalid Parent-Issue declaration'}")
-                snapshots[issue_number] = target_snapshot
-                declarations[issue_number] = target_declaration
+            for entity in open_entities:
+                number = getattr(entity, "number", None) if refresh_all else entity.get("number") if isinstance(entity, dict) else None
+                if not isinstance(number, int) or isinstance(number, bool) or number in declarations:
+                    raise ParentOperationalError("open-Issue discovery contained an invalid or duplicate Issue")
+                if refresh_all:
+                    entity = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                    if not isinstance(entity, dict) or entity.get("number") != number or "pull_request" in entity or not self._is_open_issue(entity):
+                        raise ParentOperationalError(f"authoritative open Issue #{number} could not be confirmed")
+                declarations[number] = parse_parent_declaration(entity.get("body"))
 
-            target = snapshots[issue_number]
+            target = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+            if not isinstance(target, dict) or target.get("number") != issue_number or "pull_request" in target:
+                raise ParentOperationalError(f"explicit Issue #{issue_number} could not be confirmed")
+            declarations[issue_number] = parse_parent_declaration(target.get("body"))
             if declarations[issue_number].status is ParentDeclarationStatus.INVALID:
                 raise ParentSpecificationError(f"Issue #{issue_number}: {declarations[issue_number].reason or 'invalid Parent-Issue declaration'}")
             target_native = self.github.get_parent_issue_details_strict(repo_name, issue_number)
@@ -1451,24 +1450,17 @@ class AutomationEngine:
                 affected_parent = issue_number
 
             if affected_parent is not None:
-                affected_numbers = {number for number, declaration in declarations.items() if declaration.parent_number == affected_parent}
-                if affected_parent == issue_number:
-                    affected_numbers.update(native_child_numbers)
-                else:
-                    siblings = self.github.get_direct_sub_issues_strict(repo_name, affected_parent)
-                    if not isinstance(siblings, list):
-                        raise ParentOperationalError(f"cannot establish direct-child membership for Issue #{affected_parent}")
-                    for sibling in siblings:
-                        number = sibling.get("number") if isinstance(sibling, dict) else None
-                        if not isinstance(number, int) or isinstance(number, bool):
-                            raise ParentOperationalError(f"direct-child membership for Issue #{affected_parent} was malformed")
-                        affected_numbers.add(number)
-                affected_numbers.add(issue_number)
-                for number in sorted(affected_numbers):
-                    snapshot = snapshots.get(number)
-                    if snapshot is None:
+                self._reconcile_parent_issue(repo_name, issue_number, target)
+                if refresh_all:
+                    # Materialize newly discovered declarations even when they
+                    # are absent from both the list cache and native membership.
+                    for number, declaration in sorted(declarations.items()):
+                        if number == issue_number or declaration.parent_number != affected_parent:
+                            continue
                         snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
-                    self._reconcile_parent_issue(repo_name, number, snapshot)
+                        current_declaration = parse_parent_declaration(snapshot.get("body"))
+                        if self._is_open_issue(snapshot) and current_declaration.status is ParentDeclarationStatus.SUPPORTED and current_declaration.parent_number == affected_parent:
+                            self._reconcile_parent_issue(repo_name, number, snapshot)
                 authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, affected_parent)
                 if authoritative_set is None:
                     raise ParentOperationalError(f"cannot re-read reconciled hierarchy for parent #{affected_parent}")
@@ -1476,6 +1468,14 @@ class AutomationEngine:
             refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
             if not isinstance(refreshed, dict) or refreshed.get("number") != issue_number or "pull_request" in refreshed:
                 raise ParentOperationalError("GitHub returned an ambiguous explicit target after relationship preflight")
+            if refresh_all:
+                _record_issue_stage_result(
+                    issue_number,
+                    "issue.explicit-relationship-discovery",
+                    f"issue#{issue_number} explicit relationship discovery",
+                    Outcome.COMPLETED,
+                    {"discovery_source": "live-open-issue-list", "live_scope": "all-open-issues", "authorizes_execution": False},
+                )
             return refreshed
         except ParentSpecificationError:
             raise
@@ -4337,10 +4337,11 @@ class AutomationEngine:
                 return True
             latest = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
             latest_relationship: Optional[IndividualRelationshipContext] = None
+            current_set = None
             if inherited_parent_number is not None:
-                identity_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
-                if identity_set is not None:
-                    latest_relationship = self._child_review_context(*identity_set, item_number)
+                current_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                if current_set is not None:
+                    latest_relationship = self._child_review_context(*current_set, item_number)
             child_current = isinstance(latest, dict) and self._is_open_issue(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or ""), latest_relationship) == expected_identity
             if not child_current:
                 return False
@@ -4349,7 +4350,6 @@ class AutomationEngine:
             if urgent_issue and not latest_is_urgent:
                 return False
             if inherited_parent_number is not None:
-                current_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                 if current_set is None or not self._is_open_issue(current_set[0]) or not is_implementation_ready(current_set[0]) or item_number not in {child.get("number") for child in current_set[1]}:
                     return False
                 if decomposition_enabled and decomposition_decision is not None and decomposition_validator is not None:
@@ -5127,7 +5127,7 @@ class AutomationEngine:
 
                     if explicit_only and candidate.type == "issue":
                         try:
-                            refreshed_target = self._preflight_explicit_issue_relationships(repo_name, number)
+                            refreshed_target = self._preflight_explicit_issue_relationships(repo_name, number, refresh_all=True)
                             candidate.data.update(refreshed_target)
                         except ParentSpecificationError as exc:
                             result.target_outcome = ExplicitTargetOutcome.BLOCKED.value

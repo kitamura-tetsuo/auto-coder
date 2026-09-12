@@ -1,5 +1,15 @@
 # Auto-Coder Dashboard
 
+The detail view's `issue.family-discovery` stage reports family-local live
+confirmation using the cached open-Issue list for discovery. Its facts show the
+discovery source, live scope and confirmed declared children. `completed` means
+that discovery pass finished, with `authorizes_execution=false`; validation and
+implementation admission still have to pass. Body-only relationships absent
+from both the cached list and native membership become discoverable on list refresh.
+At `--only` startup, `issue.explicit-relationship-discovery` instead reports
+`discovery_source=live-open-issue-list` and `live_scope=all-open-issues` because
+this entry point refreshes the complete list and every open Issue.
+
 Specification-validation diagnostics include standalone, retained-owner, and
 parent/direct-child scheduling. Each producer has its own execution identity,
 while a waiting worker records consumption against the exact validation decision

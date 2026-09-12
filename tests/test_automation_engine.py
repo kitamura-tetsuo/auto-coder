@@ -391,7 +391,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             result = engine.process_single("owner/repo", "issue", 100, explicit_only=True, force=True)
 
         engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True, origin="explicit-single-target")
-        engine._preflight_explicit_issue_relationships.assert_called_once_with("owner/repo", 100)
+        engine._preflight_explicit_issue_relationships.assert_called_once_with("owner/repo", 100, refresh_all=True)
         assert result["issues_processed"][0]["actions_taken"] == ["started"]
         assert result["target_outcome"] == "success"
         assert result["target_type"] == "issue"
