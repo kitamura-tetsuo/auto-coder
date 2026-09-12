@@ -3094,6 +3094,7 @@ def _handle_pr_merge(
                                     claimed_review_threads=claimed_review_threads,
                                     execution_cwd=validation_worktree,
                                     defer_session_persistence=True,
+                                    ci_status=github_checks,
                                 )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]

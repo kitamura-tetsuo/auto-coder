@@ -272,3 +272,8 @@ and is deferred. The `pr.implementation-admission` result reports the resolved
 `owner` and either `reused_owner` on admission or `reason` on deferral. Completion
 of this stage means admission passed, not that the PR merged. Both cases assert
 unchanged occupancy independently of the rendered outcome.
+## Adversarial CI evidence reuse
+
+Canonical-suite evidence reuse consumes the existing `pr.ci-observation`
+decision without changing its trace schema or the production CI gate. Rejected
+dynamic targets are validator protocol diagnostics, not implementation defects.

@@ -1,5 +1,13 @@
 # Client Features Documentation
 
+## Exact-head CI evidence reuse
+
+Adversarial validation receives the production exact-head CI observation and
+uses verified `.github/workflows/pr-tests.yml` success to avoid a redundant
+whole-suite check. Dynamic test targets are restricted to `all` or existing
+Python files/directories under `tests/`, with optional pytest node selectors;
+prose and unsafe targets never reach the test runner.
+
 ## Worker occupancy during pre-dispatch
 
 Active Workers reports the dequeued candidate throughout authoritative GitHub

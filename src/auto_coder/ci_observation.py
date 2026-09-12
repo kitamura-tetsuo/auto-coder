@@ -110,6 +110,7 @@ class WorkflowObservation:
     conclusion: CIConclusion
     display_name: str = ""
     waiting_for_deployment: bool = False
+    workflow_path: str = ""
 
 
 @dataclass(frozen=True)

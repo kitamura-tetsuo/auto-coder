@@ -2147,6 +2147,7 @@ class TestAdversarialValidationPRFlow:
             claimed_review_threads=(),
             execution_cwd=mock_worktree.return_value.__enter__.return_value,
             defer_session_persistence=True,
+            ci_status=mock_checks.return_value,
         )
         mock_merge_pr.assert_called_once()
 

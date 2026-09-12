@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence
 
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager, run_llm_prompt
+from .ci_observation import CIConclusion, ObservationAvailability, WorkflowObservation
 from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linked_issues_context, resolve_issue_oracles
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
@@ -29,6 +30,7 @@ from .utils import CommandExecutor
 
 if TYPE_CHECKING:
     from .review_thread_validation import ClaimedReviewThread
+    from .util.github_action import GitHubActionsStatusResult
 
 logger = get_logger(__name__)
 
@@ -95,6 +97,51 @@ class DynamicCheckExecution:
     verification_error: Optional[str] = None
 
 
+CANONICAL_PR_TESTS_WORKFLOW = ".github/workflows/pr-tests.yml"
+
+
+def validate_dynamic_check_target(check_target: str, repository_root: Path) -> Optional[str]:
+    """Validate the intentionally narrow reviewer-to-test-runner protocol."""
+    if check_target == "all":
+        return None
+    if not check_target or check_target != check_target.strip():
+        return "target must be 'all' or one repository-relative tests path"
+    if any(character.isspace() for character in check_target) or any(character in check_target for character in ";|&`$<>\\"):
+        return "target contains prose, whitespace, or shell/control syntax"
+    path_text, *selectors = check_target.split("::")
+    if selectors and (not path_text.endswith(".py") or any(not selector for selector in selectors)):
+        return "pytest node selectors require a .py file and non-empty components"
+    candidate = Path(path_text)
+    if candidate.is_absolute() or not candidate.parts or candidate.parts[0] != "tests" or ".." in candidate.parts:
+        return "target must resolve inside the repository tests/ tree"
+    tests_root = (repository_root / "tests").resolve()
+    resolved = (repository_root / candidate).resolve()
+    if not resolved.is_relative_to(tests_root):
+        return "target resolves outside the repository tests/ tree"
+    if not resolved.exists():
+        return "requested test file or directory does not exist"
+    if resolved.is_file() and resolved.suffix != ".py":
+        return "requested test file must have a .py suffix"
+    if not resolved.is_file() and not resolved.is_dir():
+        return "requested target is not a regular file or directory"
+    return None
+
+
+def canonical_pr_tests_succeeded(status: Optional["GitHubActionsStatusResult"]) -> bool:
+    """Require pass eligibility and verified canonical workflow provenance."""
+    if status is None or not status.success or status.in_progress or status.error or status.observation is None:
+        return False
+    snapshot = status.observation
+    if snapshot.availability is not ObservationAvailability.KNOWN:
+        return False
+    newest: Dict[tuple[str, str], int] = {}
+    for fact in snapshot.facts:
+        if isinstance(fact, WorkflowObservation) and fact.execution.attempt is not None:
+            key = (fact.execution.workflow_id, fact.execution.run_id)
+            newest[key] = max(newest.get(key, 0), fact.execution.attempt)
+    return any(isinstance(fact, WorkflowObservation) and fact.execution.attempt == newest.get((fact.execution.workflow_id, fact.execution.run_id)) and fact.workflow_path == CANONICAL_PR_TESTS_WORKFLOW and fact.conclusion is CIConclusion.SUCCESS for fact in snapshot.facts)
+
+
 def run_exact_head_dynamic_check(
     config: AutomationConfig,
     check_target: str,
@@ -109,6 +156,9 @@ def run_exact_head_dynamic_check(
     substitute evidence from a different checkout.  A second SHA assertion
     prevents a check that moved HEAD from being accepted as evidence.
     """
+    target_error = validate_dynamic_check_target(check_target, Path(execution_cwd).resolve()) if execution_cwd else None
+    if target_error:
+        return DynamicCheckExecution(verification_error=f"dynamic-check target protocol error: {target_error}")
     executor = CommandExecutor()
 
     def current_head() -> Any:
@@ -2275,6 +2325,7 @@ def run_adversarial_validation(
     claimed_review_threads: Sequence["ClaimedReviewThread"] = (),
     execution_cwd: Optional[str] = None,
     defer_session_persistence: bool = False,
+    ci_status: Optional["GitHubActionsStatusResult"] = None,
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
 
@@ -2486,71 +2537,83 @@ def run_adversarial_validation(
     if result.dynamic_check_requested and result.dynamic_check_requested.strip() and not result.needs_fix and not result.needs_tests:
         check_target = result.dynamic_check_requested.strip()
         logger.info(f"Adversarial reviewer requested dynamic validation check: {check_target}")
-        try:
-            test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
-            if test_res.verification_error:
-                known_mismatch = test_res.executed_sha is not None
-                result.result = "ERROR" if known_mismatch else "INCONCLUSIVE"
-                result.summary = f"Dynamic validation evidence rejected: {test_res.verification_error}"
-                result.diagnostic_category = "dynamic_check_head_mismatch" if known_mismatch else "dynamic_check_head_unverifiable"
-                result.diagnostic_reason = test_res.verification_error
-                result.thread_dispositions = []
-                # The prior lifecycle remains authoritative: invalid execution
-                # evidence cannot resolve, invalidate, or recreate any gap.
-                if lifecycle_session is not None:
-                    result.test_oracle_gaps = [replace(gap) for gap in lifecycle_session.test_oracle_gaps]
-                logger.error(result.summary) if known_mismatch else logger.warning(result.summary)
-            else:
-                test_success = test_res.success
-                test_output = (test_res.output + "\n" + test_res.errors).strip()
+        target_error = validate_dynamic_check_target(check_target, Path(execution_cwd).resolve()) if execution_cwd else None
+        if target_error:
+            result.result = "ERROR"
+            result.summary = "Reviewer requested an invalid dynamic-check target; no test process was launched"
+            result.diagnostic_category = "dynamic_check_target_protocol_error"
+            result.diagnostic_reason = target_error
+            result.dynamic_check_requested = None
+        elif check_target == "all" and canonical_pr_tests_succeeded(ci_status):
+            logger.info("Reusing successful exact-head canonical PR Tests evidence instead of rerunning the suite")
+            result.dynamic_check_requested = None
+            result.summary = f"{result.summary} Reused successful exact-head {CANONICAL_PR_TESTS_WORKFLOW} evidence."
+        else:
+            try:
+                test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
+                if test_res.verification_error:
+                    known_mismatch = test_res.executed_sha is not None
+                    result.result = "ERROR" if known_mismatch else "INCONCLUSIVE"
+                    result.summary = f"Dynamic validation evidence rejected: {test_res.verification_error}"
+                    result.diagnostic_category = "dynamic_check_head_mismatch" if known_mismatch else "dynamic_check_head_unverifiable"
+                    result.diagnostic_reason = test_res.verification_error
+                    result.thread_dispositions = []
+                    # The prior lifecycle remains authoritative: invalid execution
+                    # evidence cannot resolve, invalidate, or recreate any gap.
+                    if lifecycle_session is not None:
+                        result.test_oracle_gaps = [replace(gap) for gap in lifecycle_session.test_oracle_gaps]
+                    logger.error(result.summary) if known_mismatch else logger.warning(result.summary)
+                else:
+                    test_success = test_res.success
+                    test_output = (test_res.output + "\n" + test_res.errors).strip()
 
-                # Preserve original counterexamples and findings in the follow-up
-                original_findings_blocks = []
-                for idx, f in enumerate(result.findings, start=1):
-                    original_findings_blocks.append(f"Finding {idx}:\n" f"- Violated Requirement: {f.violated_requirement}\n" f"- Suspected Counterexample: {f.counterexample}\n" f"- Test Gap: {f.test_gap}\n" f"- Suggested Regression Scenario: {f.suggested_regression_scenario}\n")
-                original_findings_str = "\n".join(original_findings_blocks) if original_findings_blocks else "(No initial findings recorded)"
+                    # Preserve original counterexamples and findings in the follow-up
+                    original_findings_blocks = []
+                    for idx, f in enumerate(result.findings, start=1):
+                        original_findings_blocks.append(f"Finding {idx}:\n" f"- Violated Requirement: {f.violated_requirement}\n" f"- Suspected Counterexample: {f.counterexample}\n" f"- Test Gap: {f.test_gap}\n" f"- Suggested Regression Scenario: {f.suggested_regression_scenario}\n")
+                    original_findings_str = "\n".join(original_findings_blocks) if original_findings_blocks else "(No initial findings recorded)"
 
-                logger.info(f"Dynamic check executed on {check_target} (success={test_success}); querying reviewer with raw test output for final decision")
-                initial_thread_dispositions_str = "\n".join(f"- {d.thread_id}: {d.status} — {d.rationale}" for d in initial_thread_dispositions) if initial_thread_dispositions else "(No initial thread dispositions recorded)"
-                followup_prompt = render_prompt(
-                    "pr.adversarial_validation_followup",
-                    repo_name=repo_name,
-                    pr_number=pr_number,
-                    pr_title=context.pr_title,
-                    check_target=check_target,
-                    test_status="PASSED" if test_success else "FAILED",
-                    test_success="True" if test_success else "False",
-                    test_output=test_output[: config.MAX_PROMPT_SIZE * 2],
-                    original_summary=result.summary,
-                    original_findings=original_findings_str,
-                    linked_issues_context=context.issue_context,
-                    pr_diff=context.pr_diff,
-                    requirement_manifest=requirement_manifest,
-                    claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
-                    initial_thread_dispositions=initial_thread_dispositions_str,
-                )
-                with ProgressStage("Adversarial dynamic check follow-up"):
-                    followup_session_id = getattr(backend_manager, "_last_session_id", None)
-                    if isinstance(followup_session_id, str) and followup_session_id:
-                        followup_response = backend_manager.continue_session(followup_session_id, followup_prompt, is_noedit=True)
-                    else:
-                        # Never guess an implicit last session. A provider that did not
-                        # expose an ID cannot safely retain dynamic-check context.
-                        raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
-                result = parse_adversarial_validation_response(followup_response)
-                _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
-                result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
-                result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
-                result = _reconcile_test_oracle_gap_lifecycle(
-                    result,
-                    lifecycle_session,
-                    head_sha,
-                    _addressed_test_oracle_gap_evidence(
+                    logger.info(f"Dynamic check executed on {check_target} (success={test_success}); querying reviewer with raw test output for final decision")
+                    initial_thread_dispositions_str = "\n".join(f"- {d.thread_id}: {d.status} — {d.rationale}" for d in initial_thread_dispositions) if initial_thread_dispositions else "(No initial thread dispositions recorded)"
+                    followup_prompt = render_prompt(
+                        "pr.adversarial_validation_followup",
+                        repo_name=repo_name,
+                        pr_number=pr_number,
+                        pr_title=context.pr_title,
+                        check_target=check_target,
+                        test_status="PASSED" if test_success else "FAILED",
+                        test_success="True" if test_success else "False",
+                        test_output=test_output[: config.MAX_PROMPT_SIZE * 2],
+                        original_summary=result.summary,
+                        original_findings=original_findings_str,
+                        linked_issues_context=context.issue_context,
+                        pr_diff=context.pr_diff,
+                        requirement_manifest=requirement_manifest,
+                        claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
+                        initial_thread_dispositions=initial_thread_dispositions_str,
+                    )
+                    with ProgressStage("Adversarial dynamic check follow-up"):
+                        followup_session_id = getattr(backend_manager, "_last_session_id", None)
+                        if isinstance(followup_session_id, str) and followup_session_id:
+                            followup_response = backend_manager.continue_session(followup_session_id, followup_prompt, is_noedit=True)
+                        else:
+                            # Never guess an implicit last session. A provider that did not
+                            # expose an ID cannot safely retain dynamic-check context.
+                            raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
+                    result = parse_adversarial_validation_response(followup_response)
+                    _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
+                    result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
+                    result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
+                    result = _reconcile_test_oracle_gap_lifecycle(
                         result,
-                        claimed_review_threads,
-                        lifecycle_session.test_oracle_gaps if lifecycle_session else (),
-                    ),
-                )
+                        lifecycle_session,
+                        head_sha,
+                        _addressed_test_oracle_gap_evidence(
+                            result,
+                            claimed_review_threads,
+                            lifecycle_session.test_oracle_gaps if lifecycle_session else (),
+                        ),
+                    )
                 result = _apply_coverage_and_verdict_precedence(result, context)
                 if initial_thread_dispositions and not result.thread_dispositions:
                     # The follow-up prompt explicitly asks for a final disposition
@@ -2560,20 +2623,20 @@ def run_adversarial_validation(
                     # "no valid disposition" (stays unresolved) rather than reuse
                     # evidence the dynamic check may have since contradicted.
                     logger.warning(f"Dynamic-check follow-up for PR #{pr_number} returned no thread_dispositions; " f"{len(initial_thread_dispositions)} claimed thread(s) will not be resolved this run")
-        except Exception as e:
-            logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")
-            # Inability to complete a requested check must be treated as non-pass (fail-closed)
-            result.result = "BLOCKED"
-            result.summary = f"Dynamic validation check '{check_target}' could not be completed: {e}"
-            if initial_thread_dispositions:
-                # Once dynamic re-adjudication starts, an initial disposition is
-                # provisional: it was explicitly not trusted enough to skip the
-                # dynamic check. If that check (or the follow-up call) fails
-                # before a final disposition is obtained, the initial one must
-                # not resolve any thread — clear it so every claimed thread
-                # stays unresolved (REQ-006, REQ-008).
-                logger.warning(f"Dynamic re-adjudication failed for PR #{pr_number}; discarding {len(initial_thread_dispositions)} initial thread disposition(s)")
-                result.thread_dispositions = []
+            except Exception as e:
+                logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")
+                # Inability to complete a requested check must be treated as non-pass (fail-closed)
+                result.result = "BLOCKED"
+                result.summary = f"Dynamic validation check '{check_target}' could not be completed: {e}"
+                if initial_thread_dispositions:
+                    # Once dynamic re-adjudication starts, an initial disposition is
+                    # provisional: it was explicitly not trusted enough to skip the
+                    # dynamic check. If that check (or the follow-up call) fails
+                    # before a final disposition is obtained, the initial one must
+                    # not resolve any thread — clear it so every claimed thread
+                    # stays unresolved (REQ-006, REQ-008).
+                    logger.warning(f"Dynamic re-adjudication failed for PR #{pr_number}; discarding {len(initial_thread_dispositions)} initial thread disposition(s)")
+                    result.thread_dispositions = []
 
     result = _apply_coverage_and_verdict_precedence(result, context)
 

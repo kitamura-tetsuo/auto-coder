@@ -26,7 +26,7 @@ except ImportError:
 from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
-from ..ci_observation import CheckObservation, CIConclusion, ObservationAvailability, WorkflowObservation
+from ..ci_observation import CheckObservation, CIConclusion, CIObservationSnapshot, ObservationAvailability, WorkflowObservation
 from ..dispatch_claim_store import DispatchOutcome
 from ..execution_trace import EventKind, Outcome, get_trace_collector
 from ..github_ci_observer import approve_waiting_deployment, end_ci_read_phase, observe_ci
@@ -230,6 +230,7 @@ class GitHubActionsStatusResult:
     in_progress: bool = False
     error: Optional[str] = None
     waiting_runs: List[Tuple[int, int, str]] = field(default_factory=list)
+    observation: Optional[CIObservationSnapshot] = None
 
 
 @dataclass
@@ -492,10 +493,10 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         # explicit UNKNOWN rather than being collapsed into "failed".
         outcome = Outcome.SUPERSEDED if snapshot.availability is ObservationAvailability.SUPERSEDED else Outcome.UNKNOWN
         _record_ci_observation_stage(pr_number, outcome, {**observation_facts, "reason": snapshot.unavailable_reason})
-        return GitHubActionsStatusResult(success=False, error=snapshot.unavailable_reason or snapshot.availability.value)
+        return GitHubActionsStatusResult(success=False, error=snapshot.unavailable_reason or snapshot.availability.value, observation=snapshot)
     if snapshot.availability is ObservationAvailability.KNOWN_EMPTY:
         _record_ci_observation_stage(pr_number, Outcome.DEFERRED, {**observation_facts, "reason": "no current CI observations"})
-        return GitHubActionsStatusResult(success=False, in_progress=True, error="No current CI observations")
+        return GitHubActionsStatusResult(success=False, in_progress=True, error="No current CI observations", observation=snapshot)
 
     # A newer explicit attempt makes earlier evidence for that run ineligible.
     newest_attempt: Dict[Tuple[str, str], int] = {}
@@ -515,7 +516,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
     else:
         eligibility_outcome = Outcome.COMPLETED
     _record_ci_observation_stage(pr_number, eligibility_outcome, {**observation_facts, "run_ids": run_ids})
-    return GitHubActionsStatusResult(success=not failing, ids=run_ids, in_progress=pending, waiting_runs=waiting_runs)
+    return GitHubActionsStatusResult(success=not failing, ids=run_ids, in_progress=pending, waiting_runs=waiting_runs, observation=snapshot)
 
 
 # --- Common helpers for historical GitHub Actions processing ---

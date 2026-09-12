@@ -164,7 +164,7 @@ def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: 
                             run_id, workflow_id, attempt = item.get("id"), item.get("workflow_id"), item.get("run_attempt")
                             if not run_id or not workflow_id or not isinstance(attempt, int) or attempt <= 0:
                                 raise ValueError("workflow run lacks id/workflow_id/run_attempt")
-                            facts.append(WorkflowObservation(WorkflowExecutionIdentity(str(workflow_id), str(run_id), attempt), _conclusion(str(item.get("status") or ""), item.get("conclusion")), str(item.get("name") or ""), str(item.get("status") or "").lower() == "waiting"))
+                            facts.append(WorkflowObservation(WorkflowExecutionIdentity(str(workflow_id), str(run_id), attempt), _conclusion(str(item.get("status") or ""), item.get("conclusion")), str(item.get("name") or ""), str(item.get("status") or "").lower() == "waiting", workflow_path))
                         else:
                             check_id = item.get("id")
                             app = item.get("app")
