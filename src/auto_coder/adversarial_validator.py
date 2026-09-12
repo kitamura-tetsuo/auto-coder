@@ -95,6 +95,7 @@ class DynamicCheckExecution:
     errors: str = ""
     executed_sha: Optional[str] = None
     verification_error: Optional[str] = None
+    target_selection_error: Optional[str] = None
 
 
 CANONICAL_PR_TESTS_WORKFLOW = ".github/workflows/pr-tests.yml"
@@ -140,6 +141,85 @@ def canonical_pr_tests_succeeded(status: Optional["GitHubActionsStatusResult"]) 
             key = (fact.execution.workflow_id, fact.execution.run_id)
             newest[key] = max(newest.get(key, 0), fact.execution.attempt)
     return any(isinstance(fact, WorkflowObservation) and fact.execution.attempt == newest.get((fact.execution.workflow_id, fact.execution.run_id)) and fact.workflow_path == CANONICAL_PR_TESTS_WORKFLOW and fact.conclusion is CIConclusion.SUCCESS for fact in snapshot.facts)
+
+
+def format_ci_execution_evidence(status: Optional["GitHubActionsStatusResult"]) -> str:
+    """Serialize the authoritative observation without flattening provider facts."""
+    if status is None or status.observation is None:
+        return json.dumps({"availability": "unavailable", "diagnostic": "No authoritative CI observation was supplied"}, sort_keys=True)
+    snapshot = status.observation
+    facts = []
+    newest_attempt: Dict[tuple[str, str], int] = {}
+    for fact in snapshot.facts:
+        if isinstance(fact, WorkflowObservation) and fact.execution.attempt is not None:
+            key = (fact.execution.workflow_id, fact.execution.run_id)
+            newest_attempt[key] = max(newest_attempt.get(key, 0), fact.execution.attempt)
+    for fact in snapshot.facts:
+        if isinstance(fact, WorkflowObservation):
+            actionable = fact.execution.attempt == newest_attempt.get((fact.execution.workflow_id, fact.execution.run_id))
+            facts.append(
+                {
+                    "kind": "workflow",
+                    "workflow_id": fact.execution.workflow_id,
+                    "run_id": fact.execution.run_id,
+                    "run_attempt": fact.execution.attempt,
+                    "workflow_path": fact.workflow_path,
+                    "conclusion": fact.conclusion.value,
+                    "actionable": actionable,
+                }
+            )
+        else:
+            facts.append(
+                {
+                    "kind": "check",
+                    "app_id": fact.execution.app_id,
+                    "check_id": fact.execution.check_id,
+                    "workflow_id": fact.execution.workflow_id,
+                    "run_id": fact.execution.run_id,
+                    "run_attempt": fact.execution.attempt,
+                    "conclusion": fact.conclusion.value,
+                    "actionable": True,
+                }
+            )
+    return json.dumps(
+        {
+            "subject": {
+                "api_origin": snapshot.subject.api_origin,
+                "repository": snapshot.subject.repository,
+                "pr_number": snapshot.subject.pr_number,
+                "head_sha": snapshot.subject.head_sha,
+            },
+            "observation": {
+                "cycle_id": snapshot.cycle_id,
+                "invalidation_epoch": snapshot.invalidation_epoch,
+                "availability": snapshot.availability.value,
+                "request_source": snapshot.request.source,
+                "request_representation": snapshot.request.representation,
+            },
+            "provider_facts": facts,
+            "gate_pass_eligible": bool(status.success and not status.in_progress and not status.error),
+        },
+        sort_keys=True,
+    )
+
+
+def _pytest_target_selection_error(test_result: Any) -> Optional[str]:
+    """Recognize pure pytest selection failures without hiding collection errors."""
+    output = f"{test_result.stdout}\n{test_result.stderr}".lower()
+    collection_failure = any(marker in output for marker in ("error collecting", "collection error", "importerror while importing", "modulenotfounderror"))
+    selection_failure = test_result.returncode in {4, 5} and any(
+        marker in output
+        for marker in (
+            "not found:",
+            "found no collectors",
+            "no tests ran",
+            "collected 0 items",
+            "0 tests collected",
+        )
+    )
+    if selection_failure and not collection_failure:
+        return "pytest could not resolve the requested file/node or selected zero tests"
+    return None
 
 
 def run_exact_head_dynamic_check(
@@ -216,6 +296,7 @@ def run_exact_head_dynamic_check(
         output=test_result.stdout,
         errors=test_result.stderr,
         executed_sha=executed_sha,
+        target_selection_error=_pytest_target_selection_error(test_result),
     )
 
 
@@ -2499,6 +2580,7 @@ def run_adversarial_validation(
         requirement_manifest=requirement_manifest,
         claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
         prior_test_oracle_gaps=prior_test_oracle_gaps,
+        ci_execution_evidence=format_ci_execution_evidence(ci_status),
         adjacent_exploration_budget=ADVERSARIAL_ADJACENT_EXPLORATION_BUDGET,
         evidence_recovery_budget=ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET,
     )
@@ -2545,12 +2627,11 @@ def run_adversarial_validation(
             ci_status = refresh_ci_status()
         target_error = validate_dynamic_check_target(check_target, Path(execution_cwd).resolve()) if execution_cwd else None
         if target_error:
-            availability = ci_status.observation.availability.value if ci_status and ci_status.observation else "unavailable"
             correction_prompt = render_prompt(
                 "pr.adversarial_validation_target_correction",
                 invalid_target=check_target,
                 target_diagnostic=target_error,
-                ci_evidence=f"availability={availability}; canonical_suite_success={canonical_pr_tests_succeeded(ci_status)}",
+                ci_evidence=format_ci_execution_evidence(ci_status),
             )
             correction_session_id = getattr(backend_manager, "_last_session_id", None)
             if not isinstance(correction_session_id, str) or not correction_session_id:
@@ -2583,6 +2664,48 @@ def run_adversarial_validation(
         elif check_target and result.dynamic_check_requested:
             try:
                 test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
+                if test_res.target_selection_error:
+                    if refresh_ci_status is not None:
+                        ci_status = refresh_ci_status()
+                    correction_prompt = render_prompt(
+                        "pr.adversarial_validation_target_correction",
+                        invalid_target=check_target,
+                        target_diagnostic=test_res.target_selection_error,
+                        ci_evidence=format_ci_execution_evidence(ci_status),
+                    )
+                    correction_session_id = getattr(backend_manager, "_last_session_id", None)
+                    if not isinstance(correction_session_id, str) or not correction_session_id:
+                        return AdversarialValidationResult(
+                            result="ERROR",
+                            summary="Reviewer target correction could not continue without an explicit session",
+                            diagnostic_category="dynamic_check_target_protocol_error",
+                            diagnostic_reason=test_res.target_selection_error,
+                        )
+                    correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
+                    if refresh_ci_status is not None:
+                        ci_status = refresh_ci_status()
+                    result = parse_adversarial_validation_response(correction_response)
+                    _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_selection_correction")
+                    corrected_target = (result.dynamic_check_requested or "").strip()
+                    if not corrected_target:
+                        return _apply_coverage_and_verdict_precedence(result, context)
+                    repeated_error = validate_dynamic_check_target(corrected_target, Path(execution_cwd).resolve()) if execution_cwd else None
+                    if repeated_error:
+                        return AdversarialValidationResult(
+                            result="ERROR",
+                            summary="Reviewer repeated an invalid dynamic-check target after the bounded correction step",
+                            diagnostic_category="dynamic_check_target_protocol_error",
+                            diagnostic_reason=repeated_error,
+                        )
+                    check_target = corrected_target
+                    test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
+                    if test_res.target_selection_error:
+                        return AdversarialValidationResult(
+                            result="ERROR",
+                            summary="Reviewer repeated an unselectable dynamic-check target after the bounded correction step",
+                            diagnostic_category="dynamic_check_target_protocol_error",
+                            diagnostic_reason=test_res.target_selection_error,
+                        )
                 if test_res.verification_error:
                     known_mismatch = test_res.executed_sha is not None
                     result.result = "ERROR" if known_mismatch else "INCONCLUSIVE"

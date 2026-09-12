@@ -551,6 +551,9 @@ pr:
     after a `.py` file and every selector component must be non-empty. Never use
     prose, options, shell syntax, absolute paths, or traversal as a target.
 
+    Exact-head CI execution evidence carried from production PR processing:
+    $ci_execution_evidence
+
     $review_policy
 
     COUNTEREXAMPLE STANDARD:
