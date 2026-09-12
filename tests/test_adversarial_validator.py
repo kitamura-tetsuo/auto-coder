@@ -34,7 +34,7 @@ from auto_coder.adversarial_validator import (
     run_exact_head_dynamic_check,
 )
 from auto_coder.automation_config import AutomationConfig
-from auto_coder.ci_observation import CIObservationSnapshot, ObservationAvailability, ObservationRequest, ObservationSubject
+from auto_coder.ci_observation import CIConclusion, CIObservationSnapshot, ObservationAvailability, ObservationRequest, ObservationSubject, WorkflowExecutionIdentity, WorkflowObservation
 from auto_coder.issue_context import IssueOracleResolution, VerifiedIssueOracle
 from auto_coder.prompt_loader import render_prompt
 from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
@@ -52,6 +52,25 @@ def _dynamic_context() -> AdversarialValidationContext:
         changed_tests=["tests/test_feature.py"],
         issue_context="Issue specification",
     )
+
+
+def _ci_status(cycle: str, *facts: WorkflowObservation) -> GitHubActionsStatusResult:
+    return GitHubActionsStatusResult(
+        success=all(fact.conclusion is CIConclusion.SUCCESS for fact in facts),
+        ids=[int(fact.execution.run_id) for fact in facts],
+        observation=CIObservationSnapshot(
+            ObservationSubject("https://api.github.com", "owner/repo", 100, "b" * 40),
+            ObservationRequest("github-actions", "checks+workflows"),
+            cycle,
+            1,
+            ObservationAvailability.KNOWN,
+            facts,
+        ),
+    )
+
+
+def _workflow(run_id: str, conclusion: CIConclusion, path: str) -> WorkflowObservation:
+    return WorkflowObservation(WorkflowExecutionIdentity("1", run_id, 1), conclusion, workflow_path=path)
 
 
 @patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=_dynamic_context())
@@ -112,6 +131,64 @@ def test_pass_after_correction_fails_closed_without_current_ci(mock_prompt, _moc
 
     assert result.result == "INCONCLUSIVE"
     assert result.diagnostic_category == "validator_evidence_unavailable"
+
+
+@patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=_dynamic_context())
+@patch("auto_coder.adversarial_validator.run_llm_prompt")
+@patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
+def test_runtime_target_correction_reuses_refreshed_canonical_ci(mock_check, mock_prompt, _mock_context) -> None:
+    mock_prompt.return_value = '{"result":"INCONCLUSIVE","summary":"select",' '"dynamic_check_requested":"tests/test_adversarial_validator.py::missing"}'
+    mock_check.return_value = DynamicCheckExecution(target_selection_error="pytest selected zero tests")
+    manager = MagicMock()
+    manager._last_session_id = "session"
+    manager.continue_session.return_value = '{"result":"PASS","summary":"retry","dynamic_check_requested":"all"}'
+    green = _ci_status("green", _workflow("10", CIConclusion.SUCCESS, ".github/workflows/pr-tests.yml"))
+
+    with patch("auto_coder.adversarial_validator.CommandExecutor.run_command", return_value=CommandResult(True, "b" * 40, "", 0)):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "head_sha": "b" * 40},
+            AutomationConfig(),
+            backend_manager=manager,
+            execution_cwd=str(Path.cwd()),
+            ci_status=green,
+            refresh_ci_status=lambda: green,
+        )
+
+    assert mock_check.call_count == 1
+    assert result.dynamic_check_requested is None
+
+
+@patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=_dynamic_context())
+@patch("auto_coder.adversarial_validator.run_llm_prompt")
+def test_corrected_pass_fails_closed_when_known_ci_observation_is_replaced(mock_prompt, _mock_context) -> None:
+    mock_prompt.return_value = '{"result":"INCONCLUSIVE","summary":"select","dynamic_check_requested":"prose target"}'
+    manager = MagicMock()
+    manager._last_session_id = "session"
+    manager.continue_session.return_value = '{"result":"PASS","summary":"green CI proves execution","findings":[]}'
+    green = _ci_status("green", _workflow("10", CIConclusion.SUCCESS, ".github/workflows/pr-tests.yml"))
+    replaced = _ci_status(
+        "replacement",
+        _workflow("10", CIConclusion.SUCCESS, ".github/workflows/pr-tests.yml"),
+        _workflow("11", CIConclusion.PENDING, ".github/workflows/other.yml"),
+    )
+    refreshes = iter((green, replaced))
+
+    with patch("auto_coder.adversarial_validator.CommandExecutor.run_command", return_value=CommandResult(True, "b" * 40, "", 0)):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "head_sha": "b" * 40},
+            AutomationConfig(),
+            backend_manager=manager,
+            execution_cwd=str(Path.cwd()),
+            ci_status=green,
+            refresh_ci_status=lambda: next(refreshes),
+        )
+
+    assert result.result == "INCONCLUSIVE"
+    assert result.diagnostic_category == "validator_evidence_unavailable"
+    assert '"cycle_id": "replacement"' in result.diagnostic_reason
+    assert '"conclusion": "pending"' in result.diagnostic_reason
 
 
 def test_exact_head_dynamic_check_bypasses_container_and_asserts_sha_before_and_after() -> None:

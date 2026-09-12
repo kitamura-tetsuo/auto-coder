@@ -2645,11 +2645,12 @@ def run_adversarial_validation(
         correction_used = False
         if target_error:
             correction_used = True
+            correction_ci_evidence = format_ci_execution_evidence(ci_status)
             correction_prompt = render_prompt(
                 "pr.adversarial_validation_target_correction",
                 invalid_target=check_target,
                 target_diagnostic=target_error,
-                ci_evidence=format_ci_execution_evidence(ci_status),
+                ci_evidence=correction_ci_evidence,
             )
             correction_session_id = getattr(backend_manager, "_last_session_id", None)
             if not isinstance(correction_session_id, str) or not correction_session_id:
@@ -2675,10 +2676,10 @@ def run_adversarial_validation(
                         diagnostic_reason=repeated_error,
                     )
                 check_target = corrected_target
-                if result.result.strip().upper() == "PASS" and (ci_status is None or ci_status.observation is None or ci_status.observation.availability is not ObservationAvailability.KNOWN):
+                if result.result.strip().upper() == "PASS" and (ci_status is None or ci_status.observation is None or ci_status.observation.availability is not ObservationAvailability.KNOWN or format_ci_execution_evidence(ci_status) != correction_ci_evidence):
                     return AdversarialValidationResult(
                         result="INCONCLUSIVE",
-                        summary="Current exact-head CI evidence is unavailable after target correction",
+                        summary="Current exact-head CI evidence is unavailable or changed after target correction",
                         diagnostic_category="validator_evidence_unavailable",
                         diagnostic_reason=format_ci_execution_evidence(ci_status),
                     )
@@ -2700,11 +2701,12 @@ def run_adversarial_validation(
                     correction_used = True
                     if refresh_ci_status is not None:
                         ci_status = refresh_ci_status()
+                    correction_ci_evidence = format_ci_execution_evidence(ci_status)
                     correction_prompt = render_prompt(
                         "pr.adversarial_validation_target_correction",
                         invalid_target=check_target,
                         target_diagnostic=test_res.target_selection_error,
-                        ci_evidence=format_ci_execution_evidence(ci_status),
+                        ci_evidence=correction_ci_evidence,
                     )
                     correction_session_id = getattr(backend_manager, "_last_session_id", None)
                     if not isinstance(correction_session_id, str) or not correction_session_id:
@@ -2721,10 +2723,10 @@ def run_adversarial_validation(
                     _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_selection_correction")
                     corrected_target = (result.dynamic_check_requested or "").strip()
                     if not corrected_target:
-                        if result.result.strip().upper() == "PASS" and (ci_status is None or ci_status.observation is None or ci_status.observation.availability is not ObservationAvailability.KNOWN):
+                        if result.result.strip().upper() == "PASS" and (ci_status is None or ci_status.observation is None or ci_status.observation.availability is not ObservationAvailability.KNOWN or format_ci_execution_evidence(ci_status) != correction_ci_evidence):
                             return AdversarialValidationResult(
                                 result="INCONCLUSIVE",
-                                summary="Current exact-head CI evidence is unavailable after target correction",
+                                summary="Current exact-head CI evidence is unavailable or changed after target correction",
                                 diagnostic_category="validator_evidence_unavailable",
                                 diagnostic_reason=format_ci_execution_evidence(ci_status),
                             )
@@ -2738,6 +2740,11 @@ def run_adversarial_validation(
                             diagnostic_reason=repeated_error,
                         )
                     check_target = corrected_target
+                    if (check_target == "all" and canonical_pr_tests_succeeded(ci_status)) or (check_target != "all" and focused_ci_target_succeeded(ci_status, check_target)):
+                        logger.info("Reusing refreshed exact-head CI evidence after dynamic-target correction")
+                        result.dynamic_check_requested = None
+                        result.summary = f"{result.summary} Reused successful exact-head {CANONICAL_PR_TESTS_WORKFLOW} evidence."
+                        return _apply_coverage_and_verdict_precedence(result, context)
                     test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
                     if test_res.target_selection_error:
                         return AdversarialValidationResult(
