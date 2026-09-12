@@ -23,17 +23,17 @@ class CandidateQueue(asyncio.Queue[Candidate]):
             return await self.get()
         available = self._available[item_type]
         while True:
-            for index, candidate in enumerate(self._queue):
+            for index, candidate in enumerate(self._queue):  # type: ignore[attr-defined]
                 if candidate.type == item_type or (item_type == "issue" and candidate.type == "dependency"):
-                    del self._queue[index]
+                    del self._queue[index]  # type: ignore[attr-defined]
                     return candidate
             available.clear()
             await available.wait()
 
     def _put(self, item: Candidate) -> None:
         self._available["issue" if item.type == "dependency" else item.type].set()
-        for index, queued in enumerate(self._queue):
+        for index, queued in enumerate(self._queue):  # type: ignore[attr-defined]
             if item.priority > queued.priority:
-                self._queue.insert(index, item)
+                self._queue.insert(index, item)  # type: ignore[attr-defined]
                 return
-        self._queue.append(item)
+        self._queue.append(item)  # type: ignore[attr-defined]
