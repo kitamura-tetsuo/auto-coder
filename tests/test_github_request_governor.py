@@ -548,17 +548,11 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
 
         leader_parent.send("release_initialization")
         assert _receive(leader_parent) == "transport_started"
-        with sqlite3.connect(path) as connection:
-            assert connection.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
-            # Coverage/instrumentation can issue an already-completed request
-            # through the same client before the controlled transport blocks.
-            # The concurrency invariant is that exactly one reservation remains
-            # live and that it is not misclassified as recovered.
-            assert connection.execute("SELECT resolved, recovered FROM reservations WHERE resolved=0").fetchall() == [(0, 0)]
-            assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (0.0, "")
-
-        # The joiner is alive and initialized but cannot transmit while the
-        # leader's production-boundary transport owns the shared reservation.
+        # Do not inspect SQLite while the joiner is waiting in admission: under
+        # coverage its admission transaction can retain a database lock until
+        # the leader transport finishes, turning an observational read into a
+        # test-created deadlock. Transport ordering proves the live reservation
+        # exclusion, and the durable rows are inspected after both requests.
         assert not joiner_parent.poll()
         leader_parent.send("release_transport")
         assert _receive(leader_parent) == "completed"
@@ -569,6 +563,8 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
         assert leader.exitcode == 0
         assert joiner.exitcode == 0
         with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
+            assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (0.0, "")
             reservations = connection.execute("SELECT resolved, recovered FROM reservations ORDER BY admitted_utc").fetchall()
             assert len(reservations) >= 2
             assert set(reservations) == {(1, 0)}
