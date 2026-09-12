@@ -130,3 +130,50 @@ def test_browser_preflight_fails_closed_when_chromium_is_unusable(tmp_path):
     assert result.returncode != 0
     assert "FAILED" in result.stderr
     assert "could not launch a real headless Chromium" in result.stderr
+
+
+def test_headless_page_helper_fails_pytest_when_browser_unusable_and_required(tmp_path):
+    """REQ-005: the fail-closed contract belongs to `headless_page` itself,
+    not only to the standalone preflight script -- a selected `browser` test
+    hitting an unusable Chromium after preflight has already passed must
+    still turn into a real pytest failure (never a skip) whenever
+    `AUTO_CODER_REQUIRE_BROWSER=1` is set. Exercises the actual Playwright
+    launch path (no mocking): an isolated pytest subprocess runs a throwaway
+    test that calls the real `headless_page` context manager against a
+    deliberately empty `PLAYWRIGHT_BROWSERS_PATH`.
+    """
+    probe = tmp_path / "test_headless_page_probe.py"
+    probe.write_text(
+        f"""
+import sys
+sys.path.insert(0, {str(ROOT)!r})
+
+from tests.support.browser_launch import headless_page
+
+
+def test_real_launch_attempt():
+    with headless_page(viewport={{"width": 100, "height": 100}}):
+        pass
+""",
+        encoding="utf-8",
+    )
+
+    empty_browsers_dir = tmp_path / "no-browser-installed-here"
+    empty_browsers_dir.mkdir()
+    env = os.environ.copy()
+    env["PLAYWRIGHT_BROWSERS_PATH"] = str(empty_browsers_dir)
+    env["AUTO_CODER_REQUIRE_BROWSER"] = "1"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(probe), "-p", "no:cacheprovider", "-q"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "1 failed" in result.stdout, result.stdout + result.stderr
+    assert "skipped" not in result.stdout, "an unusable browser must fail, not skip, when AUTO_CODER_REQUIRE_BROWSER=1"
+    assert "BrowserType.launch" in result.stdout or "Executable doesn't exist" in result.stdout, result.stdout
