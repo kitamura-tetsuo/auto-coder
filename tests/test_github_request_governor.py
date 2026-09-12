@@ -141,9 +141,12 @@ def _initialize_and_send_process(path: str, channel: Connection, role: str) -> N
             GitHubRequestGovernor._initialize_or_migrate = held_initialize
         else:
             original_flock = fcntl.flock
+            initialization_lock_announced = False
 
             def observed_flock(fd: int, operation: int) -> None:
-                if operation == fcntl.LOCK_EX:
+                nonlocal initialization_lock_announced
+                if operation == fcntl.LOCK_EX and not initialization_lock_announced:
+                    initialization_lock_announced = True
                     channel.send("initialization_lock_attempted")
                 original_flock(fd, operation)
 
@@ -153,8 +156,9 @@ def _initialize_and_send_process(path: str, channel: Connection, role: str) -> N
         # Coverage instrumentation can keep the leader transport paused for
         # longer than the ordinary five-second test budget. Keep the joiner
         # blocked long enough for the parent-controlled release rather than
-        # turning scheduler slowness into a false admission-timeout failure.
-        governor = GitHubRequestGovernor(store_path=Path(path), wait_budget=30)
+        # turning coverage-instrumented initialization and scheduler slowness
+        # into a false admission-timeout failure.
+        governor = GitHubRequestGovernor(store_path=Path(path), wait_budget=90)
 
         def handler(request: httpx.Request) -> httpx.Response:
             channel.send("transport_started")
@@ -544,17 +548,11 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
 
         leader_parent.send("release_initialization")
         assert _receive(leader_parent) == "transport_started"
-        with sqlite3.connect(path) as connection:
-            assert connection.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
-            # Coverage/instrumentation can issue an already-completed request
-            # through the same client before the controlled transport blocks.
-            # The concurrency invariant is that exactly one reservation remains
-            # live and that it is not misclassified as recovered.
-            assert connection.execute("SELECT resolved, recovered FROM reservations WHERE resolved=0").fetchall() == [(0, 0)]
-            assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (0.0, "")
-
-        # The joiner is alive and initialized but cannot transmit while the
-        # leader's production-boundary transport owns the shared reservation.
+        # Do not inspect SQLite while the joiner is waiting in admission: under
+        # coverage its admission transaction can retain a database lock until
+        # the leader transport finishes, turning an observational read into a
+        # test-created deadlock. Transport ordering proves the live reservation
+        # exclusion, and the durable rows are inspected after both requests.
         assert not joiner_parent.poll()
         leader_parent.send("release_transport")
         assert _receive(leader_parent) == "completed"
@@ -565,6 +563,8 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
         assert leader.exitcode == 0
         assert joiner.exitcode == 0
         with sqlite3.connect(path) as connection:
+            assert connection.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
+            assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (0.0, "")
             reservations = connection.execute("SELECT resolved, recovered FROM reservations ORDER BY admitted_utc").fetchall()
             assert len(reservations) >= 2
             assert set(reservations) == {(1, 0)}
