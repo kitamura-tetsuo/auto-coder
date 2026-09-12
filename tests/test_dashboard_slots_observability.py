@@ -15,6 +15,7 @@ writes actually reach the mounted page (see Issue #1993's AS-001).
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -564,3 +565,23 @@ def test_real_controller_admission_origin_reaches_mounted_page(mock_ui, tmp_path
     assert ("Issue #9001", "/detail/issue/9001") in links
     labels = _label_texts(mock_ui)
     assert any("Normal: 1/1 used, 0 available" in text for text in labels)
+
+
+@patch("auto_coder.dashboard.ui")
+def test_empty_capacity_refresh_stays_known_during_writer_lock(mock_ui, tmp_path):
+    slots = ImplementationSlotRepository(REPO, 2, tmp_path / "slots.json")
+    engine = AutomationEngine(MagicMock())
+    engine.implementation_slots = slots
+    _mount_main(mock_ui, engine, REPO)
+    refresh_slots = _slots_refresh_callback(mock_ui)
+    asyncio.run(refresh_slots())
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with slots._state_lock():
+            executor.submit(asyncio.run, refresh_slots()).result(timeout=5)
+
+    assert "Normal: 0/2 used, 2 available" in _label_texts(mock_ui)
+    banners = _banner_texts(mock_ui)
+    assert len(banners) >= 2
+    assert banners[-1].startswith("Implementation slots as of ")
+    assert all("STALE" not in text and "unavailable" not in text for text in banners)

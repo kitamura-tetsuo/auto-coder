@@ -30,8 +30,8 @@ owner once regardless of its membership size, emergency usage is reported
 separately, and usage above the configured limit is shown, not clamped.
 Owner and PR entries link to the existing repository-scoped detail view.
 Refreshing this panel never issues a GitHub/provider request, a liveness
-probe, or a slot reservation/release/reconciliation call, and a slow or
-lock-contended observation runs off the page's event loop so it cannot
+probe, or a slot reservation/release/reconciliation call, and a slow
+filesystem observation runs off the page's event loop so it cannot
 block the rest of the dashboard.
 
 ## Read-only implementation-slot snapshots
@@ -45,10 +45,13 @@ complete state image. Missing legacy fields retain their documented absence or
 empty/default meaning without migration.
 
 Observation never creates or repairs the state or coordination files, performs
-lifecycle cleanup, probes liveness, or contacts an external service. It acquires
-an existing coordination lock only non-blockingly; contention and invalid or
-unreadable projected state return a typed unavailable result with a source-aware
-diagnostic and no fabricated occupancy or successful-observation timestamp.
+lifecycle cleanup, probes liveness, or contacts an external service. It reads one
+descriptor of the atomically replaced state file without acquiring writer
+coordination locks, so slow admission hierarchy lookups cannot prevent
+observation even when the last published usage is zero. Pending admissions remain
+visible as recorded evidence; the observation does not authorize new work.
+Invalid or unreadable projected state returns a typed unavailable result with a
+source-aware diagnostic and no fabricated occupancy or observation timestamp.
 
 ## Failed Cloud submission capacity recovery
 

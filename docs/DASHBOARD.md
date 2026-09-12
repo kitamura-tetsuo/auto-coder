@@ -74,7 +74,7 @@ without releasing it) still occupies its slot and is still shown.
 *   **Status line**: before any successful observation, an explicit
     "unavailable" reason is shown -- never a fabricated zero/free capacity
     or an empty-success message. After a successful observation, a later
-    read/validation/contention failure keeps showing that entire last-known
+    read/validation failure keeps showing that entire last-known
     snapshot (rows and counters together) with a prominent "STALE" banner
     and the unchanged last-successful observation time; the next
     successful observation replaces it and clears the banner.
@@ -94,8 +94,9 @@ without releasing it) still occupies its slot and is still shown.
     recorded facts, not a live running/completed/free assertion, and never
     an inferred retention reason or provider identity.
 *   **Refresh behavior**: at most one observation request is in flight per
-    mounted page; a slow or lock-contended read runs in a background
-    thread and cannot block this page's event loop or pause the Active
+    mounted page; observations read a complete atomically published state
+    image without acquiring writer locks, including during slow admission
+    checks. A slow filesystem read runs in a background thread and cannot block this page's event loop or pause the Active
     Workers/Queue/Open Items refresh above. An unchanged tick, or a
     membership-only change for one owner, never rebuilds unrelated owner
     rows or resets page scroll. Loading, linking to, or refreshing this

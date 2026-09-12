@@ -79,6 +79,16 @@ inferring a running/completed/free state.
     preserves the entire last-known snapshot (rows and counters together)
     with a stale indicator and an unchanged last-successful timestamp,
     never a partial mix of old rows and new counters.
+*   **Writer contention**: observations read one atomically published file image
+    without acquiring writer locks. Slow hierarchy admission can leave the
+    published image unchanged but cannot make the panel unavailable. Pending
+    admissions remain recorded evidence, not successful dispatch claims.
+    `tests/test_implementation_slots.py::test_snapshot_reads_published_image_while_local_writer_holds_lock`
+    and `tests/test_implementation_slots.py::test_snapshot_does_not_wait_for_another_process_store_lock`
+    verify observations during local and cross-process writes.
+    `tests/test_dashboard_slots_observability.py::test_empty_capacity_refresh_stays_known_during_writer_lock`
+    verifies that the mounted panel continues showing a known 0/2 observation.
+    This changes no admission decisions or structured trace events.
 *   **Capacity honesty**: normal usage counts each non-emergency owner
     once regardless of how many executions/PRs/sessions it has recorded;
     emergency usage is reported separately and excluded from normal usage;

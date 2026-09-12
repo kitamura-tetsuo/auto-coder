@@ -334,49 +334,27 @@ class ImplementationSlotRepository:
     def snapshot(self) -> ImplementationSlotObservation:
         """Return a non-blocking, read-only image of this instance's store.
 
-        The observation deliberately does not use ``_state_lock``: that helper
-        creates and repairs coordination paths for writers.  An existing writer
-        lock is acquired without waiting, while an absent lock is compatible
-        with reading the atomically replaced state file directly.
+        Writers publish complete images with ``os.replace``. Reading a single
+        descriptor therefore observes one published image even while admission
+        holds its coordination locks for external hierarchy checks. This is
+        recorded state, including pending admissions, not an admission decision.
         """
         source = str(self.storage_path.expanduser().resolve())
-        if not self._thread_lock.acquire(blocking=False):
-            return self._snapshot_unavailable(source, "implementation store is busy (process-local lock)")
-        lock_file: Optional[io.TextIOWrapper] = None
         try:
-            try:
-                lock_fd = os.open(self.lock_path, os.O_RDWR)
-            except FileNotFoundError:
-                lock_fd = None
-            except OSError as exc:
-                return self._snapshot_unavailable(source, f"cannot open coordination lock '{self.lock_path}': {exc}")
-            if lock_fd is not None:
-                lock_file = os.fdopen(lock_fd, "a+", encoding="utf-8")
-                try:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    return self._snapshot_unavailable(source, f"implementation store is busy at '{self.lock_path}'")
-                except OSError as exc:
-                    return self._snapshot_unavailable(source, f"cannot lock coordination source '{self.lock_path}': {exc}")
-            try:
-                owners = self._read_snapshot_image()
-                projected, normal_usage, emergency_usage = self._project_snapshot_owners(owners)
-            except (ImplementationSlotUnavailable, OSError) as exc:
-                return self._snapshot_unavailable(source, str(exc))
-            return ImplementationSlotSnapshot(
-                repository=self.repo_name,
-                storage_path=source,
-                observed_at=time.time(),
-                normal_limit=self.max_implementations,
-                owners=projected,
-                normal_usage=normal_usage,
-                normal_available=max(0, self.max_implementations - normal_usage),
-                emergency_usage=emergency_usage,
-            )
-        finally:
-            if lock_file is not None:
-                lock_file.close()
-            self._thread_lock.release()
+            owners = self._read_snapshot_image()
+            projected, normal_usage, emergency_usage = self._project_snapshot_owners(owners)
+        except (ImplementationSlotUnavailable, OSError) as exc:
+            return self._snapshot_unavailable(source, str(exc))
+        return ImplementationSlotSnapshot(
+            repository=self.repo_name,
+            storage_path=source,
+            observed_at=time.time(),
+            normal_limit=self.max_implementations,
+            owners=projected,
+            normal_usage=normal_usage,
+            normal_available=max(0, self.max_implementations - normal_usage),
+            emergency_usage=emergency_usage,
+        )
 
     def _snapshot_unavailable(self, source: str, diagnostic: str) -> ImplementationSlotSnapshotUnavailable:
         return ImplementationSlotSnapshotUnavailable(

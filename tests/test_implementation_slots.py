@@ -208,7 +208,7 @@ def test_snapshot_contains_projection_failures_and_recovers_after_store_repair(t
     assert tuple(row.owner_key for row in recovered.owners) == (owner.key,)
 
 
-def test_snapshot_returns_busy_without_waiting_or_mutating_lock(tmp_path):
+def test_snapshot_reads_published_image_while_local_writer_holds_lock(tmp_path):
     slots = repository(tmp_path)
     assert slots.reserve_new(ImplementationOwner("issue", 1))
     entered = threading.Event()
@@ -228,8 +228,9 @@ def test_snapshot_returns_busy_without_waiting_or_mutating_lock(tmp_path):
     release.set()
     thread.join(timeout=5)
 
-    assert isinstance(snapshot, ImplementationSlotSnapshotUnavailable)
-    assert "busy" in snapshot.diagnostic
+    assert isinstance(snapshot, ImplementationSlotSnapshot)
+    assert tuple(row.owner_key for row in snapshot.owners) == ("issue:1",)
+    assert (snapshot.normal_usage, snapshot.normal_available) == (1, 0)
     assert elapsed < 1
     known = slots.snapshot()
     assert isinstance(known, ImplementationSlotSnapshot)
@@ -263,11 +264,12 @@ with repository._state_lock():
         observer = repository(tmp_path)
 
         started = time.monotonic()
-        unavailable = observer.snapshot()
+        observed = observer.snapshot()
         elapsed = time.monotonic() - started
 
-        assert isinstance(unavailable, ImplementationSlotSnapshotUnavailable)
-        assert "busy" in unavailable.diagnostic
+        assert isinstance(observed, ImplementationSlotSnapshot)
+        assert tuple(row.owner_key for row in observed.owners) == (owner.key,)
+        assert (observed.normal_usage, observed.normal_available) == (1, 0)
         assert elapsed < 1
         assert child.poll() is None
     finally:
@@ -277,6 +279,55 @@ with repository._state_lock():
     recovered = observer.snapshot()
     assert isinstance(recovered, ImplementationSlotSnapshot)
     assert tuple(row.owner_key for row in recovered.owners) == (owner.key,)
+
+
+@pytest.mark.parametrize("read_number", [1, 2, 3])
+def test_snapshot_remains_available_during_slow_hierarchy_admission(tmp_path, read_number):
+    slots = repository(tmp_path, limit=2)
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowHierarchy(AuthoritativeHierarchy):
+        reads = 0
+
+        def get_parent_issue_number_strict(self, repo, number):
+            self.reads += 1
+            if self.reads == read_number:
+                entered.set()
+                assert release.wait(timeout=5)
+            return super().get_parent_issue_number_strict(repo, number)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        admission = executor.submit(slots.start_execution, ImplementationOwner("issue", 1), github_client=SlowHierarchy())
+        try:
+            assert entered.wait(timeout=5)
+            snapshot = slots.snapshot()
+            assert isinstance(snapshot, ImplementationSlotSnapshot)
+            expected_usage = 1 if read_number == 3 else 0
+            assert (snapshot.normal_usage, snapshot.normal_available) == (expected_usage, 2 - expected_usage)
+            if expected_usage:
+                assert snapshot.owners[0].admission_pending is True
+        finally:
+            release.set()
+        assert admission.result(timeout=5) is not None
+    assert slots.snapshot().normal_usage == 1
+
+
+def test_snapshot_ignores_partial_unpublished_writer_image(tmp_path):
+    slots = repository(tmp_path, limit=2)
+    assert slots.reserve_new(ImplementationOwner("issue", 1))
+    with slots._state_lock():
+        temporary = slots.storage_path.with_suffix(".tmp")
+        temporary.write_text('{"issue:2":', encoding="utf-8")
+        snapshot = slots.snapshot()
+        assert isinstance(snapshot, ImplementationSlotSnapshot)
+        assert tuple(row.owner_key for row in snapshot.owners) == ("issue:1",)
+        slots._write({"issue:2": {"kind": "issue", "number": 2}})
+        published = slots.snapshot()
+        assert isinstance(published, ImplementationSlotSnapshot)
+        assert tuple(row.owner_key for row in published.owners) == ("issue:2",)
+        assert (published.normal_usage, published.normal_available) == (1, 1)
+        assert tuple(row.owner_key for row in snapshot.owners) == ("issue:1",)
 
 
 class AuthoritativeHierarchy:
