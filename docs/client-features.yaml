@@ -154,6 +154,8 @@ the PR is closed, merged, or authoritatively absent. Operational read failures
 retain both the watch and reevaluation responsibility. Open and reopened PRs
 continue to retire only obsolete heads and activate the current-head watch, so
 periodic recovery resumes only after a fresh authoritative open observation.
+These terminal/open lifecycle transitions precede author-admission filtering;
+changing an allowlist cannot strand or revive watches contrary to strict state.
 
 ## Causally scoped CI observation snapshots
 

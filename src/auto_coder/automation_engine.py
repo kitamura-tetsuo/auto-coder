@@ -5898,6 +5898,15 @@ class AutomationEngine:
                 if not pr_data or not pr_data.get("number"):
                     logger.error(f"PR #{number} not found in {repo_name}")
                     return None
+                if propagate_errors:
+                    if pr_data.get("state") == "closed":
+                        self.invalidations.retire_ci_watches(repo_name, number)
+                    elif pr_data.get("state") == "open":
+                        self.invalidations.restore_ci_watches_for_open_lifecycle(
+                            repo_name,
+                            number,
+                            str(pr_data.get("head", {}).get("sha") or ""),
+                        )
                 if not self._is_pr_author_allowed(pr_data):
                     logger.info(f"Skipping PR #{number} - author not in PR allowlist")
                     return None

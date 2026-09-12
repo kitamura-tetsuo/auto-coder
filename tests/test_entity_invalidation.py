@@ -17,13 +17,16 @@ from src.auto_coder.automation_config import AutomationConfig, Candidate, Candid
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from src.auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
+from src.auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchOutcome
 from src.auto_coder.entity_invalidation import CIWebhookDelivery, DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
 from src.auto_coder.github_pending_work import PendingWorkScheduler, PendingWorkStore
 from src.auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from src.auto_coder.pr_processor import _handle_pr_merge
 from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
 from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from src.auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
+from src.auto_coder.util.github_action import GitHubActionsStatusResult, WorkflowDispatchResult
 from src.auto_coder.util.github_request_outcome import (
     DeliveryCertainty,
     GitHubApiOutcome,
@@ -1111,6 +1114,62 @@ def test_failed_terminal_watch_retirement_keeps_invalidation_retryable(tmp_path:
     asyncio.run(scenario())
     assert engine.invalidations.pending_count("owner/repo") == 1
     assert engine.invalidations._connection.execute("SELECT active FROM ci_watches WHERE repository = 'owner/repo' AND pr_number = 100").fetchone() == (1,)
+
+
+def test_authoritative_lifecycle_transition_survives_later_author_exclusion(tmp_path: Path, monkeypatch):
+    """The production watch origin and webhook worker cross the admission gate."""
+    path = tmp_path / "invalidations.sqlite3"
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(path))
+    pr_data = {
+        "number": 100,
+        "title": "Watched",
+        "body": "",
+        "state": "open",
+        "user": {"login": "contributor", "id": 1},
+        "author_id": 1,
+        "head": {"ref": "topic", "sha": "old-head"},
+        "labels": [],
+    }
+    github = GitHubClient("test-token")
+    github.get_pull_request_metadata_strict = MagicMock(return_value=pr_data)
+    github.get_pr_review_threads_strict = MagicMock(return_value=[])
+    claim_store = DispatchClaimStore(db_path=tmp_path / "dispatch-claims.sqlite3")
+    with (
+        patch("src.auto_coder.pr_processor.get_dispatch_claim_store", return_value=claim_store),
+        patch("src.auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[], in_progress=False)),
+        patch("src.auto_coder.pr_processor.get_detailed_checks_from_history"),
+        patch("src.auto_coder.pr_processor.LabelManager"),
+        patch("auto_coder.util.github_action.trigger_workflow_dispatch", return_value=WorkflowDispatchResult(outcome=DispatchOutcome.ACCEPTED)),
+    ):
+        actions = _handle_pr_merge(github, "owner/repo", pr_data, AutomationConfig(pr_allowlist=[1]), {})
+    assert "Created durable CI watch for ci.yml" in actions
+
+    engine = AutomationEngine(github, AutomationConfig(pr_allowlist=[999]))
+    github.get_pull_request_metadata_strict = MagicMock(
+        side_effect=[
+            {**pr_data, "state": "closed"},
+            {**pr_data, "state": "open", "head": {"ref": "topic", "sha": "new-head"}},
+        ]
+    )
+    processed = []
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda *args, **kwargs: processed.append(args))
+
+    async def scenario():
+        await process_github_payload("pull_request", {"action": "closed", "pull_request": {"number": 100}}, engine, "owner/repo", "closed-delivery")
+        await _run_worker_until(engine, 0, processed)
+        assert DurableInvalidationQueue(path).promote_due_ci_watches("owner/repo", now=time.time() + 600) == 0
+        await process_github_payload("pull_request", {"action": "reopened", "pull_request": {"number": 100}}, engine, "owner/repo", "reopened-delivery")
+        await _run_worker_until(engine, 0, processed)
+
+    asyncio.run(scenario())
+    watches = engine.invalidations._connection.execute(
+        "SELECT head_sha, workflow_id, active FROM ci_watches WHERE repository = ? AND pr_number = ? ORDER BY head_sha, workflow_id",
+        ("owner/repo", 100),
+    ).fetchall()
+    assert watches == [("new-head", "", 1), ("old-head", "", 0), ("old-head", "ci.yml", 0)]
+    assert engine.invalidations.pending_count("owner/repo") == 0
+    assert github.get_pull_request_metadata_strict.call_count == 2
+    assert processed == []
 
 
 def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: Path, monkeypatch):
