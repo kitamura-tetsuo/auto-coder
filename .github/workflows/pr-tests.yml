@@ -63,10 +63,6 @@ jobs:
         run: |
           uv sync --dev --extra test
 
-      - name: Install Playwright Chromium
-        run: |
-          uv run playwright install --with-deps chromium
-
       - name: Install package in development mode
         run: |
           # Install package with console scripts to make auto-coder command available

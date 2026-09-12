@@ -23,46 +23,27 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional, Tuple
+from typing import Iterator, Tuple
 from unittest.mock import MagicMock
 
 import pytest
 import uvicorn
 from fastapi import FastAPI
-from playwright.sync_api import Browser, Page, sync_playwright
 
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.dashboard import init_dashboard
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotSnapshotUnavailable
+from tests.support.browser_launch import headless_page
 
 REPO = "owner/repo"
 
-
-def _resolve_chromium_executable() -> Optional[str]:
-    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if browsers_path:
-        candidate = Path(browsers_path) / "chromium"
-        if candidate.exists():
-            return str(candidate)
-    return None
+# Real-browser regression coverage: excluded from ordinary `PR Tests` shards
+# and run instead by the dedicated `Browser Tests` GitHub Actions workflow.
+pytestmark = pytest.mark.browser
 
 
-@contextmanager
-def _headless_page() -> Iterator[Page]:
-    with sync_playwright() as p:
-        launch_kwargs = {"headless": True}
-        executable_path = _resolve_chromium_executable()
-        if executable_path:
-            launch_kwargs["executable_path"] = executable_path
-        try:
-            browser: Browser = p.chromium.launch(**launch_kwargs)
-        except Exception as exc:  # pragma: no cover - environment without a usable browser
-            pytest.skip(f"no usable headless Chromium in this environment: {exc}")
-        try:
-            page = browser.new_page(viewport={"width": 900, "height": 500})
-            yield page
-        finally:
-            browser.close()
+def _headless_page():
+    return headless_page(viewport={"width": 900, "height": 500})
 
 
 @pytest.fixture(scope="module")

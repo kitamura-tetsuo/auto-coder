@@ -232,6 +232,9 @@ norecursedirs = [
     "env",
     "utils",
 ]
+markers = [
+    "browser: test whose correctness oracle requires launching and driving a real browser (excluded from ordinary PR Tests shards; run by the dedicated Browser Tests GitHub Actions workflow)",
+]
 
 [dependency-groups]
 dev = [
