@@ -321,17 +321,29 @@ def test_headless_page_discovers_browser_despite_per_test_home_rewrite_is_skippa
     assert "failed" not in result.stdout, "the REQ-004 test must not force a failure in an ordinary local run without a provisioned browser"
 
 
-def test_browser_tests_step_propagates_pytest_failure_and_has_no_continue_on_error(tmp_path):
-    """REQ-005: the dedicated workflow's `Run browser-marked tests` step must
-    not swallow a non-zero pytest exit status. A minimal incorrect
-    implementation could append `|| true` to the step's `run:` script, or
-    set `continue-on-error: true` on the step -- either would let the
-    dedicated check go green while a browser-marked test actually failed.
+@pytest.mark.parametrize(
+    "stub_pytest_exit_code",
+    [
+        pytest.param(7, id="ordinary-failure"),
+        pytest.param(5, id="pytest-no-tests-collected"),
+    ],
+)
+def test_browser_tests_step_propagates_pytest_failure_and_has_no_continue_on_error(tmp_path, stub_pytest_exit_code):
+    """REQ-005, AS-004: the dedicated workflow's `Run browser-marked tests`
+    step must not swallow a non-zero pytest exit status -- including
+    pytest's specific exit code 5 ("no tests were collected"), which
+    REQ-005/AS-004 separately requires to fail the check. A minimal
+    incorrect implementation could append `|| true` to the step's `run:`
+    script, set `continue-on-error: true` on the step, or special-case
+    exactly this exit code (e.g. `|| [ "$?" -eq 5 ]`) so an empty browser
+    selection quietly turns into success while an ordinary failure still
+    fails -- covering only one exit code would miss that last mutation.
 
     Executes the step's real `run:` script verbatim (the same shell
     GitHub Actions uses by default: `bash --noprofile --norc -eo pipefail`)
     with a stub `uv` placed first on PATH that makes the pytest invocation
-    exit non-zero, and requires the step's shell to exit non-zero too.
+    exit with each controlled code in turn, and requires the step's shell
+    to exit non-zero for both.
     """
     workflow = _workflow(BROWSER_WORKFLOW)
     job = workflow["jobs"]["browser-tests"]
@@ -340,7 +352,7 @@ def test_browser_tests_step_propagates_pytest_failure_and_has_no_continue_on_err
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
     stub_uv = stub_bin / "uv"
-    stub_uv.write_text("#!/bin/bash\necho 'stub uv: simulating a failing pytest invocation' >&2\nexit 7\n", encoding="utf-8")
+    stub_uv.write_text(f"#!/bin/bash\necho 'stub uv: simulating pytest exit code {stub_pytest_exit_code}' >&2\nexit {stub_pytest_exit_code}\n", encoding="utf-8")
     stub_uv.chmod(0o755)
 
     env = os.environ.copy()
@@ -355,7 +367,7 @@ def test_browser_tests_step_propagates_pytest_failure_and_has_no_continue_on_err
         timeout=30,
     )
 
-    assert result.returncode != 0, "the step's shell must propagate a failing pytest invocation's exit status"
+    assert result.returncode != 0, f"the step's shell must propagate a pytest exit code {stub_pytest_exit_code} as a failure"
 
 
 def test_browser_tests_job_and_step_have_no_suppressing_control_flow():
