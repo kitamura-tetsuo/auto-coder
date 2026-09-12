@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from auto_coder.automation_config import AutomationConfig, Candidate, ExplicitTargetOutcome, StaleJulesPRResult
 from auto_coder.automation_engine import AutomationEngine, _ValidationPublicationStageHandler
 from auto_coder.dashboard import init_dashboard
+from auto_coder.entity_invalidation import DurableInvalidationQueue, EntityIdentity
 from auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_trace_collector
 from auto_coder.github_pending_work import PendingObligation, PendingReason, WorkIdentity
 from auto_coder.reissue_required_store import ReissueRequiredStore
@@ -63,6 +64,25 @@ def test_cached_terminal_refusal_reaches_mounted_detail_without_github(mock_ui):
     assert [event.stage_id for event in stages] == ["issue.cached-blocked-admission"]
     assert stages[0].outcome == Outcome.BLOCKED.value
     _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 2000), "cached blocked admission")
+
+
+@patch("auto_coder.dashboard.ui")
+def test_cached_dependency_wait_reaches_mounted_detail(mock_ui, tmp_path):
+    engine = AutomationEngine(MagicMock(), AutomationConfig(repo_name="owner/repo"))
+    engine.invalidations = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    engine.invalidations.invalidate(EntityIdentity("owner/repo", "issue", 2019))
+    claim = engine.invalidations.claim("owner/repo")
+    assert engine.invalidations.begin_processing(claim)
+    for number in (2019, 2018):
+        engine.dependency_observations.observe("owner/repo", {"number": number, "body": "Parent-Issue: #2016\nBlocked-By: #2018", "state": "open", "updated_at": "2026-09-12T10:00:00Z"})
+    assert engine._defer_observed_dependency_wait("owner/repo", 2019, claim)
+    snapshot = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=2019)
+    stages = [event for event in snapshot.events if event.kind == EventKind.STAGE_RESULT.value]
+    assert [event.stage_id for event in stages] == ["issue.cached-dependency-wait"]
+    assert stages[0].outcome == Outcome.DEFERRED.value
+    assert engine.github.mock_calls == []
+    assert engine.implementation_slots is None
+    _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 2019), "cached dependency wait")
 
 
 def _run_admission_to_view(mock_ui, item_type: str, item_number: int) -> None:

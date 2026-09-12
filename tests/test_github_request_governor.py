@@ -6,6 +6,7 @@ import threading
 from dataclasses import dataclass
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
+from multiprocessing.synchronize import Event as EventType
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -127,7 +128,7 @@ def _create_legacy_store(path: Path, timestamp: float) -> None:
         connection.execute("INSERT INTO reservations(origin, attempt_id, kind, admitted_utc) VALUES (?, 'legacy-attempt', 'read', ?)", (origin, timestamp))
 
 
-def _initialize_and_send_process(path: str, channel: Connection, role: str) -> None:
+def _initialize_and_send_process(path: str, channel: Connection, role: str, leader_transport_active: EventType) -> None:
     try:
         if role == "leader":
             original_initialize = GitHubRequestGovernor._initialize_or_migrate
@@ -161,10 +162,15 @@ def _initialize_and_send_process(path: str, channel: Connection, role: str) -> N
         governor = GitHubRequestGovernor(store_path=Path(path), wait_budget=90)
 
         def handler(request: httpx.Request) -> httpx.Response:
+            if role == "joiner":
+                assert not leader_transport_active.is_set()
+            else:
+                leader_transport_active.set()
             channel.send("transport_started")
             if role == "leader":
                 assert channel.poll(10)
                 assert channel.recv() == "release_transport"
+                leader_transport_active.clear()
             return httpx.Response(200, json={"ok": True}, request=request)
 
         with github_http_client(
@@ -532,9 +538,16 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
     process_context = get_context("spawn")
     leader_parent, leader_child = process_context.Pipe()
     joiner_parent, joiner_child = process_context.Pipe()
+    leader_transport_active = process_context.Event()
     path = tmp_path / "simultaneous-first-use.sqlite3"
-    leader = process_context.Process(target=_initialize_and_send_process, args=(str(path), leader_child, "leader"))
-    joiner = process_context.Process(target=_initialize_and_send_process, args=(str(path), joiner_child, "joiner"))
+    leader = process_context.Process(
+        target=_initialize_and_send_process,
+        args=(str(path), leader_child, "leader", leader_transport_active),
+    )
+    joiner = process_context.Process(
+        target=_initialize_and_send_process,
+        args=(str(path), joiner_child, "joiner", leader_transport_active),
+    )
     leader.start()
     try:
         assert _receive(leader_parent) == "constructing"
@@ -554,6 +567,8 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
         # test-created deadlock. Transport ordering proves the live reservation
         # exclusion, and the durable rows are inspected after both requests.
         assert not joiner_parent.poll()
+        # The process-shared event lets the joiner assert transport exclusion
+        # without a scheduler-sensitive parent-side poll.
         leader_parent.send("release_transport")
         assert _receive(leader_parent) == "completed"
         assert _receive(joiner_parent) == "transport_started"

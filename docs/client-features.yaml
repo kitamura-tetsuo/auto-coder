@@ -1,5 +1,30 @@
 # Client Features Documentation
 
+## Trusted observations for early dependency waiting
+
+The daemon uses a separate process-local, per-Issue observation cache exclusively
+to defer Issues with explicitly declared open prerequisites before authoritative
+family reconstruction and submitted-parent validation. Startup discards trust.
+A cold observation fetches only the target and its declared prerequisites through
+the strict GitHub reader. Complete Issue webhooks update that Issue without
+invalidating unrelated observations. Ambiguous equal-timestamp updates, older
+deliveries, incomplete payloads, deletion/transfer and relationship notifications
+invalidate affected observations; an in-flight REST response cannot overwrite a
+newer notification. Duplicate deliveries do not renew observation age.
+
+Observations expire after 300 seconds. A cached wait retains a durable retry at
+most 300 seconds later, so missing notifications cannot strand work indefinitely.
+Issue notifications wake advisory dependency waits without lifting GitHub rate
+limits or startup stabilization guards. Existing repository dependency discovery
+continues to recover unknown reverse relationships. The cache never authorizes
+implementation or replaces the final strict dependency and ownership gates.
+Explicit/operator and provider-resumption paths retain their existing checks.
+
+The dashboard detail view records `issue.cached-dependency-wait` as `deferred`,
+with `waiting_on`, `retry_at`, `evidence_source=local-issue-observation`, and
+`authorizes_execution=false`. This is observed dependency waiting, not a verified
+specification result, implementation start, or completion.
+
 ## Worker occupancy during pre-dispatch
 
 Active Workers reports the dequeued candidate throughout authoritative GitHub
@@ -147,6 +172,15 @@ across restart.  The shared invalidation controller promotes due watches into
 the normal pull-request evaluation path; no per-PR polling thread, run-appearance
 timeout, or monitor-owned merge path remains.  Dispatch claims remain a separate
 suppressing safety record when observations are missing or unavailable.
+
+An ordinary durable PR reevaluation retires every stored CI watch for that PR
+before completing its generation when its cache-bypassing GitHub read confirms
+the PR is closed, merged, or authoritatively absent. Operational read failures
+retain both the watch and reevaluation responsibility. Open and reopened PRs
+continue to retire only obsolete heads and activate the current-head watch, so
+periodic recovery resumes only after a fresh authoritative open observation.
+These terminal/open lifecycle transitions precede author-admission filtering;
+changing an allowlist cannot strand or revive watches contrary to strict state.
 
 ## Causally scoped CI observation snapshots
 

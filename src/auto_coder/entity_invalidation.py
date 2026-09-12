@@ -353,6 +353,44 @@ class DurableInvalidationQueue:
                     (repository, pr_number, current_head),
                 )
 
+    def restore_ci_watches_for_open_lifecycle(self, repository: str, pr_number: int, current_head: str) -> bool:
+        """Restore current-head recovery only when this PR has watch history.
+
+        The strict authoritative refresh calls this before processing admission.
+        Consequently a reopened lifecycle can recover a retired obligation even
+        when implementation policy now excludes the PR, without creating watch
+        obligations for open PRs that have never entered the supported watch
+        path.
+        """
+        if not repository or pr_number <= 0 or not current_head:
+            return False
+        with self._lock, self._connection:
+            history = self._connection.execute(
+                "SELECT 1 FROM ci_watches WHERE repository = ? AND pr_number = ? LIMIT 1",
+                (repository, pr_number),
+            ).fetchone()
+            if history is None:
+                return False
+            self._connection.execute(
+                "UPDATE ci_watches SET active = 0 WHERE repository = ? AND pr_number = ? AND head_sha <> ?",
+                (repository, pr_number, current_head),
+            )
+            current = self._connection.execute(
+                "SELECT 1 FROM ci_watches WHERE repository = ? AND pr_number = ? AND head_sha = ? LIMIT 1",
+                (repository, pr_number, current_head),
+            ).fetchone()
+            if current is None:
+                self._connection.execute(
+                    "INSERT INTO ci_watches(repository, pr_number, head_sha, workflow_id, next_reconcile_at) VALUES (?, ?, ?, '', ?)",
+                    (repository, pr_number, current_head, time.time()),
+                )
+            else:
+                self._connection.execute(
+                    "UPDATE ci_watches SET active = 1 WHERE repository = ? AND pr_number = ? AND head_sha = ?",
+                    (repository, pr_number, current_head),
+                )
+        return True
+
     def _advance_ci_pr(self, repository: str, number: int, received: float) -> None:
         self._connection.execute(
             """INSERT INTO ci_pending_prs(repository, pr_number, observation_epoch,
@@ -664,6 +702,17 @@ class DurableInvalidationQueue:
             if cursor.rowcount != 1:
                 raise RuntimeError("invalidation deferral transition was not committed")
         return DeferredInvalidation(identity, int(generation), deadline, reason, api_origin)
+
+    def wake_dependency_waiters(self, repository: str) -> None:
+        """Issue notifications may release advisory waits, never GitHub cooldowns."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                """UPDATE entity_invalidations
+                   SET retry_not_before = NULL, deferral_reason = NULL
+                   WHERE repository = ? AND state = 'dirty'
+                     AND deferral_reason = 'cached_dependency_wait'""",
+                (repository,),
+            )
 
     def get_deferred(self, identity: EntityIdentity) -> Optional[DeferredInvalidation]:
         """Return persisted retry metadata for diagnostics and tests."""

@@ -9,6 +9,19 @@ identity; late evidence remains attached to the execution scope that produced it
 
 ## Updating observable processing
 
+Early dependency waiting emits `issue.cached-dependency-wait` as `deferred`
+before authoritative refresh/family validation. The Issue execution includes
+`waiting_on`, `retry_at`, `evidence_source=local-issue-observation`, and
+`authorizes_execution=false`. No slot or provider execution is implied.
+`test_cached_dependency_wait_reaches_mounted_detail` in
+`tests/test_dashboard_observability.py` runs the production gate and mounted
+detail projection with zero GitHub calls; `test_worker_skips_before_refresh_validation_and_slot`
+in `tests/test_dependency_observation_cache.py` verifies the real worker releases
+the candidate while retaining a durable retry. Run both with
+`bash scripts/test.sh tests/test_dependency_observation_cache.py tests/test_dashboard_observability.py`.
+The process-local per-Issue trust expires after 300 seconds and is discarded at
+startup. Issue webhooks wake advisory waits; GitHub cooldowns remain in force.
+
 Worker occupancy includes pre-dispatch GitHub refresh, submitted-parent validation,
 and dependency expansion. `test_worker_status_owns_candidate_during_pre_dispatch`
 in `tests/test_entity_invalidation.py` holds each production worker boundary open,
@@ -60,6 +73,13 @@ Mermaid node map is not sufficient: none proves that a real producer still emits
 the evidence. The renderer is generic, so a valid new production-emitted stage and
 repeated stage occurrences require no static graph edit. Display-text-only changes
 likewise do not require meaningless producer changes.
+
+Terminal PR CI-watch retirement is observability-neutral: it changes the durable
+producer's eligibility for future periodic invalidations, not a processing
+origin, trace outcome, provider route, or structured event schema. The worker's
+existing closed/absent lifecycle result remains the Dashboard authority; the
+regressions in `tests/test_entity_invalidation.py` instead verify the underlying
+database, restart, and due-promotion behavior that prevents phantom queue work.
 
 ## Implementation Slots panel (Issue #1993)
 
