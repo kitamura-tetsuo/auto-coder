@@ -38,6 +38,13 @@ workflow/check facts rather than an aggregate green/red label. A missing pytest
 node or zero-selection exit follows the same single bounded correction path as
 a pre-launch target rejection, while collection/import failures and executed
 test failures retain their distinct meanings.
+The one target-correction budget spans both pre-launch validation and runtime
+pytest selection. A corrected but unselectable node therefore terminates as a
+protocol error rather than opening a second correction, and a PASS after that
+round trip fails closed when current authoritative CI evidence is unavailable.
+Focused reruns are suppressed only when a current pass-eligible canonical
+workflow fact explicitly reports the exact requested target as successful;
+aggregate suite success never implies that target-level fact.
 
 ## Worker occupancy during pre-dispatch
 

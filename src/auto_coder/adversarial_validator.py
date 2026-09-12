@@ -143,6 +143,21 @@ def canonical_pr_tests_succeeded(status: Optional["GitHubActionsStatusResult"]) 
     return any(isinstance(fact, WorkflowObservation) and fact.execution.attempt == newest.get((fact.execution.workflow_id, fact.execution.run_id)) and fact.workflow_path == CANONICAL_PR_TESTS_WORKFLOW and fact.conclusion is CIConclusion.SUCCESS for fact in snapshot.facts)
 
 
+def focused_ci_target_succeeded(status: Optional["GitHubActionsStatusResult"], target: str) -> bool:
+    """Return true only for an exact target explicitly reported by passing CI."""
+    if not canonical_pr_tests_succeeded(status) or status is None or status.observation is None:
+        return False
+    newest: Dict[tuple[str, str], int] = {}
+    for fact in status.observation.facts:
+        if isinstance(fact, WorkflowObservation) and fact.execution.attempt is not None:
+            key = (fact.execution.workflow_id, fact.execution.run_id)
+            newest[key] = max(newest.get(key, 0), fact.execution.attempt)
+    return any(
+        isinstance(fact, WorkflowObservation) and fact.conclusion is CIConclusion.SUCCESS and fact.workflow_path == CANONICAL_PR_TESTS_WORKFLOW and fact.execution.attempt == newest.get((fact.execution.workflow_id, fact.execution.run_id)) and target in fact.successful_test_targets
+        for fact in status.observation.facts
+    )
+
+
 def format_ci_execution_evidence(status: Optional["GitHubActionsStatusResult"]) -> str:
     """Serialize the authoritative observation without flattening provider facts."""
     if status is None or status.observation is None:
@@ -166,6 +181,7 @@ def format_ci_execution_evidence(status: Optional["GitHubActionsStatusResult"]) 
                     "workflow_path": fact.workflow_path,
                     "conclusion": fact.conclusion.value,
                     "actionable": actionable,
+                    "successful_test_targets": list(fact.successful_test_targets),
                 }
             )
         else:
@@ -2626,7 +2642,9 @@ def run_adversarial_validation(
         if refresh_ci_status is not None:
             ci_status = refresh_ci_status()
         target_error = validate_dynamic_check_target(check_target, Path(execution_cwd).resolve()) if execution_cwd else None
+        correction_used = False
         if target_error:
+            correction_used = True
             correction_prompt = render_prompt(
                 "pr.adversarial_validation_target_correction",
                 invalid_target=check_target,
@@ -2657,7 +2675,14 @@ def run_adversarial_validation(
                         diagnostic_reason=repeated_error,
                     )
                 check_target = corrected_target
-        if check_target == "all" and canonical_pr_tests_succeeded(ci_status):
+                if result.result.strip().upper() == "PASS" and (ci_status is None or ci_status.observation is None or ci_status.observation.availability is not ObservationAvailability.KNOWN):
+                    return AdversarialValidationResult(
+                        result="INCONCLUSIVE",
+                        summary="Current exact-head CI evidence is unavailable after target correction",
+                        diagnostic_category="validator_evidence_unavailable",
+                        diagnostic_reason=format_ci_execution_evidence(ci_status),
+                    )
+        if (check_target == "all" and canonical_pr_tests_succeeded(ci_status)) or (check_target != "all" and focused_ci_target_succeeded(ci_status, check_target)):
             logger.info("Reusing successful exact-head canonical PR Tests evidence instead of rerunning the suite")
             result.dynamic_check_requested = None
             result.summary = f"{result.summary} Reused successful exact-head {CANONICAL_PR_TESTS_WORKFLOW} evidence."
@@ -2665,6 +2690,14 @@ def run_adversarial_validation(
             try:
                 test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
                 if test_res.target_selection_error:
+                    if correction_used:
+                        return AdversarialValidationResult(
+                            result="ERROR",
+                            summary="Reviewer repeated an unselectable dynamic-check target after the bounded correction step",
+                            diagnostic_category="dynamic_check_target_protocol_error",
+                            diagnostic_reason=test_res.target_selection_error,
+                        )
+                    correction_used = True
                     if refresh_ci_status is not None:
                         ci_status = refresh_ci_status()
                     correction_prompt = render_prompt(
@@ -2688,6 +2721,13 @@ def run_adversarial_validation(
                     _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_selection_correction")
                     corrected_target = (result.dynamic_check_requested or "").strip()
                     if not corrected_target:
+                        if result.result.strip().upper() == "PASS" and (ci_status is None or ci_status.observation is None or ci_status.observation.availability is not ObservationAvailability.KNOWN):
+                            return AdversarialValidationResult(
+                                result="INCONCLUSIVE",
+                                summary="Current exact-head CI evidence is unavailable after target correction",
+                                diagnostic_category="validator_evidence_unavailable",
+                                diagnostic_reason=format_ci_execution_evidence(ci_status),
+                            )
                         return _apply_coverage_and_verdict_precedence(result, context)
                     repeated_error = validate_dynamic_check_target(corrected_target, Path(execution_cwd).resolve()) if execution_cwd else None
                     if repeated_error:

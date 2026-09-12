@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from auto_coder.adversarial_validator import canonical_pr_tests_succeeded, format_ci_execution_evidence, run_exact_head_dynamic_check, validate_dynamic_check_target
+from auto_coder.adversarial_validator import canonical_pr_tests_succeeded, focused_ci_target_succeeded, format_ci_execution_evidence, run_exact_head_dynamic_check, validate_dynamic_check_target
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.ci_observation import CIConclusion, CIObservationSnapshot, ObservationAvailability, ObservationRequest, ObservationSubject, WorkflowExecutionIdentity, WorkflowObservation
 from auto_coder.util.github_action import GitHubActionsStatusResult
@@ -74,3 +74,36 @@ def test_production_status_preserves_subject_and_distinct_execution_facts() -> N
     assert '"run_id": "11"' in evidence
     assert '"conclusion": "pending"' in evidence
     assert evidence.count('"actionable": true') == 2
+
+
+def test_focused_ci_reuse_requires_explicit_exact_target() -> None:
+    target = "tests/test_feature.py::test_case"
+    subject = ObservationSubject("https://api.github.com", "owner/repo", 7, "a" * 40)
+    request = ObservationRequest("github-actions", "checks+workflows")
+    fact = WorkflowObservation(
+        WorkflowExecutionIdentity("1", "10", 1),
+        CIConclusion.SUCCESS,
+        workflow_path=".github/workflows/pr-tests.yml",
+        successful_test_targets=(target,),
+    )
+    status = GitHubActionsStatusResult(
+        success=True,
+        ids=[10],
+        observation=CIObservationSnapshot(subject, request, "cycle", 1, ObservationAvailability.KNOWN, (fact,)),
+    )
+
+    assert focused_ci_target_succeeded(status, target) is True
+    assert focused_ci_target_succeeded(status, "tests/test_feature.py::other") is False
+    aggregate_only = GitHubActionsStatusResult(
+        success=True,
+        ids=[10],
+        observation=CIObservationSnapshot(
+            subject,
+            request,
+            "cycle-2",
+            1,
+            ObservationAvailability.KNOWN,
+            (WorkflowObservation(fact.execution, fact.conclusion, workflow_path=fact.workflow_path),),
+        ),
+    )
+    assert focused_ci_target_succeeded(aggregate_only, target) is False

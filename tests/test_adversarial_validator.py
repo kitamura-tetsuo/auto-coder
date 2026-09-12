@@ -34,11 +34,84 @@ from auto_coder.adversarial_validator import (
     run_exact_head_dynamic_check,
 )
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.ci_observation import CIObservationSnapshot, ObservationAvailability, ObservationRequest, ObservationSubject
 from auto_coder.issue_context import IssueOracleResolution, VerifiedIssueOracle
 from auto_coder.prompt_loader import render_prompt
 from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from auto_coder.trace_logger import get_trace_logger
+from auto_coder.util.github_action import GitHubActionsStatusResult
 from auto_coder.utils import CommandResult
+
+
+def _dynamic_context() -> AdversarialValidationContext:
+    return AdversarialValidationContext(
+        repo_name="owner/repo",
+        pr_number=100,
+        pr_title="Feature",
+        pr_diff="diff content",
+        changed_tests=["tests/test_feature.py"],
+        issue_context="Issue specification",
+    )
+
+
+@patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=_dynamic_context())
+@patch("auto_coder.adversarial_validator.run_llm_prompt")
+@patch("auto_coder.adversarial_validator.run_exact_head_dynamic_check")
+def test_invalid_then_unselectable_target_consumes_only_one_correction(mock_check, mock_prompt, _mock_context) -> None:
+    head_sha = "b" * 40
+    mock_prompt.return_value = '{"result":"INCONCLUSIVE","summary":"select","dynamic_check_requested":"run tests"}'
+    mock_check.return_value = DynamicCheckExecution(target_selection_error="pytest selected zero tests")
+    manager = MagicMock()
+    manager._last_session_id = "session"
+    manager.continue_session.return_value = '{"result":"INCONCLUSIVE","summary":"retry","dynamic_check_requested":"tests/test_feature.py::missing"}'
+
+    with patch("auto_coder.adversarial_validator.CommandExecutor.run_command", return_value=CommandResult(True, head_sha, "", 0)):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "head_sha": head_sha},
+            AutomationConfig(),
+            backend_manager=manager,
+            execution_cwd=str(Path.cwd()),
+        )
+
+    assert result.result == "ERROR"
+    assert result.diagnostic_category == "dynamic_check_target_protocol_error"
+    manager.continue_session.assert_called_once()
+
+
+@patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=_dynamic_context())
+@patch("auto_coder.adversarial_validator.run_llm_prompt")
+def test_pass_after_correction_fails_closed_without_current_ci(mock_prompt, _mock_context) -> None:
+    head_sha = "b" * 40
+    mock_prompt.return_value = '{"result":"INCONCLUSIVE","summary":"select","dynamic_check_requested":"prose target"}'
+    manager = MagicMock()
+    manager._last_session_id = "session"
+    manager.continue_session.return_value = '{"result":"PASS","summary":"done","findings":[]}'
+    unavailable = GitHubActionsStatusResult(
+        success=False,
+        error="unavailable",
+        observation=CIObservationSnapshot(
+            ObservationSubject("https://api.github.com", "owner/repo", 100, head_sha),
+            ObservationRequest("github-actions", "checks+workflows"),
+            "cycle",
+            1,
+            ObservationAvailability.UNAVAILABLE,
+            unavailable_reason="provider unavailable",
+        ),
+    )
+
+    with patch("auto_coder.adversarial_validator.CommandExecutor.run_command", return_value=CommandResult(True, head_sha, "", 0)):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "head_sha": head_sha},
+            AutomationConfig(),
+            backend_manager=manager,
+            execution_cwd=str(Path.cwd()),
+            refresh_ci_status=lambda: unavailable,
+        )
+
+    assert result.result == "INCONCLUSIVE"
+    assert result.diagnostic_category == "validator_evidence_unavailable"
 
 
 def test_exact_head_dynamic_check_bypasses_container_and_asserts_sha_before_and_after() -> None:
