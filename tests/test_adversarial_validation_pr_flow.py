@@ -38,6 +38,8 @@ from auto_coder.pr_processor import (
     _get_published_adversarial_validation_status,
     _handle_pr_merge,
     _observe_codex_cloud_remediation_activity,
+    _record_review_validation_snapshot,
+    _review_feedback_identity,
     _send_adversarial_validation_feedback_to_cloud_task,
     _take_pr_actions,
 )
@@ -894,6 +896,97 @@ class TestAdversarialValidationCodexFeedback:
         followups = json.loads((tmp_path / "followups.json").read_text(encoding="utf-8"))
         assert all(record["accepted_at"] > 0 for record in followups.values())
 
+    def test_initial_provider_receipt_recovery_does_not_satisfy_later_generation(self, tmp_path):
+        """A crash before routing receipts cannot consume B's delivery obligation."""
+        finding = "### Auto-Coder adversarial finding\n\nThe correction remains incomplete"
+        github = MagicMock()
+        github.get_pr_comments.return_value = []
+        github.get_pr_review_threads_strict.return_value = [ReviewThread(id="PRRT_crash", comments=[ReviewThreadComment(database_id=2201, body=finding)])]
+        config = MagicMock(quota_selection_strategy="surplus")
+        config.get_backend_config.return_value = None
+        task_id = "task_e_abc123"
+        turns = [WhamTurn(id=f"{task_id}~assttrn_A", role="assistant", status="completed", created_at="1")]
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=config):
+            backend = CodexCloudClient(repo_name="owner/repo")
+        backend.wham_client = CodexWhamClient()
+        backend.wham_client.get_task_turns = MagicMock(side_effect=lambda _task_id: list(turns))
+        backend.wham_client.send_follow_up = MagicMock(return_value=FollowUpDeliveryResult(FollowUpDeliveryOutcome.DELIVERED, 200))
+        delivery_path = tmp_path / "deliveries.json"
+        followup_path = tmp_path / "followups.json"
+        pr_data = {"number": 100, "body": "Closes #2031", "head": {"ref": "repair", "sha": "head"}, "base": {"ref": "main"}}
+        first_report = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:1:aaaa -->"
+        later_report = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:2:bbbb -->"
+
+        with (
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=delivery_path),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=followup_path),
+            patch("auto_coder.pr_processor._record_delivered_review_feedback", side_effect=OSError("simulated exit before routing receipt")),
+        ):
+            initial = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", first_report, github, [finding])
+
+        assert "Sent adversarial NEEDS_FIX report" in initial[0]
+        turns.append(WhamTurn(id=f"{task_id}~assttrn_B", role="assistant", status="completed", created_at="2"))
+        with patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=followup_path):
+            backend.observe_completed_followup_remediation_turns(task_id)
+            feedback_prefix = "owner/repo#100:codex-cloud:task_e_abc123:"
+            feedback_identity = _review_feedback_identity(feedback_prefix, github.get_pr_review_threads_strict.return_value[0], 0)
+            assert backend.get_completed_followup_remediation_turn(task_id, feedback_identity) == turns[1].id
+        with (
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=delivery_path),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=followup_path),
+        ):
+            later = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", later_report, github, [finding])
+
+        assert "Sent adversarial NEEDS_FIX report" in later[0]
+        assert backend.wham_client.send_follow_up.call_count == 2
+        state = json.loads(delivery_path.read_text(encoding="utf-8"))
+        later_validation_receipts = [identity for identity in state["delivered_feedback"] if ":validation:" in identity]
+        assert len(later_validation_receipts) == 1
+
+    def test_accepted_validation_snapshot_survives_initial_thread_lookup_failure(self, tmp_path):
+        finding = "### Auto-Coder adversarial finding\n\nThe accepted validation remains causally frozen"
+        thread = ReviewThread(id="PRRT_lookup", comments=[ReviewThreadComment(database_id=2202, body=finding)])
+        github = MagicMock()
+        github.get_pr_comments.return_value = []
+        github.get_pr_review_threads_strict.return_value = [thread]
+        config = MagicMock(quota_selection_strategy="surplus")
+        config.get_backend_config.return_value = None
+        task_id = "task_e_abc123"
+        turns = [WhamTurn(id=f"{task_id}~assttrn_A", role="assistant", status="completed", created_at="1")]
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=config):
+            backend = CodexCloudClient(repo_name="owner/repo")
+        backend.wham_client = CodexWhamClient()
+        backend.wham_client.get_task_turns = MagicMock(side_effect=lambda _task_id: list(turns))
+        backend.wham_client.send_follow_up = MagicMock(return_value=FollowUpDeliveryResult(FollowUpDeliveryOutcome.DELIVERED, 200))
+        delivery_path = tmp_path / "deliveries.json"
+        followup_path = tmp_path / "followups.json"
+        pr_data = {"number": 100, "body": "Closes #2031", "head": {"ref": "repair", "sha": "head"}, "base": {"ref": "main"}}
+        initial_report = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:1:aaaa -->"
+        accepted_report = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:2:bbbb -->"
+        later_report = f"{finding}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:3:cccc -->"
+
+        with (
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=delivery_path),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=followup_path),
+        ):
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", initial_report, github, [finding])
+            _record_review_validation_snapshot(delivery_path, accepted_report, {})
+            github.get_pr_review_threads_strict.side_effect = RuntimeError("temporary review-thread failure")
+            failed_lookup = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", accepted_report, github, [finding])
+            github.get_pr_review_threads_strict.side_effect = None
+            turns.append(WhamTurn(id=f"{task_id}~assttrn_B", role="assistant", status="completed", created_at="2"))
+            backend.observe_completed_followup_remediation_turns(task_id)
+            replay = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", accepted_report, github, [finding])
+            later = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "head", later_report, github, [finding])
+
+        assert "temporary review-thread failure" in failed_lookup[0]
+        assert "all actionable feedback was already delivered" in replay[0]
+        assert "Sent adversarial NEEDS_FIX report" in later[0]
+        assert backend.wham_client.send_follow_up.call_count == 2
+
     def test_saved_report_retry_persists_discovered_feedback_across_restart(self, tmp_path):
         finding = "### Auto-Coder adversarial finding\n\nConcrete counterexample"
         thread = ReviewThread(
@@ -1564,12 +1657,19 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
         client.get_pull_request.return_value = {"head": {"sha": "abc123456789"}}
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        with (
+            patch("auto_coder.pr_processor._observe_codex_cloud_remediation_activity", return_value={}) as observe_activity,
+            patch("auto_coder.pr_processor._record_review_validation_snapshot") as record_snapshot,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
         mock_run_validation.assert_called_once()
         mock_merge_pr.assert_called_once()
         dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, "abc123456789", mock_run_validation.return_value)
+        observe_activity.assert_called_once()
+        assert record_snapshot.call_args.args[2] == {}
+        assert "auto-coder-adversarial-validation-attempt" in record_snapshot.call_args.args[1]
         client.add_comment_to_pr.assert_not_called()
         assert any("Adversarial validation passed" in a for a in actions)
         assert any("Published APPROVE adversarial review" in a for a in actions)

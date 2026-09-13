@@ -574,8 +574,8 @@ class CodexCloudClient(CloudTaskClientBase):
         turns = {records[key].pre_send_turn_id for key in keys if key in records and records[key].pre_send_turn_id}
         return f"latest_turn_id:{turns.pop()}" if len(turns) == 1 else ""
 
-    def observe_completed_followup_remediation_turns(self, task_id: str) -> None:
-        """Persist the first completed turn after each latest accepted repair."""
+    def observe_completed_followup_remediation_turns(self, task_id: str) -> dict[str, str]:
+        """Persist and return each finding's current completed remediation turn."""
         state_path = _codex_followup_state_path(self.repo_name)
         with _followup_state_lock:
             records = _load_pending_followups(state_path)
@@ -598,16 +598,16 @@ class CodexCloudClient(CloudTaskClientBase):
             if completed_turn:
                 latest.completed_turn_id = completed_turn
                 changed = True
-        if not changed:
-            return
-        with _followup_state_lock:
-            current_records = _load_pending_followups(state_path)
-            selected = {(record.task_id, record.logical_identity): record.completed_turn_id for record in latest_by_feedback.values() if record.completed_turn_id}
-            for record in current_records.values():
-                completed_turn = selected.get((record.task_id, record.logical_identity))
-                if completed_turn and not record.completed_turn_id:
-                    record.completed_turn_id = completed_turn
-            _save_pending_followups(state_path, current_records)
+        if changed:
+            with _followup_state_lock:
+                current_records = _load_pending_followups(state_path)
+                selected = {(record.task_id, record.logical_identity): record.completed_turn_id for record in latest_by_feedback.values() if record.completed_turn_id}
+                for record in current_records.values():
+                    completed_turn = selected.get((record.task_id, record.logical_identity))
+                    if completed_turn and not record.completed_turn_id:
+                        record.completed_turn_id = completed_turn
+                _save_pending_followups(state_path, current_records)
+        return {feedback_identity: record.completed_turn_id for feedback_identity, record in latest_by_feedback.items()}
 
     def get_completed_followup_remediation_turn(self, task_id: str, feedback_identity: str) -> str:
         """Read the completed generation observed before validation acceptance.

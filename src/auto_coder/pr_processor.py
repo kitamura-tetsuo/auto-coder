@@ -3094,7 +3094,7 @@ def _handle_pr_merge(
                         active_attempt_id = attempt.attempt_id
                         decision_attempt_repository = attempt_repository
                         decision_attempt_sequence = attempt.sequence
-                        _observe_codex_cloud_remediation_activity(repo_name, pr_data, github_client)
+                        codex_remediation_snapshot = _observe_codex_cloud_remediation_activity(repo_name, pr_data, github_client)
                         try:
                             with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
                                 actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
@@ -3194,6 +3194,17 @@ def _handle_pr_merge(
 
                             _enforce_unresolved_provenance_gate(val_result, claimed_review_threads, resolved_thread_ids)
 
+                            validation_report = format_adversarial_validation_comment(val_result, head_sha)
+                            if codex_remediation_snapshot is not None:
+                                try:
+                                    _record_review_validation_snapshot(
+                                        _cloud_review_repair_state_path(repo_name),
+                                        validation_report,
+                                        codex_remediation_snapshot,
+                                    )
+                                except (OSError, ValueError) as exc:
+                                    actions.append(f"Adversarial review publication blocked PR #{pr_number}: remediation-generation snapshot could not be persisted: {exc}")
+                                    return actions
                             publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
                             if not publication.success:
                                 publication_confirmed, reconciliation_error = _reconcile_failed_adversarial_publication(
@@ -5051,18 +5062,22 @@ def _cloud_task_remediation_token(client: Any, task_id: str, feedback_identity: 
     return hashlib.sha256(f"{task.task_id}\n{activity}".encode("utf-8")).hexdigest()
 
 
-def _observe_codex_cloud_remediation_activity(repo_name: str, pr_data: Dict[str, Any], github_client: Optional[Any]) -> None:
+def _observe_codex_cloud_remediation_activity(repo_name: str, pr_data: Dict[str, Any], github_client: Optional[Any]) -> Optional[dict[str, str]]:
     """Snapshot completed Codex repair turns before a new validation runs."""
     resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
     if resolution.origin is None or resolution.origin.provider != "codex-cloud":
-        return
+        return None
     observer = getattr(type(resolution.origin.client), "observe_completed_followup_remediation_turns", None)
     if not callable(observer):
-        return
+        return {}
     try:
-        observer(resolution.origin.client, resolution.origin.task_id)
+        observed = observer(resolution.origin.client, resolution.origin.task_id)
+        if not isinstance(observed, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in observed.items()):
+            return {}
+        return {feedback_identity: hashlib.sha256(f"{resolution.origin.task_id}\ncompleted_assistant_turn:{turn_id}".encode("utf-8")).hexdigest() if turn_id else "" for feedback_identity, turn_id in observed.items()}
     except Exception as exc:
         logger.warning(f"Could not snapshot Codex Cloud remediation activity before adversarial validation: {exc}")
+        return {}
 
 
 def _adversarial_feedback_generation_identity(feedback_identity: str, remediation_token: str, validation_report: str) -> str:
@@ -5135,7 +5150,31 @@ def _load_review_validation_generations(state_path: Path) -> dict[str, str]:
     return values
 
 
-def _record_review_feedback_state(state_path: Path, delivered: set[str], pending: set[str], validation_generations: Optional[dict[str, str]] = None) -> None:
+def _load_review_validation_snapshots(state_path: Path) -> dict[str, dict[str, str]]:
+    """Return pre-validation generation snapshots keyed by validation attempt."""
+    if not state_path.exists():
+        return {}
+    loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("delivery state is not a JSON object")
+    values = loaded.get("validation_snapshots", {})
+    if not isinstance(values, dict):
+        raise ValueError("validation_snapshots is not an object mapping")
+    snapshots: dict[str, dict[str, str]] = {}
+    for identity, snapshot in values.items():
+        if not isinstance(identity, str) or not isinstance(snapshot, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in snapshot.items()):
+            raise ValueError("validation_snapshots contains an invalid generation mapping")
+        snapshots[identity] = snapshot
+    return snapshots
+
+
+def _record_review_feedback_state(
+    state_path: Path,
+    delivered: set[str],
+    pending: set[str],
+    validation_generations: Optional[dict[str, str]] = None,
+    validation_snapshots: Optional[dict[str, dict[str, str]]] = None,
+) -> None:
     """Atomically persist confirmed and indeterminate feedback deliveries."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = state_path.with_suffix(f"{state_path.suffix}.{os.getpid()}.tmp")
@@ -5145,6 +5184,7 @@ def _record_review_feedback_state(state_path: Path, delivered: set[str], pending
                 "delivered_feedback": sorted(delivered),
                 "pending_feedback": sorted(pending),
                 "validation_generations": validation_generations if validation_generations is not None else _load_review_validation_generations(state_path),
+                "validation_snapshots": validation_snapshots if validation_snapshots is not None else _load_review_validation_snapshots(state_path),
             },
             indent=2,
             sort_keys=True,
@@ -5152,6 +5192,24 @@ def _record_review_feedback_state(state_path: Path, delivered: set[str], pending
         encoding="utf-8",
     )
     os.replace(temporary, state_path)
+
+
+def _adversarial_validation_snapshot_identity(validation_report: str) -> str:
+    marker = re.search(r"<!-- auto-coder-adversarial-validation-attempt:v1:\d+:[0-9a-f]+ -->", validation_report)
+    return hashlib.sha256((marker.group(0) if marker else validation_report).encode("utf-8")).hexdigest()
+
+
+def _record_review_validation_snapshot(state_path: Path, validation_report: str, snapshot: dict[str, str]) -> None:
+    """Durably freeze observed generations before validation publication."""
+    with _cloud_review_delivery_lock:
+        snapshots = _load_review_validation_snapshots(state_path)
+        snapshots.setdefault(_adversarial_validation_snapshot_identity(validation_report), snapshot)
+        _record_review_feedback_state(
+            state_path,
+            _load_delivered_review_feedback(state_path),
+            _load_pending_review_feedback(state_path),
+            validation_snapshots=snapshots,
+        )
 
 
 def _record_delivered_review_feedback(state_path: Path, feedback: set[str]) -> None:
@@ -5644,8 +5702,11 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         with _cloud_review_delivery_lock:
             delivered = _load_delivered_review_feedback(state_path)
             validation_generations = _load_review_validation_generations(state_path)
+            validation_snapshots = _load_review_validation_snapshots(state_path)
+            validation_snapshot = validation_snapshots.get(_adversarial_validation_snapshot_identity(source_validation_report))
             for finding_identity, validation_identity in validation_identities.items():
-                validation_generations.setdefault(validation_identity, observed_tokens[finding_identity])
+                associated_generation = validation_snapshot.get(finding_identity, "") if validation_snapshot is not None else observed_tokens[finding_identity]
+                validation_generations.setdefault(validation_identity, associated_generation)
             _record_review_feedback_state(
                 state_path,
                 delivered,
@@ -5695,9 +5756,13 @@ def _send_adversarial_validation_feedback_to_cloud_task(
                 reconciled_receipts = set(reconciled)
                 for _body, finding_identity, generation_identity in feedback_items:
                     unknown_generation = _adversarial_feedback_generation_identity(finding_identity, "", generation_report)
-                    if generation_identity in reconciled or unknown_generation in reconciled:
+                    if generation_identity in reconciled:
                         reconciled_receipts.add(finding_identity)
                         reconciled_receipts.add(validation_identities[finding_identity])
+                    elif unknown_generation in reconciled:
+                        reconciled_receipts.add(finding_identity)
+                        if generation_identity == unknown_generation:
+                            reconciled_receipts.add(validation_identities[finding_identity])
                     remediation_token = remediation_tokens[finding_identity]
                     if unknown_generation in reconciled and remediation_token and provider != "codex-cloud" and hasattr(client, "get_followup_remediation_baseline"):
                         baseline_activity = client.get_followup_remediation_baseline(task_id, (unknown_generation,))

@@ -47,7 +47,9 @@ recovered after restart.
 Codex Cloud adversarial repair generations are recovered per finding from durable
 follow-up baselines and completed assistant turns observed before new validation.
 Accepted validations retain that observed-generation association across restart,
-without re-observing provider activity when an older validation is replayed. The dashboard continues
+including when their first delivery-routing lookup fails, without re-observing
+provider activity when an older validation is replayed. Recovering an earlier
+provider receipt does not display or imply completion of a later generation. The dashboard continues
 to show `Cloud Task Adversarial Feedback` only when the corresponding follow-up is
 successfully accepted; a repeated turn, an unfinished turn, or an unrelated PR head
 change produces no new successful-delivery event.
