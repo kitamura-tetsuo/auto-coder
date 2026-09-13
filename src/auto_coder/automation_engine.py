@@ -2250,9 +2250,17 @@ class AutomationEngine:
         self.startup_reconciliation_error = None
         try:
             entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
+            open_issue_numbers = {issue.number for issue in entities.issues}
             for issue in entities.issues:
                 not_before = issue_stabilization_deadline(issue.created_at) if issue.created_at is not None else None
                 await self.invalidate_entity(repo_name, "issue", issue.number, not_before=not_before)
+            # Webhooks are not an event log. A lane target may have closed or
+            # been reparented while the daemon was offline and therefore be
+            # absent from the open enumeration; explicitly re-authorize every
+            # such durable target so stale eligibility cannot survive restart.
+            for number in self.issue_stage_routing.targets(repo_name):
+                if number not in open_issue_numbers:
+                    await self.invalidate_entity(repo_name, "issue", number)
             for number in entities.pull_requests:
                 await self.invalidate_entity(repo_name, "pr", number)
         except BaseException as exc:
@@ -2468,13 +2476,25 @@ class AutomationEngine:
         generation = family_review_generation(repo_name, parent_contract, child_contracts, requirements)
         self.issue_stage_routing.reconcile(review_classification(repo_name, parent_number, generation, priority, admitted, requirements))
         family_keys = (parent_contract.key, *(child.key for child in child_contracts))
+        current_child_numbers = tuple(int(child["number"]) for child in children)
+        self.issue_stage_routing.remove_departed_family_children(repo_name, parent_number, current_child_numbers)
         for child, contract in zip(children, child_contracts):
             number = int(child["number"])
             # A child's own readiness label is intentionally not consulted.
             child_admitted = admitted and self._is_open_issue(child)
             child_priority = self._issue_refill_priority(child)
             implementation_key = implementation_generation(contract, family_keys)
-            self.issue_stage_routing.reconcile(implementation_classification(repo_name, number, implementation_key, child_priority, child_admitted, requirements))
+            self.issue_stage_routing.reconcile(
+                implementation_classification(
+                    repo_name,
+                    number,
+                    implementation_key,
+                    child_priority,
+                    child_admitted,
+                    requirements,
+                    family_parent_number=parent_number,
+                )
+            )
             self.issue_stage_routing.remove(repo_name, REVIEW_STAGE, number)
         # Tracking parents never enter the Implementation lane.
         self.issue_stage_routing.remove(repo_name, IMPLEMENTATION_STAGE, parent_number)
@@ -2669,6 +2689,8 @@ class AutomationEngine:
                         if authoritative_candidate is None:
                             # A successful authoritative read can decide that an
                             # absent or ineligible entity needs no processing.
+                            if candidate.type == "issue":
+                                self.issue_stage_routing.remove_target(repo_name, int(item_number))
                             decision_completed = True
                             continue
                         authoritative_candidate.invalidation_generation = candidate.invalidation_generation
@@ -2684,19 +2706,35 @@ class AutomationEngine:
                                 decision_completed = True
                                 continue
                             await self._run_local_critical(
-                                f"worker {worker_id} submitted-parent validation for issue #{item_number}",
-                                self._validate_submitted_parent_generation_for_child,
-                                repo_name,
-                                int(item_number),
-                                candidate.data,
-                            )
-                            await self._run_local_critical(
                                 f"worker {worker_id} stage routing for issue #{item_number}",
                                 self._route_issue_stages_authoritatively,
                                 repo_name,
                                 int(item_number),
                                 candidate.data,
                             )
+                            # Persist review-needed work before the legacy
+                            # inline validator runs. Missing/ERROR/in-flight
+                            # identities therefore remain recoverable even if
+                            # validation raises or the process stops.
+                            try:
+                                await self._run_local_critical(
+                                    f"worker {worker_id} submitted-parent validation for issue #{item_number}",
+                                    self._validate_submitted_parent_generation_for_child,
+                                    repo_name,
+                                    int(item_number),
+                                    candidate.data,
+                                )
+                            finally:
+                                # Validation may have persisted only a subset
+                                # before ERROR. Re-read durable decisions so the
+                                # lane retains exactly the retryable identities.
+                                await self._run_local_critical(
+                                    f"worker {worker_id} post-validation stage routing for issue #{item_number}",
+                                    self._route_issue_stages_authoritatively,
+                                    repo_name,
+                                    int(item_number),
+                                    candidate.data,
+                                )
                             if self.is_draining:
                                 return
 

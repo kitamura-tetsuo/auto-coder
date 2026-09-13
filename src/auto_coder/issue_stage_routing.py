@@ -83,6 +83,7 @@ class LaneClassification:
     priority: int
     eligible: bool
     remaining_identity_keys: tuple[str, ...] = ()
+    family_parent_number: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.stage not in _STAGES:
@@ -141,10 +142,19 @@ def implementation_classification(
     priority: int,
     admitted: bool,
     requirements: Sequence[ReviewRequirement],
+    family_parent_number: Optional[int] = None,
 ) -> LaneClassification:
     """Classify implementation independently using exact-current READY evidence."""
     all_ready = all(item.verdict == "READY" for item in requirements)
-    return LaneClassification(repository, IMPLEMENTATION_STAGE, target_number, generation, priority, admitted and all_ready)
+    return LaneClassification(
+        repository,
+        IMPLEMENTATION_STAGE,
+        target_number,
+        generation,
+        priority,
+        admitted and all_ready,
+        family_parent_number=family_parent_number,
+    )
 
 
 class IssueStageRoutingStore:
@@ -167,6 +177,7 @@ class IssueStageRoutingStore:
                     priority INTEGER NOT NULL CHECK(priority IN (0, 3, 7)),
                     state TEXT NOT NULL CHECK(state IN ('pending', 'deferred', 'starting')),
                     remaining_json TEXT NOT NULL,
+                    family_parent_number INTEGER,
                     created_at REAL NOT NULL,
                     UNIQUE(repository, stage, target_number)
                 );
@@ -179,6 +190,13 @@ class IssueStageRoutingStore:
                 );
                 """
             )
+            columns = {row[1] for row in self._connection.execute("PRAGMA table_info(issue_lane_arrivals)")}
+            if "family_parent_number" not in columns:
+                self._connection.execute("ALTER TABLE issue_lane_arrivals ADD COLUMN family_parent_number INTEGER")
+                # The earlier schema cannot prove whether an Implementation
+                # row was standalone or belonged to a now-changed family.
+                # Fail closed and let startup authority reconstruct it.
+                self._connection.execute("DELETE FROM issue_lane_arrivals WHERE stage='implementation'")
 
     def reconcile(self, classification: LaneClassification, now: Optional[float] = None) -> Optional[PendingLaneItem]:
         """Atomically replace superseded work or update priority/work in place."""
@@ -198,8 +216,15 @@ class IssueStageRoutingStore:
             remaining = json.dumps(list(classification.remaining_identity_keys), separators=(",", ":"))
             if row is not None and row[0] == classification.generation:
                 self._connection.execute(
-                    "UPDATE issue_lane_arrivals SET priority=?, remaining_json=? WHERE repository=? AND stage=? AND target_number=?",
-                    (classification.priority, remaining, classification.repository, classification.stage, classification.target_number),
+                    "UPDATE issue_lane_arrivals SET priority=?, remaining_json=?, family_parent_number=? WHERE repository=? AND stage=? AND target_number=?",
+                    (
+                        classification.priority,
+                        remaining,
+                        classification.family_parent_number,
+                        classification.repository,
+                        classification.stage,
+                        classification.target_number,
+                    ),
                 )
             else:
                 self._connection.execute(
@@ -207,8 +232,17 @@ class IssueStageRoutingStore:
                     (classification.repository, classification.stage, classification.target_number),
                 )
                 self._connection.execute(
-                    "INSERT INTO issue_lane_arrivals(repository,stage,target_number,generation,priority,state,remaining_json,created_at) VALUES(?,?,?,?,?,'pending',?,?)",
-                    (classification.repository, classification.stage, classification.target_number, classification.generation, classification.priority, remaining, timestamp),
+                    "INSERT INTO issue_lane_arrivals(repository,stage,target_number,generation,priority,state,remaining_json,family_parent_number,created_at) VALUES(?,?,?,?,?,'pending',?,?,?)",
+                    (
+                        classification.repository,
+                        classification.stage,
+                        classification.target_number,
+                        classification.generation,
+                        classification.priority,
+                        remaining,
+                        classification.family_parent_number,
+                        timestamp,
+                    ),
                 )
             return self._get_locked(classification.repository, classification.stage, classification.target_number)
 
@@ -232,6 +266,39 @@ class IssueStageRoutingStore:
                 "DELETE FROM issue_lane_arrivals WHERE repository=? AND stage=? AND target_number=?",
                 (repository, stage, target_number),
             )
+
+    def remove_target(self, repository: str, target_number: int) -> None:
+        """Remove every pending lane role for an authoritatively absent target."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                "DELETE FROM issue_lane_arrivals WHERE repository=? AND target_number=?",
+                (repository, target_number),
+            )
+
+    def targets(self, repository: str) -> tuple[int, ...]:
+        """Return durable target identities which startup must re-authorize."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT DISTINCT target_number FROM issue_lane_arrivals WHERE repository=? ORDER BY target_number",
+                (repository,),
+            ).fetchall()
+            return tuple(int(row[0]) for row in rows)
+
+    def remove_departed_family_children(self, repository: str, parent_number: int, current_children: Sequence[int]) -> None:
+        """Supersede Implementation work owned by an older family membership."""
+        retained = tuple(current_children)
+        with self._lock, self._connection:
+            if retained:
+                placeholders = ",".join("?" for _value in retained)
+                self._connection.execute(
+                    f"DELETE FROM issue_lane_arrivals WHERE repository=? AND stage='implementation' AND family_parent_number=? AND target_number NOT IN ({placeholders})",
+                    (repository, parent_number, *retained),
+                )
+            else:
+                self._connection.execute(
+                    "DELETE FROM issue_lane_arrivals WHERE repository=? AND stage='implementation' AND family_parent_number=?",
+                    (repository, parent_number),
+                )
 
     def begin(self, item: PendingLaneItem) -> bool:
         """Coalesce a start attempt for the exact still-current lane generation."""

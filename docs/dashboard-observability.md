@@ -14,6 +14,10 @@ Implementation worker changes
 which consume these records must add their production-to-view trace coverage;
 the routing store must not fabricate worker activity before that handoff exists.
 Run `bash scripts/test.sh tests/test_issue_stage_routing.py` for this boundary.
+That production suite also covers partial family validation ending in ERROR,
+departed-child membership cleanup, and offline closure followed by reopening;
+these routing-only state transitions remain intentionally absent from the
+execution timeline until a stage worker actually claims them.
 
 The detail view is a projection of **observed local evidence**. It does not query
 GitHub or a provider and it does not turn absent, unavailable, partial, throttled,

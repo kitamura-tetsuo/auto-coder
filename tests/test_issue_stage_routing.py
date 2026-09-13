@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -6,6 +7,8 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
+from auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
 from auto_coder.issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -19,6 +22,7 @@ from auto_coder.issue_stage_routing import (
     review_classification,
     standalone_review_generation,
 )
+from auto_coder.specification_analyzer import SpecificationAnalysisResult
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
 
@@ -143,6 +147,31 @@ def test_priority_contract_and_review_versus_child_sources():
     assert (family_priority, child_priority) == (3, 0)
 
 
+def test_schema_upgrade_discards_unattributable_implementation_rows(tmp_path):
+    path = tmp_path / "routing.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE issue_lane_arrivals (
+            arrival INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,
+            stage TEXT NOT NULL, target_number INTEGER NOT NULL,
+            generation TEXT NOT NULL, priority INTEGER NOT NULL,
+            state TEXT NOT NULL, remaining_json TEXT NOT NULL,
+            created_at REAL NOT NULL, UNIQUE(repository, stage, target_number)
+        );
+        INSERT INTO issue_lane_arrivals(repository,stage,target_number,generation,priority,state,remaining_json,created_at)
+        VALUES ('owner/repo','review',10,'review-g',0,'pending','[]',1),
+               ('owner/repo','implementation',12,'old-family-g',0,'pending','[]',1);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    upgraded = IssueStageRoutingStore(path)
+    assert [item.target_number for item in upgraded.pending(REPO, REVIEW_STAGE)] == [10]
+    assert upgraded.pending(REPO, IMPLEMENTATION_STAGE) == ()
+
+
 @pytest.mark.asyncio
 async def test_invalidation_and_startup_recovery_route_authoritative_standalone_decision(tmp_path, monkeypatch):
     """Exercise GitHub authority -> invalidation worker -> durable stage lanes."""
@@ -202,5 +231,125 @@ async def test_invalidation_and_startup_recovery_route_authoritative_standalone_
     assert len(recovered) == 1
     assert recovered[0].arrival == implementation[0].arrival
 
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+def _routing_engine(tmp_path, monkeypatch, snapshots, children, config):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(tmp_path / "routing.sqlite3"))
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.get_issue_details.side_effect = lambda issue: dict(issue)
+    github.get_parent_issue_details_strict.side_effect = lambda _repo, number: dict(snapshots[10]) if number in {11, 12} and snapshots[number].get("parent_issue_number") == 10 else None
+    github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [{"number": child} for child in children] if number == 10 else []
+    engine = AutomationEngine(github, config)
+    monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda _issue: True)
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda *_args, **_kwargs: CandidateProcessingResult(type="issue", number=1))
+    return engine, github
+
+
+@pytest.mark.asyncio
+async def test_family_error_remains_review_pending_through_real_validation_boundary(tmp_path, monkeypatch):
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    parent_body = "## Objective\n\nCoordinate delivery."
+    child_body = "Parent-Issue: #10\n\n## Objective\n\nShip child.\n\n## Requirements\n\nREQ-001: Ship child."
+    snapshots = {
+        10: {"id": 100, "number": 10, "title": "P", "body": parent_body, "state": "open", "created_at": created_at, "labels": [{"name": "implementation-ready"}]},
+        11: {"id": 110, "number": 11, "title": "A", "body": child_body, "state": "open", "created_at": created_at, "labels": [], "parent_issue_number": 10},
+        12: {"id": 120, "number": 12, "title": "B", "body": child_body, "state": "open", "created_at": created_at, "labels": [], "parent_issue_number": 10},
+    }
+    children = [11, 12]
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = True
+    engine, _github = _routing_engine(tmp_path, monkeypatch, snapshots, children, config)
+    engine._decomposition_validators[REPO] = DecompositionValidationLifecycle(REPO, "policy", tmp_path / "decomposition.json", lambda *_args: DecompositionAnalysisResult("READY"))
+    engine._specification_validators[REPO] = SpecificationValidationLifecycle(
+        REPO,
+        "policy",
+        tmp_path / "individual.json",
+        lambda manifest, _body: SpecificationAnalysisResult("ERROR") if manifest.issue_number == 12 else SpecificationAnalysisResult("READY"),
+    )
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 11)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+
+    pending = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(pending) == 1
+    assert pending[0].target_number == 10
+    validator = engine._specification_validators[REPO]
+    relationship = engine._child_review_context(snapshots[10], [snapshots[11], snapshots[12]], 12)
+    expected = validator.identity(12, "B", child_body, relationship).key
+    assert pending[0].remaining_identity_keys == (expected,)
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_parent_invalidation_removes_departed_child_implementation_generation(tmp_path, monkeypatch):
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshots = {
+        10: {"id": 100, "number": 10, "title": "P", "body": "", "state": "open", "created_at": created_at, "labels": [{"name": "implementation-ready"}]},
+        11: {"id": 110, "number": 11, "title": "A", "body": "", "state": "open", "created_at": created_at, "labels": [], "parent_issue_number": 10},
+        12: {"id": 120, "number": 12, "title": "B", "body": "", "state": "open", "created_at": created_at, "labels": [], "parent_issue_number": 10},
+    }
+    children = [11, 12]
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = False
+    config.issue_decomposition_validation = False
+    engine, _github = _routing_engine(tmp_path, monkeypatch, snapshots, children, config)
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 10)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [11, 12]
+
+    children.remove(12)
+    snapshots[12].pop("parent_issue_number")
+    await engine.invalidate_entity(REPO, "issue", 10)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [11]
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_removes_closed_review_and_reopen_renews_arrival(tmp_path, monkeypatch):
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshots = {
+        1: {
+            "id": 101,
+            "number": 1,
+            "title": "Standalone",
+            "body": "Body",
+            "state": "open",
+            "created_at": created_at,
+            "labels": [{"name": "implementation-ready"}],
+        }
+    }
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
+    monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *_args: None)
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    original = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)[0]
+
+    snapshots[1]["state"] = "closed"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+
+    snapshots[1]["state"] = "open"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([OpenGitHubIssue(1, created_at)], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    reopened = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(reopened) == 1
+    assert reopened[0].generation == original.generation
+    assert reopened[0].arrival > original.arrival
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)

@@ -19,6 +19,13 @@ Implementation generation from being started again after restart, readiness
 withdrawal/restoration, duplicate wakeups, or exact semantic reversion; a crash
 before ownership returns the same durable arrival to pending work. This routing
 foundation performs no Review execution or implementation dispatch itself.
+The durable invalidation worker records routing before invoking the legacy
+validation boundary, then refreshes it afterward even when validation returns
+ERROR, so partial terminal results shrink rather than erase retryable Review
+work. Family-tagged Implementation rows allow a reconciled parent membership
+change to retire departed children. Startup re-authorizes every durable lane
+target, including targets absent from the open-Issue enumeration, so closure
+removes pending work and unchanged reopening receives a new arrival.
 
 ## Revision-bound review adjudication protocol
 
