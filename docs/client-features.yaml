@@ -26,6 +26,8 @@ work. Family-tagged Implementation rows allow a reconciled parent membership
 change to retire departed children. Startup re-authorizes every durable lane
 target, including targets absent from the open-Issue enumeration, so closure
 removes pending work and unchanged reopening receives a new arrival.
+An empty authoritative child set also retires every Implementation row owned by
+the former family before the former parent is reclassified as standalone.
 
 ## Revision-bound review adjudication protocol
 
@@ -60,8 +62,11 @@ or durable retry deadlines.
 ## Trusted observations for early dependency waiting
 
 The daemon uses a separate process-local, per-Issue observation cache exclusively
-to defer Issues with explicitly declared open prerequisites before authoritative
-family reconstruction and submitted-parent validation. Startup discards trust.
+to identify Issues with explicitly declared open prerequisites before ordinary
+implementation candidate refresh and submitted-parent validation. Before the
+operational wait is committed, generation-aware Review routing performs its own
+authoritative family reconstruction so a specification edit cannot retain stale
+lane identities. Startup discards observation-cache trust.
 A cold observation fetches only the target and its declared prerequisites through
 the strict GitHub reader. Complete Issue webhooks update that Issue without
 invalidating unrelated observations. Ambiguous equal-timestamp updates, older

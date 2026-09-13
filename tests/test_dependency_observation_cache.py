@@ -84,6 +84,7 @@ def test_invalid_or_self_dependency_never_refuses(body):
 
 def engine_with_claim(tmp_path):
     engine = AutomationEngine(MagicMock(), AutomationConfig(repo_name="owner/repo"))
+    engine._route_issue_stages_authoritatively = MagicMock()
     engine.invalidations = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
     identity = EntityIdentity("owner/repo", "issue", 2019)
     engine.invalidations.invalidate(identity)
@@ -96,27 +97,29 @@ def test_cold_wait_fetches_only_target_and_dependency_and_retains_retry(tmp_path
     engine, identity, claim = engine_with_claim(tmp_path)
     engine.github.get_issue_dispatch_snapshot_strict.side_effect = lambda repo, number: issue(number)
     assert engine._defer_observed_dependency_wait("owner/repo", 2019, claim)
-    assert [call.args for call in engine.github.get_issue_dispatch_snapshot_strict.call_args_list] == [("owner/repo", 2019), ("owner/repo", 2018)]
-    assert len(engine.github.mock_calls) == 2
+    assert [call.args for call in engine.github.get_issue_dispatch_snapshot_strict.call_args_list] == [("owner/repo", 2019), ("owner/repo", 2018), ("owner/repo", 2019)]
+    engine._route_issue_stages_authoritatively.assert_called_once()
     deferred = engine.invalidations.get_deferred(identity)
     assert deferred.reason == "cached_dependency_wait"
     assert engine.invalidations.claim("owner/repo") is None
     assert engine.implementation_slots is None
 
 
-def test_warm_wait_makes_no_github_calls_and_close_webhook_wakes_it(tmp_path):
+def test_warm_wait_authoritatively_routes_and_close_webhook_wakes_it(tmp_path):
     engine, identity, claim = engine_with_claim(tmp_path)
     engine.dependency_observations.observe("owner/repo", issue())
     engine.dependency_observations.observe("owner/repo", issue(2018))
+    engine.github.get_issue_dispatch_snapshot_strict.return_value = issue()
     assert engine._defer_observed_dependency_wait("owner/repo", 2019, claim)
     payload = {"repository": {"full_name": "owner/repo"}, "action": "closed", "issue": issue(2018, state="closed", updated="2026-09-12T10:01:00Z")}
     asyncio.run(process_github_payload("issues", payload, engine, "owner/repo", "close-2018"))
     assert engine.dependency_observations.waiting_on("owner/repo", 2019) == ()
     assert engine.invalidations.get_deferred(identity) is None
-    assert engine.github.mock_calls == []
+    engine.github.get_issue_dispatch_snapshot_strict.assert_called_once_with("owner/repo", 2019)
+    engine._route_issue_stages_authoritatively.assert_called_once()
 
 
-def test_worker_skips_before_refresh_validation_and_slot(tmp_path):
+def test_worker_routes_before_dependency_deferral_without_candidate_refresh(tmp_path):
     engine, identity, claim = engine_with_claim(tmp_path)
     engine.invalidations.release(claim)
     engine.dependency_observations.observe("owner/repo", issue())
@@ -124,6 +127,7 @@ def test_worker_skips_before_refresh_validation_and_slot(tmp_path):
     engine._cached_issue_refusal = MagicMock(return_value=None)
     engine._create_candidate_from_single = MagicMock(side_effect=AssertionError("unexpected refresh"))
     engine._validate_submitted_parent_generation_for_child = MagicMock(side_effect=AssertionError("unexpected validation"))
+    engine.github.get_issue_dispatch_snapshot_strict.return_value = issue()
 
     async def scenario():
         await engine._enqueue_pending_invalidations("owner/repo")
@@ -138,7 +142,8 @@ def test_worker_skips_before_refresh_validation_and_slot(tmp_path):
     assert engine.invalidations.get_deferred(identity).reason == "cached_dependency_wait"
     engine._create_candidate_from_single.assert_not_called()
     engine._validate_submitted_parent_generation_for_child.assert_not_called()
-    assert engine.github.mock_calls == []
+    engine.github.get_issue_dispatch_snapshot_strict.assert_called_once_with("owner/repo", 2019)
+    engine._route_issue_stages_authoritatively.assert_called_once()
     assert engine.implementation_slots is None
     assert engine.active_workers[0] is None
 
@@ -175,6 +180,7 @@ def test_close_between_observation_and_persist_does_not_hide_wakeup(tmp_path, mo
     cache = engine.dependency_observations
     cache.observe("owner/repo", issue())
     cache.observe("owner/repo", issue(2018))
+    engine.github.get_issue_dispatch_snapshot_strict.return_value = issue()
     defer = engine.invalidations.defer
 
     def close_then_defer(*args):

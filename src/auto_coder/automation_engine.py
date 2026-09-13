@@ -2523,6 +2523,9 @@ class AutomationEngine:
                 raise ParentOperationalError("authoritative parent family is unavailable")
             self._route_issue_family(repo_name, *family)
             return
+        # An empty native set is positive evidence that rows authorized by a
+        # previous parent generation have all become stale.
+        self.issue_stage_routing.remove_departed_family_children(repo_name, issue_number, ())
         self._route_standalone_issue(repo_name, current)
 
     async def _refill_normal_implementation_slots(self, repo_name: str) -> bool:
@@ -2918,6 +2921,12 @@ class AutomationEngine:
         waiting = cache.waiting_on(repo_name, number)
         if not waiting:
             return False
+        # Dependency waiting is operational Implementation state. It cannot
+        # conceal a contract/family edit from semantic Review routing.
+        routing_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+        if not isinstance(routing_snapshot, dict) or routing_snapshot.get("number") != number or "pull_request" in routing_snapshot:
+            raise ParentOperationalError(f"cannot route dependency-waiting Issue #{number} from ambiguous authority")
+        self._route_issue_stages_authoritatively(repo_name, number, routing_snapshot)
         retry_at = time.time() + DEPENDENCY_OBSERVATION_TTL
         self.invalidations.defer(claim, "cached_dependency_wait", retry_at)
         # A webhook may have woken waiters just before this wait was persisted.

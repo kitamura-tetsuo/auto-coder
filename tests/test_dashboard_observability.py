@@ -89,6 +89,12 @@ def test_cached_terminal_refusal_reaches_mounted_detail_without_github(mock_ui):
 @patch("auto_coder.dashboard.ui")
 def test_cached_dependency_wait_reaches_mounted_detail(mock_ui, tmp_path):
     engine = AutomationEngine(MagicMock(), AutomationConfig(repo_name="owner/repo"))
+    engine.github.get_issue_dispatch_snapshot_strict.return_value = {
+        "number": 2019,
+        "body": "Parent-Issue: #2016\nBlocked-By: #2018",
+        "state": "open",
+    }
+    engine._route_issue_stages_authoritatively = MagicMock()
     engine.invalidations = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
     engine.invalidations.invalidate(EntityIdentity("owner/repo", "issue", 2019))
     claim = engine.invalidations.claim("owner/repo")
@@ -100,7 +106,8 @@ def test_cached_dependency_wait_reaches_mounted_detail(mock_ui, tmp_path):
     stages = [event for event in snapshot.events if event.kind == EventKind.STAGE_RESULT.value]
     assert [event.stage_id for event in stages] == ["issue.cached-dependency-wait"]
     assert stages[0].outcome == Outcome.DEFERRED.value
-    assert engine.github.mock_calls == []
+    engine.github.get_issue_dispatch_snapshot_strict.assert_called_once_with("owner/repo", 2019)
+    engine._route_issue_stages_authoritatively.assert_called_once()
     assert engine.implementation_slots is None
     _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 2019), "cached dependency wait")
 

@@ -9,6 +9,7 @@ from auto_coder.automation_config import AutomationConfig, CandidateProcessingRe
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
+from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -309,6 +310,12 @@ async def test_parent_invalidation_removes_departed_child_implementation_generat
     await engine.invalidate_entity(REPO, "issue", 10)
     await asyncio.wait_for(engine.queue.join(), timeout=5)
     assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [11]
+
+    children.clear()
+    snapshots[11].pop("parent_issue_number")
+    await engine.invalidate_entity(REPO, "issue", 10)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [10]
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)
 
@@ -351,5 +358,40 @@ async def test_startup_recovery_removes_closed_review_and_reopen_renews_arrival(
     assert len(reopened) == 1
     assert reopened[0].generation == original.generation
     assert reopened[0].arrival > original.arrival
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_dependency_wait_reclassifies_edited_family_review_generation(tmp_path, monkeypatch):
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    base_body = "Parent-Issue: #10\n\n## Objective\n\nShip child.\n\n## Requirements\n\nREQ-001: Ship child."
+    snapshots = {
+        10: {"id": 100, "number": 10, "title": "P", "body": "## Objective\n\nCoordinate.", "state": "open", "created_at": created_at, "updated_at": "2026-01-01T00:00:00Z", "labels": [{"name": "implementation-ready"}]},
+        11: {"id": 110, "number": 11, "title": "A", "body": base_body, "state": "open", "created_at": created_at, "updated_at": "2026-01-01T00:00:00Z", "labels": [], "parent_issue_number": 10},
+        12: {"id": 120, "number": 12, "title": "B", "body": base_body, "state": "open", "created_at": created_at, "updated_at": "2026-01-01T00:00:00Z", "labels": [], "parent_issue_number": 10},
+    }
+    children = [11, 12]
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = True
+    engine, _github = _routing_engine(tmp_path, monkeypatch, snapshots, children, config)
+    monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *_args: None)
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 12)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    original = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)[0]
+
+    snapshots[12]["body"] = base_body.replace("## Objective", "Blocked-By: #11\n\n## Objective")
+    snapshots[12]["updated_at"] = "2026-01-01T00:01:00Z"
+    await engine.invalidate_entity(REPO, "issue", 12, event_type="issues", action="edited", issue_snapshot=snapshots[12])
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    changed = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(changed) == 1
+    assert changed[0].generation != original.generation
+    assert changed[0].arrival > original.arrival
+    deferred = engine.invalidations.get_deferred(EntityIdentity(REPO, "issue", 12))
+    assert deferred is not None
+    assert deferred.reason == "cached_dependency_wait"
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)

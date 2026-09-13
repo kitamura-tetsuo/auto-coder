@@ -18,6 +18,10 @@ That production suite also covers partial family validation ending in ERROR,
 departed-child membership cleanup, and offline closure followed by reopening;
 these routing-only state transitions remain intentionally absent from the
 execution timeline until a stage worker actually claims them.
+Dependency-cache waits now refresh semantic routing before emitting the existing
+`issue.cached-dependency-wait` event. The event schema and operational meaning
+are unchanged: it still reports only an Implementation prerequisite wait and
+does not claim Review execution, READY evidence, or provider admission.
 
 The detail view is a projection of **observed local evidence**. It does not query
 GitHub or a provider and it does not turn absent, unavailable, partial, throttled,
