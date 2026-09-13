@@ -2296,6 +2296,40 @@ class TestRunAdversarialValidation:
         assert result.is_pass
         assert result.result == "PASS"
 
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_reviewer_invocation_receives_complete_changed_file_manifest_beyond_former_budget(self, mock_run_prompt):
+        """Production-path regression (REQ-001): the manifest reaching the reviewer prompt
+        must list every retrieved changed path, exercising the real context builder rather
+        than manually composing the prompt section (a mocked context cannot catch a
+        MAX_PR_DIFF_SIZE-derived slice reintroduced between context building and the
+        `run_llm_prompt` call in `run_adversarial_validation`)."""
+        paths = [f"src/generated/component_{index:03d}_with_a_descriptive_name.py" for index in range(30)]
+        raw_diff = "".join(f"diff --git a/{path} b/{path}\n+++ b/{path}\n+value_{index} = True\n" for index, path in enumerate(paths))
+
+        mock_client = MagicMock()
+        mock_client.get_pr_diff.return_value = raw_diff
+        mock_client.get_pr_changed_file_count.return_value = len(paths)
+        mock_issue = MagicMock(spec=["title", "body"])
+        mock_issue.title = "Large manifest feature"
+        mock_issue.body = "Specification: Persist every changed generated component."
+        mock_client.get_issue.return_value = mock_issue
+        mock_client.get_parent_issue_details.return_value = None
+        mock_run_prompt.return_value = '{"result": "PASS", "summary": "ok", "findings": []}'
+
+        config = AutomationConfig()
+        config.MAX_PR_DIFF_SIZE = 50  # far smaller than the manifest; must not bound it
+        pr_data = {"number": 200, "title": "Large manifest PR", "body": "Fixes #10", "head_sha": "c" * 40}
+
+        run_adversarial_validation("owner/repo", pr_data, config, github_client=mock_client, backend_manager=MagicMock())
+
+        assert mock_run_prompt.called
+        prompt = mock_run_prompt.call_args.args[0]
+        manifest_section = prompt.split("Complete Changed-File Manifest:", 1)[1].split("Evidence Coverage Status:", 1)[0]
+        assert "SHA-256" not in manifest_section
+        assert "Bounded manifest" not in manifest_section
+        for path in paths:
+            assert f"- {path}" in manifest_section
+
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
     def test_run_adversarial_validation_needs_fix(self, mock_run_prompt, mock_build_ctx):
