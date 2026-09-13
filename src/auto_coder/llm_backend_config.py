@@ -1919,6 +1919,32 @@ def get_pr_review_allowlist_from_config(
     return list(raw_list)
 
 
+def get_review_adjudicator_allowlist_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Optional[List[int]]:
+    """Return stable identities allowed to author review adjudications.
+
+    This is deliberately independent of ``pr_review_allowlist``: the latter
+    authenticates the automated reviewer that opened the root thread.
+    """
+    raw_list = _get_config_value(
+        section="github",
+        key="review_adjudicator_allowlist",
+        default=None,
+        config_path=config_path,
+        repo_name=repo_name,
+    )
+    if raw_list is None:
+        return None
+    message = "[github].review_adjudicator_allowlist must be a list of positive integer GitHub identity IDs"
+    if not isinstance(raw_list, list):
+        raise ValueError(message)
+    if any(not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in raw_list):
+        raise ValueError(message)
+    return list(raw_list)
+
+
 def get_adversarial_validation_max_reviews_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,
