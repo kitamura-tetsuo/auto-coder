@@ -2414,12 +2414,21 @@ def _complete_changed_file_evidence(
 # so their own wording can be masked out of the negation search -- see
 # `_lacks_independent_irrelevance_scope_basis` -- they just never satisfy the
 # basis check by themselves.
+#
+# A bare claim of a verification action ("Already reviewed.") is equally
+# unverifiable if it never names what was checked: it says an action
+# happened, not what independent thing it was checked against. So every
+# action/comparison marker here requires the marker's own preposition
+# (via/by/to/from/per) to be followed by an actual token -- some concrete
+# object -- rather than standing on its own. A concrete artifact reference
+# (.gitattributes/.gitignore) is an exception: naming the artifact itself
+# already is the citation.
 _VERIFICATION_SCOPE_EVIDENCE_PATTERN = re.compile(
-    r"(?:confirmed\s+via|confirmed\s+by|verified\s+via|verified\s+by|cross[- ]referenced" r"|\.gitattributes|\.gitignore" r"|identical\s+to|unchanged\s+from|byte[- ]identical|pattern[- ]matching" r"|renamed\s+without\s+content\s+change|out\s+of\s+scope\s+per)",
+    r"(?:(?:confirmed|verified)\s+(?:via|by)\s+\S" r"|cross[- ]referenced\s+(?:with|against|to)\s+\S" r"|\.gitattributes|\.gitignore" r"|(?:identical\s+to|unchanged\s+from|byte[- ]identical\s+(?:to|with))\s+\S" r"|out\s+of\s+scope\s+per\s+\S)",
     re.IGNORECASE,
 )
 _CATEGORY_LABEL_PATTERN = re.compile(
-    r"(?:generated\s+(?:file|code|lock\s*file)|auto-?generated|build\s+artifact|compiled\s+output" r"|binary\s+asset|vendored|symlink|no\s+reviewable\s+logic|not\s+source\s+code)",
+    r"(?:generated\s+(?:file|code|lock\s*file)|auto-?generated|build\s+artifact|compiled\s+output" r"|binary\s+asset|vendored|symlink|no\s+reviewable\s+logic|not\s+source\s+code" r"|pattern[- ]matching|renamed\s+without\s+content\s+change|already\s+reviewed)",
     re.IGNORECASE,
 )
 _INDEPENDENT_SCOPE_EVIDENCE_PATTERN = re.compile(f"(?:{_VERIFICATION_SCOPE_EVIDENCE_PATTERN.pattern}|{_CATEGORY_LABEL_PATTERN.pattern})", re.IGNORECASE)

@@ -179,9 +179,12 @@ label alone (e.g. a generated/vendored/binary-asset reference, "This is
 generated code.") does not count: it is itself just as bare an assertion as
 "this path is irrelevant", so only a verification marker actually grants
 basis, though category labels are still recognized so their own wording gets
-masked out of the negation search below. A bare prior-review claim (e.g.
-"Already reviewed.") is not a verification action or source and therefore
-cannot discharge an unavailable path. It checks each verification match
+masked out of the negation search below. A verification action word
+("confirmed", "verified", "cross-referenced", "out of scope") likewise only
+grants basis when its own preposition (via/by/to/from/per) is actually
+followed by a concrete object — "Already reviewed." names no such object, so
+it no longer counts either, and moved into the (masked-only) category
+bucket alongside the file-category labels. It checks each verification match
 against the negation cues in its own clause — on either side of the marker,
 so "no `.gitattributes` ... was obtained" and "the `.gitattributes` file was
 not obtained" are both caught — so a marker invoked only to say it was NOT
