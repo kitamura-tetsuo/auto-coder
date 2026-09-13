@@ -22,6 +22,9 @@ Dependency-cache waits now refresh semantic routing before emitting the existing
 `issue.cached-dependency-wait` event. The event schema and operational meaning
 are unchanged: it still reports only an Implementation prerequisite wait and
 does not claim Review execution, READY evidence, or provider admission.
+The final post-processing routing refresh likewise emits no additional stage:
+it consumes durable validation evidence for lane bookkeeping, while the existing
+validation and implementation-admission events remain the observable outcomes.
 
 The detail view is a projection of **observed local evidence**. It does not query
 GitHub or a provider and it does not turn absent, unavailable, partial, throttled,

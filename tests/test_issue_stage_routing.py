@@ -10,6 +10,7 @@ from auto_coder.automation_engine import AutomationEngine
 from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
+from auto_coder.implementation_slots import ImplementationSlotRepository
 from auto_coder.issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -393,5 +394,43 @@ async def test_dependency_wait_reclassifies_edited_family_review_generation(tmp_
     deferred = engine.invalidations.get_deferred(EntityIdentity(REPO, "issue", 12))
     assert deferred is not None
     assert deferred.reason == "cached_dependency_wait"
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_standalone_ready_from_ordinary_processing_immediately_hands_off(tmp_path, monkeypatch):
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = {
+        1: {
+            "id": 101,
+            "number": 1,
+            "title": "Standalone",
+            "body": body,
+            "state": "open",
+            "created_at": created_at,
+            "labels": [{"name": "implementation-ready"}],
+            "user": {"id": 1},
+        }
+    }
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
+    engine._process_single_candidate = AutomationEngine._process_single_candidate.__get__(engine)
+    engine._specification_validators[REPO] = SpecificationValidationLifecycle(REPO, "policy", tmp_path / "ready.json", lambda *_args: SpecificationAnalysisResult("READY"))
+    engine.implementation_slots = ImplementationSlotRepository(REPO, 1, tmp_path / "slots.json")
+    engine._process_single_candidate_reserved = MagicMock(return_value=CandidateProcessingResult(type="issue", number=1, success=True, actions=["stopped after admission"]))
+    github.get_issue_comments_strict.return_value = []
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+
+    assert engine._specification_validators[REPO].store.get(engine._specification_validators[REPO].identity(1, "Standalone", body)).verdict == "READY"
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    implementation = engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)
+    assert len(implementation) == 1
+    assert implementation[0].target_number == 1
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)

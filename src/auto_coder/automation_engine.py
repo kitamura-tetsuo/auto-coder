@@ -2528,6 +2528,19 @@ class AutomationEngine:
         self.issue_stage_routing.remove_departed_family_children(repo_name, issue_number, ())
         self._route_standalone_issue(repo_name, current)
 
+    def _refresh_issue_stage_routing(self, repo_name: str, issue_number: int) -> None:
+        """Reclassify after processing from a new strict GitHub snapshot."""
+        try:
+            snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                self.issue_stage_routing.remove_target(repo_name, issue_number)
+                return
+            raise
+        if not isinstance(snapshot, dict) or snapshot.get("number") != issue_number or "pull_request" in snapshot:
+            raise ParentOperationalError(f"cannot refresh Issue #{issue_number} routing from ambiguous authority")
+        self._route_issue_stages_authoritatively(repo_name, issue_number, snapshot)
+
     async def _refill_normal_implementation_slots(self, repo_name: str) -> bool:
         """Evaluate one level-triggered refill obligation from fresh GitHub state.
 
@@ -2764,12 +2777,33 @@ class AutomationEngine:
                     get_trace_logger().log("Worker", f"Worker {worker_id} started processing {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})
 
                     # Process candidate
-                    result = await self._run_local_critical(
-                        f"worker {worker_id} {candidate.type} #{item_number}",
-                        partial(self._process_single_candidate, origin="durable-invalidation-worker"),
-                        repo_name,
-                        candidate,
-                    )
+                    if candidate.type == "issue" and invalidation_claim is not None:
+                        try:
+                            result = await self._run_local_critical(
+                                f"worker {worker_id} {candidate.type} #{item_number}",
+                                partial(self._process_single_candidate, origin="durable-invalidation-worker"),
+                                repo_name,
+                                candidate,
+                            )
+                        finally:
+                            # Ordinary standalone validation occurs inside the
+                            # processing path. Consume any newly durable READY
+                            # or BLOCKED decision before acknowledging the
+                            # invalidation, including when later admission
+                            # raises after decision persistence.
+                            await self._run_local_critical(
+                                f"worker {worker_id} final stage routing for issue #{item_number}",
+                                self._refresh_issue_stage_routing,
+                                repo_name,
+                                int(item_number),
+                            )
+                    else:
+                        result = await self._run_local_critical(
+                            f"worker {worker_id} {candidate.type} #{item_number}",
+                            partial(self._process_single_candidate, origin="durable-invalidation-worker"),
+                            repo_name,
+                            candidate,
+                        )
                     decision_completed = (not bool(result.error) or result.blocked_cacheable) and not (candidate.urgent_admission and result.capacity_deferred)
 
                     if result.error:
