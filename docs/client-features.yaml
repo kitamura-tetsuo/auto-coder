@@ -47,6 +47,15 @@ terminal decisions.
 
 ## Revision-bound review adjudication protocol
 
+The production GitHub boundary fully hydrates nested review-comment pages with
+stable actor/comment identities, actor type, revisions, reply relation, raw
+Markdown, and thread resolution. A repository-scoped SQLite ledger atomically
+preserves one live context per root, decision history, retirement, observation,
+and publication state across restart. Copy-ready context replies expose the
+complete contract binding and a renderer-produced v1 envelope; ambiguous writes
+are reconciled against the actual target thread before retrying. Ordinary
+discussion and webhook bodies remain non-authoritative.
+
 Auto-Coder provides a provider-independent, side-effect-free v1 model for
 authorized decisions about one complete automated-review root thread. Literal
 versioned JSON envelopes distinguish `UPHOLD/FIX`, `OVERRULE/NO_CHANGE`, and

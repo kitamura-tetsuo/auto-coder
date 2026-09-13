@@ -172,6 +172,10 @@ class ReviewThreadComment:
     body: str = ""
     author_login: str = ""
     author_id: Optional[int] = None
+    author_type: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    in_reply_to_id: Optional[int] = None
 
 
 @dataclass
@@ -1998,14 +2002,19 @@ class GitHubClient:
                       id
                       isResolved
                       isOutdated
-                      comments(first: 50) {
+                      comments(first: 100) {
                         pageInfo {
                           hasNextPage
+                          endCursor
                         }
                         nodes {
                           databaseId
                           body
+                          createdAt
+                          updatedAt
+                          replyTo { databaseId }
                           author {
+                            __typename
                             login
                             ... on Bot {
                               databaseId
@@ -2078,9 +2087,70 @@ class GitHubClient:
                                 body=str(comment_node.get("body", "") or ""),
                                 author_login=str(author.get("login") or ""),
                                 author_id=author_id,
+                                author_type=str(author.get("__typename") or ""),
+                                created_at=str(comment_node.get("createdAt") or ""),
+                                updated_at=str(comment_node.get("updatedAt") or ""),
+                                in_reply_to_id=(comment_node.get("replyTo") or {}).get("databaseId"),
                             )
                         )
-                    comments_truncated = bool((comments_data.get("pageInfo") or {}).get("hasNextPage"))
+                    comments_page = comments_data.get("pageInfo") or {}
+                    comments_truncated = bool(comments_page.get("hasNextPage"))
+                    comment_cursor = comments_page.get("endCursor")
+                    while comments_truncated:
+                        if not comment_cursor:
+                            raise RuntimeError(f"Review thread {thread_id} omitted the next comment-page cursor")
+                        comment_response = self.graphql_query(
+                            """
+                            query($thread: ID!, $cursor: String!) {
+                              node(id: $thread) {
+                                ... on PullRequestReviewThread {
+                                  comments(first: 100, after: $cursor) {
+                                    pageInfo { hasNextPage endCursor }
+                                    nodes {
+                                      databaseId body createdAt updatedAt
+                                      replyTo { databaseId }
+                                      author {
+                                        __typename login
+                                        ... on Bot { databaseId }
+                                        ... on EnterpriseUserAccount { user { databaseId } }
+                                        ... on Mannequin { databaseId }
+                                        ... on Organization { databaseId }
+                                        ... on User { databaseId }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            """,
+                            {"thread": thread_id, "cursor": comment_cursor},
+                        )
+                        more = (((comment_response or {}).get("data") or {}).get("node") or {}).get("comments")
+                        if not isinstance(more, dict):
+                            raise RuntimeError(f"Review thread {thread_id} comment pagination was incomplete")
+                        for comment_node in more.get("nodes") or []:
+                            if not comment_node:
+                                continue
+                            author = comment_node.get("author") or {}
+                            raw_author_id = author.get("databaseId")
+                            if raw_author_id is None:
+                                raw_author_id = (author.get("user") or {}).get("databaseId")
+                            author_id = raw_author_id if isinstance(raw_author_id, int) and not isinstance(raw_author_id, bool) and raw_author_id > 0 else None
+                            comments.append(
+                                ReviewThreadComment(
+                                    database_id=comment_node.get("databaseId"),
+                                    body=str(comment_node.get("body") or ""),
+                                    author_login=str(author.get("login") or ""),
+                                    author_id=author_id,
+                                    author_type=str(author.get("__typename") or ""),
+                                    created_at=str(comment_node.get("createdAt") or ""),
+                                    updated_at=str(comment_node.get("updatedAt") or ""),
+                                    in_reply_to_id=(comment_node.get("replyTo") or {}).get("databaseId"),
+                                )
+                            )
+                        more_page = more.get("pageInfo") or {}
+                        comments_truncated = bool(more_page.get("hasNextPage"))
+                        comment_cursor = more_page.get("endCursor")
                     threads.append(
                         ReviewThread(
                             id=thread_id,
