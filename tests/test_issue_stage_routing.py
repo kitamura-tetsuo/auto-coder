@@ -1,3 +1,11 @@
+import asyncio
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
+
+import pytest
+
+from auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
+from auto_coder.automation_engine import AutomationEngine
 from auto_coder.issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -11,6 +19,8 @@ from auto_coder.issue_stage_routing import (
     review_classification,
     standalone_review_generation,
 )
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision
+from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
 
 REPO = "owner/repo"
 
@@ -131,3 +141,66 @@ def test_priority_contract_and_review_versus_child_sources():
     family_priority = max(issue_priority([]), issue_priority(["urgent"]), issue_priority([]))
     child_priority = issue_priority([])
     assert (family_priority, child_priority) == (3, 0)
+
+
+@pytest.mark.asyncio
+async def test_invalidation_and_startup_recovery_route_authoritative_standalone_decision(tmp_path, monkeypatch):
+    """Exercise GitHub authority -> invalidation worker -> durable stage lanes."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(tmp_path / "routing.sqlite3"))
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = {
+        "id": 101,
+        "number": 1,
+        "title": "Standalone",
+        "body": "## Objective\n\nShip it.\n\n## Requirements\n\nREQ-001: Ship it.",
+        "state": "open",
+        "created_at": created_at,
+        "labels": [{"name": "implementation-ready"}, {"name": "urgent"}],
+        "user": {"id": 1},
+    }
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, _number: dict(snapshot)
+    github.get_issue_details.side_effect = lambda issue: dict(issue)
+    github.get_parent_issue_details_strict.return_value = None
+    github.get_direct_sub_issues_strict.return_value = []
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([OpenGitHubIssue(1, created_at)], [])
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = True
+    engine = AutomationEngine(github, config)
+    validator = SpecificationValidationLifecycle(REPO, "test/policy", tmp_path / "decisions.json")
+    engine._specification_validators[REPO] = validator
+    monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda _issue: True)
+    monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *_args: None)
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda *_args, **_kwargs: CandidateProcessingResult(type="issue", number=1))
+
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=3)
+    review = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(review) == 1
+    assert review[0].target_number == 1
+    assert review[0].priority == 3
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+
+    identity = validator.identity(1, snapshot["title"], snapshot["body"])
+    validator.store.save(ValidationDecision(identity, "READY"))
+    first_review_arrival = review[0].arrival
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=3)
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    implementation = engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)
+    assert len(implementation) == 1
+    assert implementation[0].target_number == 1
+    assert implementation[0].priority == 3
+    assert implementation[0].arrival > first_review_arrival
+
+    restarted_store = IssueStageRoutingStore(tmp_path / "routing.sqlite3")
+    restarted_store.recover(REPO)
+    recovered = restarted_store.pending(REPO, IMPLEMENTATION_STAGE)
+    assert len(recovered) == 1
+    assert recovered[0].arrival == implementation[0].arrival
+
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)

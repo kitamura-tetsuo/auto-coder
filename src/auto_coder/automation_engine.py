@@ -47,6 +47,18 @@ from .implementation_slots import (
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import get_linked_issues_context
 from .issue_processor import create_feature_issues
+from .issue_stage_routing import (
+    IMPLEMENTATION_STAGE,
+    REVIEW_STAGE,
+    ContractIdentity,
+    IssueStageRoutingStore,
+    ReviewRequirement,
+    family_review_generation,
+    implementation_classification,
+    implementation_generation,
+    review_classification,
+    standalone_review_generation,
+)
 from .jules_client import invalidate_jules_sessions_cache
 from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
@@ -630,6 +642,8 @@ class AutomationEngine:
         self.queue = CandidateQueue()
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
+        routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
+        self.issue_stage_routing = IssueStageRoutingStore(routing_path)
         self.issue_admission_cache = IssueAdmissionCache()
         self.dependency_observations = DependencyObservationCache()
         self._invalidation_drain_lock = asyncio.Lock()
@@ -2017,6 +2031,7 @@ class AutomationEngine:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} Issue workers and {concurrency} PR workers")
+        self.issue_stage_routing.recover(repo_name)
         self.invalidations.recover(repo_name)
         await self._enqueue_pending_invalidations(repo_name)
 
@@ -2368,6 +2383,128 @@ class AutomationEngine:
         # Issues; an explicit closed state is nevertheless authoritative.
         return str(issue.get("state") or "open").lower() == "open"
 
+    @staticmethod
+    def _routing_contract(repo_name: str, snapshot: Dict[str, Any], role: str) -> ContractIdentity:
+        number = snapshot.get("number")
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise ParentOperationalError("authoritative Issue snapshot omitted its number")
+        stable_id = snapshot.get("id")
+        issue_id = stable_id if isinstance(stable_id, int) and not isinstance(stable_id, bool) else number
+        return ContractIdentity(repo_name, number, issue_id, str(snapshot.get("title") or ""), str(snapshot.get("body") or ""), role)
+
+    def _routing_members_are_stable(self, repo_name: str, members: List[Dict[str, Any]]) -> bool:
+        """Retain creation-anchored invalidations until every member is stable."""
+        stable = True
+        now = time.time()
+        for member in members:
+            number = member.get("number")
+            created_at = member.get("created_at")
+            if not isinstance(number, int) or not isinstance(created_at, str):
+                if isinstance(self.github, GitHubClient):
+                    raise ParentOperationalError("authoritative routing snapshot omitted creation evidence")
+                # Legacy test/local adapters do not claim complete GitHub
+                # authority and historically omit creation timestamps.
+                continue
+            deadline = issue_stabilization_deadline(created_at)
+            if deadline is None:
+                raise ParentOperationalError(f"Issue #{number} has an invalid creation timestamp")
+            if deadline > now:
+                self.invalidations.invalidate(EntityIdentity(repo_name, "issue", number), not_before=deadline)
+                stable = False
+        return stable
+
+    def _route_standalone_issue(self, repo_name: str, issue: Dict[str, Any]) -> None:
+        number = int(issue["number"])
+        contract = self._routing_contract(repo_name, issue, "standalone")
+        requirements: list[ReviewRequirement] = []
+        if self._is_issue_specification_validation_enabled(repo_name):
+            validator = self._get_specification_validator(repo_name)
+            identity = validator.identity(number, contract.title, contract.body)
+            decision = validator.store.get(identity)
+            requirements.append(ReviewRequirement("individual", number, identity.key, decision.verdict if decision is not None else None))
+        admitted = self._is_open_issue(issue) and is_implementation_ready(issue) and self._routing_members_are_stable(repo_name, [issue])
+        priority = self._issue_refill_priority(issue)
+        review_generation = standalone_review_generation(contract, requirements)
+        implementation_key = implementation_generation(contract)
+        self.issue_stage_routing.reconcile(review_classification(repo_name, number, review_generation, priority, admitted, requirements))
+        self.issue_stage_routing.reconcile(implementation_classification(repo_name, number, implementation_key, priority, admitted, requirements))
+
+    def _route_issue_family(self, repo_name: str, parent: Dict[str, Any], children: List[Dict[str, Any]]) -> None:
+        parent_number = int(parent["number"])
+        parent_contract = self._routing_contract(repo_name, parent, "parent")
+        child_contracts = [self._routing_contract(repo_name, child, "child") for child in children]
+        requirements: list[ReviewRequirement] = []
+        if self._is_issue_decomposition_validation_enabled(repo_name):
+            decomposition_validator = self._get_decomposition_validator(repo_name)
+            decomposition_identity = decomposition_validator.identity(parent, children)
+            decomposition_decision = decomposition_validator.store.get(decomposition_identity)
+            requirements.append(
+                ReviewRequirement(
+                    "decomposition",
+                    parent_number,
+                    decomposition_identity.key,
+                    decomposition_decision.verdict if decomposition_decision is not None else None,
+                )
+            )
+        if self._is_issue_specification_validation_enabled(repo_name):
+            individual_validator = self._get_specification_validator(repo_name)
+            for child in children:
+                number = int(child["number"])
+                relationship = self._child_review_context(parent, children, number)
+                individual_identity = individual_validator.identity(number, str(child.get("title") or ""), str(child.get("body") or ""), relationship)
+                individual_decision = individual_validator.store.get(individual_identity)
+                requirements.append(
+                    ReviewRequirement(
+                        "individual",
+                        number,
+                        individual_identity.key,
+                        individual_decision.verdict if individual_decision is not None else None,
+                    )
+                )
+        stable = self._routing_members_are_stable(repo_name, [parent, *children])
+        admitted = self._is_open_issue(parent) and is_implementation_ready(parent) and stable
+        open_members = [member for member in [parent, *children] if self._is_open_issue(member)]
+        priority = max((self._issue_refill_priority(member) for member in open_members), default=0)
+        generation = family_review_generation(repo_name, parent_contract, child_contracts, requirements)
+        self.issue_stage_routing.reconcile(review_classification(repo_name, parent_number, generation, priority, admitted, requirements))
+        family_keys = (parent_contract.key, *(child.key for child in child_contracts))
+        for child, contract in zip(children, child_contracts):
+            number = int(child["number"])
+            # A child's own readiness label is intentionally not consulted.
+            child_admitted = admitted and self._is_open_issue(child)
+            child_priority = self._issue_refill_priority(child)
+            implementation_key = implementation_generation(contract, family_keys)
+            self.issue_stage_routing.reconcile(implementation_classification(repo_name, number, implementation_key, child_priority, child_admitted, requirements))
+            self.issue_stage_routing.remove(repo_name, REVIEW_STAGE, number)
+        # Tracking parents never enter the Implementation lane.
+        self.issue_stage_routing.remove(repo_name, IMPLEMENTATION_STAGE, parent_number)
+
+    def _route_issue_stages_authoritatively(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> None:
+        """Classify one invalidated Issue from current GitHub and decision stores."""
+        current = self._reconcile_validation_snapshot(repo_name, issue_number, snapshot)
+        parent_number = self._get_authoritative_parent_number(repo_name, issue_number, current)
+        if parent_number is not None:
+            family = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
+            if family is None or issue_number not in {child.get("number") for child in family[1]}:
+                raise ParentOperationalError("authoritative child family is unavailable")
+            self._route_issue_family(repo_name, *family)
+            return
+        members = self.github.get_direct_sub_issues_strict(repo_name, issue_number)
+        if not isinstance(members, list):
+            if isinstance(self.github, GitHubClient):
+                raise ParentOperationalError("authoritative direct-child membership is unavailable")
+            # Small legacy adapters have no native hierarchy surface. They can
+            # represent only standalone Issues; they must never synthesize a
+            # family from body declarations.
+            members = []
+        if members:
+            family = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
+            if family is None:
+                raise ParentOperationalError("authoritative parent family is unavailable")
+            self._route_issue_family(repo_name, *family)
+            return
+        self._route_standalone_issue(repo_name, current)
+
     async def _refill_normal_implementation_slots(self, repo_name: str) -> bool:
         """Evaluate one level-triggered refill obligation from fresh GitHub state.
 
@@ -2549,6 +2686,13 @@ class AutomationEngine:
                             await self._run_local_critical(
                                 f"worker {worker_id} submitted-parent validation for issue #{item_number}",
                                 self._validate_submitted_parent_generation_for_child,
+                                repo_name,
+                                int(item_number),
+                                candidate.data,
+                            )
+                            await self._run_local_critical(
+                                f"worker {worker_id} stage routing for issue #{item_number}",
+                                self._route_issue_stages_authoritatively,
                                 repo_name,
                                 int(item_number),
                                 candidate.data,

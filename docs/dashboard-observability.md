@@ -4,9 +4,13 @@ The generation-aware Issue routing store is a pre-worker durability boundary:
 it classifies and orders Review and Implementation lane records but does not yet
 execute either lane or emit a processing result. Consequently it introduces no
 new production trace stage, origin, outcome, provider route, structured event,
-or dashboard projection. `tests/test_issue_stage_routing.py` exercises the
-durable classification, arrival, coalescing, supersession, crash recovery, and
-owned-start boundaries directly. The Review and Implementation worker changes
+or dashboard projection. `tests/test_issue_stage_routing.py::test_invalidation_and_startup_recovery_route_authoritative_standalone_decision`
+drives the real durable invalidation worker and startup enumeration through
+authoritative GitHub refresh and lifecycle-decision reads, then verifies the
+durable Review-to-Implementation handoff and restart-preserved arrival. The
+same test module supplements that production boundary with classification,
+coalescing, supersession, and owned-start unit coverage. The Review and
+Implementation worker changes
 which consume these records must add their production-to-view trace coverage;
 the routing store must not fabricate worker activity before that handoff exists.
 Run `bash scripts/test.sh tests/test_issue_stage_routing.py` for this boundary.

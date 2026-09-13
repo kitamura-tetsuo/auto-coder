@@ -223,6 +223,16 @@ class IssueStageRoutingStore:
             ).fetchall()
             return tuple(self._decode(row) for row in rows)
 
+    def remove(self, repository: str, stage: str, target_number: int) -> None:
+        """Remove semantically ineligible or role-superseded pending work."""
+        if stage not in _STAGES:
+            raise ValueError("unknown Issue stage")
+        with self._lock, self._connection:
+            self._connection.execute(
+                "DELETE FROM issue_lane_arrivals WHERE repository=? AND stage=? AND target_number=?",
+                (repository, stage, target_number),
+            )
+
     def begin(self, item: PendingLaneItem) -> bool:
         """Coalesce a start attempt for the exact still-current lane generation."""
         with self._lock, self._connection:
