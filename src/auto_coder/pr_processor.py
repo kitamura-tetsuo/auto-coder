@@ -5016,9 +5016,20 @@ def _review_feedback_identity(prefix: str, thread: ReviewThread, comment_index: 
     return prefix + hashlib.sha256(anchor.encode("utf-8")).hexdigest()
 
 
-def _cloud_task_remediation_token(client: Any, task_id: str) -> str:
+def _cloud_task_remediation_token(client: Any, task_id: str, feedback_identities: tuple[str, ...] = ()) -> str:
     """Return durable evidence that the owning task completed later activity."""
     from .cloud_task_client_base import CloudTask, CloudTaskState
+
+    completed_turn_observer = getattr(type(client), "get_completed_followup_remediation_turn", None)
+    if feedback_identities and callable(completed_turn_observer):
+        try:
+            completed_turn = completed_turn_observer(client, task_id, feedback_identities)
+        except Exception as exc:
+            logger.warning(f"Could not inspect cloud task '{task_id}' completed follow-up turn: {exc}")
+            return ""
+        if not isinstance(completed_turn, str) or not completed_turn:
+            return ""
+        return hashlib.sha256(f"{task_id}\ncompleted_assistant_turn:{completed_turn}".encode("utf-8")).hexdigest()
 
     try:
         task = client.get_task(task_id)
@@ -5572,7 +5583,6 @@ def _send_adversarial_validation_feedback_to_cloud_task(
 
     state_path = _cloud_review_repair_state_path(repo_name)
     prefix = f"{repo_name}#{pr_number}:{provider}:{task_id}:"
-    remediation_token = _cloud_task_remediation_token(client, task_id)
     if github_client is None:
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}; delivery was not attempted"]
     try:
@@ -5581,6 +5591,16 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         logger.error(f"Failed to identify actionable adversarial feedback for PR #{pr_number}: {exc}")
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}: {exc}"]
     requested_bodies = set(actionable_feedback)
+    matching_threads = [
+        thread
+        for thread in review_threads
+        if not thread.is_resolved
+        and thread.comments
+        and thread.comments[0].body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"))
+        and (thread.comments[0].body in requested_bodies if requested_bodies else _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report))
+    ]
+    finding_identities = tuple(_review_feedback_identity(prefix, thread, 0) for thread in matching_threads)
+    remediation_token = _cloud_task_remediation_token(client, task_id, finding_identities)
     has_remediation_evidence = _has_adversarial_remediation_evidence(remediation_token, source_validation_report)
     feedback_items = [
         (
@@ -5588,11 +5608,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
             _review_feedback_identity(prefix, thread, 0),
             _adversarial_feedback_generation_identity(_review_feedback_identity(prefix, thread, 0), remediation_token, source_validation_report),
         )
-        for thread in review_threads
-        if not thread.is_resolved
-        and thread.comments
-        and thread.comments[0].body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"))
-        and (thread.comments[0].body in requested_bodies if requested_bodies else _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report))
+        for thread in matching_threads
     ]
     if not feedback_items:
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}; delivery was not attempted"]

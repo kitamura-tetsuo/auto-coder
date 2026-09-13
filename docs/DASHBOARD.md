@@ -44,6 +44,12 @@ cancellation, and disabled bypasses remain distinct. These events use bounded
 process-local trace retention; they are not durable review history and cannot be
 recovered after restart.
 
+Codex Cloud adversarial repair generations are recovered from durable follow-up
+baselines and provider-observed completed assistant turns. The dashboard continues
+to show `Cloud Task Adversarial Feedback` only when the corresponding follow-up is
+successfully accepted; a repeated turn, an unfinished turn, or an unrelated PR head
+change produces no new successful-delivery event.
+
 The Auto-Coder Dashboard provides a real-time visualization of the automation engine's activities, including the queue status, active workers, and detailed logs for processed items (Issues and Pull Requests).
 
 Issue and PR processing use separate worker pools, with one worker per pool by

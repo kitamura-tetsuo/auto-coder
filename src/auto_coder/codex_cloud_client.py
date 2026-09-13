@@ -55,6 +55,8 @@ class PendingCodexFollowUp:
     message_fingerprint: str = ""
     pre_send_turn_id: str = ""
     status: str = "indeterminate"
+    logical_identity: str = ""
+    accepted_at: float = 0.0
 
 
 def _codex_followup_state_path(repo_name: Optional[str]) -> Path:
@@ -570,6 +572,27 @@ class CodexCloudClient(CloudTaskClientBase):
         turns = {records[key].pre_send_turn_id for key in keys if key in records and records[key].pre_send_turn_id}
         return f"latest_turn_id:{turns.pop()}" if len(turns) == 1 else ""
 
+    def get_completed_followup_remediation_turn(self, task_id: str, feedback_identities: tuple[str, ...]) -> str:
+        """Observe the completed assistant turn after the latest accepted repair.
+
+        The durable follow-up record supplies the causal pre-send baseline. WHAM
+        supplies the production assistant-turn identity and completion state.
+        Together they avoid treating CLI status changes or unrelated PR heads as
+        corrective activity.
+        """
+        state_path = _codex_followup_state_path(self.repo_name)
+        with _followup_state_lock:
+            try:
+                records = _load_pending_followups(state_path)
+            except (OSError, ValueError, TypeError):
+                return ""
+        prefixes = tuple(f"{identity}:remediation:" for identity in feedback_identities)
+        accepted = [record for record in records.values() if record.task_id == task_id and record.status == FollowUpDeliveryOutcome.DELIVERED.value and record.logical_identity.startswith(prefixes)]
+        if not accepted:
+            return ""
+        latest = max(accepted, key=lambda record: record.accepted_at)
+        return (self.wham_client or CodexWhamClient()).resolve_completed_assistant_turn_after(task_id, latest.pre_send_turn_id) or ""
+
     def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = ()) -> bool:
         """Send work once, reconciling any prior ambiguous POST before retrying."""
         if not is_valid_codex_cloud_task_id(task_id) or not message:
@@ -593,12 +616,17 @@ class CodexCloudClient(CloudTaskClientBase):
             logger.warning(f"Codex Cloud task '{task_id}' has no usable assistant turn for follow-up")
             return False
 
-        record = PendingCodexFollowUp(task_id=task_id, message_fingerprint=message_fingerprint, pre_send_turn_id=turn_id)
         with _followup_state_lock:
             try:
                 pending = _load_pending_followups(state_path)
-                for key in keys:
-                    pending[key] = record
+                for identity in identities:
+                    key = hashlib.sha256(f"{task_id}\0{identity}".encode("utf-8")).hexdigest()
+                    pending[key] = PendingCodexFollowUp(
+                        task_id=task_id,
+                        message_fingerprint=message_fingerprint,
+                        pre_send_turn_id=turn_id,
+                        logical_identity=identity,
+                    )
                 _save_pending_followups(state_path, pending)
             except (OSError, ValueError, TypeError) as exc:
                 logger.warning(f"Cannot durably reserve Codex follow-up; request was not sent: {exc}")
@@ -608,9 +636,17 @@ class CodexCloudClient(CloudTaskClientBase):
         with _followup_state_lock:
             pending = _load_pending_followups(state_path)
             if result.delivered:
-                confirmed = PendingCodexFollowUp(task_id=task_id, message_fingerprint=message_fingerprint, pre_send_turn_id=turn_id, status=FollowUpDeliveryOutcome.DELIVERED.value)
-                for key in keys:
-                    pending[key] = confirmed
+                accepted_at = time.time()
+                for identity in identities:
+                    key = hashlib.sha256(f"{task_id}\0{identity}".encode("utf-8")).hexdigest()
+                    pending[key] = PendingCodexFollowUp(
+                        task_id=task_id,
+                        message_fingerprint=message_fingerprint,
+                        pre_send_turn_id=turn_id,
+                        status=FollowUpDeliveryOutcome.DELIVERED.value,
+                        logical_identity=identity,
+                        accepted_at=accepted_at,
+                    )
             elif result.outcome is FollowUpDeliveryOutcome.NOT_DELIVERED:
                 for key in keys:
                     pending.pop(key, None)

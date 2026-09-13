@@ -225,6 +225,19 @@ class TestCodexWhamClient:
             turn_id = client.resolve_latest_assistant_turn("task_e_900")
             assert turn_id == "task_e_900~assttrn_99"
 
+    def test_resolve_completed_assistant_turn_after_requires_observed_baseline_order(self, client):
+        turns = [
+            WhamTurn(id="task_e_902~assttrn_old", role="assistant", status="completed"),
+            WhamTurn(id="task_e_902~assttrn_A", role="assistant", status="completed"),
+            WhamTurn(id="task_e_902~assttrn_running", role="assistant", status="running"),
+            WhamTurn(id="task_e_902~assttrn_B", role="assistant", status="completed"),
+        ]
+
+        with patch.object(client, "get_task_turns", return_value=turns):
+            assert client.resolve_completed_assistant_turn_after("task_e_902", turns[1].id) == turns[3].id
+            assert client.resolve_completed_assistant_turn_after("task_e_902", turns[3].id) is None
+            assert client.resolve_completed_assistant_turn_after("task_e_902", "task_e_902~missing") is None
+
     def test_reconcile_follow_up_matches_exposed_user_message(self, client):
         prompt = "Fix stable feedback identity 123"
         turns = [

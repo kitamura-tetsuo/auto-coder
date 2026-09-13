@@ -410,6 +410,30 @@ class CodexWhamClient:
         logger.info(f"Resolved latest assistant turn for Codex Cloud task '{task_id}': '{turn_id}'")
         return turn_id
 
+    def resolve_completed_assistant_turn_after(self, task_id: str, baseline_turn_id: str) -> Optional[str]:
+        """Return a completed assistant turn proven to follow ``baseline_turn_id``."""
+        turns = self.get_task_turns(task_id)
+        if not turns:
+            task = self.get_task(task_id)
+            turns = task.turns if task else []
+        normalized_baseline = baseline_turn_id.split("~", 1)[-1]
+        baseline_index = next(
+            (index for index, turn in enumerate(turns) if turn.id == baseline_turn_id or turn.id.split("~", 1)[-1] == normalized_baseline),
+            None,
+        )
+        if baseline_index is None:
+            return None
+        candidates = turns[baseline_index + 1 :]
+        for turn in reversed(candidates):
+            if not turn.id or turn.status.lower() not in {"completed", "finished", "success", "succeeded", "ready"}:
+                continue
+            if "~" in turn.id and turn.id.split("~", 1)[0] != task_id:
+                continue
+            role = turn.role.lower()
+            if role in {"assistant", "agent", "bot", "asst"} or "assttrn_" in turn.id:
+                return turn.id if "~" in turn.id else f"{task_id}~{turn.id}"
+        return None
+
     def reconcile_follow_up(self, task_id: str, pre_send_turn_id: str, message_fingerprint: str) -> Optional[bool]:
         """Reconcile an ambiguous POST against current remote turn state.
 
