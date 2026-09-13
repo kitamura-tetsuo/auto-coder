@@ -488,13 +488,24 @@ def test_collector_exit_status_is_returned_not_overwritten(fixture_repo: Path) -
 def test_target_container_mypy_failure_reaches_outer_caller(tmp_path: Path, fixture_repo: Path, fake_docker: Path) -> None:
     _provision_uv_venv(fixture_repo)
     _write(fixture_repo, "src/auto_coder/_as005_leaf.py", 'value: int = "wrong"\n')
+    # The documented shard argument vector (scripts/run_pr_test_shard.py's own
+    # `command`), so a regression that drops the forwarded "$@" is caught
+    # here rather than only by tests that never pass arguments at all.
+    argv = ["--splits", "4", "--group", "3", "-m", "not browser", "-vv", "-o", "faulthandler_timeout=30"]
 
-    result = _run_outer_forwarding_script(tmp_path / "outer", fixture_repo, fake_docker)
+    result = _run_outer_forwarding_script(tmp_path / "outer", fixture_repo, fake_docker, args=argv)
 
     assert result.returncode != 0
     assert "_as005_leaf.py" in result.stdout
     assert (tmp_path / "outer/docker-container.log").read_text().strip() == "auto-coder-project"
     assert not (fixture_repo / "collector-invocations.json").exists()
+
+    # fake_docker records the full "docker exec ..." invocation before ever
+    # cd-ing into the target checkout, so this proves the inner script was
+    # launched with the original argument vector unchanged, not just that
+    # the target container name was resolved correctly.
+    invocation = (tmp_path / "outer/docker-invocations.log").read_text().strip()
+    assert invocation.endswith("./scripts/test.sh " + " ".join(argv))
 
 
 def test_docker_launch_failure_propagates_as_outer_nonzero(tmp_path: Path) -> None:
