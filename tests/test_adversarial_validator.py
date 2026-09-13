@@ -571,10 +571,19 @@ def test_absence_only_irrelevance_cannot_discharge_unavailable_path() -> None:
     assert "src/state.py" in (checked.diagnostic_reason or "")
 
 
-def test_absence_only_irrelevance_rejected_regardless_of_phrasing() -> None:
-    """The absence-only rejection must not be keyed to one fixed sentence: a
-    differently worded but equally absence-only justification must also be
-    rejected."""
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "The patch could not be retrieved; therefore this file cannot affect any requirement.",
+        "This path is irrelevant.",
+        "No patch was available, so this path is irrelevant to this review.",
+    ],
+)
+def test_absence_only_irrelevance_rejected_regardless_of_phrasing(evidence: str) -> None:
+    """The rejection must not be keyed to one fixed sentence or require a
+    recognized absence clause to be present at all: a bare assertion of
+    irrelevance, with or without extra words, must also be rejected because
+    it offers no independent scope basis."""
     context = AdversarialValidationContext(
         unverified_files=["src/state.py"],
         issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve state")],
@@ -588,7 +597,7 @@ def test_absence_only_irrelevance_rejected_regardless_of_phrasing() -> None:
                 path="src/state.py",
                 source="current-PR retrieval",
                 status="IRRELEVANT",
-                evidence="The patch could not be retrieved; therefore this file cannot affect any requirement.",
+                evidence=evidence,
                 requirement_ids=["REQ-001"],
             )
         ],
@@ -3120,6 +3129,103 @@ class TestRunAdversarialValidation:
         assert manager.continue_session.call_count == 1
         assert result.result == "ERROR"
         assert result.diagnostic_category == "pass_with_unresolvable_changed_file_count"
+
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_stale_raw_diff_for_an_already_decided_file_is_rejected_at_finalization(self, mock_run_prompt):
+        """REQ-002/REQ-010/REQ-011/REQ-012: the finalization snapshot recheck
+        must catch a changed raw diff for a file the initial round already
+        decided from, even when the authoritative REST listing, PR metadata,
+        and Issue Requirement manifest are all unchanged. This exercises the
+        real (unmocked) build_adversarial_validation_context / snapshot-digest
+        boundary rather than a preconstructed context, so it can actually
+        detect this class of staleness."""
+
+        class FakeClient:
+            def __init__(self, diff_content: str):
+                self.diff_content = diff_content
+
+            def _diff(self) -> str:
+                return f"diff --git a/src/a.py b/src/a.py\n+++ b/src/a.py\n+{self.diff_content}\n"
+
+            def get_pr_diff(self, repo_name, pr_number):
+                return self._diff()
+
+            def get_pr_diff_strict(self, repo_name, pr_number):
+                return self._diff()
+
+            def get_pr_changed_file_count(self, repo_name, pr_number):
+                return 2
+
+            def get_pr_changed_file_count_strict(self, repo_name, pr_number):
+                return 2
+
+            def _records(self):
+                return [
+                    {"filename": "src/a.py", "additions": 1, "deletions": 0, "patch": f"+{self.diff_content}"},
+                    {"filename": "src/b.py", "additions": 1, "deletions": 0, "patch": "+b_line"},
+                ]
+
+            def get_pr_changed_files(self, repo_name, pr_number):
+                return self._records()
+
+            def get_pr_changed_files_strict(self, repo_name, pr_number):
+                return self._records()
+
+            def get_issue_strict(self, repo_name, issue_number):
+                return {"title": "Spec", "body": "## Requirements\nREQ-001: Preserve A's behavior.", "pull_request": None}
+
+            def get_issue_dispatch_snapshot_strict(self, repo_name, issue_number):
+                return self.get_issue_strict(repo_name, issue_number)
+
+            def get_parent_issue_details(self, repo_name, issue_number):
+                return None
+
+            def get_pull_request_metadata_strict(self, repo_name, pr_number):
+                return {"number": pr_number, "head": {"sha": "head-1"}, "base": {"sha": "base-1"}}
+
+        # The cached diff (served for the initial round) differs from the
+        # fresh diff (served for the finalization recheck) for the exact same
+        # file, simulating a stale cached observation despite an unchanged
+        # authoritative REST listing, PR metadata, and Issue manifest.
+        client = FakeClient("old_a_line")
+        real_diff = FakeClient("new_a_line")._diff()
+
+        def make_diff_strict(repo_name, pr_number):
+            return real_diff
+
+        client.get_pr_diff_strict = make_diff_strict  # type: ignore[method-assign]
+
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "src/a.py verified from the (cached) diff",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "src/a.py's diff shows correct behavior"}],
+                "findings": [],
+            }
+        )
+        manager = MagicMock()
+        manager._last_session_id = "session-1"
+        manager.get_current_backend_identity.return_value = ("codex", "codex", "model")
+        manager.continue_session.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "src/b.py recovered",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "src/a.py's diff shows correct behavior"}],
+                "evidence_recovery": [{"path": "src/b.py", "source": "current-PR retrieval", "status": "RECOVERED", "evidence": "complete src/b.py", "requirement_ids": ["REQ-001"]}],
+                "findings": [],
+            }
+        )
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "head_sha": "head-1", "body": "Fixes #10"},
+            AutomationConfig(),
+            github_client=client,
+            backend_manager=manager,
+        )
+
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "validation_snapshot_stale"
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

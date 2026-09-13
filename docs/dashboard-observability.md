@@ -164,17 +164,28 @@ already-decided file invalidates the snapshot even when the REST listing of
 omitted files is unchanged. A path the initial round left UNAVAILABLE may
 still transition to RECOVERED (or reveal a new finding) in the completion
 round without being treated as a rejected contradiction; only a path already
-RECOVERED/IRRELEVANT before that round must stay stable. Only a change
-representation exactly resembling a `.gitattributes`- or absence-only
-one-liner is treated as pure absence, not any phrasing that cites missing
-evidence.
+RECOVERED/IRRELEVANT before that round must stay stable. Rather than trying
+to enumerate every way of asserting absence-only irrelevance (an unwinnable
+paraphrase arms race — a bare "This path is irrelevant." offers no absence
+clause to even match), `_lacks_independent_irrelevance_scope_basis` instead
+requires an affirmative, recognized independent-scope marker (e.g. a
+generated/vendored/binary-asset reference, a `.gitattributes` marker, or an
+explicit "confirmed via"/"identical to" citation) to be present at all;
+anything else is rejected regardless of phrasing.
 
 A persistent failure on one changed-file REST page no longer blocks
 validation before the reviewer ever runs: the successfully retrieved page's
 evidence is carried into context and reaches the bounded completion round
 alongside an explicit `unresolvable_file_count`, and `pass_with_unresolvable_changed_file_count`
 still fails closed at final verdict precedence so that gap can never
-authorize PASS. The per-file REST patch completeness check
+authorize PASS. Both the cached and cache-bypassing changed-file pagination
+now also treat a `GitHubRequestError(TRANSPORT_FAILURE)` — the production
+diagnostic boundary's (`CachedGhApi`/`DiagnosticTransport`) typed wrapper
+around a raw transport exception — as the same transient, partial-recovery
+eligible failure as a bare `httpx` exception; any other `GitHubRequestError`
+classification (an authentication failure, a forbidden response) still
+propagates immediately rather than being retried or masked as a partial
+recovery. The per-file REST patch completeness check
 (`_github_file_record_has_complete_patch`) no longer excludes content lines
 that happen to start with `++`/`--` (e.g. `++counter;`): GitHub's per-file
 `patch` field never carries unified-diff `+++`/`---` file headers, only hunk
@@ -185,11 +196,13 @@ as unavailable. The production orchestration regressions
 `test_completion_round_preserves_prior_recovered_path`,
 `test_completion_transitions_unavailable_path_to_recovered_with_new_finding`,
 `test_bypass_cache_uses_genuinely_cache_bypassing_retrieval`,
-`test_unresolvable_file_count_reaches_completion_but_blocks_final_pass`, and
-`test_partial_changed_file_page_failure_retains_successfully_retrieved_evidence`
+`test_unresolvable_file_count_reaches_completion_but_blocks_final_pass`,
+`test_stale_raw_diff_for_an_already_decided_file_is_rejected_at_finalization`,
+and `test_partial_changed_file_page_failure_retains_successfully_retrieved_evidence`
 (all in `tests/test_adversarial_validator.py`), plus
-`tests/test_gh_cache_pr_changed_files_pagination.py`, prove these boundaries;
-existing dashboard stage rendering remains generic.
+`tests/test_gh_cache_pr_changed_files_pagination.py` (including its
+production-typed-error cases), prove these boundaries; existing dashboard
+stage rendering remains generic.
 
 ## Implementation Slots panel (Issue #1993)
 

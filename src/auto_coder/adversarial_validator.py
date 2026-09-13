@@ -2398,48 +2398,39 @@ def _complete_changed_file_evidence(
     return completion
 
 
-_ABSENCE_OF_EVIDENCE_PATTERN = re.compile(
-    r"(?:no\s+(?:patch|diff|evidence)\s+(?:was|is|were)\s+(?:available|retrieved|found|returned|provided|obtained)"
-    r"|(?:patch|diff|evidence)\s+(?:was|is|were)\s+(?:not\s+(?:available|retrieved|found|provided|obtained)|unavailable|missing)"
-    r"|(?:patch|diff|evidence)\s+(?:could\s+not|couldn't|cannot|can't|failed\s+to)\s+be\s+(?:retrieved|obtained|found|fetched)"
-    r"|(?:retrieval|fetch(?:ing)?)\s+(?:failed|was\s+unsuccessful|did\s+not\s+succeed))",
-    re.IGNORECASE,
-)
-_IRRELEVANCE_CONCLUSION_PATTERN = re.compile(
-    r"(?:this\s+(?:file|path)\s+(?:cannot|can't|does\s+not|doesn't)\s+affect\s+(?:any\s+)?requirement" r"|(?:this\s+(?:file|path)\s+is\s+)?irrelevant" r"|no\s+effect\s+on\s+(?:any\s+)?requirement" r"|not\s+material)",
-    re.IGNORECASE,
-)
-_ABSENCE_ONLY_RESIDUAL_STOPWORDS = re.compile(
-    r"\b(?:so|therefore|thus|hence|which\s+means|meaning|because|since|as|but|and|the|this|file|path|cannot|can't|does|doesn't|affect|any|requirement)\b",
+# A denylist of absence-only phrasings is an unwinnable arms race against
+# paraphrase (a bare "This path is irrelevant." has no absence clause to
+# match at all, yet offers no independent basis either). Instead this
+# requires an affirmative, recognized independent-scope signal to be
+# present; anything else -- however phrased -- is treated as insufficient,
+# per REQ-004's requirement that IRRELEVANT rest on a concrete same-snapshot
+# scope basis rather than the reviewer's bare assertion.
+_INDEPENDENT_SCOPE_EVIDENCE_PATTERN = re.compile(
+    r"(?:confirmed\s+via|confirmed\s+by|verified\s+via|verified\s+by|cross[- ]referenced"
+    r"|generated\s+(?:file|code|lock\s*file)|auto-?generated|build\s+artifact|compiled\s+output"
+    r"|binary\s+asset|vendored|symlink|\.gitattributes|\.gitignore"
+    r"|identical\s+to|unchanged\s+from|byte[- ]identical"
+    r"|no\s+reviewable\s+logic|not\s+source\s+code|pattern[- ]matching"
+    r"|renamed\s+without\s+content\s+change|already\s+reviewed|out\s+of\s+scope\s+per)",
     re.IGNORECASE,
 )
 
 
-def _is_absence_only_irrelevance(evidence: str) -> bool:
-    """Return True when IRRELEVANT is justified only by missing evidence.
+def _lacks_independent_irrelevance_scope_basis(evidence: str) -> bool:
+    """Return True when IRRELEVANT lacks a concrete independent scope basis.
 
     REQ-004/REQ-005 forbid discharging a path, or deciding a materially
     dependent Requirement, from missing evidence or the reviewer's bare
     assertion alone. An IRRELEVANT classification needs a concrete
-    same-snapshot scope basis independent of the absence itself.
-
-    Rather than matching one fixed sentence, this requires both an
-    absence-of-evidence clause and an irrelevance conclusion to be present,
-    then strips both (plus connective glue) from the text: if nothing
-    substantive remains, no independent scope basis was ever offered.
+    same-snapshot scope basis independent of the absence itself: this
+    requires an affirmative, recognized independent-scope marker to be
+    present rather than trying to enumerate every way of asserting
+    irrelevance without one.
     """
     text = evidence.strip()
     if not text:
-        return False
-    if not _ABSENCE_OF_EVIDENCE_PATTERN.search(text):
-        return False
-    if not _IRRELEVANCE_CONCLUSION_PATTERN.search(text):
-        return False
-    residual = _ABSENCE_OF_EVIDENCE_PATTERN.sub(" ", text)
-    residual = _IRRELEVANCE_CONCLUSION_PATTERN.sub(" ", residual)
-    residual = _ABSENCE_ONLY_RESIDUAL_STOPWORDS.sub(" ", residual)
-    residual = re.sub(r"[\s.,;:]+", "", residual)
-    return not residual
+        return True
+    return not _INDEPENDENT_SCOPE_EVIDENCE_PATTERN.search(text)
 
 
 def _apply_coverage_and_verdict_precedence(
@@ -2483,12 +2474,12 @@ def _apply_coverage_and_verdict_precedence(
         return result
 
     unavailable_controller_paths = {evidence.path for evidence in context.controller_file_evidence if not evidence.is_complete}
-    absence_only_irrelevant_paths = sorted(entry.path for entry in result.evidence_recovery if entry.status == "IRRELEVANT" and entry.path in unavailable_controller_paths and _is_absence_only_irrelevance(entry.evidence))
+    absence_only_irrelevant_paths = sorted(entry.path for entry in result.evidence_recovery if entry.status == "IRRELEVANT" and entry.path in unavailable_controller_paths and _lacks_independent_irrelevance_scope_basis(entry.evidence))
     if absence_only_irrelevant_paths:
         result.result = "ERROR"
-        result.summary = "Invalid validator response: IRRELEVANT was justified only by missing evidence"
+        result.summary = "Invalid validator response: IRRELEVANT lacked an independent scope basis"
         result.diagnostic_category = "absence_only_irrelevance_rejected"
-        result.diagnostic_reason = f"Paths marked IRRELEVANT solely because their evidence was unavailable, with no independent scope basis: {', '.join(absence_only_irrelevant_paths)}"
+        result.diagnostic_reason = f"Paths marked IRRELEVANT without a recognized independent scope basis while their evidence is unavailable: {', '.join(absence_only_irrelevant_paths)}"
         return result
 
     if unknown_finding_requirement_ids:
