@@ -130,19 +130,36 @@ class AdjudicationContextStore:
             )"""
         )
         self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS one_live_adjudication_context ON adjudication_contexts(repository, pr_number, root_comment_id) WHERE live = 1")
+        self._db.execute("CREATE TABLE IF NOT EXISTS adjudication_issue_prs (repository TEXT NOT NULL, issue_number INTEGER NOT NULL, pr_number INTEGER NOT NULL, PRIMARY KEY(repository,issue_number,pr_number))")
         self._db.commit()
 
     def register(self, context: ReviewContext, observation_revision: str) -> AdjudicationLedger:
         ledger = AdjudicationLedger(context)
-        with self._lock, self._db:
-            row = self._db.execute("SELECT ledger FROM adjudication_contexts WHERE repository=? AND pr_number=? AND root_comment_id=? AND live=1", (context.repository, context.pr_number, context.root_comment_id)).fetchone()
-            if row:
-                current = AdjudicationLedger.loads(row[0])
-                if _binding(current.context) == _binding(context):
-                    return current
-                current.retire("a bound context revision changed")
-                self._db.execute("UPDATE adjudication_contexts SET live=0, ledger=? WHERE context_id=?", (current.dumps(), current.context.context_id))
-            self._db.execute("INSERT INTO adjudication_contexts(repository,pr_number,root_comment_id,context_id,live,ledger,observation_revision) VALUES(?,?,?,?,1,?,?)", (context.repository, context.pr_number, context.root_comment_id, context.context_id, ledger.dumps(), observation_revision))
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    "SELECT ledger FROM adjudication_contexts WHERE repository=? AND pr_number=? AND root_comment_id=? AND live=1",
+                    (context.repository, context.pr_number, context.root_comment_id),
+                ).fetchone()
+                if row:
+                    current = AdjudicationLedger.loads(row[0])
+                    if _binding(current.context) == _binding(context):
+                        self._db.commit()
+                        return current
+                    current.retire("a bound context revision changed")
+                    self._db.execute(
+                        "UPDATE adjudication_contexts SET live=0, ledger=? WHERE context_id=?",
+                        (current.dumps(), current.context.context_id),
+                    )
+                self._db.execute(
+                    "INSERT INTO adjudication_contexts(repository,pr_number,root_comment_id,context_id,live,ledger,observation_revision) VALUES(?,?,?,?,1,?,?)",
+                    (context.repository, context.pr_number, context.root_comment_id, context.context_id, ledger.dumps(), observation_revision),
+                )
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
         return ledger
 
     def save(self, ledger: AdjudicationLedger, observation_revision: str) -> None:
@@ -163,6 +180,36 @@ class AdjudicationContextStore:
         with self._lock, self._db:
             if self._db.execute("UPDATE adjudication_contexts SET publication_state=?,publication_body=? WHERE context_id=?", (state, body, context_id)).rowcount != 1:
                 raise RuntimeError("adjudication context was not durably registered")
+
+    def associate_issues(self, repository: str, pr_number: int, issue_numbers: Sequence[int]) -> None:
+        """Atomically replace the reverse association from contracts to a PR."""
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM adjudication_issue_prs WHERE repository=? AND pr_number=?", (repository, pr_number))
+            self._db.executemany(
+                "INSERT INTO adjudication_issue_prs(repository,issue_number,pr_number) VALUES(?,?,?)",
+                ((repository, number, pr_number) for number in issue_numbers),
+            )
+
+    def affected_prs(self, repository: str, issue_number: int) -> tuple[int, ...]:
+        rows = self._db.execute(
+            "SELECT pr_number FROM adjudication_issue_prs WHERE repository=? AND issue_number=? ORDER BY pr_number",
+            (repository, issue_number),
+        ).fetchall()
+        return tuple(int(row[0]) for row in rows)
+
+    def tracked_prs(self, repository: str) -> tuple[int, ...]:
+        rows = self._db.execute(
+            "SELECT DISTINCT pr_number FROM adjudication_contexts WHERE repository=? AND (live=1 OR publication_state!='confirmed') ORDER BY pr_number",
+            (repository,),
+        ).fetchall()
+        return tuple(int(row[0]) for row in rows)
+
+    def ledgers_for_pr(self, repository: str, pr_number: int) -> tuple[AdjudicationLedger, ...]:
+        rows = self._db.execute(
+            "SELECT ledger FROM adjudication_contexts WHERE repository=? AND pr_number=? AND live=1 ORDER BY root_comment_id",
+            (repository, pr_number),
+        ).fetchall()
+        return tuple(AdjudicationLedger.loads(str(row[0])) for row in rows)
 
 
 def _binding(context: ReviewContext) -> tuple[object, ...]:
@@ -245,6 +292,11 @@ def reconcile_thread(ledger: AdjudicationLedger, thread: ReviewThread, adjudicat
     )
     if result.status in {AdjudicationStatus.STALE, AdjudicationStatus.REVOKED, AdjudicationStatus.INVALID}:
         return result
+    observed_ids = {item.database_id for item in thread.comments}
+    for record in (*ledger.context.decisions.values(), *ledger.context.pending_decisions.values()):
+        if record.source.comment_id not in observed_ids:
+            ledger.observe_deletion(record.source.comment_id)
+            return ledger.current(None, None, "accepted adjudication source was confirmed absent")
     for comment in sorted(thread.comments[1:], key=lambda item: (item.created_at, item.database_id or 0)):
         if comment.database_id is None or comment.author_id is None:
             ledger.context.source_unavailable = True
@@ -275,7 +327,7 @@ def publish_context(github_client: object, store: AdjudicationContextStore, ledg
     """Publish once, verifying an ambiguous prior send before any retry."""
     body = render_context_projection(ledger.context, ledger.tips())
     state, saved_body = store.publication(ledger.context.context_id)
-    if state == "confirmed":
+    if state == "confirmed" and saved_body == body:
         return state
     if state == "unknown":
         if any(item.body == saved_body for item in thread.comments):
@@ -290,3 +342,85 @@ def publish_context(github_client: object, store: AdjudicationContextStore, ledg
         return "unknown"
     store.set_publication(ledger.context.context_id, "confirmed", body)
     return "confirmed"
+
+
+class ReviewAdjudicationService:
+    """Production refresh/snapshot boundary used by every PR processing origin."""
+
+    def __init__(self, github_client: object, store: AdjudicationContextStore) -> None:
+        self.github = github_client
+        self.store = store
+        self._snapshots: dict[tuple[str, int, int], AdjudicationSnapshot] = {}
+        self._lock = threading.RLock()
+
+    @staticmethod
+    def _binding(repository: str, pr_number: int, pr_data: dict[str, object]) -> PullRequestBinding:
+        head = pr_data.get("head")
+        base = pr_data.get("base")
+        if not isinstance(head, dict) or not isinstance(base, dict):
+            raise ValueError("authoritative PR metadata lacks head/base bindings")
+        base_repo = base.get("repo")
+        repository_id = base_repo.get("id") if isinstance(base_repo, dict) else None
+        head_sha, base_sha, base_ref = head.get("sha"), base.get("sha"), base.get("ref")
+        if not isinstance(repository_id, int) or isinstance(repository_id, bool) or repository_id <= 0 or not all(isinstance(value, str) and value for value in (head_sha, base_sha, base_ref)):
+            raise ValueError("authoritative PR metadata lacks stable repository or revision identity")
+        return PullRequestBinding(repository_id, repository, pr_number, str(head_sha), str(base_sha), str(base_ref))
+
+    def refresh(
+        self,
+        repository: str,
+        pr_number: int,
+        pr_data: dict[str, object],
+        issue_numbers: Sequence[int],
+        root_reviewer_ids: Sequence[int],
+        adjudicator_ids: Sequence[int],
+    ) -> tuple[AdjudicationSnapshot, ...]:
+        """Strictly re-read all evidence, persist it, then expose applicability."""
+        if not root_reviewer_ids or not adjudicator_ids:
+            return ()
+        binding = self._binding(repository, pr_number, pr_data)
+        issue_evidence = []
+        for number in issue_numbers:
+            issue = self.github.get_issue_dispatch_snapshot_strict(repository, number)  # type: ignore[attr-defined]
+            if not isinstance(issue, dict) or issue.get("number") != number or "pull_request" in issue:
+                raise ValueError(f"contributing Issue #{number} is unavailable or ambiguous")
+            issue_id = issue.get("id")
+            title, body = issue.get("title"), issue.get("body")
+            if not isinstance(issue_id, int) or isinstance(issue_id, bool) or issue_id <= 0 or not isinstance(title, str) or not isinstance(body, str):
+                raise ValueError(f"contributing Issue #{number} lacks complete authoritative identity/body")
+            issue_evidence.append(IssueEvidence(issue_id, number, title, body))
+        contracts = build_issue_contracts(issue_evidence)
+        self.store.associate_issues(repository, pr_number, issue_numbers)
+        threads = self.github.get_pr_review_threads_strict(repository, pr_number)  # type: ignore[attr-defined]
+        snapshots = []
+        for thread in threads:
+            if thread.comments_truncated or not thread.comments:
+                raise RuntimeError(f"review thread {thread.id} was not read completely")
+            root = thread.comments[0]
+            if root.author_type != "Bot" or root.author_id not in root_reviewer_ids:
+                continue
+            candidate = new_context(binding, thread, contracts)
+            observation = hashlib.sha256("\0".join(f"{item.database_id}:{item.updated_at}" for item in thread.comments).encode("utf-8")).hexdigest()
+            ledger = self.store.register(candidate, observation)
+            result = reconcile_thread(ledger, thread, adjudicator_ids, root_reviewer_ids)
+            self.store.save(ledger, observation)
+            if ledger.context.retired_reason is None:
+                publish_context(self.github, self.store, ledger, thread)
+            snapshot = AdjudicationSnapshot(
+                context=ledger.context,
+                raw_finding=root.body,
+                contributing_issues=tuple(issue_numbers),
+                root_author_id=root.author_id,
+                source_comment_id=result.source_comment_id,
+                result=result,
+                observation_revision=observation,
+            )
+            snapshots.append(snapshot)
+            with self._lock:
+                self._snapshots[(repository, pr_number, ledger.context.root_comment_id)] = snapshot
+        return tuple(snapshots)
+
+    def snapshots(self, repository: str, pr_number: int) -> tuple[AdjudicationSnapshot, ...]:
+        """Return the last fully persisted read-only observations for consumers."""
+        with self._lock:
+            return tuple(value for (repo, pr, _), value in self._snapshots.items() if repo == repository and pr == pr_number)

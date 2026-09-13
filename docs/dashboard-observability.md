@@ -573,3 +573,11 @@ revision. Context publication is an output of reconciliation, not an operator
 decision or PASS signal. `SOURCE_UNAVAILABLE` suspends positive applicability
 while retained history remains visible; no new trace event schema or dashboard
 admission/outcome mapping is introduced by this boundary.
+
+The boundary is invoked inside the existing PR-processing execution scope, so
+its configured read or persistence failure is reported through the existing PR
+error outcome rather than a new event kind. Successful refreshes are available
+through the engine's read-only adjudication snapshot accessor; publication does
+not emit PASS, repair, or review-resolution events. Issue-originated reverse
+invalidation and startup recovery use the existing durable invalidation worker
+origin and therefore preserve the production-to-view routing contract.
