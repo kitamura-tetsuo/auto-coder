@@ -34,6 +34,7 @@ def test_dedicated_workers_progress_while_other_type_is_busy(tmp_path, monkeypat
     monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
     monkeypatch.setattr(engine, "_process_single_candidate", process)
     monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *args: None)
+    monkeypatch.setattr(engine, "_refresh_issue_stage_routing", lambda *args: None)
 
     async def scenario():
         workers = [asyncio.create_task(engine._worker_loop("owner/repo", i, kind)) for i, kind in enumerate(("issue", "pr"))]
@@ -120,6 +121,7 @@ def test_durable_prs_overtake_issue_backlog_without_losing_generations(tmp_path,
         monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
         monkeypatch.setattr(engine, "_process_single_candidate", process)
         monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *args: None)
+        monkeypatch.setattr(engine, "_refresh_issue_stage_routing", lambda *args: None)
         status = engine.get_status()
         assert [item["number"] for item in status["queue_items"]] == [2004, 2005, 1980, 1981]
         worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
