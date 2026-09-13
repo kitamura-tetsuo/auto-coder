@@ -224,8 +224,13 @@ $RUN flake8 src/ tests/
 
 # Run mypy
 echo "[CHECK] Running mypy..."
-# Run mypy from root directory with proper module resolution
-$RUN mypy -c "import sys; sys.path.insert(0, 'src'); import auto_coder" || true
+# Canonical package-wide check: matches the PR Tests "Lint & Type Check" job
+# and the mypy pre-commit hook exactly. This recursively analyzes the
+# checked-out src/auto_coder package (including new/otherwise-unimported
+# submodules) under root pyproject.toml's [tool.mypy] configuration. Do not
+# add "|| true" here: `set -Eeuo pipefail` must stop this script on a nonzero
+# result before the "checks passed" message and before the test collector.
+$RUN mypy --config-file pyproject.toml -p auto_coder
 
 echo "[OK] All code quality checks passed!"
 echo ""
