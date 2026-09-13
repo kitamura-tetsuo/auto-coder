@@ -2,8 +2,10 @@ import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from auto_coder.review_adjudication import AdjudicationStatus
-from auto_coder.review_adjudication_github import AdjudicationContextStore, IssueEvidence, PullRequestBinding, build_issue_contracts, new_context, publish_context, reconcile_thread
+import httpx
+
+from auto_coder.review_adjudication import AdjudicationStatus, Decision, render_decision
+from auto_coder.review_adjudication_github import AdjudicationContextStore, IssueEvidence, PullRequestBinding, ReviewAdjudicationService, build_issue_contracts, new_context, publish_context, reconcile_thread, render_context_projection
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 
 BODY = """## Objective
@@ -36,7 +38,7 @@ def test_ordinary_discussion_has_no_authority(tmp_path: Path) -> None:
     thread = _thread()
     thread.comments.append(ReviewThreadComment(11, "LGTM", "human", 8, "User", "2026-01-02T00:00:00Z", "2026-01-02T00:00:00Z", 10))
     result = reconcile_thread(ledger, thread, [8], [7])
-    assert result.status is AdjudicationStatus.INVALID
+    assert result.status is AdjudicationStatus.NONE
     assert not ledger.context.decisions
 
 
@@ -62,6 +64,38 @@ def test_ambiguous_publication_is_verified_before_retry(tmp_path: Path) -> None:
     assert client.calls == 1
 
 
+def test_publication_definite_refusal_remains_retryable(tmp_path: Path) -> None:
+    contracts = build_issue_contracts([IssueEvidence(90, 9, "title", BODY)])
+    context = new_context(PullRequestBinding(3, "o/r", 4, "a" * 40, "b" * 40, "main"), _thread(), contracts)
+    store = AdjudicationContextStore(tmp_path / "state.sqlite")
+    ledger = store.register(context, "r1")
+    client = MagicMock()
+    request = httpx.Request("POST", "https://api.github.test/reply")
+    client.reply_to_review_thread.side_effect = httpx.HTTPStatusError("refused", request=request, response=httpx.Response(422, request=request))
+
+    assert publish_context(client, store, ledger, _thread()) == "definitely-not-sent"
+    assert publish_context(client, store, ledger, _thread()) == "definitely-not-sent"
+    assert client.reply_to_review_thread.call_count == 2
+
+
+def test_restart_confirms_interrupted_pending_publication_without_post(tmp_path: Path) -> None:
+    contracts = build_issue_contracts([IssueEvidence(90, 9, "title", BODY)])
+    context = new_context(PullRequestBinding(3, "o/r", 4, "a" * 40, "b" * 40, "main"), _thread(), contracts)
+    path = tmp_path / "state.sqlite"
+    first_store = AdjudicationContextStore(path)
+    first_store.register(context, "r1")
+    body = render_context_projection(context, ())
+    first_store.set_publication(context.context_id, "pending", body)
+    observed = _thread()
+    observed.comments.append(ReviewThreadComment(12, body))
+    restarted = AdjudicationContextStore(path)
+    ledger = restarted.ledgers_for_pr("o/r", 4)[0]
+    client = MagicMock()
+
+    assert publish_context(client, restarted, ledger, observed) == "confirmed"
+    client.reply_to_review_thread.assert_not_called()
+
+
 def test_engine_targeted_refresh_uses_authoritative_contracts_and_publishes(tmp_path: Path, monkeypatch) -> None:
     """The supported controller boundary, rather than a helper, creates snapshots."""
     from auto_coder.automation_engine import AutomationEngine
@@ -76,25 +110,53 @@ def test_engine_targeted_refresh_uses_authoritative_contracts_and_publishes(tmp_
         "head": {"sha": "a" * 40},
         "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}},
     }
-    github.get_issue_dispatch_snapshot_strict.side_effect = [
-        {"id": 90, "number": 9, "title": "one", "body": BODY},
-        {"id": 100, "number": 10, "title": "two", "body": BODY.replace("raw value", "second value")},
-    ]
-    github.get_pr_review_threads_strict.return_value = [_thread()]
+    issue_data = {
+        9: {"id": 90, "number": 9, "title": "one", "body": BODY},
+        10: {"id": 100, "number": 10, "title": "two", "body": BODY.replace("raw value", "second value")},
+    }
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda repository, number: issue_data[number]
+    thread = _thread()
+    github.get_pr_review_threads_strict.return_value = [thread]
     engine = AutomationEngine(github)
 
     with (
         patch("auto_coder.automation_engine.get_pr_review_allowlist_from_config", return_value=[7]),
         patch("auto_coder.automation_engine.get_review_adjudicator_allowlist_from_config", return_value=[8]),
     ):
-        snapshots = engine.refresh_review_adjudications("o/r", {"number": 4, "body": "Closes #9\nCloses #10"})
+        snapshots = engine.refresh_review_adjudications("o/r", {"number": 4, "body": "Closes #9"})
 
     assert len(snapshots) == 1
+    assert snapshots[0].context is not None
+    context_id = snapshots[0].context.context_id
     assert snapshots[0].contributing_issues == (9, 10)
     assert engine.get_review_adjudication_snapshots("o/r", 4) == snapshots
     github.reply_to_review_thread.assert_called_once()
     assert "Contributing Issues: #9, #10" in github.reply_to_review_thread.call_args.args[3]
     assert engine.review_adjudications.store.affected_prs("o/r", 10) == (4,)
+
+    # A projection's own webhook leads to another authoritative refresh, but
+    # its deterministic publication identity prevents a duplicate POST.
+    published_body = github.reply_to_review_thread.call_args.args[3]
+    thread.comments.append(
+        ReviewThreadComment(
+            12,
+            published_body,
+            "auto-coder",
+            99,
+            "Bot",
+            "2026-01-02T00:00:00Z",
+            "2026-01-02T00:00:00Z",
+            10,
+        )
+    )
+    with (
+        patch("auto_coder.automation_engine.get_pr_review_allowlist_from_config", return_value=[7]),
+        patch("auto_coder.automation_engine.get_review_adjudicator_allowlist_from_config", return_value=[8]),
+    ):
+        repeated = engine.refresh_review_adjudications("o/r", {"number": 4})
+    assert repeated[0].context is not None
+    assert repeated[0].context.context_id == context_id
+    github.reply_to_review_thread.assert_called_once()
 
     # The durable reverse association makes an edit to the second contract
     # wake the same PR even though its head did not change.
@@ -102,3 +164,56 @@ def test_engine_targeted_refresh_uses_authoritative_contracts_and_publishes(tmp_
     queued = {(candidate.type, candidate.data["number"]) for candidate in engine.queue._queue}
     assert ("issue", 10) in queued
     assert ("pr", 4) in queued
+    assert engine.get_review_adjudication_snapshots("o/r", 4)[0].result.status is AdjudicationStatus.SOURCE_UNAVAILABLE
+
+
+def test_production_service_permanently_retires_revoked_root(tmp_path: Path) -> None:
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    github.get_pr_review_threads_strict.return_value = [_thread()]
+    store = AdjudicationContextStore(tmp_path / "state.sqlite")
+    service = ReviewAdjudicationService(github, store)
+    pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
+
+    original = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert original.context is not None
+    original_id = original.context.context_id
+    revoked = service.refresh("o/r", 4, pr, [9], [], [])[0]
+    assert revoked.result.status is AdjudicationStatus.REVOKED
+    assert revoked.context is not None and revoked.context.retired_reason is not None
+
+    replacement = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert replacement.context is not None
+    assert replacement.context.context_id != original_id
+
+
+def test_production_snapshot_keeps_tip_after_ordinary_discussion(tmp_path: Path) -> None:
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    thread = _thread()
+    github.get_pr_review_threads_strict.return_value = [thread]
+    service = ReviewAdjudicationService(github, AdjudicationContextStore(tmp_path / "state.sqlite"))
+    pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
+    initial = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert initial.context is not None
+    decision = Decision(
+        "00000000-0000-4000-8000-000000000001",
+        initial.context.context_id,
+        "a" * 40,
+        initial.context.contract_digest,
+        "UPHOLD",
+        "FIX",
+        (),
+        "The finding remains valid.",
+        "dashboard",
+    )
+    thread.comments.extend(
+        [
+            ReviewThreadComment(20, render_decision(decision), "judge", 8, "User", "2026-01-03T00:00:00Z", "2026-01-03T00:00:00Z", 10),
+            ReviewThreadComment(21, "Thanks", "judge", 8, "User", "2026-01-04T00:00:00Z", "2026-01-04T00:00:00Z", 10),
+        ]
+    )
+    current = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert current.result.status is AdjudicationStatus.APPLICABLE
+    assert current.result.decision_id == decision.decision_id
+    assert current.result.tips == (decision.decision_id,)

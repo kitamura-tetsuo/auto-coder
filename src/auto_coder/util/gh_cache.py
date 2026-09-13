@@ -1513,6 +1513,10 @@ class GitHubClient:
         """
         return self._get_issue_dispatch_snapshot_strict(repo_name, item_number)
 
+    def invalidate_issue_reads_for_adjudication(self, repo_name: str) -> None:
+        """Force the next contributing-Issue reads to revalidate with GitHub."""
+        self._invalidate_issue_reads(repo_name)
+
     def _get_issue_dispatch_snapshot_strict(self, repo_name: str, item_number: int) -> Dict[str, Any]:
         item = self._read_issue_resource(repo_name, item_number)
         if not isinstance(item, dict) or item.get("number") != item_number:

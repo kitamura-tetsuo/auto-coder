@@ -2933,6 +2933,9 @@ class AutomationEngine:
             # authoritative manifest set, never from a webhook body.
             for pr_number in self.review_adjudications.store.affected_prs(repo_name, number):
                 associated_pr_invalidated = await asyncio.to_thread(self.invalidations.invalidate, EntityIdentity(repo_name, "pr", pr_number)) or associated_pr_invalidated
+                self.review_adjudications.mark_unavailable(repo_name, pr_number, "contributing Issue invalidated")
+        elif entity_type == "pr":
+            self.review_adjudications.mark_unavailable(repo_name, number, "PR evidence invalidated")
         if accepted and entity_type == "issue" and event_type is not None:
             await asyncio.to_thread(self.invalidations.wake_dependency_waiters, repo_name)
         if (accepted or associated_pr_invalidated) and not self.is_draining:
@@ -2948,15 +2951,16 @@ class AutomationEngine:
             raise ValueError("PR adjudication refresh requires a positive PR number")
         reviewer_ids = get_pr_review_allowlist_from_config(repo_name=repo_name)
         adjudicator_ids = get_review_adjudicator_allowlist_from_config(repo_name=repo_name)
-        if not reviewer_ids or not adjudicator_ids:
+        if (not reviewer_ids or not adjudicator_ids) and not self.review_adjudications.store.ledgers_for_pr(repo_name, number):
             return ()
-        issue_numbers = extract_associated_issue_numbers(pr_data=pr_data)
-        if not issue_numbers:
-            raise ValueError("PR adjudication context requires complete explicit contributing Issue references")
+        self.review_adjudications.mark_unavailable(repo_name, number, "authoritative refresh is pending")
         authoritative = self.github.get_pull_request_metadata_strict(repo_name, number)
         if not isinstance(authoritative, dict):
             raise RuntimeError(f"GitHub did not return authoritative PR metadata for PR #{number}")
-        return self.review_adjudications.refresh(repo_name, number, authoritative, issue_numbers, reviewer_ids, adjudicator_ids)
+        issue_numbers = extract_associated_issue_numbers(pr_data=authoritative)
+        if not issue_numbers:
+            raise ValueError("PR adjudication context requires complete explicit contributing Issue references")
+        return self.review_adjudications.refresh(repo_name, number, authoritative, issue_numbers, reviewer_ids or (), adjudicator_ids or ())
 
     def get_review_adjudication_snapshots(self, repo_name: str, pr_number: int) -> tuple[AdjudicationSnapshot, ...]:
         """Expose persisted-before-publication observations to read-only consumers."""
