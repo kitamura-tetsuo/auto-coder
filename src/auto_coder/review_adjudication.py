@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Sequence
@@ -208,7 +208,7 @@ class AdjudicationLedger:
     def _validate_context(context: ReviewContext) -> None:
         if not _UUID.fullmatch(context.context_id) or context.repository_id <= 0 or context.pr_number <= 0 or context.root_comment_id <= 0 or context.root_author_id <= 0:
             raise ValueError("invalid or incomplete registered review context")
-        if not context.repository or not context.thread_id or context.root_actor_type != "Bot" or not _SHA256.fullmatch(context.root_body_hash) or not _SHA40.fullmatch(context.head_sha) or not _SHA40.fullmatch(context.base_sha) or not context.base_ref:
+        if not context.repository or not context.thread_id or context.root_actor_type != "Bot" or not _SHA256.fullmatch(context.root_body_hash) or not context.root_update_revision or not _SHA40.fullmatch(context.head_sha) or not _SHA40.fullmatch(context.base_sha) or not context.base_ref:
             raise ValueError("invalid or incomplete registered review context")
         _, digest, objectives = contract_identity(context.contracts, context.parser_version)
         if digest != context.contract_digest or objectives != context.objective_fingerprints:
@@ -234,10 +234,11 @@ class AdjudicationLedger:
             return self._result(AdjudicationStatus.INVALID, source, physical.decision if physical else None, self.context.retired_reason)
         if self.context.source_unavailable:
             return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision if physical else None, "required authoritative evidence is unavailable")
+        revoked_tip = self._revoked_tip_reason(adjudicator_ids, root_reviewer_ids)
+        if revoked_tip is not None:
+            self.retire(revoked_tip)
+            return self._result(AdjudicationStatus.REVOKED, source, physical.decision if physical else None, revoked_tip)
         if physical is not None:
-            if self.context.root_author_id not in root_reviewer_ids or physical.source.author_id not in adjudicator_ids:
-                self.retire("authorization of the root or an accepted decision author was revoked")
-                return self._result(AdjudicationStatus.REVOKED, source, physical.decision, self.context.retired_reason or "revoked")
             if physical.source.update_revision == source.update_revision and physical.body_hash == body_hash:
                 return self.current(source, physical.decision, "same immutable activity")
             self.retire(f"accepted source {source.comment_id} was edited")
@@ -264,10 +265,19 @@ class AdjudicationLedger:
             return self._result(AdjudicationStatus.UNAUTHORIZED, source, decision, "author or automated root is not authorized")
         if decision.context_id != self.context.context_id or decision.head_sha != self.context.head_sha or decision.contract_digest != self.context.contract_digest:
             return self._result(AdjudicationStatus.STALE, source, decision, "decision does not match the registered context revision")
-        existing = self.context.decisions.get(decision.decision_id) or self.context.pending_decisions.get(decision.decision_id)
-        if existing:
+        if decision.decision_id in decision.supersedes:
+            return self._result(AdjudicationStatus.INVALID, source, decision, "decision cannot supersede itself")
+        existing = self.context.decisions.get(decision.decision_id)
+        if existing is not None:
             self.retire(f"decision identity collision for {decision.decision_id}")
             return self._result(AdjudicationStatus.INVALID, source, decision, self.context.retired_reason or "invalidated")
+        if decision.decision_id in self.context.pending_decisions:
+            return self._result(AdjudicationStatus.INVALID, source, decision, "decision identity is already pending")
+        cycle_members = self._pending_cycle_members(decision)
+        if cycle_members:
+            for decision_id in cycle_members:
+                self.context.pending_decisions.pop(decision_id, None)
+            return self._result(AdjudicationStatus.INVALID, source, decision, "decision would create a supersession cycle")
         record = DecisionRecord(decision, source, body_hash)
         for predecessor_id in decision.supersedes:
             predecessor = self.context.decisions.get(predecessor_id)
@@ -277,14 +287,34 @@ class AdjudicationLedger:
             if self._order(predecessor.source) >= self._order(source):
                 return self._result(AdjudicationStatus.INVALID, source, decision, "predecessor is not earlier in authoritative source order")
         self.context.decisions[decision.decision_id] = record
-        self._promote_pending()
+        self._promote_pending(adjudicator_ids)
         return self.current(source, decision, "decision accepted")
 
-    def _promote_pending(self) -> None:
+    def _pending_cycle_members(self, candidate: Decision) -> set[str]:
+        edges = {key: set(record.decision.supersedes) for key, record in self.context.pending_decisions.items()}
+        edges[candidate.decision_id] = set(candidate.supersedes)
+
+        def reaches(start: str, target: str, seen: set[str]) -> bool:
+            if start == target:
+                return True
+            if start in seen:
+                return False
+            seen.add(start)
+            return any(reaches(item, target, seen) for item in edges.get(start, set()))
+
+        if any(reaches(item, candidate.decision_id, set()) for item in candidate.supersedes):
+            return {key for key in edges if reaches(key, candidate.decision_id, set()) and reaches(candidate.decision_id, key, set())}
+        return set()
+
+    def _promote_pending(self, adjudicator_ids: Sequence[int]) -> None:
         changed = True
         while changed:
             changed = False
             for decision_id, record in tuple(self.context.pending_decisions.items()):
+                if record.source.author_id not in adjudicator_ids:
+                    del self.context.pending_decisions[decision_id]
+                    changed = True
+                    continue
                 predecessors = [self.context.decisions.get(item) for item in record.decision.supersedes]
                 if all(item is not None for item in predecessors) and any(self._order(item.source) >= self._order(record.source) for item in predecessors if item is not None):
                     del self.context.pending_decisions[decision_id]
@@ -296,7 +326,7 @@ class AdjudicationLedger:
                     changed = True
 
     def observe_deletion(self, comment_id: int) -> None:
-        if any(record.source.comment_id == comment_id for record in self.context.decisions.values()):
+        if any(record.source.comment_id == comment_id for record in (*self.context.decisions.values(), *self.context.pending_decisions.values())):
             self.retire(f"accepted source {comment_id} was confirmed deleted")
 
     def reconcile(
@@ -313,12 +343,17 @@ class AdjudicationLedger:
         if current != bound:
             self.retire("a bound context revision changed")
             return self._result(AdjudicationStatus.STALE, None, None, self.context.retired_reason or "stale")
-        tips = self.tips()
-        tip_authors = {self.context.decisions[item].source.author_id for item in tips}
-        if self.context.root_author_id not in root_reviewer_ids or not tip_authors.issubset(set(adjudicator_ids)):
-            self.retire("authorization of the root or a current tip author was revoked")
+        revoked_tip = self._revoked_tip_reason(adjudicator_ids, root_reviewer_ids)
+        if revoked_tip is not None:
+            self.retire(revoked_tip)
             return self._result(AdjudicationStatus.REVOKED, None, None, self.context.retired_reason or "revoked")
         return self.current(None, None, "authoritative context reconciled")
+
+    def _revoked_tip_reason(self, adjudicator_ids: Sequence[int], root_reviewer_ids: Sequence[int]) -> Optional[str]:
+        tip_authors = {self.context.decisions[item].source.author_id for item in self.tips()}
+        if self.context.root_author_id not in root_reviewer_ids or not tip_authors.issubset(set(adjudicator_ids)):
+            return "authorization of the root or a current tip author was revoked"
+        return None
 
     def tips(self) -> tuple[str, ...]:
         superseded = {item for record in self.context.decisions.values() for item in record.decision.supersedes}
@@ -329,6 +364,8 @@ class AdjudicationLedger:
             return self._result(AdjudicationStatus.INVALID, source, decision, self.context.retired_reason)
         if self.context.source_unavailable:
             return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, decision, "required authoritative evidence is unavailable")
+        if self.context.pending_decisions:
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, decision, "decision graph awaits authoritative predecessor evidence")
         tips = self.tips()
         if not tips:
             return self._result(AdjudicationStatus.NONE, source, decision, reason)
@@ -352,6 +389,9 @@ class AdjudicationLedger:
             if not isinstance(value, dict) or set(value) != {"version", "context"} or value["version"] != SERIALIZATION_VERSION or not isinstance(value["context"], dict):
                 raise ValueError
             data = value["context"]
+            required_context_fields = {item.name for item in fields(ReviewContext)}
+            if set(data) != required_context_fields:
+                raise ValueError
             contracts = tuple(IssueContract(item["issue_id"], item["issue_number"], tuple(Requirement(**req) for req in item["requirements"]), item["objective_text"]) for item in data.pop("contracts"))
             decisions = {key: DecisionRecord(Decision(**{**item["decision"], "supersedes": tuple(item["decision"]["supersedes"])}), SourceComment(**item["source"]), item["body_hash"]) for key, item in data.pop("decisions").items()}
             pending = {key: DecisionRecord(Decision(**{**item["decision"], "supersedes": tuple(item["decision"]["supersedes"])}), SourceComment(**item["source"]), item["body_hash"]) for key, item in data.pop("pending_decisions").items()}
@@ -364,6 +404,18 @@ class AdjudicationLedger:
                 digest != context.contract_digest
                 or objectives != context.objective_fingerprints
                 or any(key != record.decision.decision_id or parse_decision(record.source.raw_body) != record.decision or hashlib.sha256(record.source.raw_body.encode("utf-8")).hexdigest() != record.body_hash for key, record in records.items())
+            ):
+                raise ValueError
+            if bool(context.retired_reason) != bool(context.tombstones) or (context.retired_reason is not None and context.retired_reason not in context.tombstones):
+                raise ValueError
+            expected_relation = (context.repository_id, context.repository, context.pr_number, context.thread_id, context.root_comment_id)
+            if any(
+                (record.source.repository_id, record.source.repository, record.source.pr_number, record.source.thread_id, record.source.root_comment_id) != expected_relation
+                or not record.source.is_reply
+                or record.source.comment_id <= 0
+                or record.source.author_id <= 0
+                or not record.source.update_revision
+                for record in records.values()
             ):
                 raise ValueError
             for record in decisions.values():

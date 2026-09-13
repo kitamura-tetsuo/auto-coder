@@ -114,7 +114,7 @@ def test_predecessor_successor_delivery_order_and_restart_are_equivalent() -> No
     expected.ingest(source(1, decision(A)), [8], [42])
     expected.ingest(source(2, decision(B, (A,))), [8], [42])
     reversed_state = ledger()
-    assert reversed_state.ingest(source(2, decision(B, (A,))), [8], [42]).status is AdjudicationStatus.NONE
+    assert reversed_state.ingest(source(2, decision(B, (A,))), [8], [42]).status is AdjudicationStatus.SOURCE_UNAVAILABLE
     reversed_state.ingest(source(1, decision(A)), [8], [42])
     assert reversed_state.tips() == expected.tips() == (B,)
     assert AdjudicationLedger.loads(reversed_state.dumps()).tips() == (B,)
@@ -205,6 +205,89 @@ def test_reconcile_unavailable_revision_and_tip_author_revocation() -> None:
     assert state.reconcile(available=True, **args).status is AdjudicationStatus.INVALID
 
 
+def test_historical_author_revocation_does_not_retire_but_tip_revocation_does() -> None:
+    state = ledger()
+    predecessor = source(1, decision(A), actor=8)
+    state.ingest(predecessor, [8, 9], [42])
+    state.ingest(source(2, decision(B, (A,)), actor=9), [8, 9], [42])
+    reread = state.ingest(predecessor, [9], [42])
+    assert (reread.status, reread.decision_id) == (AdjudicationStatus.APPLICABLE, B)
+    assert state.context.retired_reason is None
+
+    conflict = ledger()
+    conflict.ingest(source(1, decision(A), actor=8), [8, 9], [42])
+    conflict.ingest(source(2, decision(B), actor=9), [8, 9], [42])
+    successor = source(3, decision(C, (A, B)), actor=8)
+    assert conflict.ingest(successor, [8], [42]).status is AdjudicationStatus.REVOKED
+    assert conflict.current(None, None, "after attempted successor").status is AdjudicationStatus.INVALID
+
+
+def test_revoked_pending_author_cannot_gain_authority_on_promotion() -> None:
+    state = ledger()
+    state.ingest(source(2, decision(B, (A,)), actor=9), [8, 9], [42])
+    assert state.reconcile(available=True, **{**reconciliation_args(state), "adjudicator_ids": [8]}).status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    result = state.ingest(source(1, decision(A), actor=8), [8], [42])
+    assert (result.status, result.decision_id, result.actual_actor_id) == (AdjudicationStatus.APPLICABLE, A, 8)
+    assert B not in state.context.decisions
+
+
+def test_pending_branch_suspends_existing_authority_through_restart() -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A)), [8], [42])
+    pending = source(3, decision(C, (B,)))
+    assert state.ingest(pending, [8], [42]).status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    assert state.current(None, None, "incomplete branch").status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    restored = AdjudicationLedger.loads(state.dumps())
+    assert restored.current(None, None, "restart").status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    result = restored.ingest(source(2, decision(B)), [8], [42])
+    assert result.status is AdjudicationStatus.CONFLICT
+    assert result.tips == (A, C)
+
+
+def test_pending_source_deletion_retires_before_restart_and_promotion() -> None:
+    state = ledger()
+    state.ingest(source(2, decision(B, (A,))), [8], [42])
+    state.observe_deletion(2)
+    restored = AdjudicationLedger.loads(state.dumps())
+    assert restored.ingest(source(1, decision(A)), [8], [42]).status is AdjudicationStatus.INVALID
+    assert restored.current(None, None, "deleted pending source").status is AdjudicationStatus.INVALID
+
+
+@pytest.mark.parametrize("missing_field", ["retired_reason", "source_unavailable"])
+def test_serialized_lifecycle_fields_are_required(missing_field: str) -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A)), [8], [42])
+    if missing_field == "retired_reason":
+        state.observe_deletion(1)
+    else:
+        state.reconcile(available=False, **reconciliation_args(state))
+    snapshot = json.loads(state.dumps())
+    del snapshot["context"][missing_field]
+    with pytest.raises(ValueError, match="corrupt"):
+        AdjudicationLedger.loads(json.dumps(snapshot))
+
+
+def test_serialized_source_relation_must_match_registered_context() -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A)), [8], [42])
+    snapshot = json.loads(state.dumps())
+    snapshot["context"]["decisions"][A]["source"]["thread_id"] = "OTHER"
+    with pytest.raises(ValueError, match="corrupt"):
+        AdjudicationLedger.loads(json.dumps(snapshot))
+
+
+def test_self_reference_and_pending_cycle_do_not_reserve_identity() -> None:
+    state = ledger()
+    assert state.ingest(source(1, decision(A, (A,))), [8], [42]).status is AdjudicationStatus.INVALID
+    assert state.context.pending_decisions == {}
+    assert state.ingest(source(2, decision(A)), [8], [42]).status is AdjudicationStatus.APPLICABLE
+
+    cycle = ledger()
+    assert cycle.ingest(source(2, decision(A, (B,))), [8], [42]).status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    assert cycle.ingest(source(3, decision(B, (A,))), [8], [42]).status is AdjudicationStatus.INVALID
+    assert cycle.context.pending_decisions == {}
+
+
 def test_effective_tip_result_uses_tip_physical_source() -> None:
     state = ledger()
     state.ingest(source(1, decision(A), actor=8), [8, 9], [42])
@@ -221,6 +304,8 @@ def test_context_registration_rejects_missing_contracts_and_objectives() -> None
     valid = ledger().context
     with pytest.raises(ValueError, match="complete contracts"):
         AdjudicationLedger(replace(valid, contracts=(), objective_fingerprints=()))
+    with pytest.raises(ValueError, match="incomplete registered review context"):
+        AdjudicationLedger(replace(valid, root_update_revision=""))
 
 
 def test_checked_in_schema_has_exact_production_fields() -> None:
