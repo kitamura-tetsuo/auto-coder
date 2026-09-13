@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kitamura-tetsuo/auto-coder/blob/main/src/auto_coder/review_adjudication.schema.json",
+  "title": "Auto-Coder review adjudication v1 decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decision_id", "context_id", "head_sha", "contract_digest", "verdict", "directive", "supersedes", "rationale", "source"],
+  "properties": {
+    "decision_id": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f-]+$"},
+    "context_id": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f-]+$"},
+    "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "contract_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "verdict": {"enum": ["UPHOLD", "OVERRULE", "UNDECIDED"]},
+    "directive": {"enum": ["FIX", "NO_CHANGE", "NONE"]},
+    "supersedes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "format": "uuid"}},
+    "rationale": {"type": "string", "minLength": 1},
+    "source": {"enum": ["chatgpt-assisted", "dashboard"]}
+  },
+  "allOf": [
+    {"if": {"properties": {"verdict": {"const": "UPHOLD"}}}, "then": {"properties": {"directive": {"const": "FIX"}}}},
+    {"if": {"properties": {"verdict": {"const": "OVERRULE"}}}, "then": {"properties": {"directive": {"const": "NO_CHANGE"}}}},
+    {"if": {"properties": {"verdict": {"const": "UNDECIDED"}}}, "then": {"properties": {"directive": {"const": "NONE"}}}}
+  ]
+}

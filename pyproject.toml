@@ -86,7 +86,7 @@ auto-coder = "auto_coder.cli:main"
 
 # Include package data files
 [tool.setuptools.package-data]
-auto_coder = ["prompts.yaml", "*.yml", "*.yaml"]
+auto_coder = ["prompts.yaml", "*.yml", "*.yaml", "*.json"]
 
 [tool.pyright]
 # Python version
