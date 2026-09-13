@@ -30,6 +30,7 @@ def test_worker_drain_owns_real_to_thread_operation_until_durable_completion(mon
 
     authoritative = Candidate(type="issue", data={"number": 1777, "state": "open"}, priority=0, issue_number=1777)
     monkeypatch.setattr(engine, "_create_candidate_from_single", lambda *_args: authoritative)
+    monkeypatch.setattr(engine, "_refresh_issue_stage_routing", lambda *_args: None)
 
     def blocking_processing(_repo, candidate, **_kwargs):
         nonlocal commits, dispatches
