@@ -19,7 +19,7 @@ SERIALIZATION_VERSION = "review-adjudication-state:v1"
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_ENVELOPE = re.compile(r"^<!-- auto-coder-review-adjudication:v1 -->\s*\n```json\n([\s\S]*?)\n```\s*$")
+_ENVELOPE = re.compile(r"^(?:[ \t]*\n)*<!-- auto-coder-review-adjudication:v1 -->\s*\n```json\n([\s\S]*?)\n```\s*$")
 _KEYS = {"decision_id", "context_id", "head_sha", "contract_digest", "verdict", "directive", "supersedes", "rationale", "source"}
 _PAIRS = {("UPHOLD", "FIX"), ("OVERRULE", "NO_CHANGE"), ("UNDECIDED", "NONE")}
 
@@ -106,7 +106,9 @@ class ReviewContext:
     objective_fingerprints: tuple[str, ...]
     retired_reason: Optional[str] = None
     decisions: dict[str, DecisionRecord] = field(default_factory=dict)
+    pending_decisions: dict[str, DecisionRecord] = field(default_factory=dict)
     tombstones: list[str] = field(default_factory=list)
+    source_unavailable: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,6 +154,8 @@ def parse_decision(body: str) -> Decision:
         raise ValueError("head_sha must be a full lowercase commit SHA")
     if not isinstance(value["contract_digest"], str) or not _SHA256.fullmatch(value["contract_digest"]):
         raise ValueError("contract_digest must be lowercase SHA-256")
+    if not isinstance(value["verdict"], str) or not isinstance(value["directive"], str):
+        raise ValueError("verdict and directive must be strings")
     pair = (value["verdict"], value["directive"])
     if pair not in _PAIRS:
         raise ValueError("unsupported verdict/directive pair")
@@ -160,7 +164,7 @@ def parse_decision(body: str) -> Decision:
         raise ValueError("supersedes must contain distinct canonical UUIDs")
     if not isinstance(value["rationale"], str) or not value["rationale"].strip():
         raise ValueError("rationale must be nonblank")
-    if value["source"] not in {"chatgpt-assisted", "dashboard"}:
+    if not isinstance(value["source"], str) or value["source"] not in {"chatgpt-assisted", "dashboard"}:
         raise ValueError("unsupported adjudication source")
     return Decision(
         decision_id=value["decision_id"], context_id=value["context_id"], head_sha=value["head_sha"], contract_digest=value["contract_digest"], verdict=str(value["verdict"]), directive=str(value["directive"]), supersedes=tuple(supersedes), rationale=value["rationale"], source=value["source"]
@@ -181,7 +185,7 @@ def contract_identity(contracts: Sequence[IssueContract], parser_version: str) -
     issues = []
     objectives = []
     for contract in sorted(contracts, key=lambda item: item.issue_id):
-        if contract.issue_id <= 0 or contract.issue_number <= 0 or contract.issue_id in ids or not isinstance(contract.objective_text, str):
+        if contract.issue_id <= 0 or contract.issue_number <= 0 or contract.issue_id in ids or not isinstance(contract.objective_text, str) or not contract.objective_text.strip():
             raise ValueError("contracts must have unique positive identities and complete Objectives")
         ids.add(contract.issue_id)
         req_ids = [req.id for req in contract.requirements]
@@ -197,7 +201,18 @@ class AdjudicationLedger:
     """Deterministic decision graph with permanent fail-closed retirement."""
 
     def __init__(self, context: ReviewContext) -> None:
+        self._validate_context(context)
         self.context = context
+
+    @staticmethod
+    def _validate_context(context: ReviewContext) -> None:
+        if not _UUID.fullmatch(context.context_id) or context.repository_id <= 0 or context.pr_number <= 0 or context.root_comment_id <= 0 or context.root_author_id <= 0:
+            raise ValueError("invalid or incomplete registered review context")
+        if not context.repository or not context.thread_id or context.root_actor_type != "Bot" or not _SHA256.fullmatch(context.root_body_hash) or not _SHA40.fullmatch(context.head_sha) or not _SHA40.fullmatch(context.base_sha) or not context.base_ref:
+            raise ValueError("invalid or incomplete registered review context")
+        _, digest, objectives = contract_identity(context.contracts, context.parser_version)
+        if digest != context.contract_digest or objectives != context.objective_fingerprints:
+            raise ValueError("registered review context identity does not match its evidence")
 
     @staticmethod
     def _order(source: SourceComment) -> tuple[datetime, int]:
@@ -214,8 +229,15 @@ class AdjudicationLedger:
 
     def ingest(self, source: SourceComment, adjudicator_ids: Sequence[int], root_reviewer_ids: Sequence[int]) -> AdjudicationResult:
         body_hash = hashlib.sha256(source.raw_body.encode("utf-8")).hexdigest()
-        physical = next((record for record in self.context.decisions.values() if record.source.comment_id == source.comment_id), None)
+        physical = next((record for record in (*self.context.decisions.values(), *self.context.pending_decisions.values()) if record.source.comment_id == source.comment_id), None)
+        if self.context.retired_reason:
+            return self._result(AdjudicationStatus.INVALID, source, physical.decision if physical else None, self.context.retired_reason)
+        if self.context.source_unavailable:
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision if physical else None, "required authoritative evidence is unavailable")
         if physical is not None:
+            if self.context.root_author_id not in root_reviewer_ids or physical.source.author_id not in adjudicator_ids:
+                self.retire("authorization of the root or an accepted decision author was revoked")
+                return self._result(AdjudicationStatus.REVOKED, source, physical.decision, self.context.retired_reason or "revoked")
             if physical.source.update_revision == source.update_revision and physical.body_hash == body_hash:
                 return self.current(source, physical.decision, "same immutable activity")
             self.retire(f"accepted source {source.comment_id} was edited")
@@ -234,8 +256,6 @@ class AdjudicationLedger:
                 self.tips(),
                 str(exc),
             )
-        if self.context.retired_reason:
-            return self._result(AdjudicationStatus.INVALID, source, decision, self.context.retired_reason)
         exact_source = (source.repository_id, source.repository, source.pr_number, source.thread_id, source.root_comment_id)
         exact_context = (self.context.repository_id, self.context.repository, self.context.pr_number, self.context.thread_id, self.context.root_comment_id)
         if not source.is_reply or exact_source != exact_context:
@@ -244,16 +264,36 @@ class AdjudicationLedger:
             return self._result(AdjudicationStatus.UNAUTHORIZED, source, decision, "author or automated root is not authorized")
         if decision.context_id != self.context.context_id or decision.head_sha != self.context.head_sha or decision.contract_digest != self.context.contract_digest:
             return self._result(AdjudicationStatus.STALE, source, decision, "decision does not match the registered context revision")
-        existing = self.context.decisions.get(decision.decision_id)
+        existing = self.context.decisions.get(decision.decision_id) or self.context.pending_decisions.get(decision.decision_id)
         if existing:
             self.retire(f"decision identity collision for {decision.decision_id}")
             return self._result(AdjudicationStatus.INVALID, source, decision, self.context.retired_reason or "invalidated")
+        record = DecisionRecord(decision, source, body_hash)
         for predecessor_id in decision.supersedes:
             predecessor = self.context.decisions.get(predecessor_id)
-            if predecessor is None or self._order(predecessor.source) >= self._order(source):
-                return self._result(AdjudicationStatus.INVALID, source, decision, "predecessor is missing or not earlier in authoritative source order")
-        self.context.decisions[decision.decision_id] = DecisionRecord(decision, source, body_hash)
+            if predecessor is None:
+                self.context.pending_decisions[decision.decision_id] = record
+                return self.current(source, None, "decision retained pending earlier predecessor evidence")
+            if self._order(predecessor.source) >= self._order(source):
+                return self._result(AdjudicationStatus.INVALID, source, decision, "predecessor is not earlier in authoritative source order")
+        self.context.decisions[decision.decision_id] = record
+        self._promote_pending()
         return self.current(source, decision, "decision accepted")
+
+    def _promote_pending(self) -> None:
+        changed = True
+        while changed:
+            changed = False
+            for decision_id, record in tuple(self.context.pending_decisions.items()):
+                predecessors = [self.context.decisions.get(item) for item in record.decision.supersedes]
+                if all(item is not None for item in predecessors) and any(self._order(item.source) >= self._order(record.source) for item in predecessors if item is not None):
+                    del self.context.pending_decisions[decision_id]
+                    changed = True
+                    continue
+                if all(item is not None and self._order(item.source) < self._order(record.source) for item in predecessors):
+                    self.context.decisions[decision_id] = record
+                    del self.context.pending_decisions[decision_id]
+                    changed = True
 
     def observe_deletion(self, comment_id: int) -> None:
         if any(record.source.comment_id == comment_id for record in self.context.decisions.values()):
@@ -262,10 +302,12 @@ class AdjudicationLedger:
     def reconcile(
         self, *, available: bool, root_body_hash: str, root_update_revision: str, root_author_id: int, root_actor_type: str, head_sha: str, base_sha: str, base_ref: str, contract_digest: str, objective_fingerprints: Sequence[str], root_reviewer_ids: Sequence[int], adjudicator_ids: Sequence[int]
     ) -> AdjudicationResult:
-        if not available:
-            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, None, None, "required authoritative evidence is unavailable")
         if self.context.retired_reason:
             return self._result(AdjudicationStatus.INVALID, None, None, self.context.retired_reason)
+        if not available:
+            self.context.source_unavailable = True
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, None, None, "required authoritative evidence is unavailable")
+        self.context.source_unavailable = False
         current = (root_body_hash, root_update_revision, root_author_id, root_actor_type, head_sha, base_sha, base_ref, contract_digest, tuple(objective_fingerprints))
         bound = (self.context.root_body_hash, self.context.root_update_revision, self.context.root_author_id, self.context.root_actor_type, self.context.head_sha, self.context.base_sha, self.context.base_ref, self.context.contract_digest, self.context.objective_fingerprints)
         if current != bound:
@@ -283,14 +325,19 @@ class AdjudicationLedger:
         return tuple(sorted((item for item in self.context.decisions if item not in superseded), key=lambda item: self._order(self.context.decisions[item].source)))
 
     def current(self, source: Optional[SourceComment], decision: Optional[Decision], reason: str) -> AdjudicationResult:
+        if self.context.retired_reason:
+            return self._result(AdjudicationStatus.INVALID, source, decision, self.context.retired_reason)
+        if self.context.source_unavailable:
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, decision, "required authoritative evidence is unavailable")
         tips = self.tips()
         if not tips:
             return self._result(AdjudicationStatus.NONE, source, decision, reason)
         if len(tips) > 1:
             return self._result(AdjudicationStatus.CONFLICT, source, decision, reason)
         tip = self.context.decisions[tips[0]].decision
+        tip_source = self.context.decisions[tips[0]].source
         status = AdjudicationStatus.UNDECIDED if tip.verdict == "UNDECIDED" else AdjudicationStatus.APPLICABLE
-        return self._result(status, source, tip, reason, tip.verdict, tip.directive)
+        return self._result(status, tip_source, tip, reason, tip.verdict, tip.directive)
 
     def _result(self, status: AdjudicationStatus, source: Optional[SourceComment], decision: Optional[Decision], reason: str, verdict: Optional[str] = None, directive: Optional[str] = None) -> AdjudicationResult:
         return AdjudicationResult(status, self.context.context_id, self.context.repository, self.context.pr_number, source.author_id if source else None, source.comment_id if source else None, decision.decision_id if decision else None, self.tips(), reason, verdict, directive)
@@ -307,12 +354,23 @@ class AdjudicationLedger:
             data = value["context"]
             contracts = tuple(IssueContract(item["issue_id"], item["issue_number"], tuple(Requirement(**req) for req in item["requirements"]), item["objective_text"]) for item in data.pop("contracts"))
             decisions = {key: DecisionRecord(Decision(**{**item["decision"], "supersedes": tuple(item["decision"]["supersedes"])}), SourceComment(**item["source"]), item["body_hash"]) for key, item in data.pop("decisions").items()}
+            pending = {key: DecisionRecord(Decision(**{**item["decision"], "supersedes": tuple(item["decision"]["supersedes"])}), SourceComment(**item["source"]), item["body_hash"]) for key, item in data.pop("pending_decisions").items()}
             data["objective_fingerprints"] = tuple(data["objective_fingerprints"])
-            context = ReviewContext(contracts=contracts, decisions=decisions, **data)
+            context = ReviewContext(contracts=contracts, decisions=decisions, pending_decisions=pending, **data)
             # Recompute durable identities so corrupt history cannot authorize.
             _, digest, objectives = contract_identity(context.contracts, context.parser_version)
-            if digest != context.contract_digest or objectives != context.objective_fingerprints or any(key != record.decision.decision_id for key, record in decisions.items()):
+            records = {**decisions, **pending}
+            if (
+                digest != context.contract_digest
+                or objectives != context.objective_fingerprints
+                or any(key != record.decision.decision_id or parse_decision(record.source.raw_body) != record.decision or hashlib.sha256(record.source.raw_body.encode("utf-8")).hexdigest() != record.body_hash for key, record in records.items())
+            ):
                 raise ValueError
+            for record in decisions.values():
+                for predecessor_id in record.decision.supersedes:
+                    predecessor = decisions.get(predecessor_id)
+                    if predecessor is None or cls._order(predecessor.source) >= cls._order(record.source):
+                        raise ValueError
             return cls(context)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError("corrupt review adjudication history") from exc

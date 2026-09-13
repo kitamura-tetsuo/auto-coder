@@ -58,6 +58,7 @@ def test_canonical_contract_fixture_and_objective_bytes() -> None:
 def test_literal_parser_renderer_and_rejections() -> None:
     value = decision(A)
     assert parse_decision(render_decision(value)) == value
+    assert parse_decision(" \n\n" + render_decision(value)) == value
     assert parse_decision(render_decision(decision(A, verdict="OVERRULE", directive="NO_CHANGE"))).directive == "NO_CHANGE"
     assert parse_decision(render_decision(decision(A, verdict="UNDECIDED", directive="NONE"))).verdict == "UNDECIDED"
     with pytest.raises(ValueError, match="exact v1"):
@@ -67,6 +68,16 @@ def test_literal_parser_renderer_and_rejections() -> None:
         parse_decision(duplicate)
     with pytest.raises(ValueError, match="unsupported verdict"):
         parse_decision(render_decision(value).replace('"FIX"', '"NONE"'))
+
+
+@pytest.mark.parametrize("field", ["verdict", "source"])
+def test_ingest_returns_invalid_for_non_scalar_enum_fields(field: str) -> None:
+    state = ledger()
+    raw = render_decision(decision(A)).replace(f'"{field}":"', f'"{field}":["', 1)
+    raw = raw.replace('","supersedes"' if field == "source" else '","head_sha"', '"],"supersedes"' if field == "source" else '"],"head_sha"', 1)
+    malformed = replace(source(1, decision(A)), raw_body=raw)
+    assert state.ingest(malformed, [8], [42]).status is AdjudicationStatus.INVALID
+    assert state.context.decisions == {}
 
 
 def test_authority_matching_and_immutable_reobservation() -> None:
@@ -98,6 +109,17 @@ def test_graph_is_source_ordered_and_delivery_order_independent() -> None:
     assert AdjudicationLedger.loads(first.dumps()).tips() == (d,)
 
 
+def test_predecessor_successor_delivery_order_and_restart_are_equivalent() -> None:
+    expected = ledger()
+    expected.ingest(source(1, decision(A)), [8], [42])
+    expected.ingest(source(2, decision(B, (A,))), [8], [42])
+    reversed_state = ledger()
+    assert reversed_state.ingest(source(2, decision(B, (A,))), [8], [42]).status is AdjudicationStatus.NONE
+    reversed_state.ingest(source(1, decision(A)), [8], [42])
+    assert reversed_state.tips() == expected.tips() == (B,)
+    assert AdjudicationLedger.loads(reversed_state.dumps()).tips() == (B,)
+
+
 def test_collision_edit_deletion_and_corruption_fail_closed() -> None:
     state = ledger()
     original = source(1, decision(A))
@@ -118,10 +140,44 @@ def test_collision_edit_deletion_and_corruption_fail_closed() -> None:
         AdjudicationLedger.loads(corrupt)
 
 
-def test_reconcile_unavailable_revision_and_tip_author_revocation() -> None:
+def test_serialized_history_rejects_missing_or_forged_decisions() -> None:
     state = ledger()
     state.ingest(source(1, decision(A)), [8], [42])
-    args = dict(
+    state.ingest(source(2, decision(B, (A,))), [8], [42])
+    missing = json.loads(state.dumps())
+    del missing["context"]["decisions"][A]
+    with pytest.raises(ValueError, match="corrupt"):
+        AdjudicationLedger.loads(json.dumps(missing))
+    forged = json.loads(state.dumps())
+    forged["context"]["decisions"][B]["decision"]["verdict"] = "OVERRULE"
+    forged["context"]["decisions"][B]["decision"]["directive"] = "NO_CHANGE"
+    with pytest.raises(ValueError, match="corrupt"):
+        AdjudicationLedger.loads(json.dumps(forged))
+
+
+@pytest.mark.parametrize("retirement", ["collision", "edit", "deletion", "head", "revocation"])
+def test_every_retirement_permanently_blocks_selection_reread_and_restart(retirement: str) -> None:
+    state = ledger()
+    original = source(1, decision(A))
+    state.ingest(original, [8], [42])
+    args = reconciliation_args(state)
+    if retirement == "collision":
+        state.ingest(source(2, decision(A)), [8], [42])
+    elif retirement == "edit":
+        state.ingest(replace(original, update_revision="r2"), [8], [42])
+    elif retirement == "deletion":
+        state.observe_deletion(1)
+    elif retirement == "head":
+        state.reconcile(available=True, **{**args, "head_sha": "3" * 40})
+    else:
+        state.reconcile(available=True, **{**args, "adjudicator_ids": []})
+    assert state.current(None, None, "selection").status is AdjudicationStatus.INVALID
+    assert state.ingest(original, [8], [42]).status is AdjudicationStatus.INVALID
+    assert AdjudicationLedger.loads(state.dumps()).current(None, None, "restart").status is AdjudicationStatus.INVALID
+
+
+def reconciliation_args(state: AdjudicationLedger) -> dict[str, object]:
+    return dict(
         root_body_hash="f" * 64,
         root_update_revision="r1",
         root_author_id=42,
@@ -134,10 +190,37 @@ def test_reconcile_unavailable_revision_and_tip_author_revocation() -> None:
         root_reviewer_ids=[42],
         adjudicator_ids=[8],
     )
+
+
+def test_reconcile_unavailable_revision_and_tip_author_revocation() -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A)), [8], [42])
+    args = reconciliation_args(state)
     assert state.reconcile(available=False, **args).status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    assert state.current(None, None, "during outage").status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    assert state.ingest(source(1, decision(A)), [8], [42]).status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    assert AdjudicationLedger.loads(state.dumps()).current(None, None, "restart").status is AdjudicationStatus.SOURCE_UNAVAILABLE
     assert state.reconcile(available=True, **args).status is AdjudicationStatus.APPLICABLE
     assert state.reconcile(available=True, **{**args, "adjudicator_ids": []}).status is AdjudicationStatus.REVOKED
     assert state.reconcile(available=True, **args).status is AdjudicationStatus.INVALID
+
+
+def test_effective_tip_result_uses_tip_physical_source() -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A), actor=8), [8, 9], [42])
+    state.ingest(source(2, decision(B, (A,)), actor=9), [8, 9], [42])
+    reread = state.ingest(source(1, decision(A), actor=8), [8, 9], [42])
+    assert (reread.decision_id, reread.actual_actor_id, reread.source_comment_id) == (B, 9, 2)
+    reconciled = state.reconcile(available=True, **{**reconciliation_args(state), "adjudicator_ids": [8, 9]})
+    assert (reconciled.decision_id, reconciled.actual_actor_id, reconciled.source_comment_id) == (B, 9, 2)
+
+
+def test_context_registration_rejects_missing_contracts_and_objectives() -> None:
+    with pytest.raises(ValueError, match="complete Objectives"):
+        contract_identity(contracts(""), "v1")
+    valid = ledger().context
+    with pytest.raises(ValueError, match="complete contracts"):
+        AdjudicationLedger(replace(valid, contracts=(), objective_fingerprints=()))
 
 
 def test_checked_in_schema_has_exact_production_fields() -> None:

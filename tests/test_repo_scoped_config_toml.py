@@ -15,6 +15,7 @@ from auto_coder.llm_backend_config import (
     get_jules_wait_timeout_hours_from_config,
     get_pr_allowlist_from_config,
     get_pr_review_allowlist_from_config,
+    get_review_adjudicator_allowlist_from_config,
     load_app_config_data,
 )
 
@@ -199,6 +200,20 @@ isolate_single_test_on_failure = true
 
 
 class TestPRReviewAllowlistConfig:
+    def test_adjudicator_repository_override_is_independent_and_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        home = tmp_path / "home"
+        root = home / ".auto-coder"
+        root.mkdir(parents=True)
+        global_config = root / "config.toml"
+        global_config.write_text("[github]\npr_review_allowlist = [101]\nreview_adjudicator_allowlist = [202]\n", encoding="utf-8")
+        repository = root / "owner" / "repo"
+        repository.mkdir(parents=True)
+        (repository / "config.toml").write_text("[github]\npr_review_allowlist = [303]\nreview_adjudicator_allowlist = []\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+
+        assert get_pr_review_allowlist_from_config(config_path=str(global_config), repo_name="owner/repo") == [303]
+        assert get_review_adjudicator_allowlist_from_config(config_path=str(global_config), repo_name="owner/repo") == []
+
     def test_absent_and_empty_authorize_nobody(self, tmp_path: Path):
         absent = tmp_path / "absent.toml"
         absent.write_text("[github]\n", encoding="utf-8")
