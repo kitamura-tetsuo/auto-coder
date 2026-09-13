@@ -449,6 +449,7 @@ def test_worker_status_owns_candidate_during_pre_dispatch(tmp_path: Path, monkey
 
     monkeypatch.setattr(engine, "_create_candidate_from_single", fetch)
     monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", validate)
+    monkeypatch.setattr(engine, "_refresh_issue_stage_routing", lambda *_args: None)
     monkeypatch.setattr(engine, "_expand_dependency_obligation", expand)
     monkeypatch.setattr(engine, "_process_single_candidate", lambda *args, **kwargs: processed.append(100) or CandidateProcessingResult(type="issue", number=100, success=True))
 

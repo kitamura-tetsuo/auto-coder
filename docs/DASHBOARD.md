@@ -1,5 +1,13 @@
 # Auto-Coder Dashboard
 
+> **Issue-stage routing note:** durable Review and Implementation lane records
+> are currently scheduling evidence only. Until their respective workers consume
+> them, the dashboard intentionally does not present those records as active
+> workers, provider handoffs, or completed outcomes.
+> A validation provider/model route change can supersede these scheduling
+> identities without producing a dashboard event; execution remains observable
+> only when an existing validation or implementation boundary actually runs.
+
 For an explicit Issue restart (`--only <issue> --force --retry`),
 `issue.manual-retry` records authorization after admission checks. A completed
 authorization is not a successful provider handoff or implementation: inspect
