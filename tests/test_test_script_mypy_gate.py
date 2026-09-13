@@ -295,13 +295,17 @@ def fake_docker(tmp_path: Path) -> Path:
     It forwards to a real checkout on disk (``$FAKE_DOCKER_TARGET_DIR``)
     rather than launching an actual container, but the inner
     ``scripts/test.sh`` invocation it runs is the real, unmodified script.
+    Its own argv is recorded NUL-separated (never space-joined via ``"$*"``,
+    which would make a single ``"not browser"`` argument indistinguishable
+    from the two separate arguments ``"not"``, ``"browser"``), so a test can
+    assert on the exact argument boundaries the inner script receives.
     """
     bin_dir = tmp_path / "fakedockerbin"
     bin_dir.mkdir()
     script = bin_dir / "docker"
     script.write_text(
         "#!/bin/bash\n"
-        'echo "$*" >> "$FAKE_DOCKER_LOG"\n'
+        'printf \'%s\\0\' "$@" >> "$FAKE_DOCKER_LOG"\n'
         'if [ "$1" = "exec" ]; then\n'
         "  shift\n"
         '  env_assign=""\n'
@@ -500,12 +504,16 @@ def test_target_container_mypy_failure_reaches_outer_caller(tmp_path: Path, fixt
     assert (tmp_path / "outer/docker-container.log").read_text().strip() == "auto-coder-project"
     assert not (fixture_repo / "collector-invocations.json").exists()
 
-    # fake_docker records the full "docker exec ..." invocation before ever
-    # cd-ing into the target checkout, so this proves the inner script was
-    # launched with the original argument vector unchanged, not just that
-    # the target container name was resolved correctly.
-    invocation = (tmp_path / "outer/docker-invocations.log").read_text().strip()
-    assert invocation.endswith("./scripts/test.sh " + " ".join(argv))
+    # fake_docker records its own argv NUL-separated, immediately before
+    # cd-ing into the target checkout, so this proves the inner script
+    # received the original argument *boundaries* unchanged (not merely a
+    # space-joined string that a split/merged argument could also produce)
+    # -- not just that the target container name was resolved correctly.
+    raw_parts = (tmp_path / "outer/docker-invocations.log").read_bytes().split(b"\0")
+    if raw_parts and raw_parts[-1] == b"":
+        raw_parts = raw_parts[:-1]  # trailing NUL from printf '%s\0'
+    recorded_argv = [part.decode() for part in raw_parts]
+    assert recorded_argv == ["exec", "-e", "INSIDE_TARGET_EXECUTION=true", "auto-coder-project", "./scripts/test.sh", *argv]
 
 
 def test_docker_launch_failure_propagates_as_outer_nonzero(tmp_path: Path) -> None:
