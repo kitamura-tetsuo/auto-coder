@@ -318,7 +318,9 @@ class DiagnosticTransport(httpx.BaseTransport):
         if request.url.path.rstrip("/").endswith("/graphql") and method == "POST":
             # Classification is entirely local and the document is never logged.
             try:
-                payload = json.loads(request.content)
+                # Hishel reconstructs even JSON bodies as streams. Reading here
+                # buffers the document and preserves a replayable body for sending.
+                payload = json.loads(request.read())
                 document = payload.get("query", "") if isinstance(payload, dict) else ""
                 stripped = re.sub(r"(?s)^\s*(?:#[^\n]*\n\s*)*", "", document)
                 kind = "read" if re.match(r"(?i)^(?:query\b|\{)", stripped) else "mutation"

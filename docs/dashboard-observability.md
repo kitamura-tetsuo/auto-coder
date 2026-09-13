@@ -8,14 +8,14 @@ completed. Each top-level evaluation or durable resumption has a distinct execut
 identity; late evidence remains attached to the execution scope that produced it.
 
 Inherited specification BLOCKED publication withdraws an explicitly submitted
-child's readiness before the parent's readiness. The existing blocked outcome
+child's readiness while preserving the parent's readiness. The existing blocked outcome
 and incomplete-publication reporting remain authoritative; no new origin,
-provider route, or event schema is introduced. Readiness completion now includes
-both targets. Dashboard consumers must not infer label mutation from a BLOCKED
+provider route, or event schema is introduced. Readiness completion covers only
+the child label; the child BLOCKED decision still denies its dispatch. Dashboard consumers must not infer label mutation from a BLOCKED
 verdict alone. Run
 `bash scripts/test.sh tests/test_specification_validation_lifecycle.py tests/test_validation_publication_resumption.py`
 for the production lifecycle regressions, including
-`test_inherited_blocked_withdraws_child_and_parent_with_restart_retry` and
+`test_inherited_blocked_preserves_parent_with_restart_retry` and
 `test_inherited_blocked_edit_after_comment_preserves_both_labels`.
 
 ## Updating observable processing
@@ -35,7 +35,7 @@ Family reconciliation emits `issue.family-discovery` after confirming related
 declarations against live GitHub reads. Its facts identify
 `discovery_source=cached-open-issue-list`,
 `live_scope=related-declarations-and-native-children`,
-`declared_issue_numbers`, and `authorizes_execution=false`. The one-hour list
+`declared_issue_numbers`, `discovery_payload=issue-bodies`, and `authorizes_execution=false`. The one-hour list
 cache discovers candidates; only family members bypass it for confirmation.
 This completed stage does not claim complete live repository discovery or
 implementation readiness. The production-path regression
@@ -45,13 +45,27 @@ declarations and uncached native-member conflicts are covered in the same file.
 `tests/test_dashboard_observability.py::test_family_discovery_scope_reaches_mounted_detail`
 joins that production event to the mounted detail view without issuing any
 repository-wide strict discovery request.
-The `--only` startup exception emits `issue.explicit-relationship-discovery`
-with `discovery_source=live-open-issue-list`, `live_scope=all-open-issues`, and
-`authorizes_execution=false`.
+The `--only` startup pass emits `issue.explicit-relationship-discovery`
+with `discovery_source=cache-aware-open-issue-list`, `discovery_payload=issue-bodies`,
+`live_scope=target-and-related-family`, and `authorizes_execution=false`.
+The source describes a cache policy rather than an unconditional cache hit.
+`tests/test_dashboard_observability.py::test_explicit_cached_discovery_reaches_mounted_detail`
+checks the production event and mounted detail view.
 `tests/test_parent_issue_reconciliation.py::test_only_parent_reconciles_every_declared_child_before_unified_processing`
-uses a stale cache omitting children and proves that the real explicit entry
-point refreshes all Issues, including an unrelated Issue, before materializing
-the target family.
+runs the real explicit-entry/decomposition/family path with both warm and cold
+caches, rejects any enriched Issue-list or PR-connection call, and proves that
+related declarations are materialized without refreshing unrelated Issues.
+The mounted family and explicit detail tests also assert `discovery_payload=issue-bodies`.
+`tests/test_only_discovery_cache.py` verifies the memory TTL boundary, repository
+isolation, and paginated cache-backed discovery without enrichment. It also drives
+the real HTTP-cache factory with a controlled wire transport: fresh persistent
+responses avoid wire admission, while expired responses return to that boundary.
+The private cache isolates credential variants and preserves wire timeout and
+operation identity; local cache results remain diagnostic-only quota evidence.
+The streaming GraphQL regressions in `tests/test_only_discovery_cache.py` exercise
+this same production boundary: classification precedes admission, refused work
+never reaches the wire, and accepted bodies remain intact. These transport
+diagnostics do not create an implementation-ready or completed Issue event.
 
 Early dependency waiting emits `issue.cached-dependency-wait` as `deferred`
 before authoritative refresh/family validation. The Issue execution includes
@@ -389,3 +403,10 @@ needed. The runnable regressions
 in `tests/test_adversarial_validation_pr_flow.py` enter production without an
 externally supplied phase and cover refreshed green, pending, repeated
 invalidation, and the delivery/merge barrier.
+
+The CLI preserves a diagnostic-bearing `deferred` result before explicit target
+resolution, without changing production traces or asserting a resolved target type.
+This presentation correction is observability-neutral: origins, admission, provider
+routing, and event schemas are unchanged.
+`tests/test_process_issues_cloud_only.py::test_process_issues_only_completion_status_uses_target_outcome`
+verifies preserved deferrals, missing diagnostics, and target-number mismatches.

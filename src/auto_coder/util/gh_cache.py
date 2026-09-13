@@ -8,6 +8,7 @@ import time
 import types
 import uuid
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, cast
@@ -15,8 +16,11 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import httpx
 from ghapi.all import GhApi
 from github import GithubException
-from hishel import SyncSqliteStorage
-from hishel.httpx import SyncCacheClient
+from hishel import CacheOptions
+from hishel import Request as CacheRequest
+from hishel import Response as CacheResponse
+from hishel import SpecificationPolicy, SyncSqliteStorage
+from hishel.httpx import SyncCacheClient, SyncCacheTransport
 from nacl.encoding import Base64Encoder
 from nacl.public import PublicKey, SealedBox
 
@@ -198,6 +202,36 @@ TIMELINE_MAX_PAGES = 100
 _local_storage = threading.local()
 
 
+_cache_request_extensions: ContextVar[dict[str, object]] = ContextVar("github_cache_request_extensions", default={})
+
+
+class _GitHubCacheTransport(SyncCacheTransport):
+    """Keep wire timeouts/identity and credential variants across Hishel conversion."""
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        extensions = {key: request.extensions[key] for key in ("timeout", "auto_coder_operation_id") if key in request.extensions}
+        token = _cache_request_extensions.set(extensions)
+        try:
+            return super().handle_request(request)
+        finally:
+            _cache_request_extensions.reset(token)
+
+    def request_sender(self, request: CacheRequest) -> CacheResponse:
+        # Hishel's HTTPX adapter otherwise drops these request extensions.
+        cast(dict[str, object], request.metadata).update(_cache_request_extensions.get())
+        response = super().request_sender(request)
+        # A private local cache must never reuse another credential's response,
+        # including when the server omits these Vary fields.
+        vary = response.headers.get("vary", "")
+        if vary.strip() != "*":
+            fields = [field.strip() for field in vary.split(",") if field.strip()]
+            for header_field in ("Authorization", "Cookie"):
+                if header_field.lower() not in {existing.lower() for existing in fields}:
+                    fields.append(header_field)
+            response.headers["vary"] = ", ".join(fields)
+        return response
+
+
 def get_caching_client(
     admission_hook: AdmissionHook | None = None,
     observation_hook: ObservationHook | None = None,
@@ -213,20 +247,24 @@ def get_caching_client(
     observation_hook = observation_hook if observation_hook is not None else configured_observation
     # Hook-bearing clients are deliberately not shared: admission policy belongs
     # to one operation and must never leak to a later caller on the same thread.
-    if admission_hook is not None or observation_hook is not None:
+    dedicated = admission_hook is not None or observation_hook is not None
+    if dedicated or not hasattr(_local_storage, "client"):
         storage = SyncSqliteStorage(database_path=".cache/gh_cache.db")
-        return SyncCacheClient(
-            storage=storage,
-            transport=DiagnosticTransport(
+        # Supplying a bare transport to SyncCacheClient bypasses Hishel entirely.
+        # Keep admission on the wire side so a fresh cache hit needs no API slot.
+        transport = _GitHubCacheTransport(
+            next_transport=DiagnosticTransport(
                 admission_hook=admission_hook,
                 observation_hook=observation_hook,
                 subsystem=subsystem,
             ),
+            storage=storage,
+            policy=SpecificationPolicy(cache_options=CacheOptions(shared=False)),
         )
-    if not hasattr(_local_storage, "client"):
-        # Create a new storage and client for this thread
-        storage = SyncSqliteStorage(database_path=".cache/gh_cache.db")
-        _local_storage.client = SyncCacheClient(storage=storage, transport=DiagnosticTransport())
+        client = SyncCacheClient(storage=storage, transport=transport)
+        if dedicated:
+            return client
+        _local_storage.client = client
     return _local_storage.client
 
 
@@ -1131,6 +1169,64 @@ class GitHubClient:
                             logger.debug(f"Updated issue #{issue_number} in cache: {kwargs.keys()}")
                         return
 
+    def _cached_open_issues(self, repo_name: str) -> Optional[list[dict]]:
+        """Return the complete in-memory list only while its one-hour TTL is valid."""
+        with self._open_issues_cache_lock:
+            if self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(hours=1):
+                logger.info(f"Returning cached open issues for {repo_name} (age: {datetime.now() - self._open_issues_cache_time})")
+                return list(self._open_issues_cache)
+
+        return None
+
+    def get_open_issue_declarations(self, repo_name: str, limit: int = 100, labels: Optional[List[str]] = None) -> list[dict]:
+        """Discover declarations through fresh caches without per-Issue enrichment.
+
+        The persistent HTTP cache owns HTTP expiry/revalidation on a memory miss.
+        Discovery bodies are hints; callers must strictly refresh related Issues
+        before materializing relationships or authorizing implementation.
+        """
+        cached = self._cached_open_issues(repo_name) if not labels else None
+        if cached is not None:
+            return cached
+        return self._list_open_issue_declarations(repo_name, limit, labels)
+
+    def _list_open_issue_declarations(self, repo_name: str, limit: int, labels: Optional[List[str]]) -> list[dict]:
+        """Read raw paginated Issue bodies through the persistent HTTP cache."""
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+
+        # GitHub's Issues endpoint interleaves pull requests with Issues. Fetch
+        # every page before filtering so a page filled by PRs cannot hide later
+        # ordinary or urgent Issues or poison the complete-result cache.
+        issues_summary = []
+        page = 1
+        while True:
+            if labels:
+                page_items = api.issues.list_for_repo(
+                    owner,
+                    repo,
+                    state="open",
+                    per_page=limit,
+                    labels=",".join(labels),
+                    page=page,
+                )
+            else:
+                page_items = api.issues.list_for_repo(
+                    owner,
+                    repo,
+                    state="open",
+                    per_page=limit,
+                    page=page,
+                )
+            issues_summary.extend(page_items)
+            if len(page_items) < limit:
+                break
+            page += 1
+
+        # Filter out Pull Requests (which are returned in issues list by REST API)
+        raw_open_issues = [issue for issue in issues_summary if "pull_request" not in issue]
+        return raw_open_issues
+
     @retry_with_backoff()
     def get_open_issues_json(self, repo_name: str, limit: int = 100, labels: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Get open issues from repository using REST API.
@@ -1142,46 +1238,11 @@ class GitHubClient:
         Note: Sub-issues and Linked PRs via timeline are expensive to fetch via REST for all issues.
         We return empty lists for those fields in this implementation to respect the REST/caching requirement.
         """
-        # Filtered requests always reach the REST label query.
-        with self._open_issues_cache_lock:
-            if not labels and self._open_issues_cache is not None and self._open_issues_cache_repo == repo_name and self._open_issues_cache_time and datetime.now() - self._open_issues_cache_time < timedelta(hours=1):
-                logger.info(f"Returning cached open issues for {repo_name} (age: {datetime.now() - self._open_issues_cache_time})")
-                return list(self._open_issues_cache)
-
+        cached = self._cached_open_issues(repo_name) if not labels else None
+        if cached is not None:
+            return cached
         try:
-            owner, repo = repo_name.split("/")
-            api = get_ghapi_client(self.token)
-
-            # GitHub's Issues endpoint interleaves pull requests with Issues. Fetch
-            # every page before filtering so a page filled by PRs cannot hide later
-            # ordinary or urgent Issues or poison the complete-result cache.
-            issues_summary = []
-            page = 1
-            while True:
-                if labels:
-                    page_items = api.issues.list_for_repo(
-                        owner,
-                        repo,
-                        state="open",
-                        per_page=limit,
-                        labels=",".join(labels),
-                        page=page,
-                    )
-                else:
-                    page_items = api.issues.list_for_repo(
-                        owner,
-                        repo,
-                        state="open",
-                        per_page=limit,
-                        page=page,
-                    )
-                issues_summary.extend(page_items)
-                if len(page_items) < limit:
-                    break
-                page += 1
-
-            # Filter out Pull Requests (which are returned in issues list by REST API)
-            raw_open_issues = [issue for issue in issues_summary if "pull_request" not in issue]
+            raw_open_issues = self._list_open_issue_declarations(repo_name, limit=limit, labels=labels)
 
             # Pass 1: Scan all open issues immediately for Parent-Issue relationships
             # This ensures parents with lower issue numbers (e.g. #10) know about their

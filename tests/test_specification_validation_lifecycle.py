@@ -435,6 +435,7 @@ def test_real_refill_graph_uses_all_open_issues_and_native_precedence(tmp_path, 
     github = GitHubClient.get_instance(token="test-token")
     github.get_open_entities_strict = Mock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(number) for number, snapshot in issues.items() if snapshot["state"] == "open"]))
     github.get_open_issues_json = Mock(side_effect=lambda _repo: [dict(snapshot) for snapshot in issues.values() if snapshot["state"] == "open"])
+    github.get_open_issue_declarations = github.get_open_issues_json
     github.get_issue_dispatch_snapshot_strict = Mock(side_effect=lambda _repo, number: dict(issues[number]))
     github.get_parent_issue_number_strict = Mock(side_effect=lambda _repo, number: native_parent if number == 20 else None)
     parents = {20: native_parent} if native_parent is not None else {}
@@ -1169,7 +1170,7 @@ def test_daemon_replacement_pr_preserves_capacity_across_later_edit(monkeypatch,
 
 @pytest.mark.parametrize("child_ready", [True, False])
 @pytest.mark.parametrize("failed_target", [None, 1728, 1727])
-def test_inherited_blocked_withdraws_child_and_parent_with_restart_retry(tmp_path, child_ready, failed_target):
+def test_inherited_blocked_preserves_parent_with_restart_retry(tmp_path, child_ready, failed_target):
     gate = lifecycle(tmp_path, "BLOCKED")
     decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
     ready = {1727: True, 1728: child_ready}
@@ -1187,18 +1188,18 @@ def test_inherited_blocked_withdraws_child_and_parent_with_restart_retry(tmp_pat
             ready[number] = False
 
     github = FamilyGitHub([snapshot()])
-    error = gate.apply_inherited_blocked(github, decision, 1727, lambda: ready[1727])
-    failed = failed_target == 1727 or (failed_target == 1728 and child_ready)
+    error = gate.apply_inherited_blocked(github, decision, lambda: ready[1727])
+    failed = failed_target == 1728 and child_ready
     assert error == ("readiness withdrawal failed: label API unavailable" if failed else None)
     assert gate.store.get(decision.identity).readiness_removed is (not failed)
     if failed:
         assert ready[1727] is True
         failed_target = None
         restarted = lifecycle(tmp_path, "BLOCKED", Mock(side_effect=AssertionError("must reuse")))
-        assert restarted.apply_inherited_blocked(github, decision, 1727, lambda: ready[1727]) is None
+        assert restarted.apply_inherited_blocked(github, decision, lambda: ready[1727]) is None
         assert restarted.store.get(decision.identity).readiness_removed is True
-    assert ready == {1727: False, 1728: False}
-    assert removals == ([1728, 1727] if child_ready else [1727])
+    assert ready == {1727: True, 1728: False}
+    assert removals == ([1728] if child_ready else [])
     assert len(github.comments) == 1
 
 
@@ -1212,7 +1213,7 @@ def test_inherited_blocked_edit_after_comment_preserves_both_labels(tmp_path):
             self.last = snapshot(body=BODY + " edited")
 
     github = EditingGitHub([snapshot()])
-    assert gate.apply_inherited_blocked(github, decision, 1727, lambda: True) is None
+    assert gate.apply_inherited_blocked(github, decision, lambda: True) is None
     assert github.removals == 0
     assert len(github.comments) == 1
     assert gate.store.get(decision.identity).readiness_removed is False

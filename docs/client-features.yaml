@@ -124,7 +124,8 @@ to distinguish recovered capacity from ownership retained for other work.
 ## Family-scoped specification validation
 
 Before standalone, child, or decomposition validation is admitted, Auto-Coder
-uses the existing one-hour open-Issue list cache to discover supported
+uses lightweight Issue-body discovery, reusing the existing one-hour open-Issue
+list cache when available, to discover supported
 `Parent-Issue` declarations belonging to the affected family. Only those
 candidate children and native direct children are refreshed without cache;
 unrelated Issues are not individually refreshed. Native membership is re-read
@@ -137,14 +138,35 @@ does not veto a family, while malformed metadata on a native member fails the
 family closed. Validation waits for every discovered member's original
 creation-plus-60-seconds deadline through durable invalidations; linking and
 editing do not create a sliding delay.
-Explicit `--only` startup remains an exception: it enumerates and refreshes all
-open Issues without cache, then materializes related declarations even when
-the initial list cache omits them. Subsequent normal family checks remain scoped.
+When GitHub admission defers `--only` before target resolution, the CLI preserves
+`Deferred` and the original diagnostic without inventing a target-type failure.
+The requested target number must still match; unresolved success remains invalid.
+Explicit `--only` startup reuses the complete open-Issue memory cache within its
+one-hour TTL. On a miss or expiry, declaration discovery uses the persistent HTTP
+cache with its normal freshness/revalidation policy and paginates the Issue list
+without per-Issue enrichment or a separate PR listing. Unrelated Issues are not
+individually refreshed. Related declarations and the target are strictly re-read
+before linking or dispatch; a new body-only declaration omitted from a still-fresh
+list becomes discoverable after list expiry. Every subsequent family reconciliation
+uses the same lightweight discovery method, including decomposition preflight
+and validation; it never calls the enriched repository-wide Issue listing or
+fetches unrelated PR connections. Cold caches use only paginated Issue bodies.
+An INFO message identifies the family being discovered.
 The dashboard records `issue.family-discovery` with the cached discovery source,
 live relationship scope, confirmed declared children, and
 `authorizes_execution=false`; completion of discovery is not implementation readiness.
 The explicit startup pass records `issue.explicit-relationship-discovery` with
-`discovery_source=live-open-issue-list` and `live_scope=all-open-issues`.
+`discovery_source=cache-aware-open-issue-list` and `live_scope=target-and-related-family`.
+Both discovery stages include `discovery_payload=issue-bodies`. This describes
+the cache policy and lightweight payload, not a claim that every request was a cache hit.
+The shared caching-client factory places the diagnostic wire transport inside
+Hishel's cache transport (a bare custom transport would disable caching).
+Private HTTP responses honor normal expiry and revalidation, with Authorization
+and Cookie variants isolated. Wire timeouts and operation identity survive cache
+conversion; cache hits require no governor admission. GraphQL operation classification
+reads and buffers cache-converted request streams before admission, preserving
+the complete outgoing body and the existing read/mutation classification without
+logging documents or variables.
 ## Separate Issue and PR workers in live durable processing
 
 The daemon starts dedicated Issue and PR worker pools, each with the configured
@@ -773,8 +795,8 @@ against the stable repository/Issue number before GitHub side effects. The stop
 survives edits, relabeling, validation generations, and controller restarts, so
 that Issue (or parent set) cannot later authorize implementation. Stale or
 withdrawn submissions cannot create the marker. Child-level terminal results
-mark only the child and withdraw only its currently authoritative submitted
-parent, leaving the parent and siblings unmarked.
+mark only the child and withdraw only its own explicit readiness label,
+preserving parent readiness and leaving the parent and siblings unmarked.
 
 Each stable Issue number also receives an immutable individual-review baseline
 when its first valid authoritative title, body, and Requirement manifest enter
@@ -847,9 +869,10 @@ Issue #1730.  It is one shared production boundary rather than an optional
 planning phase: standalone submissions require a current individual `READY`,
 and parent submissions require both a current decomposition `READY` and a
 current individual `READY` for the sequentially selected direct child.  No
-parent Requirement is inherited by a child.  `BLOCKED` withdraws the relevant
-submission and requires an explicit resubmission, whereas operational `ERROR`
-preserves it for retry.  These checks cover daemon, explicit/urgent, local, and
+parent Requirement is inherited by a child. `BLOCKED` withdraws the reviewed
+Issue's explicit readiness label and requires explicit resubmission for that
+label; an inherited child result preserves parent readiness. Operational `ERROR`
+preserves readiness for retry.  These checks cover daemon, explicit/urgent, local, and
 cloud dispatch and precede implementation ownership and capacity admission.
 They do not create `plan.md`/`tasks.md`, allocate implementation slots, relax
 quota or routing policy, or permit sibling implementation in parallel.
@@ -921,10 +944,9 @@ publishes one identity-marked set summary only after a fresh generation check;
 first eligible child in the existing sequential sibling order receives its own
 exact-generation specification validation without requiring or receiving a
 child `implementation-ready` label. Child `BLOCKED` withdraws any explicit
-readiness label on that child before withdrawing the still-current parent
-submission. Both withdrawals require fresh specification and family checks;
-a failed child withdrawal preserves parent readiness for retry, and the durable
-withdrawal effect completes only after both succeed. Child `ERROR` preserves readiness. Immediately
+readiness label on that child while preserving the parent submission. The child
+withdrawal requires fresh specification and family checks and retries durably
+on failure; the withdrawal effect completes when the child label is absent. Child `ERROR` preserves readiness. Immediately
 before ownership and dispatch, both the live parent set and child identities are
 re-fetched, and parent-label withdrawal, membership edits, or specification edits
 fail closed.
@@ -2570,7 +2592,7 @@ resumable-validation-publication:
   behavior:
     - "`SpecificationValidationLifecycle.apply_blocked` / `apply_inherited_blocked` durably complete the diagnostic comment and readiness-withdrawal effects independently, one at a time, via `PendingWorkStore.complete_effect(WorkIdentity(repository, \"issue:<number>\", \"validation-publication\", decision.identity.key), effect)` as each succeeds (or was already durably confirmed by an earlier partial run) -- `complete_effect` now has a real production caller for both the `diagnostic` and `readiness-withdrawal` effect names used by the store's own test fixtures."
     - "A `GitHubRequestError` raised while applying a BLOCKED decision (standalone or inherited) is never reported as the durable `BLOCKED` terminal outcome: the candidate-processing call site (`AutomationEngine._defer_validation_publication`) retains exactly the still-unfinished effects (as read from the durable `SpecificationValidationStore` decision, not a single undifferentiated flag) as a `DEFERRED` obligation on the `validation-publication` pending-work stage, and wakes the scheduler."
-    - "The standalone diagnostic comment's currentness check no longer requires the `implementation-ready` label to still be present: a label already removed by this same result's own completed withdrawal effect must not hide a still-missing diagnostic comment behind a stale label-presence check. Label *removal* itself, and the inherited (parent) diagnostic and withdrawal, keep the full original label/decomposition-set currentness check, since a parent's BLOCKED result is authoritative only for a specific decomposition set."
+    - "The standalone diagnostic comment's currentness check no longer requires the `implementation-ready` label to still be present: a label already removed by this same result's own completed withdrawal effect must not hide a still-missing diagnostic comment behind a stale label-presence check. Label *removal* itself, and the inherited child diagnostic and withdrawal, keep the full original label/decomposition-set currentness check, since an inherited child BLOCKED result is authoritative only for a specific decomposition set. Child BLOCKED preserves the parent readiness label."
     - "`AutomationEngine` registers a `_ValidationPublicationStageHandler` for the `validation-publication` stage (alongside the existing `startup-reconciliation`, `pr-processing`, and `issue-processing` handlers) so both dispatch (governed retry) and recover (post-restart) resume through the real production path: refetch the current Issue (and, for an inherited result, the current authoritative parent/decomposition set), recompute the specification identity fresh, and only proceed when it still matches the retained obligation's revision -- an edited Issue, changed hierarchy, or new readiness submission supersedes the obligation instead of authorizing a stale mutation."
     - "A superseded or already-fully-completed obligation is discarded or cleared without any further GitHub mutation; a decision no longer `BLOCKED` (e.g. re-validated as READY) also supersedes rather than reapplying withdrawal effects."
 

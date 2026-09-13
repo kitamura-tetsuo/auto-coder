@@ -14,8 +14,19 @@ that discovery pass finished, with `authorizes_execution=false`; validation and
 implementation admission still have to pass. Body-only relationships absent
 from both the cached list and native membership become discoverable on list refresh.
 At `--only` startup, `issue.explicit-relationship-discovery` instead reports
-`discovery_source=live-open-issue-list` and `live_scope=all-open-issues` because
-this entry point refreshes the complete list and every open Issue.
+`discovery_source=cache-aware-open-issue-list` and
+`live_scope=target-and-related-family`. This entry point reuses unexpired discovery
+caches and strictly confirms the target and related family. The source describes
+the cache policy, not a guarantee of a cache hit; unrelated Issues are not
+individually refreshed. Both discovery stages report `discovery_payload=issue-bodies`;
+subsequent family/decomposition checks also avoid repository-wide detail enrichment,
+including on a cold cache. Discovery completion does not authorize implementation.
+GraphQL request streams are buffered for API admission classification without
+logging their contents; transport success alone does not mark Issue work complete.
+
+A child specification BLOCKED outcome preserves the parent `implementation-ready`
+label and still prevents child dispatch. Readiness-withdrawal completion concerns
+only the child's explicit label, so a blocked trace does not imply parent withdrawal.
 
 Specification-validation diagnostics include standalone, retained-owner, and
 parent/direct-child scheduling. Each producer has its own execution identity,
@@ -230,3 +241,10 @@ this diagnostic does not mean that the preceding request was never sent.
 No candidate execution or provider-success event is emitted by this retry.
 
 Coverage: `tests/test_github_request_governor.py::test_outcome_lock_contention_retains_response_before_next_send` exercises successful and throttled responses.
+
+The CLI preserves a diagnostic-bearing `deferred` result before explicit target
+resolution, without changing production traces or asserting a resolved target type.
+This presentation correction is observability-neutral: origins, admission, provider
+routing, and event schemas are unchanged.
+`tests/test_process_issues_cloud_only.py::test_process_issues_only_completion_status_uses_target_outcome`
+verifies preserved deferrals, missing diagnostics, and target-number mismatches.

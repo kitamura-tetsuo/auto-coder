@@ -583,7 +583,7 @@ class _ValidationPublicationStageHandler:
                     relationship = engine._child_review_context(*latest, issue_number)
                     return validator.identity(issue_number, title, body, relationship) == decision.identity
 
-                side_effect_error = validator.apply_inherited_blocked(engine.github, decision, parent_number, _set_is_current)
+                side_effect_error = validator.apply_inherited_blocked(engine.github, decision, _set_is_current)
             else:
                 side_effect_error = validator.apply_blocked(engine.github, decision, lambda: engine._standalone_validation_is_current(repo_name, decision))
         except GitHubRequestError as exc:
@@ -994,10 +994,11 @@ class AutomationEngine:
         are checked without cache before they can affect validation or dispatch.
         Body-only additions absent from the list are discovered after its refresh.
         """
-        enumerator = getattr(self.github, "get_open_issues_json", None)
+        enumerator = getattr(self.github, "get_open_issue_declarations", None)
         if not callable(enumerator):
             raise ParentOperationalError("cached open-Issue discovery is unavailable")
 
+        logger.info("Discovering family declarations for Issue #{} from cache-aware Issue bodies", parent_number)
         previous: Optional[dict[int, str]] = None
         for _attempt in range(5):
             try:
@@ -1048,7 +1049,7 @@ class AutomationEngine:
                         "issue.family-discovery",
                         f"issue#{parent_number} family discovery",
                         Outcome.COMPLETED,
-                        {"discovery_source": "cached-open-issue-list", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": sorted(discovered), "authorizes_execution": False},
+                        {"discovery_source": "cached-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": sorted(discovered), "authorizes_execution": False},
                     )
                     return
                 previous = generation
@@ -1395,31 +1396,27 @@ class AutomationEngine:
             return graph.results.get(issue_number, next(iter(graph.results.values()))).satisfaction
 
     def _preflight_explicit_issue_relationships(self, repo_name: str, issue_number: int, *, refresh_all: bool = False) -> Dict[str, Any]:
-        """Complete the target hierarchy, refreshing every Issue at --only startup.
+        """Complete the target hierarchy using cache-aware discovery at --only startup.
 
         This deliberately performs no validation or implementation work.  The
         repository-wide discovery only finds declarations which can
         change the target's native direct-child set; all policy decisions happen
         later, from a fresh authoritative read. Normal callers use cached discovery;
-        explicit startup cannot assume that this process's list cache is current.
+        explicit startup honors discovery cache expiry and strictly rechecks related Issues.
         """
-        enumerator = getattr(self.github, "get_open_entities_strict" if refresh_all else "get_open_issues_json", None)
+        enumerator = getattr(self.github, "get_open_issue_declarations", None)
         if not callable(enumerator):
             raise ParentOperationalError("open-Issue discovery is unavailable")
         try:
             discovery = enumerator(repo_name)
-            open_entities = getattr(discovery, "issues", None) if refresh_all else discovery
+            open_entities = discovery
             if not isinstance(open_entities, list):
                 raise ParentOperationalError("open-Issue discovery was malformed")
             declarations = {}
             for entity in open_entities:
-                number = getattr(entity, "number", None) if refresh_all else entity.get("number") if isinstance(entity, dict) else None
+                number = entity.get("number") if isinstance(entity, dict) else None
                 if not isinstance(number, int) or isinstance(number, bool) or number in declarations:
                     raise ParentOperationalError("open-Issue discovery contained an invalid or duplicate Issue")
-                if refresh_all:
-                    entity = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
-                    if not isinstance(entity, dict) or entity.get("number") != number or "pull_request" in entity or not self._is_open_issue(entity):
-                        raise ParentOperationalError(f"authoritative open Issue #{number} could not be confirmed")
                 declarations[number] = parse_parent_declaration(entity.get("body"))
 
             target = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
@@ -1474,7 +1471,7 @@ class AutomationEngine:
                     "issue.explicit-relationship-discovery",
                     f"issue#{issue_number} explicit relationship discovery",
                     Outcome.COMPLETED,
-                    {"discovery_source": "live-open-issue-list", "live_scope": "all-open-issues", "authorizes_execution": False},
+                    {"discovery_source": "cache-aware-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "target-and-related-family", "authorizes_execution": False},
                 )
             return refreshed
         except ParentSpecificationError:
@@ -1969,7 +1966,6 @@ class AutomationEngine:
                     validator.apply_inherited_blocked(
                         self.github,
                         decision,
-                        parent_number,
                         _set_is_current,
                     )
                 else:
@@ -3812,7 +3808,7 @@ class AutomationEngine:
                                 latest = self._fetch_authoritative_decomposition_set(repo_name, item_number)
                                 return latest is not None and self._is_open_issue(latest[0]) and is_implementation_ready(latest[0]) and parent_decision is not None and parent_decomposition_validator.identity(*latest) == parent_decision.identity
 
-                            side_effect_error = validator.apply_inherited_blocked(self.github, blocked, item_number, set_is_current)
+                            side_effect_error = validator.apply_inherited_blocked(self.github, blocked, set_is_current)
                             result.error = "Child specification validation found material defects"
                             if side_effect_error:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
@@ -4207,7 +4203,6 @@ class AutomationEngine:
                             side_effect_error = validator.apply_inherited_blocked(
                                 self.github,
                                 decision,
-                                inherited_parent_number,
                                 _set_is_current,
                             )
                         else:

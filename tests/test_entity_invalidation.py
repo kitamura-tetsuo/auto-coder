@@ -814,6 +814,7 @@ def test_real_startup_scan_preserves_recent_issue_stabilization(tmp_path: Path, 
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.Client.get", MagicMock(return_value=response(issue)))
     github = GitHubClient("token")
     github.get_open_issues_json = MagicMock(return_value=[dict(issue)])
+    github.get_open_issue_declarations = github.get_open_issues_json
     github.get_parent_issue_details_strict = MagicMock(return_value=None)
     github.get_direct_sub_issues_strict = MagicMock(return_value=[])
     engine = AutomationEngine(github, AutomationConfig())
@@ -1198,6 +1199,7 @@ def test_issue_invalidation_uses_single_strict_snapshot_for_decision(tmp_path: P
     github.get_issue = MagicMock(side_effect=RuntimeError("second request unavailable"))
     github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[], pull_requests=[]))
     github.get_open_issues_json = MagicMock(return_value=[])
+    github.get_open_issue_declarations = github.get_open_issues_json
     engine = AutomationEngine(github, AutomationConfig())
     processed = []
     monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate, **_kwargs: processed.append(candidate.data) or CandidateProcessingResult(type="issue", number=42, success=True))
@@ -1410,10 +1412,7 @@ def test_explicit_child_processing_validates_submitted_generation_before_eligibi
         "parent_issue_url": "https://api.github.com/repos/owner/repo/issues/10",
     }
     github = MagicMock()
-    github.get_open_entities_strict.return_value = OpenGitHubEntities(
-        issues=[OpenGitHubIssue(number=10)] + ([OpenGitHubIssue(number=11)] if child_state == "open" else []),
-        pull_requests=[],
-    )
+    github.get_open_issue_declarations.return_value = [dict(parent)] + ([dict(child)] if child_state == "open" else [])
     snapshots = {10: parent, 11: child}
     github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
     github.get_issue.return_value = child

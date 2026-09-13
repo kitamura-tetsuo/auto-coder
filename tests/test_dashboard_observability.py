@@ -49,7 +49,7 @@ def _assert_required_stage_visible(diagram: str, display_text: str) -> None:
 @patch("auto_coder.dashboard.ui")
 def test_family_discovery_scope_reaches_mounted_detail(mock_ui):
     github = MagicMock()
-    github.get_open_issues_json.return_value = [{"number": 900, "body": "Parent-Issue: #899"}]
+    github.get_open_issue_declarations.return_value = [{"number": 900, "body": "Parent-Issue: #899"}]
     github.get_direct_sub_issues_strict.return_value = [{"number": 101}]
     github.get_issue_dispatch_snapshot_strict.return_value = {"number": 101, "body": ""}
     engine = AutomationEngine(github, AutomationConfig(repo_name="owner/repo"))
@@ -62,7 +62,7 @@ def test_family_discovery_scope_reaches_mounted_detail(mock_ui):
     github.get_open_entities_strict.assert_not_called()
     events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=100).events if event.stage_id == "issue.family-discovery"]
     assert len(events) == 1
-    assert events[0].facts == {"discovery_source": "cached-open-issue-list", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": [], "authorizes_execution": False}
+    assert events[0].facts == {"discovery_source": "cached-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": [], "authorizes_execution": False}
     _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 100), "family discovery")
 
 
@@ -832,7 +832,7 @@ def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_pat
     github.get_direct_sub_issues_strict.return_value = []
     github.get_open_sub_issues_strict.return_value = []
     github.get_open_entities_strict.return_value = SimpleNamespace(issues=[SimpleNamespace(number=1998)])
-    github.get_open_issues_json.return_value = [dict(issue)]
+    github.get_open_issue_declarations.return_value = [dict(issue)]
     github.get_issue_comments_strict.return_value = []
     github.get_connected_prs.return_value = []
     github.get_parent_issue_number_strict.return_value = None
@@ -965,3 +965,22 @@ def test_manual_retry_authorization_reaches_mounted_detail(mock_ui, tmp_path):
     older = next(call.kwargs["on_click"] for call in mock_ui.button.call_args_list if call.kwargs.get("icon") == "arrow_downward")
     older()
     _assert_required_stage_visible(mock_ui.mermaid.return_value.classes.return_value.set_content.call_args[0][0], "manual retry authorized")
+
+
+@patch("auto_coder.dashboard.ui")
+def test_explicit_cached_discovery_reaches_mounted_detail(mock_ui):
+    github = MagicMock()
+    github.get_open_issue_declarations.return_value = [{"number": 900, "body": "Unrelated"}]
+    github.get_issue_dispatch_snapshot_strict.return_value = {"number": 100, "body": "", "state": "open"}
+    github.get_parent_issue_details_strict.return_value = None
+    github.get_direct_sub_issues_strict.return_value = []
+    engine = AutomationEngine(github, AutomationConfig(repo_name="owner/repo"))
+    collector = get_trace_collector()
+    with collector.start_execution("owner/repo", "issue", 100, origin="explicit-single-target"):
+        engine._preflight_explicit_issue_relationships("owner/repo", 100, refresh_all=True)
+    assert [call.args for call in github.get_issue_dispatch_snapshot_strict.call_args_list] == [("owner/repo", 100), ("owner/repo", 100)]
+    github.get_open_entities_strict.assert_not_called()
+    events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=100).events if event.stage_id == "issue.explicit-relationship-discovery"]
+    assert len(events) == 1
+    assert events[0].facts == {"discovery_source": "cache-aware-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "target-and-related-family", "authorizes_execution": False}
+    _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 100), "explicit relationship discovery")

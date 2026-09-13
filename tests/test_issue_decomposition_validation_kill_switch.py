@@ -476,8 +476,8 @@ class TestAS005ChildSpecificationValidationRemainsIndependent:
         spec_analyzer.assert_called_once()
         engine._process_single_candidate_reserved.assert_not_called()
 
-        # Implementation-ready label was removed from parent
-        assert (10, ["implementation-ready"]) in github.removed_labels
+        # A blocked child preserves the parent submission.
+        assert github.removed_labels == []
 
     def test_ready_child_specification_allows_dispatch(self, tmp_path: Path):
         parent = make_parent(10, ready=True)

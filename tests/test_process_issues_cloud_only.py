@@ -86,6 +86,16 @@ def test_process_issues_only_passes_configured_cloud_mode(retry):
 @pytest.mark.parametrize(
     ("processing_result", "expected_status"),
     [
+        (
+            {
+                "target_number": 5266,
+                "target_type": None,
+                "target_outcome": "deferred",
+                "target_reason": "GitHub request deferred before sending: rate_limit_cooldown; retry_at=1789286881.7999094 (Unix seconds)",
+                "errors": ["GitHub request deferred before sending: rate_limit_cooldown; retry_at=1789286881.7999094 (Unix seconds)"],
+            },
+            "Deferred",
+        ),
         *[
             (
                 {
@@ -99,6 +109,8 @@ def test_process_issues_only_passes_configured_cloud_mode(retry):
             for number, outcome, errors in [
                 (5266, "failed", ["GitHub request deferred before sending: governor_state_unavailable"]),
                 (9999, "failed", ["Lookup failed"]),
+                (9999, "deferred", ["Lookup failed"]),
+                (5266, "deferred", []),
                 (5266, "success", []),
                 (5266, "failed", []),
             ]

@@ -33,6 +33,9 @@ class GraphGitHub(GitHubClient):
     def get_open_entities_strict(self, _repo):
         return SimpleNamespace(issues=[SimpleNamespace(number=number) for number, issue in self.issues.items() if issue["state"] == "open"])
 
+    def get_open_issue_declarations(self, _repo):
+        return [dict(issue) for issue in self.issues.values() if issue["state"] == "open"]
+
     def get_open_issues_json(self, _repo):
         return [dict(issue) for issue in self.issues.values() if issue["state"] == "open"]
 
@@ -97,13 +100,13 @@ def test_family_discovery_refreshes_only_related_issues_and_records_scope():
     github.get_open_entities_strict.assert_not_called()
     events = [event for event in collector.get_snapshot(item_type="issue", item_number=100).events if event.stage_id == "issue.family-discovery"]
     assert events[-1].outcome == "completed"
-    assert events[-1].facts == {"discovery_source": "cached-open-issue-list", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": [101], "authorizes_execution": False}
+    assert events[-1].facts == {"discovery_source": "cached-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": [101], "authorizes_execution": False}
 
 
 @pytest.mark.parametrize("fresh_body,state", [("Parent-Issue: #200", "open"), ("", "open"), ("Parent-Issue: #100", "closed")])
 def test_stale_cached_declaration_cannot_materialize_child(fresh_body, state):
     github = GraphGitHub({100: graph_issue(100, ""), 101: graph_issue(101, fresh_body, state=state)}, {}, {})
-    github.get_open_issues_json = MagicMock(return_value=[graph_issue(101, "Parent-Issue: #100")])
+    github.get_open_issue_declarations = MagicMock(return_value=[graph_issue(101, "Parent-Issue: #100")])
     engine = AutomationEngine(github, AutomationConfig())
 
     engine._reconcile_declared_family("o/r", 100)
@@ -116,7 +119,7 @@ def test_native_member_missing_from_cache_still_rejects_conflicting_declaration(
     from src.auto_coder.parent_issue_reconciliation import ParentSpecificationError
 
     github = GraphGitHub({100: graph_issue(100, ""), 101: graph_issue(101, "Parent-Issue: #200")}, {101: 100}, {100: [101]})
-    github.get_open_issues_json = MagicMock(return_value=[])
+    github.get_open_issue_declarations = MagicMock(return_value=[])
     engine = AutomationEngine(github, AutomationConfig())
 
     with pytest.raises(ParentSpecificationError, match="conflicts with native parent #100"):
@@ -149,7 +152,7 @@ def test_family_discovery_reuses_valid_production_list_cache():
     github._open_issues_cache_repo = "o/r"
     github._open_issues_cache_time = datetime.now() - timedelta(minutes=59)
     github._open_issues_cache = [dict(issue) for issue in github.issues.values()]
-    github.get_open_issues_json = GitHubClient.get_open_issues_json.__get__(github)
+    github.get_open_issue_declarations = GitHubClient.get_open_issue_declarations.__get__(github)
     github.get_issue_dispatch_snapshot_strict = MagicMock(wraps=github.get_issue_dispatch_snapshot_strict)
     engine = AutomationEngine(github, AutomationConfig())
 
@@ -160,7 +163,8 @@ def test_family_discovery_reuses_valid_production_list_cache():
     assert {call.args[1] for call in github.get_issue_dispatch_snapshot_strict.call_args_list} == {101}
 
 
-def test_only_parent_reconciles_every_declared_child_before_unified_processing():
+@pytest.mark.parametrize("warm_cache", [True, False])
+def test_only_parent_reconciles_every_declared_child_before_unified_processing(warm_cache):
     """The supported explicit origin cannot pass a partial child set downstream."""
     body = "## Requirements\n- REQ-001: Preserve the complete set."
     github = GraphGitHub(
@@ -174,7 +178,12 @@ def test_only_parent_reconciles_every_declared_child_before_unified_processing()
         {101: 100},
         {100: [101]},
     )
-    github.get_open_issues_json = MagicMock(return_value=[dict(github.issues[100])])
+    github.get_open_issues_json = MagicMock(side_effect=AssertionError("Explicit family discovery must never enrich every open Issue"))
+    github._open_issues_cache_lock = RLock()
+    github._open_issues_cache = [dict(issue) for issue in github.issues.values()] if warm_cache else None
+    github._open_issues_cache_repo = "o/r"
+    github._open_issues_cache_time = datetime.now()
+    github.get_open_issue_declarations = GitHubClient.get_open_issue_declarations.__get__(github)
     github.get_open_entities_strict = MagicMock(wraps=github.get_open_entities_strict)
     github.get_issue_dispatch_snapshot_strict = MagicMock(wraps=github.get_issue_dispatch_snapshot_strict)
     engine = AutomationEngine(github, AutomationConfig())
@@ -191,12 +200,21 @@ def test_only_parent_reconciles_every_declared_child_before_unified_processing()
     engine._process_single_candidate_unified = MagicMock(side_effect=process)
     engine._validate_submitted_parent_generation_for_child = MagicMock()
 
-    with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
+    api = MagicMock()
+    api.issues.list_for_repo.return_value = [dict(issue) for issue in github.issues.values()]
+    github.token = "test"
+    github.get_connected_prs = MagicMock(side_effect=AssertionError("Discovery must not fetch unrelated PR connections"))
+    github.get_open_sub_issues = MagicMock(side_effect=AssertionError("Discovery must not enrich unrelated children"))
+    with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False), patch("src.auto_coder.util.gh_cache.get_ghapi_client", return_value=api):
         result = engine.process_single("o/r", "issue", 100, explicit_only=True)
 
+    github.get_open_issues_json.assert_not_called()
+    github.get_connected_prs.assert_not_called()
+    github.get_open_sub_issues.assert_not_called()
+    assert api.issues.list_for_repo.call_count == (0 if warm_cache else 3)
     assert observed == [(101, 102, 103)]
-    github.get_open_entities_strict.assert_called_once_with("o/r")
-    assert {call.args[1] for call in github.get_issue_dispatch_snapshot_strict.call_args_list} == {100, 101, 102, 103, 900}
+    github.get_open_entities_strict.assert_not_called()
+    assert {call.args[1] for call in github.get_issue_dispatch_snapshot_strict.call_args_list} == {100, 101, 102, 103}
     assert github.events == ["linked", "linked"]
     assert result["issues_processed"][0]["actions_taken"] == ["target only"]
     engine._validate_submitted_parent_generation_for_child.assert_called_once_with("o/r", 100, engine._create_candidate_from_single.return_value.data, target_only=True)

@@ -400,8 +400,8 @@ def process_issues(
             resolved_type = result.get("target_type")
             outcome = result.get("target_outcome")
             valid_outcomes = {"success", "deferred", "skipped", "blocked", "failed"}
-            unresolved_failure = resolved_type is None and outcome == "failed" and bool(diagnostics)
-            if resolved_type not in {"issue", "pr"} and not unresolved_failure:
+            unresolved_non_success = resolved_type is None and outcome in {"failed", "deferred"} and bool(diagnostics)
+            if resolved_type not in {"issue", "pr"} and not unresolved_non_success:
                 diagnostics.append(f"Explicit result did not provide an authoritative target type for #{number}")
                 outcome = "failed"
             elif result.get("target_number") != number:

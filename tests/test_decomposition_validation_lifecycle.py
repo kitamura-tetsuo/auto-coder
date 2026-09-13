@@ -463,7 +463,7 @@ def test_set_blocked_comment_failure_still_withdraws_parent(tmp_path):
     dispatch.assert_not_called()
 
 
-def test_inherited_child_blocked_comment_failure_still_withdraws_parent(tmp_path):
+def test_inherited_child_blocked_comment_failure_preserves_parent(tmp_path):
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     child = issue(11, "Child", CHILD_BODY)
     child["parent_issue_number"] = 10
@@ -477,7 +477,7 @@ def test_inherited_child_blocked_comment_failure_still_withdraws_parent(tmp_path
     )
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, child), 0, issue_number=11), engine.config)
-    github.remove_labels.assert_called_once_with("owner/repo", 10, ["implementation-ready"], item_type="issue")
+    github.remove_labels.assert_not_called()
     assert "findings publication failed" in str(result.error)
     dispatch.assert_not_called()
 
@@ -812,7 +812,7 @@ def test_parent_generation_validates_despite_retained_first_child_owner(tmp_path
     [(False, "READY", True), (True, "BLOCKED", False)],
 )
 def test_stale_jules_inherited_readiness_and_blocked_effects(tmp_path, child_ready, child_verdict, replacement_expected):
-    """The real daemon withdraws both explicit child and inherited readiness."""
+    """The real daemon withdraws explicit child readiness and preserves the parent."""
     from auto_coder.implementation_slots import ImplementationOwner
 
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
@@ -862,7 +862,6 @@ def test_stale_jules_inherited_readiness_and_blocked_effects(tmp_path, child_rea
     if child_verdict == "BLOCKED":
         assert github.remove_labels.call_args_list == [
             call("owner/repo", 11, ["implementation-ready"], item_type="issue"),
-            call("owner/repo", 10, ["implementation-ready"], item_type="issue"),
         ]
     else:
         github.remove_labels.assert_not_called()

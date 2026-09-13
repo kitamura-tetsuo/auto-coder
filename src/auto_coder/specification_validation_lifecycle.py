@@ -489,13 +489,12 @@ class SpecificationValidationLifecycle:
         self,
         github: object,
         decision: ValidationDecision,
-        parent_number: int,
         set_is_current: Callable[[], bool],
     ) -> Optional[str]:
-        """Withdraw a parent submission for one current blocked child.
+        """Withdraw only the explicit submission of a current blocked child.
 
         See ``apply_blocked`` for the effect-completion contract this shares:
-        the diagnostic comment and the parent's readiness withdrawal are
+        the diagnostic comment and the child's readiness withdrawal are
         confirmed independently against the durable pending-work store.
         """
         issue_number = decision.identity.issue_number
@@ -559,8 +558,7 @@ class SpecificationValidationLifecycle:
                 return "; ".join(failures) or None
             try:
                 # A child may also have its own explicit submission. Withdraw
-                # it before the parent: losing parent readiness invalidates
-                # set_is_current and would prevent a retry of the child effect.
+                # only that label; the parent submission remains available.
                 snapshot = github.get_issue_dispatch_snapshot_strict(self.repository, issue_number)  # type: ignore[attr-defined]
                 if not isinstance(snapshot, dict) or specification_digest(str(snapshot.get("title") or ""), str(snapshot.get("body") or "")) != decision.identity.specification_digest or not set_is_current():
                     return "; ".join(failures) or None
@@ -568,7 +566,6 @@ class SpecificationValidationLifecycle:
                     github.remove_labels(self.repository, issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
                 if not still_current():
                     return "; ".join(failures) or None
-                github.remove_labels(self.repository, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
                 self.store.save(ValidationDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation, current.remediation_reason))
                 pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
             except Exception as exc:
