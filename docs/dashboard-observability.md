@@ -378,3 +378,14 @@ this diagnostic does not mean that the preceding request was never sent.
 No candidate execution or provider-success event is emitted by this retry.
 
 Coverage: `tests/test_github_request_governor.py::test_outcome_lock_contention_retains_response_before_next_send` exercises successful and throttled responses.
+
+The final merge gate owns its read phase independently of candidate selection.
+This scope-lifetime correction preserves production trace stages, facts, and
+outcome mappings: successful merges use the existing merge result, and newly
+non-passing CI still emits `pr.ci-eligibility`. No renderer or schema change is
+needed. The runnable regressions
+`test_webhook_fence_after_green_final_refresh_forces_new_ci_gate` and
+`test_ci_delivery_cannot_be_accepted_between_authority_check_and_merge_mutation`
+in `tests/test_adversarial_validation_pr_flow.py` enter production without an
+externally supplied phase and cover refreshed green, pending, repeated
+invalidation, and the delivery/merge barrier.

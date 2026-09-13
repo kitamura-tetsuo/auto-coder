@@ -23,7 +23,7 @@ from auto_coder.cloud_task_client_base import CloudTask, CloudTaskState
 from auto_coder.codex_cloud_client import CodexCloudClient
 from auto_coder.codex_wham_client import FollowUpDeliveryOutcome, FollowUpDeliveryResult
 from auto_coder.github_app_reviewer import ReviewPublicationResult
-from auto_coder.github_ci_observer import accept_and_fence_ci_delivery, ci_read_phase, fence_active_ci_observations, observe_ci
+from auto_coder.github_ci_observer import accept_and_fence_ci_delivery, fence_active_ci_observations, observe_ci
 from auto_coder.pr_processor import (
     AdversarialValidationEligibility,
     ClaimedReviewThreadGateState,
@@ -2198,6 +2198,7 @@ class TestAdversarialValidationPRFlow:
         mock_merge_pr.assert_not_called()
         assert any("post-validation CI refresh checks are pending" in action for action in actions)
 
+    @pytest.mark.parametrize("replacement", ["pending", "green", "invalidated"])
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
@@ -2214,6 +2215,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks,
         mock_mergeable,
         mock_exit_in_progress,
+        replacement,
     ):
         class Actions:
             def list_workflow_runs_for_repo(self, owner, repo, **kwargs):
@@ -2245,8 +2247,10 @@ class TestAdversarialValidationPRFlow:
             calls += 1
             if calls == 1:
                 return green
-            if calls == 2:
+            if calls == 2 or replacement != "pending":
                 snapshot = observe_ci(api, "credential", "owner/repo", 100, "current-head")
+                if calls == 3 and replacement == "invalidated":
+                    fence_active_ci_observations("second accepted CI delivery")
                 return GitHubActionsStatusResult(success=True, ids=[10], observation=snapshot)
             return pending
 
@@ -2265,12 +2269,16 @@ class TestAdversarialValidationPRFlow:
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
 
-        with ci_read_phase("production-pr-processing"):
-            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         assert calls == 3
-        mock_merge_pr.assert_not_called()
-        assert any("final CI authority refresh checks are pending" in action for action in actions)
+        if replacement == "green":
+            mock_merge_pr.assert_called_once()
+            assert "Successfully merged PR #100" in actions
+        else:
+            mock_merge_pr.assert_not_called()
+            reason = "final CI authority refresh checks are pending" if replacement == "pending" else "CI authority was invalidated repeatedly"
+            assert any(reason in action for action in actions)
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
@@ -2346,8 +2354,7 @@ class TestAdversarialValidationPRFlow:
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
 
-        with ci_read_phase("production-pr-processing"):
-            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
         assert delivery_thread is not None
         delivery_thread.join(1)
 
