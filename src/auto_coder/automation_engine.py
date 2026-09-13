@@ -667,6 +667,12 @@ class AutomationEngine:
         self._implementation_slots_lock = threading.Lock()
         self._specification_validators: Dict[str, SpecificationValidationLifecycle] = {}
         self._decomposition_validators: Dict[str, DecompositionValidationLifecycle] = {}
+        # Entries created by the engine are tagged with the effective provider
+        # identity that produced them. Tests and embedding callers may inject a
+        # lifecycle directly; an untagged entry remains caller-owned.
+        self._validator_cache_lock = threading.RLock()
+        self._specification_validator_providers: Dict[str, str] = {}
+        self._decomposition_validator_providers: Dict[str, str] = {}
         self.validation_scheduler = ValidationScheduler(self.config.validation_concurrency)
         self.adversarial_validation_scheduler = AdversarialValidationScheduler(self.config.adversarial_validation_concurrency)
         self._lifecycle = EngineLifecycle.RUNNING
@@ -864,11 +870,17 @@ class AutomationEngine:
             return []
 
     def _get_specification_validator(self, repo_name: str) -> SpecificationValidationLifecycle:
-        validator = self._specification_validators.get(repo_name)
-        if validator is None:
-            validator = SpecificationValidationLifecycle(repo_name, configured_provider_identity())
-            self._specification_validators[repo_name] = validator
-        return validator
+        with self._validator_cache_lock:
+            validator = self._specification_validators.get(repo_name)
+            cached_provider = self._specification_validator_providers.get(repo_name)
+            if validator is not None and cached_provider is None:
+                return validator
+            provider_identity = configured_provider_identity()
+            if validator is None or cached_provider != provider_identity:
+                validator = SpecificationValidationLifecycle(repo_name, provider_identity)
+                self._specification_validators[repo_name] = validator
+                self._specification_validator_providers[repo_name] = provider_identity
+            return validator
 
     def _is_issue_specification_validation_enabled(self, repo_name: str, config: Optional[AutomationConfig] = None) -> bool:
         """Return whether individual Issue specification validation is enabled."""
@@ -926,11 +938,17 @@ class AutomationEngine:
         return get_automatic_test_fix_from_config(repo_name=repo_name)
 
     def _get_decomposition_validator(self, repo_name: str) -> DecompositionValidationLifecycle:
-        validator = self._decomposition_validators.get(repo_name)
-        if validator is None:
-            validator = DecompositionValidationLifecycle(repo_name, configured_provider_identity())
-            self._decomposition_validators[repo_name] = validator
-        return validator
+        with self._validator_cache_lock:
+            validator = self._decomposition_validators.get(repo_name)
+            cached_provider = self._decomposition_validator_providers.get(repo_name)
+            if validator is not None and cached_provider is None:
+                return validator
+            provider_identity = configured_provider_identity()
+            if validator is None or cached_provider != provider_identity:
+                validator = DecompositionValidationLifecycle(repo_name, provider_identity)
+                self._decomposition_validators[repo_name] = validator
+                self._decomposition_validator_providers[repo_name] = provider_identity
+            return validator
 
     def _fetch_authoritative_decomposition_set(self, repo_name: str, parent_number: int) -> Optional[tuple[Dict[str, Any], List[Dict[str, Any]]]]:
         """Reconcile every member, then fetch one stable native direct-child set."""

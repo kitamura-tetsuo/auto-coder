@@ -25,6 +25,11 @@ does not claim Review execution, READY evidence, or provider admission.
 The final post-processing routing refresh likewise emits no additional stage:
 it consumes durable validation evidence for lane bookkeeping, while the existing
 validation and implementation-admission events remain the observable outcomes.
+Effective validation-route changes now rebind the engine-owned lifecycle before
+classification. This changes only durable Review/Implementation identities and
+eligibility; it emits no provider execution or dashboard event until an existing
+validation or implementation boundary actually runs. The production routing
+suite covers model changes and exact restoration for standalone and family work.
 
 The detail view is a projection of **observed local evidence**. It does not query
 GitHub or a provider and it does not turn absent, unavailable, partial, throttled,

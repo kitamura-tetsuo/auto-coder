@@ -8,7 +8,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
-from auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
+from auto_coder.decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.implementation_slots import ImplementationSlotRepository
 from auto_coder.issue_stage_routing import (
@@ -432,5 +432,117 @@ async def test_standalone_ready_from_ordinary_processing_immediately_hands_off(t
     implementation = engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)
     assert len(implementation) == 1
     assert implementation[0].target_number == 1
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_running_engine_reclassifies_standalone_after_provider_policy_change(tmp_path, monkeypatch):
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = {
+        1: {
+            "id": 101,
+            "number": 1,
+            "title": "Standalone",
+            "body": body,
+            "state": "open",
+            "created_at": created_at,
+            "labels": [{"name": "implementation-ready"}],
+            "user": {"id": 1},
+        }
+    }
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    policy = {"value": "provider/model-a"}
+    monkeypatch.setattr("auto_coder.automation_engine.configured_provider_identity", lambda: policy["value"])
+    engine, _github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
+    validator_a = engine._get_specification_validator(REPO)
+    identity_a = validator_a.identity(1, "Standalone", body)
+    validator_a.store.save(ValidationDecision(identity_a, "READY"))
+
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [1]
+
+    policy["value"] = "provider/model-b"
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    validator_b = engine._get_specification_validator(REPO)
+    assert validator_b is not validator_a
+    assert validator_b.identity(1, "Standalone", body) != identity_a
+    review = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(review) == 1
+    assert review[0].remaining_identity_keys == (validator_b.identity(1, "Standalone", body).key,)
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+
+    policy["value"] = "provider/model-a"
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert engine._get_specification_validator(REPO).identity(1, "Standalone", body) == identity_a
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [1]
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_running_engine_reclassifies_both_family_categories_after_policy_change(tmp_path, monkeypatch):
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    parent_body = "## Objective\n\nCoordinate delivery."
+    child_body = "Parent-Issue: #10\n\n## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = {
+        10: {"id": 100, "number": 10, "title": "P", "body": parent_body, "state": "open", "created_at": created_at, "labels": [{"name": "implementation-ready"}]},
+        11: {"id": 110, "number": 11, "title": "A", "body": child_body, "state": "open", "created_at": created_at, "labels": [], "parent_issue_number": 10},
+        12: {"id": 120, "number": 12, "title": "B", "body": child_body, "state": "open", "created_at": created_at, "labels": [], "parent_issue_number": 10},
+    }
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = True
+    policy = {"value": "provider/model-a"}
+    monkeypatch.setattr("auto_coder.automation_engine.configured_provider_identity", lambda: policy["value"])
+    engine, _github = _routing_engine(tmp_path, monkeypatch, snapshots, [11, 12], config)
+    monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *_args: None)
+    decomposition_a = engine._get_decomposition_validator(REPO)
+    individual_a = engine._get_specification_validator(REPO)
+    family = (snapshots[10], [snapshots[11], snapshots[12]])
+    decomposition_identity_a = decomposition_a.identity(*family)
+    decomposition_a.store.save(DecompositionDecision(decomposition_identity_a, "READY"))
+    individual_identities_a = []
+    for child in family[1]:
+        relationship = engine._child_review_context(*family, child["number"])
+        identity = individual_a.identity(child["number"], child["title"], child["body"], relationship)
+        individual_a.store.save(ValidationDecision(identity, "READY"))
+        individual_identities_a.append(identity)
+
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 10)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert {item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)} == {11, 12}
+
+    policy["value"] = "provider/model-b"
+    await engine.invalidate_entity(REPO, "issue", 10)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    decomposition_b = engine._get_decomposition_validator(REPO)
+    individual_b = engine._get_specification_validator(REPO)
+    expected_b = {decomposition_b.identity(*family).key}
+    expected_b.update(individual_b.identity(child["number"], child["title"], child["body"], engine._child_review_context(*family, child["number"])).key for child in family[1])
+    review = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(review) == 1
+    assert set(review[0].remaining_identity_keys) == expected_b
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+
+    policy["value"] = "provider/model-a"
+    await engine.invalidate_entity(REPO, "issue", 10)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert engine._get_decomposition_validator(REPO).identity(*family) == decomposition_identity_a
+    restored_individual = engine._get_specification_validator(REPO)
+    assert [restored_individual.identity(child["number"], child["title"], child["body"], engine._child_review_context(*family, child["number"])) for child in family[1]] == individual_identities_a
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert {item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)} == {11, 12}
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)
