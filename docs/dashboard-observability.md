@@ -1,5 +1,16 @@
 # Dashboard observability verification
 
+The generation-aware Issue routing store is a pre-worker durability boundary:
+it classifies and orders Review and Implementation lane records but does not yet
+execute either lane or emit a processing result. Consequently it introduces no
+new production trace stage, origin, outcome, provider route, structured event,
+or dashboard projection. `tests/test_issue_stage_routing.py` exercises the
+durable classification, arrival, coalescing, supersession, crash recovery, and
+owned-start boundaries directly. The Review and Implementation worker changes
+which consume these records must add their production-to-view trace coverage;
+the routing store must not fabricate worker activity before that handoff exists.
+Run `bash scripts/test.sh tests/test_issue_stage_routing.py` for this boundary.
+
 The detail view is a projection of **observed local evidence**. It does not query
 GitHub or a provider and it does not turn absent, unavailable, partial, throttled,
 or superseded evidence into a pass or failure. An accepted provider submission is
