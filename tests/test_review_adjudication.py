@@ -120,6 +120,32 @@ def test_predecessor_successor_delivery_order_and_restart_are_equivalent() -> No
     assert AdjudicationLedger.loads(reversed_state.dumps()).tips() == (B,)
 
 
+def test_pending_duplicate_identity_retires_independent_of_delivery_order() -> None:
+    first = ledger()
+    first.ingest(source(1, decision(A)), [8], [42])
+    first.ingest(source(2, decision(B, (A,))), [8], [42])
+    assert first.ingest(source(3, decision(B, (A,))), [8], [42]).status is AdjudicationStatus.INVALID
+
+    delayed = ledger()
+    delayed.ingest(source(2, decision(B, (A,))), [8], [42])
+    assert delayed.ingest(source(3, decision(B, (A,))), [8], [42]).status is AdjudicationStatus.INVALID
+    restored = AdjudicationLedger.loads(delayed.dumps())
+    assert restored.ingest(source(1, decision(A)), [8], [42]).status is AdjudicationStatus.INVALID
+    assert first.current(None, None, "first order").status is restored.current(None, None, "last order").status is AdjudicationStatus.INVALID
+
+
+@pytest.mark.parametrize("supersedes", [(B, A), (A, B)])
+def test_known_forward_reference_is_rejected_before_missing_predecessor(supersedes: tuple[str, ...]) -> None:
+    state = ledger()
+    later_a = replace(source(5, decision(A)), created_at="2026-01-01T00:00:05Z")
+    state.ingest(later_a, [8], [42])
+    earlier_c = replace(source(3, decision(C, supersedes)), created_at="2026-01-01T00:00:03Z")
+    result = state.ingest(earlier_c, [8], [42])
+    assert result.status is AdjudicationStatus.INVALID
+    assert state.context.pending_decisions == {}
+    assert state.current(None, None, "A remains eligible").status is AdjudicationStatus.APPLICABLE
+
+
 def test_collision_edit_deletion_and_corruption_fail_closed() -> None:
     state = ledger()
     original = source(1, decision(A))
@@ -253,6 +279,16 @@ def test_pending_source_deletion_retires_before_restart_and_promotion() -> None:
     assert restored.current(None, None, "deleted pending source").status is AdjudicationStatus.INVALID
 
 
+def test_confirmed_edit_during_outage_permanently_retires() -> None:
+    state = ledger()
+    original = source(1, decision(A))
+    state.ingest(original, [8], [42])
+    state.reconcile(available=False, **reconciliation_args(state))
+    assert state.ingest(replace(original, update_revision="r2"), [8], [42]).status is AdjudicationStatus.INVALID
+    restored = AdjudicationLedger.loads(state.dumps())
+    assert restored.reconcile(available=True, **reconciliation_args(restored)).status is AdjudicationStatus.INVALID
+
+
 @pytest.mark.parametrize("missing_field", ["retired_reason", "source_unavailable"])
 def test_serialized_lifecycle_fields_are_required(missing_field: str) -> None:
     state = ledger()
@@ -274,6 +310,43 @@ def test_serialized_source_relation_must_match_registered_context() -> None:
     snapshot["context"]["decisions"][A]["source"]["thread_id"] = "OTHER"
     with pytest.raises(ValueError, match="corrupt"):
         AdjudicationLedger.loads(json.dumps(snapshot))
+
+
+def test_serialized_conflict_cannot_lose_an_independent_tip() -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A)), [8], [42])
+    state.ingest(source(2, decision(B)), [8], [42])
+    snapshot = json.loads(state.dumps())
+    del snapshot["context"]["decisions"][B]
+    with pytest.raises(ValueError, match="corrupt"):
+        AdjudicationLedger.loads(json.dumps(snapshot))
+
+
+def test_serialized_context_revision_must_match_decision_envelopes() -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A)), [8], [42])
+    snapshot = json.loads(state.dumps())
+    snapshot["context"]["head_sha"] = "3" * 40
+    with pytest.raises(ValueError, match="corrupt"):
+        AdjudicationLedger.loads(json.dumps(snapshot))
+
+
+def test_serialized_physical_comment_identity_must_be_unique() -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A)), [8], [42])
+    state.ingest(source(2, decision(B, (A,))), [8], [42])
+    snapshot = json.loads(state.dumps())
+    snapshot["context"]["decisions"][B]["source"]["comment_id"] = 1
+    with pytest.raises(ValueError, match="corrupt"):
+        AdjudicationLedger.loads(json.dumps(snapshot))
+
+
+def test_missing_source_revision_suspends_without_accepting_decision() -> None:
+    state = ledger()
+    incomplete = replace(source(1, decision(A)), update_revision="")
+    assert state.ingest(incomplete, [8], [42]).status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    assert state.context.decisions == {}
+    assert AdjudicationLedger.loads(state.dumps()).current(None, None, "restart").status is AdjudicationStatus.SOURCE_UNAVAILABLE
 
 
 def test_self_reference_and_pending_cycle_do_not_reserve_identity() -> None:
