@@ -333,16 +333,29 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
     return decorator
 
 
+def _is_recognized_request_boundary_failure(exc: BaseException) -> bool:
+    """Return whether an exception is a recognized GitHub request-boundary error.
+
+    Both a raw ``httpx`` transport exception and any ``GitHubRequestError``
+    (the shared diagnostic boundary's typed wrapper, covering transport
+    failures and permanent API-level rejections such as an HTTP 500 alike)
+    represent a definite outcome of actually attempting the request. An
+    unrecognized exception type is treated as a genuine bug rather than a
+    retrieval failure and is left to propagate untouched.
+    """
+    return isinstance(exc, (httpx.RequestError, httpx.StreamError, httpx.RemoteProtocolError, httpx.PoolTimeout, GitHubRequestError))
+
+
 def _is_transient_transport_failure(exc: BaseException) -> bool:
-    """Return whether an exception represents a retryable network failure.
+    """Return whether a recognized request-boundary exception should be retried.
 
     ``GitHubRequestError`` also wraps permanent API-level rejections (an
     authentication failure, a forbidden response, a remote error). Only its
     ``TRANSPORT_FAILURE`` classification -- the shared diagnostic boundary's
     wrapper around a raw transport exception such as a connection failure --
-    is treated as transient here; any other classification must propagate
-    immediately rather than being retried or silently downgraded to a
-    partial-recovery result.
+    is retried; any other classification is not transient, so it is not worth
+    retrying, though (per ``_is_recognized_request_boundary_failure``) it is
+    still eligible to preserve already-retrieved records.
     """
     if isinstance(exc, (httpx.RequestError, httpx.StreamError, httpx.RemoteProtocolError, httpx.PoolTimeout)):
         return True
@@ -356,10 +369,13 @@ def _paginate_pr_changed_files(pr_number: int, fetch_page: Callable[[int], Any])
 
     Retrying only the page that actually failed (rather than restarting the
     whole pagination loop) means a transient failure on a later page cannot
-    discard records a prior page already retrieved. If a page's retries are
-    exhausted, ``PartialPRChangedFilesError`` is raised carrying every record
-    fetched so far, so a caller can still use that successfully retrieved
-    per-path evidence instead of losing it alongside the failure.
+    discard records a prior page already retrieved. A recognized
+    request-boundary failure (whether retried to exhaustion, or not worth
+    retrying at all, such as a permanent API-level rejection) raises
+    ``PartialPRChangedFilesError`` carrying every record fetched so far, so a
+    caller can still use that successfully retrieved per-path evidence
+    instead of losing it alongside the failure. An unrecognized exception
+    (a genuine bug rather than a retrieval failure) propagates untouched.
     """
     result: List[Dict[str, Any]] = []
     retries = 3
@@ -371,19 +387,20 @@ def _paginate_pr_changed_files(pr_number: int, fetch_page: Callable[[int], Any])
                 files = fetch_page(page)
                 break
             except Exception as e:
-                if not _is_transient_transport_failure(e):
+                if not _is_recognized_request_boundary_failure(e):
                     raise
-                if attempt == retries:
-                    raise PartialPRChangedFilesError(
-                        f"PR #{pr_number} changed-file pagination failed on page {page} after {retries} retries: {e}",
-                        partial_records=result,
-                        failed_page=page,
-                        original_error=e,
-                    ) from e
-                sleep = backoff_in_seconds * 2**attempt
-                logger.warning(f"Network error fetching PR #{pr_number} changed files page {page} ({e}), retrying in {sleep}s...")
-                time.sleep(sleep)
-                attempt += 1
+                if _is_transient_transport_failure(e) and attempt < retries:
+                    sleep = backoff_in_seconds * 2**attempt
+                    logger.warning(f"Network error fetching PR #{pr_number} changed files page {page} ({e}), retrying in {sleep}s...")
+                    time.sleep(sleep)
+                    attempt += 1
+                    continue
+                raise PartialPRChangedFilesError(
+                    f"PR #{pr_number} changed-file pagination failed on page {page}: {e}",
+                    partial_records=result,
+                    failed_page=page,
+                    original_error=e,
+                ) from e
         if not isinstance(files, list):
             raise ValueError(f"PR #{pr_number} files response was not a list")
         result.extend(dict(item) for item in files if isinstance(item, dict))

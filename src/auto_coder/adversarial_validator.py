@@ -2414,6 +2414,11 @@ _INDEPENDENT_SCOPE_EVIDENCE_PATTERN = re.compile(
     r"|renamed\s+without\s+content\s+change|already\s+reviewed|out\s+of\s+scope\s+per)",
     re.IGNORECASE,
 )
+# A negation cue immediately before a matched marker (within its own clause)
+# means the marker was invoked to say the evidence is ABSENT ("no
+# .gitattributes ... was obtained"), not that it was affirmatively found.
+_NEGATION_CUE_PATTERN = re.compile(r"\b(?:no|not|none|never|without|neither|nor|n't|lack(?:s|ing)?\s+of|absen(?:t|ce)\s+of)\b", re.IGNORECASE)
+_CLAUSE_BOUNDARY_PATTERN = re.compile(r"[.;]|,\s+(?:and|but)\b", re.IGNORECASE)
 
 
 def _lacks_independent_irrelevance_scope_basis(evidence: str) -> bool:
@@ -2426,11 +2431,22 @@ def _lacks_independent_irrelevance_scope_basis(evidence: str) -> bool:
     requires an affirmative, recognized independent-scope marker to be
     present rather than trying to enumerate every way of asserting
     irrelevance without one.
+
+    A marker mentioned only to say it was NOT obtained (e.g. "no
+    .gitattributes ... was obtained") is not affirmative evidence: each match
+    is checked against the negation cues in its own clause (text back to the
+    nearest clause boundary), and only a match with no such cue counts.
     """
     text = evidence.strip()
     if not text:
         return True
-    return not _INDEPENDENT_SCOPE_EVIDENCE_PATTERN.search(text)
+    for match in _INDEPENDENT_SCOPE_EVIDENCE_PATTERN.finditer(text):
+        preceding = text[: match.start()]
+        clause_boundaries = list(_CLAUSE_BOUNDARY_PATTERN.finditer(preceding))
+        clause = preceding[clause_boundaries[-1].end() :] if clause_boundaries else preceding
+        if not _NEGATION_CUE_PATTERN.search(clause):
+            return False
+    return True
 
 
 def _apply_coverage_and_verdict_precedence(
@@ -2546,6 +2562,9 @@ def _apply_coverage_and_verdict_precedence(
         if remaining_unverified_files:
             incomplete_coverage.append(f"{len(remaining_unverified_files)} changed file(s)")
             coverage_details.append(f"changed files: {', '.join(remaining_unverified_files)}")
+        if context.unresolvable_file_count:
+            incomplete_coverage.append(f"{context.unresolvable_file_count} unidentified changed file(s)")
+            coverage_details.append(f"{context.unresolvable_file_count} changed file(s) could not be identified after pagination retries")
         if not expected_requirement_ids:
             incomplete_coverage.append("Issue requirement manifest was empty")
             coverage_details.append("Issue requirement manifest was empty")
@@ -2565,12 +2584,16 @@ def _apply_coverage_and_verdict_precedence(
 
     if result.open_test_oracle_gaps and result.result in {"PASS", "NEEDS_TESTS"}:
         result.result = "NEEDS_TESTS"
+        gap_details: List[str] = []
         if remaining_unverified_files:
-            result.diagnostic_category = "incomplete_evidence_coverage"
-            result.diagnostic_reason = f"Material changed-file evidence was incomplete for: {', '.join(remaining_unverified_files)}"
-        elif not expected_requirement_ids or incomplete_requirement_ids:
-            result.diagnostic_category = "incomplete_requirement_coverage"
-            result.diagnostic_reason = "The deterministic Issue requirement manifest was empty" if not expected_requirement_ids else f"Material Issue requirement IDs remain unverified: {', '.join(incomplete_requirement_ids)}"
+            gap_details.append(f"changed files: {', '.join(remaining_unverified_files)}")
+        if context.unresolvable_file_count:
+            gap_details.append(f"{context.unresolvable_file_count} changed file(s) could not be identified after pagination retries")
+        if not expected_requirement_ids or incomplete_requirement_ids:
+            gap_details.append("The deterministic Issue requirement manifest was empty" if not expected_requirement_ids else f"Material Issue requirement IDs remain unverified: {', '.join(incomplete_requirement_ids)}")
+        if gap_details:
+            result.diagnostic_category = "incomplete_evidence_coverage" if (remaining_unverified_files or context.unresolvable_file_count) else "incomplete_requirement_coverage"
+            result.diagnostic_reason = "; ".join(gap_details)
 
     if not remaining_unverified_files and expected_requirement_ids and not incomplete_requirement_ids and result.unexplained_changes:
         result.result = "INCONCLUSIVE"

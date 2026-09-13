@@ -577,6 +577,7 @@ def test_absence_only_irrelevance_cannot_discharge_unavailable_path() -> None:
         "The patch could not be retrieved; therefore this file cannot affect any requirement.",
         "This path is irrelevant.",
         "No patch was available, so this path is irrelevant to this review.",
+        "The patch is unavailable; no .gitattributes or other scope evidence was obtained.",
     ],
 )
 def test_absence_only_irrelevance_rejected_regardless_of_phrasing(evidence: str) -> None:
@@ -634,6 +635,69 @@ def test_irrelevance_with_independent_scope_basis_is_accepted() -> None:
     checked = _apply_coverage_and_verdict_precedence(result, context)
 
     assert checked.result == "PASS"
+
+
+def test_irrelevance_with_negated_marker_in_an_earlier_clause_is_still_accepted() -> None:
+    """Clause-scoped negation checking must not over-reject: a negated
+    mention of a marker in one clause must not poison a genuine, non-negated
+    affirmative marker in a later clause of the same explanation."""
+    context = AdversarialValidationContext(
+        unverified_files=["src/state.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve state")],
+        controller_file_evidence=[FileDiffEvidence(path="src/state.py", patch="", is_complete=False)],
+    )
+    result = AdversarialValidationResult(
+        result="PASS",
+        requirement_coverage=[RequirementCoverageEntry(requirement_id="REQ-001", status="VERIFIED", evidence="Claimed complete")],
+        evidence_recovery=[
+            EvidenceRecoveryEntry(
+                path="src/state.py",
+                source="current-PR retrieval",
+                status="IRRELEVANT",
+                evidence="No .gitignore rule was needed here; this is a vendored binary asset confirmed via the vendor manifest.",
+                requirement_ids=["REQ-001"],
+            )
+        ],
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert checked.result == "PASS"
+
+
+def test_unresolvable_file_count_is_retained_as_diagnostic_alongside_a_demonstrated_finding() -> None:
+    """REQ-010: a demonstrated finding correctly wins the top-level verdict
+    (NEEDS_FIX) over an unrelated unidentified-file accounting gap, but that
+    gap must still be retained diagnostically rather than silently dropped
+    once a higher-precedence verdict determines the result."""
+    context = AdversarialValidationContext(
+        unverified_files=["src/known.py"],
+        all_changed_files=["src/known.py", "src/violation.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve state")],
+        unresolvable_file_count=1,
+    )
+    finding = AdversarialValidationFinding(
+        requirement_id="REQ-001",
+        violated_requirement="Preserve state",
+        counterexample="Given state S, when X runs, then state is lost",
+        anchor_path="src/violation.py",
+    )
+    result = AdversarialValidationResult(
+        result="NEEDS_FIX",
+        summary="A concrete defect was found",
+        requirement_coverage=[RequirementCoverageEntry(requirement_id="REQ-001", status="VIOLATED", evidence="Demonstrated defect")],
+        evidence_recovery=[
+            EvidenceRecoveryEntry(path="src/known.py", source="current-PR retrieval", status="RECOVERED", evidence="complete", requirement_ids=["REQ-001"]),
+        ],
+        findings=[finding],
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert checked.result == "NEEDS_FIX"
+    assert checked.diagnostic_category == "incomplete_evidence_coverage"
+    assert "1" in (checked.diagnostic_reason or "")
+    assert "unidentified" in checked.summary.lower() or "unidentified" in (checked.diagnostic_reason or "").lower()
 
 
 def test_evidence_recovery_parser_enforces_deterministic_budget() -> None:

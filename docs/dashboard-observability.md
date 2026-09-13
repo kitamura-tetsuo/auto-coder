@@ -164,14 +164,21 @@ already-decided file invalidates the snapshot even when the REST listing of
 omitted files is unchanged. A path the initial round left UNAVAILABLE may
 still transition to RECOVERED (or reveal a new finding) in the completion
 round without being treated as a rejected contradiction; only a path already
-RECOVERED/IRRELEVANT before that round must stay stable. Rather than trying
-to enumerate every way of asserting absence-only irrelevance (an unwinnable
-paraphrase arms race — a bare "This path is irrelevant." offers no absence
-clause to even match), `_lacks_independent_irrelevance_scope_basis` instead
-requires an affirmative, recognized independent-scope marker (e.g. a
-generated/vendored/binary-asset reference, a `.gitattributes` marker, or an
-explicit "confirmed via"/"identical to" citation) to be present at all;
-anything else is rejected regardless of phrasing.
+RECOVERED/IRRELEVANT before that round must stay stable, and that gap is now
+also retained diagnostically (in `summary`/`diagnostic_reason`) even when a
+demonstrated finding or material test-oracle gap determines the top-level
+NEEDS_FIX/NEEDS_TESTS verdict, instead of being silently dropped once a
+higher-precedence verdict wins. Rather than trying to enumerate every way of
+asserting absence-only irrelevance (an unwinnable paraphrase arms race — a
+bare "This path is irrelevant." offers no absence clause to even match),
+`_lacks_independent_irrelevance_scope_basis` instead requires an affirmative,
+recognized independent-scope marker (e.g. a generated/vendored/binary-asset
+reference, a `.gitattributes` marker, or an explicit "confirmed
+via"/"identical to" citation) to be present at all, and checks each match
+against the negation cues in its own clause so a marker invoked only to say
+it was NOT obtained (e.g. "no `.gitattributes` ... was obtained") does not
+count as affirmative evidence; anything else is rejected regardless of
+phrasing.
 
 A persistent failure on one changed-file REST page no longer blocks
 validation before the reviewer ever runs: the successfully retrieved page's
@@ -179,13 +186,17 @@ evidence is carried into context and reaches the bounded completion round
 alongside an explicit `unresolvable_file_count`, and `pass_with_unresolvable_changed_file_count`
 still fails closed at final verdict precedence so that gap can never
 authorize PASS. Both the cached and cache-bypassing changed-file pagination
-now also treat a `GitHubRequestError(TRANSPORT_FAILURE)` — the production
-diagnostic boundary's (`CachedGhApi`/`DiagnosticTransport`) typed wrapper
-around a raw transport exception — as the same transient, partial-recovery
-eligible failure as a bare `httpx` exception; any other `GitHubRequestError`
-classification (an authentication failure, a forbidden response) still
-propagates immediately rather than being retried or masked as a partial
-recovery. The per-file REST patch completeness check
+recognize any `GitHubRequestError` — the production diagnostic boundary's
+(`CachedGhApi`/`DiagnosticTransport`) typed wrapper covering both a raw
+transport exception and a permanent API-level rejection (e.g. an HTTP 500) —
+as eligible to preserve already-retrieved records; only its
+`TRANSPORT_FAILURE` classification (and a bare `httpx` transport exception)
+is actually retried; every other classification is not worth retrying but
+still raises `PartialPRChangedFilesError` with whatever was already fetched
+rather than discarding it. An exception unrelated to the GitHub request
+boundary (a genuine bug, not a retrieval failure) still propagates untouched
+rather than being downgraded to a partial recovery. The per-file REST patch
+completeness check
 (`_github_file_record_has_complete_patch`) no longer excludes content lines
 that happen to start with `++`/`--` (e.g. `++counter;`): GitHub's per-file
 `patch` field never carries unified-diff `+++`/`---` file headers, only hunk
@@ -198,11 +209,13 @@ as unavailable. The production orchestration regressions
 `test_bypass_cache_uses_genuinely_cache_bypassing_retrieval`,
 `test_unresolvable_file_count_reaches_completion_but_blocks_final_pass`,
 `test_stale_raw_diff_for_an_already_decided_file_is_rejected_at_finalization`,
+`test_unresolvable_file_count_is_retained_as_diagnostic_alongside_a_demonstrated_finding`,
+`test_irrelevance_with_negated_marker_in_an_earlier_clause_is_still_accepted`,
 and `test_partial_changed_file_page_failure_retains_successfully_retrieved_evidence`
 (all in `tests/test_adversarial_validator.py`), plus
 `tests/test_gh_cache_pr_changed_files_pagination.py` (including its
-production-typed-error cases), prove these boundaries; existing dashboard
-stage rendering remains generic.
+production-typed-error and unrecognized-exception cases), prove these
+boundaries; existing dashboard stage rendering remains generic.
 
 ## Implementation Slots panel (Issue #1993)
 

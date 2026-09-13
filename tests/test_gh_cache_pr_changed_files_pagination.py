@@ -106,23 +106,45 @@ class TestGetPrChangedFilesPagination:
 
         assert [record["filename"] for record in excinfo.value.partial_records] == [record["filename"] for record in page_one]
 
-    def test_non_transient_github_request_error_is_not_masked_as_partial_recovery(self):
-        """A permanent API-level rejection (e.g. forbidden) must propagate
-        immediately rather than being retried or downgraded to a partial
-        recovery: only a genuine transport failure is transient."""
+    def test_non_transient_github_request_error_still_preserves_prior_records_without_retry(self):
+        """REQ-002/REQ-008: a permanent API-level rejection (e.g. an HTTP 500
+        surfaced as REMOTE_ERROR) is not worth retrying, but page-one evidence
+        already retrieved must still be preserved and delivered alongside the
+        failure rather than discarded -- retry and preservation are separate
+        questions."""
         client = GitHubClient(token="secret-token")
         page_one = self._page_records(100, "page1")
-        forbidden = _github_request_error(GitHubApiOutcome.FORBIDDEN)
+        remote_error = _github_request_error(GitHubApiOutcome.REMOTE_ERROR)
 
         mock_api = MagicMock()
-        mock_api.pulls.list_files.side_effect = [page_one, forbidden]
+        mock_api.pulls.list_files.side_effect = [page_one, remote_error]
 
         with (
             patch("src.auto_coder.util.gh_cache.get_ghapi_client", return_value=mock_api),
             patch("src.auto_coder.util.gh_cache.time.sleep"),
         ):
-            with pytest.raises(GitHubRequestError):
+            with pytest.raises(PartialPRChangedFilesError) as excinfo:
                 client.get_pr_changed_files("owner/repo", 101)
 
+        assert [record["filename"] for record in excinfo.value.partial_records] == [record["filename"] for record in page_one]
         # No retry should have been attempted for a non-transient classification.
+        assert mock_api.pulls.list_files.call_count == 2
+
+    def test_unrecognized_exception_propagates_untouched(self):
+        """An exception unrelated to the GitHub request boundary (a genuine
+        bug, not a retrieval failure) must not be silently downgraded to a
+        partial-recovery result."""
+        client = GitHubClient(token="secret-token")
+        page_one = self._page_records(100, "page1")
+
+        mock_api = MagicMock()
+        mock_api.pulls.list_files.side_effect = [page_one, ValueError("unexpected bug")]
+
+        with (
+            patch("src.auto_coder.util.gh_cache.get_ghapi_client", return_value=mock_api),
+            patch("src.auto_coder.util.gh_cache.time.sleep"),
+        ):
+            with pytest.raises(ValueError):
+                client.get_pr_changed_files("owner/repo", 101)
+
         assert mock_api.pulls.list_files.call_count == 2
