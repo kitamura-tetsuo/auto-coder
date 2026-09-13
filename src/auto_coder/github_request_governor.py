@@ -7,6 +7,7 @@ import json
 import math
 import os
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -438,25 +439,38 @@ class GitHubRequestGovernor:
                     self._recover_terminated(now)
                     self._cleanup(now)
                     state = self._read_state(origin)
-                    rows = self._connection.execute("SELECT attempt_id, kind, admitted_utc, resolved, recovered FROM reservations WHERE origin=? ORDER BY admitted_utc", (origin,)).fetchall()
-                    for row in rows:
-                        self._stored_number(row[2], "reservation timestamp")
-                    active = next((row for row in rows if row[3] == 0 and row[4] == 0), None)
-                    attempts = [float(row[2]) for row in rows if float(row[2]) > now - 60.0]
-                    minute = [float(row[2]) for row in rows if row[1] == "mutation" and float(row[2]) > now - 60.0]
-                    hour = [float(row[2]) for row in rows if row[1] == "mutation" and float(row[2]) > now - 3600.0]
+                    # Aggregate in SQLite while holding the write lock. Copying
+                    # the whole retained hour into Python on every admission
+                    # poll can starve the response writer, especially under
+                    # debugpy/tracemalloc, leaving its request marked in flight.
+                    active, attempts, first_attempt, minute, first_mutation, hour, first_hour_mutation, invalid = self._connection.execute(
+                        """SELECT
+                            COUNT(CASE WHEN resolved=0 AND recovered=0 THEN 1 END),
+                            COUNT(CASE WHEN admitted_utc > ? THEN 1 END),
+                            MIN(CASE WHEN admitted_utc > ? THEN admitted_utc END),
+                            COUNT(CASE WHEN kind='mutation' AND admitted_utc > ? THEN 1 END),
+                            MIN(CASE WHEN kind='mutation' AND admitted_utc > ? THEN admitted_utc END),
+                            COUNT(CASE WHEN kind='mutation' AND admitted_utc > ? THEN 1 END),
+                            MIN(CASE WHEN kind='mutation' AND admitted_utc > ? THEN admitted_utc END),
+                            COUNT(CASE WHEN typeof(admitted_utc) NOT IN ('integer', 'real')
+                                OR admitted_utc < 0 OR admitted_utc > ? THEN 1 END)
+                        FROM reservations WHERE origin=?""",
+                        (now - 60.0, now - 60.0, now - 60.0, now - 60.0, now - 3600.0, now - 3600.0, sys.float_info.max, origin),
+                    ).fetchone()
+                    if invalid:
+                        raise GovernorStateError("invalid stored reservation timestamp")
                     reason, eligible = "", now
                     if state.cooldown_until > now:
                         reason, eligible = "rate_limit_cooldown", state.cooldown_until
-                    elif active is not None:
+                    elif active:
                         reason = "request_in_flight"
-                    elif len(attempts) >= REQUESTS_PER_MINUTE:
-                        reason, eligible = "request_rolling_window", min(attempts) + 60.0
+                    elif attempts >= REQUESTS_PER_MINUTE:
+                        reason, eligible = "request_rolling_window", first_attempt + 60.0
                     elif context.kind == "mutation":
-                        if len(minute) >= MUTATIONS_PER_MINUTE:
-                            reason, eligible = "mutation_minute_window", min(minute) + 60.0
-                        elif len(hour) >= MUTATIONS_PER_HOUR:
-                            reason, eligible = "mutation_hour_window", min(hour) + 3600.0
+                        if minute >= MUTATIONS_PER_MINUTE:
+                            reason, eligible = "mutation_minute_window", first_mutation + 60.0
+                        elif hour >= MUTATIONS_PER_HOUR:
+                            reason, eligible = "mutation_hour_window", first_hour_mutation + 3600.0
                         elif state.last_mutation_completion is not None and now < state.last_mutation_completion + MUTATION_SPACING_SECONDS:
                             reason, eligible = "mutation_spacing", state.last_mutation_completion + MUTATION_SPACING_SECONDS
                     if not reason:

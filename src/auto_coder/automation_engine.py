@@ -939,45 +939,21 @@ class AutomationEngine:
                     return None
                 authoritative_children.append(child)
             return parent, authoritative_children
-        if isinstance(self.github, GitHubClient) and parse_parent_declaration(parent.get("body")).status is not ParentDeclarationStatus.ABSENT:
-            parent = self._reconcile_parent_issue(repo_name, parent_number, parent)
-
-        previous_members: Optional[set[int]] = None
-        for _attempt in range(5):
-            members = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
-            if not isinstance(members, list):
-                return None
-            member_numbers: set[int] = set()
-            for member in members:
-                number = member.get("number") if isinstance(member, dict) else None
-                if not isinstance(number, int) or isinstance(number, bool):
-                    return None
-                member_numbers.add(number)
-                child = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
-                if not isinstance(child, dict) or child.get("number") != number or "pull_request" in child:
-                    return None
-                if isinstance(self.github, GitHubClient) and parse_parent_declaration(child.get("body")).status is not ParentDeclarationStatus.ABSENT:
-                    self._reconcile_parent_issue(repo_name, number, child)
-            confirmed = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
-            confirmed_numbers: set[int] = set()
-            for member in confirmed:
-                confirmed_number = member.get("number") if isinstance(member, dict) else None
-                if not isinstance(confirmed_number, int) or isinstance(confirmed_number, bool):
-                    return None
-                confirmed_numbers.add(confirmed_number)
-            if len(confirmed_numbers) != len(confirmed):
-                return None
-            if confirmed_numbers == member_numbers and (previous_members is None or previous_members == member_numbers):
-                break
-            previous_members = member_numbers
-        else:
-            raise ParentOperationalError("native direct-child membership did not stabilize")
-
-        parent = self.github.get_issue_dispatch_snapshot_strict(repo_name, parent_number)
         parent = self._reconcile_parent_issue(repo_name, parent_number, parent)
+        members = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
+        if not isinstance(members, list):
+            return None
+        confirmed_numbers: set[int] = set()
+        for member in members:
+            number = member.get("number") if isinstance(member, dict) else None
+            if not isinstance(number, int) or isinstance(number, bool) or number in confirmed_numbers:
+                return None
+            confirmed_numbers.add(number)
         authoritative_children = []
         for number in sorted(confirmed_numbers):
             child = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+            if not isinstance(child, dict) or child.get("number") != number or "pull_request" in child:
+                return None
             child = self._reconcile_parent_issue(repo_name, number, child)
             native_parent = self.github.get_parent_issue_details_strict(repo_name, number)
             if not isinstance(child, dict) or child.get("number") != number or not isinstance(native_parent, dict) or native_parent.get("number") != parent_number:
@@ -987,11 +963,11 @@ class AutomationEngine:
         return parent, authoritative_children
 
     def _reconcile_declared_family(self, repo_name: str, parent_number: int) -> None:
-        """Discover related declarations from the cached list, then verify live.
+        """Discover declarations, then validate related HTTP snapshots.
 
         The list is only a discovery hint. Unrelated Issues are never individually
         refreshed here; native members and cached declarations for this parent
-        are checked without cache before they can affect validation or dispatch.
+        use strict readers with HTTP freshness before validation or dispatch.
         Body-only additions absent from the list are discovered after its refresh.
         """
         enumerator = getattr(self.github, "get_open_issue_declarations", None)
@@ -1049,7 +1025,7 @@ class AutomationEngine:
                         "issue.family-discovery",
                         f"issue#{parent_number} family discovery",
                         Outcome.COMPLETED,
-                        {"discovery_source": "cached-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": sorted(discovered), "authorizes_execution": False},
+                        {"discovery_source": "cached-open-issue-list", "discovery_payload": "issue-bodies", "relationship_reads": "http-cache-freshness", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": sorted(discovered), "authorizes_execution": False},
                     )
                     return
                 previous = generation
@@ -1173,6 +1149,8 @@ class AutomationEngine:
 
             if declaration.status is ParentDeclarationStatus.INVALID:
                 raise ParentSpecificationError(declaration.reason or "invalid Parent-Issue declaration")
+            if declaration.status is ParentDeclarationStatus.ABSENT:
+                return current
             if declaration.status is ParentDeclarationStatus.SUPPORTED:
                 declared = declaration.parent_number
                 assert declared is not None
@@ -1180,6 +1158,8 @@ class AutomationEngine:
                     raise ParentSpecificationError("an Issue cannot declare itself as its parent")
                 if isinstance(native_number, int) and native_number != declared:
                     raise ParentSpecificationError(f"Parent-Issue declaration #{declared} conflicts with native parent #{native_number}")
+                if native_number == declared:
+                    return current
                 if native_number is None:
                     try:
                         target = self.github.get_issue_dispatch_snapshot_strict(repo_name, declared)
@@ -1401,8 +1381,8 @@ class AutomationEngine:
         This deliberately performs no validation or implementation work.  The
         repository-wide discovery only finds declarations which can
         change the target's native direct-child set; all policy decisions happen
-        later, from a fresh authoritative read. Normal callers use cached discovery;
-        explicit startup honors discovery cache expiry and strictly rechecks related Issues.
+        later, from a validated HTTP snapshot. Normal callers use cached discovery;
+        explicit startup honors discovery and related-Issue HTTP cache expiry.
         """
         enumerator = getattr(self.github, "get_open_issue_declarations", None)
         if not callable(enumerator):
@@ -1471,7 +1451,7 @@ class AutomationEngine:
                     "issue.explicit-relationship-discovery",
                     f"issue#{issue_number} explicit relationship discovery",
                     Outcome.COMPLETED,
-                    {"discovery_source": "cache-aware-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "target-and-related-family", "authorizes_execution": False},
+                    {"discovery_source": "cache-aware-open-issue-list", "discovery_payload": "issue-bodies", "relationship_reads": "http-cache-freshness", "live_scope": "target-and-related-family", "authorizes_execution": False},
                 )
             return refreshed
         except ParentSpecificationError:
@@ -1812,6 +1792,7 @@ class AutomationEngine:
         snapshot: Dict[str, Any],
         *,
         target_only: bool = False,
+        relationships_preflight_done: bool = False,
     ) -> None:
         """Materialize validation evidence triggered by one authoritative child change.
 
@@ -1820,7 +1801,7 @@ class AutomationEngine:
         cannot consume the invalidation without validating the changed set.
         """
         declaration = parse_parent_declaration(snapshot.get("body"))
-        if isinstance(self.github, GitHubClient):
+        if isinstance(self.github, GitHubClient) and not relationships_preflight_done:
             snapshot = self._preflight_explicit_issue_relationships(repo_name, issue_number)
             declaration = parse_parent_declaration(snapshot.get("body"))
         parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
@@ -2564,7 +2545,7 @@ class AutomationEngine:
                     if is_closed:
                         logger.info(f"Worker {worker_id} skipping closed {candidate.type} #{item_number}")
                         if candidate.type == "pr":
-                            # This state came from the cache-bypassing read above.
+                            # This state came from the validated HTTP snapshot above.
                             # A retirement failure leaves completion false, so
                             # the generation remains durable and retryable.
                             await asyncio.to_thread(self.invalidations.retire_ci_watches, repo_name, int(item_number))
@@ -5175,6 +5156,7 @@ class AutomationEngine:
                             number,
                             candidate.data,
                             target_only=explicit_only,
+                            relationships_preflight_done=explicit_only,
                         )
 
                     # Use unified processing function

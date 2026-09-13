@@ -14,10 +14,7 @@ def test_dependency_boundary_paginates_and_retains_stable_ids(mock_github_token)
     first_page = [{"number": number, "id": 10_000 + number} for number in range(1, 101)]
     http = MagicMock()
     http.get.side_effect = [_response(200, first_page), _response(200, [{"number": 205, "id": 991_205}])]
-    context = MagicMock()
-    context.__enter__.return_value = http
-
-    with patch("src.auto_coder.util.gh_cache.httpx.Client", return_value=context):
+    with patch("src.auto_coder.util.gh_cache._caching_request", side_effect=http.get):
         relationships = GitHubClient.get_instance("token").get_blocked_by_strict("owner/repo", 101)
 
     assert len(relationships) == 101

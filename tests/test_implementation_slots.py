@@ -437,12 +437,11 @@ class HierarchyHttpResponse:
 def test_production_reader_preserves_self_child_as_operational_failure(tmp_path):
     """REQ-006: the HTTP parser must not erase contradictory self-membership."""
     client_context = MagicMock()
-    client_context.__enter__.return_value.get.side_effect = lambda url, **_kwargs: (HierarchyHttpResponse(200, {"number": 2, "updated_at": "generation-1"}) if url.endswith("/issues/2") else (HierarchyHttpResponse(404, {}) if url.endswith("/parent") else HierarchyHttpResponse(200, [{"number": 2}])))
-    github = object.__new__(GitHubClient)
-    github.token = "token"
+    client_context.side_effect = lambda _client, _method, url, **_kwargs: (HierarchyHttpResponse(200, {"number": 2, "updated_at": "generation-1"}) if url.endswith("/issues/2") else (HierarchyHttpResponse(404, {}) if url.endswith("/parent") else HierarchyHttpResponse(200, [{"number": 2}])))
+    github = GitHubClient("token")
     slots = repository(tmp_path)
 
-    with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
+    with patch("auto_coder.util.gh_cache._caching_request", client_context):
         with pytest.raises(ImplementationHierarchyUnavailable, match="self-referential"):
             slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
 
@@ -466,13 +465,12 @@ def test_production_readers_detect_reparenting_during_final_child_lookup(tmp_pat
         return HierarchyHttpResponse(200, [])
 
     client_context = MagicMock()
-    client_context.__enter__.return_value.get.side_effect = get
-    github = object.__new__(GitHubClient)
-    github.token = "token"
+    client_context.side_effect = lambda _client, _method, url, **kwargs: get(url, **kwargs)
+    github = GitHubClient("token")
     slots = repository(tmp_path, limit=3)
     slots.reserve(ImplementationOwner("issue", 1))
 
-    with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
+    with patch("auto_coder.util.gh_cache._caching_request", client_context):
         with pytest.raises(ImplementationHierarchyUnavailable, match="changed"):
             slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
 
@@ -497,13 +495,12 @@ def test_production_readers_detect_child_attachment_during_final_parent_confirma
         return HierarchyHttpResponse(200, [{"number": number} for number in children])
 
     client_context = MagicMock()
-    client_context.__enter__.return_value.get.side_effect = get
-    github = object.__new__(GitHubClient)
-    github.token = "token"
+    client_context.side_effect = lambda _client, _method, url, **kwargs: get(url, **kwargs)
+    github = GitHubClient("token")
     slots = repository(tmp_path, limit=3)
     slots.reserve(ImplementationOwner("issue", 1))
 
-    with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
+    with patch("auto_coder.util.gh_cache._caching_request", client_context):
         with pytest.raises(ImplementationHierarchyUnavailable, match="changed"):
             slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
 
@@ -531,12 +528,11 @@ def test_production_readers_rollback_reparenting_after_provisional_owner_write(t
         return HierarchyHttpResponse(200, [])
 
     client_context = MagicMock()
-    client_context.__enter__.return_value.get.side_effect = get
-    github = object.__new__(GitHubClient)
-    github.token = "token"
+    client_context.side_effect = lambda _client, _method, url, **kwargs: get(url, **kwargs)
+    github = GitHubClient("token")
     slots = ReparentAfterWriteRepository("owner/repo", 3, path)
 
-    with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
+    with patch("auto_coder.util.gh_cache._caching_request", client_context):
         with pytest.raises(ImplementationHierarchyConflict, match="issue:1"):
             slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
 
@@ -555,12 +551,11 @@ def test_production_parent_reader_rejects_boolean_confirmation_identity(tmp_path
         return HierarchyHttpResponse(200, [])
 
     client_context = MagicMock()
-    client_context.__enter__.return_value.get.side_effect = get
-    github = object.__new__(GitHubClient)
-    github.token = "token"
+    client_context.side_effect = lambda _client, _method, url, **kwargs: get(url, **kwargs)
+    github = GitHubClient("token")
     slots = repository(tmp_path)
 
-    with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context):
+    with patch("auto_coder.util.gh_cache._caching_request", client_context):
         with pytest.raises(ImplementationHierarchyUnavailable, match="ambiguous"):
             slots.start_execution(ImplementationOwner("issue", 2), github_client=github)
 

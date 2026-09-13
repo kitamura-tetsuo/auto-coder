@@ -811,7 +811,7 @@ def test_real_startup_scan_preserves_recent_issue_stabilization(tmp_path: Path, 
 
     get = MagicMock(side_effect=[response([issue]), response([])] * 5)
     monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.get", get)
-    monkeypatch.setattr("src.auto_coder.util.gh_cache.httpx.Client.get", MagicMock(return_value=response(issue)))
+    monkeypatch.setattr("src.auto_coder.util.gh_cache._caching_request", MagicMock(return_value=response(issue)))
     github = GitHubClient("token")
     github.get_open_issues_json = MagicMock(return_value=[dict(issue)])
     github.get_open_issue_declarations = github.get_open_issues_json

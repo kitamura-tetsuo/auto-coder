@@ -550,16 +550,13 @@ def test_strict_membership_keeps_closed_child_and_reuses_ready_after_restart(tmp
         def json(self):
             return [dict(member) for member in members]
 
-    client = MagicMock()
-    client.__enter__.return_value.get.return_value = Response()
     github = MagicMock()
-    strict_client = object.__new__(GitHubClient)
-    strict_client.token = "token"
+    strict_client = GitHubClient("token")
     github.get_direct_sub_issues_strict.side_effect = lambda repo, number: GitHubClient.get_direct_sub_issues_strict(strict_client, repo, number)
     snapshots = {10: parent, 11: first, 12: second}
     github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
     calls = Mock(return_value=DecompositionAnalysisResult("READY"))
-    with patch("auto_coder.util.gh_cache.httpx.Client", return_value=client):
+    with patch("auto_coder.util.gh_cache._caching_request", return_value=Response()):
         engine = AutomationEngine(github, AutomationConfig())
         initial = engine._fetch_authoritative_decomposition_set("owner/repo", 10)
         assert initial is not None and [item["number"] for item in initial[1]] == [11, 12]

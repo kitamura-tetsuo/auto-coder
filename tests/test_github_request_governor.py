@@ -939,3 +939,48 @@ def test_outcome_lock_contention_retains_response_before_next_send(tmp_path, cla
     finally:
         writer.close()
         governor.close()
+
+
+@pytest.mark.parametrize("history_size", [100, 10000])
+def test_admission_materializes_bounded_rows_with_retained_history(tmp_path, history_size):
+    """Old completed reads must not become Python objects on every poll."""
+    clock = Clock()
+    governor = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=tmp_path / "governor.sqlite3")
+    try:
+        admit_and_finish(governor, context(0))
+        assert governor._connection is not None
+        governor._connection.executemany(
+            "INSERT INTO reservations(origin, attempt_id, kind, admitted_utc, resolved, owner_id) VALUES (?, ?, 'read', ?, 1, ?)",
+            [("https://api.github.com", f"history-{number}", clock.wall_value - 600, governor._incarnation_id) for number in range(history_size)],
+        )
+        observed_rows = []
+
+        def record_row(_cursor, row):
+            observed_rows.append(row)
+            return row
+
+        governor._connection.row_factory = record_row
+        assert governor.admit(context(1)) is True
+        assert 1 <= len(observed_rows) <= 5
+        governor.observe(outcome(context(1)))
+        governor._connection.row_factory = None
+        assert governor._connection.execute("SELECT COUNT(*) FROM reservations").fetchone() == (history_size + 2,)
+    finally:
+        governor.close()
+
+
+@pytest.mark.parametrize("invalid_timestamp", [float("inf"), "invalid", -1])
+def test_aggregated_admission_rejects_invalid_live_timestamps(tmp_path, invalid_timestamp):
+    clock = Clock()
+    governor = GitHubRequestGovernor(monotonic=clock.monotonic, wall_time=clock.wall, store_path=tmp_path / "governor.sqlite3")
+    try:
+        assert governor.admit(context(1)) is True
+        assert governor._connection is not None
+        governor._connection.execute("UPDATE reservations SET admitted_utc=? WHERE attempt_id='attempt-1'", (invalid_timestamp,))
+        with pytest.raises(GitHubRequestDeferred) as refused:
+            governor.admit(context(2))
+        assert refused.value.reason == "governor_state_unavailable"
+        with sqlite3.connect(governor.path) as observer:
+            assert observer.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(0, 0)]
+    finally:
+        governor.close()

@@ -32,11 +32,12 @@ checks its mounted detail projection. Run
 `bash scripts/test.sh tests/test_manual_cloud_retry.py tests/test_specification_validation_lifecycle.py tests/test_dashboard_observability.py tests/test_process_issues_cloud_only.py`.
 
 Family reconciliation emits `issue.family-discovery` after confirming related
-declarations against live GitHub reads. Its facts identify
+declarations against validated, cache-aware GitHub reads. Its facts identify
 `discovery_source=cached-open-issue-list`,
 `live_scope=related-declarations-and-native-children`,
 `declared_issue_numbers`, `discovery_payload=issue-bodies`, and `authorizes_execution=false`. The one-hour list
-cache discovers candidates; only family members bypass it for confirmation.
+cache discovers candidates; family confirmation uses HTTP freshness and
+revalidation rather than bypassing valid cached responses.
 This completed stage does not claim complete live repository discovery or
 implementation readiness. The production-path regression
 `tests/test_parent_issue_reconciliation.py::test_family_discovery_refreshes_only_related_issues_and_records_scope`
@@ -48,6 +49,7 @@ repository-wide strict discovery request.
 The `--only` startup pass emits `issue.explicit-relationship-discovery`
 with `discovery_source=cache-aware-open-issue-list`, `discovery_payload=issue-bodies`,
 `live_scope=target-and-related-family`, and `authorizes_execution=false`.
+Both discovery events carry `relationship_reads=http-cache-freshness`.
 The source describes a cache policy rather than an unconditional cache hit.
 `tests/test_dashboard_observability.py::test_explicit_cached_discovery_reaches_mounted_detail`
 checks the production event and mounted detail view.
@@ -410,3 +412,28 @@ This presentation correction is observability-neutral: origins, admission, provi
 routing, and event schemas are unchanged.
 `tests/test_process_issues_cloud_only.py::test_process_issues_only_completion_status_uses_target_outcome`
 verifies preserved deferrals, missing diagnostics, and target-number mismatches.
+
+Issue relationship reads use the shared HTTP cache and emit request outcomes
+under `controller-issue-read`. Fresh hits have local-cache provenance and do not
+reserve a governor slot. Expired responses revalidate; local mutations invalidate
+previous snapshots and relationship pages before readback.
+`tests/test_issue_relationship_http_cache.py::test_explicit_preflight_and_repeated_family_checks_send_each_resource_once`
+checks real cache transport request counts across repeated engine checks, and
+`test_issue_cache_hit_records_local_provenance_without_admission` verifies wire
+admission and local provenance. Run `bash scripts/test.sh tests/test_issue_relationship_http_cache.py tests/test_dashboard_observability.py`.
+
+Governor admission aggregates its retained reservation history inside SQLite,
+returning one row instead of materializing the whole hour in Python while holding
+the shared write lock. This is trace-neutral: admission decisions, retry deadlines,
+request outcomes, and their production emission points remain unchanged; it changes
+only the cost of computing those same decisions. No new dashboard stage is implied.
+`tests/test_github_request_governor.py::test_admission_materializes_bounded_rows_with_retained_history`
+covers bounded result allocation for 100 and 10,000 retained requests;
+`test_aggregated_admission_rejects_invalid_live_timestamps` preserves fail-closed
+handling of corrupted evidence. Run `bash scripts/test.sh tests/test_github_request_governor.py`.
+
+Explicit startup passes its completed relationship preflight into child-generation
+validation. This removes a duplicate internal discovery pass; the original
+`issue.explicit-relationship-discovery` event and all downstream admission events
+retain their meaning. Coverage:
+`tests/test_parent_issue_reconciliation.py::test_child_generation_reuses_completed_explicit_relationship_preflight`.

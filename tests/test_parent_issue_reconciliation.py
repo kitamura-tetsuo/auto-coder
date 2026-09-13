@@ -100,7 +100,7 @@ def test_family_discovery_refreshes_only_related_issues_and_records_scope():
     github.get_open_entities_strict.assert_not_called()
     events = [event for event in collector.get_snapshot(item_type="issue", item_number=100).events if event.stage_id == "issue.family-discovery"]
     assert events[-1].outcome == "completed"
-    assert events[-1].facts == {"discovery_source": "cached-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": [101], "authorizes_execution": False}
+    assert events[-1].facts == {"discovery_source": "cached-open-issue-list", "discovery_payload": "issue-bodies", "relationship_reads": "http-cache-freshness", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": [101], "authorizes_execution": False}
 
 
 @pytest.mark.parametrize("fresh_body,state", [("Parent-Issue: #200", "open"), ("", "open"), ("Parent-Issue: #100", "closed")])
@@ -217,7 +217,7 @@ def test_only_parent_reconciles_every_declared_child_before_unified_processing(w
     assert {call.args[1] for call in github.get_issue_dispatch_snapshot_strict.call_args_list} == {100, 101, 102, 103}
     assert github.events == ["linked", "linked"]
     assert result["issues_processed"][0]["actions_taken"] == ["target only"]
-    engine._validate_submitted_parent_generation_for_child.assert_called_once_with("o/r", 100, engine._create_candidate_from_single.return_value.data, target_only=True)
+    engine._validate_submitted_parent_generation_for_child.assert_called_once_with("o/r", 100, engine._create_candidate_from_single.return_value.data, target_only=True, relationships_preflight_done=True)
 
 
 def test_only_child_reconciles_unmaterialized_elder_without_processing_it():
@@ -250,7 +250,7 @@ def test_only_child_reconciles_unmaterialized_elder_without_processing_it():
 
     assert github.events == ["linked"]
     assert engine._process_single_candidate_unified.call_count == 1
-    engine._validate_submitted_parent_generation_for_child.assert_called_once_with("o/r", 103, engine._create_candidate_from_single.return_value.data, target_only=True)
+    engine._validate_submitted_parent_generation_for_child.assert_called_once_with("o/r", 103, engine._create_candidate_from_single.return_value.data, target_only=True, relationships_preflight_done=True)
 
 
 def test_only_relationship_contradiction_fails_closed_before_dispatch():
@@ -669,7 +669,7 @@ def test_reconciliation_rechecks_the_snapshot_it_returns(tmp_path: Path, replace
     assert analyzed == []
 
 
-def test_final_parent_snapshot_is_reconciled_before_decomposition(tmp_path: Path):
+def test_parent_snapshot_is_reconciled_before_decomposition(tmp_path: Path):
     body = "## Requirements\n- REQ-001: Preserve the graph."
 
     class ParentRaceGraph(GraphGitHub):
@@ -679,7 +679,7 @@ def test_final_parent_snapshot_is_reconciled_before_decomposition(tmp_path: Path
             snapshot = super().get_issue_dispatch_snapshot_strict(repo, number)
             if number == 1:
                 self.parent_reads += 1
-                if self.parent_reads >= 4:
+                if self.parent_reads >= 1:
                     snapshot["body"] = body + "\nParent-Issue: #abc"
                     self.issues[1]["body"] = snapshot["body"]
             return snapshot
@@ -911,3 +911,18 @@ def test_empty_dependency_declaration_requires_available_parent_evidence():
     with pytest.raises(RuntimeError, match="read unavailable"):
         engine._reconcile_sibling_dependencies("o/r", 1998, issue)
     assert github.removals == []
+
+
+@pytest.mark.parametrize("preflight_done,expected_calls", [(False, 1), (True, 0)])
+def test_child_generation_reuses_completed_explicit_relationship_preflight(preflight_done, expected_calls):
+    parent = graph_issue(10, "")
+    child = graph_issue(11, "Parent-Issue: #10")
+    github = GraphGitHub({10: parent, 11: child}, {11: 10}, {10: [11]})
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._preflight_explicit_issue_relationships = MagicMock(wraps=engine._preflight_explicit_issue_relationships)
+
+    engine._validate_submitted_parent_generation_for_child("o/r", 11, child, target_only=True, relationships_preflight_done=preflight_done)
+
+    assert engine._preflight_explicit_issue_relationships.call_count == expected_calls
+    assert github.parents == {11: 10}
+    assert github.events == []

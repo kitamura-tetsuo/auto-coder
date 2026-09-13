@@ -65,7 +65,7 @@ def test_process_boundary_refuses_distinct_production_credentials_without_a_send
     assert sent == []
     assert len(observations) == 3
     assert {item.context.subsystem for item in observations} == {
-        "controller-strict",
+        "controller-issue-read",
         "reviewer-app",
         "actions-secrets",
     }

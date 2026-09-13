@@ -62,7 +62,7 @@ def test_family_discovery_scope_reaches_mounted_detail(mock_ui):
     github.get_open_entities_strict.assert_not_called()
     events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=100).events if event.stage_id == "issue.family-discovery"]
     assert len(events) == 1
-    assert events[0].facts == {"discovery_source": "cached-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": [], "authorizes_execution": False}
+    assert events[0].facts == {"discovery_source": "cached-open-issue-list", "discovery_payload": "issue-bodies", "relationship_reads": "http-cache-freshness", "live_scope": "related-declarations-and-native-children", "declared_issue_numbers": [], "authorizes_execution": False}
     _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 100), "family discovery")
 
 
@@ -982,5 +982,5 @@ def test_explicit_cached_discovery_reaches_mounted_detail(mock_ui):
     github.get_open_entities_strict.assert_not_called()
     events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=100).events if event.stage_id == "issue.explicit-relationship-discovery"]
     assert len(events) == 1
-    assert events[0].facts == {"discovery_source": "cache-aware-open-issue-list", "discovery_payload": "issue-bodies", "live_scope": "target-and-related-family", "authorizes_execution": False}
+    assert events[0].facts == {"discovery_source": "cache-aware-open-issue-list", "discovery_payload": "issue-bodies", "relationship_reads": "http-cache-freshness", "live_scope": "target-and-related-family", "authorizes_execution": False}
     _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 100), "explicit relationship discovery")

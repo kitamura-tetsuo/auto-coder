@@ -1,4 +1,5 @@
 import functools
+import hashlib
 import json
 import logging
 import re
@@ -7,7 +8,8 @@ import threading
 import time
 import types
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -209,6 +211,13 @@ class _GitHubCacheTransport(SyncCacheTransport):
     """Keep wire timeouts/identity and credential variants across Hishel conversion."""
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if request.extensions.get("auto_coder_invalidate_issue_read"):
+            # Hishel keys ordinary GET entries by the SHA-256 of the full URL.
+            # Remove known pre-mutation versions, including cached 404s, rather
+            # than retaining them alongside a replacement with the same Date.
+            key = hashlib.sha256(str(request.url).encode("utf-8")).hexdigest()
+            for entry in self.storage.get_entries(key):
+                self.storage.remove_entry(entry.id)
         extensions = {key: request.extensions[key] for key in ("timeout", "auto_coder_operation_id") if key in request.extensions}
         token = _cache_request_extensions.set(extensions)
         try:
@@ -581,14 +590,14 @@ def resolve_authoritative_item_type(github_client: Any, repo_name: str, item_num
     Jules session fallback, and any other internal enqueue path) must call this before
     performing an Issue lifecycle side effect. A caller-supplied type is not
     authoritative on its own: GitHub's Issues API represents pull requests as
-    issue-like objects. Only a genuinely cache-bypassing lookup
+    issue-like objects. Only a validated lookup
     (``get_item_type_strict``) counts as authoritative; a client that cannot perform
     one has not established the type, so this fails closed (raises) rather than
     falling back to a cached ``get_issue()`` response that could be stale.
     """
     strict_type_getter = getattr(github_client, "get_item_type_strict", None)
     if strict_type_getter is None:
-        raise ValueError(f"GitHub client does not implement an authoritative, cache-bypassing item-type lookup for {repo_name}#{item_number}")
+        raise ValueError(f"GitHub client does not implement an authoritative item-type lookup for {repo_name}#{item_number}")
 
     item_type = strict_type_getter(repo_name, item_number)
     if item_type not in ("issue", "pr"):
@@ -627,6 +636,9 @@ class GitHubClient:
         self.disable_labels = disable_labels
         self._initialized = True
         self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
+        self._issue_read_lock = threading.Lock()
+        self._issue_read_generation: dict[str, int] = {}
+        self._issue_read_observed: dict[tuple[str, int, str], int] = {}
 
         # Memory cache for open issues to avoid re-fetching in loops
         self._open_issues_cache: Optional[List[Dict[str, Any]]] = None
@@ -1389,45 +1401,98 @@ class GitHubClient:
     def get_item_type_strict(self, repo_name: str, item_number: int) -> str:
         """Return GitHub's authoritative type ("issue" or "pr") for an issue-like item.
 
-        This deliberately bypasses the shared hishel-backed caching client
-        (``get_caching_client()`` / ``get_ghapi_client()``): it is a safety gate for
-        starting Issue implementation work, so it must reflect GitHub's current state
-        rather than a possibly-stale cached response. GitHub's Issues REST endpoint
-        returns both issues and pull requests; a pull request is distinguished by the
-        presence of the ``pull_request`` field.
+        Type and body share the validated HTTP snapshot and its freshness policy.
+        The presence of the ``pull_request`` field distinguishes a pull request.
         """
         item = self._get_issue_dispatch_snapshot_strict(repo_name, item_number)
         return "pr" if "pull_request" in item else "issue"
 
     @retry_with_backoff()
     def get_issue_dispatch_snapshot_strict(self, repo_name: str, item_number: int) -> Dict[str, Any]:
-        """Return a cache-bypassing Issue API snapshot for dispatch safety gates.
+        """Return a validated, cache-aware Issue API snapshot for dispatch gates.
 
-        Candidate collection is intentionally cached, but fields that decide whether
-        implementation may start must come from one current, authoritative snapshot.
+        Fresh HTTP responses are reused; expired responses are revalidated using
+        the shared cache policy before they can decide implementation admission.
         Keeping type and body together also prevents them from being observed from
         different Issue revisions between separate requests.
         """
         return self._get_issue_dispatch_snapshot_strict(repo_name, item_number)
 
     def _get_issue_dispatch_snapshot_strict(self, repo_name: str, item_number: int) -> Dict[str, Any]:
-        owner, repo = repo_name.split("/")
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-
-        url = f"https://api.github.com/repos/{owner}/{repo}/issues/{item_number}"
-        with github_http_client(subsystem="controller-strict") as client:
-            response = client.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            item = response.json()
-
+        item = self._read_issue_resource(repo_name, item_number)
         if not isinstance(item, dict) or item.get("number") != item_number:
             raise ValueError(f"GitHub returned an ambiguous item for {repo_name}#{item_number}")
         return item
+
+    def _invalidate_issue_reads(self, repo_name: str) -> None:
+        """Require revalidation after a local write, including an ambiguous write."""
+        with self._issue_read_lock:
+            self._issue_read_generation[repo_name] = self._issue_read_generation.get(repo_name, 0) + 1
+
+    @contextmanager
+    def _issue_read_mutation(self, repo_name: str) -> Iterator[None]:
+        """Fence reads both during a write and after its success or failure."""
+        self._invalidate_issue_reads(repo_name)
+        try:
+            yield
+        finally:
+            self._invalidate_issue_reads(repo_name)
+
+    def _read_issue_resource(self, repo_name: str, issue_number: int, relation: str = "", *, paginated: bool = False, absent_on_404: bool = False) -> Any:
+        """Reuse fresh HTTP evidence; revalidate expired or locally changed data.
+
+        Strict readers preserve errors and payload validation. Strictness does
+        not require sending the same GET again while its HTTP cache is fresh.
+        A mutation invalidates every page, including reverse dependency edges.
+        """
+        owner, repo = repo_name.split("/")
+        key = (repo_name, issue_number, relation)
+        with self._issue_read_lock:
+            generation = self._issue_read_generation.get(repo_name, 0)
+            revalidate = self._issue_read_observed.get(key, 0) != generation
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        if revalidate:
+            headers["Cache-Control"] = "no-cache"
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}"
+        if relation:
+            url += f"/{relation}"
+        with ExitStack() as resources:
+            client = get_caching_client(subsystem="controller-issue-read")
+            if any(hook is not None for hook in boundary_hooks()):
+                resources.callback(client.close)
+            items: list[object] = []
+            page = 1
+            while True:
+                response = _caching_request(
+                    client,
+                    "GET",
+                    url,
+                    headers=headers,
+                    params={"per_page": 100, "page": page} if paginated else None,
+                    timeout=30,
+                    subsystem="controller-issue-read",
+                    path_template="/repos/{owner}/{repo}/issues/{issue_number}" + (f"/{relation}" if relation else ""),
+                    extensions={"auto_coder_invalidate_issue_read": revalidate},
+                )
+                if absent_on_404 and response.status_code == 404:
+                    payload = None
+                else:
+                    response.raise_for_status()
+                    payload = response.json()
+                if not paginated:
+                    break
+                if not isinstance(payload, list):
+                    raise ValueError(f"GitHub returned an ambiguous {relation} list for {repo_name}#{issue_number}")
+                items.extend(payload)
+                if len(payload) < 100:
+                    payload = items
+                    break
+                page += 1
+        with self._issue_read_lock:
+            self._issue_read_observed[key] = generation
+        return payload
 
     def get_issue_details(self, issue: Any) -> Dict[str, Any]:
         """Extract detailed information from an issue.
@@ -2285,7 +2350,8 @@ class GitHubClient:
             if comment:
                 api.issues.create_comment(owner, repo, issue_number, body=comment)
 
-            api.issues.update(owner, repo, issue_number, state="closed")
+            with self._issue_read_mutation(repo_name):
+                api.issues.update(owner, repo, issue_number, state="closed")
             logger.info(f"Closed issue #{issue_number}")
 
             # Update cache
@@ -2304,7 +2370,8 @@ class GitHubClient:
             if comment:
                 api.issues.create_comment(owner, repo, issue_number, body=comment)
 
-            api.issues.update(owner, repo, issue_number, state="open")
+            with self._issue_read_mutation(repo_name):
+                api.issues.update(owner, repo, issue_number, state="open")
             logger.info(f"Reopened issue #{issue_number}")
 
             # Invalidate cache
@@ -2605,49 +2672,23 @@ class GitHubClient:
 
     @retry_with_backoff()
     def get_open_sub_issues_strict(self, repo_name: str, issue_number: int) -> List[int]:
-        """Return current open children without caches or failure flattening."""
-        owner, repo = repo_name.split("/")
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        url: Optional[str] = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues?per_page=100"
-        children: List[int] = []
-        with github_http_client(subsystem="controller-strict") as client:
-            while url:
-                response = client.get(url, headers=headers, timeout=30)
-                response.raise_for_status()
-                page = response.json()
-                if not isinstance(page, list):
-                    raise RuntimeError("GitHub sub-issues response was not a list")
-                for child in page:
-                    if not isinstance(child, dict) or not isinstance(child.get("number"), int) or not isinstance(child.get("state"), str):
-                        raise RuntimeError("GitHub sub-issues response contained an invalid Issue")
-                    if child["state"].lower() == "open" and child["number"] != issue_number:
-                        children.append(child["number"])
-                url = response.links.get("next", {}).get("url")
+        """Return current open children using valid HTTP cache entries without flattening failures."""
+        children: list[int] = []
+        for child in self._read_issue_resource(repo_name, issue_number, "sub_issues", paginated=True):
+            if not isinstance(child, dict) or isinstance(child.get("number"), bool) or not isinstance(child.get("number"), int) or not isinstance(child.get("state"), str):
+                raise RuntimeError("GitHub sub-issues response contained an invalid Issue")
+            if child["state"].lower() == "open" and child["number"] != issue_number:
+                children.append(child["number"])
         return sorted(set(children))
 
     @retry_with_backoff()
     def get_parent_issue_number_strict(self, repo_name: str, issue_number: int) -> Optional[int]:
-        """Return the current native parent identity without cached evidence."""
-        owner, repo = repo_name.split("/")
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        with github_http_client(subsystem="controller-strict") as client:
-            response = client.get(f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent", headers=headers, timeout=30)
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        parent = response.json()
-        if isinstance(parent, dict) and isinstance(parent.get("parent"), dict):
-            parent = parent["parent"]
-        if not isinstance(parent, dict) or isinstance(parent.get("number"), bool) or not isinstance(parent.get("number"), int):
-            raise RuntimeError("GitHub parent-Issue response was ambiguous")
-        return parent["number"]
+        """Return the native parent identity using valid HTTP cache entries."""
+        parent = self.get_parent_issue_details_strict(repo_name, issue_number)
+        return parent["number"] if parent is not None else None
 
     def get_issue_hierarchy_generation_strict(self, repo_name: str, issue_number: int) -> str:
-        """Return the cache-bypassing Issue revision guarding hierarchy reads."""
+        """Return the cache-aware Issue revision guarding hierarchy reads."""
         snapshot = self.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
         updated_at = snapshot.get("updated_at")
         if not isinstance(updated_at, str) or not updated_at:
@@ -2673,87 +2714,39 @@ class GitHubClient:
             return []
 
     def get_direct_sub_issues_strict(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
-        """Return the complete cache-bypassing direct-child membership.
+        """Return complete direct-child membership using valid HTTP cache entries.
 
         Closed children are deliberately retained because execution state is not
         part of a submitted specification generation.
         """
-        owner, repo = repo_name.split("/")
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        items: List[Dict[str, Any]] = []
-        page = 1
-        with github_http_client(subsystem="controller-strict") as client:
-            while True:
-                response = client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/sub_issues",
-                    headers=headers,
-                    params={"per_page": 100, "page": page},
-                    timeout=30,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, list):
-                    raise ValueError(f"GitHub returned ambiguous direct-child membership for {repo_name}#{issue_number}")
-                for item in payload:
-                    if not isinstance(item, dict) or not isinstance(item.get("number"), int):
-                        raise ValueError(f"GitHub returned an invalid direct child for {repo_name}#{issue_number}")
-                    if item["number"] == issue_number:
-                        raise ValueError(f"GitHub returned self-referential direct-child membership for {repo_name}#{issue_number}")
-                    items.append(item)
-                if len(payload) < 100:
-                    break
-                page += 1
+        items = self._read_issue_resource(repo_name, issue_number, "sub_issues", paginated=True)
+        for item in items:
+            if not isinstance(item, dict) or isinstance(item.get("number"), bool) or not isinstance(item.get("number"), int):
+                raise ValueError(f"GitHub returned an invalid direct child for {repo_name}#{issue_number}")
+            if item["number"] == issue_number:
+                raise ValueError(f"GitHub returned self-referential direct-child membership for {repo_name}#{issue_number}")
         return items
 
     def get_parent_issue_details_strict(self, repo_name: str, issue_number: int) -> Optional[Dict[str, Any]]:
-        """Return a cache-bypassing native parent relationship."""
-        owner, repo = repo_name.split("/")
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        with github_http_client(subsystem="controller-strict") as client:
-            response = client.get(f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/parent", headers=headers, timeout=30)
-        if response.status_code == 404:
+        """Return the native parent relationship using valid HTTP cache entries."""
+        payload = self._read_issue_resource(repo_name, issue_number, "parent", absent_on_404=True)
+        if payload is None:
             return None
-        response.raise_for_status()
-        payload = response.json()
         if isinstance(payload, dict) and isinstance(payload.get("parent"), dict):
             payload = payload["parent"]
-        if not isinstance(payload, dict) or not isinstance(payload.get("number"), int):
+        if not isinstance(payload, dict) or isinstance(payload.get("number"), bool) or not isinstance(payload.get("number"), int):
             raise ValueError(f"GitHub returned an ambiguous parent for {repo_name}#{issue_number}")
         return payload
 
     def _get_issue_dependencies_strict(self, repo_name: str, issue_number: int, relation: str) -> List[Dict[str, Any]]:
-        """Return one complete, uncached native Issue dependency relation."""
+        """Return one complete native Issue dependency relation through the HTTP cache."""
         if relation not in {"blocked_by", "blocking"}:
             raise ValueError("unsupported Issue dependency relation")
-        owner, repo = repo_name.split("/")
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        items: List[Dict[str, Any]] = []
-        page = 1
-        with github_http_client(subsystem="controller-strict") as client:
-            while True:
-                response = client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/dependencies/{relation}",
-                    headers=headers,
-                    params={"per_page": 100, "page": page},
-                    timeout=30,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, list):
-                    raise ValueError("GitHub returned an ambiguous Issue dependency relation")
-                for item in payload:
-                    if not isinstance(item, dict) or isinstance(item.get("number"), bool) or not isinstance(item.get("number"), int) or isinstance(item.get("id"), bool) or not isinstance(item.get("id"), int):
-                        raise ValueError("GitHub returned a malformed Issue dependency")
-                    items.append(item)
-                if len(payload) < 100:
-                    return items
-                page += 1
+        items = self._read_issue_resource(repo_name, issue_number, f"dependencies/{relation}", paginated=True)
+        for item in items:
+            if not isinstance(item, dict) or isinstance(item.get("number"), bool) or not isinstance(item.get("number"), int) or isinstance(item.get("id"), bool) or not isinstance(item.get("id"), int):
+                raise ValueError("GitHub returned a malformed Issue dependency")
+        return items
 
     def get_blocked_by_strict(self, repo_name: str, issue_number: int) -> List[Dict[str, Any]]:
         return self._get_issue_dependencies_strict(repo_name, issue_number, "blocked_by")
@@ -2769,7 +2762,7 @@ class GitHubClient:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         base = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by"
-        with github_http_client(subsystem="controller-strict") as client:
+        with self._issue_read_mutation(repo_name), github_http_client(subsystem="controller-strict") as client:
             if add:
                 response = client.post(base, headers=headers, json={"issue_id": dependency_id}, timeout=30)
             else:
@@ -2824,7 +2817,8 @@ class GitHubClient:
             }
             payload = {"sub_issue_id": int(sub_issue_id)}
 
-            response = _caching_request(client, "POST", url, headers=headers, json=payload, path_template=f"/repos/{owner}/{repo}/issues/{{id}}/sub_issues")
+            with self._issue_read_mutation(repo_name):
+                response = _caching_request(client, "POST", url, headers=headers, json=payload, path_template=f"/repos/{owner}/{repo}/issues/{{id}}/sub_issues")
             if response.status_code in (200, 201):
                 logger.info(f"Successfully linked issue #{sub_issue_number} as sub-issue of #{parent_issue_number}")
                 self.clear_sub_issue_cache()
@@ -2861,7 +2855,7 @@ class GitHubClient:
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        with github_http_client(subsystem="controller-strict") as client:
+        with self._issue_read_mutation(repo_name), github_http_client(subsystem="controller-strict") as client:
             response = client.post(
                 f"https://api.github.com/repos/{owner}/{repo}/issues/{parent_issue_number}/sub_issues",
                 headers=headers,
@@ -2930,7 +2924,8 @@ class GitHubClient:
 
             # Using add_labels endpoint which appends to existing labels
             # works for both Issues and PRs
-            api.issues.add_labels(owner, repo, issue_number, labels=labels)
+            with self._issue_read_mutation(repo_name):
+                api.issues.add_labels(owner, repo, issue_number, labels=labels)
 
             logger.debug(f"Added labels {labels} to {item_type} #{issue_number}")
 
@@ -2968,7 +2963,8 @@ class GitHubClient:
                 logger.info(f"{item_type} #{issue_number} already has label(s) {existing_labels} - skipping")
                 return False
 
-            api.issues.add_labels(owner, repo, issue_number, labels=labels)
+            with self._issue_read_mutation(repo_name):
+                api.issues.add_labels(owner, repo, issue_number, labels=labels)
             logger.info(f"Added labels {labels} to {item_type} #{issue_number}")
 
             # Invalidate cache
@@ -2994,7 +2990,8 @@ class GitHubClient:
 
             for label in labels:
                 try:
-                    api.issues.remove_label(owner, repo, item_number, name=label)
+                    with self._issue_read_mutation(repo_name):
+                        api.issues.remove_label(owner, repo, item_number, name=label)
                 except Exception as e:
                     # Absence is the only idempotent success. Authentication,
                     # transport, and server failures must remain observable to

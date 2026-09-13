@@ -7,16 +7,9 @@ from src.auto_coder.util.gh_cache import GitHubClient, resolve_authoritative_ite
 
 
 class TestGetItemTypeStrict:
-    """get_item_type_strict() must never rely on the shared hishel cache.
+    """Strict readers validate responses while using the shared HTTP cache."""
 
-    It is the authoritative safety gate that decides whether a target may be
-    dispatched through Issue implementation. A stale cached response could
-    reintroduce the regression this check exists to prevent, so it must talk to
-    GitHub directly via a plain httpx.Client rather than get_caching_client()
-    / get_ghapi_client().
-    """
-
-    def test_bypasses_the_shared_caching_client_for_an_issue(self):
+    def test_uses_the_shared_caching_client_for_an_issue(self):
         client = GitHubClient(token="secret-token")
 
         mock_response = MagicMock()
@@ -25,16 +18,16 @@ class TestGetItemTypeStrict:
 
         with (
             patch("src.auto_coder.util.gh_cache.get_caching_client") as mock_get_caching_client,
-            patch("httpx.Client") as mock_client_cls,
+            patch("src.auto_coder.util.gh_cache._caching_request") as mock_client_cls,
         ):
-            mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_response
+            mock_client_cls.return_value = mock_response
 
             result = client.get_item_type_strict("owner/repo", 300)
 
         assert result == "issue"
-        mock_get_caching_client.assert_not_called()
-        mock_client_cls.return_value.__enter__.return_value.get.assert_called_once()
-        called_url = mock_client_cls.return_value.__enter__.return_value.get.call_args[0][0]
+        mock_get_caching_client.assert_called_once_with(subsystem="controller-issue-read")
+        mock_client_cls.assert_called_once()
+        called_url = mock_client_cls.call_args[0][2]
         assert called_url == "https://api.github.com/repos/owner/repo/issues/300"
 
     def test_detects_a_pull_request_via_the_pull_request_field(self):
@@ -48,8 +41,8 @@ class TestGetItemTypeStrict:
         }
         mock_response.raise_for_status.return_value = None
 
-        with patch("httpx.Client") as mock_client_cls:
-            mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_response
+        with patch("src.auto_coder.util.gh_cache._caching_request") as mock_client_cls:
+            mock_client_cls.return_value = mock_response
 
             result = client.get_item_type_strict("owner/repo", 5266)
 
@@ -62,8 +55,8 @@ class TestGetItemTypeStrict:
         mock_response.json.return_value = {"number": 999}
         mock_response.raise_for_status.return_value = None
 
-        with patch("httpx.Client") as mock_client_cls:
-            mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_response
+        with patch("src.auto_coder.util.gh_cache._caching_request") as mock_client_cls:
+            mock_client_cls.return_value = mock_response
 
             with pytest.raises(ValueError):
                 client.get_item_type_strict("owner/repo", 5266)
@@ -74,8 +67,8 @@ class TestGetItemTypeStrict:
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError("not found", request=MagicMock(), response=MagicMock(status_code=404))
 
-        with patch("httpx.Client") as mock_client_cls:
-            mock_client_cls.return_value.__enter__.return_value.get.return_value = mock_response
+        with patch("src.auto_coder.util.gh_cache._caching_request") as mock_client_cls:
+            mock_client_cls.return_value = mock_response
 
             with pytest.raises(httpx.HTTPStatusError):
                 client.get_item_type_strict("owner/repo", 5266)
@@ -84,7 +77,7 @@ class TestGetItemTypeStrict:
 class TestResolveAuthoritativeItemType:
     """resolve_authoritative_item_type() must never fall back to a cached response.
 
-    A client that cannot perform the cache-bypassing lookup has not established the
+    A client that cannot perform the strict validated lookup has not established the
     type; it must not be treated as confirmation the target is an Issue.
     """
 
@@ -113,17 +106,17 @@ class TestStrictIssueHierarchy:
         response.json.return_value = [{"number": 21, "state": "open"}]
         response.links = {}
         response.raise_for_status.return_value = None
-        with patch("httpx.Client") as client_class:
-            client_class.return_value.__enter__.return_value.get.return_value = response
+        with patch("src.auto_coder.util.gh_cache._caching_request") as client_class:
+            client_class.return_value = response
             assert client.get_open_sub_issues_strict("owner/repo", 20) == [21]
-        client_class.return_value.__enter__.return_value.get.assert_called_once()
+        client_class.assert_called_once()
 
     def test_open_children_failure_is_not_flattened_to_empty(self):
         client = GitHubClient(token="secret-token")
         response = MagicMock()
         response.raise_for_status.side_effect = RuntimeError("hierarchy unavailable")
-        with patch("httpx.Client") as client_class, patch("time.sleep"):
-            client_class.return_value.__enter__.return_value.get.return_value = response
+        with patch("src.auto_coder.util.gh_cache._caching_request") as client_class, patch("time.sleep"):
+            client_class.return_value = response
             with pytest.raises(RuntimeError, match="hierarchy unavailable"):
                 client.get_open_sub_issues_strict("owner/repo", 20)
 
@@ -132,10 +125,10 @@ class TestStrictIssueHierarchy:
         response = MagicMock(status_code=200)
         response.json.return_value = {"number": 10, "state": "open"}
         response.raise_for_status.return_value = None
-        with patch("httpx.Client") as client_class:
-            client_class.return_value.__enter__.return_value.get.return_value = response
+        with patch("src.auto_coder.util.gh_cache._caching_request") as client_class:
+            client_class.return_value = response
             assert client.get_parent_issue_number_strict("owner/repo", 20) == 10
-        called_url = client_class.return_value.__enter__.return_value.get.call_args.args[0]
+        called_url = client_class.call_args.args[2]
         assert called_url.endswith("/issues/20/parent")
 
     def test_raises_instead_of_falling_back_to_a_cached_stale_issue_response(self):

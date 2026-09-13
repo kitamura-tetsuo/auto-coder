@@ -832,7 +832,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             status_code = 404
 
         client_context = MagicMock()
-        client_context.__enter__.return_value.get.side_effect = lambda url, **_kwargs: (MembershipResponse() if url.endswith("/sub_issues") else NoParentResponse() if url.endswith("/parent") else Response())
+        client_context.side_effect = lambda _client, _method, url, **_kwargs: (MembershipResponse() if url.endswith("/sub_issues") else NoParentResponse() if url.endswith("/parent") else Response())
         GitHubClient.reset_singleton()
         github = GitHubClient.get_instance(token="test-token")
         github.get_open_prs_json = Mock(return_value=[])
@@ -850,7 +850,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         with (
             patch("auto_coder.util.gh_cache.get_ghapi_client", return_value=api),
-            patch("auto_coder.util.gh_cache.httpx.Client", return_value=client_context),
+            patch("auto_coder.util.gh_cache._caching_request", client_context),
             patch("auto_coder.automation_engine.LabelManager", return_value=label_context),
         ):
             first_candidates = engine._get_candidates("owner/repo")
