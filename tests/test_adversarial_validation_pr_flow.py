@@ -1,5 +1,6 @@
 """Integration tests for adversarial validation in the PR processor flow."""
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from threading import Event, Thread
@@ -15,6 +16,7 @@ from auto_coder.adversarial_validator import (
     AdversarialValidationResult,
     RequirementCoverageEntry,
     adversarial_validation_codex_feedback_marker,
+    format_adversarial_finding_comment,
     format_adversarial_validation_comment,
 )
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
@@ -29,6 +31,7 @@ from auto_coder.pr_processor import (
     ClaimedReviewThreadGateState,
     CodexReviewState,
     PRActionList,
+    _adversarial_validation_snapshot_identity,
     _delegate_cloud_review_thread_repair,
     _enforce_unresolved_provenance_gate,
     _find_authoritative_adversarial_review,
@@ -1727,6 +1730,102 @@ class TestAdversarialValidationPRFlow:
         dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, "abc123456789", mock_run_validation.return_value)
         assert any("Adversarial validation failed for PR #100" in a for a in actions)
         assert any("no local automatic adversarial fix was attempted" in a for a in actions)
+
+    def test_handle_pr_merge_persists_nonempty_provider_snapshot_for_restart_delivery(self, tmp_path, dedicated_reviewer_publication):
+        """The production validation boundary preserves B through publication and restart."""
+        task_id = "task_e_real123"
+        finding = AdversarialValidationFinding(
+            violated_requirement="REQ-003 durable remediation generation",
+            counterexample="Completed assistant turn B must remain associated with this accepted validation",
+            test_gap="The production publication boundary previously had no nonempty snapshot oracle",
+            suggested_regression_scenario="Restart and replay the accepted validation",
+        )
+        finding_body = format_adversarial_finding_comment(finding)
+        review_thread = ReviewThread(
+            id="PRRT_nonempty_snapshot",
+            comments=[ReviewThreadComment(database_id=2301, body=finding_body)],
+        )
+        github = MagicMock()
+        github.get_pr_comments.return_value = []
+        github.get_pr_review_threads_strict.return_value = [review_thread]
+        result = AdversarialValidationResult(result="NEEDS_FIX", summary="Correction B remains incomplete", findings=[finding])
+        config = MagicMock(quota_selection_strategy="surplus")
+        config.get_backend_config.return_value = None
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=config):
+            backend = CodexCloudClient(repo_name="owner/repo")
+        backend.wham_client = CodexWhamClient()
+        backend.wham_client._get_headers = MagicMock(return_value={"authorization": "Bearer test"})
+        turns = [
+            {"id": f"{task_id}~assttrn_A", "role": "assistant", "turn_status": "completed", "created_at": "1"},
+        ]
+        get_response = MagicMock(status_code=200)
+        get_response.json.side_effect = lambda: list(turns)
+        post_response = MagicMock(status_code=200)
+        post_response.json.return_value = {}
+        delivery_path = tmp_path / "deliveries.json"
+        followup_path = tmp_path / "followups.json"
+        head_sha = "abc123456789"
+        pr_data = {
+            "number": 100,
+            "body": "Closes #99",
+            "labels": [],
+            "head": {"ref": "repair", "sha": head_sha},
+            "base": {"ref": "main"},
+        }
+        initial_report = f"{finding_body}\n\n<!-- auto-coder-adversarial-validation-attempt:v1:1:aaaa -->"
+
+        with (
+            patch("auto_coder.cloud_manager.CloudManager.get_binding", return_value=CloudTaskBinding("codex-cloud", task_id)),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=backend),
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=delivery_path),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=followup_path),
+            patch("httpx.get", return_value=get_response),
+            patch("httpx.post", return_value=post_response) as post,
+        ):
+            _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, head_sha, initial_report, github, [finding_body])
+            turns.insert(
+                0,
+                {"id": f"{task_id}~assttrn_B", "role": "assistant", "turn_status": "completed", "created_at": "2"},
+            )
+            with (
+                patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+                patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+                patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+                patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False),
+                patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
+                patch("auto_coder.pr_processor.run_adversarial_validation", return_value=result),
+                patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+                patch("auto_coder.pr_processor._merge_pr"),
+            ):
+                automation_config = AutomationConfig()
+                automation_config.AUTO_MERGE = True
+                automation_config.ENABLE_ADVERSARIAL_VALIDATION = True
+                actions = _handle_pr_merge(github, "owner/repo", pr_data, automation_config, {})
+
+        assert any("Sent adversarial NEEDS_FIX report" in action for action in actions)
+        accepted_report = format_adversarial_validation_comment(result, head_sha)
+        persisted = json.loads(delivery_path.read_text(encoding="utf-8"))
+        snapshot = persisted["validation_snapshots"][_adversarial_validation_snapshot_identity(accepted_report)]
+        expected_generation = hashlib.sha256(f"{task_id}\ncompleted_assistant_turn:{task_id}~assttrn_B".encode("utf-8")).hexdigest()
+        assert len(snapshot) == 1
+        assert next(iter(snapshot.values())) == expected_generation
+        assert expected_generation in persisted["validation_generations"].values()
+
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=config):
+            restarted = CodexCloudClient(repo_name="owner/repo")
+        restarted.wham_client = backend.wham_client
+        with (
+            patch("auto_coder.cloud_manager.CloudManager.get_binding", return_value=CloudTaskBinding("codex-cloud", task_id)),
+            patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=restarted),
+            patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=delivery_path),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=followup_path),
+            patch("httpx.post") as replay_post,
+        ):
+            replay = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, head_sha, accepted_report, github, [finding_body])
+
+        assert "all actionable feedback was already delivered" in replay[0]
+        assert post.call_count == 2
+        replay_post.assert_not_called()
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
