@@ -413,8 +413,8 @@ def test_get_pr_review_threads_includes_comments(mock_github_client):
     assert threads[0].comments_truncated is False
 
 
-def test_get_pr_review_threads_marks_truncated_comment_list(mock_github_client):
-    mock_response = {
+def test_get_pr_review_threads_paginates_nested_comment_list(mock_github_client):
+    first_page = {
         "data": {
             "repository": {
                 "pullRequest": {
@@ -426,7 +426,7 @@ def test_get_pr_review_threads_marks_truncated_comment_list(mock_github_client):
                                 "isResolved": False,
                                 "isOutdated": False,
                                 "comments": {
-                                    "pageInfo": {"hasNextPage": True},
+                                    "pageInfo": {"hasNextPage": True, "endCursor": "comment-page-1"},
                                     "nodes": [
                                         {"databaseId": 100, "body": "Original finding", "author": {"login": "chatgpt-codex-connector[bot]"}},
                                     ],
@@ -438,10 +438,34 @@ def test_get_pr_review_threads_marks_truncated_comment_list(mock_github_client):
             }
         }
     }
-    mock_github_client.graphql_query.return_value = mock_response
+    second_page = {
+        "data": {
+            "node": {
+                "comments": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "databaseId": 101,
+                            "body": "Authoritative reply",
+                            "createdAt": "2026-09-13T01:00:00Z",
+                            "updatedAt": "2026-09-13T01:01:00Z",
+                            "replyTo": {"databaseId": 100},
+                            "author": {"__typename": "User", "login": "reviewer", "databaseId": 55},
+                        }
+                    ],
+                }
+            }
+        }
+    }
+    mock_github_client.graphql_query.side_effect = [first_page, second_page]
 
     threads = mock_github_client.get_pr_review_threads("owner/repo", 101)
-    assert threads[0].comments_truncated is True
+    assert threads[0].comments_truncated is False
+    assert [comment.database_id for comment in threads[0].comments] == [100, 101]
+    assert threads[0].comments[1].author_id == 55
+    assert threads[0].comments[1].author_type == "User"
+    assert threads[0].comments[1].in_reply_to_id == 100
+    assert mock_github_client.graphql_query.call_args_list[1].args[1] == {"thread": "t1", "cursor": "comment-page-1"}
 
 
 def test_get_pr_review_threads_missing_comments_field_defaults_empty(mock_github_client):
