@@ -15,6 +15,16 @@ transparently reprovisions a project's declared dev-group tools) makes those
 specific failure modes impossible to reproduce by sabotaging the real,
 unmodified install step. The mypy *invocation* itself is never altered
 outside of the single test that explicitly targets "config file missing".
+
+Fixtures copy a small, self-contained *slice* of the real ``src/auto_coder``
+tree (a handful of complete, unmodified production files with no relative
+imports outside that slice) rather than the whole ~140-file package: `mypy
+-p auto_coder` walks whatever package directory is actually on disk, so a
+seeded nested/otherwise-unimported submodule proves the same "package-wide,
+not import-driven" contract either way, while Black/Flake8 -- which have no
+cross-run cache -- scan an order of magnitude fewer real files per one of
+this suite's dozen full script invocations. This keeps the whole file's
+runtime well inside a single PR-Tests shard's attempt budget.
 """
 
 from __future__ import annotations
@@ -40,6 +50,19 @@ VENV_BIN = ROOT / ".venv" / "bin"
 REAL_UV_CACHE_DIR = os.environ.get("UV_CACHE_DIR") or str(Path(os.environ["HOME"]) / ".cache" / "uv")
 
 _VERSION_RE = re.compile(r"\d+(?:\.\d+){1,3}")
+
+# Small, complete, unmodified real production files with no relative imports
+# outside this list (verified against the actual source), used in place of
+# the whole ~140-file auto_coder package -- see the module docstring.
+_SLIM_PACKAGE_FILES = (
+    "shutdown_context.py",
+    "codex_cloud_task.py",
+    "review_feedback_marker.py",
+    "exceptions.py",
+    "test_result.py",
+    "log_utils.py",
+    "security_utils.py",
+)
 
 _STUB_COLLECTOR = '''"""Stub standing in for local_test_log_collector.py in disposable fixtures.
 
@@ -119,11 +142,9 @@ def _find_python312() -> str | None:
 def _write_pyproject_with_shared_cache(dest: Path, cache_dir: Path) -> None:
     """Copy the real pyproject.toml, pointing mypy's cache at a shared dir.
 
-    A fresh package-wide mypy run over the real 140-file auto_coder tree
-    takes ~20s with a cold cache; sharing one cache directory across these
-    disposable, per-test checkouts (mypy's cache is keyed by file content,
-    so this cannot mask a real seeded error) brings that down to well under
-    a second per test after the first.
+    Sharing one cache directory across these disposable, per-test checkouts
+    (mypy's cache is keyed by file content, so this cannot mask a real
+    seeded error) makes every mypy run after the first well under a second.
     """
     text = PYPROJECT.read_text(encoding="utf-8")
     marker = "[tool.mypy]\n"
@@ -138,7 +159,10 @@ def _seed_fixture_repo(repo: Path, cache_dir: Path) -> None:
     shutil.copy2(FLAKE8_CONFIG, repo / ".flake8")
     shutil.copy2(ROOT / "uv.lock", repo / "uv.lock")
     shutil.copy2(ROOT / ".python-version", repo / ".python-version")
-    shutil.copytree(ROOT / "src/auto_coder", repo / "src/auto_coder")
+    (repo / "src/auto_coder").mkdir(parents=True)
+    _write(repo, "src/auto_coder/__init__.py", '"""Slim auto_coder package subset for scripts/test.sh fixtures."""\n')
+    for name in _SLIM_PACKAGE_FILES:
+        shutil.copy2(ROOT / "src/auto_coder" / name, repo / "src/auto_coder" / name)
     _write(repo, "tests/test_placeholder.py", "def test_placeholder() -> None:\n    assert True\n")
     script = _write(repo, "scripts/test.sh", TEST_SH.read_text(encoding="utf-8"))
     script.chmod(0o755)
