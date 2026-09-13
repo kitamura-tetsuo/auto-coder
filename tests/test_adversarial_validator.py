@@ -2974,9 +2974,9 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    def test_completion_rejects_bare_prior_review_as_irrelevance_basis(self, mock_run_prompt, mock_build_ctx):
-        """REQ-004/REQ-005: production completion must not treat a bare prior-review
-        assertion as independent same-snapshot scope evidence."""
+    def test_completion_rejects_negated_verification_as_irrelevance_basis(self, mock_run_prompt, mock_build_ctx):
+        """REQ-004/REQ-005: production completion must not let a verification
+        marker mask the absence of an independent same-snapshot scope basis."""
         context = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=100,
@@ -3005,14 +3005,14 @@ class TestRunAdversarialValidation:
         manager.continue_session.return_value = json.dumps(
             {
                 "result": "PASS",
-                "summary": "Prior review supposedly discharged the path",
+                "summary": "Unsupported verification supposedly discharged the path",
                 "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "prior review claim"}],
                 "evidence_recovery": [
                     {
                         "path": "src/state.py",
                         "source": "current-PR retrieval",
                         "status": "IRRELEVANT",
-                        "evidence": "Already reviewed.",
+                        "evidence": "Verified by no independent evidence.",
                         "requirement_ids": ["REQ-001"],
                     }
                 ],
