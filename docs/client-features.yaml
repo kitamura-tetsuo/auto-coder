@@ -10,6 +10,27 @@ state refusal, and dashboard request-outcome semantics remain unchanged.
 
 # Client Features Documentation
 
+## Revision-bound review adjudication protocol
+
+Auto-Coder provides a provider-independent, side-effect-free v1 model for
+authorized decisions about one complete automated-review root thread. Literal
+versioned JSON envelopes distinguish `UPHOLD/FIX`, `OVERRULE/NO_CHANGE`, and
+`UNDECIDED/NONE` from implementation-addressed claims. Registered contexts bind
+repository and GitHub thread identities, source revisions, exact head/base,
+canonical explicit Issue contracts, and byte-exact Objective fingerprints.
+
+Decision authority uses a repository-scoped `review_adjudicator_allowlist`
+independently from the automated root's `pr_review_allowlist`; both fail closed
+and accept only positive numeric GitHub actor IDs. The durable decision graph is
+ordered by authoritative GitHub creation instant and numeric comment ID, exposes
+conflicting tips, and permanently retires a context after accepted-source
+collision/edit/deletion, bound revision changes, or current-tip authorization
+revocation. Incomplete evidence instead reports `SOURCE_UNAVAILABLE` without
+changing durable state. A checked-in JSON schema and copy-ready renderer use the
+same production parser. This foundational model emits no processing trace and
+performs no GitHub, repair, test, thread-resolution, Issue, or PASS side effect,
+so the dashboard observability production-to-view contract is unchanged.
+
 ## GitHub open Issue list cache
 
 Complete, unfiltered open Issue lists are cached per repository for one hour
