@@ -1524,9 +1524,10 @@ class TestBuildAdversarialValidationContext:
         assert "Linked Issue #10" in context.issue_context
         assert not context.is_diff_truncated
 
-    def test_build_context_uses_file_aware_evidence_for_large_diff(self):
+    def test_build_context_supplies_complete_evidence_for_diff_far_beyond_former_budget(self):
+        """A diff far larger than the old MAX_PR_DIFF_SIZE*3 budget must not be truncated (REQ-001, REQ-002)."""
         mock_client = MagicMock()
-        huge_diff = "diff --git a/file1.py b/file1.py\n+++ b/file1.py\n" + ("+" + "a" * 100 + "\n") * 500 + "diff --git a/file_late.py b/file_late.py\n+++ b/file_late.py\n"
+        huge_diff = "diff --git a/file1.py b/file1.py\n+++ b/file1.py\n" + ("+" + "a" * 100 + "\n") * 500 + "diff --git a/file_late.py b/file_late.py\n+++ b/file_late.py\n+late_line\n"
         mock_client.get_pr_diff.return_value = huge_diff
         mock_client.get_pr_changed_file_count.return_value = 2
         mock_issue = MagicMock(spec=["title", "body"])
@@ -1536,18 +1537,22 @@ class TestBuildAdversarialValidationContext:
         mock_client.get_parent_issue_details.return_value = None
 
         config = AutomationConfig()
-        config.MAX_PR_DIFF_SIZE = 100  # small threshold to trigger truncation
+        config.MAX_PR_DIFF_SIZE = 100  # far smaller than the diff; must no longer bound evidence
         pr_data = {"number": 99, "title": "Big PR", "body": "Fixes #10"}
 
         context = build_adversarial_validation_context("owner/repo", pr_data, config, github_client=mock_client)
-        assert context.is_diff_truncated
-        assert "COVERAGE INCOMPLETE" in context.pr_diff
+        assert not context.is_diff_truncated
+        assert "COVERAGE INCOMPLETE" not in context.pr_diff
+        assert not context.unverified_files
+        assert "### Changed file: file1.py" in context.pr_diff
+        assert "+" + "a" * 100 in context.pr_diff
         assert "### Changed file: file_late.py" in context.pr_diff
+        assert "+late_line" in context.pr_diff
         assert "file_late.py" in context.all_changed_files
-        assert "file1.py" in context.unverified_files
+        assert "file1.py" in context.all_changed_files
 
-    def test_rendered_prompt_preserves_late_file_patch_and_complete_manifests(self):
-        """A large early patch must not hide a later material file from the prompt."""
+    def test_rendered_prompt_preserves_early_and_late_file_patches_in_full(self):
+        """Neither an oversized early patch nor a later material file may be locally dropped (REQ-001, REQ-002)."""
         mock_client = MagicMock()
         diff_prefix = "diff --git a/src/early.py b/src/early.py\n+++ b/src/early.py\n" + ("+early_line\n" * 200)
         diff_suffix = "diff --git a/src/late_secret_feature.py b/src/late_secret_feature.py\n+++ b/src/late_secret_feature.py\n+late_line\n"
@@ -1566,6 +1571,7 @@ class TestBuildAdversarialValidationContext:
         pr_data = {"number": 100, "title": "Complex PR", "body": "Fixes #10"}
 
         context = build_adversarial_validation_context("owner/repo", pr_data, config, github_client=mock_client)
+        assert context.has_complete_file_coverage
 
         changed_tests_str = "\n".join(f"- {t}" for t in context.changed_tests) if context.changed_tests else "(No test files detected in diff)"
         rendered_prompt = render_prompt(
@@ -1579,50 +1585,60 @@ class TestBuildAdversarialValidationContext:
             linked_issues_context=context.issue_context,
             changed_tests=changed_tests_str,
             changed_files="\n".join(f"- {path}" for path in context.all_changed_files),
-            coverage_status="INCOMPLETE",
+            coverage_status="COMPLETE: every changed file has complete patch evidence.",
             requirement_manifest="\n".join(f"- {item.requirement_id}: {item.text}" for item in context.issue_requirements),
         )
 
         assert "Complete Changed-File Manifest" in rendered_prompt
+        assert "src/early.py" in rendered_prompt
+        assert "+early_line" in rendered_prompt
         assert "src/late_secret_feature.py" in rendered_prompt
         assert "+late_line" in rendered_prompt
-        assert "Coverage: COMPLETE" in rendered_prompt
+        assert rendered_prompt.count("Coverage: COMPLETE") == 2
 
-    def test_oversized_first_file_does_not_starve_later_security_and_test_files(self):
+    def test_all_files_receive_complete_untruncated_patch_evidence(self):
+        """No file is ever locally omitted or shortened regardless of aggregate size (REQ-001, REQ-002)."""
         huge_patch = "diff --git a/generated.txt b/generated.txt\n+++ b/generated.txt\n" + "+generated\n" * 1000
         security_patch = "diff --git a/src/security.py b/src/security.py\n+++ b/src/security.py\n+reject_unsafe_input()\n"
         test_patch = "diff --git a/tests/test_security.py b/tests/test_security.py\n+++ b/tests/test_security.py\n+assert_rejected()\n"
 
-        evidence, unverified = build_file_aware_diff(huge_patch + security_patch + test_patch, 700)
+        evidence, unverified = build_file_aware_diff(huge_patch + security_patch + test_patch)
 
-        assert "generated.txt" in unverified
+        assert not unverified
+        assert "### Changed file: generated.txt" in evidence
+        assert evidence.count("+generated\n") == 1000
         assert "### Changed file: src/security.py" in evidence
         assert "+reject_unsafe_input()" in evidence
         assert "### Changed file: tests/test_security.py" in evidence
         assert "+assert_rejected()" in evidence
 
-    def test_quoted_path_before_normal_file_is_never_omitted_or_reported_complete(self):
+    def test_quoted_path_and_normal_file_both_receive_complete_evidence(self):
         quoted_patch = r'diff --git "a/src/\346\227\245\346\234\254.py" "b/src/\346\227\245\346\234\254.py"' "\n" r'--- "a/src/\346\227\245\346\234\254.py"' "\n" r'+++ "b/src/\346\227\245\346\234\254.py"' "\n" + "+quoted_change\n" * 100
         normal_patch = "diff --git a/src/normal.py b/src/normal.py\n+++ b/src/normal.py\n+normal_change\n"
 
-        evidence, unverified = build_file_aware_diff(quoted_patch + normal_patch, 300)
+        evidence, unverified = build_file_aware_diff(quoted_patch + normal_patch)
 
+        assert not unverified
+        assert "COVERAGE INCOMPLETE" not in evidence
         assert "### Changed file: src/normal.py" in evidence
-        assert "src/日本.py" in unverified
-        assert "COVERAGE INCOMPLETE" in evidence
+        assert "+normal_change" in evidence
+        assert "### Changed file: src/日本.py" in evidence
+        assert evidence.count("+quoted_change\n") == 100
 
-    def test_many_file_evidence_obeys_hard_size_bound(self):
+    def test_many_file_evidence_has_no_local_size_bound(self):
         patches = []
         for index in range(100):
             path = f"src/generated/component_{index:03d}_with_a_descriptive_name.py"
             patches.append(f"diff --git a/{path} b/{path}\n+++ b/{path}\n+value_{index} = True\n")
 
-        evidence, unverified = build_file_aware_diff("".join(patches), 6000)
+        raw_diff = "".join(patches)
+        evidence, unverified = build_file_aware_diff(raw_diff)
 
-        assert len(evidence) <= 6000
-        assert unverified
-        assert "COVERAGE INCOMPLETE" in evidence
-        assert "Unverified manifest SHA-256:" in evidence
+        assert not unverified
+        assert "COVERAGE INCOMPLETE" not in evidence
+        assert len(evidence) > 6000
+        for index in range(100):
+            assert f"+value_{index} = True" in evidence
 
     def test_authoritative_301_file_count_requires_human_review(self):
         mock_client = MagicMock()
@@ -1672,8 +1688,9 @@ class TestBuildAdversarialValidationContext:
         violation_patch = "diff --git a/src/violation.py b/src/violation.py\n+++ b/src/violation.py\n+allow_forbidden_state()\n"
         raw_diff = violation_patch + huge_patch if late_file_first else huge_patch + violation_patch
 
-        evidence, _ = build_file_aware_diff(raw_diff, 500)
+        evidence, unverified = build_file_aware_diff(raw_diff)
 
+        assert not unverified
         assert "+allow_forbidden_state()" in evidence
 
     def test_hierarchical_oracle_selection_prefers_explicit_linking_keyword(self):
@@ -2278,6 +2295,40 @@ class TestRunAdversarialValidation:
         result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=MagicMock())
         assert result.is_pass
         assert result.result == "PASS"
+
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_reviewer_invocation_receives_complete_changed_file_manifest_beyond_former_budget(self, mock_run_prompt):
+        """Production-path regression (REQ-001): the manifest reaching the reviewer prompt
+        must list every retrieved changed path, exercising the real context builder rather
+        than manually composing the prompt section (a mocked context cannot catch a
+        MAX_PR_DIFF_SIZE-derived slice reintroduced between context building and the
+        `run_llm_prompt` call in `run_adversarial_validation`)."""
+        paths = [f"src/generated/component_{index:03d}_with_a_descriptive_name.py" for index in range(30)]
+        raw_diff = "".join(f"diff --git a/{path} b/{path}\n+++ b/{path}\n+value_{index} = True\n" for index, path in enumerate(paths))
+
+        mock_client = MagicMock()
+        mock_client.get_pr_diff.return_value = raw_diff
+        mock_client.get_pr_changed_file_count.return_value = len(paths)
+        mock_issue = MagicMock(spec=["title", "body"])
+        mock_issue.title = "Large manifest feature"
+        mock_issue.body = "Specification: Persist every changed generated component."
+        mock_client.get_issue.return_value = mock_issue
+        mock_client.get_parent_issue_details.return_value = None
+        mock_run_prompt.return_value = '{"result": "PASS", "summary": "ok", "findings": []}'
+
+        config = AutomationConfig()
+        config.MAX_PR_DIFF_SIZE = 50  # far smaller than the manifest; must not bound it
+        pr_data = {"number": 200, "title": "Large manifest PR", "body": "Fixes #10", "head_sha": "c" * 40}
+
+        run_adversarial_validation("owner/repo", pr_data, config, github_client=mock_client, backend_manager=MagicMock())
+
+        assert mock_run_prompt.called
+        prompt = mock_run_prompt.call_args.args[0]
+        manifest_section = prompt.split("Complete Changed-File Manifest:", 1)[1].split("Evidence Coverage Status:", 1)[0]
+        assert "SHA-256" not in manifest_section
+        assert "Bounded manifest" not in manifest_section
+        for path in paths:
+            assert f"- {path}" in manifest_section
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
