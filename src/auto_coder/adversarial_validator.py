@@ -2405,15 +2405,24 @@ def _complete_changed_file_evidence(
 # present; anything else -- however phrased -- is treated as insufficient,
 # per REQ-004's requirement that IRRELEVANT rest on a concrete same-snapshot
 # scope basis rather than the reviewer's bare assertion.
-_INDEPENDENT_SCOPE_EVIDENCE_PATTERN = re.compile(
-    r"(?:confirmed\s+via|confirmed\s+by|verified\s+via|verified\s+by|cross[- ]referenced"
-    r"|generated\s+(?:file|code|lock\s*file)|auto-?generated|build\s+artifact|compiled\s+output"
-    r"|binary\s+asset|vendored|symlink|\.gitattributes|\.gitignore"
-    r"|identical\s+to|unchanged\s+from|byte[- ]identical"
-    r"|no\s+reviewable\s+logic|not\s+source\s+code|pattern[- ]matching"
-    r"|renamed\s+without\s+content\s+change|already\s+reviewed|out\s+of\s+scope\s+per)",
+#
+# A bare file-category label ("this is generated code") is itself just an
+# unverified assertion -- exactly as bare as "this path is irrelevant" -- so
+# it cannot grant basis on its own. Only a marker describing how irrelevance
+# was actually established (a citation, comparison, or verification action)
+# does. Category labels are still recognized (in the combined pattern below)
+# so their own wording can be masked out of the negation search -- see
+# `_lacks_independent_irrelevance_scope_basis` -- they just never satisfy the
+# basis check by themselves.
+_VERIFICATION_SCOPE_EVIDENCE_PATTERN = re.compile(
+    r"(?:confirmed\s+via|confirmed\s+by|verified\s+via|verified\s+by|cross[- ]referenced" r"|\.gitattributes|\.gitignore" r"|identical\s+to|unchanged\s+from|byte[- ]identical|pattern[- ]matching" r"|renamed\s+without\s+content\s+change|already\s+reviewed|out\s+of\s+scope\s+per)",
     re.IGNORECASE,
 )
+_CATEGORY_LABEL_PATTERN = re.compile(
+    r"(?:generated\s+(?:file|code|lock\s*file)|auto-?generated|build\s+artifact|compiled\s+output" r"|binary\s+asset|vendored|symlink|no\s+reviewable\s+logic|not\s+source\s+code)",
+    re.IGNORECASE,
+)
+_INDEPENDENT_SCOPE_EVIDENCE_PATTERN = re.compile(f"(?:{_VERIFICATION_SCOPE_EVIDENCE_PATTERN.pattern}|{_CATEGORY_LABEL_PATTERN.pattern})", re.IGNORECASE)
 # A negation cue anywhere in a matched marker's own clause -- whether it
 # precedes the marker ("no .gitattributes ...") or follows it ("...gitattributes
 # ... was not obtained") -- means the marker was invoked to say the evidence
@@ -2429,8 +2438,10 @@ def _lacks_independent_irrelevance_scope_basis(evidence: str) -> bool:
     dependent Requirement, from missing evidence or the reviewer's bare
     assertion alone. An IRRELEVANT classification needs a concrete
     same-snapshot scope basis independent of the absence itself: this
-    requires an affirmative, recognized independent-scope marker to be
-    present rather than trying to enumerate every way of asserting
+    requires an affirmative, recognized *verification* marker (a citation,
+    comparison, or verification action -- not merely a file-category label,
+    which is itself just as bare an assertion as "this path is irrelevant")
+    to be present rather than trying to enumerate every way of asserting
     irrelevance without one.
 
     A marker mentioned only to say it was NOT obtained (e.g. "no
@@ -2441,8 +2452,9 @@ def _lacks_independent_irrelevance_scope_basis(evidence: str) -> bool:
     marker can itself contain a generic negation word as an idiom (e.g. "no
     reviewable logic"), which must not be read as negating a *different*
     marker sharing the same clause (e.g. "..., confirmed via ..."), so every
-    matched span is masked out of the text used for the negation search --
-    only text outside any recognized marker can negate a given match.
+    matched span (verification or category) is masked out of the text used
+    for the negation search -- only text outside any recognized marker can
+    negate a given match.
     """
     text = evidence.strip()
     if not text:
@@ -2453,7 +2465,8 @@ def _lacks_independent_irrelevance_scope_basis(evidence: str) -> bool:
         for index in range(start, end):
             masked[index] = " "
     masked_text = "".join(masked)
-    for start, end in spans:
+    for match in _VERIFICATION_SCOPE_EVIDENCE_PATTERN.finditer(text):
+        start, end = match.span()
         clause_start = 0
         for boundary in _CLAUSE_BOUNDARY_PATTERN.finditer(text, 0, start):
             clause_start = boundary.end()
