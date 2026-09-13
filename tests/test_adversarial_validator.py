@@ -17,6 +17,7 @@ from auto_coder.adversarial_validator import (
     ChangeProvenanceItem,
     DynamicCheckExecution,
     EvidenceRecoveryEntry,
+    FileDiffEvidence,
     IssueRequirement,
     RequirementCoverageEntry,
     ReviewThreadDisposition,
@@ -542,7 +543,7 @@ def test_unavailable_evidence_cannot_contradict_verified_dependent_requirement()
 
 
 def test_evidence_recovery_parser_enforces_deterministic_budget() -> None:
-    attempts = [{"path": f"src/{index}.py", "source": "repository inspection", "status": "UNAVAILABLE", "evidence": "not present", "requirement_ids": ["REQ-001"]} for index in range(9)]
+    attempts = [{"path": f"src/{index}.py", "source": "repository inspection", "status": "UNAVAILABLE", "evidence": "not present", "requirement_ids": ["REQ-001"]} for index in range(301)]
 
     result = parse_adversarial_validation_response(json.dumps({"result": "INCONCLUSIVE", "findings": [], "evidence_recovery": attempts}))
 
@@ -1682,6 +1683,36 @@ class TestBuildAdversarialValidationContext:
         assert context.evidence_retrieval_error == "Authoritative changed-file count retrieval failed: count unavailable"
         assert not context.requires_human_review
 
+    def test_omitted_raw_diff_paths_are_retrieved_with_complete_patch_checks(self):
+        mock_client = MagicMock()
+        mock_client.get_pr_diff.return_value = "diff --git a/src/visible.py b/src/visible.py\n+++ b/src/visible.py\n+visible = True\n"
+        mock_client.get_pr_changed_file_count.return_value = 3
+        mock_client.get_pr_changed_files.return_value = [
+            {"filename": "src/visible.py", "additions": 1, "deletions": 0, "patch": "+visible = True"},
+            {"filename": "src/complete.py", "additions": 1, "deletions": 1, "patch": "@@ -1 +1 @@\n-old\n+new"},
+            {"filename": "src/truncated.py", "additions": 20, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+only one line"},
+        ]
+        mock_issue = MagicMock(spec=["title", "body"])
+        mock_issue.title = "Recover files"
+        mock_issue.body = "REQ-001: Review every changed path."
+        mock_client.get_issue.return_value = mock_issue
+        mock_client.get_parent_issue_details.return_value = None
+
+        context = build_adversarial_validation_context(
+            "owner/repo",
+            {"number": 303, "title": "Partial raw diff", "body": "Fixes #10", "head_sha": "head", "base_sha": "base"},
+            AutomationConfig(),
+            github_client=mock_client,
+        )
+
+        assert context.all_changed_files == ["src/visible.py", "src/complete.py", "src/truncated.py"]
+        assert context.unverified_files == ["src/complete.py", "src/truncated.py"]
+        assert [(item.path, item.is_complete) for item in context.controller_file_evidence] == [
+            ("src/complete.py", True),
+            ("src/truncated.py", False),
+        ]
+        assert context.validation_snapshot
+
     @pytest.mark.parametrize("late_file_first", [False, True])
     def test_violating_file_evidence_is_order_independent(self, late_file_first):
         huge_patch = "diff --git a/generated.txt b/generated.txt\n+++ b/generated.txt\n" + "+generated\n" * 1000
@@ -2609,7 +2640,57 @@ class TestRunAdversarialValidation:
 
         assert result.result == "ERROR"
         assert result.is_blocked
-        assert result.diagnostic_category == "pass_with_unresolved_changed_file_evidence"
+        assert result.diagnostic_category == "changed_file_completion_session_unavailable"
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_controller_recovers_exact_paths_in_one_same_session_round(self, mock_run_prompt, mock_build_ctx):
+        context = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Large change",
+            pr_diff="partial evidence",
+            all_changed_files=["src/one.py", "src/two.py"],
+            issue_context="Issue specification",
+            unverified_files=["src/one.py", "src/two.py"],
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Behavior remains correct")],
+            validation_snapshot="snapshot-1",
+            controller_file_evidence=[
+                FileDiffEvidence(path="src/one.py", patch="complete one", is_complete=True),
+                FileDiffEvidence(path="src/two.py", patch="complete two", is_complete=True),
+            ],
+        )
+        mock_build_ctx.return_value = context
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Initially complete",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "initial evidence"}],
+                "findings": [],
+            }
+        )
+        manager = MagicMock()
+        manager._last_session_id = "session-1"
+        manager.get_current_backend_identity.return_value = ("codex", "codex", "model")
+        manager.continue_session.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Coverage completed",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "retained plus recovered evidence"}],
+                "evidence_recovery": [{"path": path, "source": "current-PR retrieval", "status": "RECOVERED", "evidence": f"complete {path}", "requirement_ids": ["REQ-001"]} for path in context.unverified_files],
+                "findings": [],
+            }
+        )
+
+        result = run_adversarial_validation("owner/repo", {"number": 100, "head_sha": "head-1"}, AutomationConfig(), backend_manager=manager)
+
+        assert result.result == "PASS"
+        assert manager.continue_session.call_count == 1
+        completion_prompt = manager.continue_session.call_args.args[1]
+        assert '"src/one.py"' in completion_prompt
+        assert '"src/two.py"' in completion_prompt
+        assert "complete one" in completion_prompt
+        assert "complete two" in completion_prompt
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

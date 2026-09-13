@@ -2692,6 +2692,14 @@ mention-only-pr-ownership-exclusion:
     - "The native-connection check is bounded to Issue owners already tracked in the slot store, so `_record_open_pr_memberships` (startup discovery, run before reconciliation) can attach an open PR to an existing owner's durable `implementation_prs` only via this restricted evidence, never via a title/body mention; already-recorded `implementation_prs` and provider-session membership are untouched by this filtering."
     - "`GitHubClient.has_linked_pr` now reports only a currently open PR from `get_connected_prs(..., strict=True)`; the previous title/body substring fallback (e.g. matching bare `#N`) is removed entirely, and an unavailable native-connection lookup raises so its sole caller (`issue_processor.handle_stale_jules_issue_sessions`) defers that session's stale-Jules replacement instead of treating the failure as either a found or a missing linked PR."
 
+deterministic-adversarial-file-evidence-completion:
+  description: "Deterministically completes unresolved changed-file evidence before rejecting an otherwise-PASS adversarial review (Issue #2048)."
+  implementation: "Adversarial validation snapshot and completion orchestration in src/auto_coder/adversarial_validator.py; paginated PR file retrieval in src/auto_coder/util/gh_cache.py."
+  behavior:
+    - "The controller obtains the exact unresolved paths and independent per-path GitHub REST file representations, then supplies every success or failure in one focused continuation of the same reviewer session; autonomous reviewer discovery is not required."
+    - "The completion must account for each supplied path exactly once, cannot call incomplete controller evidence RECOVERED, and is never retried; omissions and contradictions fail closed."
+    - "Final finding/test-gap/evidence-incomplete/PASS precedence is applied after completion, and the PR identity, head, base/change representation, and authoritative Requirement manifest snapshot must be reconfirmed before the focused result can authorize a verdict."
+
 ## Mandatory production-to-view dashboard observability regressions
 
 Dashboard observability is protected by deterministic tests in the ordinary PR

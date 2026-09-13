@@ -139,6 +139,15 @@ CI delivery persistence/fencing and the final authority-check/merge mutation use
 one short authority barrier, so a delivery cannot become accepted in the gap
 between the proof and mutation. The barrier does not cover provider reads.
 
+Changed-file evidence completion retains the existing
+`pr.adversarial-validation` stage and processing origin. Its non-PASS event now
+preserves `diagnostic_category` and `diagnostic_reason`, allowing the generic
+Observed Evidence panel to distinguish unavailable completion sessions, invalid
+path accounting, evidence incompleteness, and stale validation snapshots without
+coercing any of them into success. The production orchestration regression
+`test_controller_recovers_exact_paths_in_one_same_session_round` proves the
+focused same-session boundary; existing dashboard stage rendering remains generic.
+
 ## Implementation Slots panel (Issue #1993)
 
 The main dashboard's Implementation Slots section is a separate

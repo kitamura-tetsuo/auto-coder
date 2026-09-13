@@ -2420,6 +2420,21 @@ class GitHubClient:
             raise ValueError(f"PR #{pr_number} response did not contain a valid changed_files count")
         return changed_files
 
+    @retry_with_backoff()
+    def get_pr_changed_files(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        """Return every REST changed-file record for a pull request."""
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        result: List[Dict[str, Any]] = []
+        for page in range(1, 4):  # Automated validation is capped at 300 files.
+            files = api.pulls.list_files(owner, repo, pr_number, per_page=100, page=page)
+            if not isinstance(files, list):
+                raise ValueError(f"PR #{pr_number} files response was not a list")
+            result.extend(dict(item) for item in files if isinstance(item, dict))
+            if len(files) < 100:
+                break
+        return result
+
     def get_pr_commits(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
         """Get all commits for a pull request."""
         try:
