@@ -155,6 +155,84 @@ CI delivery persistence/fencing and the final authority-check/merge mutation use
 one short authority barrier, so a delivery cannot become accepted in the gap
 between the proof and mutation. The barrier does not cover provider reads.
 
+Changed-file evidence completion retains the existing
+`pr.adversarial-validation` stage and processing origin. Its non-PASS event now
+preserves `diagnostic_category` and `diagnostic_reason`, allowing the generic
+Observed Evidence panel to distinguish unavailable completion sessions,
+same-session discontinuity, invalid or contradictory path accounting,
+absence-only IRRELEVANT rejections, evidence incompleteness, and stale
+validation snapshots without coercing any of them into success. The completion
+round now also rejects a response whose backend fell back to a fresh session
+instead of resuming the original reviewer session
+(`changed_file_completion_session_discontinuity`) and merges a later round's
+newly recovered paths with evidence already recovered in an earlier round
+instead of discarding it, so a focused completion cannot invalidate prior
+same-snapshot recovery. `_apply_coverage_and_verdict_precedence` separately
+rejects an IRRELEVANT classification justified only by the evidence being
+unavailable (`absence_only_irrelevance_rejected`), and the evidence-recovery
+parser rejects a duplicate/contradictory path before any verdict is computed.
+Revalidating a snapshot before authorizing a completion-round PASS now uses
+genuinely cache-bypassing retrieval for the diff, changed-file listing, and
+linked Issue body (`bypass_cache=True`) instead of the general HTTP cache, and
+the validation snapshot digest now also binds the raw diff content itself
+(not just the authoritative REST listing), so a changed raw diff for an
+already-decided file invalidates the snapshot even when the REST listing of
+omitted files is unchanged. A path the initial round left UNAVAILABLE may
+still transition to RECOVERED (or reveal a new finding) in the completion
+round without being treated as a rejected contradiction; only a path already
+RECOVERED/IRRELEVANT before that round must stay stable, and that gap is now
+also retained diagnostically (in `summary`/`diagnostic_reason`) even when a
+demonstrated finding or material test-oracle gap determines the top-level
+NEEDS_FIX/NEEDS_TESTS verdict, instead of being silently dropped once a
+higher-precedence verdict wins. Rather than trying to enumerate every way of
+asserting absence-only irrelevance (an unwinnable paraphrase arms race — a
+bare "This path is irrelevant." offers no absence clause to even match),
+`_lacks_independent_irrelevance_scope_basis` instead requires an affirmative,
+recognized independent-scope marker (e.g. a generated/vendored/binary-asset
+reference, a `.gitattributes` marker, or an explicit "confirmed
+via"/"identical to" citation) to be present at all, and checks each match
+against the negation cues in its own clause so a marker invoked only to say
+it was NOT obtained (e.g. "no `.gitattributes` ... was obtained") does not
+count as affirmative evidence; anything else is rejected regardless of
+phrasing.
+
+A persistent failure on one changed-file REST page no longer blocks
+validation before the reviewer ever runs: the successfully retrieved page's
+evidence is carried into context and reaches the bounded completion round
+alongside an explicit `unresolvable_file_count`, and `pass_with_unresolvable_changed_file_count`
+still fails closed at final verdict precedence so that gap can never
+authorize PASS. Both the cached and cache-bypassing changed-file pagination
+recognize any `GitHubRequestError` — the production diagnostic boundary's
+(`CachedGhApi`/`DiagnosticTransport`) typed wrapper covering both a raw
+transport exception and a permanent API-level rejection (e.g. an HTTP 500) —
+as eligible to preserve already-retrieved records; only its
+`TRANSPORT_FAILURE` classification (and a bare `httpx` transport exception)
+is actually retried; every other classification is not worth retrying but
+still raises `PartialPRChangedFilesError` with whatever was already fetched
+rather than discarding it. An exception unrelated to the GitHub request
+boundary (a genuine bug, not a retrieval failure) still propagates untouched
+rather than being downgraded to a partial recovery. The per-file REST patch
+completeness check
+(`_github_file_record_has_complete_patch`) no longer excludes content lines
+that happen to start with `++`/`--` (e.g. `++counter;`): GitHub's per-file
+`patch` field never carries unified-diff `+++`/`---` file headers, only hunk
+headers and content, so that exclusion was misclassifying complete evidence
+as unavailable. The production orchestration regressions
+`test_controller_recovers_exact_paths_in_one_same_session_round`,
+`test_completion_rejects_response_from_a_rotated_backend_session`,
+`test_completion_round_preserves_prior_recovered_path`,
+`test_completion_transitions_unavailable_path_to_recovered_with_new_finding`,
+`test_bypass_cache_uses_genuinely_cache_bypassing_retrieval`,
+`test_unresolvable_file_count_reaches_completion_but_blocks_final_pass`,
+`test_stale_raw_diff_for_an_already_decided_file_is_rejected_at_finalization`,
+`test_unresolvable_file_count_is_retained_as_diagnostic_alongside_a_demonstrated_finding`,
+`test_irrelevance_with_negated_marker_in_an_earlier_clause_is_still_accepted`,
+and `test_partial_changed_file_page_failure_retains_successfully_retrieved_evidence`
+(all in `tests/test_adversarial_validator.py`), plus
+`tests/test_gh_cache_pr_changed_files_pagination.py` (including its
+production-typed-error and unrecognized-exception cases), prove these
+boundaries; existing dashboard stage rendering remains generic.
+
 ## Implementation Slots panel (Issue #1993)
 
 The main dashboard's Implementation Slots section is a separate

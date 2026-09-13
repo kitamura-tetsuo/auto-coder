@@ -234,19 +234,28 @@ def resolve_issue_oracles(
     repo_name: str,
     pr_data: Optional[Dict[str, Any]] = None,
     pr_body: str = "",
+    bypass_cache: bool = False,
 ) -> IssueOracleResolution:
-    """Resolve all inferred candidates through GitHub and reject invalid oracles."""
+    """Resolve all inferred candidates through GitHub and reject invalid oracles.
+
+    ``bypass_cache`` forces a genuinely cache-bypassing Issue fetch instead of
+    the ordinary cached lookup. Use it only when re-confirming a validation
+    snapshot is still current: the general path stays cached for performance.
+    """
     candidates = tuple(extract_associated_issue_numbers(pr_data=pr_data, pr_body=pr_body))
     if not candidates:
         return IssueOracleResolution()
     if not github_client:
         return IssueOracleResolution(candidates=candidates, error="GitHub client unavailable while resolving linked Issue oracle")
 
+    strict_snapshot_getter = getattr(type(github_client), "get_issue_dispatch_snapshot_strict", None)
     strict_getter = getattr(type(github_client), "get_issue_strict", None)
     verified_issues = []
     for issue_number in candidates:
         try:
-            if callable(strict_getter):
+            if bypass_cache and callable(strict_snapshot_getter):
+                issue = github_client.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+            elif callable(strict_getter):
                 issue = github_client.get_issue_strict(repo_name, issue_number)
             else:
                 issue = github_client.get_issue(repo_name, issue_number)
