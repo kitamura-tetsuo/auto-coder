@@ -580,6 +580,7 @@ def test_absence_only_irrelevance_cannot_discharge_unavailable_path() -> None:
         "The patch is unavailable; no .gitattributes or other scope evidence was obtained.",
         "The .gitattributes file was not obtained; no independent scope evidence is available.",
         "This is generated code.",
+        "Already reviewed.",
     ],
 )
 def test_absence_only_irrelevance_rejected_regardless_of_phrasing(evidence: str) -> None:
