@@ -1025,106 +1025,40 @@ def _split_diff_by_file(pr_diff: str) -> List[FileDiffEvidence]:
     return evidence
 
 
-def _bounded_file_patch(patch: str, allocation: int) -> str:
-    """Represent one oversized patch with bounded beginning and ending evidence."""
-    if allocation <= 0:
-        return ""
-    if len(patch) <= allocation:
-        return patch
-    marker = "\n... [per-file patch evidence omitted] ...\n"
-    if allocation <= len(marker):
-        return patch[:allocation]
-
-    content_budget = max(0, allocation - len(marker))
-    prefix_size = (content_budget + 1) // 2
-    suffix_size = content_budget // 2
-    return patch[:prefix_size] + marker + (patch[-suffix_size:] if suffix_size else "")
-
-
 def _render_complete_file_evidence(file_patch: FileDiffEvidence) -> str:
     """Render one completely covered file patch."""
     return f"### Changed file: {file_patch.path}\nCoverage: COMPLETE ({file_patch.original_size}/{file_patch.original_size} patch characters supplied)\n{file_patch.patch}"
 
 
-def _bounded_unverified_summary(paths: List[str], budget: int) -> str:
-    """Render a hard-bounded diagnostic for the complete unverified path set."""
-    if budget <= 0 or not paths:
-        return ""
-    manifest = "\0".join(paths)
-    digest = hashlib.sha256(manifest.encode("utf-8", errors="replace")).hexdigest()
-    summary = f"## COVERAGE INCOMPLETE\nUnverified changed files: {len(paths)}\nUnverified manifest SHA-256: {digest}\n"
-    if len(summary) >= budget:
-        return summary[:budget]
+def _format_path_manifest(paths: List[str], empty_message: str) -> str:
+    """Render a complete path manifest with no local character bound.
 
-    sample_prefix = "Bounded path sample: "
-    if len(summary) + len(sample_prefix) < budget:
-        summary += sample_prefix
-        for path in paths:
-            separator = ", " if not summary.endswith(sample_prefix) else ""
-            addition = separator + path
-            if len(summary) + len(addition) > budget:
-                break
-            summary += addition
-    return summary[:budget]
-
-
-def _bounded_path_manifest(paths: List[str], budget: int, empty_message: str) -> str:
-    """Format a path manifest without allowing metadata to bypass context limits."""
+    REQ-001/REQ-002: every path Auto-Coder already retrieved must reach the
+    reviewer; a local character budget must never omit, truncate, or sample
+    the changed-file manifest.
+    """
     if not paths:
-        return empty_message[: max(0, budget)]
-    rendered = "\n".join(f"- {path}" for path in paths)
-    if len(rendered) <= budget:
-        return rendered
-
-    digest = hashlib.sha256("\0".join(paths).encode("utf-8", errors="replace")).hexdigest()
-    header = f"(Bounded manifest: {len(paths)} paths, SHA-256 {digest})\n"
-    if len(header) >= budget:
-        return header[: max(0, budget)]
-    sample_budget = budget - len(header)
-    return (header + rendered[:sample_budget])[:budget]
+        return empty_message
+    return "\n".join(f"- {path}" for path in paths)
 
 
-def build_file_aware_diff(pr_diff: str, max_evidence_size: int) -> tuple[str, List[str]]:
-    """Build bounded, per-file diff evidence without allowing early files to starve later ones.
+def build_file_aware_diff(pr_diff: str) -> tuple[str, List[str]]:
+    """Render complete, per-file diff evidence for every retrieved changed file.
 
-    Every file receives an independent coverage record. Small patches are included
-    completely before the remaining budget is shared across oversized patches.
-    Files without complete patches are explicitly returned as unverified so a
-    downstream PASS can be rejected deterministically.
+    REQ-001/REQ-002: a local character budget must never convert already
+    retrieved patch evidence into unverified evidence, so every file
+    ``_split_diff_by_file`` can identify is rendered with its complete,
+    untruncated patch. The unverified-files return value is always empty
+    here; only a genuine upstream retrieval gap (see
+    ``build_adversarial_validation_context``) may report a path as
+    unverified.
     """
     file_patches = _split_diff_by_file(pr_diff)
     if not file_patches:
-        if len(pr_diff) <= max_evidence_size:
-            return pr_diff, []
-        return _bounded_file_patch(pr_diff, max_evidence_size), ["<unparsed unified diff>"]
+        return pr_diff, []
 
-    limit = max(0, max_evidence_size)
     complete_blocks = [_render_complete_file_evidence(file_patch) for file_patch in file_patches]
-    complete_rendering = "\n\n".join(complete_blocks)
-    if len(complete_rendering) <= limit:
-        return complete_rendering, []
-
-    # Reserve a fixed amount for a count and digest of the complete unverified
-    # manifest, then fit the smallest full patches. This keeps the output under
-    # the hard limit and prevents a large early file from starving later files.
-    summary_reserve = min(limit, 128)
-    content_budget = max(0, limit - summary_reserve - 2)
-    selected_indexes: set[int] = set()
-    used = 0
-    for index in sorted(range(len(file_patches)), key=lambda item: len(complete_blocks[item])):
-        separator_size = 2 if selected_indexes else 0
-        block_size = len(complete_blocks[index]) + separator_size
-        if used + block_size <= content_budget:
-            selected_indexes.add(index)
-            used += block_size
-
-    rendered_blocks = [complete_blocks[index] for index in range(len(file_patches)) if index in selected_indexes]
-    unverified_files = [file_patch.path for index, file_patch in enumerate(file_patches) if index not in selected_indexes]
-    content = "\n\n".join(rendered_blocks)
-    separator = "\n\n" if content else ""
-    summary_budget = max(0, limit - len(content) - len(separator))
-    summary = _bounded_unverified_summary(unverified_files, summary_budget)
-    return (content + separator + summary)[:limit], unverified_files
+    return "\n\n".join(complete_blocks), []
 
 
 def build_adversarial_validation_context(
@@ -1136,8 +1070,8 @@ def build_adversarial_validation_context(
     """Compile issue specification, PR diff, and changed tests for validation.
 
     Recovers oracle/specification from PR body, title, branch name, and session.
-    Uses a bounded, file-aware budget so an early oversized patch cannot hide
-    later implementation or test files.
+    Every changed-file patch that GitHub's diff endpoint returns is supplied in
+    full; no Auto-Coder-local character budget hides or samples a file.
 
     Args:
         repo_name: Repository name in 'owner/repo' format
@@ -1159,8 +1093,11 @@ def build_adversarial_validation_context(
         except Exception:
             client = None
 
-    # Retrieve bounded diff evidence and the authoritative changed-file count through
-    # independent endpoints so GitHub's raw-diff limit cannot authorize a large PR.
+    # Retrieve complete diff evidence and the authoritative changed-file count through
+    # independent endpoints so GitHub's own raw-diff retrieval gap cannot authorize a
+    # large PR. No Auto-Coder-local character budget is applied to either (REQ-001,
+    # REQ-002): a path only becomes unverified when the authoritative changed-file
+    # count exceeds what the raw diff actually returned (a genuine upstream gap).
     pr_diff = ""
     is_diff_truncated = False
     all_changed_files: List[str] = []
@@ -1175,8 +1112,7 @@ def build_adversarial_validation_context(
             raw_diff = client.get_pr_diff(repo_name, pr_number)
             if raw_diff:
                 diff_changed_files = extract_all_changed_files(raw_diff)
-                max_diff_size = config.MAX_PR_DIFF_SIZE * 3
-                pr_diff, unverified_files = build_file_aware_diff(raw_diff, max_diff_size)
+                pr_diff, unverified_files = build_file_aware_diff(raw_diff)
         except Exception as e:
             logger.warning(f"Could not retrieve diff for PR #{pr_number}: {e}")
 
@@ -2542,18 +2478,16 @@ def run_adversarial_validation(
 
     # 3. Render adversarial validation prompt with complete manifests and
     # deterministic file-evidence coverage metadata.
-    manifest_budget = max(256, config.MAX_PR_DIFF_SIZE)
-    changed_tests_str = _bounded_path_manifest(context.changed_tests, manifest_budget, "(No test files detected in diff)")
-    changed_files_str = _bounded_path_manifest(context.all_changed_files, manifest_budget, "(No changed files detected)")
+    changed_tests_str = _format_path_manifest(context.changed_tests, "(No test files detected in diff)")
+    changed_files_str = _format_path_manifest(context.all_changed_files, "(No changed files detected)")
     requirement_entries = "\n".join(f"- {requirement.requirement_id}: {requirement.text}" for requirement in context.issue_requirements)
     requirement_manifest = f"Manifest mode: {context.requirement_manifest_mode}\n{requirement_entries}" if requirement_entries else f"Manifest mode: {context.requirement_manifest_mode}\n(Requirement manifest extraction failed; PASS is forbidden.)"
     if context.has_complete_file_coverage:
         coverage_status = "COMPLETE: every changed file has complete patch evidence."
     else:
         coverage_prefix = "INCOMPLETE: PASS is forbidden. Partial/unavailable file evidence:\n"
-        coverage_status = coverage_prefix + _bounded_path_manifest(
+        coverage_status = coverage_prefix + _format_path_manifest(
             context.unverified_files,
-            max(0, manifest_budget - len(coverage_prefix)),
             "(Unverified path metadata unavailable)",
         )
     registry = session_registry or ReviewerSessionRegistry()
@@ -2575,9 +2509,8 @@ def run_adversarial_validation(
                 coverage_status = "COMPLETE: every initially incomplete changed file was recovered or classified irrelevant on this exact head."
             else:
                 coverage_prefix = "INCOMPLETE: PASS is forbidden. Partial/unavailable file evidence after same-head recovery:\n"
-                coverage_status = coverage_prefix + _bounded_path_manifest(
+                coverage_status = coverage_prefix + _format_path_manifest(
                     unresolved_paths,
-                    max(0, manifest_budget - len(coverage_prefix)),
                     "(Unverified path metadata unavailable)",
                 )
     lifecycle_session = stored_session if stored_session is not None and stored_session.last_head_sha else None
