@@ -2365,9 +2365,10 @@ def _build_recovery_ledger(
 ) -> List[RecoveredFileEvidence]:
     """Build a diagnostic ledger without letting invalid history cover files."""
     prior_by_path = {entry.path: entry for entry in stored_session.recovered_file_evidence} if stored_session else {}
-    current_by_path = {entry.path: entry for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files}
+    current_by_path = {entry.path: entry for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"}}
     ledger: List[RecoveredFileEvidence] = []
-    for path in context.unverified_files:
+    ledger_paths = list(dict.fromkeys([*context.unverified_files, *prior_by_path]))
+    for path in ledger_paths:
         current = current_by_path.get(path)
         prior = prior_by_path.get(path)
         current_identity = context.file_change_identities.get(path, "")
@@ -3010,7 +3011,7 @@ def run_adversarial_validation(
     )
     result = _complete_changed_file_evidence(result, context, backend_manager, requirement_manifest, head_sha)
     result = _apply_coverage_and_verdict_precedence(result, context)
-    current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files]
+    current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and (entry.path in context.unverified_files or entry.provenance == "REUSED_EQUIVALENT")]
 
     initial_thread_dispositions = result.thread_dispositions
 
@@ -3114,7 +3115,7 @@ def run_adversarial_validation(
                                 diagnostic_category="validator_evidence_unavailable",
                                 diagnostic_reason=format_ci_execution_evidence(ci_status),
                             )
-                        return _apply_coverage_and_verdict_precedence(result, context)
+                        result.dynamic_check_requested = None
                     repeated_error = validate_dynamic_check_target(corrected_target, Path(execution_cwd).resolve()) if execution_cwd else None
                     if repeated_error:
                         return AdversarialValidationResult(
@@ -3128,16 +3129,18 @@ def run_adversarial_validation(
                         logger.info("Reusing refreshed exact-head CI evidence after dynamic-target correction")
                         result.dynamic_check_requested = None
                         result.summary = f"{result.summary} Reused successful exact-head {CANONICAL_PR_TESTS_WORKFLOW} evidence."
-                        return _apply_coverage_and_verdict_precedence(result, context)
-                    test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
-                    if test_res.target_selection_error:
+                    if check_target and result.dynamic_check_requested:
+                        test_res = run_exact_head_dynamic_check(config, check_target, head_sha, execution_cwd) if execution_cwd else run_exact_head_dynamic_check(config, check_target, head_sha)
+                    if result.dynamic_check_requested and test_res.target_selection_error:
                         return AdversarialValidationResult(
                             result="ERROR",
                             summary="Reviewer repeated an unselectable dynamic-check target after the bounded correction step",
                             diagnostic_category="dynamic_check_target_protocol_error",
                             diagnostic_reason=test_res.target_selection_error,
                         )
-                if test_res.verification_error:
+                if not result.dynamic_check_requested:
+                    pass
+                elif test_res.verification_error:
                     known_mismatch = test_res.executed_sha is not None
                     result.result = "ERROR" if known_mismatch else "INCONCLUSIVE"
                     result.summary = f"Dynamic validation evidence rejected: {test_res.verification_error}"
