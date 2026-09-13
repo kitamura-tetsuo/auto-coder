@@ -101,6 +101,21 @@ def parse_parent_issue_url_number(parent_issue_url: object) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+class PartialPRChangedFilesError(RuntimeError):
+    """Pagination failed after at least one page of changed-file records succeeded.
+
+    ``partial_records`` retains every record already fetched so a caller can
+    supply that successfully retrieved per-path evidence to a bounded
+    completion round instead of discarding it alongside the failure.
+    """
+
+    def __init__(self, message: str, partial_records: List[Dict[str, Any]], failed_page: int, original_error: BaseException):
+        super().__init__(message)
+        self.partial_records = partial_records
+        self.failed_page = failed_page
+        self.original_error = original_error
+
+
 class ActionsSecretPermissionError(RuntimeError):
     """The dedicated credential cannot publish repository Actions secrets."""
 
@@ -2420,14 +2435,110 @@ class GitHubClient:
             raise ValueError(f"PR #{pr_number} response did not contain a valid changed_files count")
         return changed_files
 
-    @retry_with_backoff()
     def get_pr_changed_files(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
-        """Return every REST changed-file record for a pull request."""
+        """Return every REST changed-file record for a pull request.
+
+        Each page is retried independently (rather than restarting the whole
+        pagination loop) so a transient failure on a later page cannot discard
+        records a prior page already retrieved. If a page's retries are
+        exhausted, ``PartialPRChangedFilesError`` is raised carrying every
+        record fetched so far, so a caller can still use that successfully
+        retrieved per-path evidence instead of losing it alongside the
+        failure.
+        """
         owner, repo = repo_name.split("/")
         api = get_ghapi_client(self.token)
         result: List[Dict[str, Any]] = []
+        retries = 3
+        backoff_in_seconds = 1
         for page in range(1, 4):  # Automated validation is capped at 300 files.
-            files = api.pulls.list_files(owner, repo, pr_number, per_page=100, page=page)
+            attempt = 0
+            while True:
+                try:
+                    files = api.pulls.list_files(owner, repo, pr_number, per_page=100, page=page)
+                    break
+                except (httpx.RequestError, httpx.StreamError, httpx.RemoteProtocolError, httpx.PoolTimeout) as e:
+                    if attempt == retries:
+                        raise PartialPRChangedFilesError(
+                            f"PR #{pr_number} changed-file pagination failed on page {page} after {retries} retries: {e}",
+                            partial_records=result,
+                            failed_page=page,
+                            original_error=e,
+                        ) from e
+                    sleep = backoff_in_seconds * 2**attempt
+                    logger.warning(f"Network error fetching PR #{pr_number} changed files page {page} ({e}), retrying in {sleep}s...")
+                    time.sleep(sleep)
+                    attempt += 1
+            if not isinstance(files, list):
+                raise ValueError(f"PR #{pr_number} files response was not a list")
+            result.extend(dict(item) for item in files if isinstance(item, dict))
+            if len(files) < 100:
+                break
+        return result
+
+    @retry_with_backoff()
+    def get_pr_diff_strict(self, repo_name: str, pr_number: int) -> str:
+        """Fetch the raw PR diff directly, bypassing every cache.
+
+        Used only where the caller must reconfirm the exact live diff instead
+        of a possibly-stale cached response (e.g. revalidating a snapshot
+        before authorizing a verdict).
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Authorization": f"bearer {self.token}", "Accept": "application/vnd.github.v3.diff", "X-GitHub-Api-Version": "2022-11-28"}
+        response = _strict_request("GET", f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}", headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.text
+
+    @retry_with_backoff()
+    def get_pr_changed_file_count_strict(self, repo_name: str, pr_number: int) -> int:
+        """Fetch the authoritative changed-file count directly, bypassing every cache."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        response = _strict_request("GET", f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}", headers=headers, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        changed_files = payload.get("changed_files") if isinstance(payload, dict) else None
+        if isinstance(changed_files, bool) or not isinstance(changed_files, int) or changed_files < 0:
+            raise ValueError(f"PR #{pr_number} response did not contain a valid changed_files count")
+        return changed_files
+
+    def get_pr_changed_files_strict(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        """Return every REST changed-file record directly, bypassing every cache.
+
+        Mirrors ``get_pr_changed_files``'s per-page retry and partial-failure
+        behavior so a revalidation snapshot cannot be authorized from a stale
+        cached listing while still preserving any successfully fetched pages.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        result: List[Dict[str, Any]] = []
+        retries = 3
+        backoff_in_seconds = 1
+        for page in range(1, 4):  # Automated validation is capped at 300 files.
+            attempt = 0
+            while True:
+                try:
+                    response = _strict_request("GET", f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/files", headers=headers, params={"per_page": 100, "page": page}, timeout=30)
+                    response.raise_for_status()
+                    files = response.json()
+                    break
+                except (httpx.RequestError, httpx.StreamError, httpx.RemoteProtocolError, httpx.PoolTimeout) as e:
+                    if attempt == retries:
+                        raise PartialPRChangedFilesError(
+                            f"PR #{pr_number} changed-file pagination failed on page {page} after {retries} retries: {e}",
+                            partial_records=result,
+                            failed_page=page,
+                            original_error=e,
+                        ) from e
+                    sleep = backoff_in_seconds * 2**attempt
+                    logger.warning(f"Network error fetching PR #{pr_number} changed files page {page} ({e}), retrying in {sleep}s...")
+                    time.sleep(sleep)
+                    attempt += 1
             if not isinstance(files, list):
                 raise ValueError(f"PR #{pr_number} files response was not a list")
             result.extend(dict(item) for item in files if isinstance(item, dict))

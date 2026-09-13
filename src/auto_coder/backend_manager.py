@@ -224,6 +224,12 @@ class BackendManager(LLMBackendManagerBase):
         # Track session ID of the last executed backend
         self._last_session_id: Optional[str] = None
 
+        # Whether the most recent continue_session() call actually resumed the
+        # requested session, or fell back to a fresh session/backend. Callers
+        # that require session continuity (e.g. adversarial evidence-completion
+        # rounds) must check this before trusting the response.
+        self._last_continue_session_resumed: bool = False
+
         # Provider manager for backend provider metadata
         # Implements provider rotation logic for switching between different provider implementations
         # for the same backend (e.g., qwen-open-router vs qwen-azure vs qwen-direct)
@@ -600,12 +606,15 @@ class BackendManager(LLMBackendManagerBase):
             self._last_backend = backend_name
             self._last_model = getattr(client, "model_name", None)
             self._last_session_id = client.get_last_session_id() or session_id
+            self._last_continue_session_resumed = True
             return str(output)
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
+            self._last_continue_session_resumed = False
             self.switch_to_next_backend()
             return self._run_llm_cli(prompt)
         except (ValueError, RuntimeError, NotImplementedError) as exc:
             logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
+            self._last_continue_session_resumed = False
             self._last_session_id = None
             self._save_session_state(backend_name, None)
             if hasattr(client, "clear_last_session_id"):

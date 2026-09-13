@@ -542,6 +542,62 @@ def test_unavailable_evidence_cannot_contradict_verified_dependent_requirement()
     assert checked.diagnostic_reason == ("Correctness-relevant changed-file evidence is unavailable while dependent requirements are marked decided: REQ-001")
 
 
+def test_absence_only_irrelevance_cannot_discharge_unavailable_path() -> None:
+    """REQ-004/REQ-005: an IRRELEVANT classification justified only by missing
+    evidence must not discharge coverage or authorize PASS."""
+    context = AdversarialValidationContext(
+        unverified_files=["src/state.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve state")],
+        controller_file_evidence=[FileDiffEvidence(path="src/state.py", patch="", is_complete=False)],
+    )
+    result = AdversarialValidationResult(
+        result="PASS",
+        requirement_coverage=[RequirementCoverageEntry(requirement_id="REQ-001", status="VERIFIED", evidence="Claimed complete")],
+        evidence_recovery=[
+            EvidenceRecoveryEntry(
+                path="src/state.py",
+                source="current-PR retrieval",
+                status="IRRELEVANT",
+                evidence="No patch was available, so this path is irrelevant.",
+                requirement_ids=["REQ-001"],
+            )
+        ],
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert checked.result == "ERROR"
+    assert checked.diagnostic_category == "absence_only_irrelevance_rejected"
+    assert "src/state.py" in (checked.diagnostic_reason or "")
+
+
+def test_irrelevance_with_independent_scope_basis_is_accepted() -> None:
+    """An IRRELEVANT classification grounded in a concrete, independent scope
+    basis (not merely the absence of evidence) remains valid."""
+    context = AdversarialValidationContext(
+        unverified_files=["src/state.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve state")],
+        controller_file_evidence=[FileDiffEvidence(path="src/state.py", patch="", is_complete=False)],
+    )
+    result = AdversarialValidationResult(
+        result="PASS",
+        requirement_coverage=[RequirementCoverageEntry(requirement_id="REQ-001", status="VERIFIED", evidence="Claimed complete")],
+        evidence_recovery=[
+            EvidenceRecoveryEntry(
+                path="src/state.py",
+                source="current-PR retrieval",
+                status="IRRELEVANT",
+                evidence="This is a generated lockfile with no reviewable logic, confirmed via the repository's .gitattributes generated-file marker.",
+                requirement_ids=["REQ-001"],
+            )
+        ],
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert checked.result == "PASS"
+
+
 def test_evidence_recovery_parser_enforces_deterministic_budget() -> None:
     attempts = [{"path": f"src/{index}.py", "source": "repository inspection", "status": "UNAVAILABLE", "evidence": "not present", "requirement_ids": ["REQ-001"]} for index in range(301)]
 
@@ -549,6 +605,22 @@ def test_evidence_recovery_parser_enforces_deterministic_budget() -> None:
 
     assert result.result == "ERROR"
     assert result.diagnostic_category == "schema_error"
+
+
+def test_evidence_recovery_parser_rejects_duplicate_path_entries() -> None:
+    """REQ-004/REQ-005/REQ-007/REQ-010: a path reported with two different
+    (contradictory) statuses must be rejected before any verdict, not
+    silently resolved by treating any RECOVERED entry as sufficient."""
+    duplicated = [
+        {"path": "src/one.py", "source": "current-PR retrieval", "status": "RECOVERED", "evidence": "complete src/one.py", "requirement_ids": ["REQ-001"]},
+        {"path": "src/one.py", "source": "current-PR retrieval", "status": "UNAVAILABLE", "evidence": "retrieval failed", "requirement_ids": ["REQ-001"]},
+    ]
+
+    result = parse_adversarial_validation_response(json.dumps({"result": "PASS", "findings": [], "evidence_recovery": duplicated}))
+
+    assert result.result == "ERROR"
+    assert result.diagnostic_category == "schema_error"
+    assert "src/one.py" in (result.diagnostic_reason or "")
 
 
 def test_inconclusive_without_recovery_or_irreducible_gap_is_rejected() -> None:
@@ -1683,6 +1755,52 @@ class TestBuildAdversarialValidationContext:
         assert context.evidence_retrieval_error == "Authoritative changed-file count retrieval failed: count unavailable"
         assert not context.requires_human_review
 
+    def test_bypass_cache_uses_genuinely_cache_bypassing_retrieval(self):
+        """REQ-002/REQ-011/REQ-012: reconfirming a validation snapshot must
+        reconfirm the live diff and Issue Requirement manifest through
+        genuinely cache-bypassing retrieval, not whatever a general-purpose
+        HTTP cache happens to still be serving locally."""
+
+        class FakeClient:
+            def get_pr_diff(self, repo_name, pr_number):
+                return "diff --git a/src/main.py b/src/main.py\n+++ b/src/main.py\n+cached = True\n"
+
+            def get_pr_diff_strict(self, repo_name, pr_number):
+                return "diff --git a/src/main.py b/src/main.py\n+++ b/src/main.py\n+fresh = True\n"
+
+            def get_pr_changed_file_count(self, repo_name, pr_number):
+                return 1
+
+            def get_pr_changed_file_count_strict(self, repo_name, pr_number):
+                return 1
+
+            def get_pr_changed_files(self, repo_name, pr_number):
+                raise AssertionError("changed-file listing is not needed once the diff already covers every file")
+
+            def get_pr_changed_files_strict(self, repo_name, pr_number):
+                raise AssertionError("changed-file listing is not needed once the diff already covers every file")
+
+            def get_issue_strict(self, repo_name, issue_number):
+                return {"title": "Spec", "body": "Cached authoritative requirement text", "pull_request": None}
+
+            def get_issue_dispatch_snapshot_strict(self, repo_name, issue_number):
+                return {"title": "Spec", "body": "Fresh authoritative requirement text", "pull_request": None}
+
+            def get_parent_issue_details(self, repo_name, issue_number):
+                return None
+
+        client = FakeClient()
+        pr_data = {"number": 42, "title": "Implement feature", "body": "Fixes #10"}
+
+        cached_context = build_adversarial_validation_context("owner/repo", pr_data, AutomationConfig(), github_client=client, bypass_cache=False)
+        fresh_context = build_adversarial_validation_context("owner/repo", pr_data, AutomationConfig(), github_client=client, bypass_cache=True)
+
+        assert "+cached = True" in cached_context.pr_diff
+        assert "+fresh = True" in fresh_context.pr_diff
+        assert "Cached authoritative requirement text" in cached_context.issue_context
+        assert "Fresh authoritative requirement text" in fresh_context.issue_context
+        assert fresh_context.validation_snapshot != cached_context.validation_snapshot
+
     def test_omitted_raw_diff_paths_are_retrieved_with_complete_patch_checks(self):
         mock_client = MagicMock()
         mock_client.get_pr_diff.return_value = "diff --git a/src/visible.py b/src/visible.py\n+++ b/src/visible.py\n+visible = True\n"
@@ -1712,6 +1830,47 @@ class TestBuildAdversarialValidationContext:
             ("src/truncated.py", False),
         ]
         assert context.validation_snapshot
+
+    def test_partial_changed_file_page_failure_retains_successfully_retrieved_evidence(self):
+        """REQ-002/REQ-008: a persistent failure on a later changed-file page must
+        not discard per-path evidence a prior page already retrieved; the
+        successfully retrieved records must still populate context evidence
+        alongside the explicit accounting of what failed."""
+        from auto_coder.util.gh_cache import PartialPRChangedFilesError
+
+        mock_client = MagicMock()
+        mock_client.get_pr_diff.return_value = "diff --git a/src/visible.py b/src/visible.py\n+++ b/src/visible.py\n+visible = True\n"
+        mock_client.get_pr_changed_file_count.return_value = 3
+        partial_records = [
+            {"filename": "src/visible.py", "additions": 1, "deletions": 0, "patch": "+visible = True"},
+            {"filename": "src/complete.py", "additions": 1, "deletions": 1, "patch": "@@ -1 +1 @@\n-old\n+new"},
+        ]
+        mock_client.get_pr_changed_files.side_effect = PartialPRChangedFilesError(
+            "page 2 failed",
+            partial_records=partial_records,
+            failed_page=2,
+            original_error=RuntimeError("network unreachable"),
+        )
+        mock_issue = MagicMock(spec=["title", "body"])
+        mock_issue.title = "Recover files"
+        mock_issue.body = "REQ-001: Review every changed path."
+        mock_client.get_issue.return_value = mock_issue
+        mock_client.get_parent_issue_details.return_value = None
+
+        context = build_adversarial_validation_context(
+            "owner/repo",
+            {"number": 304, "title": "Partial pagination", "body": "Fixes #10", "head_sha": "head", "base_sha": "base"},
+            AutomationConfig(),
+            github_client=mock_client,
+        )
+
+        # The genuinely unrecoverable third file's name is unknown, so the run
+        # still fails closed; but the successfully retrieved src/complete.py
+        # evidence is retained rather than silently dropped alongside it.
+        assert context.evidence_retrieval_error is not None
+        assert "2 of 3" in context.evidence_retrieval_error
+        assert "src/complete.py" in context.unverified_files
+        assert [(item.path, item.is_complete) for item in context.controller_file_evidence] == [("src/complete.py", True)]
 
     @pytest.mark.parametrize("late_file_first", [False, True])
     def test_violating_file_evidence_is_order_independent(self, late_file_first):
@@ -2691,6 +2850,111 @@ class TestRunAdversarialValidation:
         assert '"src/two.py"' in completion_prompt
         assert "complete one" in completion_prompt
         assert "complete two" in completion_prompt
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_completion_rejects_response_from_a_rotated_backend_session(self, mock_run_prompt, mock_build_ctx):
+        """REQ-003: the completion round must continue the same reviewer session;
+        a fresh session's PASS (from a rotated backend or rejected resume) must
+        never be accepted."""
+        context = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Large change",
+            pr_diff="partial evidence",
+            all_changed_files=["src/one.py"],
+            issue_context="Issue specification",
+            unverified_files=["src/one.py"],
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Behavior remains correct")],
+            validation_snapshot="snapshot-1",
+            controller_file_evidence=[
+                FileDiffEvidence(path="src/one.py", patch="complete one", is_complete=True),
+            ],
+        )
+        mock_build_ctx.return_value = context
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Initially complete",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "initial evidence"}],
+                "findings": [],
+            }
+        )
+        manager = MagicMock()
+        manager._last_session_id = "session-1"
+        manager._last_continue_session_resumed = False  # backend fell back to a fresh session
+        manager.get_current_backend_identity.return_value = ("codex", "codex", "model")
+        manager.continue_session.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Coverage completed on a fresh session",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "recovered evidence"}],
+                "evidence_recovery": [{"path": "src/one.py", "source": "current-PR retrieval", "status": "RECOVERED", "evidence": "complete src/one.py", "requirement_ids": ["REQ-001"]}],
+                "findings": [],
+            }
+        )
+
+        result = run_adversarial_validation("owner/repo", {"number": 100, "head_sha": "head-1"}, AutomationConfig(), backend_manager=manager)
+
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "changed_file_completion_session_discontinuity"
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_completion_round_preserves_prior_recovered_path(self, mock_run_prompt, mock_build_ctx):
+        """REQ-003 forbids silently discarding or resetting already recovered
+        changed-file evidence bound to the same snapshot: recovering one
+        remaining path in the completion round must not invalidate or lose a
+        different path the initial round already recovered."""
+        context = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Large change",
+            pr_diff="partial evidence",
+            all_changed_files=["src/one.py", "src/two.py"],
+            issue_context="Issue specification",
+            unverified_files=["src/one.py", "src/two.py"],
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Behavior remains correct")],
+            validation_snapshot="snapshot-1",
+            controller_file_evidence=[
+                FileDiffEvidence(path="src/one.py", patch="complete one", is_complete=True),
+                FileDiffEvidence(path="src/two.py", patch="complete two", is_complete=True),
+            ],
+        )
+        mock_build_ctx.return_value = context
+        # The initial reviewer round already independently recovered src/one.py.
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Initially complete",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "initial evidence"}],
+                "evidence_recovery": [{"path": "src/one.py", "source": "initial review", "status": "RECOVERED", "evidence": "recovered during initial review", "requirement_ids": ["REQ-001"]}],
+                "findings": [],
+            }
+        )
+        manager = MagicMock()
+        manager._last_session_id = "session-1"
+        manager.get_current_backend_identity.return_value = ("codex", "codex", "model")
+        # The completion round only needs to recover src/two.py, but echoes the
+        # prior src/one.py recovery in its complete-schema response.
+        manager.continue_session.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Coverage completed",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "retained plus recovered evidence"}],
+                "evidence_recovery": [
+                    {"path": "src/one.py", "source": "initial review", "status": "RECOVERED", "evidence": "recovered during initial review", "requirement_ids": ["REQ-001"]},
+                    {"path": "src/two.py", "source": "current-PR retrieval", "status": "RECOVERED", "evidence": "complete src/two.py", "requirement_ids": ["REQ-001"]},
+                ],
+                "findings": [],
+            }
+        )
+
+        result = run_adversarial_validation("owner/repo", {"number": 100, "head_sha": "head-1"}, AutomationConfig(), backend_manager=manager)
+
+        assert result.result == "PASS"
+        recovered_paths = {entry.path for entry in result.evidence_recovery if entry.status == "RECOVERED"}
+        assert recovered_paths == {"src/one.py", "src/two.py"}
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

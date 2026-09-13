@@ -25,7 +25,7 @@ from .requirement_contract import build_normative_issue_manifest
 from .reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
-from .util.gh_cache import GitHubClient
+from .util.gh_cache import GitHubClient, PartialPRChangedFilesError
 from .utils import CommandExecutor
 
 if TYPE_CHECKING:
@@ -1093,6 +1093,7 @@ def build_adversarial_validation_context(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     github_client: Optional[Any] = None,
+    bypass_cache: bool = False,
 ) -> AdversarialValidationContext:
     """Compile issue specification, PR diff, and changed tests for validation.
 
@@ -1105,6 +1106,10 @@ def build_adversarial_validation_context(
         pr_data: Pull request metadata dictionary
         config: AutomationConfig instance
         github_client: Optional GitHubClient instance
+        bypass_cache: Force genuinely cache-bypassing retrieval of the diff,
+            changed-file listing, and linked Issue body instead of the
+            ordinary cached lookups. Use only to reconfirm a validation
+            snapshot is still current; the general path stays cached.
 
     Returns:
         AdversarialValidationContext populated with review data
@@ -1134,11 +1139,24 @@ def build_adversarial_validation_context(
     changed_file_records: List[Dict[str, Any]] = []
     controller_file_evidence: List[FileDiffEvidence] = []
 
+    def _select_retrieval(strict_name: str, cached: Any) -> Any:
+        # Check the class, not the instance: an unconfigured test double
+        # (e.g. a bare MagicMock) auto-vivifies any instance attribute as a
+        # callable, which would silently select a strict method nobody
+        # configured. A real GitHubClient defines these methods on the class.
+        if bypass_cache and callable(getattr(type(client), strict_name, None)):
+            return getattr(client, strict_name)
+        return cached
+
     if client:
+        get_diff = _select_retrieval("get_pr_diff_strict", client.get_pr_diff)
+        get_changed_file_count = _select_retrieval("get_pr_changed_file_count_strict", client.get_pr_changed_file_count)
+        get_changed_files = _select_retrieval("get_pr_changed_files_strict", client.get_pr_changed_files)
+
         raw_diff = ""
         diff_changed_files: List[str] = []
         try:
-            raw_diff = client.get_pr_diff(repo_name, pr_number)
+            raw_diff = get_diff(repo_name, pr_number)
             if raw_diff:
                 diff_changed_files = extract_all_changed_files(raw_diff)
                 pr_diff, unverified_files = build_file_aware_diff(raw_diff)
@@ -1147,11 +1165,31 @@ def build_adversarial_validation_context(
 
         all_changed_files = diff_changed_files
         try:
-            changed_file_count = client.get_pr_changed_file_count(repo_name, pr_number)
+            changed_file_count = get_changed_file_count(repo_name, pr_number)
             if changed_file_count > 300:
                 requires_human_review = True
             elif changed_file_count > len(diff_changed_files):
-                records = client.get_pr_changed_files(repo_name, pr_number)
+                try:
+                    records = get_changed_files(repo_name, pr_number)
+                except PartialPRChangedFilesError as partial_error:
+                    # Retain every successfully fetched record instead of
+                    # discarding it: the caller can still supply this
+                    # per-path evidence to the bounded completion round
+                    # alongside explicit accounting of the pages that failed.
+                    partial_records = [dict(record) for record in partial_error.partial_records if isinstance(record, dict)]
+                    partial_paths = {str(record.get("filename", "")).strip() for record in partial_records if str(record.get("filename", "")).strip()}
+                    raw_paths = set(diff_changed_files)
+                    partial_unverified = [path for path in partial_paths if path not in raw_paths]
+                    by_path = {str(record["filename"]): record for record in partial_records if str(record.get("filename", "")).strip()}
+                    for path in partial_unverified:
+                        record = by_path[path]
+                        complete = _github_file_record_has_complete_patch(record)
+                        evidence = json.dumps(record, sort_keys=True, default=str)
+                        controller_file_evidence.append(FileDiffEvidence(path=path, patch=evidence, original_size=len(evidence), is_complete=complete))
+                    changed_file_records = partial_records
+                    unverified_files = partial_unverified
+                    all_changed_files = sorted(set(diff_changed_files) | partial_paths)
+                    raise ValueError(f"authoritative changed-file listing was incomplete after page {partial_error.failed_page} failed; retrieved {len(partial_records)} of {changed_file_count} files ({partial_error.original_error})") from partial_error
                 if not isinstance(records, list) or len(records) != changed_file_count:
                     raise ValueError("authoritative changed-file listing was incomplete")
                 changed_file_records = [dict(record) for record in records]
@@ -1177,7 +1215,7 @@ def build_adversarial_validation_context(
         is_diff_truncated = bool(unverified_files)
 
     # Extract linked issues context (from body, title, branch name, session)
-    resolution = resolve_issue_oracles(client, repo_name, pr_data=pr_data, pr_body=pr_body)
+    resolution = resolve_issue_oracles(client, repo_name, pr_data=pr_data, pr_body=pr_body, bypass_cache=bypass_cache)
     issue_context = get_linked_issues_context(client, repo_name, pr_body=pr_body, pr_data=pr_data, resolution=resolution)
     manifest = build_issue_requirement_manifest(resolution)
 
@@ -1710,6 +1748,7 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 if not isinstance(raw_recovery, list) or len(raw_recovery) > ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET:
                     return _parse_error(raw_response, "schema_error", "Malformed evidence recovery report", f"evidence_recovery must contain at most {ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET} entries")
                 evidence_recovery: List[EvidenceRecoveryEntry] = []
+                seen_recovery_paths: set[str] = set()
                 for item in raw_recovery:
                     if not isinstance(item, dict):
                         return _parse_error(raw_response, "schema_error", "Malformed evidence recovery entry", "evidence recovery entries must be objects")
@@ -1720,6 +1759,14 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                     requirement_ids = item.get("requirement_ids", [])
                     if not path or not source or status not in {"RECOVERED", "UNAVAILABLE", "IRRELEVANT"} or not evidence or not isinstance(requirement_ids, list) or any(not isinstance(value, str) or not value.strip() for value in requirement_ids):
                         return _parse_error(raw_response, "schema_error", "Malformed evidence recovery entry", "each recovery entry requires path, supported source, status, evidence, and requirement_ids")
+                    if path in seen_recovery_paths:
+                        return _parse_error(
+                            raw_response,
+                            "schema_error",
+                            "Duplicate evidence recovery entry",
+                            f"path {path} appears more than once in evidence_recovery; a contradictory or repeated status cannot be adjudicated",
+                        )
+                    seen_recovery_paths.add(path)
                     evidence_recovery.append(EvidenceRecoveryEntry(path=path, source=source, status=status, evidence=evidence, requirement_ids=[value.strip() for value in requirement_ids]))
 
                 raw_gaps = parsed.get("decision_critical_evidence_gaps", [])
@@ -2283,6 +2330,8 @@ def _complete_changed_file_evidence(
             diagnostic_category="changed_file_completion_session_unavailable",
             diagnostic_reason=f"Unresolved paths: {', '.join(unresolved)}",
         )
+    prior_recovery = list(result.evidence_recovery)
+    prior_by_path = {entry.path: entry for entry in prior_recovery}
     prompt = render_prompt(
         "pr.adversarial_validation_evidence_completion",
         validation_snapshot=context.validation_snapshot,
@@ -2293,23 +2342,63 @@ def _complete_changed_file_evidence(
         controller_retrievals=json.dumps(retrievals, indent=2),
     )
     response = backend_manager.continue_session(session_id, prompt, is_noedit=True)
+    if not getattr(backend_manager, "_last_continue_session_resumed", False):
+        return AdversarialValidationResult(
+            result="ERROR",
+            summary="Changed-file evidence completion could not continue the reviewer session",
+            diagnostic_category="changed_file_completion_session_discontinuity",
+            diagnostic_reason=f"Backend started a fresh session instead of resuming the original reviewer session while completing: {', '.join(unresolved)}",
+        )
     completion = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(completion, response, backend_manager, context.pr_number, "evidence_completion")
     supplied_complete = {item["path"] for item in retrievals if item["status"] == "COMPLETE"}
-    invalid_recovered = [entry.path for entry in completion.evidence_recovery if entry.status == "RECOVERED" and entry.path not in supplied_complete]
-    accounted = {entry.path for entry in completion.evidence_recovery if entry.path in unresolved}
-    if invalid_recovered or accounted != set(unresolved):
+    # Only this round's entries (for paths that were actually unresolved coming
+    # in) are validated against the controller retrieval and accounting rules.
+    # An entry that merely echoes a path already resolved in a prior round is
+    # neither invalid nor required here; it must not cause a previously
+    # recovered path to be discarded or rejected (REQ-003).
+    round_entries = [entry for entry in completion.evidence_recovery if entry.path in unresolved]
+    invalid_recovered = [entry.path for entry in round_entries if entry.status == "RECOVERED" and entry.path not in supplied_complete]
+    accounted = {entry.path for entry in round_entries}
+    contradicted_prior = [entry.path for entry in completion.evidence_recovery if entry.path in prior_by_path and prior_by_path[entry.path].status != entry.status]
+    if invalid_recovered or accounted != set(unresolved) or contradicted_prior:
         return AdversarialValidationResult(
             result="ERROR",
             summary="Invalid or incomplete changed-file evidence completion response",
             diagnostic_category="invalid_changed_file_completion",
-            diagnostic_reason=f"Invalid recovered paths: {invalid_recovered}; unaccounted paths: {sorted(set(unresolved) - accounted)}",
+            diagnostic_reason=(f"Invalid recovered paths: {invalid_recovered}; unaccounted paths: {sorted(set(unresolved) - accounted)}; contradicted prior recovery: {contradicted_prior}"),
             evidence_recovery=completion.evidence_recovery,
             requirement_coverage=completion.requirement_coverage,
             test_oracle_gaps=completion.test_oracle_gaps,
             thread_dispositions=completion.thread_dispositions,
         )
+    merged_recovery = list(prior_recovery)
+    merged_paths = {entry.path for entry in merged_recovery}
+    for entry in round_entries:
+        if entry.path not in merged_paths:
+            merged_recovery.append(entry)
+            merged_paths.add(entry.path)
+    completion.evidence_recovery = merged_recovery
     return completion
+
+
+_ABSENCE_ONLY_IRRELEVANCE_PATTERN = re.compile(
+    r"^(?:(?:no|since\s+no|because\s+no|as\s+no)\s+(?:patch|diff|evidence)\s+(?:was|is|were)\s+(?:available|retrieved|found|returned|provided)"
+    r"|(?:patch|diff|evidence)\s+(?:was|is|were)\s+(?:not\s+available|unavailable|missing|not\s+(?:retrieved|found|provided)))"
+    r"[.,;]?\s*(?:so|therefore|thus|hence|which\s+means|meaning)?[,]?\s*(?:this\s+path\s+is\s+)?irrelevant\.?$",
+    re.IGNORECASE,
+)
+
+
+def _is_absence_only_irrelevance(evidence: str) -> bool:
+    """Return True when IRRELEVANT is justified only by missing evidence.
+
+    REQ-004/REQ-005 forbid discharging a path, or deciding a materially
+    dependent Requirement, from missing evidence or the reviewer's bare
+    assertion alone. An IRRELEVANT classification needs a concrete
+    same-snapshot scope basis independent of the absence itself.
+    """
+    return bool(_ABSENCE_ONLY_IRRELEVANCE_PATTERN.match(evidence.strip()))
 
 
 def _apply_coverage_and_verdict_precedence(
@@ -2350,6 +2439,15 @@ def _apply_coverage_and_verdict_precedence(
         result.summary = "Invalid validator response: unavailable evidence was declared for already-decided requirements"
         result.diagnostic_category = "requirement_evidence_claim_mismatch"
         result.diagnostic_reason = "Correctness-relevant changed-file evidence is unavailable while dependent requirements " f"are marked decided: {', '.join(incompatible_verified_ids)}"
+        return result
+
+    unavailable_controller_paths = {evidence.path for evidence in context.controller_file_evidence if not evidence.is_complete}
+    absence_only_irrelevant_paths = sorted(entry.path for entry in result.evidence_recovery if entry.status == "IRRELEVANT" and entry.path in unavailable_controller_paths and _is_absence_only_irrelevance(entry.evidence))
+    if absence_only_irrelevant_paths:
+        result.result = "ERROR"
+        result.summary = "Invalid validator response: IRRELEVANT was justified only by missing evidence"
+        result.diagnostic_category = "absence_only_irrelevance_rejected"
+        result.diagnostic_reason = f"Paths marked IRRELEVANT solely because their evidence was unavailable, with no independent scope basis: {', '.join(absence_only_irrelevant_paths)}"
         return result
 
     if unknown_finding_requirement_ids:
@@ -2701,7 +2799,7 @@ def run_adversarial_validation(
                 if not isinstance(live_pr_data, dict):
                     raise ValueError("live pull-request metadata was malformed")
                 refresh_pr_data = live_pr_data
-            refreshed = build_adversarial_validation_context(repo_name, refresh_pr_data, config, github_client)
+            refreshed = build_adversarial_validation_context(repo_name, refresh_pr_data, config, github_client, bypass_cache=True)
         except Exception:
             refreshed = AdversarialValidationContext()
         if not context.validation_snapshot or refreshed.validation_snapshot != context.validation_snapshot:

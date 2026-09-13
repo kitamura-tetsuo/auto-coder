@@ -142,11 +142,33 @@ between the proof and mutation. The barrier does not cover provider reads.
 Changed-file evidence completion retains the existing
 `pr.adversarial-validation` stage and processing origin. Its non-PASS event now
 preserves `diagnostic_category` and `diagnostic_reason`, allowing the generic
-Observed Evidence panel to distinguish unavailable completion sessions, invalid
-path accounting, evidence incompleteness, and stale validation snapshots without
-coercing any of them into success. The production orchestration regression
-`test_controller_recovers_exact_paths_in_one_same_session_round` proves the
-focused same-session boundary; existing dashboard stage rendering remains generic.
+Observed Evidence panel to distinguish unavailable completion sessions,
+same-session discontinuity, invalid or contradictory path accounting,
+absence-only IRRELEVANT rejections, evidence incompleteness, and stale
+validation snapshots without coercing any of them into success. The completion
+round now also rejects a response whose backend fell back to a fresh session
+instead of resuming the original reviewer session
+(`changed_file_completion_session_discontinuity`) and merges a later round's
+newly recovered paths with evidence already recovered in an earlier round
+instead of discarding it, so a focused completion cannot invalidate prior
+same-snapshot recovery. `_apply_coverage_and_verdict_precedence` separately
+rejects an IRRELEVANT classification justified only by the evidence being
+unavailable (`absence_only_irrelevance_rejected`), and the evidence-recovery
+parser rejects a duplicate/contradictory path before any verdict is computed.
+Revalidating a snapshot before authorizing a completion-round PASS now uses
+genuinely cache-bypassing retrieval for the diff, changed-file listing, and
+linked Issue body (`bypass_cache=True`) instead of the general HTTP cache, and
+a persistent failure on one changed-file REST page retains every
+successfully retrieved page's evidence instead of discarding it alongside the
+failure. The production orchestration regressions
+`test_controller_recovers_exact_paths_in_one_same_session_round`,
+`test_completion_rejects_response_from_a_rotated_backend_session`,
+`test_completion_round_preserves_prior_recovered_path`,
+`test_bypass_cache_uses_genuinely_cache_bypassing_retrieval`, and
+`test_partial_changed_file_page_failure_retains_successfully_retrieved_evidence`
+(all in `tests/test_adversarial_validator.py`), plus
+`tests/test_gh_cache_pr_changed_files_pagination.py`, prove these boundaries;
+existing dashboard stage rendering remains generic.
 
 ## Implementation Slots panel (Issue #1993)
 
