@@ -248,15 +248,19 @@ class AdjudicationLedger:
         physical = next((record for record in (*self.context.decisions.values(), *self.context.pending_decisions.values()) if record.source.comment_id == source.comment_id), None)
         if self.context.retired_reason:
             return self._result(AdjudicationStatus.INVALID, source, physical.decision if physical else None, self.context.retired_reason)
+        revoked_tip = self._revoked_tip_reason(adjudicator_ids, root_reviewer_ids)
+        if revoked_tip is not None:
+            self.retire(revoked_tip)
+            return self._result(AdjudicationStatus.REVOKED, source, physical.decision if physical else None, revoked_tip)
+        if physical is not None and not source.update_revision:
+            self.context.source_unavailable = True
+            self._refresh_integrity()
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision, "physical source revision is unavailable")
         if physical is not None and (physical.source.update_revision != source.update_revision or physical.body_hash != body_hash):
             self.retire(f"accepted source {source.comment_id} was edited")
             return self._result(AdjudicationStatus.INVALID, source, physical.decision, self.context.retired_reason or "invalidated")
         if self.context.source_unavailable:
             return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision if physical else None, "required authoritative evidence is unavailable")
-        revoked_tip = self._revoked_tip_reason(adjudicator_ids, root_reviewer_ids)
-        if revoked_tip is not None:
-            self.retire(revoked_tip)
-            return self._result(AdjudicationStatus.REVOKED, source, physical.decision if physical else None, revoked_tip)
         if physical is not None:
             if physical.source.update_revision == source.update_revision and physical.body_hash == body_hash:
                 return self.current(source, physical.decision, "same immutable activity")
@@ -341,7 +345,7 @@ class AdjudicationLedger:
                     changed = True
                     continue
                 predecessors = [self.context.decisions.get(item) for item in record.decision.supersedes]
-                if all(item is not None for item in predecessors) and any(self._order(item.source) >= self._order(record.source) for item in predecessors if item is not None):
+                if any(self._order(item.source) >= self._order(record.source) for item in predecessors if item is not None):
                     del self.context.pending_decisions[decision_id]
                     changed = True
                     continue
@@ -425,6 +429,8 @@ class AdjudicationLedger:
             pending = {key: DecisionRecord(Decision(**{**item["decision"], "supersedes": tuple(item["decision"]["supersedes"])}), SourceComment(**item["source"]), item["body_hash"]) for key, item in data.pop("pending_decisions").items()}
             data["objective_fingerprints"] = tuple(data["objective_fingerprints"])
             context = ReviewContext(contracts=contracts, decisions=decisions, pending_decisions=pending, **data)
+            if not _SHA256.fullmatch(context.integrity_digest):
+                raise ValueError
             # Recompute durable identities so corrupt history cannot authorize.
             _, digest, objectives = contract_identity(context.contracts, context.parser_version)
             records = {**decisions, **pending}

@@ -146,6 +146,18 @@ def test_known_forward_reference_is_rejected_before_missing_predecessor(supersed
     assert state.current(None, None, "A remains eligible").status is AdjudicationStatus.APPLICABLE
 
 
+def test_pending_forward_reference_is_discarded_when_later_predecessor_arrives() -> None:
+    state = ledger()
+    earlier_c = replace(source(3, decision(C, (B, A))), created_at="2026-01-01T00:00:03Z")
+    state.ingest(earlier_c, [8], [42])
+    state = AdjudicationLedger.loads(state.dumps())
+    later_a = replace(source(5, decision(A)), created_at="2026-01-01T00:00:05Z")
+    result = state.ingest(later_a, [8], [42])
+    assert result.status is AdjudicationStatus.APPLICABLE
+    assert result.decision_id == A
+    assert state.context.pending_decisions == {}
+
+
 def test_collision_edit_deletion_and_corruption_fail_closed() -> None:
     state = ledger()
     original = source(1, decision(A))
@@ -289,6 +301,36 @@ def test_confirmed_edit_during_outage_permanently_retires() -> None:
     assert restored.reconcile(available=True, **reconciliation_args(restored)).status is AdjudicationStatus.INVALID
 
 
+def test_missing_revision_reread_suspends_then_recovers_known_identity() -> None:
+    state = ledger()
+    original = source(1, decision(A))
+    state.ingest(original, [8], [42])
+    assert state.ingest(replace(original, update_revision=""), [8], [42]).status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    assert state.context.retired_reason is None
+    restored = AdjudicationLedger.loads(state.dumps())
+    assert restored.reconcile(available=True, **reconciliation_args(restored)).decision_id == A
+    assert restored.context.retired_reason is None
+
+    pending = ledger()
+    incomplete_graph_source = source(2, decision(B, (A,)))
+    pending.ingest(incomplete_graph_source, [8], [42])
+    assert pending.ingest(replace(incomplete_graph_source, update_revision=""), [8], [42]).status is AdjudicationStatus.SOURCE_UNAVAILABLE
+    assert pending.context.retired_reason is None
+
+
+@pytest.mark.parametrize("revoked", ["tip", "root"])
+def test_authorization_revocation_during_outage_is_permanent(revoked: str) -> None:
+    state = ledger()
+    original = source(1, decision(A))
+    state.ingest(original, [8], [42])
+    state.reconcile(available=False, **reconciliation_args(state))
+    adjudicators = [] if revoked == "tip" else [8]
+    reviewers = [42] if revoked == "tip" else []
+    assert state.ingest(original, adjudicators, reviewers).status is AdjudicationStatus.REVOKED
+    restored = AdjudicationLedger.loads(state.dumps())
+    assert restored.reconcile(available=True, **reconciliation_args(restored)).status is AdjudicationStatus.INVALID
+
+
 @pytest.mark.parametrize("missing_field", ["retired_reason", "source_unavailable"])
 def test_serialized_lifecycle_fields_are_required(missing_field: str) -> None:
     state = ledger()
@@ -318,6 +360,17 @@ def test_serialized_conflict_cannot_lose_an_independent_tip() -> None:
     state.ingest(source(2, decision(B)), [8], [42])
     snapshot = json.loads(state.dumps())
     del snapshot["context"]["decisions"][B]
+    with pytest.raises(ValueError, match="corrupt"):
+        AdjudicationLedger.loads(json.dumps(snapshot))
+
+
+def test_serialized_conflict_requires_nonblank_integrity_evidence() -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A)), [8], [42])
+    state.ingest(source(2, decision(B)), [8], [42])
+    snapshot = json.loads(state.dumps())
+    del snapshot["context"]["decisions"][B]
+    snapshot["context"]["integrity_digest"] = ""
     with pytest.raises(ValueError, match="corrupt"):
         AdjudicationLedger.loads(json.dumps(snapshot))
 
