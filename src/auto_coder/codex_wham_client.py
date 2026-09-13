@@ -23,6 +23,19 @@ logger = get_logger(__name__)
 DEFAULT_WHAM_BASE_URL = "https://chatgpt.com/backend-api/wham"
 
 
+def _turn_created_at_key(turn: "WhamTurn") -> Optional[float]:
+    """Return a comparable provider timestamp, or ``None`` if unavailable."""
+    if not turn.created_at:
+        return None
+    try:
+        return float(turn.created_at)
+    except (TypeError, ValueError):
+        try:
+            return datetime.fromisoformat(turn.created_at.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+
+
 @dataclass(frozen=True)
 class WhamTurn:
     """Represents a turn in a Codex Cloud WHAM task."""
@@ -389,12 +402,7 @@ class CodexWhamClient:
 
         # Sort turns chronologically by created_at timestamp if present
         def _turn_sort_key(t: WhamTurn) -> float:
-            if t.created_at:
-                try:
-                    return float(t.created_at)
-                except (ValueError, TypeError):
-                    pass
-            return 0.0
+            return _turn_created_at_key(t) or 0.0
 
         if any(t.created_at for t in assistant_turns):
             assistant_turns.sort(key=_turn_sort_key)
@@ -409,6 +417,36 @@ class CodexWhamClient:
 
         logger.info(f"Resolved latest assistant turn for Codex Cloud task '{task_id}': '{turn_id}'")
         return turn_id
+
+    def resolve_completed_assistant_turn_after(self, task_id: str, baseline_turn_id: str) -> Optional[str]:
+        """Return a completed assistant turn proven to follow ``baseline_turn_id``."""
+        turns = self.get_task_turns(task_id)
+        if not turns:
+            task = self.get_task(task_id)
+            turns = task.turns if task else []
+        normalized_baseline = baseline_turn_id.split("~", 1)[-1]
+        baseline = next((turn for turn in turns if turn.id == baseline_turn_id or turn.id.split("~", 1)[-1] == normalized_baseline), None)
+        if baseline is None:
+            return None
+        baseline_created_at = _turn_created_at_key(baseline)
+        if baseline_created_at is None:
+            return None
+        candidates: list[tuple[float, WhamTurn]] = []
+        for turn in turns:
+            created_at = _turn_created_at_key(turn)
+            if created_at is None or created_at <= baseline_created_at:
+                continue
+            if not turn.id or turn.status.lower() not in {"completed", "finished", "success", "succeeded", "ready"}:
+                continue
+            if "~" in turn.id and turn.id.split("~", 1)[0] != task_id:
+                continue
+            role = turn.role.lower()
+            if role in {"assistant", "agent", "bot", "asst"} or "assttrn_" in turn.id:
+                candidates.append((created_at, turn))
+        if not candidates:
+            return None
+        first_turn = min(candidates, key=lambda candidate: candidate[0])[1]
+        return first_turn.id if "~" in first_turn.id else f"{task_id}~{first_turn.id}"
 
     def reconcile_follow_up(self, task_id: str, pre_send_turn_id: str, message_fingerprint: str) -> Optional[bool]:
         """Reconcile an ambiguous POST against current remote turn state.
