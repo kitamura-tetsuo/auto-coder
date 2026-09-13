@@ -56,6 +56,9 @@ class RecoveredFileEvidence:
     scope_basis_identity: str = ""
     last_consumed_head_sha: str = ""
     disposition: str = "FRESH"
+    previous_origin_head_sha: str = ""
+    previous_origin_validation_snapshot: str = ""
+    transition_reason: str = ""
 
 
 @dataclass

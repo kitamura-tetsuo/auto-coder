@@ -550,6 +550,32 @@ def _requirement_manifest_identity(requirements: Sequence[IssueRequirement]) -> 
     return _stable_digest([(item.requirement_id, item.text) for item in requirements])
 
 
+def _complete_file_change_identity(record: Dict[str, Any]) -> str:
+    """Identify a complete semantic PR-file representation, excluding locators.
+
+    GitHub's URL fields contain the current commit name and therefore are not
+    part of the change itself. Conversely, an absent/truncated patch cannot
+    prove the base-side representation and intentionally has no reusable
+    identity.
+    """
+    if not _github_file_record_has_complete_patch(record):
+        return ""
+    representation = {
+        key: record.get(key)
+        for key in (
+            "filename",
+            "previous_filename",
+            "status",
+            "sha",
+            "additions",
+            "deletions",
+            "changes",
+            "patch",
+        )
+    }
+    return _stable_digest(representation)
+
+
 def _github_file_record_has_complete_patch(record: Dict[str, Any]) -> bool:
     """Reject absent or truncated REST patches using authoritative line totals."""
     patch = record.get("patch")
@@ -1266,7 +1292,7 @@ def build_adversarial_validation_context(
         validation_snapshot=_snapshot_digest(repo_name, pr_data, changed_file_records, manifest.requirements, raw_diff),
         controller_file_evidence=controller_file_evidence,
         unresolvable_file_count=unresolvable_file_count,
-        file_change_identities={str(record.get("filename", "")): _stable_digest(record) for record in changed_file_records if str(record.get("filename", ""))},
+        file_change_identities={str(record.get("filename", "")): identity for record in changed_file_records if str(record.get("filename", "")) and (identity := _complete_file_change_identity(record))},
         requirement_manifest_identity=_requirement_manifest_identity(manifest.requirements),
     )
 
@@ -2331,6 +2357,63 @@ def _reconcile_reusable_recovered_evidence(
     return result
 
 
+def _build_recovery_ledger(
+    result: AdversarialValidationResult,
+    stored_session: Optional[ReviewerSession],
+    context: AdversarialValidationContext,
+    head_sha: str,
+) -> List[RecoveredFileEvidence]:
+    """Build a diagnostic ledger without letting invalid history cover files."""
+    prior_by_path = {entry.path: entry for entry in stored_session.recovered_file_evidence} if stored_session else {}
+    current_by_path = {entry.path: entry for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files}
+    ledger: List[RecoveredFileEvidence] = []
+    for path in context.unverified_files:
+        current = current_by_path.get(path)
+        prior = prior_by_path.get(path)
+        current_identity = context.file_change_identities.get(path, "")
+        reusable = current is not None and current.provenance == "REUSED_EQUIVALENT"
+        if current is None:
+            if prior is None:
+                continue
+            invalidated = replace(prior)
+            invalidated.status = "INVALIDATED"
+            invalidated.disposition = "INVALIDATED"
+            invalidated.last_consumed_head_sha = ""
+            invalidated.transition_reason = "Current file, Requirement manifest, or IRRELEVANT scope identity was changed or unverifiable"
+            ledger.append(invalidated)
+            continue
+        if reusable and prior is not None:
+            retained = replace(prior)
+            retained.source = current.source
+            retained.last_consumed_head_sha = head_sha
+            retained.disposition = "REUSED_EQUIVALENT"
+            retained.transition_reason = "Authoritative file-change and Requirement-manifest identities remained equivalent"
+            ledger.append(retained)
+            continue
+        readjudicated = prior is not None
+        ledger.append(
+            RecoveredFileEvidence(
+                path=current.path,
+                source=current.source,
+                status=current.status,
+                evidence=current.evidence,
+                requirement_ids=list(current.requirement_ids),
+                identity_version=RECOVERED_FILE_IDENTITY_VERSION,
+                change_identity=current_identity,
+                requirement_manifest_identity=context.requirement_manifest_identity,
+                origin_head_sha=head_sha,
+                origin_validation_snapshot=context.validation_snapshot,
+                scope_basis_identity=_stable_digest(current.evidence) if current.status == "IRRELEVANT" else "",
+                last_consumed_head_sha=head_sha,
+                disposition="READJUDICATED" if readjudicated else "FRESH",
+                previous_origin_head_sha=prior.origin_head_sha if prior else "",
+                previous_origin_validation_snapshot=prior.origin_validation_snapshot if prior else "",
+                transition_reason=("Prior classification was invalidated and independently re-adjudicated for the current snapshot" if readjudicated else ""),
+            )
+        )
+    return ledger
+
+
 def _carry_forward_current_run_recovered_evidence(
     result: AdversarialValidationResult,
     recovered_evidence: List[EvidenceRecoveryEntry],
@@ -2925,27 +3008,7 @@ def run_adversarial_validation(
             lifecycle_session.test_oracle_gaps if lifecycle_session else (),
         ),
     )
-    completion_was_required = bool(_remaining_unverified_paths(result, context) and result.result == "PASS" and not result.findings and not result.open_test_oracle_gaps)
     result = _complete_changed_file_evidence(result, context, backend_manager, requirement_manifest, head_sha)
-    reused_evidence_consumed = any(entry.provenance == "REUSED_EQUIVALENT" for entry in result.evidence_recovery)
-    if (completion_was_required or reused_evidence_consumed) and result.result != "ERROR":
-        try:
-            refresh_pr_data = pr_data
-            if github_client is not None:
-                live_pr_data = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
-                if not isinstance(live_pr_data, dict):
-                    raise ValueError("live pull-request metadata was malformed")
-                refresh_pr_data = live_pr_data
-            refreshed = build_adversarial_validation_context(repo_name, refresh_pr_data, config, github_client, bypass_cache=True)
-        except Exception:
-            refreshed = AdversarialValidationContext()
-        if not context.validation_snapshot or refreshed.validation_snapshot != context.validation_snapshot:
-            return AdversarialValidationResult(
-                result="ERROR",
-                summary="Changed-file evidence completion became stale and requires revalidation",
-                diagnostic_category="validation_snapshot_stale",
-                diagnostic_reason="PR head, base/change representation, or Issue Requirement manifest changed or could not be reconfirmed",
-            )
     result = _apply_coverage_and_verdict_precedence(result, context)
     current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files]
 
@@ -3161,6 +3224,30 @@ def run_adversarial_validation(
                     logger.warning(f"Dynamic re-adjudication failed for PR #{pr_number}; discarding {len(initial_thread_dispositions)} initial thread disposition(s)")
                     result.thread_dispositions = []
 
+    # Recovery installation, reuse consumption, invalidation, and the final
+    # adjudication share one target snapshot. This check is intentionally after
+    # every external reviewer/dynamic-check boundary and immediately before the
+    # checkpoint is assembled.
+    recovery_ledger_active = any(entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files for entry in result.evidence_recovery) or bool(stored_session and stored_session.recovered_file_evidence)
+    if recovery_ledger_active:
+        try:
+            refresh_pr_data = pr_data
+            if github_client is not None:
+                live_pr_data = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
+                if not isinstance(live_pr_data, dict):
+                    raise ValueError("live pull-request metadata was malformed")
+                refresh_pr_data = live_pr_data
+            refreshed = build_adversarial_validation_context(repo_name, refresh_pr_data, config, github_client, bypass_cache=True)
+        except Exception:
+            refreshed = AdversarialValidationContext()
+        if not context.validation_snapshot or refreshed.validation_snapshot != context.validation_snapshot:
+            return AdversarialValidationResult(
+                result="ERROR",
+                summary="Changed-file evidence adjudication became stale and requires revalidation",
+                diagnostic_category="validation_snapshot_stale",
+                diagnostic_reason="PR head, base/change representation, or Issue Requirement manifest changed or could not be reconfirmed",
+            )
+
     result = _apply_coverage_and_verdict_precedence(result, context)
 
     persisted_session_id = provider_session_id if isinstance(provider_session_id, str) and provider_session_id else stored_session.session_id if stored_session else ""
@@ -3194,25 +3281,7 @@ def run_adversarial_validation(
             last_head_sha=persisted_head_sha,
             test_oracle_gaps=persisted_gaps,
             evidence_head_sha=head_sha,
-            recovered_file_evidence=[
-                RecoveredFileEvidence(
-                    path=entry.path,
-                    source=entry.source,
-                    status=entry.status,
-                    evidence=entry.evidence,
-                    requirement_ids=list(entry.requirement_ids),
-                    identity_version=RECOVERED_FILE_IDENTITY_VERSION,
-                    change_identity=context.file_change_identities.get(entry.path, ""),
-                    requirement_manifest_identity=context.requirement_manifest_identity,
-                    origin_head_sha=entry.origin_head_sha or head_sha,
-                    origin_validation_snapshot=context.validation_snapshot,
-                    scope_basis_identity=_stable_digest(entry.evidence) if entry.status == "IRRELEVANT" else "",
-                    last_consumed_head_sha=head_sha,
-                    disposition=entry.provenance,
-                )
-                for entry in result.evidence_recovery
-                if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files
-            ],
+            recovered_file_evidence=_build_recovery_ledger(result, stored_session, context, head_sha),
         )
         result.reviewer_session_checkpoint = checkpoint
         result.reviewer_session_registry = registry

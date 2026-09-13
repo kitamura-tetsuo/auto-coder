@@ -2401,6 +2401,7 @@ class TestRunAdversarialValidation:
             unverified_files=[missing_path],
             issue_context="Issue requires immutable artifact publication.",
             issue_requirements=[IssueRequirement(requirement_id="REQ-005", text="Recovered coverage permits PASS")],
+            validation_snapshot="snapshot-a",
         )
         mock_run_prompt.return_value = json.dumps(
             {
