@@ -13,7 +13,7 @@ from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import httpx
 from ghapi.all import GhApi
@@ -105,6 +105,21 @@ def parse_parent_issue_url_number(parent_issue_url: object) -> Optional[int]:
     """Return the stable Issue number encoded by a native parent URL."""
     match = re.search(r"/issues/(\d+)$", parent_issue_url) if isinstance(parent_issue_url, str) else None
     return int(match.group(1)) if match else None
+
+
+class PartialPRChangedFilesError(RuntimeError):
+    """Pagination failed after at least one page of changed-file records succeeded.
+
+    ``partial_records`` retains every record already fetched so a caller can
+    supply that successfully retrieved per-path evidence to a bounded
+    completion round instead of discarding it alongside the failure.
+    """
+
+    def __init__(self, message: str, partial_records: List[Dict[str, Any]], failed_page: int, original_error: BaseException):
+        super().__init__(message)
+        self.partial_records = partial_records
+        self.failed_page = failed_page
+        self.original_error = original_error
 
 
 class ActionsSecretPermissionError(RuntimeError):
@@ -363,6 +378,82 @@ def retry_with_backoff(retries=3, backoff_in_seconds=1):
         return wrapper
 
     return decorator
+
+
+def _is_recognized_request_boundary_failure(exc: BaseException) -> bool:
+    """Return whether an exception is a recognized GitHub request-boundary error.
+
+    Both a raw ``httpx`` transport exception and any ``GitHubRequestError``
+    (the shared diagnostic boundary's typed wrapper, covering transport
+    failures and permanent API-level rejections such as an HTTP 500 alike)
+    represent a definite outcome of actually attempting the request. An
+    unrecognized exception type is treated as a genuine bug rather than a
+    retrieval failure and is left to propagate untouched.
+    """
+    return isinstance(exc, (httpx.RequestError, httpx.StreamError, httpx.RemoteProtocolError, httpx.PoolTimeout, GitHubRequestError))
+
+
+def _is_transient_transport_failure(exc: BaseException) -> bool:
+    """Return whether a recognized request-boundary exception should be retried.
+
+    ``GitHubRequestError`` also wraps permanent API-level rejections (an
+    authentication failure, a forbidden response, a remote error). Only its
+    ``TRANSPORT_FAILURE`` classification -- the shared diagnostic boundary's
+    wrapper around a raw transport exception such as a connection failure --
+    is retried; any other classification is not transient, so it is not worth
+    retrying, though (per ``_is_recognized_request_boundary_failure``) it is
+    still eligible to preserve already-retrieved records.
+    """
+    if isinstance(exc, (httpx.RequestError, httpx.StreamError, httpx.RemoteProtocolError, httpx.PoolTimeout)):
+        return True
+    if isinstance(exc, GitHubRequestError):
+        return exc.outcome.classification is GitHubApiOutcome.TRANSPORT_FAILURE
+    return False
+
+
+def _paginate_pr_changed_files(pr_number: int, fetch_page: Callable[[int], Any]) -> List[Dict[str, Any]]:
+    """Page through a PR's changed-file listing with per-page retry.
+
+    Retrying only the page that actually failed (rather than restarting the
+    whole pagination loop) means a transient failure on a later page cannot
+    discard records a prior page already retrieved. A recognized
+    request-boundary failure (whether retried to exhaustion, or not worth
+    retrying at all, such as a permanent API-level rejection) raises
+    ``PartialPRChangedFilesError`` carrying every record fetched so far, so a
+    caller can still use that successfully retrieved per-path evidence
+    instead of losing it alongside the failure. An unrecognized exception
+    (a genuine bug rather than a retrieval failure) propagates untouched.
+    """
+    result: List[Dict[str, Any]] = []
+    retries = 3
+    backoff_in_seconds = 1
+    for page in range(1, 4):  # Automated validation is capped at 300 files.
+        attempt = 0
+        while True:
+            try:
+                files = fetch_page(page)
+                break
+            except Exception as e:
+                if not _is_recognized_request_boundary_failure(e):
+                    raise
+                if _is_transient_transport_failure(e) and attempt < retries:
+                    sleep = backoff_in_seconds * 2**attempt
+                    logger.warning(f"Network error fetching PR #{pr_number} changed files page {page} ({e}), retrying in {sleep}s...")
+                    time.sleep(sleep)
+                    attempt += 1
+                    continue
+                raise PartialPRChangedFilesError(
+                    f"PR #{pr_number} changed-file pagination failed on page {page}: {e}",
+                    partial_records=result,
+                    failed_page=page,
+                    original_error=e,
+                ) from e
+        if not isinstance(files, list):
+            raise ValueError(f"PR #{pr_number} files response was not a list")
+        result.extend(dict(item) for item in files if isinstance(item, dict))
+        if len(files) < 100:
+            break
+    return result
 
 
 def parse_parent_issue_number(body: Optional[str], current_issue_number: Optional[int] = None) -> Optional[int]:
@@ -2547,6 +2638,69 @@ class GitHubClient:
         if isinstance(changed_files, bool) or not isinstance(changed_files, int) or changed_files < 0:
             raise ValueError(f"PR #{pr_number} response did not contain a valid changed_files count")
         return changed_files
+
+    def get_pr_changed_files(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        """Return every REST changed-file record for a pull request.
+
+        Each page is retried independently (rather than restarting the whole
+        pagination loop) so a transient failure on a later page cannot discard
+        records a prior page already retrieved. If a page's retries are
+        exhausted, ``PartialPRChangedFilesError`` is raised carrying every
+        record fetched so far, so a caller can still use that successfully
+        retrieved per-path evidence instead of losing it alongside the
+        failure.
+        """
+        owner, repo = repo_name.split("/")
+        api = get_ghapi_client(self.token)
+        return _paginate_pr_changed_files(pr_number, lambda page: api.pulls.list_files(owner, repo, pr_number, per_page=100, page=page))
+
+    @retry_with_backoff()
+    def get_pr_diff_strict(self, repo_name: str, pr_number: int) -> str:
+        """Fetch the raw PR diff directly, bypassing every cache.
+
+        Used only where the caller must reconfirm the exact live diff instead
+        of a possibly-stale cached response (e.g. revalidating a snapshot
+        before authorizing a verdict).
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Authorization": f"bearer {self.token}", "Accept": "application/vnd.github.v3.diff", "X-GitHub-Api-Version": "2022-11-28"}
+        response = _strict_request("GET", f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}", headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.text
+
+    @retry_with_backoff()
+    def get_pr_changed_file_count_strict(self, repo_name: str, pr_number: int) -> int:
+        """Fetch the authoritative changed-file count directly, bypassing every cache."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        response = _strict_request("GET", f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}", headers=headers, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        changed_files = payload.get("changed_files") if isinstance(payload, dict) else None
+        if isinstance(changed_files, bool) or not isinstance(changed_files, int) or changed_files < 0:
+            raise ValueError(f"PR #{pr_number} response did not contain a valid changed_files count")
+        return changed_files
+
+    def get_pr_changed_files_strict(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        """Return every REST changed-file record directly, bypassing every cache.
+
+        Mirrors ``get_pr_changed_files``'s per-page retry and partial-failure
+        behavior so a revalidation snapshot cannot be authorized from a stale
+        cached listing while still preserving any successfully fetched pages.
+        """
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        def _fetch_page(page: int) -> Any:
+            response = _strict_request("GET", f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/files", headers=headers, params={"per_page": 100, "page": page}, timeout=30)
+            response.raise_for_status()
+            return response.json()
+
+        return _paginate_pr_changed_files(pr_number, _fetch_page)
 
     def get_pr_commits(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
         """Get all commits for a pull request."""

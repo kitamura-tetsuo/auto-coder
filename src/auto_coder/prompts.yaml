@@ -871,6 +871,33 @@ pr:
     Do not convert this protocol error into an implementation finding,
     test-oracle gap, or Requirement UNVERIFIED status.
 
+  adversarial_validation_evidence_completion: |-
+    Continue the same adversarial review session with one focused changed-file
+    evidence-completion round. Do not restart or discard prior same-snapshot
+    Requirement decisions or completed evidence.
+
+    Validation snapshot: $validation_snapshot
+    Exact validated head: $head_sha
+    Authoritative Issue Requirement manifest:
+    $requirement_manifest
+
+    Exact unresolved paths:
+    $unresolved_paths
+
+    Prior adjudication:
+    $prior_adjudication
+
+    Controller-retrieved authoritative per-path results:
+    $controller_retrievals
+
+    Return the complete adversarial JSON schema. Include exactly one
+    `evidence_recovery` entry for every unresolved path. Use RECOVERED only for
+    controller results marked COMPLETE. Use IRRELEVANT only with a concrete
+    same-snapshot scope basis independent of missing evidence; otherwise use
+    UNAVAILABLE. Missing evidence alone is neither a finding nor a material
+    test-oracle gap. Preserve prior decisions unless the supplied evidence
+    demonstrates that they must change.
+
   adversarial_validation_followup: |-
     You are an expert adversarial software correctness reviewer.
     You previously evaluated PR #$pr_number in $repo_name and requested a focused dynamic check: '$check_target'.

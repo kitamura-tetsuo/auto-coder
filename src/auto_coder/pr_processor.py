@@ -3303,7 +3303,13 @@ def _handle_pr_merge(
                             "pr.adversarial-validation",
                             f"pr#{pr_number} adversarial validation",
                             Outcome.FAILED if is_error else Outcome.BLOCKED,
-                            {"examined_head": head_sha, "result": val_result.result, "summary": val_result.summary},
+                            {
+                                "examined_head": head_sha,
+                                "result": val_result.result,
+                                "summary": val_result.summary,
+                                "diagnostic_category": val_result.diagnostic_category,
+                                "diagnostic_reason": val_result.diagnostic_reason,
+                            },
                         )
                         return actions
                     elif not val_result.allows_auto_merge:
