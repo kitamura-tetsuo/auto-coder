@@ -2414,9 +2414,10 @@ _INDEPENDENT_SCOPE_EVIDENCE_PATTERN = re.compile(
     r"|renamed\s+without\s+content\s+change|already\s+reviewed|out\s+of\s+scope\s+per)",
     re.IGNORECASE,
 )
-# A negation cue immediately before a matched marker (within its own clause)
-# means the marker was invoked to say the evidence is ABSENT ("no
-# .gitattributes ... was obtained"), not that it was affirmatively found.
+# A negation cue anywhere in a matched marker's own clause -- whether it
+# precedes the marker ("no .gitattributes ...") or follows it ("...gitattributes
+# ... was not obtained") -- means the marker was invoked to say the evidence
+# is ABSENT, not that it was affirmatively found.
 _NEGATION_CUE_PATTERN = re.compile(r"\b(?:no|not|none|never|without|neither|nor|n't|lack(?:s|ing)?\s+of|absen(?:t|ce)\s+of)\b", re.IGNORECASE)
 _CLAUSE_BOUNDARY_PATTERN = re.compile(r"[.;]|,\s+(?:and|but)\b", re.IGNORECASE)
 
@@ -2433,17 +2434,32 @@ def _lacks_independent_irrelevance_scope_basis(evidence: str) -> bool:
     irrelevance without one.
 
     A marker mentioned only to say it was NOT obtained (e.g. "no
-    .gitattributes ... was obtained") is not affirmative evidence: each match
-    is checked against the negation cues in its own clause (text back to the
-    nearest clause boundary), and only a match with no such cue counts.
+    .gitattributes ... was obtained", or equally "the .gitattributes file was
+    not obtained") is not affirmative evidence: each match is checked against
+    the negation cues anywhere in its own clause -- both before and after the
+    marker, back and forward to the nearest clause boundary. One recognized
+    marker can itself contain a generic negation word as an idiom (e.g. "no
+    reviewable logic"), which must not be read as negating a *different*
+    marker sharing the same clause (e.g. "..., confirmed via ..."), so every
+    matched span is masked out of the text used for the negation search --
+    only text outside any recognized marker can negate a given match.
     """
     text = evidence.strip()
     if not text:
         return True
-    for match in _INDEPENDENT_SCOPE_EVIDENCE_PATTERN.finditer(text):
-        preceding = text[: match.start()]
-        clause_boundaries = list(_CLAUSE_BOUNDARY_PATTERN.finditer(preceding))
-        clause = preceding[clause_boundaries[-1].end() :] if clause_boundaries else preceding
+    spans = [match.span() for match in _INDEPENDENT_SCOPE_EVIDENCE_PATTERN.finditer(text)]
+    masked = list(text)
+    for start, end in spans:
+        for index in range(start, end):
+            masked[index] = " "
+    masked_text = "".join(masked)
+    for start, end in spans:
+        clause_start = 0
+        for boundary in _CLAUSE_BOUNDARY_PATTERN.finditer(text, 0, start):
+            clause_start = boundary.end()
+        end_boundary = _CLAUSE_BOUNDARY_PATTERN.search(text, end)
+        clause_end = end_boundary.start() if end_boundary else len(text)
+        clause = masked_text[clause_start:clause_end]
         if not _NEGATION_CUE_PATTERN.search(clause):
             return False
     return True

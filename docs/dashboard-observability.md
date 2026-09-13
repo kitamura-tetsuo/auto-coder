@@ -175,10 +175,15 @@ bare "This path is irrelevant." offers no absence clause to even match),
 recognized independent-scope marker (e.g. a generated/vendored/binary-asset
 reference, a `.gitattributes` marker, or an explicit "confirmed
 via"/"identical to" citation) to be present at all, and checks each match
-against the negation cues in its own clause so a marker invoked only to say
-it was NOT obtained (e.g. "no `.gitattributes` ... was obtained") does not
-count as affirmative evidence; anything else is rejected regardless of
-phrasing.
+against the negation cues in its own clause — on either side of the marker,
+so "no `.gitattributes` ... was obtained" and "the `.gitattributes` file was
+not obtained" are both caught — so a marker invoked only to say it was NOT
+obtained does not count as affirmative evidence. Because a recognized marker
+can itself contain a generic negation word as an idiom (e.g. "no reviewable
+logic"), every matched span is masked out of the text before that negation
+search runs, so one marker's own wording can never be misread as negating a
+*different* marker sharing the same clause; anything else is rejected
+regardless of phrasing.
 
 A persistent failure on one changed-file REST page no longer blocks
 validation before the reviewer ever runs: the successfully retrieved page's
