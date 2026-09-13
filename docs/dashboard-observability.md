@@ -184,12 +184,10 @@ masked out of the negation search below. A verification action word
 grants basis when its own preposition (via/by/to/from/per) is actually
 followed by a concrete object — "Already reviewed." names no such object, so
 it no longer counts either, and moved into the (masked-only) category
-bucket alongside the file-category labels. That trailing-object requirement
-uses a negative lookahead so a negation word can never itself satisfy it:
-without it, "Verified by no independent evidence." would match with the
-object requirement consuming only "n" (one character), leaving "o
-independent evidence" behind and breaking the later `\bno\b` negation check
-that relies on the word staying intact. It checks each verification match
+bucket alongside the file-category labels. A positive lookahead confirms that
+the preposition has an object without consuming it. Consequently, in
+"Verified by no independent evidence.", the complete word "no" remains visible
+to the later `\bno\b` negation check. It checks each verification match
 against the negation cues in its own clause — on either side of the marker,
 so "no `.gitattributes` ... was obtained" and "the `.gitattributes` file was
 not obtained" are both caught — so a marker invoked only to say it was NOT
