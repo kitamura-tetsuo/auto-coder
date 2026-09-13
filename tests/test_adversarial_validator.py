@@ -580,6 +580,7 @@ def test_absence_only_irrelevance_cannot_discharge_unavailable_path() -> None:
         "The patch is unavailable; no .gitattributes or other scope evidence was obtained.",
         "The .gitattributes file was not obtained; no independent scope evidence is available.",
         "This is generated code.",
+        "Already reviewed.",
     ],
 )
 def test_absence_only_irrelevance_rejected_regardless_of_phrasing(evidence: str) -> None:
@@ -2969,6 +2970,66 @@ class TestRunAdversarialValidation:
         assert '"src/two.py"' in completion_prompt
         assert "complete one" in completion_prompt
         assert "complete two" in completion_prompt
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_completion_rejects_bare_prior_review_as_irrelevance_basis(self, mock_run_prompt, mock_build_ctx):
+        """REQ-004/REQ-005: production completion must not treat a bare prior-review
+        assertion as independent same-snapshot scope evidence."""
+        context = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=100,
+            pr_title="Incomplete material change",
+            pr_diff="partial evidence",
+            all_changed_files=["src/state.py"],
+            issue_context="Issue specification",
+            unverified_files=["src/state.py"],
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve state")],
+            validation_snapshot="snapshot-1",
+            controller_file_evidence=[FileDiffEvidence(path="src/state.py", patch="", is_complete=False)],
+        )
+        mock_build_ctx.return_value = context
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Initially claimed complete",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "initial claim"}],
+                "findings": [],
+            }
+        )
+        manager = MagicMock()
+        manager._last_session_id = "session-1"
+        manager._last_continue_session_resumed = True
+        manager.get_current_backend_identity.return_value = ("codex", "codex", "model")
+        manager.continue_session.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Prior review supposedly discharged the path",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "prior review claim"}],
+                "evidence_recovery": [
+                    {
+                        "path": "src/state.py",
+                        "source": "current-PR retrieval",
+                        "status": "IRRELEVANT",
+                        "evidence": "Already reviewed.",
+                        "requirement_ids": ["REQ-001"],
+                    }
+                ],
+                "findings": [],
+            }
+        )
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 100, "head_sha": "head-1"},
+            AutomationConfig(),
+            backend_manager=manager,
+        )
+
+        assert manager.continue_session.call_count == 1
+        assert result.result == "ERROR"
+        assert result.diagnostic_category == "absence_only_irrelevance_rejected"
+        assert result.diagnostic_reason == ("Paths marked IRRELEVANT without a recognized independent scope basis while their evidence is unavailable: src/state.py")
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")

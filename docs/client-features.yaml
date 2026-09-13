@@ -2697,7 +2697,7 @@ deterministic-adversarial-file-evidence-completion:
   implementation: "Adversarial validation snapshot and completion orchestration in src/auto_coder/adversarial_validator.py; paginated PR file retrieval in src/auto_coder/util/gh_cache.py."
   behavior:
     - "The controller obtains the exact unresolved paths and independent per-path GitHub REST file representations, then supplies every success or failure in one focused continuation of the same reviewer session; autonomous reviewer discovery is not required."
-    - "The completion must account for each supplied path exactly once, cannot call incomplete controller evidence RECOVERED, and is never retried; omissions and contradictions fail closed."
+    - "The completion must account for each supplied path exactly once, cannot call incomplete controller evidence RECOVERED, and may call unavailable evidence IRRELEVANT only from a concrete independent same-snapshot scope basis rather than a bare category or prior-review assertion; omissions and contradictions fail closed, and completion is never retried."
     - "Final finding/test-gap/evidence-incomplete/PASS precedence is applied after completion, and the PR identity, head, base/change representation, and authoritative Requirement manifest snapshot must be reconfirmed before the focused result can authorize a verdict."
 
 ## Mandatory production-to-view dashboard observability regressions

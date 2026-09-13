@@ -2415,7 +2415,7 @@ def _complete_changed_file_evidence(
 # `_lacks_independent_irrelevance_scope_basis` -- they just never satisfy the
 # basis check by themselves.
 _VERIFICATION_SCOPE_EVIDENCE_PATTERN = re.compile(
-    r"(?:confirmed\s+via|confirmed\s+by|verified\s+via|verified\s+by|cross[- ]referenced" r"|\.gitattributes|\.gitignore" r"|identical\s+to|unchanged\s+from|byte[- ]identical|pattern[- ]matching" r"|renamed\s+without\s+content\s+change|already\s+reviewed|out\s+of\s+scope\s+per)",
+    r"(?:confirmed\s+via|confirmed\s+by|verified\s+via|verified\s+by|cross[- ]referenced" r"|\.gitattributes|\.gitignore" r"|identical\s+to|unchanged\s+from|byte[- ]identical|pattern[- ]matching" r"|renamed\s+without\s+content\s+change|out\s+of\s+scope\s+per)",
     re.IGNORECASE,
 )
 _CATEGORY_LABEL_PATTERN = re.compile(
