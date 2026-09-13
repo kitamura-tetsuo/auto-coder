@@ -10,6 +10,37 @@ state refusal, and dashboard request-outcome semantics remain unchanged.
 
 # Client Features Documentation
 
+## Durable generation-aware Issue-stage routing
+
+Authoritative Issue classification can be persisted independently for Review
+and Implementation lanes without introducing another GitHub readiness signal.
+Each lane stores one coalesced item per target, ordered by current Issue priority
+and a durable FIFO arrival that survives restart and in-place reprioritization.
+Semantic supersession or loss of stage eligibility removes the old item; later
+admission receives a new arrival. Review generations bind enabled exact
+validation identities but not their verdicts, while Implementation generations
+bind only the target/family contract snapshot and therefore ignore validation
+policy, labels, operational state, and review outcomes.
+
+Review routing omits exact-current terminal READY/BLOCKED decisions and
+coalesces in-flight identities. Implementation routing requires READY for every
+enabled exact-current identity. A durable owned-start tombstone prevents an
+Implementation generation from being started again after restart, readiness
+withdrawal/restoration, duplicate wakeups, or exact semantic reversion; a crash
+before ownership returns the same durable arrival to pending work. This routing
+foundation performs no Review execution or implementation dispatch itself.
+The durable invalidation worker records routing before invoking the legacy
+validation boundary, then refreshes it afterward even when validation returns
+ERROR, so partial terminal results shrink rather than erase retryable Review
+work. After ordinary Issue processing, routing performs another strict refresh
+so a standalone READY/BLOCKED decision is handed off immediately rather than
+waiting for another webhook or restart. Family-tagged Implementation rows allow a reconciled parent membership
+change to retire departed children. Startup re-authorizes every durable lane
+target, including targets absent from the open-Issue enumeration, so closure
+removes pending work and unchanged reopening receives a new arrival.
+An empty authoritative child set also retires every Implementation row owned by
+the former family before the former parent is reclassified as standalone.
+
 ## Revision-bound review adjudication protocol
 
 Auto-Coder provides a provider-independent, side-effect-free v1 model for
@@ -43,8 +74,11 @@ or durable retry deadlines.
 ## Trusted observations for early dependency waiting
 
 The daemon uses a separate process-local, per-Issue observation cache exclusively
-to defer Issues with explicitly declared open prerequisites before authoritative
-family reconstruction and submitted-parent validation. Startup discards trust.
+to identify Issues with explicitly declared open prerequisites before ordinary
+implementation candidate refresh and submitted-parent validation. Before the
+operational wait is committed, generation-aware Review routing performs its own
+authoritative family reconstruction so a specification edit cannot retain stale
+lane identities. Startup discards observation-cache trust.
 A cold observation fetches only the target and its declared prerequisites through
 the strict GitHub reader. Complete Issue webhooks update that Issue without
 invalidating unrelated observations. Ambiguous equal-timestamp updates, older

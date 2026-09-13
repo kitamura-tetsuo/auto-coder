@@ -1,5 +1,31 @@
 # Dashboard observability verification
 
+The generation-aware Issue routing store is a pre-worker durability boundary:
+it classifies and orders Review and Implementation lane records but does not yet
+execute either lane or emit a processing result. Consequently it introduces no
+new production trace stage, origin, outcome, provider route, structured event,
+or dashboard projection. `tests/test_issue_stage_routing.py::test_invalidation_and_startup_recovery_route_authoritative_standalone_decision`
+drives the real durable invalidation worker and startup enumeration through
+authoritative GitHub refresh and lifecycle-decision reads, then verifies the
+durable Review-to-Implementation handoff and restart-preserved arrival. The
+same test module supplements that production boundary with classification,
+coalescing, supersession, and owned-start unit coverage. The Review and
+Implementation worker changes
+which consume these records must add their production-to-view trace coverage;
+the routing store must not fabricate worker activity before that handoff exists.
+Run `bash scripts/test.sh tests/test_issue_stage_routing.py` for this boundary.
+That production suite also covers partial family validation ending in ERROR,
+departed-child membership cleanup, and offline closure followed by reopening;
+these routing-only state transitions remain intentionally absent from the
+execution timeline until a stage worker actually claims them.
+Dependency-cache waits now refresh semantic routing before emitting the existing
+`issue.cached-dependency-wait` event. The event schema and operational meaning
+are unchanged: it still reports only an Implementation prerequisite wait and
+does not claim Review execution, READY evidence, or provider admission.
+The final post-processing routing refresh likewise emits no additional stage:
+it consumes durable validation evidence for lane bookkeeping, while the existing
+validation and implementation-admission events remain the observable outcomes.
+
 The detail view is a projection of **observed local evidence**. It does not query
 GitHub or a provider and it does not turn absent, unavailable, partial, throttled,
 or superseded evidence into a pass or failure. An accepted provider submission is
