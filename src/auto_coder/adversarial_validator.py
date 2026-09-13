@@ -2423,8 +2423,21 @@ def _complete_changed_file_evidence(
 # object -- rather than standing on its own. A concrete artifact reference
 # (.gitattributes/.gitignore) is an exception: naming the artifact itself
 # already is the citation.
+#
+# That trailing-token requirement must not itself be satisfiable by a
+# negation word ("Verified by no independent evidence."): the match would
+# then consume only the negation word's first character, leaving the rest
+# ("o independent evidence") behind and breaking the \bno\b word-boundary
+# check that the later negation search relies on -- silently defeating it.
+# A negative lookahead keeps a negation word from ever counting as the
+# required object in the first place.
+_NEGATION_LOOKAHEAD = r"(?!(?:no|not|none|never|neither|nor|without)\b)"
 _VERIFICATION_SCOPE_EVIDENCE_PATTERN = re.compile(
-    r"(?:(?:confirmed|verified)\s+(?:via|by)\s+\S" r"|cross[- ]referenced\s+(?:with|against|to)\s+\S" r"|\.gitattributes|\.gitignore" r"|(?:identical\s+to|unchanged\s+from|byte[- ]identical\s+(?:to|with))\s+\S" r"|out\s+of\s+scope\s+per\s+\S)",
+    rf"(?:(?:confirmed|verified)\s+(?:via|by)\s+{_NEGATION_LOOKAHEAD}\S"
+    rf"|cross[- ]referenced\s+(?:with|against|to)\s+{_NEGATION_LOOKAHEAD}\S"
+    r"|\.gitattributes|\.gitignore"
+    rf"|(?:identical\s+to|unchanged\s+from|byte[- ]identical\s+(?:to|with))\s+{_NEGATION_LOOKAHEAD}\S"
+    rf"|out\s+of\s+scope\s+per\s+{_NEGATION_LOOKAHEAD}\S)",
     re.IGNORECASE,
 )
 _CATEGORY_LABEL_PATTERN = re.compile(
