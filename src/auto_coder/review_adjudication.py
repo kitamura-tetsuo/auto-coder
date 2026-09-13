@@ -257,14 +257,21 @@ class AdjudicationLedger:
         if physical is not None and physical.body_hash != body_hash:
             self.retire(f"accepted source {source.comment_id} was edited")
             return self._result(AdjudicationStatus.INVALID, source, physical.decision, self.context.retired_reason or "invalidated")
-        if physical is not None and (not source.update_revision or not source.created_at):
+        if physical is not None and not source.update_revision:
             self.context.source_unavailable = True
             self._refresh_integrity()
-            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision, "physical source revision or creation instant is unavailable")
-        if physical is not None and (physical.source.update_revision != source.update_revision or physical.source.created_at != source.created_at):
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision, "physical source revision is unavailable")
+        if physical is not None and physical.source.update_revision != source.update_revision:
             self.retire(f"accepted source {source.comment_id} was edited")
             return self._result(AdjudicationStatus.INVALID, source, physical.decision, self.context.retired_reason or "invalidated")
-        if self.context.source_unavailable:
+        if physical is not None and not source.created_at:
+            self.context.source_unavailable = True
+            self._refresh_integrity()
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision, "physical source creation instant is unavailable")
+        if physical is not None and physical.source.created_at != source.created_at:
+            self.retire(f"accepted source {source.comment_id} was edited")
+            return self._result(AdjudicationStatus.INVALID, source, physical.decision, self.context.retired_reason or "invalidated")
+        if physical is not None and self.context.source_unavailable:
             return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision if physical else None, "required authoritative evidence is unavailable")
         if physical is not None:
             if physical.source.update_revision == source.update_revision and physical.body_hash == body_hash:
@@ -310,6 +317,8 @@ class AdjudicationLedger:
         if decision.decision_id in self.context.pending_decisions:
             self.retire(f"decision identity collision for {decision.decision_id}")
             return self._result(AdjudicationStatus.INVALID, source, decision, self.context.retired_reason or "invalidated")
+        if self.context.source_unavailable:
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, decision, "required authoritative evidence is unavailable")
         cycle_members = self._pending_cycle_members(decision)
         if cycle_members:
             for decision_id in cycle_members:

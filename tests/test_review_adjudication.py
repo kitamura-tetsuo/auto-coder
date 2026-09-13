@@ -332,6 +332,20 @@ def test_changed_body_with_missing_revision_permanently_retires(pending: bool) -
         assert restored.ingest(source(1, decision(A)), [8], [42]).status is AdjudicationStatus.INVALID
 
 
+@pytest.mark.parametrize("pending", [False, True])
+def test_changed_revision_with_missing_creation_permanently_retires(pending: bool) -> None:
+    state = ledger()
+    original = source(2, decision(B, (A,))) if pending else source(1, decision(A))
+    state.ingest(original, [8], [42])
+    changed = replace(original, update_revision="r2", created_at="")
+    assert state.ingest(changed, [8], [42]).status is AdjudicationStatus.INVALID
+    assert state.context.tombstones == [f"accepted source {original.comment_id} was edited"]
+    restored = AdjudicationLedger.loads(state.dumps())
+    assert restored.reconcile(available=True, **reconciliation_args(restored)).status is AdjudicationStatus.INVALID
+    if pending:
+        assert restored.ingest(source(1, decision(A)), [8], [42]).status is AdjudicationStatus.INVALID
+
+
 @pytest.mark.parametrize("revoked", ["tip", "root"])
 def test_authorization_revocation_during_outage_is_permanent(revoked: str) -> None:
     state = ledger()
@@ -341,6 +355,16 @@ def test_authorization_revocation_during_outage_is_permanent(revoked: str) -> No
     adjudicators = [] if revoked == "tip" else [8]
     reviewers = [42] if revoked == "tip" else []
     assert state.ingest(original, adjudicators, reviewers).status is AdjudicationStatus.REVOKED
+    restored = AdjudicationLedger.loads(state.dumps())
+    assert restored.reconcile(available=True, **reconciliation_args(restored)).status is AdjudicationStatus.INVALID
+
+
+def test_authorized_identity_collision_during_outage_is_permanent() -> None:
+    state = ledger()
+    state.ingest(source(1, decision(A)), [8], [42])
+    state.reconcile(available=False, **reconciliation_args(state))
+    assert state.ingest(source(2, decision(A)), [8], [42]).status is AdjudicationStatus.INVALID
+    assert state.context.tombstones == [f"decision identity collision for {A}"]
     restored = AdjudicationLedger.loads(state.dumps())
     assert restored.reconcile(available=True, **reconciliation_args(restored)).status is AdjudicationStatus.INVALID
 
