@@ -3094,6 +3094,7 @@ def _handle_pr_merge(
                         active_attempt_id = attempt.attempt_id
                         decision_attempt_repository = attempt_repository
                         decision_attempt_sequence = attempt.sequence
+                        _observe_codex_cloud_remediation_activity(repo_name, pr_data, github_client)
                         try:
                             with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
                                 actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
@@ -5016,14 +5017,14 @@ def _review_feedback_identity(prefix: str, thread: ReviewThread, comment_index: 
     return prefix + hashlib.sha256(anchor.encode("utf-8")).hexdigest()
 
 
-def _cloud_task_remediation_token(client: Any, task_id: str, feedback_identities: tuple[str, ...] = ()) -> str:
+def _cloud_task_remediation_token(client: Any, task_id: str, feedback_identity: str = "") -> str:
     """Return durable evidence that the owning task completed later activity."""
     from .cloud_task_client_base import CloudTask, CloudTaskState
 
     completed_turn_observer = getattr(type(client), "get_completed_followup_remediation_turn", None)
-    if feedback_identities and callable(completed_turn_observer):
+    if feedback_identity and callable(completed_turn_observer):
         try:
-            completed_turn = completed_turn_observer(client, task_id, feedback_identities)
+            completed_turn = completed_turn_observer(client, task_id, feedback_identity)
         except Exception as exc:
             logger.warning(f"Could not inspect cloud task '{task_id}' completed follow-up turn: {exc}")
             return ""
@@ -5048,6 +5049,20 @@ def _cloud_task_remediation_token(client: Any, task_id: str, feedback_identities
     if not activity:
         return ""
     return hashlib.sha256(f"{task.task_id}\n{activity}".encode("utf-8")).hexdigest()
+
+
+def _observe_codex_cloud_remediation_activity(repo_name: str, pr_data: Dict[str, Any], github_client: Optional[Any]) -> None:
+    """Snapshot completed Codex repair turns before a new validation runs."""
+    resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
+    if resolution.origin is None or resolution.origin.provider != "codex-cloud":
+        return
+    observer = getattr(type(resolution.origin.client), "observe_completed_followup_remediation_turns", None)
+    if not callable(observer):
+        return
+    try:
+        observer(resolution.origin.client, resolution.origin.task_id)
+    except Exception as exc:
+        logger.warning(f"Could not snapshot Codex Cloud remediation activity before adversarial validation: {exc}")
 
 
 def _adversarial_feedback_generation_identity(feedback_identity: str, remediation_token: str, validation_report: str) -> str:
@@ -5107,12 +5122,33 @@ def _load_pending_review_feedback(state_path: Path) -> set[str]:
     return set(values)
 
 
-def _record_review_feedback_state(state_path: Path, delivered: set[str], pending: set[str]) -> None:
+def _load_review_validation_generations(state_path: Path) -> dict[str, str]:
+    """Return immutable validation-to-remediation-generation associations."""
+    if not state_path.exists():
+        return {}
+    loaded = json.loads(state_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("delivery state is not a JSON object")
+    values = loaded.get("validation_generations", {})
+    if not isinstance(values, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in values.items()):
+        raise ValueError("validation_generations is not a string mapping")
+    return values
+
+
+def _record_review_feedback_state(state_path: Path, delivered: set[str], pending: set[str], validation_generations: Optional[dict[str, str]] = None) -> None:
     """Atomically persist confirmed and indeterminate feedback deliveries."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = state_path.with_suffix(f"{state_path.suffix}.{os.getpid()}.tmp")
     temporary.write_text(
-        json.dumps({"delivered_feedback": sorted(delivered), "pending_feedback": sorted(pending)}, indent=2),
+        json.dumps(
+            {
+                "delivered_feedback": sorted(delivered),
+                "pending_feedback": sorted(pending),
+                "validation_generations": validation_generations if validation_generations is not None else _load_review_validation_generations(state_path),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
     os.replace(temporary, state_path)
@@ -5599,23 +5635,34 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         and thread.comments[0].body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"))
         and (thread.comments[0].body in requested_bodies if requested_bodies else _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report))
     ]
-    finding_identities = tuple(_review_feedback_identity(prefix, thread, 0) for thread in matching_threads)
-    remediation_token = _cloud_task_remediation_token(client, task_id, finding_identities)
-    has_remediation_evidence = _has_adversarial_remediation_evidence(remediation_token, source_validation_report)
-    feedback_items = [
-        (
-            thread.comments[0].body,
-            _review_feedback_identity(prefix, thread, 0),
-            _adversarial_feedback_generation_identity(_review_feedback_identity(prefix, thread, 0), remediation_token, source_validation_report),
-        )
-        for thread in matching_threads
-    ]
-    if not feedback_items:
+    feedback_bodies = [(thread.comments[0].body, _review_feedback_identity(prefix, thread, 0)) for thread in matching_threads]
+    if not feedback_bodies:
         return [f"Cannot identify actionable adversarial feedback for PR #{pr_number}; delivery was not attempted"]
-    validation_identities = {finding_identity: _adversarial_validation_delivery_identity(finding_identity, source_validation_report) for _body, finding_identity, _generation_identity in feedback_items}
+    validation_identities = {finding_identity: _adversarial_validation_delivery_identity(finding_identity, source_validation_report) for _body, finding_identity in feedback_bodies}
+    observed_tokens = {finding_identity: _cloud_task_remediation_token(client, task_id, finding_identity) for _body, finding_identity in feedback_bodies}
     try:
         with _cloud_review_delivery_lock:
             delivered = _load_delivered_review_feedback(state_path)
+            validation_generations = _load_review_validation_generations(state_path)
+            for finding_identity, validation_identity in validation_identities.items():
+                validation_generations.setdefault(validation_identity, observed_tokens[finding_identity])
+            _record_review_feedback_state(
+                state_path,
+                delivered,
+                _load_pending_review_feedback(state_path),
+                validation_generations,
+            )
+            remediation_tokens = {finding_identity: validation_generations[validation_identities[finding_identity]] for _body, finding_identity in feedback_bodies}
+            generation_report = "" if provider == "codex-cloud" else source_validation_report
+            feedback_items = [
+                (
+                    body,
+                    finding_identity,
+                    _adversarial_feedback_generation_identity(finding_identity, remediation_tokens[finding_identity], generation_report),
+                )
+                for body, finding_identity in feedback_bodies
+            ]
+            has_remediation_evidence = {finding_identity: _has_adversarial_remediation_evidence(remediation_tokens[finding_identity], generation_report) for _body, finding_identity in feedback_bodies}
             all_identities = [
                 identity
                 for _body, finding_identity, generation_identity in feedback_items
@@ -5623,17 +5670,17 @@ def _send_adversarial_validation_feedback_to_cloud_task(
                     finding_identity,
                     validation_identities[finding_identity],
                     generation_identity,
-                    _adversarial_feedback_generation_identity(finding_identity, "", source_validation_report),
+                    _adversarial_feedback_generation_identity(finding_identity, "", generation_report),
                 )
             ]
             delivered.update(_load_pr_delivered_review_feedback(github_client, repo_name, pr_number, all_identities))
             reconciliation_candidates = {
                 identity
                 for _body, finding_identity, generation_identity in feedback_items
-                if finding_identity not in delivered or (has_remediation_evidence and validation_identities[finding_identity] not in delivered)
+                if finding_identity not in delivered or (has_remediation_evidence[finding_identity] and validation_identities[finding_identity] not in delivered)
                 for identity in (
                     generation_identity,
-                    _adversarial_feedback_generation_identity(finding_identity, "", source_validation_report),
+                    _adversarial_feedback_generation_identity(finding_identity, "", generation_report),
                 )
                 if identity not in delivered
             }
@@ -5647,11 +5694,12 @@ def _send_adversarial_validation_feedback_to_cloud_task(
                 delivered.update(reconciled)
                 reconciled_receipts = set(reconciled)
                 for _body, finding_identity, generation_identity in feedback_items:
-                    unknown_generation = _adversarial_feedback_generation_identity(finding_identity, "", source_validation_report)
+                    unknown_generation = _adversarial_feedback_generation_identity(finding_identity, "", generation_report)
                     if generation_identity in reconciled or unknown_generation in reconciled:
                         reconciled_receipts.add(finding_identity)
                         reconciled_receipts.add(validation_identities[finding_identity])
-                    if unknown_generation in reconciled and remediation_token and hasattr(client, "get_followup_remediation_baseline"):
+                    remediation_token = remediation_tokens[finding_identity]
+                    if unknown_generation in reconciled and remediation_token and provider != "codex-cloud" and hasattr(client, "get_followup_remediation_baseline"):
                         baseline_activity = client.get_followup_remediation_baseline(task_id, (unknown_generation,))
                         if isinstance(baseline_activity, str) and baseline_activity:
                             baseline_token = hashlib.sha256(f"{task_id}\n{baseline_activity}".encode("utf-8")).hexdigest()
@@ -5667,7 +5715,9 @@ def _send_adversarial_validation_feedback_to_cloud_task(
                     f"🤖 Auto-Coder: I reconciled previously submitted adversarial feedback with the existing {provider} task.",
                 )
         pending_feedback = [
-            (body, finding_identity, generation_identity) for body, finding_identity, generation_identity in feedback_items if generation_identity not in delivered and (finding_identity not in delivered or (has_remediation_evidence and validation_identities[finding_identity] not in delivered))
+            (body, finding_identity, generation_identity)
+            for body, finding_identity, generation_identity in feedback_items
+            if generation_identity not in delivered and (finding_identity not in delivered or (has_remediation_evidence[finding_identity] and validation_identities[finding_identity] not in delivered))
         ]
         if not pending_feedback:
             return [f"Skipped duplicate adversarial feedback to {provider} for PR #{pr_number}: all actionable feedback was already delivered"]
@@ -5704,12 +5754,12 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         return [f"{provider} task '{task_id}' could not receive adversarial feedback for PR #{pr_number}"]
 
     baseline_receipts: set[str] = set()
-    if not remediation_token and hasattr(client, "get_followup_remediation_baseline"):
+    if provider != "codex-cloud" and all(not remediation_tokens[finding_identity] for _body, finding_identity, _generation_identity in pending_feedback) and hasattr(client, "get_followup_remediation_baseline"):
         logical_identities = tuple(sorted(generation_identity for _body, _finding_identity, generation_identity in pending_feedback))
         baseline_activity = client.get_followup_remediation_baseline(task_id, logical_identities)
         if isinstance(baseline_activity, str) and baseline_activity:
             baseline_token = hashlib.sha256(f"{task_id}\n{baseline_activity}".encode("utf-8")).hexdigest()
-            baseline_receipts = {_adversarial_feedback_generation_identity(finding_identity, baseline_token, source_validation_report) for _body, finding_identity, _generation_identity in pending_feedback}
+            baseline_receipts = {_adversarial_feedback_generation_identity(finding_identity, baseline_token, generation_report) for _body, finding_identity, _generation_identity in pending_feedback}
 
     local_receipt = False
     try:

@@ -57,6 +57,7 @@ class PendingCodexFollowUp:
     status: str = "indeterminate"
     logical_identity: str = ""
     accepted_at: float = 0.0
+    completed_turn_id: str = ""
 
 
 def _codex_followup_state_path(repo_name: Optional[str]) -> Path:
@@ -553,6 +554,7 @@ class CodexCloudClient(CloudTaskClientBase):
         if wham.reconcile_follow_up(task_id, record.pre_send_turn_id, record.message_fingerprint) is not True:
             return FollowUpDeliveryOutcome.INDETERMINATE
         record.status = FollowUpDeliveryOutcome.DELIVERED.value
+        record.accepted_at = record.accepted_at or time.time()
         with _followup_state_lock:
             records = _load_pending_followups(state_path)
             records[key] = record
@@ -572,13 +574,48 @@ class CodexCloudClient(CloudTaskClientBase):
         turns = {records[key].pre_send_turn_id for key in keys if key in records and records[key].pre_send_turn_id}
         return f"latest_turn_id:{turns.pop()}" if len(turns) == 1 else ""
 
-    def get_completed_followup_remediation_turn(self, task_id: str, feedback_identities: tuple[str, ...]) -> str:
-        """Observe the completed assistant turn after the latest accepted repair.
+    def observe_completed_followup_remediation_turns(self, task_id: str) -> None:
+        """Persist the first completed turn after each latest accepted repair."""
+        state_path = _codex_followup_state_path(self.repo_name)
+        with _followup_state_lock:
+            records = _load_pending_followups(state_path)
+        latest_by_feedback: dict[str, PendingCodexFollowUp] = {}
+        for record in records.values():
+            if record.task_id != task_id or record.status != FollowUpDeliveryOutcome.DELIVERED.value:
+                continue
+            feedback_identity, separator, _generation = record.logical_identity.partition(":remediation:")
+            if not separator:
+                continue
+            current = latest_by_feedback.get(feedback_identity)
+            if current is None or record.accepted_at > current.accepted_at:
+                latest_by_feedback[feedback_identity] = record
+        changed = False
+        wham = self.wham_client or CodexWhamClient()
+        for latest in latest_by_feedback.values():
+            if latest.completed_turn_id:
+                continue
+            completed_turn = wham.resolve_completed_assistant_turn_after(task_id, latest.pre_send_turn_id)
+            if completed_turn:
+                latest.completed_turn_id = completed_turn
+                changed = True
+        if not changed:
+            return
+        with _followup_state_lock:
+            current_records = _load_pending_followups(state_path)
+            selected = {(record.task_id, record.logical_identity): record.completed_turn_id for record in latest_by_feedback.values() if record.completed_turn_id}
+            for record in current_records.values():
+                completed_turn = selected.get((record.task_id, record.logical_identity))
+                if completed_turn and not record.completed_turn_id:
+                    record.completed_turn_id = completed_turn
+            _save_pending_followups(state_path, current_records)
+
+    def get_completed_followup_remediation_turn(self, task_id: str, feedback_identity: str) -> str:
+        """Read the completed generation observed before validation acceptance.
 
         The durable follow-up record supplies the causal pre-send baseline. WHAM
-        supplies the production assistant-turn identity and completion state.
-        Together they avoid treating CLI status changes or unrelated PR heads as
-        corrective activity.
+        supplies the production assistant-turn identity. Observation is deliberately
+        separate so replaying an already accepted validation cannot discover newer
+        activity and associate it retroactively.
         """
         state_path = _codex_followup_state_path(self.repo_name)
         with _followup_state_lock:
@@ -586,12 +623,12 @@ class CodexCloudClient(CloudTaskClientBase):
                 records = _load_pending_followups(state_path)
             except (OSError, ValueError, TypeError):
                 return ""
-        prefixes = tuple(f"{identity}:remediation:" for identity in feedback_identities)
-        accepted = [record for record in records.values() if record.task_id == task_id and record.status == FollowUpDeliveryOutcome.DELIVERED.value and record.logical_identity.startswith(prefixes)]
+        prefix = f"{feedback_identity}:remediation:"
+        accepted = [record for record in records.values() if record.task_id == task_id and record.status == FollowUpDeliveryOutcome.DELIVERED.value and record.logical_identity.startswith(prefix)]
         if not accepted:
             return ""
         latest = max(accepted, key=lambda record: record.accepted_at)
-        return (self.wham_client or CodexWhamClient()).resolve_completed_assistant_turn_after(task_id, latest.pre_send_turn_id) or ""
+        return latest.completed_turn_id
 
     def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = ()) -> bool:
         """Send work once, reconciling any prior ambiguous POST before retrying."""

@@ -227,16 +227,29 @@ class TestCodexWhamClient:
 
     def test_resolve_completed_assistant_turn_after_requires_observed_baseline_order(self, client):
         turns = [
-            WhamTurn(id="task_e_902~assttrn_old", role="assistant", status="completed"),
-            WhamTurn(id="task_e_902~assttrn_A", role="assistant", status="completed"),
-            WhamTurn(id="task_e_902~assttrn_running", role="assistant", status="running"),
-            WhamTurn(id="task_e_902~assttrn_B", role="assistant", status="completed"),
+            WhamTurn(id="task_e_902~assttrn_old", role="assistant", status="completed", created_at="1"),
+            WhamTurn(id="task_e_902~assttrn_A", role="assistant", status="completed", created_at="2"),
+            WhamTurn(id="task_e_902~assttrn_running", role="assistant", status="running", created_at="3"),
+            WhamTurn(id="task_e_902~assttrn_B", role="assistant", status="completed", created_at="4"),
         ]
 
         with patch.object(client, "get_task_turns", return_value=turns):
             assert client.resolve_completed_assistant_turn_after("task_e_902", turns[1].id) == turns[3].id
             assert client.resolve_completed_assistant_turn_after("task_e_902", turns[3].id) is None
             assert client.resolve_completed_assistant_turn_after("task_e_902", "task_e_902~missing") is None
+
+    def test_provider_newest_first_history_uses_timestamp_order_for_both_selectors(self, client):
+        response = MagicMock(status_code=200)
+        response.json.return_value = [
+            {"id": "task_e_903~assttrn_B", "role": "assistant", "turn_status": "completed", "created_at": "3"},
+            {"id": "task_e_903~assttrn_A", "role": "assistant", "turn_status": "completed", "created_at": "2"},
+            {"id": "task_e_903~assttrn_old", "role": "assistant", "turn_status": "completed", "created_at": "1"},
+        ]
+
+        with patch("httpx.get", return_value=response):
+            assert client.resolve_latest_assistant_turn("task_e_903") == "task_e_903~assttrn_B"
+            assert client.resolve_completed_assistant_turn_after("task_e_903", "task_e_903~assttrn_A") == "task_e_903~assttrn_B"
+            assert client.resolve_completed_assistant_turn_after("task_e_903", "task_e_903~assttrn_B") is None
 
     def test_reconcile_follow_up_matches_exposed_user_message(self, client):
         prompt = "Fix stable feedback identity 123"

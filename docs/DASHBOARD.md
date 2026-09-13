@@ -44,8 +44,10 @@ cancellation, and disabled bypasses remain distinct. These events use bounded
 process-local trace retention; they are not durable review history and cannot be
 recovered after restart.
 
-Codex Cloud adversarial repair generations are recovered from durable follow-up
-baselines and provider-observed completed assistant turns. The dashboard continues
+Codex Cloud adversarial repair generations are recovered per finding from durable
+follow-up baselines and completed assistant turns observed before new validation.
+Accepted validations retain that observed-generation association across restart,
+without re-observing provider activity when an older validation is replayed. The dashboard continues
 to show `Cloud Task Adversarial Feedback` only when the corresponding follow-up is
 successfully accepted; a repeated turn, an unfinished turn, or an unrelated PR head
 change produces no new successful-delivery event.

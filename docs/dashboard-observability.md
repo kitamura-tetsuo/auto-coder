@@ -51,16 +51,20 @@ for the production lifecycle regressions, including
 
 ## Updating observable processing
 
-Codex Cloud adversarial redelivery now derives its remediation generation from
-the WHAM completed assistant turn ordered after the durable baseline of the last
-accepted adversarial follow-up. This changes provider observation and restart
+Codex Cloud adversarial redelivery now derives each finding's remediation generation
+from the first WHAM completed assistant turn chronologically ordered after that
+finding's durable accepted-follow-up baseline. Observation occurs before a new
+validation, and the accepted validation-to-generation association is durable;
+replaying an older validation performs no new provider observation. This changes provider observation and restart
 recovery, but not the existing `Cloud Task Adversarial Feedback` trace stage,
 outcome, or fields: only a successful follow-up emits that event, while duplicate
 or not-yet-completed generations remain action diagnostics. The production-path
 regression
-`tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationCodexFeedback::test_codex_completed_turn_redelivers_failed_correction_once_after_restart`
-reconstructs the client across the durable boundary and proves one emission-worthy
-delivery for a completed turn and suppression for its repeated observation. Run it
+`tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationCodexFeedback`
+reconstructs clients across the durable boundary and proves one emission-worthy
+delivery for a completed turn, immutable rejected-generation retry, per-finding
+batch baselines, and suppression for replayed validations and provenance-only
+activity. Run it
 with `bash scripts/test.sh tests/test_codex_wham_client.py tests/test_adversarial_validation_pr_flow.py`.
 
 Explicit Issue restart (`--only <issue> --force --retry`) keeps the
@@ -455,7 +459,7 @@ also mount and refresh the detail view from that snapshot.
 | PR pending-work resumption | `tests/test_pr_production_instrumentation.py::TestPrResumptionSupersededHead::test_pending_work_resumption_records_superseded_on_changed_head`; `tests/test_dashboard_observability.py::TestJoinedProductionToView::test_pr_pending_work_resumption_reaches_detail_view_as_superseded` |
 | Merge-operation resumption | `tests/test_pr_production_instrumentation.py::TestMergeOperationResumeSupersededHead::test_merge_operation_resumption_records_superseded_on_changed_head`; `tests/test_dashboard_observability.py::TestJoinedProductionToView::test_merge_operation_resumption_reaches_detail_view_as_superseded` |
 | Asynchronous PR adversarial validation | `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_asynchronous_pr_adversarial_validation_origin_is_recorded` (drives `_handle_pr_merge` through the real `AdversarialValidationScheduler` admission and reads the real `pr.adversarial-validation` event back; `test_take_pr_actions_preserves_structured_adversarial_failure` mocks `_handle_pr_merge` itself, so it does not exercise this emission) |
-| Codex Cloud failed-correction redelivery generation | `tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationCodexFeedback::test_codex_completed_turn_redelivers_failed_correction_once_after_restart` (uses provider-shaped WHAM turns and recreated production clients to verify durable baseline ordering, completed-turn redelivery, and duplicate suppression). The route retains the existing `Cloud Task Adversarial Feedback` event schema and emits it only after confirmed follow-up delivery. |
+| Codex Cloud failed-correction redelivery generation | `tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationCodexFeedback::test_codex_completed_turn_redelivers_failed_correction_once_after_restart`, `test_rejected_failed_correction_retains_first_observed_generation_when_later_turn_appears`, and `test_codex_batch_keeps_each_findings_own_remediation_baseline`, plus `tests/test_codex_wham_client.py::TestCodexWhamClient::test_provider_newest_first_history_uses_timestamp_order_for_both_selectors` (use the production routing/client and provider-shaped WHAM boundaries to verify validation association, chronological ordering, immutable selected generations, per-finding baselines, and duplicate suppression). The route retains the existing `Cloud Task Adversarial Feedback` event schema and emits it only after confirmed follow-up delivery. |
 | Material test-oracle gap reconciliation | `tests/test_adversarial_test_oracle_gaps.py::test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_resolution` (covers omitted and explicit-OPEN response variants and reopens the durable reviewer store before the external thread-resolution boundary). This changes the reconciled validation outcome but introduces no processing origin or structured event field; the existing `pr.adversarial-validation` result emission and dashboard consumer remain authoritative. |
 | Adversarial gap-state acceptance fence | `tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationPRFlow::test_forced_only_retry_runs_for_an_already_validated_head` (registers a newer attempt before the owning serialized application boundary and proves the stale reviewer checkpoint is not saved or published). Head-unavailable and persistence-failure outcomes retain the existing `pr.adversarial-validation` event schema and are distinguished by the recorded application phase and validation diagnostic. |
 
