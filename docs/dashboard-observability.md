@@ -158,13 +158,34 @@ parser rejects a duplicate/contradictory path before any verdict is computed.
 Revalidating a snapshot before authorizing a completion-round PASS now uses
 genuinely cache-bypassing retrieval for the diff, changed-file listing, and
 linked Issue body (`bypass_cache=True`) instead of the general HTTP cache, and
-a persistent failure on one changed-file REST page retains every
-successfully retrieved page's evidence instead of discarding it alongside the
-failure. The production orchestration regressions
+the validation snapshot digest now also binds the raw diff content itself
+(not just the authoritative REST listing), so a changed raw diff for an
+already-decided file invalidates the snapshot even when the REST listing of
+omitted files is unchanged. A path the initial round left UNAVAILABLE may
+still transition to RECOVERED (or reveal a new finding) in the completion
+round without being treated as a rejected contradiction; only a path already
+RECOVERED/IRRELEVANT before that round must stay stable. Only a change
+representation exactly resembling a `.gitattributes`- or absence-only
+one-liner is treated as pure absence, not any phrasing that cites missing
+evidence.
+
+A persistent failure on one changed-file REST page no longer blocks
+validation before the reviewer ever runs: the successfully retrieved page's
+evidence is carried into context and reaches the bounded completion round
+alongside an explicit `unresolvable_file_count`, and `pass_with_unresolvable_changed_file_count`
+still fails closed at final verdict precedence so that gap can never
+authorize PASS. The per-file REST patch completeness check
+(`_github_file_record_has_complete_patch`) no longer excludes content lines
+that happen to start with `++`/`--` (e.g. `++counter;`): GitHub's per-file
+`patch` field never carries unified-diff `+++`/`---` file headers, only hunk
+headers and content, so that exclusion was misclassifying complete evidence
+as unavailable. The production orchestration regressions
 `test_controller_recovers_exact_paths_in_one_same_session_round`,
 `test_completion_rejects_response_from_a_rotated_backend_session`,
 `test_completion_round_preserves_prior_recovered_path`,
-`test_bypass_cache_uses_genuinely_cache_bypassing_retrieval`, and
+`test_completion_transitions_unavailable_path_to_recovered_with_new_finding`,
+`test_bypass_cache_uses_genuinely_cache_bypassing_retrieval`,
+`test_unresolvable_file_count_reaches_completion_but_blocks_final_pass`, and
 `test_partial_changed_file_page_failure_retains_successfully_retrieved_evidence`
 (all in `tests/test_adversarial_validator.py`), plus
 `tests/test_gh_cache_pr_changed_files_pagination.py`, prove these boundaries;
