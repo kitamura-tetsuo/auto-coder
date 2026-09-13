@@ -235,6 +235,8 @@ class AdjudicationLedger:
             instant = datetime.fromisoformat(source.created_at.replace("Z", "+00:00"))
         except ValueError as exc:
             raise ValueError("created_at must be an ISO-8601 instant") from exc
+        if instant.tzinfo is None:
+            raise ValueError("created_at must include a timezone")
         return instant, source.comment_id
 
     def retire(self, reason: str) -> None:
@@ -252,11 +254,14 @@ class AdjudicationLedger:
         if revoked_tip is not None:
             self.retire(revoked_tip)
             return self._result(AdjudicationStatus.REVOKED, source, physical.decision if physical else None, revoked_tip)
-        if physical is not None and not source.update_revision:
+        if physical is not None and physical.body_hash != body_hash:
+            self.retire(f"accepted source {source.comment_id} was edited")
+            return self._result(AdjudicationStatus.INVALID, source, physical.decision, self.context.retired_reason or "invalidated")
+        if physical is not None and (not source.update_revision or not source.created_at):
             self.context.source_unavailable = True
             self._refresh_integrity()
-            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision, "physical source revision is unavailable")
-        if physical is not None and (physical.source.update_revision != source.update_revision or physical.body_hash != body_hash):
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, physical.decision, "physical source revision or creation instant is unavailable")
+        if physical is not None and (physical.source.update_revision != source.update_revision or physical.source.created_at != source.created_at):
             self.retire(f"accepted source {source.comment_id} was edited")
             return self._result(AdjudicationStatus.INVALID, source, physical.decision, self.context.retired_reason or "invalidated")
         if self.context.source_unavailable:
@@ -290,6 +295,12 @@ class AdjudicationLedger:
             self.context.source_unavailable = True
             self._refresh_integrity()
             return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, decision, "physical source revision is unavailable")
+        try:
+            self._order(source)
+        except ValueError:
+            self.context.source_unavailable = True
+            self._refresh_integrity()
+            return self._result(AdjudicationStatus.SOURCE_UNAVAILABLE, source, decision, "physical source creation instant is unavailable")
         if decision.decision_id in decision.supersedes:
             return self._result(AdjudicationStatus.INVALID, source, decision, "decision cannot supersede itself")
         existing = self.context.decisions.get(decision.decision_id)
@@ -456,6 +467,8 @@ class AdjudicationLedger:
                 for record in records.values()
             ):
                 raise ValueError
+            for record in records.values():
+                cls._order(record.source)
             for record in decisions.values():
                 for predecessor_id in record.decision.supersedes:
                     predecessor = decisions.get(predecessor_id)
