@@ -41,6 +41,7 @@ ADVERSARIAL_VALIDATION_COVERAGE_ID_LIMIT = 20
 ADVERSARIAL_VALIDATION_CACHE_VERSION = "v11"
 ADVERSARIAL_ADJACENT_EXPLORATION_BUDGET = 8
 ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET = 300
+RECOVERED_FILE_IDENTITY_VERSION = 1
 CHANGE_PROVENANCE_CLARIFICATION_MARKER = "<!-- auto-coder-change-provenance-clarification:v1 -->"
 TEST_ORACLE_GAP_STATUSES = {"OPEN", "RESOLVED", "INVALID"}
 TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS = {
@@ -360,6 +361,8 @@ class EvidenceRecoveryEntry:
     status: str = "UNAVAILABLE"
     evidence: str = ""
     requirement_ids: List[str] = field(default_factory=list)
+    provenance: str = "FRESH"
+    origin_head_sha: str = ""
 
 
 @dataclass
@@ -496,6 +499,8 @@ class AdversarialValidationContext:
     validation_snapshot: str = ""
     controller_file_evidence: List[FileDiffEvidence] = field(default_factory=list)
     unresolvable_file_count: int = 0
+    file_change_identities: dict[str, str] = field(default_factory=dict)
+    requirement_manifest_identity: str = ""
 
     @property
     def has_complete_file_coverage(self) -> bool:
@@ -534,6 +539,15 @@ def _snapshot_digest(repo_name: str, pr_data: Dict[str, Any], changed_files: Seq
         "raw_diff_sha256": hashlib.sha256(raw_diff.encode()).hexdigest(),
     }
     return hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _stable_digest(value: object) -> str:
+    """Return a deterministic identity for an authoritative persisted value."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def _requirement_manifest_identity(requirements: Sequence[IssueRequirement]) -> str:
+    return _stable_digest([(item.requirement_id, item.text) for item in requirements])
 
 
 def _github_file_record_has_complete_patch(record: Dict[str, Any]) -> bool:
@@ -1252,6 +1266,8 @@ def build_adversarial_validation_context(
         validation_snapshot=_snapshot_digest(repo_name, pr_data, changed_file_records, manifest.requirements, raw_diff),
         controller_file_evidence=controller_file_evidence,
         unresolvable_file_count=unresolvable_file_count,
+        file_change_identities={str(record.get("filename", "")): _stable_digest(record) for record in changed_file_records if str(record.get("filename", ""))},
+        requirement_manifest_identity=_requirement_manifest_identity(manifest.requirements),
     )
 
 
@@ -2270,24 +2286,46 @@ def _enforce_inconclusive_recovery_contract(
     return result
 
 
-def _reconcile_same_head_recovered_evidence(
+def _reusable_recovered_evidence(
+    stored_session: Optional[ReviewerSession],
+    context: AdversarialValidationContext,
+    head_sha: str,
+) -> List[RecoveredFileEvidence]:
+    """Select entries whose complete change and contract identities still match.
+
+    IRRELEVANT is deliberately re-adjudicated on every snapshot: file identity
+    cannot prove that its context-dependent scope basis remains valid after
+    another file changes. Legacy entries remain readable but fail closed.
+    """
+    if stored_session is None:
+        return []
+    reusable: List[RecoveredFileEvidence] = []
+    for entry in stored_session.recovered_file_evidence:
+        current_identity = context.file_change_identities.get(entry.path, "")
+        if entry.status == "RECOVERED" and entry.identity_version == RECOVERED_FILE_IDENTITY_VERSION and bool(current_identity) and entry.change_identity == current_identity and entry.requirement_manifest_identity == context.requirement_manifest_identity:
+            reusable.append(entry)
+    return reusable
+
+
+def _reconcile_reusable_recovered_evidence(
     result: AdversarialValidationResult,
     stored_session: Optional[ReviewerSession],
+    context: AdversarialValidationContext,
     head_sha: str,
 ) -> AdversarialValidationResult:
-    """Retain successful file recovery when revalidating an unchanged head."""
-    if stored_session is None or stored_session.evidence_head_sha != head_sha:
-        return result
+    """Install only independently proven equivalent file recovery evidence."""
     current_resolved = {entry.path for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"}}
-    for persisted in stored_session.recovered_file_evidence:
+    for persisted in _reusable_recovered_evidence(stored_session, context, head_sha):
         if persisted.path not in current_resolved:
             result.evidence_recovery.append(
                 EvidenceRecoveryEntry(
                     path=persisted.path,
-                    source=persisted.source,
+                    source=f"reused equivalent evidence from {persisted.source}",
                     status=persisted.status,
                     evidence=persisted.evidence,
                     requirement_ids=list(persisted.requirement_ids),
+                    provenance="REUSED_EQUIVALENT",
+                    origin_head_sha=persisted.origin_head_sha or stored_session.evidence_head_sha if stored_session else "",
                 )
             )
     return result
@@ -2816,17 +2854,13 @@ def run_adversarial_validation(
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
     if stored_session is not None:
         _populate_test_oracle_gap_requirement_text(stored_session.test_oracle_gaps, context.issue_requirements)
-        if stored_session.evidence_head_sha == head_sha:
-            persisted_resolved_paths = {entry.path for entry in stored_session.recovered_file_evidence if entry.status in {"RECOVERED", "IRRELEVANT"}}
-            unresolved_paths = [path for path in context.unverified_files if path not in persisted_resolved_paths]
-            if not unresolved_paths:
-                coverage_status = "COMPLETE: every initially incomplete changed file was recovered or classified irrelevant on this exact head."
-            else:
-                coverage_prefix = "INCOMPLETE: PASS is forbidden. Partial/unavailable file evidence after same-head recovery:\n"
-                coverage_status = coverage_prefix + _format_path_manifest(
-                    unresolved_paths,
-                    "(Unverified path metadata unavailable)",
-                )
+        persisted_resolved_paths = {entry.path for entry in _reusable_recovered_evidence(stored_session, context, head_sha)}
+        unresolved_paths = [path for path in context.unverified_files if path not in persisted_resolved_paths]
+        if not unresolved_paths:
+            coverage_status = "COMPLETE: every initially incomplete changed file has fresh or proven-equivalent recovered evidence for this validation snapshot."
+        elif persisted_resolved_paths:
+            coverage_prefix = "INCOMPLETE: PASS is forbidden. Partial/unavailable file evidence after equivalent-evidence reuse:\n"
+            coverage_status = coverage_prefix + _format_path_manifest(unresolved_paths, "(Unverified path metadata unavailable)")
     lifecycle_session = stored_session if stored_session is not None and stored_session.last_head_sha else None
     if lifecycle_session is not None:
         review_policy = render_prompt(
@@ -2880,7 +2914,7 @@ def run_adversarial_validation(
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
-    result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
+    result = _reconcile_reusable_recovered_evidence(result, stored_session, context, head_sha)
     result = _reconcile_test_oracle_gap_lifecycle(
         result,
         lifecycle_session,
@@ -2893,7 +2927,8 @@ def run_adversarial_validation(
     )
     completion_was_required = bool(_remaining_unverified_paths(result, context) and result.result == "PASS" and not result.findings and not result.open_test_oracle_gaps)
     result = _complete_changed_file_evidence(result, context, backend_manager, requirement_manifest, head_sha)
-    if completion_was_required and result.result != "ERROR":
+    reused_evidence_consumed = any(entry.provenance == "REUSED_EQUIVALENT" for entry in result.evidence_recovery)
+    if (completion_was_required or reused_evidence_consumed) and result.result != "ERROR":
         try:
             refresh_pr_data = pr_data
             if github_client is not None:
@@ -3090,7 +3125,7 @@ def run_adversarial_validation(
                             raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
                     result = parse_adversarial_validation_response(followup_response)
                     _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
-                    result = _reconcile_same_head_recovered_evidence(result, stored_session, head_sha)
+                    result = _reconcile_reusable_recovered_evidence(result, stored_session, context, head_sha)
                     result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
                     result = _reconcile_test_oracle_gap_lifecycle(
                         result,
@@ -3166,6 +3201,14 @@ def run_adversarial_validation(
                     status=entry.status,
                     evidence=entry.evidence,
                     requirement_ids=list(entry.requirement_ids),
+                    identity_version=RECOVERED_FILE_IDENTITY_VERSION,
+                    change_identity=context.file_change_identities.get(entry.path, ""),
+                    requirement_manifest_identity=context.requirement_manifest_identity,
+                    origin_head_sha=entry.origin_head_sha or head_sha,
+                    origin_validation_snapshot=context.validation_snapshot,
+                    scope_basis_identity=_stable_digest(entry.evidence) if entry.status == "IRRELEVANT" else "",
+                    last_consumed_head_sha=head_sha,
+                    disposition=entry.provenance,
                 )
                 for entry in result.evidence_recovery
                 if entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files

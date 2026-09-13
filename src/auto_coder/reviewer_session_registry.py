@@ -41,13 +41,21 @@ class TestOracleGap:
 
 @dataclass
 class RecoveredFileEvidence:
-    """Current-head evidence that resolved an initially incomplete file."""
+    """Versioned provenance for an independently resolved changed file."""
 
     path: str = ""
     source: str = ""
     status: str = "RECOVERED"
     evidence: str = ""
     requirement_ids: List[str] = field(default_factory=list)
+    identity_version: int = 0
+    change_identity: str = ""
+    requirement_manifest_identity: str = ""
+    origin_head_sha: str = ""
+    origin_validation_snapshot: str = ""
+    scope_basis_identity: str = ""
+    last_consumed_head_sha: str = ""
+    disposition: str = "FRESH"
 
 
 @dataclass

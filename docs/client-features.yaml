@@ -124,6 +124,19 @@ Focused reruns are suppressed only when a current pass-eligible canonical
 workflow fact explicitly reports the exact requested target as successful;
 aggregate suite success never implies that target-level fact.
 
+## Cross-head changed-file evidence reuse
+
+Recovered changed-file evidence is persisted with versioned identities for the
+complete authoritative per-file PR representation and exact Issue Requirement
+manifest. A later PR head reuses only `RECOVERED` entries whose two identities
+still match, invalidating changed or unverifiable paths independently; legacy
+entries and `IRRELEVANT` classifications fail closed and are re-adjudicated.
+Reuse records its original and consuming heads and is accepted only after a
+cache-bypassing confirmation that the current validation snapshot stayed fixed.
+Only file-evidence accounting is reused: Requirement coverage, findings,
+test-oracle gaps, and the top-level verdict are always adjudicated for the
+current snapshot.
+
 ## Worker occupancy during pre-dispatch
 
 Active Workers reports the dequeued candidate throughout authoritative GitHub
