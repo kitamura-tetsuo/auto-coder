@@ -3522,6 +3522,7 @@ class AutomationEngine:
         generation_serialized: bool = False,
         authoritative_parent_number: Optional[int] = None,
         origin: str = "worker",
+        retry: bool = False,
     ) -> CandidateProcessingResult:
         """Open (or continue) an execution-scoped trace, then dispatch to the real implementation.
 
@@ -3550,6 +3551,7 @@ class AutomationEngine:
             generation_serialized,
             authoritative_parent_number,
             origin,
+            retry,
         )
 
         def dispatch() -> CandidateProcessingResult:
@@ -3602,6 +3604,7 @@ class AutomationEngine:
         generation_serialized: bool = False,
         authoritative_parent_number: Optional[int] = None,
         origin: str = "worker",
+        retry: bool = False,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -3625,6 +3628,7 @@ class AutomationEngine:
         """
         from .label_manager import LabelManager
 
+        manual_retry = explicit_only and force and retry and candidate.type == "issue"
         result = CandidateProcessingResult(
             type=candidate.type,
             number=candidate.data.get("number"),
@@ -3895,7 +3899,7 @@ class AutomationEngine:
                 owner = ImplementationOwner("issue", item_number)
                 slots = self._get_implementation_slots(repo_name)
                 retained_async_owner = slots.has_provider_sessions(owner)
-                if (slots.active_execution_ids(owner) or retained_async_owner) and not continue_execution:
+                if (slots.active_execution_ids(owner) or (retained_async_owner and not manual_retry)) and not continue_execution:
                     try:
                         owned_snapshot = self._reconcile_validation_snapshot(
                             repo_name,
@@ -3951,7 +3955,7 @@ class AutomationEngine:
                     result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
                     return result
                 with slots.serialize(owner):
-                    if owner in slots.active_owners() and not continue_execution:
+                    if owner in slots.active_owners() and not continue_execution and not manual_retry:
                         # A completed local launch can leave a bare owner while
                         # its Issue stays open. It has no actual implementation
                         # work to coordinate, so retire it before validation.
@@ -3980,6 +3984,7 @@ class AutomationEngine:
                         generation_serialized=True,
                         authoritative_parent_number=authoritative_parent_number,
                         origin=origin,
+                        retry=retry,
                     )
             try:
                 current_issue = self._reconcile_validation_snapshot(
@@ -4458,7 +4463,10 @@ class AutomationEngine:
                     result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, force_adversarial_validation=True)
             else:
                 with slots.serialize(owner):
-                    if advance_issue_attempt:
+                    if manual_retry:
+                        _record_issue_stage_result(item_number, "issue.manual-retry", f"issue#{item_number} manual retry authorized", Outcome.COMPLETED, {"reason": "explicit --only --force --retry", "owner": owner.key})
+                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, manual_retry=True)
+                    elif advance_issue_attempt:
                         result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True)
                     else:
                         result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
@@ -4494,6 +4502,7 @@ class AutomationEngine:
         jules_mode: bool = False,
         force_adversarial_validation: bool = False,
         advance_issue_attempt: bool = False,
+        manual_retry: bool = False,
     ) -> CandidateProcessingResult:
         """Process a candidate after its durable owner slot is reserved."""
         result = CandidateProcessingResult(
@@ -4520,6 +4529,11 @@ class AutomationEngine:
                 raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
 
             implementation_slots = self._get_implementation_slots(repo_name)
+            previous_binding = None
+            if manual_retry and item_type == "issue":
+                from .cloud_manager import CloudManager
+
+                previous_binding = CloudManager(repo_name).read_bindings_strict().get(str(item_number))
 
             if item_type == "pr":
                 from .pr_processor import _reject_unsafe_codex_cloud_pr
@@ -4634,6 +4648,7 @@ class AutomationEngine:
                             self.github,
                             label_context=should_process,
                             implementation_slots=implementation_slots,
+                            **({"manual_retry": True} if manual_retry else {}),
                         )
                     elif jules_mode:
                         # Use Cloud mode (backend_cloud, defaulting to Jules) for issue processing
@@ -4648,6 +4663,7 @@ class AutomationEngine:
                             self.github,
                             label_context=should_process,
                             implementation_slots=implementation_slots,
+                            **({"manual_retry": True} if manual_retry else {}),
                         )
 
                     else:
@@ -4663,6 +4679,9 @@ class AutomationEngine:
                     from .cloud_manager import CloudManager
 
                     binding = CloudManager(repo_name).get_binding(item_number)
+                    if manual_retry and (jules_mode or is_difficult):
+                        if binding is None or binding == previous_binding:
+                            raise RuntimeError("Manual retry did not establish a new provider tracking target")
                     if binding is not None:
                         owner = ImplementationOwner("issue", item_number)
                         if not self._get_implementation_slots(repo_name).record_provider_session(owner, binding.task_id):
@@ -5046,6 +5065,7 @@ class AutomationEngine:
         *,
         explicit_only: bool = False,
         force: bool = False,
+        retry: bool = False,
     ) -> Dict[str, Any]:
         """Process a single issue or PR by number.
 
@@ -5058,6 +5078,8 @@ class AutomationEngine:
         Returns:
             Dictionary with processing results
         """
+        if retry and not (explicit_only and force):
+            raise ValueError("retry requires explicit_only and force")
         with active_repo_context(repo_name):
             os.environ["REPO_NAME"] = repo_name
             self.config.repo_name = repo_name
@@ -5114,13 +5136,16 @@ class AutomationEngine:
 
                 try:
                     # Create a Candidate from the single item
-                    candidate = self._create_candidate_from_single(repo_name, target_type, number)
+                    candidate = self._create_candidate_from_single(repo_name, target_type, number, propagate_errors=True) if explicit_only else self._create_candidate_from_single(repo_name, target_type, number)
                     if not candidate:
                         if explicit_only:
                             result.target_outcome = ExplicitTargetOutcome.FAILED.value
                             result.target_reason = f"Could not resolve requested target #{number}"
                             result.errors.append(result.target_reason)
                         return explicit_result()
+
+                    if retry and candidate.type != "issue":
+                        raise ValueError("--retry supports Issue targets only")
 
                     if explicit_only:
                         result.target_type = candidate.type if candidate.type in {"issue", "pr"} else None
@@ -5165,6 +5190,7 @@ class AutomationEngine:
                             explicit_only=True,
                             force=force,
                             origin="explicit-single-target",
+                            retry=retry,
                         )
                     else:
                         processing_result = self._process_single_candidate_unified(*processing_args, origin="explicit-single-target")
@@ -5253,6 +5279,12 @@ class AutomationEngine:
                                 )
                     except Exception as e:
                         logger.warning(f"Failed to check/handle closed item state: {e}")
+
+                except GitHubRequestDeferred as deferred:
+                    result.target_outcome = ExplicitTargetOutcome.DEFERRED.value if explicit_only else None
+                    result.target_reason = str(deferred)
+                    result.errors.append(str(deferred))
+                    logger.warning("Single target #{} deferred: {}", number, deferred)
 
                 except Exception as e:
                     msg = f"Error in process_single: {e}"
@@ -5911,6 +5943,8 @@ class AutomationEngine:
 
         try:
             # Handle 'auto' type
+            if target_type == "auto" and propagate_errors:
+                target_type = self.github.get_item_type_strict(repo_name, number)
             if target_type == "auto":
                 # Prefer PR to avoid mislabeling PR issues.
                 # get_pull_request() returns an empty result instead of raising when the

@@ -135,6 +135,7 @@ async def _run_process_issues_daemon(
     "only_target",
     help="Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)",
 )
+@click.option("--retry", is_flag=True, help="Start a new Issue implementation and replace provider tracking; requires --only and --force.")
 @click.option(
     "--log-level",
     default="INFO",
@@ -166,11 +167,15 @@ def process_issues(
     port: int,
     github_webhook_secret: Optional[str],
     sentry_webhook_secret: Optional[str],
+    retry: bool = False,
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
     parent_context = click.get_current_context().parent
     operator_force = bool(parent_context and parent_context.params.get("force"))
+
+    if retry and not (only_target and operator_force):
+        raise click.UsageError("--retry requires --only and --force")
 
     # Get repository name (from parameter, auto-detect, or --only URL)
     repo_name = get_repo_or_detect(repo, fallback_url=only_target)
@@ -387,9 +392,9 @@ def process_issues(
             if target_type is None:
                 # Auto-detect the type; process_single reports failures in its result
                 # instead of raising, so the detection happens while building the candidate.
-                result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force)
+                result = automation_engine.process_single(repo_name, "auto", number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}))
             else:
-                result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force)
+                result = automation_engine.process_single(repo_name, target_type, number, jules_mode=configured_cloud_mode, explicit_only=True, force=operator_force, **({"retry": True} if retry else {}))
 
             diagnostics = list(result.get("errors") or [])
             resolved_type = result.get("target_type")

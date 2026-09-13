@@ -34,3 +34,13 @@ conservatively recovers every legacy ownerless unresolved admission. Charges, lo
 clock checkpoint, mutation spacing, cooldown, and throttle episode state are retained.
 If validation or migration cannot commit, admission remains closed and the existing
 store must not be deleted or replaced to obtain a fresh allowance.
+
+## Transient outcome persistence contention
+
+A response whose reservation transaction cannot acquire the SQLite write lock is
+retained by the controller. Its durable reservation remains unresolved and its
+lifetime lock remains held. Subsequent admissions retry persisting that response
+before sending any more requests; throttle evidence is applied before admission
+is reconsidered. A controller restart uses the existing orphan recovery policy.
+Other persistence failures continue to close admission. Do not delete the shared
+store to recover from contention.

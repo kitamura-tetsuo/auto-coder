@@ -20,6 +20,17 @@ for the production lifecycle regressions, including
 
 ## Updating observable processing
 
+Explicit Issue restart (`--only <issue> --force --retry`) keeps the
+`explicit-single-target` origin and emits `issue.manual-retry` after admission,
+with the Issue owner and explicit flag reason. `completed` means retry was
+authorized, not that a provider accepted it. Existing provider dispatch stages
+report the subsequent handoff or failure. No event schema change is needed.
+`tests/test_specification_validation_lifecycle.py::test_manual_retry_retained_provider_admission_and_trace`
+checks the real admission path and emitted authorization for every flag boundary;
+`tests/test_dashboard_observability.py::test_manual_retry_authorization_reaches_mounted_detail`
+checks its mounted detail projection. Run
+`bash scripts/test.sh tests/test_manual_cloud_retry.py tests/test_specification_validation_lifecycle.py tests/test_dashboard_observability.py tests/test_process_issues_cloud_only.py`.
+
 Family reconciliation emits `issue.family-discovery` after confirming related
 declarations against live GitHub reads. Its facts identify
 `discovery_source=cached-open-issue-list`,
@@ -344,8 +355,26 @@ and is deferred. The `pr.implementation-admission` result reports the resolved
 `owner` and either `reused_owner` on admission or `reason` on deferral. Completion
 of this stage means admission passed, not that the PR merged. Both cases assert
 unchanged occupancy independently of the rendered outcome.
+
 ## Adversarial CI evidence reuse
 
 Canonical-suite evidence reuse consumes the existing `pr.ci-observation`
 decision without changing its trace schema or the production CI gate. Rejected
 dynamic targets are validator protocol diagnostics, not implementation defects.
+
+
+An explicit `--only` lookup deferred before candidate creation reports `deferred`
+with the governor reason and retry deadline in the CLI result. There is no
+candidate execution trace yet: no processing origin or provider dispatch has
+started. Governor transaction contention uses the existing structured diagnostic
+fields (`decision=deferred`, `delay_reason=governor_transaction_contention`).
+The dashboard execution schema and production processing emissions are unchanged.
+Regression coverage: `tests/test_automation_engine.py::TestAutomationEngine::test_explicit_target_preserves_governor_deferral`
+and `tests/test_github_request_governor.py::test_reservation_lock_contention_recovers_same_governor`.
+
+Outcome-persistence lock contention also emits `governor_transaction_contention`.
+The completed response is retained and blocks further sends until persisted;
+this diagnostic does not mean that the preceding request was never sent.
+No candidate execution or provider-success event is emitted by this retry.
+
+Coverage: `tests/test_github_request_governor.py::test_outcome_lock_contention_retains_response_before_next_send` exercises successful and throttled responses.

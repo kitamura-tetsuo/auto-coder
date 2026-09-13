@@ -939,3 +939,29 @@ def test_claude_pr_slot_admission_reaches_detail_view(mock_ui, tmp_path, known_s
     diagram = _mounted_detail(mock_ui, "pr", 2027)
     _assert_required_stage_visible(diagram, "implementation admission")
     assert ("outcome: completed" if known_session else "outcome: deferred") in diagram
+
+
+@patch("auto_coder.dashboard.ui")
+def test_manual_retry_authorization_reaches_mounted_detail(mock_ui, tmp_path):
+    from auto_coder.implementation_slots import ImplementationOwner
+    from tests.test_specification_validation_lifecycle import GitHubFlow, engine_with_gate, lifecycle, snapshot
+
+    engine, candidate = engine_with_gate(tmp_path, GitHubFlow([snapshot()]), lifecycle(tmp_path, "READY"))
+    slots = engine.implementation_slots
+    owner = ImplementationOwner("issue", 1728)
+    execution = slots.start_execution(owner)
+    assert slots.record_provider_session(owner, "old-session")
+    slots.finish_execution(owner, execution)
+    engine._process_single_candidate_unified("owner/repo", candidate, engine.config, explicit_only=True, force=True, retry=True, origin="explicit-single-target")
+    engine._process_single_candidate_reserved.assert_called_once_with("owner/repo", candidate, engine.config, False, manual_retry=True)
+    events = get_trace_collector().get_snapshot(item_type="issue", item_number=1728).events
+    event = next(event for event in events if event.stage_id == "issue.manual-retry")
+    assert event.origin == "issue.manual-retry"
+    started = next(event for event in events if event.kind == EventKind.EXECUTION_STARTED.value)
+    assert started.origin == "explicit-single-target"
+    assert event.execution_id == started.execution_id
+    assert event.outcome == Outcome.COMPLETED.value
+    _mounted_detail(mock_ui, "issue", 1728)
+    older = next(call.kwargs["on_click"] for call in mock_ui.button.call_args_list if call.kwargs.get("icon") == "arrow_downward")
+    older()
+    _assert_required_stage_visible(mock_ui.mermaid.return_value.classes.return_value.set_content.call_args[0][0], "manual retry authorized")

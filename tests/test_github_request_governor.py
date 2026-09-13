@@ -884,3 +884,58 @@ def test_blocking_admission_waits_out_mutation_spacing(tmp_path) -> None:
 
     assert governor.admit_blocking(context(2, "mutation")) is True
     assert sum(waits) == pytest.approx(1.0)
+
+
+def test_reservation_lock_contention_recovers_same_governor(tmp_path) -> None:
+    """A locked writer defers without poisoning state or reserving a send."""
+    path = tmp_path / "transaction-contention.sqlite3"
+    governor = GitHubRequestGovernor(store_path=path, wait_budget=0)
+    governor._connection.execute("PRAGMA busy_timeout=0")
+    writer = sqlite3.connect(path, isolation_level=None)
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        with pytest.raises(GitHubRequestDeferred) as deferred:
+            governor.admit_blocking(context(101))
+        assert deferred.value.reason == "governor_transaction_contention"
+        assert deferred.value.outcome.delivery is DeliveryCertainty.DEFINITELY_NOT_SENT
+        assert writer.execute("SELECT COUNT(*) FROM reservations").fetchone() == (0,)
+        writer.execute("ROLLBACK")
+        assert governor.admit_blocking(context(101)) is True
+        governor.observe(outcome(context(101)))
+        assert writer.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(1, 0)]
+    finally:
+        writer.close()
+        governor.close()
+
+
+@pytest.mark.parametrize("classification", [GitHubApiOutcome.SUCCESS, GitHubApiOutcome.THROTTLED])
+def test_outcome_lock_contention_retains_response_before_next_send(tmp_path, classification) -> None:
+    """A completed response survives contention, including its throttle evidence."""
+    clock = Clock()
+    path = tmp_path / "outcome-contention.sqlite3"
+    governor = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall, wait_budget=0)
+    governor._connection.execute("PRAGMA busy_timeout=0")
+    first, second = context(201), context(202)
+    assert governor.admit(first) is True
+    writer = sqlite3.connect(path, isolation_level=None)
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        governor.observe(outcome(first, classification))
+        with pytest.raises(GitHubRequestDeferred) as pending:
+            governor.admit_blocking(second)
+        assert pending.value.reason == "governor_transaction_contention"
+        assert writer.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(0, 0)]
+        writer.execute("ROLLBACK")
+        if classification is GitHubApiOutcome.THROTTLED:
+            with pytest.raises(GitHubRequestDeferred) as throttled:
+                governor.admit_blocking(second)
+            assert throttled.value.reason == "rate_limit_cooldown"
+            assert throttled.value.retry_at == clock.wall_value + 60
+            assert writer.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(1, 0)]
+            clock.advance(60)
+        assert governor.admit_blocking(second) is True
+        governor.observe(outcome(second))
+        assert writer.execute("SELECT resolved, recovered FROM reservations ORDER BY attempt_id").fetchall() == [(1, 0), (1, 0)]
+    finally:
+        writer.close()
+        governor.close()

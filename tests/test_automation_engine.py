@@ -377,7 +377,8 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         )
         assert result["issues_processed"][0]["actions_taken"] == ["Started Codex Cloud task"]
 
-    def test_process_single_preserves_operator_override_to_admission_boundary(self, mock_github_client):
+    @pytest.mark.parametrize("retry", [False, True])
+    def test_process_single_preserves_operator_override_to_admission_boundary(self, mock_github_client, retry):
         engine = AutomationEngine(mock_github_client, config=AutomationConfig())
         candidate = Candidate(type="issue", data={"number": 100, "title": "Recovery"}, priority=1)
         processing_result = CandidateProcessingResult(type="issue", number=100, title="Recovery", success=True, actions=["started"])
@@ -388,9 +389,9 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         engine._process_single_candidate_unified = Mock(return_value=processing_result)
 
         with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
-            result = engine.process_single("owner/repo", "issue", 100, explicit_only=True, force=True)
+            result = engine.process_single("owner/repo", "issue", 100, explicit_only=True, force=True, retry=retry)
 
-        engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True, origin="explicit-single-target")
+        engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True, origin="explicit-single-target", retry=retry)
         engine._preflight_explicit_issue_relationships.assert_called_once_with("owner/repo", 100, refresh_all=True)
         assert result["issues_processed"][0]["actions_taken"] == ["started"]
         assert result["target_outcome"] == "success"
@@ -412,6 +413,26 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         assert result["errors"] == ["Could not resolve requested target #404"]
         assert result["issues_processed"] == []
         assert result["prs_processed"] == []
+
+    @pytest.mark.parametrize("target_type, lookup", [("issue", "get_issue_dispatch_snapshot_strict"), ("pr", "get_pull_request_metadata_strict"), ("auto", "get_item_type_strict")])
+    def test_explicit_target_preserves_governor_deferral(self, mock_github_client, target_type, lookup):
+        from auto_coder.github_request_governor import GitHubRequestDeferred
+        from auto_coder.util.github_request_outcome import GitHubRequestContext
+
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        context = GitHubRequestContext("lookup", "attempt", "test", "https://api.github.com", "GET", "read", "/issues/2047")
+        deferred = GitHubRequestDeferred(context, "governor_state_unavailable", 1800000060.0)
+        getattr(mock_github_client, lookup).side_effect = deferred
+        engine._process_single_candidate_unified = Mock()
+        with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
+            result = engine.process_single("owner/repo", target_type, 2047, explicit_only=True)
+        assert result["target_outcome"] == "deferred"
+        assert result["target_reason"] == str(deferred)
+        assert result["errors"] == [str(deferred)]
+        assert result["issues_processed"] == []
+        mock_github_client.get_issue.assert_not_called()
+        engine._process_single_candidate_unified.assert_not_called()
 
     def test_forced_pr_reaches_validation_attempt_despite_active_execution_and_label(self, tmp_path):
         from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository

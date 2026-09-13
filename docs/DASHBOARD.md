@@ -1,5 +1,12 @@
 # Auto-Coder Dashboard
 
+For an explicit Issue restart (`--only <issue> --force --retry`),
+`issue.manual-retry` records authorization after admission checks. A completed
+authorization is not a successful provider handoff or implementation: inspect
+the following provider dispatch result. The Issue slot retains prior remote
+session membership and adds the accepted replacement; retry does not cancel
+old sessions. The latest accepted session becomes the cloud tracking target.
+
 The detail view's `issue.family-discovery` stage reports family-local live
 confirmation using the cached open-Issue list for discovery. Its facts show the
 discovery source, live scope and confirmed declared children. `completed` means
@@ -206,3 +213,20 @@ recorded provider session reuse that owner's slot, including when capacity is
 full. Unknown sessions remain subject to ordinary capacity limits. A completed
 admission stage does not mean review or merge has completed; a deferred stage
 reports the admission reason.
+
+
+An explicit `--only` lookup deferred before candidate creation reports `deferred`
+with the governor reason and retry deadline in the CLI result. There is no
+candidate execution trace yet: no processing origin or provider dispatch has
+started. Governor transaction contention uses the existing structured diagnostic
+fields (`decision=deferred`, `delay_reason=governor_transaction_contention`).
+The dashboard execution schema and production processing emissions are unchanged.
+Regression coverage: `tests/test_automation_engine.py::TestAutomationEngine::test_explicit_target_preserves_governor_deferral`
+and `tests/test_github_request_governor.py::test_reservation_lock_contention_recovers_same_governor`.
+
+Outcome-persistence lock contention also emits `governor_transaction_contention`.
+The completed response is retained and blocks further sends until persisted;
+this diagnostic does not mean that the preceding request was never sent.
+No candidate execution or provider-success event is emitted by this retry.
+
+Coverage: `tests/test_github_request_governor.py::test_outcome_lock_contention_retains_response_before_next_send` exercises successful and throttled responses.

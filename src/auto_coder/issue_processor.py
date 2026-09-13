@@ -275,6 +275,7 @@ def _process_issue_claude_routine_mode(
     github_client: GitHubClient,
     backend_name: Optional[str] = None,
     label_context: Optional[LabelManagerContext] = None,
+    manual_retry: bool = False,
 ) -> List[str]:
     """Process an issue using Claude Routine for cloud-based AI routine execution.
 
@@ -343,6 +344,8 @@ def _process_issue_claude_routine_mode(
             backend_name=backend_name or "claude-routine",
         )
 
+        if not success and manual_retry:
+            raise RuntimeError(f"New Claude Routine session {session_id} was accepted, but tracking could not be updated")
         if not success:
             logger.warning(f"Failed to save session ID to cloud.csv for issue #{issue_number}")
             actions.append(f"Warning: Could not save session ID for issue #{issue_number}")
@@ -379,6 +382,8 @@ def _process_issue_claude_routine_mode(
     except AutoCoderUsageLimitError:
         raise
     except Exception as e:
+        if manual_retry:
+            raise
         logger.error(f"Error processing issue #{issue_number} in Claude Routine mode: {e}")
         actions.append(f"Error processing issue #{issue_number} in Claude Routine mode: {e}")
 
@@ -392,6 +397,7 @@ def _process_issue_codex_cloud_mode(
     github_client: GitHubClient,
     backend_name: str,
     label_context: Optional[LabelManagerContext] = None,
+    manual_retry: bool = False,
 ) -> List[str]:
     """Submit an issue to Codex Cloud and persist its task identifier.
 
@@ -412,6 +418,13 @@ def _process_issue_codex_cloud_mode(
     attempt = get_current_attempt(repo_name, issue_number)
     cloud_run_repo = CloudRunRepository(repo_name)
     cloud_manager = CloudManager(repo_name)
+    if manual_retry:
+        # Preserve all earlier runs; a human request authorizes a new attempt.
+        runs = cloud_run_repo.list_for_issue(issue_number)
+        previous_attempt = max([attempt] + [run.attempt for run in runs])
+        attempt = increment_attempt(repo_name, issue_number, attempt_number=previous_attempt + 1)
+        if attempt <= previous_attempt:
+            raise RuntimeError("Could not record the manual retry attempt")
     try:
         existing_run = cloud_run_repo.get(issue_number, attempt)
         candidate_binding = cloud_manager.read_bindings_strict().get(str(issue_number))
@@ -436,7 +449,7 @@ def _process_issue_codex_cloud_mode(
             label_context.keep_label()
         _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.SKIPPED, {"backend": "codex-cloud", "task_id": existing_run.task_id, "reason": "duplicate dispatch"})
         return [f"Codex Cloud task '{existing_run.task_id}' already running for issue #{issue_number} attempt {attempt}; skipped duplicate dispatch"]
-    if csv_binding is not None:
+    if csv_binding is not None and not manual_retry:
         return [f"Deferred Codex Cloud task for issue #{issue_number}: legacy cloud.csv ownership has no authoritative Issue attempt; operator attention required"]
 
     # Extract issue labels, excluding the retired "@auto-coder" legacy label
@@ -509,7 +522,8 @@ def _process_issue_codex_cloud_mode(
     task_id = submission.task_id
     try:
         binding = CloudTaskBinding("codex-cloud", task_id, backend_name)
-        if not cloud_manager.ensure_binding(issue_number, binding):
+        saved = cloud_manager.add_session(issue_number, task_id, provider="codex-cloud", backend_name=backend_name) if manual_retry else cloud_manager.ensure_binding(issue_number, binding)
+        if not saved:
             raise OSError("cloud.csv write failed")
     except Exception as exc:
         _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.ACCEPTED_HANDOFF, {"backend": "codex-cloud", "task_id": task_id, "tracking_incomplete": True})
@@ -541,6 +555,7 @@ def _process_issue_high_score_cloud(
     github_client: GitHubClient,
     label_context: Optional[LabelManagerContext] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
+    manual_retry: bool = False,
 ) -> List[str]:
     """Process an issue using the backend_with_high_score_cloud configuration with failover support.
 
@@ -596,6 +611,7 @@ def _process_issue_high_score_cloud(
                     github_client,
                     backend_name=backend_name,
                     label_context=label_context,
+                    **({"manual_retry": True} if manual_retry else {}),
                 )
             elif backend_type == "codex-cloud":
                 return _process_issue_codex_cloud_mode(
@@ -605,6 +621,7 @@ def _process_issue_high_score_cloud(
                     github_client,
                     backend_name=backend_name,
                     label_context=label_context,
+                    **({"manual_retry": True} if manual_retry else {}),
                 )
             elif backend_type == "jules":
                 return _process_issue_jules_mode(
@@ -619,6 +636,8 @@ def _process_issue_high_score_cloud(
             logger.warning(f"Cloud backend '{backend_name}' rejected submission: {e}. Trying next backend.")
             continue
         except Exception as e:
+            if manual_retry:
+                raise
             logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
             continue
 
@@ -648,6 +667,7 @@ def _process_issue_cloud_backend(
     github_client: GitHubClient,
     label_context: Optional[LabelManagerContext] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
+    manual_retry: bool = False,
 ) -> List[str]:
     """Process an issue using the backend_cloud configuration with failover support.
 
@@ -710,6 +730,7 @@ def _process_issue_cloud_backend(
                     github_client,
                     backend_name=backend_name,
                     label_context=label_context,
+                    **({"manual_retry": True} if manual_retry else {}),
                 )
             elif backend_type == "codex-cloud":
                 return _process_issue_codex_cloud_mode(
@@ -719,6 +740,7 @@ def _process_issue_cloud_backend(
                     github_client,
                     backend_name=backend_name,
                     label_context=label_context,
+                    **({"manual_retry": True} if manual_retry else {}),
                 )
             elif backend_type == "jules":
                 return _process_issue_jules_mode(
@@ -733,6 +755,8 @@ def _process_issue_cloud_backend(
             logger.warning(f"Cloud backend '{backend_name}' rejected submission: {e}. Trying next backend.")
             continue
         except Exception as e:
+            if manual_retry:
+                raise
             logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
             continue
 

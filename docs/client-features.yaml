@@ -477,6 +477,13 @@ no credentials or request content. A participant that loses persistence after an
 admission retains its lifetime evidence so another participant cannot recover a
 possibly active transport. See `docs/github-governor-operations.md` for the supported
 topology and schema-version-1 upgrade procedure.
+Explicit `--only` target resolution uses strict reads and reports local governor
+deferrals with their reason and retry deadline instead of reporting a missing
+target. Reservation write-lock contention is retryable on the same participant;
+outcome write-lock contention retains the completed response in memory and its
+durable unresolved reservation until persistence succeeds, blocking subsequent
+sends in the meantime. Other outcome persistence failures still close admission. State failures include the
+underlying cause and database path in the console log.
 Concurrent first use is protected by a short initialization lock that covers SQLite
 WAL setup and schema creation. Transient SQLite lock contention never authorizes a
 send or permanently poisons that participant: the same governor retries on subsequent
@@ -1330,6 +1337,7 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
       backends explicitly placed in the same equal-priority set/group and
       cannot promote a later candidate or group across an earlier priority
       boundary.
+    - "Explicit Issue restart: `auto-coder process-issues --only <issue> --force --retry` authorizes a new implementation using current repository backend configuration even when provider sessions are retained. `--retry` requires both other flags and rejects PR targets. Readiness, specification, hierarchy, dependencies, and live local dispatch serialization still apply. The accepted session replaces cloud.csv tracking and is added to the same Issue slot; previous session membership remains because retry does not cancel remote work. Failed submission preserves the previous binding. Codex Cloud uses a new durable attempt and retains earlier CloudRuns. Ordinary runs and --force without --retry retain duplicate protection. The process-local issue.manual-retry stage records authorization, not successful implementation."
     - Single-item processing (`process-issues --only`) honors the repository's cloud/Jules mode configuration, just like continuous issue processing.
     - When `backend_type = "codex-cloud"` is used, the system invokes `codex cloud exec --env <environment_id> --branch <base_branch>` and records the returned task ID.
     - Before creating a Codex Cloud task, weekly usage is read through `codex app-server` using `initialize`, `initialized`, and `account/rateLimits/read` over stdio. Codex manages authentication and refresh using its own configuration and `CODEX_HOME`; Auto-Coder does not read OAuth tokens or call the usage HTTP endpoint directly. Surplus admission requires remaining percentage of at least `(days_until_reset + 1) * 5`; burst requires nonzero remaining weekly quota. Missing CLI/authentication, RPC errors, timeouts, and malformed responses leave quota unavailable and prevent Cloud submission. No LLM turn is started and no reset credit is consumed.

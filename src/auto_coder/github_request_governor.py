@@ -40,6 +40,7 @@ SELF_RESOLVING_DEFERRALS = frozenset(
         "mutation_minute_window",
         "mutation_hour_window",
         "governor_initialization_contention",
+        "governor_transaction_contention",
     }
 )
 
@@ -52,6 +53,10 @@ class GitHubRequestDeferred(GitHubRequestRefused):
         self.retry_at = retry_at
         super().__init__(GitHubRequestOutcome(context, None, GitHubApiOutcome.REFUSED, RequestProvenance.NETWORK, DeliveryCertainty.DEFINITELY_NOT_SENT, GitHubResponseMetadata(), 0.0, message=reason))
         self.args = (f"GitHub request deferred before sending: {reason}; retry_at={retry_at} (Unix seconds)",)
+
+
+class GovernorTransactionContention(sqlite3.OperationalError):
+    """The reservation transaction could not acquire its write lock."""
 
 
 class GovernorStateError(RuntimeError):
@@ -99,6 +104,7 @@ class GitHubRequestGovernor:
         self._ownership_active = False
         self._initialization_pending_reason: str | None = None
         self._unavailable_reason: str | None = None
+        self._pending_outcomes: dict[str, GitHubRequestOutcome] = {}
         self._base_monotonic = self._checked_time(monotonic(), "monotonic clock")
         self._base_wall = self._checked_time(wall_time(), "UTC clock")
         try:
@@ -137,7 +143,12 @@ class GitHubRequestGovernor:
 
         def __enter__(self) -> None:
             assert self.owner._connection is not None
-            self.owner._connection.execute("BEGIN IMMEDIATE")
+            try:
+                self.owner._connection.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                if self.owner._is_initialization_contention(exc):
+                    raise GovernorTransactionContention(str(exc)) from exc
+                raise
 
         def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
             assert self.owner._connection is not None
@@ -410,6 +421,16 @@ class GitHubRequestGovernor:
             self._ensure_initialized(context, origin)
             if self._unavailable_reason is not None:
                 self._refuse_unavailable(context, origin)
+            for pending in list(self._pending_outcomes.values()):
+                self.observe(pending)
+            if self._unavailable_reason is not None:
+                self._refuse_unavailable(context, origin)
+            if self._pending_outcomes:
+                now = self._now()
+                eligible = now + ADMISSION_POLL_CEILING_SECONDS
+                if announce_deferral:
+                    self._diagnostic(origin, context.attempt_id, "deferred", "governor_transaction_contention", eligible, now)
+                raise GitHubRequestDeferred(context, "governor_transaction_contention", self._retry_at(eligible, now))
             try:
                 now = self._now()
                 assert self._connection is not None
@@ -449,6 +470,12 @@ class GitHubRequestGovernor:
                 return True
             except GitHubRequestDeferred:
                 raise
+            except GovernorTransactionContention:
+                now = self._now()
+                eligible = now + ADMISSION_POLL_CEILING_SECONDS
+                if announce_deferral:
+                    self._diagnostic(origin, context.attempt_id, "deferred", "governor_transaction_contention", eligible, now)
+                raise GitHubRequestDeferred(context, "governor_transaction_contention", self._retry_at(eligible, now))
             except Exception as exc:
                 self._fail_closed(f"reservation persistence failed: {exc}", origin)
                 self._refuse_unavailable(context, origin)
@@ -470,6 +497,7 @@ class GitHubRequestGovernor:
                     state = self._read_state(origin)
                     reservation = self._connection.execute("SELECT kind, post_cooldown FROM reservations WHERE origin=? AND attempt_id=? AND owner_id=? AND resolved=0 AND recovered=0", (origin, outcome.context.attempt_id, self._incarnation_id)).fetchone()
                     if reservation is None:
+                        self._pending_outcomes.pop(outcome.context.attempt_id, None)
                         return
                     self._connection.execute("UPDATE reservations SET resolved=1 WHERE origin=? AND attempt_id=? AND owner_id=?", (origin, outcome.context.attempt_id, self._incarnation_id))
                     completion = now if reservation[0] == "mutation" else state.last_mutation_completion
@@ -489,8 +517,16 @@ class GitHubRequestGovernor:
                         count, episode = 0, False
                     self._connection.execute("UPDATE origin_state SET cooldown_until_utc=?, cooldown_reason=?, throttle_count=?, episode_active=?, last_mutation_completion_utc=? WHERE origin=?", (cooldown, cooldown_reason, count, int(episode), completion, origin))
                     self._checkpoint(now)
+                self._pending_outcomes.pop(outcome.context.attempt_id, None)
                 if cooldown > now:
                     self._diagnostic(origin, outcome.context.attempt_id, "cooldown", cooldown_reason, cooldown, now)
+            except GovernorTransactionContention:
+                # The transport has completed, but its outcome must commit before
+                # another request can send. Keep the unresolved durable reservation
+                # and lifetime lock intact while retrying this exact observation.
+                self._pending_outcomes[outcome.context.attempt_id] = outcome
+                now = self._now()
+                self._diagnostic(origin, outcome.context.attempt_id, "deferred", "governor_transaction_contention", now + ADMISSION_POLL_CEILING_SECONDS, now)
             except Exception as exc:
                 self._fail_closed(f"outcome persistence failed: {exc}", origin)
             self._wake_waiters()
@@ -572,7 +608,7 @@ class GitHubRequestGovernor:
             except OSError:
                 pass
             self._lifetime_file = None
-        logger.bind(github_governor={"state_path": str(self.path), "origin": origin, "refusal_reason": reason}).error("GitHub governor state unavailable; network admission is closed")
+        logger.bind(github_governor={"state_path": str(self.path), "origin": origin, "refusal_reason": reason}).error("GitHub governor state unavailable; network admission is closed: {} (state_path={})", reason, self.path)
 
     def _diagnostic(self, origin: str, attempt: str, decision: str, reason: str, eligible: float, now: float, refusal: str | None = None, incarnation: str | None = None) -> None:
         diagnostic: dict[str, object] = {

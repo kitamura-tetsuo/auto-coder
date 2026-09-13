@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -10,7 +11,10 @@ from auto_coder.automation_engine import AutomationEngine
 from auto_coder.cli_commands_main import process_issues
 
 
-def test_process_issues_only_passes_configured_cloud_mode():
+@pytest.mark.parametrize("retry", [False, True])
+def test_process_issues_only_passes_configured_cloud_mode(retry):
+    parent = click.Context(click.Command("auto-coder"))
+    parent.params["force"] = retry
     repo_name = "owner/repo"
     llm_config = MagicMock()
     llm_config.get_active_backends.return_value = ["codex-cloud-spark"]
@@ -54,6 +58,7 @@ def test_process_issues_only_passes_configured_cloud_mode():
         result = CliRunner().invoke(
             process_issues,
             [
+                *(["--retry"] if retry else []),
                 "--repo",
                 repo_name,
                 "--github-token",
@@ -62,6 +67,7 @@ def test_process_issues_only_passes_configured_cloud_mode():
                 f"https://github.com/{repo_name}/issues/1591",
             ],
             catch_exceptions=False,
+            parent=parent,
         )
 
     assert result.exit_code == 0
@@ -72,7 +78,8 @@ def test_process_issues_only_passes_configured_cloud_mode():
         1591,
         jules_mode=True,
         explicit_only=True,
-        force=False,
+        force=retry,
+        **({"retry": True} if retry else {}),
     )
 
 
@@ -294,3 +301,14 @@ def test_process_issues_only_preserves_production_deferred_issue_outcome():
     assert summary["Target"].startswith(f"issue #{issue_number}")
     assert summary["Actions Taken"] == ["Deferred - readiness submission is in its initial stabilization window"]
     assert "Processed single" not in invocation.output
+
+
+@pytest.mark.parametrize("only,force", [(False, False), (True, False), (False, True)])
+def test_retry_requires_both_only_and_force_before_setup(only, force):
+    parent = click.Context(click.Command("auto-coder"))
+    parent.params["force"] = force
+    with patch("auto_coder.cli_commands_main.get_repo_or_detect") as detect:
+        result = CliRunner().invoke(process_issues, ["--retry", *(["--only", "2014"] if only else [])], parent=parent)
+    assert result.exit_code == 2
+    assert "--retry requires --only and --force" in result.output
+    detect.assert_not_called()

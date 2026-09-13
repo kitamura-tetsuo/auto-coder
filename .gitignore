@@ -247,3 +247,5 @@ pyright_results.json
 /setup.py.backup
 /=1.0.0
 /<MagicMock*
+
+node_modules/

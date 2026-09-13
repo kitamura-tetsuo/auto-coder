@@ -1216,3 +1216,47 @@ def test_inherited_blocked_edit_after_comment_preserves_both_labels(tmp_path):
     assert github.removals == 0
     assert len(github.comments) == 1
     assert gate.store.get(decision.identity).readiness_removed is False
+
+
+@pytest.mark.parametrize("explicit_only,force,retry", [(True, True, True), (True, True, False), (True, False, True), (False, True, True)])
+def test_manual_retry_retained_provider_admission_and_trace(tmp_path, explicit_only, force, retry):
+    github = GitHubFlow([snapshot()])
+    engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
+    slots = engine.implementation_slots
+    owner = ImplementationOwner("issue", 1728)
+    execution = slots.start_execution(owner)
+    assert slots.record_provider_session(owner, "old-session")
+    slots.finish_execution(owner, execution)
+    TraceCollector._instance = None
+
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, explicit_only=explicit_only, force=force, retry=retry)
+
+    authorized = explicit_only and force and retry
+    if authorized:
+        engine._process_single_candidate_reserved.assert_called_once_with("owner/repo", candidate, engine.config, False, manual_retry=True)
+        assert result.actions == ["dispatched"]
+    else:
+        engine._process_single_candidate_reserved.assert_not_called()
+        assert result.actions == ["Deferred - implementation ownership already exists (issue:1728)"]
+    events = get_trace_collector().get_snapshot(item_type="issue", item_number=1728).events
+    retry_events = [event for event in events if event.stage_id == "issue.manual-retry"]
+    assert len(retry_events) == int(authorized)
+    if authorized:
+        assert retry_events[0].outcome == Outcome.COMPLETED.value
+    assert slots.snapshot().owners[0].provider_sessions == ("old-session",)
+    assert slots.active_execution_ids(owner) == ()
+
+
+@pytest.mark.parametrize("ready,active_execution", [(False, False), (True, True)])
+def test_manual_retry_preserves_readiness_and_live_dispatch_gates(tmp_path, ready, active_execution):
+    engine, candidate = engine_with_gate(tmp_path, GitHubFlow([snapshot(ready=ready)]), lifecycle(tmp_path, "READY"))
+    slots = engine.implementation_slots
+    owner = ImplementationOwner("issue", 1728)
+    execution = slots.start_execution(owner)
+    assert slots.record_provider_session(owner, "old-session")
+    if not active_execution:
+        slots.finish_execution(owner, execution)
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, explicit_only=True, force=True, retry=True)
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert result.actions == (["Deferred - implementation ownership already exists (issue:1728)"] if active_execution else ["Skipped - missing implementation-ready label"])
+    assert slots.snapshot().owners[0].provider_sessions == ("old-session",)
