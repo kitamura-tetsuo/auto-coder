@@ -97,6 +97,7 @@ def test_only_current_applied_blocked_outcomes_enter_review_history(tmp_path):
     assert json.loads(history_path.read_text())["1728"]["applied_outcomes"] == []
 
     assert gate.apply_blocked(GitHubFlow([snapshot()] * 4), decision) is None
+    assert gate.repair_rounds.count("individual", 1728) == 0
     raw = json.loads(history_path.read_text())
     assert len(raw["1728"]["applied_outcomes"]) == 1
     outcome = json.loads(raw["1728"]["applied_outcomes"][0])
@@ -143,6 +144,10 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
         body = BODY + f"\nGeneration {generation}"
         gate = SpecificationValidationLifecycle("owner/repo", f"policy-{generation}", decisions_path, lambda *_args: blocked)
         decision = gate.decide(build_normative_issue_manifest(1728, "Title", body), "Title", body)
+        initiated = []
+        authorization = gate.authorize_automatic_repair(decision, lambda: True, lambda: initiated.append(gate.repair_rounds.count("individual", 1728)))
+        assert authorization.automatic_repair_authorized
+        assert initiated == [generation + 1]
         assert gate.apply_blocked(GitHubFlow([snapshot(body=body)] * 4), decision) is None
 
     restarted = SpecificationValidationLifecycle("owner/repo", "policy-final", decisions_path, lambda *_args: blocked)
@@ -163,11 +168,13 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     github = GitHubFlow([snapshot(body=blocked_body)] * 8)
     assert blocked_gate.apply_blocked(github, blocked_decision) is None
     applied = blocked_gate.store.get(blocked_decision.identity)
-    assert applied is not None and applied.remediation == "REISSUE_REQUIRED"
-    assert applied.remediation_reason == "repair_round_limit_exhausted(limit=3,previously_applied_edit_in_place_rounds=3)"
-    assert blocked_gate.is_reissue_required(1728)
+    assert applied is not None and applied.remediation == "EDIT_IN_PLACE"
+    assert applied.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)"
+    assert blocked_gate.repair_rounds.is_paused("individual", 1728, blocked_decision.identity.specification_digest)
+    assert not blocked_gate.is_reissue_required(1728)
     assert len(github.comments) == 1
-    assert applied.remediation_reason in github.comments[0]["body"]
+    assert "Automatic repair has paused" in github.comments[0]["body"]
+    assert "replacement/reissue is not required" in github.comments[0]["body"]
 
     # Exact/policy-only reuse is one generation, while a replacement number is clean.
     duplicate_body = BODY + "\nGeneration 0"
@@ -176,6 +183,49 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     duplicate_gate.apply_blocked(GitHubFlow([snapshot(body=duplicate_body)] * 4), duplicate)
     assert duplicate_gate.repair_rounds.count("individual", 1728) == 3
     assert duplicate_gate.repair_rounds.count("individual", 200) == 0
+
+
+def test_production_dispatch_authorizes_three_repair_rounds_then_pauses_uncounted(tmp_path):
+    """REQ-003, REQ-005, REQ-014: real production processing authorizes/counts rounds.
+
+    Drives ``AutomationEngine._process_single_candidate_unified`` -- the actual
+    normal-worker production boundary, not the lifecycle API directly -- through
+    three previously-unassociated BLOCKED + EDIT_IN_PLACE generations and asserts
+    each durably authorizes and counts exactly one automatic repair round before
+    its diagnostic/readiness effects publish. A fourth previously-unassociated
+    generation must then pause the episode at the durable limit, leaving the
+    count unchanged and issuing no automatic repair or reissue marker.
+    """
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    decisions_path = tmp_path / "production-decisions.json"
+    gate = SpecificationValidationLifecycle("owner/repo", "policy", decisions_path, lambda *_args: blocked)
+    engine = AutomationEngine(Mock(), config=AutomationConfig())
+    engine._specification_validators["owner/repo"] = gate
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "production-slots.json")
+
+    for generation in range(3):
+        body = BODY + f"\n- REQ-{generation + 2:03d}: Generation {generation} marker."
+        engine.github = GitHubFlow([snapshot(body=body)] * 20)
+        candidate = Candidate(type="issue", data={"number": 1728, "title": "Title", "body": body}, priority=0)
+        result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+        assert result.actions == ["Rejected - blocked specification"]
+        assert gate.repair_rounds.count("individual", 1728) == generation + 1
+        decision = gate.store.get(gate.identity(1728, "Title", body))
+        assert decision is not None and decision.remediation_reason is None
+
+    final_body = BODY + "\n- REQ-005: Generation 3 marker."
+    engine.github = GitHubFlow([snapshot(body=final_body)] * 20)
+    candidate = Candidate(type="issue", data={"number": 1728, "title": "Title", "body": final_body}, priority=0)
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+    assert result.actions == ["Rejected - blocked specification"]
+    # The circuit breaker pauses without consuming a fourth round.
+    assert gate.repair_rounds.count("individual", 1728) == 3
+    assert gate.repair_rounds.is_paused("individual", 1728, gate.identity(1728, "Title", final_body).specification_digest)
+    assert not gate.is_reissue_required(1728)
+    paused_decision = gate.store.get(gate.identity(1728, "Title", final_body))
+    assert paused_decision is not None and paused_decision.remediation == "EDIT_IN_PLACE"
+    assert paused_decision.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)"
+    assert "Automatic repair has paused" in engine.github.comments[-1]["body"]
 
 
 def test_concurrent_paths_coalesce_semantic_validation(tmp_path):
@@ -1261,3 +1311,48 @@ def test_manual_retry_preserves_readiness_and_live_dispatch_gates(tmp_path, read
     engine._process_single_candidate_reserved.assert_not_called()
     assert result.actions == (["Deferred - implementation ownership already exists (issue:1728)"] if active_execution else ["Skipped - missing implementation-ready label"])
     assert slots.snapshot().owners[0].provider_sessions == ("old-session",)
+
+
+def test_paused_episode_exact_reversion_and_new_episode_are_durable(tmp_path):
+    """AS-001/005/006/010: only a novel generation receives a new allowance."""
+    from auto_coder.specification_repair_rounds import SpecificationRepairRoundStore
+
+    path = tmp_path / "rounds.json"
+    rounds = SpecificationRepairRoundStore("owner/repo", path)
+    for generation in ("g1", "g2", "g3"):
+        applied = rounds.authorize("individual", 7, generation, "EDIT_IN_PLACE", 3)
+        assert applied.automatic_repair_authorized
+        assert not applied.paused
+
+    trigger = rounds.apply("individual", 7, "g4", "EDIT_IN_PLACE", 3)
+    assert trigger.remediation == "EDIT_IN_PLACE"
+    assert trigger.previous_rounds == 3
+    assert trigger.paused and not trigger.automatic_repair_authorized
+    assert rounds.count("individual", 7) == 3
+
+    restarted = SpecificationRepairRoundStore("owner/repo", path)
+    reverted = restarted.apply("individual", 7, "g2", "EDIT_IN_PLACE", 9)
+    assert reverted.episode == 1
+    assert reverted.paused and not reverted.automatic_repair_authorized
+    assert reverted.previous_rounds == 3
+
+    fresh = restarted.authorize("individual", 7, "g5", "EDIT_IN_PLACE", 3)
+    assert fresh.episode == 2
+    assert fresh.automatic_repair_authorized and not fresh.paused
+    assert restarted.count("individual", 7, episode=2) == 1
+
+    reverted_again = restarted.apply("individual", 7, "g2", "EDIT_IN_PLACE", 3)
+    assert reverted_again.episode == 1 and reverted_again.paused
+    assert not reverted_again.automatic_repair_authorized
+
+
+def test_semantic_reissue_is_not_changed_by_repair_episode_budget(tmp_path):
+    from auto_coder.specification_repair_rounds import SpecificationRepairRoundStore
+
+    rounds = SpecificationRepairRoundStore("owner/repo", tmp_path / "rounds.json")
+    rounds.authorize("decomposition", 8, "g1", "EDIT_IN_PLACE", 1)
+    paused = rounds.apply("decomposition", 8, "g2", "EDIT_IN_PLACE", 1)
+    assert paused.paused and paused.remediation == "EDIT_IN_PLACE"
+    semantic = rounds.apply("decomposition", 8, "g2", "REISSUE_REQUIRED", 1)
+    assert semantic.remediation == "REISSUE_REQUIRED"
+    assert semantic.previous_rounds == 1

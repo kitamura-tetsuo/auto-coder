@@ -190,7 +190,7 @@ def test_decomposition_repair_budget_is_generation_bound_and_independent_from_ch
     policy_rerun = DecompositionValidationLifecycle("owner/repo", "policy-b", path, lambda *_args: blocked)
     rerun = policy_rerun.decide(policy_rerun.identity(parent, children), parent_input, child_inputs)
     assert policy_rerun.apply_blocked(github, rerun, lambda _number: (parent, children)) is None
-    assert policy_rerun.repair_rounds.count("decomposition", 10) == 1
+    assert policy_rerun.repair_rounds.count("decomposition", 10) == 0
     assert policy_rerun.repair_rounds.count("individual", 11) == 0
 
 
@@ -863,3 +863,72 @@ def test_stale_jules_inherited_readiness_and_blocked_effects(tmp_path, child_rea
     else:
         github.remove_labels.assert_not_called()
         assert not is_implementation_ready(child)
+
+
+def test_closed_parent_cannot_publish_pause_or_create_continuation_episode(tmp_path):
+    """REQ-007/008/009: open parent submission is authority, not semantic identity."""
+    blocked = DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "sets.json"
+    gate = DecompositionValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+
+    for generation in range(3):
+        parent = issue(10, "Parent", PARENT_BODY + f"\n{generation}", ready=True)
+        children = [issue(11, "Child", CHILD_BODY)]
+        parent_input, child_inputs = decomposition_issues(parent, children)
+        decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+        applied = gate.authorize_automatic_repair(decision, lambda: True, lambda: None)
+        assert applied.automatic_repair_authorized
+
+    trigger_parent = issue(10, "Parent", PARENT_BODY + "\ntrigger", ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(trigger_parent, children)
+    trigger = gate.decide(gate.identity(trigger_parent, children), parent_input, child_inputs)
+    closed_trigger = {**trigger_parent, "state": "closed"}
+    github = relationship_github(closed_trigger, children)
+    assert gate.apply_blocked(github, trigger, lambda _number: (closed_trigger, children)) is None
+    assert not gate.repair_rounds.is_paused("decomposition", 10, gate._repair_generation(trigger))
+    assert github.add_comment_to_issue.call_count == 0
+    assert github.remove_labels.call_count == 0
+
+    # Establish the pause only after open authority is restored.
+    assert gate.apply_blocked(relationship_github(trigger_parent, children), trigger, lambda _number: (trigger_parent, children)) is None
+    assert gate.repair_rounds.is_paused("decomposition", 10, gate._repair_generation(trigger))
+
+    corrected_parent = issue(10, "Parent", PARENT_BODY + "\ncorrected", ready=True, state="closed")
+    corrected_input, child_inputs = decomposition_issues(corrected_parent, children)
+    corrected = gate.decide(gate.identity(corrected_parent, children), corrected_input, child_inputs)
+    closed_github = relationship_github(corrected_parent, children)
+    assert gate.apply_blocked(closed_github, corrected, lambda _number: (corrected_parent, children)) is None
+    assert gate.repair_rounds.count("decomposition", 10) == 3
+    assert closed_github.add_comment_to_issue.call_count == 0
+    assert closed_github.remove_labels.call_count == 0
+
+
+@pytest.mark.parametrize("blocked_sibling_state", ["open", "closed"])
+def test_blocked_sibling_prevents_ready_child_dispatch(tmp_path, blocked_sibling_state):
+    """REQ-006/011: the complete current family needs individual READY evidence."""
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    parent["sub_issues_summary"] = {"total": 2}
+    ready_child = issue(11, "Ready", CHILD_BODY)
+    blocked_child = issue(12, "Blocked", CHILD_BODY, state=blocked_sibling_state)
+    github = relationship_github(parent, [ready_child, blocked_child])
+
+    def analyze_child(manifest, _body):
+        if manifest.issue_number == 12:
+            return SpecificationAnalysisResult("BLOCKED", (CHILD_FINDING,), remediation="EDIT_IN_PLACE")
+        return SpecificationAnalysisResult("READY")
+
+    engine = configured_engine(
+        tmp_path,
+        github,
+        lambda *_args: DecompositionAnalysisResult("READY"),
+        analyze_child,
+    )
+    candidate = Candidate(type="issue", data=dict(ready_child), priority=0, issue_number=11)
+    result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
+
+    assert result.actions == ["Rejected - blocked child specification prerequisite"]
+    assert result.target_outcome.value == "blocked"
+    assert engine.implementation_slots.active_owners() == ()
+    assert github.add_comment_to_issue.call_count == 1
+    assert github.add_comment_to_issue.call_args.args[1] == 12

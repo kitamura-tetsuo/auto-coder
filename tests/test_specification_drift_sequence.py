@@ -167,6 +167,8 @@ def test_fourth_blocked_generation_trips_circuit_breaker_but_ready_can_converge(
     for index, generation in enumerate(("baseline", "ownership", "urgent-capacity")):
         gate = SpecificationValidationLifecycle("kitamura-tetsuo/auto-coder", f"model-{index}", path)
         decision = submit(gate, 1790, bodies[generation])
+        authorization = gate.authorize_automatic_repair(decision, lambda: True, lambda: None)
+        assert authorization.automatic_repair_authorized
         gate.apply_blocked(CurrentIssue(1790, TITLE, bodies[generation]), decision)
         assert gate.store.get(decision.identity).remediation == "EDIT_IN_PLACE"
 
@@ -181,8 +183,10 @@ def test_fourth_blocked_generation_trips_circuit_breaker_but_ready_can_converge(
     blocked_gate.apply_blocked(CurrentIssue(1790, TITLE, bodies["semantic-resolution"]), fourth)
     applied = blocked_gate.store.get(fourth.identity)
     assert applied is not None
-    assert applied.remediation == "REISSUE_REQUIRED"
-    assert applied.remediation_reason == "repair_round_limit_exhausted(limit=3,previously_applied_edit_in_place_rounds=3)"
+    assert applied.remediation == "EDIT_IN_PLACE"
+    assert applied.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)"
+    assert blocked_gate.repair_rounds.is_paused("individual", 1790, fourth.identity.specification_digest)
+    assert not blocked_gate.is_reissue_required(1790)
 
 
 def test_coherent_lifecycle_clarifications_remain_editable_below_boundary(tmp_path, monkeypatch) -> None:

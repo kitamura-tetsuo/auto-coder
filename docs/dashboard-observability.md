@@ -584,6 +584,26 @@ validation. This removes a duplicate internal discovery pass; the original
 `issue.explicit-relationship-discovery` event and all downstream admission events
 retain their meaning. Coverage:
 `tests/test_parent_issue_reconciliation.py::test_child_generation_reuses_completed_explicit_relationship_preflight`.
+
+Automatic specification-repair budget exhaustion remains represented by the ordinary
+category-specific BLOCKED production outcome and effects; it no longer fabricates the
+terminal `reissue_required` admission outcome. The diagnostic explicitly identifies
+the durable episode pause, while existing validation event kinds and dashboard outcome
+projection remain unchanged because the semantic verdict is still BLOCKED. Run the
+production lifecycle regressions with
+`bash scripts/test.sh tests/test_specification_validation_lifecycle.py tests/test_decomposition_validation_lifecycle.py`.
+Publication-only BLOCKED processing leaves the repair count unchanged; explicit
+repair authorization persists its count before its initiator runs. Every normal-worker
+and stale-session production call site that applies a freshly reviewed standalone,
+inherited-child, or decomposition BLOCKED decision now performs that authorization
+immediately before publishing the decision's diagnostic/readiness effects; durable
+recovery of an already-decided pending publication (`_ValidationPublicationStageHandler`)
+continues to republish those same effects without re-authorizing, so a replay never
+double-counts. Complete-family individual blocking, unconditional durable-reissue
+refusal during category disablement, and closed-parent effect refusal all return
+through the existing Issue blocked/skipped result instrumentation, so no event schema
+or dashboard projection change is needed.
+
 # Review adjudication snapshots
 
 The GitHub adjudication boundary exposes a read-only snapshot containing the

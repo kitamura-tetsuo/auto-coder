@@ -287,7 +287,7 @@ class TestAS002ExistingBlockedSetBypassedWithoutMutation:
         assert github.removed_labels == []
         assert github.comments == []
 
-    def test_durable_reissue_required_record_bypassed_and_preserved(self, tmp_path: Path):
+    def test_durable_reissue_required_marker_remains_terminal_when_disabled(self, tmp_path: Path):
         parent = make_parent(10, ready=True)
         child = make_child(11, parent_number=10)
         github = DecompositionGitHubFlow(parent, [child])
@@ -307,8 +307,9 @@ class TestAS002ExistingBlockedSetBypassedWithoutMutation:
         child_candidate = Candidate(type="issue", data=dict(child), priority=0, issue_number=11)
         result = engine._process_single_candidate_unified("owner/repo", child_candidate, config)
 
-        assert result.actions == ["dispatched"]
-        assert result.success is True
+        assert result.actions == ["Rejected - parent set is durably reissue-required"]
+        assert result.target_outcome.value == "blocked"
+        engine._process_single_candidate_reserved.assert_not_called()
         assert reissue_file.read_bytes() == reissue_bytes
         assert decomp_gate.is_reissue_required(10) is True
 
@@ -475,6 +476,10 @@ class TestAS005ChildSpecificationValidationRemainsIndependent:
         decomp_analyzer.assert_not_called()
         spec_analyzer.assert_called_once()
         engine._process_single_candidate_reserved.assert_not_called()
+        # This is the first time the generation crosses the production
+        # BLOCKED-application boundary, which durably authorizes and counts
+        # its first automatic repair round.
+        assert spec_gate.repair_rounds.count("individual", 11) == 1
 
         # A blocked child preserves the parent submission.
         assert github.removed_labels == []
@@ -621,6 +626,10 @@ class TestAS008ReEnableUnchangedBlockedGeneration:
         assert res2.actions == ["Rejected - blocked parent/child decomposition"]
         assert "material defects" in (res2.error or "")
         engine2._process_single_candidate_reserved.assert_not_called()
+        # Re-enabling the category runs this generation through the ordinary
+        # production BLOCKED-application boundary for the first time, which
+        # durably authorizes and counts its first automatic repair round.
+        assert decomp_gate.repair_rounds.count("decomposition", 10) == 1
 
 
 class TestSchedulerNonInterference:
@@ -710,3 +719,24 @@ class TestRepositoryScopedOverride:
         res_b = engine_b._process_single_candidate_unified("owner/repo-b", Candidate(type="issue", data=dict(child_b), priority=0, issue_number=11), config_b)
         assert res_b.actions == ["Rejected - blocked parent/child decomposition"]
         decomp_analyzer_b.assert_called_once()
+
+
+def test_parent_reissue_marker_remains_terminal_when_decomposition_validation_is_disabled(tmp_path: Path):
+    """REQ-001/011/013: a category switch cannot bypass stable parent terminal state."""
+    parent = make_parent(10, ready=True)
+    child = make_child(11, parent_number=10)
+    github = DecompositionGitHubFlow(parent, [child])
+    config = AutomationConfig(repo_name="owner/repo")
+    config.issue_decomposition_validation = False
+    config.issue_specification_validation = False
+    decomp_gate = DecompositionValidationLifecycle("owner/repo", "model", tmp_path / "decomp.json")
+    decomp_gate.reissue_store.mark(10)
+    before = (tmp_path / "reissue_required.json").read_bytes()
+    engine = make_engine(tmp_path, github, config=config, decomposition_gate=decomp_gate)
+
+    result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data=dict(child), priority=0, issue_number=11), config)
+
+    assert result.actions == ["Rejected - parent set is durably reissue-required"]
+    assert result.target_outcome.value == "blocked"
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert (tmp_path / "reissue_required.json").read_bytes() == before

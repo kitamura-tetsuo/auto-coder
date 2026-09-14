@@ -180,7 +180,7 @@ class TestAS002ExistingBlockedRecordBypassedAndPreserved:
         assert github.comments == []
         assert github.removed_labels == []
 
-    def test_reissue_required_record_bypassed_without_modification(self, tmp_path: Path):
+    def test_reissue_required_marker_remains_terminal_while_validation_is_disabled(self, tmp_path: Path):
         # Create durable reissue-required marker
         gate = make_lifecycle(tmp_path, verdict="BLOCKED")
         gate.reissue_store.mark(1728)
@@ -197,9 +197,10 @@ class TestAS002ExistingBlockedRecordBypassedAndPreserved:
         engine, candidate = make_engine_and_candidate(tmp_path, github, gate, config=config)
         result = engine._process_single_candidate_unified("owner/repo", candidate, config)
 
-        assert result.actions == ["dispatched"]
-        engine._process_single_candidate_reserved.assert_called_once()
-        # File is preserved
+        assert result.actions == ["Rejected - Issue is durably reissue-required"]
+        assert result.target_outcome.value == "blocked"
+        engine._process_single_candidate_reserved.assert_not_called()
+        # The terminal file is enforced without rewriting historical state.
         assert reissue_file.read_text(encoding="utf-8") == reissue_content_before
         assert gate.is_reissue_required(1728) is True
 
