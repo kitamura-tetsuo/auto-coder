@@ -97,6 +97,7 @@ def test_only_current_applied_blocked_outcomes_enter_review_history(tmp_path):
     assert json.loads(history_path.read_text())["1728"]["applied_outcomes"] == []
 
     assert gate.apply_blocked(GitHubFlow([snapshot()] * 4), decision) is None
+    assert gate.repair_rounds.count("individual", 1728) == 0
     raw = json.loads(history_path.read_text())
     assert len(raw["1728"]["applied_outcomes"]) == 1
     outcome = json.loads(raw["1728"]["applied_outcomes"][0])
@@ -143,6 +144,10 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
         body = BODY + f"\nGeneration {generation}"
         gate = SpecificationValidationLifecycle("owner/repo", f"policy-{generation}", decisions_path, lambda *_args: blocked)
         decision = gate.decide(build_normative_issue_manifest(1728, "Title", body), "Title", body)
+        initiated = []
+        authorization = gate.authorize_automatic_repair(decision, lambda: True, lambda: initiated.append(gate.repair_rounds.count("individual", 1728)))
+        assert authorization.automatic_repair_authorized
+        assert initiated == [generation + 1]
         assert gate.apply_blocked(GitHubFlow([snapshot(body=body)] * 4), decision) is None
 
     restarted = SpecificationValidationLifecycle("owner/repo", "policy-final", decisions_path, lambda *_args: blocked)
@@ -1272,7 +1277,7 @@ def test_paused_episode_exact_reversion_and_new_episode_are_durable(tmp_path):
     path = tmp_path / "rounds.json"
     rounds = SpecificationRepairRoundStore("owner/repo", path)
     for generation in ("g1", "g2", "g3"):
-        applied = rounds.apply("individual", 7, generation, "EDIT_IN_PLACE", 3)
+        applied = rounds.authorize("individual", 7, generation, "EDIT_IN_PLACE", 3)
         assert applied.automatic_repair_authorized
         assert not applied.paused
 
@@ -1288,7 +1293,7 @@ def test_paused_episode_exact_reversion_and_new_episode_are_durable(tmp_path):
     assert reverted.paused and not reverted.automatic_repair_authorized
     assert reverted.previous_rounds == 3
 
-    fresh = restarted.apply("individual", 7, "g5", "EDIT_IN_PLACE", 3)
+    fresh = restarted.authorize("individual", 7, "g5", "EDIT_IN_PLACE", 3)
     assert fresh.episode == 2
     assert fresh.automatic_repair_authorized and not fresh.paused
     assert restarted.count("individual", 7, episode=2) == 1
@@ -1302,7 +1307,7 @@ def test_semantic_reissue_is_not_changed_by_repair_episode_budget(tmp_path):
     from auto_coder.specification_repair_rounds import SpecificationRepairRoundStore
 
     rounds = SpecificationRepairRoundStore("owner/repo", tmp_path / "rounds.json")
-    rounds.apply("decomposition", 8, "g1", "EDIT_IN_PLACE", 1)
+    rounds.authorize("decomposition", 8, "g1", "EDIT_IN_PLACE", 1)
     paused = rounds.apply("decomposition", 8, "g2", "EDIT_IN_PLACE", 1)
     assert paused.paused and paused.remediation == "EDIT_IN_PLACE"
     semantic = rounds.apply("decomposition", 8, "g2", "REISSUE_REQUIRED", 1)

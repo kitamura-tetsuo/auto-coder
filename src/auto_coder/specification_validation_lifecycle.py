@@ -28,7 +28,7 @@ from .specification_analyzer import (
     individual_review_evidence,
     objective_integrity_result,
 )
-from .specification_repair_rounds import SpecificationRepairRoundStore
+from .specification_repair_rounds import RepairRoundApplication, SpecificationRepairRoundStore
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
 VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v4-objective-scope"
@@ -596,6 +596,30 @@ class SpecificationValidationLifecycle:
         )
         self.store.save(updated)
         return updated
+
+    def authorize_automatic_repair(
+        self,
+        decision: ValidationDecision,
+        submission_is_current: Callable[[], bool],
+        initiate: Callable[[], None],
+    ) -> RepairRoundApplication:
+        """Persist authorization before initiating an exact-current contract repair."""
+        from .llm_backend_config import get_specification_repair_round_limit_from_config
+
+        with self.store.locked(decision.identity.key):
+            current = self.store.get(decision.identity)
+            if current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not submission_is_current():
+                return RepairRoundApplication(decision.remediation, self.repair_rounds.count("individual", decision.identity.issue_number))
+            applied = self.repair_rounds.authorize(
+                "individual",
+                decision.identity.issue_number,
+                decision.identity.specification_digest,
+                current.remediation,
+                get_specification_repair_round_limit_from_config(repo_name=self.repository),
+            )
+            if applied.automatic_repair_authorized:
+                initiate()
+            return applied
 
     def _record_applied_outcome(self, decision: ValidationDecision) -> None:
         outcome = json.dumps(

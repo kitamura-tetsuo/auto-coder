@@ -27,7 +27,7 @@ from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
 from .role_structural_assessment import ROLE_IMPLEMENTATION_CHILD, ROLE_TRACKING_PARENT, assess_role_structure
 from .runtime_locks import ensure_lock_directory, lock_path
-from .specification_repair_rounds import SpecificationRepairRoundStore
+from .specification_repair_rounds import RepairRoundApplication, SpecificationRepairRoundStore
 from .specification_validation_lifecycle import specification_digest
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
@@ -303,6 +303,43 @@ class DecompositionValidationLifecycle:
     def is_reissue_required(self, parent_number: int) -> bool:
         return self.reissue_store.contains(parent_number)
 
+    @staticmethod
+    def _repair_generation(decision: DecompositionDecision) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                {
+                    "parent": [decision.identity.parent.issue_number, decision.identity.parent.specification_digest],
+                    "children": [[item.issue_number, item.specification_digest] for item in decision.identity.children],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def authorize_automatic_repair(
+        self,
+        decision: DecompositionDecision,
+        set_is_current: Callable[[], bool],
+        initiate: Callable[[], None],
+    ) -> RepairRoundApplication:
+        """Persist authorization before initiating an exact-current set repair."""
+        from .llm_backend_config import get_specification_repair_round_limit_from_config
+
+        with self.store.locked(decision.identity.key):
+            current = self.store.get(decision.identity)
+            if current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not set_is_current():
+                return RepairRoundApplication(decision.remediation, self.repair_rounds.count("decomposition", decision.identity.parent.issue_number))
+            applied = self.repair_rounds.authorize(
+                "decomposition",
+                current.identity.parent.issue_number,
+                self._repair_generation(current),
+                current.remediation,
+                get_specification_repair_round_limit_from_config(repo_name=self.repository),
+            )
+            if applied.automatic_repair_authorized:
+                initiate()
+            return applied
+
     def apply_blocked(self, github: object, decision: DecompositionDecision, fetch_set: Callable[[int], Optional[tuple[dict[str, object], list[dict[str, object]]]]]) -> Optional[str]:
         with self.store.locked(decision.identity.key):
             failures: list[str] = []
@@ -312,22 +349,13 @@ class DecompositionValidationLifecycle:
 
             def still_current() -> bool:
                 fetched = fetch_set(decision.identity.parent.issue_number)
-                return fetched is not None and is_implementation_ready(fetched[0]) and self.identity(*fetched) == decision.identity
+                return fetched is not None and str(fetched[0].get("state") or "").lower() == "open" and is_implementation_ready(fetched[0]) and self.identity(*fetched) == decision.identity
 
             if not still_current():
                 return None
             from .llm_backend_config import get_specification_repair_round_limit_from_config
 
-            generation = hashlib.sha256(
-                json.dumps(
-                    {
-                        "parent": [current.identity.parent.issue_number, current.identity.parent.specification_digest],
-                        "children": [[item.issue_number, item.specification_digest] for item in current.identity.children],
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
+            generation = self._repair_generation(current)
             applied = self.repair_rounds.apply(
                 "decomposition",
                 current.identity.parent.issue_number,

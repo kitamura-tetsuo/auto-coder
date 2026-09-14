@@ -39,8 +39,22 @@ class SpecificationRepairRoundStore:
         self.path = path or root / repository / "specification_repair_rounds.json"
         self.repository = repository
 
-    def apply(self, subject_kind: str, subject_number: int, generation: str, remediation: str, limit: int) -> RepairRoundApplication:
-        """Associate a trustworthy current BLOCKED decision and authorize safely."""
+    def apply(
+        self,
+        subject_kind: str,
+        subject_number: int,
+        generation: str,
+        remediation: str,
+        limit: int,
+        *,
+        authorize_automatic_repair: bool = False,
+    ) -> RepairRoundApplication:
+        """Associate a current decision, optionally authorizing its automatic repair.
+
+        Observation/publication never consumes allowance.  The caller that is
+        about to initiate an automatic contract edit must opt in; the count is
+        then committed before authorization is returned.
+        """
         if limit <= 0:
             raise ValueError("specification repair-round limit must be a positive integer")
         key = f"{subject_kind}:{subject_number}"
@@ -69,7 +83,7 @@ class SpecificationRepairRoundStore:
             paused = episode["status"] == "paused"
             authorized = False
             reason: Optional[str] = PAUSE_REASON if paused and remediation == "EDIT_IN_PLACE" else None
-            if remediation == "EDIT_IN_PLACE" and not paused and generation not in counted:
+            if remediation == "EDIT_IN_PLACE" and not paused and generation not in counted and (authorize_automatic_repair or previous >= limit):
                 if previous >= limit:
                     episode["status"] = "paused"
                     episode["pause_trigger_generation"] = generation
@@ -84,6 +98,17 @@ class SpecificationRepairRoundStore:
             if changed:
                 self._write(state)
             return RepairRoundApplication(remediation, previous, reason, authorized, paused, episode_number)
+
+    def authorize(self, subject_kind: str, subject_number: int, generation: str, remediation: str, limit: int) -> RepairRoundApplication:
+        """Durably count, then authorize, one automatic in-place repair."""
+        return self.apply(
+            subject_kind,
+            subject_number,
+            generation,
+            remediation,
+            limit,
+            authorize_automatic_repair=True,
+        )
 
     def count(self, subject_kind: str, subject_number: int, episode: Optional[int] = None) -> int:
         raw = self._read().get(f"{subject_kind}:{subject_number}")

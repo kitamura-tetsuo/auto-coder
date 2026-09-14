@@ -852,8 +852,10 @@ Requirements themselves define enough observable semantics to decide correctness
 
 Specification validation has a durable repair-round circuit breaker. Individual
 Issues and parent decomposition sets independently count distinct authoritative
-contract generations whose trustworthy BLOCKED decision was applied as
-`EDIT_IN_PLACE`. The `[validation].repair_round_limit` positive integer setting
+contract generations only when their trustworthy `BLOCKED` + `EDIT_IN_PLACE`
+decision explicitly authorizes another automatic contract repair. Diagnostic
+publication and readiness withdrawal never consume a round. The
+`[validation].repair_round_limit` positive integer setting
 defaults to `3`. Once exhausted, the next new generation is still reviewed. READY and ERROR retain
 their semantic meanings, genuine `REISSUE_REQUIRED` remains terminal, and another
 `EDIT_IN_PLACE` result durably pauses its repair episode without changing remediation
@@ -862,6 +864,13 @@ restart, policy changes, limit changes, duplicate observations, and exact revers
 cannot mint another allowance. A never-before-associated corrected generation may
 start a fresh episode when the applicable standalone or parent submission is renewed,
 or under uninterrupted inherited parent admission for a child.
+
+Every enabled individual validation in a submitted family is a complete-family
+prerequisite: one current child BLOCKED or paused result prevents every open sibling
+from dispatch, including when the blocking child is retained closed in membership.
+Durable semantic reissue markers remain unconditional terminal admission stops when
+their validation category is disabled. Decomposition BLOCKED effects additionally
+require the authoritative parent to remain open as well as currently submitted.
 
 Individual and parent/decomposition specification results carry a strict
 remediation disposition in addition to their unchanged semantic verdict.

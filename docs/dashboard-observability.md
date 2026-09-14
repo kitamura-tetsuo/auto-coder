@@ -592,3 +592,8 @@ the durable episode pause, while existing validation event kinds and dashboard o
 projection remain unchanged because the semantic verdict is still BLOCKED. Run the
 production lifecycle regressions with
 `bash scripts/test.sh tests/test_specification_validation_lifecycle.py tests/test_decomposition_validation_lifecycle.py`.
+Publication-only BLOCKED processing leaves the repair count unchanged; explicit
+repair authorization persists its count before its initiator runs. Complete-family
+individual blocking, unconditional durable-reissue refusal during category disablement,
+and closed-parent effect refusal all return through the existing Issue blocked/skipped
+result instrumentation, so no event schema or dashboard projection change is needed.
