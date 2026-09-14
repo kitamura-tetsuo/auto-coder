@@ -584,3 +584,20 @@ validation. This removes a duplicate internal discovery pass; the original
 `issue.explicit-relationship-discovery` event and all downstream admission events
 retain their meaning. Coverage:
 `tests/test_parent_issue_reconciliation.py::test_child_generation_reuses_completed_explicit_relationship_preflight`.
+# Review adjudication snapshots
+
+The GitHub adjudication boundary exposes a read-only snapshot containing the
+registered context, raw finding, contributing Issue references, actual actor and
+source-comment identities, effective graph result and tips, and observation
+revision. Context publication is an output of reconciliation, not an operator
+decision or PASS signal. `SOURCE_UNAVAILABLE` suspends positive applicability
+while retained history remains visible; no new trace event schema or dashboard
+admission/outcome mapping is introduced by this boundary.
+
+The boundary is invoked inside the existing PR-processing execution scope, so
+its configured read or persistence failure is reported through the existing PR
+error outcome rather than a new event kind. Successful refreshes are available
+through the engine's read-only adjudication snapshot accessor; publication does
+not emit PASS, repair, or review-resolution events. Issue-originated reverse
+invalidation and startup recovery use the existing durable invalidation worker
+origin and therefore preserve the production-to-view routing contract.
