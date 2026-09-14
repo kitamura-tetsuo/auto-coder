@@ -962,48 +962,8 @@ def is_read_only_review_capable_backend(backend_name: Optional[str], config: Opt
     return normalized in READ_ONLY_REVIEW_CAPABLE_TYPES
 
 
-def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
-    """Create a BackendManager for the adversarial validation configuration.
-
-    Uses dedicated [backend_adversarial_validation] settings if configured,
-    or falls back to high-score order, filtering strictly for backends whose effective
-    backend_type supports synchronous read-only review capability.
-    Cloud coding backends, codex-mcp, and write-capable clients are rejected.
-
-    Returns:
-        BackendManager instance configured strictly with read-only capable models,
-        or None if no read-only capable backend is available (fail-closed).
-    """
-    config = get_llm_config()
-    if config is None:
-        return None
-
-    adv_order = config.get_adversarial_validation_backend_order()
-    adv_config = config.get_backend_adversarial_validation()
-
-    candidates: List[str] = []
-    if adv_order and isinstance(adv_order, list):
-        candidates = adv_order
-    elif adv_config and hasattr(adv_config, "name"):
-        candidates = [adv_config.name]
-    else:
-        # Fallback to high score order if defined
-        if hasattr(config, "get_high_score_backend_order"):
-            candidates = config.get_high_score_backend_order() or []
-        elif hasattr(config, "backend_with_high_score_order"):
-            high_score_order = getattr(config, "backend_with_high_score_order", None)
-            if isinstance(high_score_order, list):
-                candidates = high_score_order
-
-    if not candidates:
-        return None
-
-    # Strict capability filter on EVERY backend in the candidate list
-    capable_backends = [b for b in candidates if is_read_only_review_capable_backend(b, config)]
-
-    if not capable_backends:
-        return None
-
+def _build_adversarial_validation_manager_from_capable_backends(capable_backends: List[str], config: Any) -> Optional[BackendManager]:
+    """Build a BackendManager from an already capability-filtered backend name list."""
     from .quota_selector import rank_high_score_backends_by_quota
 
     selected_backends = rank_high_score_backends_by_quota(capable_backends, config)
@@ -1047,3 +1007,78 @@ def create_adversarial_validation_backend_manager() -> Optional[BackendManager]:
         logger = get_logger(__name__)
         logger.warning(f"Failed to create backend manager for adversarial validation: {e}")
         return None
+
+
+def create_adversarial_validation_backend_manager(validation_kind: Optional[str] = None) -> Optional[BackendManager]:
+    """Create a BackendManager for the adversarial validation configuration.
+
+    Args:
+        validation_kind: "issue" to prefer [backend_issue_adversarial_validation],
+            "pr" to prefer [backend_pr_adversarial_validation], or None/anything else
+            to use only the legacy [backend_adversarial_validation] resolution.
+
+    A present dedicated configuration for the requested kind is authoritative: if its
+    candidates are non-empty but none are read-only-review capable, this returns None
+    without falling back to the legacy [backend_adversarial_validation] configuration
+    or the high-score order. When no dedicated configuration is present for the
+    requested kind, resolution falls back to the legacy [backend_adversarial_validation]
+    settings, and finally to high-score order, filtering strictly for backends whose
+    effective backend_type supports synchronous read-only review capability.
+    Cloud coding backends, codex-mcp, and write-capable clients are rejected.
+
+    Returns:
+        BackendManager instance configured strictly with read-only capable models,
+        or None if no read-only capable backend is available (fail-closed).
+    """
+    config = get_llm_config()
+    if config is None:
+        return None
+
+    dedicated_order: List[str] = []
+    dedicated_config = None
+    if validation_kind == "issue":
+        dedicated_order = config.get_issue_adversarial_validation_backend_order()
+        dedicated_config = config.get_backend_issue_adversarial_validation()
+    elif validation_kind == "pr":
+        dedicated_order = config.get_pr_adversarial_validation_backend_order()
+        dedicated_config = config.get_backend_pr_adversarial_validation()
+
+    if dedicated_order or dedicated_config is not None:
+        dedicated_candidates: List[str] = list(dedicated_order)
+        if not dedicated_candidates and dedicated_config is not None:
+            dedicated_candidates = [dedicated_config.name]
+        capable_dedicated_backends = [b for b in dedicated_candidates if is_read_only_review_capable_backend(b, config)]
+        if not capable_dedicated_backends:
+            # A present dedicated configuration is authoritative (REQ-006): an
+            # ineligible dedicated selection must not fall back to the legacy
+            # backend_adversarial_validation configuration.
+            return None
+        return _build_adversarial_validation_manager_from_capable_backends(capable_dedicated_backends, config)
+
+    adv_order = config.get_adversarial_validation_backend_order()
+    adv_config = config.get_backend_adversarial_validation()
+
+    candidates: List[str] = []
+    if adv_order and isinstance(adv_order, list):
+        candidates = adv_order
+    elif adv_config and hasattr(adv_config, "name"):
+        candidates = [adv_config.name]
+    else:
+        # Fallback to high score order if defined
+        if hasattr(config, "get_high_score_backend_order"):
+            candidates = config.get_high_score_backend_order() or []
+        elif hasattr(config, "backend_with_high_score_order"):
+            high_score_order = getattr(config, "backend_with_high_score_order", None)
+            if isinstance(high_score_order, list):
+                candidates = high_score_order
+
+    if not candidates:
+        return None
+
+    # Strict capability filter on EVERY backend in the candidate list
+    capable_backends = [b for b in candidates if is_read_only_review_capable_backend(b, config)]
+
+    if not capable_backends:
+        return None
+
+    return _build_adversarial_validation_manager_from_capable_backends(capable_backends, config)

@@ -302,7 +302,7 @@ def analyze_issue_decomposition(
             if backend_manager is None:
                 from .cli_helpers import create_adversarial_validation_backend_manager
 
-                backend_manager = create_adversarial_validation_backend_manager()
+                backend_manager = create_adversarial_validation_backend_manager(validation_kind="issue")
             if backend_manager is None:
                 return _error("No strong decomposition-analysis backend is available")
             response = run_llm_prompt(prompt, backend_manager=backend_manager, is_noedit=True)
