@@ -2781,7 +2781,7 @@ def run_adversarial_validation(
     if backend_manager is None:
         from .cli_helpers import create_adversarial_validation_backend_manager
 
-        backend_manager = create_adversarial_validation_backend_manager()
+        backend_manager = create_adversarial_validation_backend_manager(validation_kind="pr")
 
     if backend_manager is None:
         logger.error("No strong adversarial validation backend configured or available. Blocking merge.")
