@@ -1297,6 +1297,27 @@ def build_adversarial_validation_context(
     )
 
 
+def validation_snapshot_is_current(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: Any,
+    expected_snapshot: str,
+) -> bool:
+    """Reconfirm every authoritative validation input without using caches."""
+    if not expected_snapshot:
+        return False
+    try:
+        pr_number = int(pr_data.get("number", 0))
+        live_pr_data = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
+        if not isinstance(live_pr_data, dict):
+            return False
+        refreshed = build_adversarial_validation_context(repo_name, live_pr_data, config, github_client, bypass_cache=True)
+    except Exception:
+        return False
+    return refreshed.validation_snapshot == expected_snapshot
+
+
 def _extract_finding_from_dict(f: Dict[str, Any]) -> Optional[AdversarialValidationFinding]:
     """Helper to parse an AdversarialValidationFinding from a dictionary."""
     req = str(f.get("violated_requirement", "")).strip()
@@ -3233,17 +3254,15 @@ def run_adversarial_validation(
     # checkpoint is assembled.
     recovery_ledger_active = any(entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files for entry in result.evidence_recovery) or bool(stored_session and stored_session.recovered_file_evidence)
     if recovery_ledger_active:
-        try:
-            refresh_pr_data = pr_data
-            if github_client is not None:
-                live_pr_data = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
-                if not isinstance(live_pr_data, dict):
-                    raise ValueError("live pull-request metadata was malformed")
-                refresh_pr_data = live_pr_data
-            refreshed = build_adversarial_validation_context(repo_name, refresh_pr_data, config, github_client, bypass_cache=True)
-        except Exception:
-            refreshed = AdversarialValidationContext()
-        if not context.validation_snapshot or refreshed.validation_snapshot != context.validation_snapshot:
+        if github_client is None:
+            try:
+                refreshed = build_adversarial_validation_context(repo_name, pr_data, config, github_client, bypass_cache=True)
+                snapshot_current = bool(context.validation_snapshot) and refreshed.validation_snapshot == context.validation_snapshot
+            except Exception:
+                snapshot_current = False
+        else:
+            snapshot_current = validation_snapshot_is_current(repo_name, pr_data, config, github_client, context.validation_snapshot)
+        if not snapshot_current:
             return AdversarialValidationResult(
                 result="ERROR",
                 summary="Changed-file evidence adjudication became stale and requires revalidation",
@@ -3284,6 +3303,7 @@ def run_adversarial_validation(
             last_head_sha=persisted_head_sha,
             test_oracle_gaps=persisted_gaps,
             evidence_head_sha=head_sha,
+            evidence_validation_snapshot=context.validation_snapshot,
             recovered_file_evidence=_build_recovery_ledger(result, stored_session, context, head_sha),
         )
         result.reviewer_session_checkpoint = checkpoint

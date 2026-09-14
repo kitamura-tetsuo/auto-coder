@@ -1117,6 +1117,69 @@ class TestAdversarialValidationPRFlow:
         stale_registry.save.assert_not_called()
         assert any("newer attempt is already applicable" in action for action in actions)
 
+    @patch("auto_coder.pr_processor.validation_snapshot_is_current", return_value=False)
+    @patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository")
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_deferred_recovery_rejects_manifest_change_before_registry_save(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+        attempt_repository_type,
+        mock_snapshot_current,
+    ):
+        from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
+        from auto_coder.reviewer_session_registry import RecoveredFileEvidence, ReviewerSession
+
+        registry = MagicMock()
+        checkpoint = ReviewerSession(
+            repository="owner/repo",
+            pr_number=100,
+            backend_name="reviewer",
+            backend_type="codex",
+            model_name="strong",
+            session_id="session",
+            evidence_head_sha="head-h2",
+            evidence_validation_snapshot="snapshot-m2",
+            recovered_file_evidence=[RecoveredFileEvidence(path="src/a.py", status="RECOVERED")],
+        )
+        mock_run_validation.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="Validated M2",
+            reviewer_session_checkpoint=checkpoint,
+            reviewer_session_registry=registry,
+        )
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        attempt_repository = attempt_repository_type.return_value
+        attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-m2", 1)
+        attempt_repository.latest_sequence.return_value = 1
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = []
+        client.get_pull_request.return_value = {"head": {"sha": "head-h2"}}
+        client.get_pull_request_head_sha_strict.return_value = "head-h2"
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": "head-h2"}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_snapshot_current.assert_called_once_with("owner/repo", pr_data, config, client, "snapshot-m2")
+        registry.save.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("validation snapshot changed before durable acceptance" in action for action in actions)
+
     def test_real_validator_cannot_eagerly_persist_superseded_gap_closure(self, tmp_path):
         """The owning attempt fence contains real parsing and reviewer storage."""
         from contextlib import nullcontext

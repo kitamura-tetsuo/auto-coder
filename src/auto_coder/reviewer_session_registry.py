@@ -73,6 +73,7 @@ class ReviewerSession:
     test_oracle_gaps: List[TestOracleGap] = field(default_factory=list)
     evidence_head_sha: str = ""
     recovered_file_evidence: List[RecoveredFileEvidence] = field(default_factory=list)
+    evidence_validation_snapshot: str = ""
 
 
 class ReviewerSessionRegistry:
@@ -131,6 +132,7 @@ class ReviewerSessionRegistry:
                     last_head_sha=str(raw["last_head_sha"]),
                     test_oracle_gaps=gaps,
                     evidence_head_sha=str(raw.get("evidence_head_sha", "")),
+                    evidence_validation_snapshot=str(raw.get("evidence_validation_snapshot", "")),
                     recovered_file_evidence=recovered_evidence,
                 )
             except (KeyError, TypeError, ValueError):

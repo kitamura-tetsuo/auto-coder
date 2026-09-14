@@ -40,6 +40,7 @@ from .adversarial_validator import (
     format_adversarial_validation_comment,
     format_test_oracle_gap_comment,
     run_adversarial_validation,
+    validation_snapshot_is_current,
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ExplicitTargetOutcome, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
@@ -3151,6 +3152,28 @@ def _handle_pr_merge(
                                 if observed_head != head_sha:
                                     actions.append(f"Ignored adversarial-validation attempt {attempt.attempt_id}: current head changed before durable acceptance")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "observed_head": observed_head, "phase": "gap-state-acceptance"})
+                                    return actions
+                                checkpoint = val_result.reviewer_session_checkpoint
+                                if checkpoint.recovered_file_evidence and not validation_snapshot_is_current(
+                                    repo_name,
+                                    pr_data,
+                                    config,
+                                    github_client,
+                                    checkpoint.evidence_validation_snapshot,
+                                ):
+                                    actions.append(f"Ignored adversarial-validation attempt {attempt.attempt_id}: validation snapshot changed before durable acceptance")
+                                    _record_pr_stage(
+                                        pr_number,
+                                        "pr.adversarial-validation",
+                                        f"pr#{pr_number} adversarial validation",
+                                        Outcome.SUPERSEDED,
+                                        {
+                                            "attempt_id": attempt.attempt_id,
+                                            "examined_head": head_sha,
+                                            "phase": "gap-state-acceptance",
+                                            "reason": "validation snapshot changed or could not be confirmed",
+                                        },
+                                    )
                                     return actions
                                 try:
                                     registry = val_result.reviewer_session_registry or ReviewerSessionRegistry()
