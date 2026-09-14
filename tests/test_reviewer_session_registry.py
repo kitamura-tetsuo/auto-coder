@@ -62,6 +62,13 @@ def test_same_head_recovered_file_evidence_survives_reload(tmp_path):
         status="RECOVERED",
         evidence="Inspected the current-head workflow",
         requirement_ids=["REQ-001"],
+        identity_version=1,
+        change_identity="change-a",
+        requirement_manifest_identity="manifest-a",
+        origin_head_sha="sha-a",
+        origin_validation_snapshot="snapshot-a",
+        last_consumed_head_sha="sha-b",
+        disposition="REUSED_EQUIVALENT",
     )
     session = ReviewerSession(
         repository="owner/repo",

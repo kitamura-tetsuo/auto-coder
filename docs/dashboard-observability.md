@@ -603,3 +603,21 @@ double-counts. Complete-family individual blocking, unconditional durable-reissu
 refusal during category disablement, and closed-parent effect refusal all return
 through the existing Issue blocked/skipped result instrumentation, so no event schema
 or dashboard projection change is needed.
+
+# Review adjudication snapshots
+
+The GitHub adjudication boundary exposes a read-only snapshot containing the
+registered context, raw finding, contributing Issue references, actual actor and
+source-comment identities, effective graph result and tips, and observation
+revision. Context publication is an output of reconciliation, not an operator
+decision or PASS signal. `SOURCE_UNAVAILABLE` suspends positive applicability
+while retained history remains visible; no new trace event schema or dashboard
+admission/outcome mapping is introduced by this boundary.
+
+The boundary is invoked inside the existing PR-processing execution scope, so
+its configured read or persistence failure is reported through the existing PR
+error outcome rather than a new event kind. Successful refreshes are available
+through the engine's read-only adjudication snapshot accessor; publication does
+not emit PASS, repair, or review-resolution events. Issue-originated reverse
+invalidation and startup recovery use the existing durable invalidation worker
+origin and therefore preserve the production-to-view routing contract.

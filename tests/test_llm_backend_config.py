@@ -2634,3 +2634,123 @@ class TestOptionInheritance:
 
         assert parent_config.options == ["--grandparent-opt"]
         assert child_config.options == ["--grandparent-opt"]
+
+
+class TestIssueAndPrAdversarialValidationConfig:
+    """Test cases for dedicated [backend_issue_adversarial_validation] and
+    [backend_pr_adversarial_validation] sections (Issue #2060)."""
+
+    def test_optional_in_initialization(self):
+        """Both dedicated sections are optional and default to unset."""
+        config = LLMBackendConfiguration()
+        assert config.backend_issue_adversarial_validation is None
+        assert config.backend_pr_adversarial_validation is None
+        assert config.get_issue_adversarial_validation_backend_order() == []
+        assert config.get_pr_adversarial_validation_backend_order() == []
+        assert config.get_backend_issue_adversarial_validation() is None
+        assert config.get_backend_pr_adversarial_validation() is None
+
+    def test_load_from_dict_order_and_default_are_distinct(self):
+        """Distinct order/default values for each of the three sections are preserved independently."""
+        data = {
+            "backend": {"order": ["codex"], "default": "codex"},
+            "backend_adversarial_validation": {"order": ["legacy-a"], "default": "legacy-a"},
+            "backend_issue_adversarial_validation": {"order": ["issue-a", "issue-b"], "default": "issue-a"},
+            "backend_pr_adversarial_validation": {"order": ["pr-a"], "default": "pr-a"},
+            "backends": {"codex": {"enabled": True, "model": "codex"}},
+        }
+        config = LLMBackendConfiguration.load_from_dict(data)
+
+        assert config.get_adversarial_validation_backend_order() == ["legacy-a"]
+        assert config.get_adversarial_validation_default_backend() == "legacy-a"
+        assert config.get_issue_adversarial_validation_backend_order() == ["issue-a", "issue-b"]
+        assert config.get_issue_adversarial_validation_default_backend() == "issue-a"
+        assert config.get_pr_adversarial_validation_backend_order() == ["pr-a"]
+        assert config.get_pr_adversarial_validation_default_backend() == "pr-a"
+
+    def test_load_from_dict_single_backend_config_per_section(self):
+        """A single-backend dedicated section is parsed into its own BackendConfig."""
+        data = {
+            "backend": {"order": ["codex"], "default": "codex"},
+            "backend_issue_adversarial_validation": {
+                "name": "issue-validator",
+                "model": "issue-model",
+                "enabled": True,
+            },
+            "backend_pr_adversarial_validation": {
+                "name": "pr-validator",
+                "model": "pr-model",
+                "enabled": True,
+            },
+            "backends": {"codex": {"enabled": True, "model": "codex"}},
+        }
+        config = LLMBackendConfiguration.load_from_dict(data)
+
+        issue_backend = config.get_backend_issue_adversarial_validation()
+        assert issue_backend is not None
+        assert issue_backend.name == "issue-validator"
+        assert issue_backend.model == "issue-model"
+        assert config.get_model_for_backend_issue_adversarial_validation() == "issue-model"
+
+        pr_backend = config.get_backend_pr_adversarial_validation()
+        assert pr_backend is not None
+        assert pr_backend.name == "pr-validator"
+        assert pr_backend.model == "pr-model"
+        assert config.get_model_for_backend_pr_adversarial_validation() == "pr-model"
+
+        # get_backend_config must resolve these dedicated sections by name too.
+        assert config.get_backend_config("issue-validator") is issue_backend
+        assert config.get_backend_config("pr-validator") is pr_backend
+
+    def test_save_and_reload_configuration_round_trip(self, tmp_path):
+        """Order/default/single-backend settings for both new sections survive save/reload
+        and remain distinct from each other and from the legacy section."""
+        config_path = str(tmp_path / "llm_config.toml")
+        config = LLMBackendConfiguration(
+            backend_order=["codex"],
+            default_backend="codex",
+            backend_adversarial_validation_order=["legacy-a"],
+            backend_adversarial_validation_default="legacy-a",
+            backend_issue_adversarial_validation_order=["issue-a", "issue-b"],
+            backend_issue_adversarial_validation_default="issue-a",
+            backend_pr_adversarial_validation_order=["pr-a"],
+            backend_pr_adversarial_validation_default="pr-a",
+            config_file_path=config_path,
+        )
+        config.save_to_file(config_path)
+
+        reloaded = LLMBackendConfiguration.load_from_file(config_path)
+        assert reloaded.get_adversarial_validation_backend_order() == ["legacy-a"]
+        assert reloaded.get_adversarial_validation_default_backend() == "legacy-a"
+        assert reloaded.get_issue_adversarial_validation_backend_order() == ["issue-a", "issue-b"]
+        assert reloaded.get_issue_adversarial_validation_default_backend() == "issue-a"
+        assert reloaded.get_pr_adversarial_validation_backend_order() == ["pr-a"]
+        assert reloaded.get_pr_adversarial_validation_default_backend() == "pr-a"
+
+    def test_dedicated_sections_not_discovered_as_ordinary_backends(self):
+        """[backend_issue_adversarial_validation]/[backend_pr_adversarial_validation] must
+        be treated as adversarial-validation configuration surfaces, not recursively
+        discovered as ordinary top-level backend definitions."""
+        data = {
+            "backend": {"order": ["codex"], "default": "codex"},
+            "backend_issue_adversarial_validation": {"order": ["issue-a"]},
+            "backend_pr_adversarial_validation": {"order": ["pr-a"]},
+            "backends": {"codex": {"enabled": True, "model": "codex"}},
+        }
+        config = LLMBackendConfiguration.load_from_dict(data)
+
+        assert "backend_issue_adversarial_validation" not in config.backends
+        assert "backend_pr_adversarial_validation" not in config.backends
+
+    def test_configuring_one_kind_does_not_affect_the_other(self):
+        """Only the Issue section is configured; PR resolution must remain unaffected (REQ-009)."""
+        data = {
+            "backend": {"order": ["codex"], "default": "codex"},
+            "backend_issue_adversarial_validation": {"order": ["issue-a"]},
+            "backends": {"codex": {"enabled": True, "model": "codex"}},
+        }
+        config = LLMBackendConfiguration.load_from_dict(data)
+
+        assert config.get_issue_adversarial_validation_backend_order() == ["issue-a"]
+        assert config.get_pr_adversarial_validation_backend_order() == []
+        assert config.get_backend_pr_adversarial_validation() is None

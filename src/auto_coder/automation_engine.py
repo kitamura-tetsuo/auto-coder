@@ -45,7 +45,7 @@ from .implementation_slots import (
     ImplementationSlotRepository,
 )
 from .issue_admission_cache import IssueAdmissionCache
-from .issue_context import get_linked_issues_context
+from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
 from .issue_processor import create_feature_issues
 from .issue_stage_routing import (
     IMPLEMENTATION_STAGE,
@@ -62,7 +62,7 @@ from .issue_stage_routing import (
 from .jules_client import invalidate_jules_sessions_cache
 from .jules_engine import check_and_resume_or_archive_sessions, check_and_start_recurrent_jules_tasks
 from .label_manager import LabelManager
-from .llm_backend_config import active_repo_context
+from .llm_backend_config import active_repo_context, get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .logger_config import get_logger
 from .merge_operation_scheduler import get_merge_operation_scheduler
 from .merge_operation_state import MergeOperation
@@ -75,6 +75,7 @@ from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .reissue_required_store import ReissueRequiredStore
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
+from .review_adjudication_github import AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService
 from .shutdown_context import install_admission_check, reset_admission_check
 from .sibling_dependencies import (
     BlockedByDeclarationStatus,
@@ -642,6 +643,8 @@ class AutomationEngine:
         self.queue = CandidateQueue()
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
+        adjudication_path = Path(os.environ.get("AUTO_CODER_REVIEW_ADJUDICATION_DB", "~/.auto-coder/review-adjudications.sqlite3")).expanduser()
+        self.review_adjudications = ReviewAdjudicationService(self.github, AdjudicationContextStore(adjudication_path))
         routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
         self.issue_stage_routing = IssueStageRoutingStore(routing_path)
         self.issue_admission_cache = IssueAdmissionCache()
@@ -2344,6 +2347,12 @@ class AutomationEngine:
                     await self.invalidate_entity(repo_name, "issue", number)
             for number in entities.pull_requests:
                 await self.invalidate_entity(repo_name, "pr", number)
+            # A publication interrupted before confirmation remains a durable
+            # targeted obligation even if an enumeration implementation omits
+            # it. The subsequent PR worker always performs a fresh strict read.
+            for number in self.review_adjudications.store.tracked_prs(repo_name):
+                if number not in entities.pull_requests:
+                    await self.invalidate_entity(repo_name, "pr", number)
         except BaseException as exc:
             self.startup_reconciliation_error = f"{type(exc).__name__}: {exc}"
             logger.opt(exception=True).error(f"Startup GitHub reconciliation failed for {repo_name}: {exc}")
@@ -3003,13 +3012,48 @@ class AutomationEngine:
             not_before,
             urgent_admission,
         )
+        associated_pr_invalidated = False
+        if entity_type == "issue":
+            # Contract edits invalidate every associated same-head PR. This
+            # reverse relationship is established from the last complete
+            # authoritative manifest set, never from a webhook body.
+            for pr_number in self.review_adjudications.store.affected_prs(repo_name, number):
+                associated_pr_invalidated = await asyncio.to_thread(self.invalidations.invalidate, EntityIdentity(repo_name, "pr", pr_number)) or associated_pr_invalidated
+                self.review_adjudications.mark_unavailable(repo_name, pr_number, "contributing Issue invalidated")
+        elif entity_type == "pr":
+            self.review_adjudications.mark_unavailable(repo_name, number, "PR evidence invalidated")
         if accepted and entity_type == "issue" and event_type is not None:
             await asyncio.to_thread(self.invalidations.wake_dependency_waiters, repo_name)
-        if accepted and not self.is_draining:
+        if (accepted or associated_pr_invalidated) and not self.is_draining:
             await self._enqueue_pending_invalidations(repo_name)
             if self._invalidation_wake_event is not None:
                 self._invalidation_wake_event.set()
         return accepted
+
+    def refresh_review_adjudications(self, repo_name: str, pr_data: Dict[str, Any]) -> tuple[AdjudicationSnapshot, ...]:
+        """Refresh the production adjudication snapshot for a targeted PR."""
+        number = pr_data.get("number")
+        if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+            raise ValueError("PR adjudication refresh requires a positive PR number")
+        # Suspend first: strict configuration lookup itself can fail and must
+        # never leave a previously positive snapshot consumable.
+        self.review_adjudications.mark_unavailable(repo_name, number, "authorization policy refresh is pending")
+        reviewer_ids = get_pr_review_allowlist_from_config(repo_name=repo_name)
+        adjudicator_ids = get_review_adjudicator_allowlist_from_config(repo_name=repo_name)
+        self.review_adjudications.apply_authorization_policy(repo_name, number, reviewer_ids or (), adjudicator_ids or ())
+        if (not reviewer_ids or not adjudicator_ids) and not self.review_adjudications.store.ledgers_for_pr(repo_name, number):
+            return ()
+        authoritative = self.github.get_pull_request_metadata_strict(repo_name, number)
+        if not isinstance(authoritative, dict):
+            raise RuntimeError(f"GitHub did not return authoritative PR metadata for PR #{number}")
+        issue_numbers = extract_associated_issue_numbers(pr_data=authoritative)
+        if not issue_numbers:
+            raise ValueError("PR adjudication context requires complete explicit contributing Issue references")
+        return self.review_adjudications.refresh(repo_name, number, authoritative, issue_numbers, reviewer_ids or (), adjudicator_ids or ())
+
+    def get_review_adjudication_snapshots(self, repo_name: str, pr_number: int) -> tuple[AdjudicationSnapshot, ...]:
+        """Expose persisted-before-publication observations to read-only consumers."""
+        return self.review_adjudications.snapshots(repo_name, pr_number)
 
     def _defer_observed_dependency_wait(self, repo_name: str, number: int, claim: ClaimedInvalidation) -> bool:
         """Avoid family validation for known waiting Issues, never authorize work."""
@@ -3951,6 +3995,14 @@ class AutomationEngine:
         if not isinstance(item_number, int) or isinstance(item_number, bool):
             result.error = f"Item number is missing for {candidate.type} #{candidate.data.get('number', 'N/A')}"
             return result
+        if candidate.type == "pr":
+            try:
+                self.refresh_review_adjudications(repo_name, candidate.data)
+            except Exception as exc:
+                # Configured adjudication is fail-closed: processing must not
+                # consume a stale positive decision after an incomplete read.
+                result.error = f"Review adjudication refresh failed: {exc}"
+                return result
         if candidate.type == "pr" and not self._is_pr_author_allowed(candidate.data):
             logger.info(f"Skipping PR #{item_number} - author not in PR allowlist")
             result.target_outcome = ExplicitTargetOutcome.SKIPPED

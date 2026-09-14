@@ -41,13 +41,24 @@ class TestOracleGap:
 
 @dataclass
 class RecoveredFileEvidence:
-    """Current-head evidence that resolved an initially incomplete file."""
+    """Versioned provenance for an independently resolved changed file."""
 
     path: str = ""
     source: str = ""
     status: str = "RECOVERED"
     evidence: str = ""
     requirement_ids: List[str] = field(default_factory=list)
+    identity_version: int = 0
+    change_identity: str = ""
+    requirement_manifest_identity: str = ""
+    origin_head_sha: str = ""
+    origin_validation_snapshot: str = ""
+    scope_basis_identity: str = ""
+    last_consumed_head_sha: str = ""
+    disposition: str = "FRESH"
+    previous_origin_head_sha: str = ""
+    previous_origin_validation_snapshot: str = ""
+    transition_reason: str = ""
 
 
 @dataclass
@@ -62,6 +73,7 @@ class ReviewerSession:
     test_oracle_gaps: List[TestOracleGap] = field(default_factory=list)
     evidence_head_sha: str = ""
     recovered_file_evidence: List[RecoveredFileEvidence] = field(default_factory=list)
+    evidence_validation_snapshot: str = ""
 
 
 class ReviewerSessionRegistry:
@@ -120,6 +132,7 @@ class ReviewerSessionRegistry:
                     last_head_sha=str(raw["last_head_sha"]),
                     test_oracle_gaps=gaps,
                     evidence_head_sha=str(raw.get("evidence_head_sha", "")),
+                    evidence_validation_snapshot=str(raw.get("evidence_validation_snapshot", "")),
                     recovered_file_evidence=recovered_evidence,
                 )
             except (KeyError, TypeError, ValueError):

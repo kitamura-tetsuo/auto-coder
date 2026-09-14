@@ -149,7 +149,7 @@ def test_executor_preserves_repository_context_through_real_analyzer_factories(t
     observed_models: list[dict[str, str]] = []
     monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", effective_config)
 
-    def create_manager() -> Mock:
+    def create_manager(validation_kind: str | None = None) -> Mock:
         config = effective_config()
         observed_models.append({"codex": config.get_model_for_backend("codex")})
         return Mock()

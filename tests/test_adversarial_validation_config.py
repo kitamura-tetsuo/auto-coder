@@ -249,6 +249,114 @@ class TestCreateAdversarialValidationBackendManager:
         assert is_read_only_review_capable_backend(None) is False
         assert is_read_only_review_capable_backend("") is False
 
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_issue_kind_uses_dedicated_issue_config_when_present(self, mock_build, mock_rank, mock_get_config):
+        """validation_kind='issue' must prefer backend_issue_adversarial_validation over the legacy section."""
+        mock_config = MagicMock()
+        mock_config.get_issue_adversarial_validation_backend_order.return_value = ["issue-claude"]
+        mock_config.get_backend_issue_adversarial_validation.return_value = None
+        mock_config.get_backend_config.return_value = MagicMock(backend_type="claude")
+        mock_config.get_model_for_backend.return_value = "issue-model"
+        mock_get_config.return_value = mock_config
+        mock_rank.return_value = ["issue-claude"]
+
+        with patch("pathlib.Path.is_file", return_value=False):
+            mgr = create_adversarial_validation_backend_manager(validation_kind="issue")
+
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["selected_backends"] == ["issue-claude"]
+        # Legacy order/config must never be consulted once the dedicated section is present.
+        mock_config.get_adversarial_validation_backend_order.assert_not_called()
+        mock_config.get_backend_adversarial_validation.assert_not_called()
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_pr_kind_uses_dedicated_pr_config_when_present(self, mock_build, mock_rank, mock_get_config):
+        """validation_kind='pr' must prefer backend_pr_adversarial_validation over the legacy section."""
+        mock_config = MagicMock()
+        mock_config.get_issue_adversarial_validation_backend_order.return_value = []
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = ["pr-codex"]
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_backend_config.return_value = MagicMock(backend_type="codex")
+        mock_config.get_model_for_backend.return_value = "pr-model"
+        mock_get_config.return_value = mock_config
+        mock_rank.return_value = ["pr-codex"]
+
+        with patch("pathlib.Path.is_file", return_value=False):
+            mgr = create_adversarial_validation_backend_manager(validation_kind="pr")
+
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["selected_backends"] == ["pr-codex"]
+        mock_config.get_adversarial_validation_backend_order.assert_not_called()
+        mock_config.get_backend_adversarial_validation.assert_not_called()
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_issue_kind_falls_back_to_legacy_when_dedicated_absent(self, mock_build, mock_rank, mock_get_config):
+        """When backend_issue_adversarial_validation is absent, Issue validation must use the legacy section."""
+        mock_config = MagicMock()
+        mock_config.get_issue_adversarial_validation_backend_order.return_value = []
+        mock_config.get_backend_issue_adversarial_validation.return_value = None
+        mock_config.get_adversarial_validation_backend_order.return_value = ["legacy-claude"]
+        mock_config.get_backend_config.return_value = MagicMock(backend_type="claude")
+        mock_config.get_model_for_backend.return_value = "legacy-model"
+        mock_get_config.return_value = mock_config
+        mock_rank.return_value = ["legacy-claude"]
+
+        with patch("pathlib.Path.is_file", return_value=False):
+            mgr = create_adversarial_validation_backend_manager(validation_kind="issue")
+
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["selected_backends"] == ["legacy-claude"]
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_dedicated_config_ineligible_does_not_fall_back_to_legacy(self, mock_build, mock_get_config):
+        """A present dedicated configuration is authoritative (REQ-006): an ineligible dedicated
+        selection must not fall back to the legacy backend_adversarial_validation configuration."""
+        mock_config = MagicMock()
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = ["pr-cloud-only"]
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_backend_config.return_value = MagicMock(backend_type="codex-cloud")
+        mock_config.get_adversarial_validation_backend_order.return_value = ["legacy-claude"]
+        mock_get_config.return_value = mock_config
+
+        mgr = create_adversarial_validation_backend_manager(validation_kind="pr")
+
+        assert mgr is None
+        mock_build.assert_not_called()
+        # Fail-closed: the legacy fallback configuration must never be consulted.
+        mock_config.get_adversarial_validation_backend_order.assert_not_called()
+        mock_config.get_backend_adversarial_validation.assert_not_called()
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    @patch("auto_coder.quota_selector.rank_high_score_backends_by_quota")
+    @patch("auto_coder.cli_helpers.build_backend_manager")
+    def test_configuring_issue_kind_does_not_change_pr_selection(self, mock_build, mock_rank, mock_get_config):
+        """Configuring the Issue dedicated section must not change PR resolution (REQ-009)."""
+        mock_config = MagicMock()
+        mock_config.get_issue_adversarial_validation_backend_order.return_value = ["issue-only"]
+        mock_config.get_backend_issue_adversarial_validation.return_value = None
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = []
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_adversarial_validation_backend_order.return_value = ["legacy-claude"]
+        mock_config.get_backend_config.return_value = MagicMock(backend_type="claude")
+        mock_config.get_model_for_backend.return_value = "legacy-model"
+        mock_get_config.return_value = mock_config
+        mock_rank.return_value = ["legacy-claude"]
+
+        with patch("pathlib.Path.is_file", return_value=False):
+            mgr = create_adversarial_validation_backend_manager(validation_kind="pr")
+
+        # PR resolution falls back to legacy since no PR-dedicated config exists,
+        # completely unaffected by the Issue-only configuration.
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["selected_backends"] == ["legacy-claude"]
+
     def test_is_read_only_review_capable_backend_with_backend_type_resolution(self):
         """Verify that capability is determined by resolved backend_type rather than alias string."""
         from auto_coder.cli_helpers import is_read_only_review_capable_backend

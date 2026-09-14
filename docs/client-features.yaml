@@ -47,6 +47,21 @@ terminal decisions.
 
 ## Revision-bound review adjudication protocol
 
+The production GitHub boundary fully hydrates nested review-comment pages with
+stable actor/comment identities, actor type, revisions, reply relation, raw
+Markdown, and thread resolution. A repository-scoped SQLite ledger atomically
+preserves one live context per root, decision history, retirement, observation,
+and publication state across restart. Copy-ready context replies expose the
+complete contract binding and a renderer-produced v1 envelope; ambiguous writes
+are reconciled against the actual target thread before retrying. Ordinary
+discussion and webhook bodies remain non-authoritative.
+
+Every normal PR-processing origin now crosses this refresh boundary before PR
+admission. Startup requeues open and unfinished tracked PRs, while authoritative
+contributing-Issue associations wake the affected PR on Issue invalidation even
+when its head is unchanged. Configured refresh failures remain operational PR
+errors rather than allowing a stale positive adjudication to be consumed.
+
 Auto-Coder provides a provider-independent, side-effect-free v1 model for
 authorized decisions about one complete automated-review root thread. Literal
 versioned JSON envelopes distinguish `UPHOLD/FIX`, `OVERRULE/NO_CHANGE`, and
@@ -123,6 +138,23 @@ round trip fails closed when current authoritative CI evidence is unavailable.
 Focused reruns are suppressed only when a current pass-eligible canonical
 workflow fact explicitly reports the exact requested target as successful;
 aggregate suite success never implies that target-level fact.
+
+## Cross-head changed-file evidence reuse
+
+Recovered changed-file evidence is persisted with versioned identities for the
+complete authoritative per-file PR representation and exact Issue Requirement
+manifest. A later PR head reuses only `RECOVERED` entries whose two identities
+still match. Commit-qualified REST locator URLs are excluded from that semantic
+identity, while a missing or incomplete patch cannot produce a reusable
+identity. Changed or unverifiable paths are invalidated independently; legacy
+entries and `IRRELEVANT` classifications fail closed and are re-adjudicated.
+The durable ledger preserves explicit fresh, reused, invalidated, and
+re-adjudicated transitions together with original and current provenance. Reuse
+and fresh recovery are accepted only after a final cache-bypassing confirmation,
+after all dynamic work, that the current validation snapshot stayed fixed.
+Only file-evidence accounting is reused: Requirement coverage, findings,
+test-oracle gaps, and the top-level verdict are always adjudicated for the
+current snapshot.
 
 ## Worker occupancy during pre-dispatch
 
@@ -1055,6 +1087,12 @@ Blocked findings use stable material-defect categories, exact affected
 Requirement IDs, and (for false-success gaps) a concrete incorrect outcome and
 the missing normative boundary.
 
+Backend selection for this analysis (`create_adversarial_validation_backend_manager(validation_kind="issue")`
+in src/auto_coder/cli_helpers.py) prefers `[backend_issue_adversarial_validation]`
+in ~/.auto-coder/llm_config.toml when present, falling back to
+`[backend_adversarial_validation]` otherwise; it never uses
+`[backend_pr_adversarial_validation]`.
+
 ## Adversarial parent/child decomposition analysis
 
 Auto-Coder exposes a provider-independent set analysis for exactly one supplied
@@ -1084,6 +1122,12 @@ changes from member specification-generation changes, traces stale and reusable
 individual/set evidence through readiness and authorization, and predicts other
 defects already derivable after the proposed clarifications. This closure is
 strictly bounded to the caller-supplied parent and complete direct-child set.
+
+Backend selection for this analysis (`create_adversarial_validation_backend_manager(validation_kind="issue")`
+in src/auto_coder/cli_helpers.py) prefers `[backend_issue_adversarial_validation]`
+in ~/.auto-coder/llm_config.toml when present, falling back to
+`[backend_adversarial_validation]` otherwise; it never uses
+`[backend_pr_adversarial_validation]`.
 
 ## Issue requirement-contract intake gate
 
@@ -2342,9 +2386,12 @@ Recent configuration schema changes that require migration:
       resolve_issue_oracles, get_linked_issues_context in src/auto_coder/issue_context.py,
       get_pr_changed_file_count in src/auto_coder/util/gh_cache.py,
       create_adversarial_validation_backend_manager in src/auto_coder/cli_helpers.py,
-      backend_adversarial_validation in src/auto_coder/llm_backend_config.py
+      backend_adversarial_validation, backend_issue_adversarial_validation,
+      backend_pr_adversarial_validation in src/auto_coder/llm_backend_config.py
     configuration:
-      - "[backend_adversarial_validation]: Configures order / default / model for the strong adversarial reviewer in ~/.auto-coder/llm_config.toml."
+      - "[backend_adversarial_validation]: Configures order / default / model for the strong adversarial reviewer in ~/.auto-coder/llm_config.toml. Used by PR adversarial validation when [backend_pr_adversarial_validation] is absent, and by Issue specification/decomposition analysis when [backend_issue_adversarial_validation] is absent."
+      - "[backend_pr_adversarial_validation]: Optional dedicated order / default / model for PR adversarial validation only, in ~/.auto-coder/llm_config.toml. When present it is authoritative for PR validation: an order/config that resolves to no read-only-review-capable backend blocks PR validation rather than falling back to [backend_adversarial_validation]."
+      - "[backend_issue_adversarial_validation]: Optional dedicated order / default / model for Issue specification analysis and Issue parent/child decomposition analysis only, in ~/.auto-coder/llm_config.toml. When present it is authoritative for both Issue analysis paths: an order/config that resolves to no read-only-review-capable backend blocks that analysis rather than falling back to [backend_adversarial_validation]. Configuring this section never changes PR adversarial validation's backend selection."
       - "ENABLE_ADVERSARIAL_VALIDATION / pr_adversarial_validation (AutomationConfig): Toggle feature on/off (default: True, overridable via AUTO_CODER_ENABLE_ADVERSARIAL_VALIDATION env var or pr_adversarial_validation setting)."
       - "MAX_ADVERSARIAL_VALIDATIONS / [adversarial_validation].max_reviews (AutomationConfig): Specifies maximum adversarial review executions for a PR (default: None for unlimited, overridable via AUTO_CODER_MAX_ADVERSARIAL_VALIDATIONS env var). When reached on a green PR, adversarial validation is skipped and PR proceeds to merge."
     behavior:
