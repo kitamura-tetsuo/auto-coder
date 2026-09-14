@@ -297,3 +297,55 @@ def test_engine_invalid_configuration_suspends_applicable_snapshot(tmp_path: Pat
     ):
         engine.refresh_review_adjudications("o/r", {"number": 4})
     assert engine.get_review_adjudication_snapshots("o/r", 4)[0].result.status is AdjudicationStatus.SOURCE_UNAVAILABLE
+
+
+def test_stale_writer_cannot_resurrect_durably_retired_context(tmp_path: Path) -> None:
+    contracts = build_issue_contracts([IssueEvidence(90, 9, "title", BODY)])
+    context = new_context(PullRequestBinding(3, "o/r", 4, "a" * 40, "b" * 40, "main"), _thread(), contracts)
+    path = tmp_path / "state.sqlite"
+    first = AdjudicationContextStore(path)
+    first.register(context, "initial")
+    stale = first.ledgers_for_pr("o/r", 4)[0]
+    second = AdjudicationContextStore(path)
+    revoked = second.ledgers_for_pr("o/r", 4)[0]
+    revoked.retire("authorization revoked")
+    second.save(revoked, "revoked")
+
+    first.save(stale, "stale-writer")
+
+    assert stale.context.retired_reason == "authorization revoked"
+    assert AdjudicationContextStore(path).ledgers_for_pr("o/r", 4) == ()
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        PullRequestBinding(3, "o/r", 4, "c" * 40, "b" * 40, "main"),
+        PullRequestBinding(3, "o/r", 4, "a" * 40, "c" * 40, "main"),
+        PullRequestBinding(3, "o/r", 4, "a" * 40, "b" * 40, "release"),
+    ],
+)
+def test_observed_revision_change_retires_before_later_read_failure(tmp_path: Path, changed: PullRequestBinding) -> None:
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    github.get_pr_review_threads_strict.return_value = [_thread()]
+    path = tmp_path / "state.sqlite"
+    service = ReviewAdjudicationService(github, AdjudicationContextStore(path))
+    original_pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
+    original = service.refresh("o/r", 4, original_pr, [9], [7], [8])[0]
+    assert original.context is not None
+    original_id = original.context.context_id
+    changed_pr = {
+        "head": {"sha": changed.head_sha},
+        "base": {"sha": changed.base_sha, "ref": changed.base_ref, "repo": {"id": changed.repository_id}},
+    }
+    github.get_issue_dispatch_snapshot_strict.side_effect = PermissionError("403")
+
+    with pytest.raises(PermissionError, match="403"):
+        service.refresh("o/r", 4, changed_pr, [9], [7], [8])
+
+    github.get_issue_dispatch_snapshot_strict.side_effect = None
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    replacement = ReviewAdjudicationService(github, AdjudicationContextStore(path)).refresh("o/r", 4, original_pr, [9], [7], [8])[0]
+    assert replacement.context is not None
+    assert replacement.context.context_id != original_id

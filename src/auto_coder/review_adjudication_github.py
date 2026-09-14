@@ -166,10 +166,33 @@ class AdjudicationContextStore:
         return ledger
 
     def save(self, ledger: AdjudicationLedger, observation_revision: str) -> None:
-        with self._lock, self._db:
-            changed = self._db.execute("UPDATE adjudication_contexts SET live=?, ledger=?, observation_revision=? WHERE context_id=?", (0 if ledger.context.retired_reason else 1, ledger.dumps(), observation_revision, ledger.context.context_id)).rowcount
-            if changed != 1:
-                raise RuntimeError("adjudication context was not durably registered")
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    "SELECT ledger FROM adjudication_contexts WHERE context_id=?",
+                    (ledger.context.context_id,),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("adjudication context was not durably registered")
+                persisted = AdjudicationLedger.loads(str(row[0]))
+                # Retirement is monotonic. A detached writer that loaded the
+                # context before another process retired it may never restore
+                # either the live bit or its pre-retirement serialization.
+                if persisted.context.retired_reason and not ledger.context.retired_reason:
+                    ledger.context = persisted.context
+                    self._db.commit()
+                    return
+                changed = self._db.execute(
+                    "UPDATE adjudication_contexts SET live=?, ledger=?, observation_revision=? WHERE context_id=?",
+                    (0 if ledger.context.retired_reason else 1, ledger.dumps(), observation_revision, ledger.context.context_id),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("adjudication context was not durably registered")
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
 
     def publication(self, context_id: str) -> tuple[str, str]:
         row = self._db.execute("SELECT publication_state,publication_body FROM adjudication_contexts WHERE context_id=?", (context_id,)).fetchone()
@@ -394,6 +417,7 @@ class ReviewAdjudicationService:
     ) -> tuple[AdjudicationSnapshot, ...]:
         """Strictly re-read all evidence, persist it, then expose applicability."""
         binding = self._binding(repository, pr_number, pr_data)
+        self.apply_revision_binding(binding)
         invalidate_issue_reads = getattr(self.github, "invalidate_issue_reads_for_adjudication", None)
         if callable(invalidate_issue_reads):
             invalidate_issue_reads(repository)
@@ -507,6 +531,19 @@ class ReviewAdjudicationService:
             if ledger.context.root_author_id not in root_reviewer_ids or not tip_authors.issubset(set(adjudicator_ids)):
                 ledger.retire("authorization of the root or a current tip author was revoked")
                 self.store.save(ledger, "authorization-policy-revocation")
+
+    def apply_revision_binding(self, binding: PullRequestBinding) -> None:
+        """Retire observed head/base changes before later fallible reads."""
+        for ledger in self.store.ledgers_for_pr(binding.repository, binding.pr_number):
+            context = ledger.context
+            if (context.repository_id, context.head_sha, context.base_sha, context.base_ref) != (
+                binding.repository_id,
+                binding.head_sha,
+                binding.base_sha,
+                binding.base_ref,
+            ):
+                ledger.retire("an authoritative PR revision binding changed")
+                self.store.save(ledger, "pr-revision-binding-change")
 
     def snapshots(self, repository: str, pr_number: int) -> tuple[AdjudicationSnapshot, ...]:
         """Return the last fully persisted read-only observations for consumers."""
