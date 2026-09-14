@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 from auto_coder.review_adjudication import AdjudicationStatus, Decision, render_decision
 from auto_coder.review_adjudication_github import AdjudicationContextStore, IssueEvidence, PullRequestBinding, ReviewAdjudicationService, build_issue_contracts, new_context, publish_context, reconcile_thread, render_context_projection
@@ -89,10 +90,15 @@ def test_restart_confirms_interrupted_pending_publication_without_post(tmp_path:
     observed = _thread()
     observed.comments.append(ReviewThreadComment(12, body))
     restarted = AdjudicationContextStore(path)
-    ledger = restarted.ledgers_for_pr("o/r", 4)[0]
     client = MagicMock()
+    client.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    client.get_pr_review_threads_strict.return_value = [observed]
+    service = ReviewAdjudicationService(client, restarted)
+    pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
 
-    assert publish_context(client, restarted, ledger, observed) == "confirmed"
+    snapshots = service.refresh("o/r", 4, pr, [9], [7], [8])
+    assert len(snapshots) == 1
+    assert restarted.publication(context.context_id)[0] == "confirmed"
     client.reply_to_review_thread.assert_not_called()
 
 
@@ -178,11 +184,16 @@ def test_production_service_permanently_retires_revoked_root(tmp_path: Path) -> 
     original = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
     assert original.context is not None
     original_id = original.context.context_id
-    revoked = service.refresh("o/r", 4, pr, [9], [], [])[0]
-    assert revoked.result.status is AdjudicationStatus.REVOKED
-    assert revoked.context is not None and revoked.context.retired_reason is not None
+    service.mark_unavailable("o/r", 4, "policy refresh")
+    service.apply_authorization_policy("o/r", 4, [], [8])
+    github.get_issue_dispatch_snapshot_strict.side_effect = PermissionError("403")
+    with pytest.raises(PermissionError, match="403"):
+        service.refresh("o/r", 4, pr, [9], [], [8])
 
-    replacement = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    # Restart and later reauthorization cannot revive the retired context.
+    github.get_issue_dispatch_snapshot_strict.side_effect = None
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    replacement = ReviewAdjudicationService(github, AdjudicationContextStore(tmp_path / "state.sqlite")).refresh("o/r", 4, pr, [9], [7], [8])[0]
     assert replacement.context is not None
     assert replacement.context.context_id != original_id
 
@@ -217,3 +228,72 @@ def test_production_snapshot_keeps_tip_after_ordinary_discussion(tmp_path: Path)
     assert current.result.status is AdjudicationStatus.APPLICABLE
     assert current.result.decision_id == decision.decision_id
     assert current.result.tips == (decision.decision_id,)
+    assert github.reply_to_review_thread.call_count == 2
+    assert f"Current predecessor tips: {decision.decision_id}" in github.reply_to_review_thread.call_args.args[3]
+
+
+def test_empty_adjudicator_policy_does_not_issue_context_for_new_root(tmp_path: Path) -> None:
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    first = _thread()
+    github.get_pr_review_threads_strict.return_value = [first]
+    store = AdjudicationContextStore(tmp_path / "state.sqlite")
+    service = ReviewAdjudicationService(github, store)
+    pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
+    service.refresh("o/r", 4, pr, [9], [7], [8])
+    second = ReviewThread(
+        id="T2",
+        comments=[ReviewThreadComment(30, "second finding", "bot", 7, "Bot", "2026-02-01T00:00:00Z", "2026-02-01T00:00:00Z")],
+    )
+    github.get_pr_review_threads_strict.return_value = [first, second]
+
+    service.refresh("o/r", 4, pr, [9], [7], [])
+
+    assert len(store.ledgers_for_pr("o/r", 4)) == 1
+    assert github.reply_to_review_thread.call_count == 1
+
+
+def test_engine_invalid_configuration_suspends_applicable_snapshot(tmp_path: Path, monkeypatch) -> None:
+    from auto_coder.automation_engine import AutomationEngine
+
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite"))
+    monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(tmp_path / "routing.sqlite"))
+    monkeypatch.setenv("AUTO_CODER_REVIEW_ADJUDICATION_DB", str(tmp_path / "adjudications.sqlite"))
+    github = MagicMock()
+    github.get_pull_request_metadata_strict.return_value = {
+        "number": 4,
+        "body": "Closes #9",
+        "head": {"sha": "a" * 40},
+        "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}},
+    }
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    thread = _thread()
+    github.get_pr_review_threads_strict.return_value = [thread]
+    engine = AutomationEngine(github)
+    with (
+        patch("auto_coder.automation_engine.get_pr_review_allowlist_from_config", return_value=[7]),
+        patch("auto_coder.automation_engine.get_review_adjudicator_allowlist_from_config", return_value=[8]),
+    ):
+        initial = engine.refresh_review_adjudications("o/r", {"number": 4})[0]
+        assert initial.context is not None
+        decision = Decision(
+            "00000000-0000-4000-8000-000000000002",
+            initial.context.context_id,
+            "a" * 40,
+            initial.context.contract_digest,
+            "UPHOLD",
+            "FIX",
+            (),
+            "Still valid.",
+            "dashboard",
+        )
+        thread.comments.append(ReviewThreadComment(20, render_decision(decision), "judge", 8, "User", "2026-03-01T00:00:00Z", "2026-03-01T00:00:00Z", 10))
+        assert engine.refresh_review_adjudications("o/r", {"number": 4})[0].result.status is AdjudicationStatus.APPLICABLE
+
+    with (
+        patch("auto_coder.automation_engine.get_pr_review_allowlist_from_config", return_value=[7]),
+        patch("auto_coder.automation_engine.get_review_adjudicator_allowlist_from_config", side_effect=ValueError("invalid adjudicator list")),
+        pytest.raises(ValueError, match="invalid adjudicator list"),
+    ):
+        engine.refresh_review_adjudications("o/r", {"number": 4})
+    assert engine.get_review_adjudication_snapshots("o/r", 4)[0].result.status is AdjudicationStatus.SOURCE_UNAVAILABLE

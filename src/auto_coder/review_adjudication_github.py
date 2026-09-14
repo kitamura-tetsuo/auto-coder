@@ -440,6 +440,8 @@ class ReviewAdjudicationService:
                 result = reconcile_thread(ledger, thread, adjudicator_ids, root_reviewer_ids)
             observation = hashlib.sha256("\0".join(f"{item.database_id}:{item.updated_at}" for item in thread.comments).encode("utf-8")).hexdigest()
             self.store.save(ledger, observation)
+            if ledger.context.retired_reason is None:
+                publish_context(self.github, self.store, ledger, thread)
             snapshot = AdjudicationSnapshot(ledger.context, root.body, tuple(issue_numbers), root.author_id, result.source_comment_id, result, observation)
             snapshots.append(snapshot)
             with self._lock:
@@ -450,7 +452,7 @@ class ReviewAdjudicationService:
             root = thread.comments[0]
             if root.database_id in existing_ids:
                 continue
-            if root.author_type != "Bot" or root.author_id not in root_reviewer_ids:
+            if not adjudicator_ids or root.author_type != "Bot" or root.author_id not in root_reviewer_ids:
                 continue
             candidate = new_context(binding, thread, contracts)
             observation = hashlib.sha256("\0".join(f"{item.database_id}:{item.updated_at}" for item in thread.comments).encode("utf-8")).hexdigest()
@@ -491,6 +493,20 @@ class ReviewAdjudicationService:
                     result,
                     reason,
                 )
+
+    def apply_authorization_policy(
+        self,
+        repository: str,
+        pr_number: int,
+        root_reviewer_ids: Sequence[int],
+        adjudicator_ids: Sequence[int],
+    ) -> None:
+        """Durably apply confirmed revocations before fallible GitHub reads."""
+        for ledger in self.store.ledgers_for_pr(repository, pr_number):
+            tip_authors = {ledger.context.decisions[tip].source.author_id for tip in ledger.tips()}
+            if ledger.context.root_author_id not in root_reviewer_ids or not tip_authors.issubset(set(adjudicator_ids)):
+                ledger.retire("authorization of the root or a current tip author was revoked")
+                self.store.save(ledger, "authorization-policy-revocation")
 
     def snapshots(self, repository: str, pr_number: int) -> tuple[AdjudicationSnapshot, ...]:
         """Return the last fully persisted read-only observations for consumers."""

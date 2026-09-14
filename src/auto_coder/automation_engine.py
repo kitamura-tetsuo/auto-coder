@@ -2949,11 +2949,14 @@ class AutomationEngine:
         number = pr_data.get("number")
         if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
             raise ValueError("PR adjudication refresh requires a positive PR number")
+        # Suspend first: strict configuration lookup itself can fail and must
+        # never leave a previously positive snapshot consumable.
+        self.review_adjudications.mark_unavailable(repo_name, number, "authorization policy refresh is pending")
         reviewer_ids = get_pr_review_allowlist_from_config(repo_name=repo_name)
         adjudicator_ids = get_review_adjudicator_allowlist_from_config(repo_name=repo_name)
+        self.review_adjudications.apply_authorization_policy(repo_name, number, reviewer_ids or (), adjudicator_ids or ())
         if (not reviewer_ids or not adjudicator_ids) and not self.review_adjudications.store.ledgers_for_pr(repo_name, number):
             return ()
-        self.review_adjudications.mark_unavailable(repo_name, number, "authoritative refresh is pending")
         authoritative = self.github.get_pull_request_metadata_strict(repo_name, number)
         if not isinstance(authoritative, dict):
             raise RuntimeError(f"GitHub did not return authoritative PR metadata for PR #{number}")
