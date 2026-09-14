@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Union, cast
 
 import httpx
 
@@ -1732,6 +1732,50 @@ class AutomationEngine:
         related = [contract(parent)] + [contract(child) for child in children if int(child["number"]) != issue_number]
         return IndividualRelationshipContext(role="child", related_contracts=json.dumps(related, ensure_ascii=False, indent=2))
 
+    def _authorize_and_apply_blocked(
+        self,
+        validator: SpecificationValidationLifecycle,
+        github: object,
+        decision: ValidationDecision,
+        submission_is_current: Optional[Callable[[], bool]] = None,
+    ) -> Optional[str]:
+        """Durably authorize a fresh standalone BLOCKED decision before publishing it.
+
+        Only a freshly scheduled/joined decision reaches this wrapper (REQ-003):
+        durable recovery of an already-decided pending publication calls
+        ``apply_blocked`` directly, without re-authorizing, so a replay never
+        double-counts (REQ-004, REQ-006).
+        """
+        validator.authorize_automatic_repair(decision, submission_is_current or (lambda: True), lambda: None)
+        return validator.apply_blocked(github, decision, submission_is_current)
+
+    def _authorize_and_apply_inherited_blocked(
+        self,
+        validator: SpecificationValidationLifecycle,
+        github: object,
+        decision: ValidationDecision,
+        set_is_current: Callable[[], bool],
+    ) -> Optional[str]:
+        """Durably authorize a fresh inherited-child BLOCKED decision before publishing it."""
+        validator.authorize_automatic_repair(decision, set_is_current, lambda: None)
+        return validator.apply_inherited_blocked(github, decision, set_is_current)
+
+    def _authorize_and_apply_decomposition_blocked(
+        self,
+        validator: DecompositionValidationLifecycle,
+        github: object,
+        decision: DecompositionDecision,
+        fetch_set: Callable[[int], Optional[tuple[Dict[str, Any], List[Dict[str, Any]]]]],
+    ) -> Optional[str]:
+        """Durably authorize a fresh decomposition BLOCKED decision before publishing it."""
+
+        def set_is_current() -> bool:
+            fetched = fetch_set(decision.identity.parent.issue_number)
+            return fetched is not None and str(fetched[0].get("state") or "").lower() == "open" and is_implementation_ready(fetched[0]) and validator.identity(*fetched) == decision.identity
+
+        validator.authorize_automatic_repair(decision, set_is_current, lambda: None)
+        return validator.apply_blocked(github, decision, fetch_set)
+
     def _family_individual_identities_match(
         self,
         validator: SpecificationValidationLifecycle,
@@ -1810,7 +1854,8 @@ class AutomationEngine:
                 decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
                 decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                 if decision is not None and decision.verdict == "BLOCKED":
-                    validator.apply_blocked(
+                    self._authorize_and_apply_decomposition_blocked(
+                        validator,
                         self.github,
                         decision,
                         lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
@@ -1926,7 +1971,8 @@ class AutomationEngine:
                     decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
                     parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                     if parent_decision is not None and parent_decision.verdict == "BLOCKED":
-                        parent_validator.apply_blocked(
+                        self._authorize_and_apply_decomposition_blocked(
+                            parent_validator,
                             self.github,
                             parent_decision,
                             lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
@@ -1955,7 +2001,8 @@ class AutomationEngine:
             decomposition_decision, joined_child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
             if decomposition_enabled and decomposition_decision is not None:
                 if decomposition_decision.verdict == "BLOCKED":
-                    decomposition_validator.apply_blocked(
+                    self._authorize_and_apply_decomposition_blocked(
+                        decomposition_validator,
                         self.github,
                         decomposition_decision,
                         lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
@@ -1992,7 +2039,7 @@ class AutomationEngine:
                         return latest is not None and self._is_open_issue(latest[0]) and is_implementation_ready(latest[0]) and self._family_individual_identities_match(validator, latest, joined_child_decisions)
 
                     for blocked_child in blocked_children:
-                        validator.apply_inherited_blocked(self.github, blocked_child, _family_is_current)
+                        self._authorize_and_apply_inherited_blocked(validator, self.github, blocked_child, _family_is_current)
                     return None
             if parent_number is not None:
                 decision = joined_child_decisions[issue_number]
@@ -2013,13 +2060,15 @@ class AutomationEngine:
                             return decomposition_validator.identity(*latest) == decomposition_decision.identity
                         return True
 
-                    validator.apply_inherited_blocked(
+                    self._authorize_and_apply_inherited_blocked(
+                        validator,
                         self.github,
                         decision,
                         _set_is_current,
                     )
                 else:
-                    validator.apply_blocked(
+                    self._authorize_and_apply_blocked(
+                        validator,
                         self.github,
                         decision,
                         lambda: self._standalone_validation_is_current(repo_name, decision),
@@ -4039,7 +4088,8 @@ class AutomationEngine:
                         parent_decomposition_validator = self._get_decomposition_validator(repo_name)
                         decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
                         if decomposition_enabled and parent_decision is not None and parent_decision.verdict == "BLOCKED":
-                            side_effect_error = parent_decomposition_validator.apply_blocked(
+                            side_effect_error = self._authorize_and_apply_decomposition_blocked(
+                                parent_decomposition_validator,
                                 self.github,
                                 parent_decision,
                                 lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
@@ -4069,7 +4119,7 @@ class AutomationEngine:
                                 latest = self._fetch_authoritative_decomposition_set(repo_name, item_number)
                                 return latest is not None and self._is_open_issue(latest[0]) and is_implementation_ready(latest[0]) and parent_decision is not None and parent_decomposition_validator.identity(*latest) == parent_decision.identity
 
-                            side_effect_error = validator.apply_inherited_blocked(self.github, blocked, set_is_current)
+                            side_effect_error = self._authorize_and_apply_inherited_blocked(validator, self.github, blocked, set_is_current)
                             result.error = "Child specification validation found material defects"
                             if side_effect_error:
                                 result.error += f"; GitHub side effect failed: {side_effect_error}"
@@ -4199,7 +4249,8 @@ class AutomationEngine:
                                 result.refill_retry_required = True
                                 return result
                             if owned_decision.verdict == "BLOCKED":
-                                owned_validator.apply_blocked(
+                                self._authorize_and_apply_blocked(
+                                    owned_validator,
                                     self.github,
                                     owned_decision,
                                     lambda: self._standalone_validation_is_current(repo_name, owned_decision),
@@ -4355,7 +4406,8 @@ class AutomationEngine:
                         return result
                     if decomposition_decision.verdict == "BLOCKED":
                         try:
-                            side_effect_error = decomposition_validator.apply_blocked(
+                            side_effect_error = self._authorize_and_apply_decomposition_blocked(
+                                decomposition_validator,
                                 self.github,
                                 decomposition_decision,
                                 lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
@@ -4388,7 +4440,7 @@ class AutomationEngine:
 
                         failures: list[str] = []
                         for child_decision in blocked_children:
-                            failure = individual_validator.apply_inherited_blocked(self.github, child_decision, _family_is_current)
+                            failure = self._authorize_and_apply_inherited_blocked(individual_validator, self.github, child_decision, _family_is_current)
                             if failure is not None:
                                 failures.append(failure)
                         result.error = "A current child specification validation found material defects"
@@ -4481,13 +4533,15 @@ class AutomationEngine:
                                     return decomposition_validator.identity(*latest) == decomposition_decision.identity
                                 return True
 
-                            side_effect_error = validator.apply_inherited_blocked(
+                            side_effect_error = self._authorize_and_apply_inherited_blocked(
+                                validator,
                                 self.github,
                                 decision,
                                 _set_is_current,
                             )
                         else:
-                            side_effect_error = validator.apply_blocked(
+                            side_effect_error = self._authorize_and_apply_blocked(
+                                validator,
                                 self.github,
                                 decision,
                                 lambda: self._standalone_validation_is_current(repo_name, decision),

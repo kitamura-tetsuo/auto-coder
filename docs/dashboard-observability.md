@@ -593,7 +593,13 @@ projection remain unchanged because the semantic verdict is still BLOCKED. Run t
 production lifecycle regressions with
 `bash scripts/test.sh tests/test_specification_validation_lifecycle.py tests/test_decomposition_validation_lifecycle.py`.
 Publication-only BLOCKED processing leaves the repair count unchanged; explicit
-repair authorization persists its count before its initiator runs. Complete-family
-individual blocking, unconditional durable-reissue refusal during category disablement,
-and closed-parent effect refusal all return through the existing Issue blocked/skipped
-result instrumentation, so no event schema or dashboard projection change is needed.
+repair authorization persists its count before its initiator runs. Every normal-worker
+and stale-session production call site that applies a freshly reviewed standalone,
+inherited-child, or decomposition BLOCKED decision now performs that authorization
+immediately before publishing the decision's diagnostic/readiness effects; durable
+recovery of an already-decided pending publication (`_ValidationPublicationStageHandler`)
+continues to republish those same effects without re-authorizing, so a replay never
+double-counts. Complete-family individual blocking, unconditional durable-reissue
+refusal during category disablement, and closed-parent effect refusal all return
+through the existing Issue blocked/skipped result instrumentation, so no event schema
+or dashboard projection change is needed.
