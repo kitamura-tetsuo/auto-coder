@@ -434,6 +434,7 @@ class ReviewAdjudicationService:
         contracts = build_issue_contracts(issue_evidence)
         _, current_contract_digest, current_objectives = contract_identity(contracts, REQUIREMENT_CONTRACT_PARSER_VERSION)
         self.store.associate_issues(repository, pr_number, issue_numbers)
+        self.apply_contract_binding(repository, pr_number, current_contract_digest, current_objectives)
         threads = self.github.get_pr_review_threads_strict(repository, pr_number)  # type: ignore[attr-defined]
         threads_by_root = {thread.comments[0].database_id: thread for thread in threads if thread.comments}
         snapshots = []
@@ -464,6 +465,9 @@ class ReviewAdjudicationService:
                 result = reconcile_thread(ledger, thread, adjudicator_ids, root_reviewer_ids)
             observation = hashlib.sha256("\0".join(f"{item.database_id}:{item.updated_at}" for item in thread.comments).encode("utf-8")).hexdigest()
             self.store.save(ledger, observation)
+            # save() may adopt a retirement concurrently committed by another
+            # writer. Never expose the result computed from its stale ledger.
+            result = ledger.current(None, None, "durable authoritative observation committed")
             if ledger.context.retired_reason is None:
                 publish_context(self.github, self.store, ledger, thread)
             snapshot = AdjudicationSnapshot(ledger.context, root.body, tuple(issue_numbers), root.author_id, result.source_comment_id, result, observation)
@@ -483,6 +487,7 @@ class ReviewAdjudicationService:
             ledger = self.store.register(candidate, observation)
             result = reconcile_thread(ledger, thread, adjudicator_ids, root_reviewer_ids)
             self.store.save(ledger, observation)
+            result = ledger.current(None, None, "durable authoritative observation committed")
             if ledger.context.retired_reason is None:
                 publish_context(self.github, self.store, ledger, thread)
             snapshot = AdjudicationSnapshot(
@@ -544,6 +549,23 @@ class ReviewAdjudicationService:
             ):
                 ledger.retire("an authoritative PR revision binding changed")
                 self.store.save(ledger, "pr-revision-binding-change")
+
+    def apply_contract_binding(
+        self,
+        repository: str,
+        pr_number: int,
+        contract_digest: str,
+        objective_fingerprints: Sequence[str],
+    ) -> None:
+        """Retire observed contract changes before a later thread read."""
+        current_objectives = tuple(objective_fingerprints)
+        for ledger in self.store.ledgers_for_pr(repository, pr_number):
+            if (ledger.context.contract_digest, ledger.context.objective_fingerprints) != (
+                contract_digest,
+                current_objectives,
+            ):
+                ledger.retire("an authoritative Issue contract or Objective binding changed")
+                self.store.save(ledger, "issue-contract-binding-change")
 
     def snapshots(self, repository: str, pr_number: int) -> tuple[AdjudicationSnapshot, ...]:
         """Return the last fully persisted read-only observations for consumers."""

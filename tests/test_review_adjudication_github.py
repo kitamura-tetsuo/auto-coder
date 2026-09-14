@@ -349,3 +349,73 @@ def test_observed_revision_change_retires_before_later_read_failure(tmp_path: Pa
     replacement = ReviewAdjudicationService(github, AdjudicationContextStore(path)).refresh("o/r", 4, original_pr, [9], [7], [8])[0]
     assert replacement.context is not None
     assert replacement.context.context_id != original_id
+
+
+def test_concurrent_retirement_cannot_leave_applicable_service_snapshot(tmp_path: Path) -> None:
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    thread = _thread()
+    github.get_pr_review_threads_strict.return_value = [thread]
+    path = tmp_path / "state.sqlite"
+    store = AdjudicationContextStore(path)
+    service = ReviewAdjudicationService(github, store)
+    pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
+    initial = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert initial.context is not None
+    decision = Decision(
+        "00000000-0000-4000-8000-000000000003",
+        initial.context.context_id,
+        "a" * 40,
+        initial.context.contract_digest,
+        "UPHOLD",
+        "FIX",
+        (),
+        "Still valid.",
+        "dashboard",
+    )
+    thread.comments.append(ReviewThreadComment(20, render_decision(decision), "judge", 8, "User", "2026-04-01T00:00:00Z", "2026-04-01T00:00:00Z", 10))
+    assert service.refresh("o/r", 4, pr, [9], [7], [8])[0].result.status is AdjudicationStatus.APPLICABLE
+    original_save = store.save
+    raced = False
+
+    def save_after_competing_retirement(ledger, observation_revision):
+        nonlocal raced
+        if not raced:
+            raced = True
+            competing_store = AdjudicationContextStore(path)
+            competing = competing_store.ledgers_for_pr("o/r", 4)[0]
+            competing.retire("concurrent authorization revocation")
+            competing_store.save(competing, "revoked")
+        original_save(ledger, observation_revision)
+
+    store.save = save_after_competing_retirement
+    snapshot = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert snapshot.context is not None and snapshot.context.retired_reason is not None
+    assert snapshot.result.status is AdjudicationStatus.INVALID
+    assert service.snapshots("o/r", 4)[0].result.status is AdjudicationStatus.INVALID
+
+
+@pytest.mark.parametrize("changed_body", [BODY.replace("Keep π exact.", "Keep p exact."), BODY.replace("raw value", "changed value")])
+def test_observed_contract_change_retires_before_thread_failure(tmp_path: Path, changed_body: str) -> None:
+    github = MagicMock()
+    issue = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda repository, number: issue
+    github.get_pr_review_threads_strict.return_value = [_thread()]
+    path = tmp_path / "state.sqlite"
+    service = ReviewAdjudicationService(github, AdjudicationContextStore(path))
+    pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
+    original = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert original.context is not None
+    original_id = original.context.context_id
+    issue["body"] = changed_body
+    github.get_pr_review_threads_strict.side_effect = PermissionError("403")
+
+    with pytest.raises(PermissionError, match="403"):
+        service.refresh("o/r", 4, pr, [9], [7], [8])
+
+    issue["body"] = BODY
+    github.get_pr_review_threads_strict.side_effect = None
+    github.get_pr_review_threads_strict.return_value = [_thread()]
+    replacement = ReviewAdjudicationService(github, AdjudicationContextStore(path)).refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert replacement.context is not None
+    assert replacement.context.context_id != original_id
