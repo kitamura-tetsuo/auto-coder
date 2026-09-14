@@ -399,6 +399,13 @@ class DecompositionValidationLifecycle:
         lines = [f"<!-- {DECOMPOSITION_FINDINGS_MARKER}:{decision.identity.key} -->", "## Auto-Coder decomposition validation", "", "Implementation is blocked by defects in the submitted parent/child specification set:", "", f"**Remediation:** {remedy}"]
         if decision.remediation_reason:
             lines.extend(["", f"**Reason:** `{decision.remediation_reason}`"])
+        if decision.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)":
+            lines.extend(
+                [
+                    "",
+                    "Automatic repair has paused because the repair-round limit was reached. " "The semantic remediation remains `EDIT_IN_PLACE`; replacement/reissue is not required by the circuit breaker itself.",
+                ]
+            )
         for finding in decision.findings:
             affected = ", ".join(f"#{item.issue_number} ({', '.join(item.requirement_ids) or 'contract-wide'})" for item in finding.affected_issues)
             lines.extend(["", f"- **{finding.category}** — {affected}: {finding.explanation}", f"  Clarification required: {finding.clarification}"])

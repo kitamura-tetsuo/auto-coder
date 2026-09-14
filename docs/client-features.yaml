@@ -854,12 +854,14 @@ Specification validation has a durable repair-round circuit breaker. Individual
 Issues and parent decomposition sets independently count distinct authoritative
 contract generations whose trustworthy BLOCKED decision was applied as
 `EDIT_IN_PLACE`. The `[validation].repair_round_limit` positive integer setting
-defaults to `3`. Once exhausted, the next new generation is still reviewed and
-may become READY, but another `EDIT_IN_PLACE` result is upgraded to terminal
-`REISSUE_REQUIRED` with a machine-readable limit reason. Duplicate observations,
-policy-only reruns, errors, stale results, READY results, and semantic reissue
-decisions do not consume repair rounds; counts survive restart and remain tied to
-the stable Issue or parent number.
+defaults to `3`. Once exhausted, the next new generation is still reviewed. READY and ERROR retain
+their semantic meanings, genuine `REISSUE_REQUIRED` remains terminal, and another
+`EDIT_IN_PLACE` result durably pauses its repair episode without changing remediation
+or writing a reissue marker. Generation-to-episode assignments are immutable, so
+restart, policy changes, limit changes, duplicate observations, and exact reversion
+cannot mint another allowance. A never-before-associated corrected generation may
+start a fresh episode when the applicable standalone or parent submission is renewed,
+or under uninterrupted inherited parent admission for a child.
 
 Individual and parent/decomposition specification results carry a strict
 remediation disposition in addition to their unchanged semantic verdict.

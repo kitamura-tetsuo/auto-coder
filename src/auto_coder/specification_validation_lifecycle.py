@@ -617,6 +617,13 @@ class SpecificationValidationLifecycle:
         lines = [f"<!-- {FINDINGS_MARKER_PREFIX}:{decision.identity.key} -->", "## Auto-Coder specification validation", "", "Implementation is blocked by material specification defects:", "", f"**Remediation:** {remedy}"]
         if decision.remediation_reason:
             lines.extend(["", f"**Reason:** `{decision.remediation_reason}`"])
+        if decision.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)":
+            lines.extend(
+                [
+                    "",
+                    "Automatic repair has paused because the repair-round limit was reached. " "The semantic remediation remains `EDIT_IN_PLACE`; replacement/reissue is not required by the circuit breaker itself.",
+                ]
+            )
         for finding in decision.findings:
             ids = ", ".join(finding.requirement_ids) or "contract-wide"
             lines.extend(["", f"- **{finding.category}** ({ids}): {finding.explanation}", f"  Clarification required: {finding.clarification}"])

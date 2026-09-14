@@ -584,3 +584,11 @@ validation. This removes a duplicate internal discovery pass; the original
 `issue.explicit-relationship-discovery` event and all downstream admission events
 retain their meaning. Coverage:
 `tests/test_parent_issue_reconciliation.py::test_child_generation_reuses_completed_explicit_relationship_preflight`.
+
+Automatic specification-repair budget exhaustion remains represented by the ordinary
+category-specific BLOCKED production outcome and effects; it no longer fabricates the
+terminal `reissue_required` admission outcome. The diagnostic explicitly identifies
+the durable episode pause, while existing validation event kinds and dashboard outcome
+projection remain unchanged because the semantic verdict is still BLOCKED. Run the
+production lifecycle regressions with
+`bash scripts/test.sh tests/test_specification_validation_lifecycle.py tests/test_decomposition_validation_lifecycle.py`.

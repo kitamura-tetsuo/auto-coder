@@ -1,4 +1,4 @@
-"""Durable circuit breaker for semantic specification repair rounds."""
+"""Durable episodes for automatic specification repair rounds."""
 
 from __future__ import annotations
 
@@ -12,18 +12,27 @@ from typing import Iterator, Optional
 
 from .runtime_locks import ensure_lock_directory, lock_path
 
+PAUSE_REASON = "automatic_repair_paused(repair_round_limit_reached)"
+
 
 @dataclass(frozen=True)
 class RepairRoundApplication:
-    """The remediation which may safely be applied for one generation."""
+    """The semantic remediation and automatic-repair authorization for a generation."""
 
     remediation: str
     previous_rounds: int
     reason: Optional[str] = None
+    automatic_repair_authorized: bool = False
+    paused: bool = False
+    episode: int = 0
 
 
 class SpecificationRepairRoundStore:
-    """Atomically count distinct applied EDIT_IN_PLACE contract generations."""
+    """Persist immutable generation-to-episode assignments and bounded rounds.
+
+    A paused episode is never reopened.  A generation that has appeared before
+    always selects its original episode, including after a later episode exists.
+    """
 
     def __init__(self, repository: str, path: Optional[Path] = None) -> None:
         root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
@@ -31,36 +40,107 @@ class SpecificationRepairRoundStore:
         self.repository = repository
 
     def apply(self, subject_kind: str, subject_number: int, generation: str, remediation: str, limit: int) -> RepairRoundApplication:
-        """Record or upgrade a trustworthy current BLOCKED remediation."""
+        """Associate a trustworthy current BLOCKED decision and authorize safely."""
         if limit <= 0:
             raise ValueError("specification repair-round limit must be a positive integer")
         key = f"{subject_kind}:{subject_number}"
         with self._locked():
             state = self._read()
-            raw = state.setdefault(key, {"edit_in_place_generations": []})
-            if not isinstance(raw, dict):
-                raise ValueError(f"Invalid specification repair-round state for {key}")
-            generations = raw.get("edit_in_place_generations")
-            if not isinstance(generations, list) or any(not isinstance(item, str) for item in generations):
-                raise ValueError(f"Invalid specification repair-round generations for {key}")
-            previous = len(generations)
-            # Reapplication and policy-only review of an already applied contract
-            # retain the original disposition and never consume or reinterpret budget.
-            if generation in generations:
-                return RepairRoundApplication("EDIT_IN_PLACE", previous)
-            if remediation != "EDIT_IN_PLACE":
-                return RepairRoundApplication(remediation, previous)
-            if previous >= limit:
-                reason = f"repair_round_limit_exhausted(limit={limit},previously_applied_edit_in_place_rounds={previous})"
-                return RepairRoundApplication("REISSUE_REQUIRED", previous, reason)
-            generations.append(generation)
-            self._write(state)
-            return RepairRoundApplication("EDIT_IN_PLACE", previous)
+            subject = self._subject(state, key)
+            associations = subject["generation_episodes"]
+            episodes = subject["episodes"]
+            assert isinstance(associations, dict) and isinstance(episodes, list)
 
-    def count(self, subject_kind: str, subject_number: int) -> int:
+            episode_number = associations.get(generation)
+            changed = False
+            if episode_number is None:
+                if not episodes or self._episode(episodes, len(episodes))["status"] == "paused":
+                    episodes.append({"status": "active", "counted_generations": [], "pause_trigger_generation": None})
+                episode_number = len(episodes)
+                associations[generation] = episode_number
+                changed = True
+            if not isinstance(episode_number, int) or episode_number < 1:
+                raise ValueError(f"Invalid specification repair episode association for {key}")
+            episode = self._episode(episodes, episode_number)
+            counted = episode["counted_generations"]
+            assert isinstance(counted, list)
+            previous = len(counted)
+
+            paused = episode["status"] == "paused"
+            authorized = False
+            reason: Optional[str] = PAUSE_REASON if paused and remediation == "EDIT_IN_PLACE" else None
+            if remediation == "EDIT_IN_PLACE" and not paused and generation not in counted:
+                if previous >= limit:
+                    episode["status"] = "paused"
+                    episode["pause_trigger_generation"] = generation
+                    paused = True
+                    reason = PAUSE_REASON
+                    changed = True
+                else:
+                    # The durable write below happens before authorization is returned.
+                    counted.append(generation)
+                    authorized = True
+                    changed = True
+            if changed:
+                self._write(state)
+            return RepairRoundApplication(remediation, previous, reason, authorized, paused, episode_number)
+
+    def count(self, subject_kind: str, subject_number: int, episode: Optional[int] = None) -> int:
         raw = self._read().get(f"{subject_kind}:{subject_number}")
-        generations = raw.get("edit_in_place_generations") if isinstance(raw, dict) else None
-        return len(generations) if isinstance(generations, list) else 0
+        if not isinstance(raw, dict):
+            return 0
+        # Read legacy state without mutating it.
+        legacy = raw.get("edit_in_place_generations")
+        if isinstance(legacy, list):
+            return len(legacy)
+        episodes = raw.get("episodes")
+        if not isinstance(episodes, list) or not episodes:
+            return 0
+        selected = episode or len(episodes)
+        current = self._episode(episodes, selected)
+        counted = current.get("counted_generations")
+        return len(counted) if isinstance(counted, list) else 0
+
+    def is_paused(self, subject_kind: str, subject_number: int, generation: str) -> bool:
+        raw = self._read().get(f"{subject_kind}:{subject_number}")
+        if not isinstance(raw, dict):
+            return False
+        associations, episodes = raw.get("generation_episodes"), raw.get("episodes")
+        selected = associations.get(generation) if isinstance(associations, dict) else None
+        return isinstance(selected, int) and isinstance(episodes, list) and self._episode(episodes, selected).get("status") == "paused"
+
+    def _subject(self, state: dict[str, object], key: str) -> dict[str, object]:
+        raw = state.get(key)
+        if raw is None:
+            raw = {"version": 2, "episodes": [], "generation_episodes": {}}
+            state[key] = raw
+        if not isinstance(raw, dict):
+            raise ValueError(f"Invalid specification repair-round state for {key}")
+        legacy = raw.get("edit_in_place_generations")
+        if isinstance(legacy, list):
+            if any(not isinstance(item, str) for item in legacy):
+                raise ValueError(f"Invalid specification repair-round generations for {key}")
+            raw.clear()
+            raw.update(
+                {
+                    "version": 2,
+                    "episodes": [{"status": "active", "counted_generations": legacy, "pause_trigger_generation": None}],
+                    "generation_episodes": {item: 1 for item in legacy},
+                }
+            )
+        if not isinstance(raw.get("episodes"), list) or not isinstance(raw.get("generation_episodes"), dict):
+            raise ValueError(f"Invalid specification repair episode state for {key}")
+        return raw
+
+    @staticmethod
+    def _episode(episodes: list[object], number: int) -> dict[str, object]:
+        if number > len(episodes) or not isinstance(episodes[number - 1], dict):
+            raise ValueError("Invalid specification repair episode")
+        episode = episodes[number - 1]
+        assert isinstance(episode, dict)
+        if episode.get("status") not in {"active", "paused"} or not isinstance(episode.get("counted_generations"), list):
+            raise ValueError("Invalid specification repair episode")
+        return episode
 
     def _read(self) -> dict[str, object]:
         try:

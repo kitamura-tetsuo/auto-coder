@@ -163,11 +163,13 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     github = GitHubFlow([snapshot(body=blocked_body)] * 8)
     assert blocked_gate.apply_blocked(github, blocked_decision) is None
     applied = blocked_gate.store.get(blocked_decision.identity)
-    assert applied is not None and applied.remediation == "REISSUE_REQUIRED"
-    assert applied.remediation_reason == "repair_round_limit_exhausted(limit=3,previously_applied_edit_in_place_rounds=3)"
-    assert blocked_gate.is_reissue_required(1728)
+    assert applied is not None and applied.remediation == "EDIT_IN_PLACE"
+    assert applied.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)"
+    assert blocked_gate.repair_rounds.is_paused("individual", 1728, blocked_decision.identity.specification_digest)
+    assert not blocked_gate.is_reissue_required(1728)
     assert len(github.comments) == 1
-    assert applied.remediation_reason in github.comments[0]["body"]
+    assert "Automatic repair has paused" in github.comments[0]["body"]
+    assert "replacement/reissue is not required" in github.comments[0]["body"]
 
     # Exact/policy-only reuse is one generation, while a replacement number is clean.
     duplicate_body = BODY + "\nGeneration 0"
@@ -1261,3 +1263,48 @@ def test_manual_retry_preserves_readiness_and_live_dispatch_gates(tmp_path, read
     engine._process_single_candidate_reserved.assert_not_called()
     assert result.actions == (["Deferred - implementation ownership already exists (issue:1728)"] if active_execution else ["Skipped - missing implementation-ready label"])
     assert slots.snapshot().owners[0].provider_sessions == ("old-session",)
+
+
+def test_paused_episode_exact_reversion_and_new_episode_are_durable(tmp_path):
+    """AS-001/005/006/010: only a novel generation receives a new allowance."""
+    from auto_coder.specification_repair_rounds import SpecificationRepairRoundStore
+
+    path = tmp_path / "rounds.json"
+    rounds = SpecificationRepairRoundStore("owner/repo", path)
+    for generation in ("g1", "g2", "g3"):
+        applied = rounds.apply("individual", 7, generation, "EDIT_IN_PLACE", 3)
+        assert applied.automatic_repair_authorized
+        assert not applied.paused
+
+    trigger = rounds.apply("individual", 7, "g4", "EDIT_IN_PLACE", 3)
+    assert trigger.remediation == "EDIT_IN_PLACE"
+    assert trigger.previous_rounds == 3
+    assert trigger.paused and not trigger.automatic_repair_authorized
+    assert rounds.count("individual", 7) == 3
+
+    restarted = SpecificationRepairRoundStore("owner/repo", path)
+    reverted = restarted.apply("individual", 7, "g2", "EDIT_IN_PLACE", 9)
+    assert reverted.episode == 1
+    assert reverted.paused and not reverted.automatic_repair_authorized
+    assert reverted.previous_rounds == 3
+
+    fresh = restarted.apply("individual", 7, "g5", "EDIT_IN_PLACE", 3)
+    assert fresh.episode == 2
+    assert fresh.automatic_repair_authorized and not fresh.paused
+    assert restarted.count("individual", 7, episode=2) == 1
+
+    reverted_again = restarted.apply("individual", 7, "g2", "EDIT_IN_PLACE", 3)
+    assert reverted_again.episode == 1 and reverted_again.paused
+    assert not reverted_again.automatic_repair_authorized
+
+
+def test_semantic_reissue_is_not_changed_by_repair_episode_budget(tmp_path):
+    from auto_coder.specification_repair_rounds import SpecificationRepairRoundStore
+
+    rounds = SpecificationRepairRoundStore("owner/repo", tmp_path / "rounds.json")
+    rounds.apply("decomposition", 8, "g1", "EDIT_IN_PLACE", 1)
+    paused = rounds.apply("decomposition", 8, "g2", "EDIT_IN_PLACE", 1)
+    assert paused.paused and paused.remediation == "EDIT_IN_PLACE"
+    semantic = rounds.apply("decomposition", 8, "g2", "REISSUE_REQUIRED", 1)
+    assert semantic.remediation == "REISSUE_REQUIRED"
+    assert semantic.previous_rounds == 1
