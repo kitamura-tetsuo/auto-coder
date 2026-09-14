@@ -375,11 +375,11 @@ def build_backend_manager(
 
         return AuggieClient(backend_name=backend_name)
 
-    def _create_muse_client(backend_name: str):
+    def _create_muse_client(backend_name: str, use_noedit_options: bool = use_noedit_options):
         """Create a MuseClient lazily."""
         from .muse_client import MuseClient
 
-        return MuseClient(backend_name=backend_name)
+        return MuseClient(backend_name=backend_name, use_noedit_options=use_noedit_options)
 
     def _create_codex_client(backend_name: str):
         """Create a CodexClient with optional configuration for aliases."""
@@ -931,7 +931,7 @@ def create_cloud_backend_manager() -> Optional[BackendManager]:
         return None
 
 
-READ_ONLY_REVIEW_CAPABLE_TYPES = {"claude", "codex"}
+READ_ONLY_REVIEW_CAPABLE_TYPES = {"claude", "codex", "muse"}
 
 
 def get_effective_backend_type(backend_name: Optional[str], config: Optional[Any] = None) -> Optional[str]:
@@ -951,7 +951,7 @@ def get_effective_backend_type(backend_name: Optional[str], config: Optional[Any
 def is_read_only_review_capable_backend(backend_name: Optional[str], config: Optional[Any] = None) -> bool:
     """Check if a backend provides synchronous read-only review execution based on resolved backend_type.
 
-    Only local clients with proven client-level read-only sandboxing (Claude, Codex)
+    Only local clients with proven client-level read-only sandboxing (Claude, Codex, Muse)
     are permitted for adversarial validation. Cloud agents (CodexCloud, ClaudeRoutine, Jules),
     MCP variants without sandbox sanitization (CodexMCP), and non-enforcing clients are rejected.
     """

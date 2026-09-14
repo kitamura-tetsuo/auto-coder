@@ -132,16 +132,16 @@ class TestCreateAdversarialValidationBackendManager:
         """Order must filter out cloud/non-enforcing backends and only include read-only capable ones."""
         mock_config = MagicMock()
         # Order includes cloud agents and capable local backends
-        mock_config.get_adversarial_validation_backend_order.return_value = ["codex_cloud", "claude", "claude_routine", "codex"]
+        mock_config.get_adversarial_validation_backend_order.return_value = ["codex_cloud", "claude", "claude_routine", "codex", "muse"]
         mock_config.get_backend_adversarial_validation.return_value = None
         mock_config.get_model_for_backend.side_effect = lambda b: f"model-{b}"
         mock_get_config.return_value = mock_config
-        mock_rank.return_value = ["claude", "codex"]
+        mock_rank.return_value = ["claude", "codex", "muse"]
 
         mgr = create_adversarial_validation_backend_manager()
         mock_build.assert_called_once()
         call_kwargs = mock_build.call_args.kwargs
-        assert call_kwargs["selected_backends"] == ["claude", "codex"]
+        assert call_kwargs["selected_backends"] == ["claude", "codex", "muse"]
         assert call_kwargs["primary_backend"] == "claude"
         assert call_kwargs["use_noedit_options"] is True
         assert call_kwargs["capture_codex_final_message"] is True
@@ -234,6 +234,7 @@ class TestCreateAdversarialValidationBackendManager:
         # Exact capable factory backend types
         assert is_read_only_review_capable_backend("claude") is True
         assert is_read_only_review_capable_backend("codex") is True
+        assert is_read_only_review_capable_backend("muse") is True
 
         # Ineligible MCP variants, cloud backends, routines, and non-enforcing clients
         assert is_read_only_review_capable_backend("codex_mcp") is False
@@ -369,13 +370,17 @@ class TestCreateAdversarialValidationBackendManager:
         mock_b2 = MagicMock(backend_type="claude")
         # Alias has prefix claude, but backend_type is claude_routine -> MUST BE REJECTED
         mock_b3 = MagicMock(backend_type="claude_routine")
+        # Alias looks unfamiliar, but backend_type is muse -> MUST BE ACCEPTED
+        mock_b4 = MagicMock(backend_type="muse")
 
         mock_config.get_backend_config.side_effect = lambda name: {
             "codex-heavy": mock_b1,
             "custom-reviewer": mock_b2,
             "claude-custom-routine": mock_b3,
+            "muse-spark-reviewer": mock_b4,
         }.get(name)
 
         assert is_read_only_review_capable_backend("codex-heavy", mock_config) is False
         assert is_read_only_review_capable_backend("custom-reviewer", mock_config) is True
         assert is_read_only_review_capable_backend("claude-custom-routine", mock_config) is False
+        assert is_read_only_review_capable_backend("muse-spark-reviewer", mock_config) is True

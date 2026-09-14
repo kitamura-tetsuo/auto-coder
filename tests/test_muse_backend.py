@@ -25,7 +25,7 @@ def _git(repo: Path, *args: str) -> str:
 
 def _repository(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
-    repo.mkdir()
+    repo.mkdir(parents=True, exist_ok=True)
     _git(repo, "init")
     _git(repo, "config", "user.email", "tests@example.com")
     _git(repo, "config", "user.name", "Muse Tests")
@@ -510,3 +510,183 @@ def test_muse_alias_prerequisite_failure_is_actionable() -> None:
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.cli_helpers.shutil.which", return_value=None):
         with pytest.raises(ClickException, match="muse CLI is not found in PATH"):
             check_backend_prerequisites(["muse-payg"])
+
+
+def test_muse_noedit_sanitizes_options_and_enforces_readonly_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    captured_file = tmp_path / "captured_args.json"
+    script = tmp_path / "muse"
+    script.write_text(
+        f"""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code 1.2.1")
+    raise SystemExit(0)
+arguments = sys.argv[1:]
+Path(r"{captured_file}").write_text(json.dumps(arguments))
+print("ACTION_SUMMARY: Muse review completed")
+"""
+    )
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(
+        backends={
+            "muse-spark": BackendConfig(
+                name="muse-spark",
+                backend_type="muse",
+                model="muse-spark-1.3",
+                options=["exec", "--reasoning-effort", "low", "--yolo"],
+                options_for_noedit=["exec", "--reasoning-effort", "low", "--yolo", "--disable-sandbox"],
+            )
+        }
+    )
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config):
+        manager = build_backend_manager(["muse-spark"], "muse-spark", {"muse-spark": "muse-spark-1.3"}, use_noedit_options=True)
+        manager._is_noedit = True
+        output = manager._run_llm_cli("review the code")
+
+    assert output == "ACTION_SUMMARY: Muse review completed"
+    captured = json.loads(captured_file.read_text())
+    assert captured[0] == "exec"
+    assert captured.count("exec") == 1
+    assert "--yolo" not in captured
+    assert "--disable-sandbox" not in captured
+    assert "--disable-write" in captured
+    assert "--disable-shell" in captured
+    assert "--disable-approval" in captured
+    assert "--prompt-file" in captured
+
+
+def test_muse_edit_mode_strips_duplicate_exec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    captured_file = tmp_path / "captured_edit_args.json"
+    script = tmp_path / "muse"
+    script.write_text(
+        f"""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code 1.2.1")
+    raise SystemExit(0)
+arguments = sys.argv[1:]
+Path(r"{captured_file}").write_text(json.dumps(arguments))
+print("ACTION_SUMMARY: Muse edit completed")
+"""
+    )
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(
+        backends={
+            "muse-spark": BackendConfig(
+                name="muse-spark",
+                backend_type="muse",
+                model="muse-spark-1.3",
+                options=["exec", "--reasoning-effort", "low", "--yolo"],
+            )
+        }
+    )
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config):
+        manager = build_backend_manager(["muse-spark"], "muse-spark", {"muse-spark": "muse-spark-1.3"})
+        manager._is_noedit = False
+        output = manager._run_llm_cli("edit the code")
+
+    assert output == "ACTION_SUMMARY: Muse edit completed"
+    captured = json.loads(captured_file.read_text())
+    assert captured[0] == "exec"
+    assert captured.count("exec") == 1
+    assert "--yolo" in captured
+
+
+def test_muse_respects_command_execution_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    main_repo = _repository(tmp_path / "main")
+    worktree_dir = tmp_path / "worktree"
+    _git(main_repo, "worktree", "add", str(worktree_dir), "HEAD")
+    captured_file = tmp_path / "captured_cwd_args.json"
+    script = tmp_path / "muse"
+    script.write_text(
+        f"""#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code 1.2.1")
+    raise SystemExit(0)
+arguments = sys.argv[1:]
+Path(r"{captured_file}").write_text(json.dumps({{"cwd": os.getcwd(), "args": arguments}}))
+print("ACTION_SUMMARY: Muse worktree completed")
+"""
+    )
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(
+        backends={
+            "muse-spark": BackendConfig(
+                name="muse-spark",
+                backend_type="muse",
+                model="muse-spark-1.3",
+            )
+        }
+    )
+    monkeypatch.chdir(main_repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    from src.auto_coder.utils import bind_command_execution_cwd, reset_command_execution_cwd
+
+    token = bind_command_execution_cwd(str(worktree_dir))
+    try:
+        with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config):
+            manager = build_backend_manager(["muse-spark"], "muse-spark", {"muse-spark": "muse-spark-1.3"}, use_noedit_options=True)
+            manager._is_noedit = True
+            output = manager._run_llm_cli("review the code")
+    finally:
+        reset_command_execution_cwd(token)
+
+    assert output == "ACTION_SUMMARY: Muse worktree completed"
+    data = json.loads(captured_file.read_text())
+    assert Path(data["cwd"]).resolve() == worktree_dir.resolve()
+
+
+def test_muse_stderr_warnings_do_not_pollute_successful_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    script = tmp_path / "muse"
+    script.write_text(
+        """#!/usr/bin/env python3
+import sys
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code 1.2.1")
+    raise SystemExit(0)
+sys.stderr.write("muse: workspace root: /tmp/isolated\\n")
+sys.stderr.write("muse: warning: rules file at /workspace/CLAUDE.md is ignored\\n")
+print('{"verdict": "APPROVE"}')
+"""
+    )
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(
+        backends={
+            "muse-spark": BackendConfig(
+                name="muse-spark",
+                backend_type="muse",
+                model="muse-spark-1.3",
+            )
+        }
+    )
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config):
+        manager = build_backend_manager(["muse-spark"], "muse-spark", {"muse-spark": "muse-spark-1.3"}, use_noedit_options=True)
+        manager._is_noedit = True
+        output = manager._run_llm_cli("review the code")
+
+    assert output == '{"verdict": "APPROVE"}'

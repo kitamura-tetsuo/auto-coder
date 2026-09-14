@@ -3007,7 +3007,7 @@ def run_adversarial_validation(
     # 4. Invoke the strong model
     with ProgressStage("Adversarial validation"):
         verify_execution_target("LLM invocation")
-        if stored_session:
+        if stored_session and stored_session.session_id:
             response = backend_manager.continue_session(stored_session.session_id, prompt, is_noedit=True)
         else:
             response = run_llm_prompt(prompt, backend_manager=backend_manager, is_noedit=True)

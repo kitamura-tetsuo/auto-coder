@@ -2586,6 +2586,50 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_run_adversarial_validation_empty_stored_session_id_does_not_continue_session(self, mock_run_prompt, mock_build_ctx):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=1594,
+            pr_title="Stateless rereview",
+            pr_body="Closes #1594",
+            pr_diff="diff content",
+            changed_tests=["tests/test_fix.py"],
+            issue_context="Issue requires convergence.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-003", text="Rereview must converge.")],
+        )
+        registry = MagicMock()
+        registry.get.return_value = ReviewerSession(
+            repository="owner/repo",
+            pr_number=1594,
+            backend_name="reviewer",
+            backend_type="muse",
+            model_name="muse-spark",
+            session_id="",
+            last_head_sha="previous-head",
+        )
+        mock_run_prompt.return_value = """{
+          "result": "PASS",
+          "summary": "Review passed",
+          "requirement_coverage": [{"requirement_id": "REQ-003", "status": "VERIFIED", "evidence": "Verified"}],
+          "findings": []
+        }"""
+        manager = MagicMock()
+        manager.get_current_backend_identity.return_value = ("reviewer", "muse", "muse-spark")
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1594, "title": "Stateless rereview", "body": "Closes #1594", "head": {"sha": "current-head"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+        assert result.is_pass
+        manager.continue_session.assert_not_called()
+        mock_run_prompt.assert_called_once()
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
     def test_run_adversarial_validation_pass(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",

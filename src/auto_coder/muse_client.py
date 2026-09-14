@@ -19,6 +19,7 @@ from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .usage_marker_utils import has_usage_marker_match
+from .utils import _COMMAND_EXECUTION_CWD
 
 logger = get_logger(__name__)
 
@@ -67,15 +68,21 @@ def _read_only_special_git_command(name: object, argv: object) -> bool:
     return False
 
 
+def _execution_cwd() -> Path:
+    override = _COMMAND_EXECUTION_CWD.get()
+    return Path(override) if override else Path.cwd()
+
+
 class _GitMetadataWatch:
     """Watch repository metadata using inotify or a portable stat journal."""
 
     _WRITE_EVENTS = 0x00000FCE
 
-    def __init__(self) -> None:
+    def __init__(self, cwd: Optional[Path] = None) -> None:
         self._fd = -1
-        git_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-dir"], capture_output=True, text=True)
-        common_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True, text=True)
+        self._cwd = cwd or _execution_cwd()
+        git_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-dir"], cwd=self._cwd, capture_output=True, text=True)
+        common_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=self._cwd, capture_output=True, text=True)
         if git_dir_result.returncode != 0 or common_dir_result.returncode != 0:
             self.close()
             raise RuntimeError("Unable to locate Git metadata for Muse lifecycle enforcement")
@@ -164,12 +171,16 @@ class _GitState:
 class MuseClient(LLMClientBase):
     """Run Muse Code while retaining Auto-Coder's ownership of Git state."""
 
-    def __init__(self, backend_name: Optional[str] = None) -> None:
+    def __init__(self, backend_name: Optional[str] = None, use_noedit_options: bool = False) -> None:
         super().__init__()
         config = get_llm_config()
         self.config_backend = config.get_backend_config(backend_name or "muse")
         self.model_name = (self.config_backend and self.config_backend.model) or "muse-spark-1.3"
-        self.options = (self.config_backend and self.config_backend.options) or []
+        self.use_noedit_options = use_noedit_options
+        if use_noedit_options and self.config_backend and self.config_backend.options_for_noedit:
+            self.options = self.config_backend.options_for_noedit
+        else:
+            self.options = (self.config_backend and self.config_backend.options) or []
         self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
         self.timeout = (self.config_backend and self.config_backend.timeout) or 7200
@@ -183,29 +194,34 @@ class MuseClient(LLMClientBase):
         if result.returncode != 0:
             raise RuntimeError("Muse Code CLI is installed but unusable; run 'muse --version' and verify your installation")
 
-    @staticmethod
-    def _git(*args: str) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(["git", *args], cwd=Path.cwd(), capture_output=True, check=False)
+    @classmethod
+    def _execution_cwd(cls) -> Path:
+        return _execution_cwd()
+
+    @classmethod
+    def _git(cls, *args: str, cwd: Optional[Path] = None) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(["git", *args], cwd=cwd or cls._execution_cwd(), capture_output=True, check=False)
 
     def _snapshot(self) -> _GitState:
-        head = self._git("rev-parse", "HEAD")
+        cwd = self._execution_cwd()
+        head = self._git("rev-parse", "HEAD", cwd=cwd)
         if head.returncode != 0:
             raise RuntimeError("Muse backend requires a Git repository with an existing HEAD")
-        branch_result = self._git("symbolic-ref", "--quiet", "--short", "HEAD")
-        status = self._git("status", "--porcelain=v2", "--untracked-files=all")
+        branch_result = self._git("symbolic-ref", "--quiet", "--short", "HEAD", cwd=cwd)
+        status = self._git("status", "--porcelain=v2", "--untracked-files=all", cwd=cwd)
         if status.returncode != 0:
             raise RuntimeError("Unable to snapshot repository state before Muse execution")
-        untracked_files = self._snapshot_files(self._git("ls-files", "--others", "--exclude-standard", "-z").stdout)
-        ignored_files = self._snapshot_files(self._git("ls-files", "--others", "--ignored", "--exclude-standard", "-z").stdout)
-        tracked_modes = self._snapshot_modes(self._git("ls-files", "-z").stdout)
-        directory_modes = self._snapshot_directory_modes()
-        refs = self._snapshot_refs()
+        untracked_files = self._snapshot_files(self._git("ls-files", "--others", "--exclude-standard", "-z", cwd=cwd).stdout, cwd=cwd)
+        ignored_files = self._snapshot_files(self._git("ls-files", "--others", "--ignored", "--exclude-standard", "-z", cwd=cwd).stdout, cwd=cwd)
+        tracked_modes = self._snapshot_modes(self._git("ls-files", "-z", cwd=cwd).stdout, cwd=cwd)
+        directory_modes = self._snapshot_directory_modes(cwd=cwd)
+        refs = self._snapshot_refs(cwd=cwd)
         return _GitState(
             branch=branch_result.stdout.decode().strip() if branch_result.returncode == 0 else None,
             head=head.stdout.decode().strip(),
             status=status.stdout,
-            staged_patch=self._git("diff", "--cached", "--binary").stdout,
-            unstaged_patch=self._git("diff", "--binary").stdout,
+            staged_patch=self._git("diff", "--cached", "--binary", cwd=cwd).stdout,
+            unstaged_patch=self._git("diff", "--binary", cwd=cwd).stdout,
             untracked_files=untracked_files,
             ignored_files=ignored_files,
             tracked_modes=tracked_modes,
@@ -213,31 +229,33 @@ class MuseClient(LLMClientBase):
             refs=refs,
         )
 
-    @staticmethod
-    def _snapshot_files(raw_paths: bytes) -> tuple[_WorkspaceFile, ...]:
+    @classmethod
+    def _snapshot_files(cls, raw_paths: bytes, cwd: Optional[Path] = None) -> tuple[_WorkspaceFile, ...]:
         files = []
+        target_cwd = cwd or cls._execution_cwd()
         for raw_path in filter(None, raw_paths.split(b"\0")):
             relative_path = os.fsdecode(raw_path)
-            path = Path.cwd() / relative_path
+            path = target_cwd / relative_path
             if path.is_symlink():
                 files.append(_WorkspaceFile(relative_path, os.fsencode(os.readlink(path)), True, stat.S_IMODE(path.lstat().st_mode)))
             elif path.is_file():
                 files.append(_WorkspaceFile(relative_path, path.read_bytes(), False, stat.S_IMODE(path.stat().st_mode)))
         return tuple(files)
 
-    @staticmethod
-    def _snapshot_modes(raw_paths: bytes) -> tuple[_WorkspaceMode, ...]:
+    @classmethod
+    def _snapshot_modes(cls, raw_paths: bytes, cwd: Optional[Path] = None) -> tuple[_WorkspaceMode, ...]:
         modes = []
+        target_cwd = cwd or cls._execution_cwd()
         for raw_path in filter(None, raw_paths.split(b"\0")):
             relative_path = os.fsdecode(raw_path)
-            path = Path.cwd() / relative_path
+            path = target_cwd / relative_path
             if path.exists() and not path.is_symlink():
                 modes.append(_WorkspaceMode(relative_path, stat.S_IMODE(path.stat().st_mode)))
         return tuple(modes)
 
-    @staticmethod
-    def _snapshot_directory_modes() -> tuple[_WorkspaceMode, ...]:
-        root = Path.cwd()
+    @classmethod
+    def _snapshot_directory_modes(cls, cwd: Optional[Path] = None) -> tuple[_WorkspaceMode, ...]:
+        root = cwd or cls._execution_cwd()
         modes = [_WorkspaceMode(".", stat.S_IMODE(root.stat().st_mode))]
         for current_root, directories, _files in os.walk(root, followlinks=False):
             directories[:] = sorted(directory for directory in directories if not (Path(current_root) == root and directory == ".git"))
@@ -247,8 +265,8 @@ class MuseClient(LLMClientBase):
                     modes.append(_WorkspaceMode(str(path.relative_to(root)), stat.S_IMODE(path.stat().st_mode)))
         return tuple(modes)
 
-    def _snapshot_refs(self) -> tuple[tuple[str, str], ...]:
-        result = self._git("for-each-ref", "--format=%(refname) %(objectname)")
+    def _snapshot_refs(self, cwd: Optional[Path] = None) -> tuple[tuple[str, str], ...]:
+        result = self._git("for-each-ref", "--format=%(refname) %(objectname)", cwd=cwd)
         if result.returncode != 0:
             raise RuntimeError("Unable to snapshot Git refs for Muse execution")
         refs = []
@@ -257,40 +275,44 @@ class MuseClient(LLMClientBase):
             refs.append((ref_name, object_name))
         return tuple(refs)
 
-    def _restore_refs(self, state: _GitState) -> None:
+    def _restore_refs(self, state: _GitState, cwd: Optional[Path] = None) -> None:
+        target_cwd = cwd or self._execution_cwd()
         expected = dict(state.refs)
-        current = dict(self._snapshot_refs())
+        current = dict(self._snapshot_refs(cwd=target_cwd))
         for ref_name in current.keys() - expected.keys():
-            if self._git("update-ref", "-d", ref_name).returncode != 0:
+            if self._git("update-ref", "-d", ref_name, cwd=target_cwd).returncode != 0:
                 raise RuntimeError(f"Auto-Coder could not remove Muse-created ref {ref_name}")
         for ref_name, object_name in expected.items():
-            if current.get(ref_name) != object_name and self._git("update-ref", ref_name, object_name).returncode != 0:
+            if current.get(ref_name) != object_name and self._git("update-ref", ref_name, object_name, cwd=target_cwd).returncode != 0:
                 raise RuntimeError(f"Auto-Coder could not restore Muse-modified ref {ref_name}")
 
-    def _restore_lifecycle(self, state: _GitState) -> None:
+    def _restore_lifecycle(self, state: _GitState, cwd: Optional[Path] = None) -> None:
+        target_cwd = cwd or self._execution_cwd()
         if state.branch:
-            restored = self._git("checkout", "-f", state.branch)
+            restored = self._git("checkout", "-f", state.branch, cwd=target_cwd)
             if restored.returncode != 0:
-                restored = self._git("checkout", "-B", state.branch, state.head)
+                restored = self._git("checkout", "-B", state.branch, state.head, cwd=target_cwd)
         else:
-            restored = self._git("checkout", "--detach", "-f", state.head)
-        reset = self._git("reset", "--mixed", state.head)
+            restored = self._git("checkout", "--detach", "-f", state.head, cwd=target_cwd)
+        reset = self._git("reset", "--mixed", state.head, cwd=target_cwd)
         if restored.returncode != 0 or reset.returncode != 0:
             raise RuntimeError("Muse changed Git lifecycle state and Auto-Coder could not restore it")
-        self._restore_refs(state)
+        self._restore_refs(state, cwd=target_cwd)
 
-    def _restore_index(self, state: _GitState) -> None:
-        if self._git("reset", "--mixed", state.head).returncode != 0:
+    def _restore_index(self, state: _GitState, cwd: Optional[Path] = None) -> None:
+        target_cwd = cwd or self._execution_cwd()
+        if self._git("reset", "--mixed", state.head, cwd=target_cwd).returncode != 0:
             raise RuntimeError("Auto-Coder could not unstage Muse changes")
         if state.staged_patch:
-            result = subprocess.run(["git", "apply", "--binary", "--cached"], cwd=Path.cwd(), input=state.staged_patch, capture_output=True)
+            result = subprocess.run(["git", "apply", "--binary", "--cached"], cwd=target_cwd, input=state.staged_patch, capture_output=True)
             if result.returncode != 0:
                 raise RuntimeError("Auto-Coder could not restore the pre-Muse index")
 
-    def _restore_repository(self, state: _GitState) -> None:
+    def _restore_repository(self, state: _GitState, cwd: Optional[Path] = None) -> None:
         """Restore the exact tracked/index/untracked state captured for no-edit."""
-        self._restore_lifecycle(state)
-        if self._git("reset", "--hard", state.head).returncode != 0 or self._git("clean", "-fdx").returncode != 0:
+        target_cwd = cwd or self._execution_cwd()
+        self._restore_lifecycle(state, cwd=target_cwd)
+        if self._git("reset", "--hard", state.head, cwd=target_cwd).returncode != 0 or self._git("clean", "-fdx", cwd=target_cwd).returncode != 0:
             raise RuntimeError("Muse changed repository state and Auto-Coder could not restore it")
         for patch, cached in ((state.staged_patch, True), (state.unstaged_patch, False)):
             if not patch:
@@ -298,13 +320,13 @@ class MuseClient(LLMClientBase):
             args = ["git", "apply", "--binary"]
             if cached:
                 args.append("--cached")
-            result = subprocess.run(args, cwd=Path.cwd(), input=patch, capture_output=True)
+            result = subprocess.run(args, cwd=target_cwd, input=patch, capture_output=True)
             if result.returncode != 0:
                 raise RuntimeError("Muse changed repository state and Auto-Coder could not restore its pre-run patch")
-            if cached and self._git("checkout-index", "-a", "-f").returncode != 0:
+            if cached and self._git("checkout-index", "-a", "-f", cwd=target_cwd).returncode != 0:
                 raise RuntimeError("Muse changed repository state and Auto-Coder could not restore its working tree")
         for workspace_file in state.untracked_files + state.ignored_files:
-            path = Path.cwd() / workspace_file.path
+            path = target_cwd / workspace_file.path
             path.parent.mkdir(parents=True, exist_ok=True)
             if workspace_file.is_symlink:
                 path.symlink_to(os.fsdecode(workspace_file.contents))
@@ -312,15 +334,15 @@ class MuseClient(LLMClientBase):
                 path.write_bytes(workspace_file.contents)
                 path.chmod(workspace_file.mode)
         for workspace_mode in state.tracked_modes:
-            path = Path.cwd() / workspace_mode.path
+            path = target_cwd / workspace_mode.path
             if path.exists() and not path.is_symlink():
                 path.chmod(workspace_mode.mode)
         for directory_mode in state.directory_modes:
-            path = Path.cwd() / directory_mode.path
+            path = target_cwd / directory_mode.path
             if not path.exists():
                 path.mkdir(parents=True)
         for directory_mode in reversed(state.directory_modes):
-            path = Path.cwd() / directory_mode.path
+            path = target_cwd / directory_mode.path
             if not path.is_symlink():
                 path.chmod(directory_mode.mode)
 
@@ -373,10 +395,11 @@ class MuseClient(LLMClientBase):
 
     def _safe_prompt_directory(self) -> Path:
         """Select a temporary directory outside the worktree and Git metadata."""
-        repository = Path.cwd().resolve()
+        cwd = self._execution_cwd()
+        repository = cwd.resolve()
         protected = [repository]
         for argument in ("--git-dir", "--git-common-dir"):
-            result = self._git("rev-parse", "--path-format=absolute", argument)
+            result = self._git("rev-parse", "--path-format=absolute", argument, cwd=cwd)
             if result.returncode != 0:
                 raise RuntimeError("Unable to locate Git metadata for Muse prompt isolation")
             protected.append(Path(os.fsdecode(result.stdout).strip()).resolve())
@@ -434,13 +457,21 @@ class MuseClient(LLMClientBase):
                 raise RuntimeError("Muse options must not configure a prompt source; Auto-Coder owns --prompt-file")
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+        cwd = self._execution_cwd()
         before = self._snapshot()
+        effective_noedit = is_noedit or self.use_noedit_options
         processed = self.config_backend.replace_placeholders(model_name=self.model_name) if self.config_backend else {}
-        options = processed.get("options_for_noedit" if is_noedit and self.options_for_noedit else "options", self.options_for_noedit if is_noedit and self.options_for_noedit else self.options)
+        options = processed.get("options_for_noedit" if effective_noedit and self.options_for_noedit else "options", self.options_for_noedit if effective_noedit and self.options_for_noedit else self.options)
         command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse"))
-        invocation_arguments = [*options, *self.consume_extra_args()]
-        self._reject_competing_prompt_sources(invocation_arguments)
-        rendered_prompt = render_prompt("muse.execution", task_prompt=prompt, mode="no-edit" if is_noedit else "edit")
+        raw_arguments = [*options, *self.consume_extra_args()]
+        self._reject_competing_prompt_sources(raw_arguments)
+        invocation_arguments = [arg for arg in raw_arguments if arg != "exec"]
+        if effective_noedit:
+            invocation_arguments = [arg for arg in invocation_arguments if arg not in {"--yolo", "--disable-sandbox"}]
+            for required_flag in ("--disable-write", "--disable-shell", "--disable-approval"):
+                if required_flag not in invocation_arguments:
+                    invocation_arguments.append(required_flag)
+        rendered_prompt = render_prompt("muse.execution", task_prompt=prompt, mode="no-edit" if effective_noedit else "edit")
         env = os.environ.copy()
         if self.config_backend and self.config_backend.api_key and "MUSE_API_KEY" not in env:
             env["MUSE_API_KEY"] = self.config_backend.api_key
@@ -449,7 +480,7 @@ class MuseClient(LLMClientBase):
         trace_path = trace_file.name
         trace_file.close()
         env["GIT_TRACE2_EVENT"] = trace_path
-        metadata_watch = _GitMetadataWatch()
+        metadata_watch = _GitMetadataWatch(cwd=cwd)
         try:
             prompt_path = self._create_prompt_file(rendered_prompt)
         except BaseException:
@@ -463,25 +494,27 @@ class MuseClient(LLMClientBase):
 
         try:
             logger.warning("LLM invocation: Muse Code CLI is being called. Keep LLM calls minimized.")
-            logger.info("Running Muse Code in non-interactive %s mode", "no-edit" if is_noedit else "edit")
+            logger.info("Running Muse Code in non-interactive %s mode", "no-edit" if effective_noedit else "edit")
             try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout, env=env)
+                result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=self.timeout, env=env)
             except subprocess.TimeoutExpired as exc:
                 mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
-                self._assert_invariants(before, is_noedit, mutation_observed)
+                self._assert_invariants(before, effective_noedit, mutation_observed)
                 raise AutoCoderTimeoutError(f"Muse Code CLI timed out after {self.timeout} seconds") from exc
             except OSError as exc:
                 raise RuntimeError(f"Muse Code CLI could not be executed: {exc}") from exc
 
-            output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            combined_output = "\n".join(part for part in (stdout, stderr) if part).strip()
             mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
-            self._assert_invariants(before, is_noedit, mutation_observed)
+            self._assert_invariants(before, effective_noedit, mutation_observed)
             markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded", "429"]
-            if has_usage_marker_match(output, markers):
-                raise AutoCoderUsageLimitError(output or "Muse Code usage limit reached")
+            if has_usage_marker_match(combined_output, markers):
+                raise AutoCoderUsageLimitError(combined_output or "Muse Code usage limit reached")
             if result.returncode != 0:
-                raise RuntimeError(f"Muse Code CLI failed with return code {result.returncode}\n{output}")
-            final_output = output
+                raise RuntimeError(f"Muse Code CLI failed with return code {result.returncode}\n{combined_output}")
+            final_output = stdout or stderr
         except BaseException as exc:
             try:
                 prompt_path.unlink()
