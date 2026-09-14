@@ -2401,6 +2401,7 @@ class TestRunAdversarialValidation:
             unverified_files=[missing_path],
             issue_context="Issue requires immutable artifact publication.",
             issue_requirements=[IssueRequirement(requirement_id="REQ-005", text="Recovered coverage permits PASS")],
+            validation_snapshot="snapshot-a",
         )
         mock_run_prompt.return_value = json.dumps(
             {
@@ -2469,6 +2470,9 @@ class TestRunAdversarialValidation:
             unverified_files=workflow_paths,
             issue_context="Issue requires immutable artifact publication.",
             issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Publish immutable artifacts")],
+            validation_snapshot="snapshot-a",
+            file_change_identities={path: f"identity-{path}" for path in workflow_paths},
+            requirement_manifest_identity="manifest-a",
         )
         recovered = [
             {
@@ -2522,7 +2526,7 @@ class TestRunAdversarialValidation:
         assert persisted.evidence_head_sha == "same-head"
         assert [entry.path for entry in persisted.recovered_file_evidence] == workflow_paths
         retry_prompt = manager.continue_session.call_args.args[1]
-        assert "COMPLETE: every initially incomplete changed file was recovered or classified irrelevant on this exact head." in retry_prompt
+        assert "COMPLETE: every initially incomplete changed file has fresh or proven-equivalent recovered evidence for this validation snapshot." in retry_prompt
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     def test_rereview_prompt_composition_excludes_initial_broad_policy(self, mock_build_ctx):

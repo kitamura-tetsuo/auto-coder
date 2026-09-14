@@ -1337,6 +1337,111 @@ class TestAdversarialValidationPRFlow:
         stale_registry.save.assert_not_called()
         assert any("newer attempt is already applicable" in action for action in actions)
 
+    @patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository")
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_deferred_recovery_rejects_manifest_change_before_registry_save(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+        attempt_repository_type,
+    ):
+        from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
+        from auto_coder.adversarial_validator import build_adversarial_validation_context
+        from auto_coder.reviewer_session_registry import RecoveredFileEvidence, ReviewerSession
+
+        class ManifestChangingClient(MagicMock):
+            requirement_text = "M2 behavior must be preserved."
+
+            def get_pull_request_metadata_strict(self, repo_name, pr_number):
+                return {
+                    "number": pr_number,
+                    "title": "Deferred recovery",
+                    "body": "Fixes #99",
+                    "state": "open",
+                    "author": {"login": "developer"},
+                    "labels": [],
+                    "head": {"ref": "feature", "sha": "head-h2"},
+                    "base": {"sha": "base-b1"},
+                }
+
+            def get_pull_request_head_sha_strict(self, repo_name, pr_number):
+                return "head-h2"
+
+            def get_pr_diff_strict(self, repo_name, pr_number):
+                return "diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+
+            def get_pr_changed_file_count_strict(self, repo_name, pr_number):
+                return 1
+
+            def get_pr_changed_files_strict(self, repo_name, pr_number):
+                return [{"filename": "src/a.py", "status": "modified", "sha": "blob-a", "additions": 1, "deletions": 1, "changes": 2, "patch": "@@ -1 +1 @@\n-old\n+new"}]
+
+            def get_issue_strict(self, repo_name, issue_number):
+                return {"number": issue_number, "title": "Requirement contract", "body": f"## Requirements\nREQ-001: {self.requirement_text}", "pull_request": None}
+
+            def get_issue_dispatch_snapshot_strict(self, repo_name, issue_number):
+                return self.get_issue_strict(repo_name, issue_number)
+
+            def get_parent_issue_details(self, repo_name, issue_number):
+                return None
+
+        client = ManifestChangingClient()
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": "head-h2"}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        m2_context = build_adversarial_validation_context(
+            "owner/repo",
+            client.get_pull_request_metadata_strict("owner/repo", 100),
+            config,
+            client,
+            bypass_cache=True,
+        )
+        assert m2_context.issue_requirements[0].text == "M2 behavior must be preserved."
+        registry = MagicMock()
+        checkpoint = ReviewerSession(
+            repository="owner/repo",
+            pr_number=100,
+            backend_name="reviewer",
+            backend_type="codex",
+            model_name="strong",
+            session_id="session",
+            evidence_head_sha="head-h2",
+            evidence_validation_snapshot=m2_context.validation_snapshot,
+            recovered_file_evidence=[RecoveredFileEvidence(path="src/a.py", status="RECOVERED")],
+        )
+        mock_run_validation.return_value = AdversarialValidationResult(
+            result="PASS",
+            summary="Validated M2",
+            reviewer_session_checkpoint=checkpoint,
+            reviewer_session_registry=registry,
+        )
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        attempt_repository = attempt_repository_type.return_value
+        attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-m2", 1)
+        attempt_repository.latest_sequence.return_value = 1
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = []
+        client.get_pull_request.return_value = {"head": {"sha": "head-h2"}}
+        client.requirement_text = "M3 changed behavior must be preserved."
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        registry.save.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("validation snapshot changed before durable acceptance" in action for action in actions), list(actions)
+
     def test_real_validator_cannot_eagerly_persist_superseded_gap_closure(self, tmp_path):
         """The owning attempt fence contains real parsing and reviewer storage."""
         from contextlib import nullcontext
