@@ -821,6 +821,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                     "number": 1684,
                     "body": authoritative["body"],
                     "labels": [{"name": "implementation-ready"}],
+                    "created_at": "2024-01-01T00:00:00Z",
                     "updated_at": "2024-01-01T00:00:00Z",
                 }
 
@@ -951,7 +952,11 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
                 self.reads += 1
                 labels = [{"name": "implementation-ready"}, {"name": "urgent"}]
-                if self.reads >= 3:
+                # The urgent label is removed after validation and dispatch
+                # refresh (reads 1-3) but before ownership admission (read 4):
+                # the stale emergency must be denied. The Review lane's
+                # handoff reevaluation is read 2.
+                if self.reads >= 4:
                     labels.pop()
                 return {"number": number, "body": "", "labels": labels}
 

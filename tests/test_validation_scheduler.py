@@ -209,7 +209,12 @@ def test_executor_preserves_repository_context_through_real_analyzer_factories(t
 
 
 def test_all_closed_parent_processing_uses_shared_validation_capacity(tmp_path: Path) -> None:
-    """Candidate routing cannot bypass a capacity occupied by another category."""
+    """Review proceeds on its independent lane while shared validation capacity is full.
+
+    Issue #2054 REQ-009/AS-001: the Review lane runs on its own scheduler,
+    so saturating the shared validation scheduler must not starve semantic
+    review. Implementation dispatch still follows durable review decisions.
+    """
     release = threading.Event()
     occupied = threading.Event()
     decomposition_started = threading.Event()
@@ -242,11 +247,12 @@ def test_all_closed_parent_processing_uses_shared_validation_capacity(tmp_path: 
     assert occupied.wait(2)
     with ThreadPoolExecutor(max_workers=1) as pool:
         processing = pool.submit(engine._process_single_candidate_unified, "owner/repo", Candidate("issue", parent, 0, issue_number=10), engine.config)
-        assert not decomposition_started.wait(0.2)
+        assert decomposition_started.wait(5)
         release.set()
         assert blocker.result() is True
-        result = processing.result(timeout=5)
+        result = processing.result(timeout=10)
 
     assert decomposition_started.is_set()
     assert result.actions == ["Completed - closed container parent after all direct children completed"]
     engine.validation_scheduler.shutdown()
+    engine.review_scheduler.shutdown()

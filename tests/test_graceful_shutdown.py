@@ -144,7 +144,7 @@ def test_parent_validation_error_joins_running_sibling_before_releasing_claim(mo
         assert release_child.wait(5)
         return SimpleNamespace(verdict="READY")
 
-    def schedule(*_args):
+    def schedule(*_args, **_kwargs):
         return (
             engine.validation_scheduler.submit("decomposition:test", decomposition),
             {22: engine.validation_scheduler.submit("individual:test", individual)},
@@ -199,7 +199,7 @@ def test_queued_child_validation_is_not_started_during_drain(monkeypatch, tmp_pa
         child_calls += 1
         return SimpleNamespace(verdict="READY")
 
-    def schedule(*_args):
+    def schedule(*_args, **_kwargs):
         return (
             engine.validation_scheduler.submit("decomposition:queued", decomposition),
             {22: engine.validation_scheduler.submit("individual:queued", individual)},

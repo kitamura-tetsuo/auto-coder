@@ -267,6 +267,24 @@ class IssueStageRoutingStore:
                 (repository, stage, target_number),
             )
 
+    def remove_generation(self, repository: str, stage: str, target_number: int, generation: str) -> bool:
+        """Remove one pending lane item only while its generation is still current."""
+        if stage not in _STAGES:
+            raise ValueError("unknown Issue stage")
+        with self._lock, self._connection:
+            changed = self._connection.execute(
+                "DELETE FROM issue_lane_arrivals WHERE repository=? AND stage=? AND target_number=? AND generation=?",
+                (repository, stage, target_number, generation),
+            ).rowcount
+            return changed > 0
+
+    def get(self, repository: str, stage: str, target_number: int) -> Optional[PendingLaneItem]:
+        """Return the current pending lane item for one target, if any."""
+        if stage not in _STAGES:
+            raise ValueError("unknown Issue stage")
+        with self._lock:
+            return self._get_locked(repository, stage, target_number)
+
     def remove_target(self, repository: str, target_number: int) -> None:
         """Remove every pending lane role for an authoritatively absent target."""
         with self._lock, self._connection:
