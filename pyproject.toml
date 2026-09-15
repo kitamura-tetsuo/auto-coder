@@ -91,6 +91,7 @@ auto_coder = ["prompts.yaml", "*.yml", "*.yaml", "*.json"]
 [tool.pyright]
 # Python version
 pythonVersion = "3.12"
+include = ["src"]
 
 # Basic checking
 strictParameterNoneValue = true
@@ -98,7 +99,6 @@ reportGeneralTypeIssues = true
 reportOptionalSubscript = true
 reportOptionalMemberAccess = true
 reportOptionalCall = true
-reportOptionalIndexedValue = true
 reportOptionalIterable = true
 reportOptionalContextManager = true
 reportOptionalOperand = true
@@ -128,11 +128,16 @@ reportPrivateImportUsage = "warning"
 
 # Advanced checking
 strictListInference = true
-strictDictInference = true
+strictDictionaryInference = true
 strictSetInference = true
 
 # Exclude specific files from checking if needed
 exclude = [
+    "**/.*",
+    "**/node_modules",
+    "**/__pycache__",
+    ".venv",
+    ".agent-tmp",
     "tests/",
     "build/",
     "dist/",

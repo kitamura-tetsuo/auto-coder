@@ -147,6 +147,11 @@ async def _run_process_issues_daemon(
 @click.option("--enable-webhook/--disable-webhook", default=True, help="Enable webhook server in normal mode (default: True)")
 @click.option("--host", default="0.0.0.0", help="Host to bind the server to")
 @click.option("--port", default=8000, type=int, help="Port to bind the server to")
+@click.option(
+    "--jules-mode/--no-jules-mode",
+    default=None,
+    help="Enable or disable Jules/Cloud mode for issue processing (default: on)",
+)
 @click.option("--github-webhook-secret", envvar="GITHUB_WEBHOOK_SECRET", help="GitHub Webhook Secret")
 @click.option("--sentry-webhook-secret", envvar="SENTRY_WEBHOOK_SECRET", help="Sentry Webhook Secret")
 def process_issues(
@@ -168,6 +173,7 @@ def process_issues(
     github_webhook_secret: Optional[str],
     sentry_webhook_secret: Optional[str],
     retry: bool = False,
+    jules_mode: Optional[bool] = None,
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
@@ -185,7 +191,10 @@ def process_issues(
     set_active_repo_name(repo_name)
 
     config = get_llm_config(repo_name=repo_name)
-    configured_cloud_mode = is_jules_mode_enabled(repo_name=repo_name)
+    if jules_mode is not None:
+        configured_cloud_mode = jules_mode
+    else:
+        configured_cloud_mode = is_jules_mode_enabled(repo_name=repo_name)
 
     active_backends = config.get_active_backends()
     ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
@@ -235,10 +244,12 @@ def process_issues(
     logger.info(f"Auto-merge: {auto_merge}")
     logger.info(f"Auto-merge Dependabot PRs: {auto_merge_dependabot_prs}")
     logger.info(f"Force clean before checkout: {force_clean_before_checkout}")
+    logger.info(f"Jules mode: {configured_cloud_mode}")
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
     engine_config.repo_name = repo_name
+    engine_config.jules_mode = configured_cloud_mode
 
     # Explicitly show base branch update policy for PR checks failure
     policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
@@ -252,6 +263,7 @@ def process_issues(
         summary["Model"] = primary_model
     summary.update(
         {
+            "Jules mode": configured_cloud_mode,
             "Disable labels": disable_labels,
             "Main update before fixes": policy_str,
             "Ignore Dependabot PRs": ignore_dependabot_prs,
@@ -849,6 +861,11 @@ def fix_to_pass_tests_command(
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
 @click.option("--host", default="0.0.0.0", help="Host to bind the server to")
 @click.option("--port", default=8000, type=int, help="Port to bind the server to")
+@click.option(
+    "--jules-mode/--no-jules-mode",
+    default=None,
+    help="Enable or disable Jules/Cloud mode for issue processing (default: on)",
+)
 @click.option("--github-webhook-secret", envvar="GITHUB_WEBHOOK_SECRET", help="GitHub Webhook Secret")
 @click.option("--sentry-webhook-secret", envvar="SENTRY_WEBHOOK_SECRET", help="Sentry Webhook Secret")
 def serve(
@@ -867,6 +884,7 @@ def serve(
     port: int,
     github_webhook_secret: Optional[str],
     sentry_webhook_secret: Optional[str],
+    jules_mode: Optional[bool] = None,
 ) -> None:
     """Run Auto-Coder in daemon mode with FastAPI server."""
 
@@ -928,6 +946,11 @@ def serve(
     selected_backends = manager._all_backends[:]
     message_manager = build_message_backend_manager(models=models)
 
+    if jules_mode is not None:
+        configured_cloud_mode = jules_mode
+    else:
+        configured_cloud_mode = is_jules_mode_enabled(repo_name=repo_name)
+
     # Configure engine behavior flags
     engine_config = AutomationConfig()
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
@@ -936,6 +959,7 @@ def serve(
     engine_config.AUTO_MERGE_DEPENDABOT_PRS = bool(auto_merge_dependabot_prs)
     engine_config.DISABLE_LABELS = bool(disable_labels)
     engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
+    engine_config.jules_mode = configured_cloud_mode
 
     automation_engine = AutomationEngine(
         github_client,  # type: ignore[arg-type]
