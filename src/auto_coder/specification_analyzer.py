@@ -9,9 +9,12 @@ from dataclasses import dataclass
 from typing import Callable, Iterator, Optional
 
 from .backend_manager import BackendManager, run_llm_prompt
+from .logger_config import get_logger
 from .objective_evidence import ObjectiveAnchor, objective_evidence_json
 from .prompt_loader import render_prompt
 from .requirement_contract import NormativeIssueManifest
+
+logger = get_logger(__name__)
 
 SPECIFICATION_FINDING_CATEGORIES = frozenset(
     {
@@ -256,5 +259,6 @@ def analyze_issue_specification(
                 return _error("No strong specification-analysis backend is available")
             response = run_llm_prompt(prompt, backend_manager=backend_manager, is_noedit=True)
     except Exception as exc:
+        logger.exception("Specification analysis execution failed: %s", exc)
         return _error(f"Specification analysis execution failed: {type(exc).__name__}")
     return parse_specification_analysis_response(response, manifest)

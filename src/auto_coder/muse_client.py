@@ -44,6 +44,21 @@ _READ_ONLY_GIT_COMMANDS = {
     "status",
 }
 
+_DISPOSABLE_DIRECTORY_NAMES = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        ".agent-tmp",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".cache",
+        "__pycache__",
+        "node_modules",
+    }
+)
+_DISPOSABLE_DIRECTORY_PREFIXES = tuple(f"{name}/" for name in _DISPOSABLE_DIRECTORY_NAMES)
+
 
 def _read_only_special_git_command(name: object, argv: object) -> bool:
     """Recognize inspection-only forms of Git commands that also mutate."""
@@ -128,11 +143,17 @@ class _GitMetadataWatch:
     def mutation_observed(self) -> bool:
         if self._fd >= 0:
             try:
-                if os.read(self._fd, 1024 * 1024):
+                data = os.read(self._fd, 1024 * 1024)
+                if data:
+                    logger.warning("Git metadata watch observed inotify event (%d bytes)", len(data))
                     return True
             except BlockingIOError:
                 pass
-        return self._metadata_snapshot() != self._baseline
+        snapshot = self._metadata_snapshot()
+        if snapshot != self._baseline:
+            logger.warning("Git metadata watch baseline mismatch: baseline=%r current=%r", self._baseline, snapshot)
+            return True
+        return False
 
     def close(self) -> None:
         if getattr(self, "_fd", -1) >= 0:
@@ -235,6 +256,9 @@ class MuseClient(LLMClientBase):
         target_cwd = cwd or cls._execution_cwd()
         for raw_path in filter(None, raw_paths.split(b"\0")):
             relative_path = os.fsdecode(raw_path)
+            normalized = relative_path.replace(os.sep, "/")
+            if any(normalized.startswith(prefix) or f"/{prefix}" in f"/{normalized}" for prefix in _DISPOSABLE_DIRECTORY_PREFIXES):
+                continue
             path = target_cwd / relative_path
             if path.is_symlink():
                 files.append(_WorkspaceFile(relative_path, os.fsencode(os.readlink(path)), True, stat.S_IMODE(path.lstat().st_mode)))
@@ -248,6 +272,9 @@ class MuseClient(LLMClientBase):
         target_cwd = cwd or cls._execution_cwd()
         for raw_path in filter(None, raw_paths.split(b"\0")):
             relative_path = os.fsdecode(raw_path)
+            normalized = relative_path.replace(os.sep, "/")
+            if any(normalized.startswith(prefix) or f"/{prefix}" in f"/{normalized}" for prefix in _DISPOSABLE_DIRECTORY_PREFIXES):
+                continue
             path = target_cwd / relative_path
             if path.exists() and not path.is_symlink():
                 modes.append(_WorkspaceMode(relative_path, stat.S_IMODE(path.stat().st_mode)))
@@ -258,7 +285,7 @@ class MuseClient(LLMClientBase):
         root = cwd or cls._execution_cwd()
         modes = [_WorkspaceMode(".", stat.S_IMODE(root.stat().st_mode))]
         for current_root, directories, _files in os.walk(root, followlinks=False):
-            directories[:] = sorted(directory for directory in directories if not (Path(current_root) == root and directory == ".git"))
+            directories[:] = sorted(directory for directory in directories if not (Path(current_root) == root and directory in _DISPOSABLE_DIRECTORY_NAMES))
             for directory in directories:
                 path = Path(current_root) / directory
                 if not path.is_symlink():
@@ -312,7 +339,10 @@ class MuseClient(LLMClientBase):
         """Restore the exact tracked/index/untracked state captured for no-edit."""
         target_cwd = cwd or self._execution_cwd()
         self._restore_lifecycle(state, cwd=target_cwd)
-        if self._git("reset", "--hard", state.head, cwd=target_cwd).returncode != 0 or self._git("clean", "-fdx", cwd=target_cwd).returncode != 0:
+        clean_args = ["clean", "-fdx"]
+        for name in sorted(_DISPOSABLE_DIRECTORY_NAMES):
+            clean_args.extend(["-e", f"{name}/", "-e", name])
+        if self._git("reset", "--hard", state.head, cwd=target_cwd).returncode != 0 or self._git(*clean_args, cwd=target_cwd).returncode != 0:
             raise RuntimeError("Muse changed repository state and Auto-Coder could not restore it")
         for patch, cached in ((state.staged_patch, True), (state.unstaged_patch, False)):
             if not patch:
@@ -359,6 +389,7 @@ class MuseClient(LLMClientBase):
                     elif event.get("event") == "cmd_name":
                         name = event.get("name")
                         if name not in _READ_ONLY_GIT_COMMANDS and not _read_only_special_git_command(name, starts.get(event.get("sid"))):
+                            logger.warning("Git trace observed non-read-only command: name=%r argv=%r", name, starts.get(event.get("sid")))
                             return True
         except (OSError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Unable to audit Git commands executed by Muse: {exc}") from exc
@@ -383,6 +414,15 @@ class MuseClient(LLMClientBase):
             detail = "Git lifecycle or index" if lifecycle_changed or refs_changed or index_changed else "working tree"
             if mutation_observed:
                 detail = "Git lifecycle command"
+            logger.warning(
+                "Muse Git-state invariant violated: detail=%s lifecycle=%s refs=%s index=%s noedit=%s mutation_observed=%s",
+                detail,
+                lifecycle_changed,
+                refs_changed,
+                index_changed,
+                noedit_changed,
+                mutation_observed,
+            )
             raise RuntimeError(f"Muse execution violated the Git-state invariant ({detail} changed)")
 
     @staticmethod
@@ -513,8 +553,22 @@ class MuseClient(LLMClientBase):
             if has_usage_marker_match(combined_output, markers):
                 raise AutoCoderUsageLimitError(combined_output or "Muse Code usage limit reached")
             if result.returncode != 0:
+                from .adversarial_validator import _extract_muse_jsonl_result
+
+                jsonl_detected, _, jsonl_error = _extract_muse_jsonl_result(stdout)
+                if jsonl_detected and jsonl_error:
+                    raise RuntimeError(f"Muse Code CLI failed with return code {result.returncode}: {jsonl_error}")
                 raise RuntimeError(f"Muse Code CLI failed with return code {result.returncode}\n{combined_output}")
-            final_output = stdout or stderr
+
+            from .adversarial_validator import _extract_muse_jsonl_result
+
+            jsonl_detected, extracted_text, jsonl_error = _extract_muse_jsonl_result(stdout)
+            if jsonl_detected:
+                if jsonl_error:
+                    raise RuntimeError(f"Muse Code CLI event stream error: {jsonl_error}")
+                final_output = extracted_text if extracted_text is not None else ""
+            else:
+                final_output = stdout or stderr
         except BaseException as exc:
             try:
                 prompt_path.unlink()

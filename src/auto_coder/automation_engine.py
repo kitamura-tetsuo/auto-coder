@@ -1933,12 +1933,19 @@ class AutomationEngine:
         try:
             decomposition_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
             if decomposition_decision is not None and decomposition_decision.verdict == "ERROR":
-                failures.append("decomposition validation failed")
-            if any(decision.verdict == "ERROR" for decision in child_decisions.values()):
-                failures.append("individual validation failed")
+                reason = f": {decomposition_decision.remediation_reason}" if decomposition_decision.remediation_reason else ""
+                failures.append(f"decomposition validation failed{reason}")
+            failed_children: list[str] = []
+            for num, decision in sorted(child_decisions.items()):
+                if decision.verdict == "ERROR":
+                    reason = f": {decision.remediation_reason}" if decision.remediation_reason else ""
+                    failed_children.append(f"#{num}{reason}")
+            if failed_children:
+                failures.append(f"individual validation failed for {', '.join(failed_children)}")
         except ValidationAdmissionDeferred:
             failures.append("validation was deferred")
         except Exception as exc:
+            logger.exception("Parent validations join failed: %s", exc)
             failures.append(f"validation raised {type(exc).__name__}")
         if failures:
             raise RuntimeError(f"validation batch incomplete while processing child invalidation: {', '.join(failures)}")
@@ -4159,7 +4166,8 @@ class AutomationEngine:
                             result.actions = ["Deferred - decomposition validation error"]
                             _record_issue_stage_result(item_number, "issue.decomposition-validation", f"issue#{item_number} decomposition validation", Outcome.FAILED, {"member_issue_numbers": sorted(child_decisions)})
                         elif any(decision.verdict == "ERROR" for decision in child_decisions.values()):
-                            result.error = "Individual validation failed; parent readiness was preserved for retry"
+                            failed_children = [f"#{num}: {decision.remediation_reason}" if decision.remediation_reason else f"#{num}" for num, decision in sorted(child_decisions.items()) if decision.verdict == "ERROR"]
+                            result.error = f"Individual validation failed for {', '.join(failed_children)}; parent readiness was preserved for retry"
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = ["Deferred - child specification validation error"]
                             _record_issue_stage_result(item_number, "issue.individual-validation", f"issue#{item_number} individual validation", Outcome.FAILED, {"member_issue_numbers": sorted(child_decisions)})
@@ -4475,13 +4483,13 @@ class AutomationEngine:
                         result.blocked_cacheable = not side_effect_error
                         return result
                 if spec_validation_enabled:
-                    for eager_decision in eager_child_decisions.values():
-                        if eager_decision.verdict == "ERROR":
-                            result.error = "Individual validation failed; parent readiness was preserved for retry"
-                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
-                            result.actions = ["Deferred - child specification validation error"]
-                            _record_issue_stage_result(item_number, "issue.individual-validation", f"issue#{item_number} individual validation", Outcome.FAILED, {"issue_number": item_number})
-                            return result
+                    failed_eager_children = [f"#{num}: {eager_decision.remediation_reason}" if eager_decision.remediation_reason else f"#{num}" for num, eager_decision in sorted(eager_child_decisions.items()) if eager_decision.verdict == "ERROR"]
+                    if failed_eager_children:
+                        result.error = f"Individual validation failed for {', '.join(failed_eager_children)}; parent readiness was preserved for retry"
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.actions = ["Deferred - child specification validation error"]
+                        _record_issue_stage_result(item_number, "issue.individual-validation", f"issue#{item_number} individual validation", Outcome.FAILED, {"issue_number": item_number})
+                        return result
                     blocked_children = [child_decision for child_decision in eager_child_decisions.values() if child_decision.verdict == "BLOCKED"]
                     if blocked_children:
                         assert authoritative_set is not None

@@ -295,7 +295,13 @@ class DecompositionValidationLifecycle:
                     analyzed = self.analyzer(parent, children)
             else:
                 analyzed = self.analyzer(parent, children)
-            decision = DecompositionDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
+            decision = DecompositionDecision(
+                identity,
+                analyzed.verdict,
+                analyzed.findings,
+                remediation=analyzed.remediation,
+                remediation_reason=analyzed.error,
+            )
             if decision.verdict in {"READY", "BLOCKED"}:
                 self.store.save(decision)
             return decision

@@ -926,3 +926,28 @@ def test_child_generation_reuses_completed_explicit_relationship_preflight(prefl
     assert engine._preflight_explicit_issue_relationships.call_count == expected_calls
     assert github.parents == {11: 10}
     assert github.events == []
+
+
+def test_child_validation_failure_message_includes_issue_number_and_reason(tmp_path: Path) -> None:
+    from src.auto_coder.decomposition_validation_lifecycle import DecompositionAnalysisResult, DecompositionValidationLifecycle
+    from src.auto_coder.specification_validation_lifecycle import SpecificationAnalysisResult, SpecificationValidationLifecycle
+
+    body = "## Requirements\n- REQ-001: Keep the graph authoritative."
+    child = graph_issue(2054, body + "\nParent-Issue: #1")
+    parent = graph_issue(1, body, ready=True)
+    github = GraphGitHub({1: parent, 2054: child}, {2054: 1}, {1: [2054]})
+
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._decomposition_validators["o/r"] = DecompositionValidationLifecycle("o/r", "provider/model", tmp_path / "sets.json", lambda *_args: DecompositionAnalysisResult("READY"))
+    engine._specification_validators["o/r"] = SpecificationValidationLifecycle(
+        "o/r",
+        "provider/model",
+        tmp_path / "issues.json",
+        lambda *_args: SpecificationAnalysisResult("ERROR", (), remediation="NONE", error="Specification analyzer returned unparsable JSON"),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"validation batch incomplete while processing child invalidation: individual validation failed for #2054: Specification analyzer returned unparsable JSON",
+    ):
+        engine._validate_submitted_parent_generation_for_child("o/r", 2054, child, target_only=True, relationships_preflight_done=True)

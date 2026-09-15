@@ -335,7 +335,14 @@ class SpecificationValidationLifecycle:
                     return ValidationDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}", evaluation_source="local-only")
                 integrity = objective_integrity_result(evidence, manifest.issue_number)
                 if integrity is not None:
-                    decision = ValidationDecision(identity, integrity.verdict, integrity.findings, remediation=integrity.remediation, evaluation_source="local-only")
+                    decision = ValidationDecision(
+                        identity,
+                        integrity.verdict,
+                        integrity.findings,
+                        remediation=integrity.remediation,
+                        remediation_reason=integrity.error,
+                        evaluation_source="local-only",
+                    )
                     if integrity.verdict == "BLOCKED":
                         self.store.save(decision)
                     return decision
@@ -350,7 +357,13 @@ class SpecificationValidationLifecycle:
                         analyzed = analyze_issue_specification(manifest, body)
                 else:
                     analyzed = analyze_issue_specification(manifest, body)
-                decision = ValidationDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
+                decision = ValidationDecision(
+                    identity,
+                    analyzed.verdict,
+                    analyzed.findings,
+                    remediation=analyzed.remediation,
+                    remediation_reason=analyzed.error,
+                )
                 if analyzed.verdict in {"READY", "BLOCKED"}:
                     self.store.save(decision)
                 return decision
@@ -359,7 +372,13 @@ class SpecificationValidationLifecycle:
                 analyzed = self._default_analyzer(manifest, body, evidence, relationship_context)
             else:
                 analyzed = self.analyzer(manifest, body)
-            decision = ValidationDecision(identity, analyzed.verdict, analyzed.findings, remediation=analyzed.remediation)
+            decision = ValidationDecision(
+                identity,
+                analyzed.verdict,
+                analyzed.findings,
+                remediation=analyzed.remediation,
+                remediation_reason=analyzed.error,
+            )
             if analyzed.verdict in {"READY", "BLOCKED"}:
                 self.store.save(decision)
             return decision

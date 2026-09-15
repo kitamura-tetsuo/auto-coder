@@ -690,3 +690,106 @@ print('{"verdict": "APPROVE"}')
         output = manager._run_llm_cli("review the code")
 
     assert output == '{"verdict": "APPROVE"}'
+
+
+def test_extract_muse_jsonl_result_completed() -> None:
+    from src.auto_coder.adversarial_validator import _extract_muse_jsonl_result
+
+    raw = """muse: workspace root: /workspace
+muse: warning: something ignored
+{"schema_version":1,"record_type":"event","payload_type":"run.lifecycle.started","payload":{}}
+{"schema_version":1,"record_type":"event","payload_type":"run.terminal.completed","payload":{"terminal":"completed","text":"{\\"verdict\\": \\"READY\\"}"}}
+"""
+    detected, text, error = _extract_muse_jsonl_result(raw)
+    assert detected is True
+    assert text == '{"verdict": "READY"}'
+    assert error is None
+
+
+def test_extract_muse_jsonl_result_failed() -> None:
+    from src.auto_coder.adversarial_validator import _extract_muse_jsonl_result
+
+    raw = """{"schema_version":1,"record_type":"event","payload_type":"run.terminal.failed","payload":{"terminal":"failed","reason":"model error"}}
+"""
+    detected, text, error = _extract_muse_jsonl_result(raw)
+    assert detected is True
+    assert text is None
+    assert error == "Muse emitted failure event: model error"
+
+
+def test_extract_muse_jsonl_result_task_failed() -> None:
+    from src.auto_coder.adversarial_validator import _extract_muse_jsonl_result
+
+    raw = """{"schema_version":1,"record_type":"event","payload_type":"task.lifecycle.failed","payload":{"event":{"kind":"failed","reason":"task crashed"}}}
+"""
+    detected, text, error = _extract_muse_jsonl_result(raw)
+    assert detected is True
+    assert text is None
+    assert error == "Muse emitted failure event: task crashed"
+
+
+def test_extract_muse_jsonl_result_delta_fallback() -> None:
+    from src.auto_coder.adversarial_validator import _extract_muse_jsonl_result
+
+    raw = """{"schema_version":1,"record_type":"event","payload_type":"run.output.delta","payload":{"text":"part1"}}
+{"schema_version":1,"record_type":"event","payload_type":"run.output.delta","payload":{"text":"part2"}}
+"""
+    detected, text, error = _extract_muse_jsonl_result(raw)
+    assert detected is True
+    assert text == "part1part2"
+    assert error is None
+
+
+def test_extract_muse_jsonl_result_not_muse_jsonl() -> None:
+    from src.auto_coder.adversarial_validator import _extract_muse_jsonl_result
+
+    raw = "Hello, plain text output\nNot a muse JSONL stream"
+    detected, text, error = _extract_muse_jsonl_result(raw)
+    assert detected is False
+    assert text is None
+    assert error is None
+
+
+def test_muse_run_llm_cli_extracts_jsonl_stream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    script = tmp_path / "muse"
+    event_payload = {
+        "schema_version": 1,
+        "record_type": "event",
+        "payload_type": "run.terminal.completed",
+        "payload": {
+            "terminal": "completed",
+            "text": '{"verdict": "READY", "findings": []}',
+        },
+    }
+    script.write_text(
+        f"""#!/usr/bin/env python3
+import sys
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code 1.2.1")
+    raise SystemExit(0)
+print("muse: workspace root: /workspace")
+print({repr(json.dumps(event_payload))})
+"""
+    )
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(
+        backends={
+            "muse-spark": BackendConfig(
+                name="muse-spark",
+                backend_type="muse",
+                model="muse-spark-1.3",
+                options_for_noedit=["--json", "--reasoning-effort", "low"],
+            )
+        }
+    )
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config):
+        manager = build_backend_manager(["muse-spark"], "muse-spark", {"muse-spark": "muse-spark-1.3"}, use_noedit_options=True)
+        manager._is_noedit = True
+        output = manager._run_llm_cli("review the code")
+
+    assert output == '{"verdict": "READY", "findings": []}'

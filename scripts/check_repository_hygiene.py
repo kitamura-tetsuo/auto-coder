@@ -11,10 +11,7 @@ import sys
 from pathlib import Path
 
 ALLOWLIST_PATH = "scripts/repository_hygiene_allowlist.json"
-GUIDANCE = (
-    "Disposable artifacts should remain untracked; maintained scripts belong under "
-    "scripts/."
-)
+GUIDANCE = "Disposable artifacts should remain untracked; maintained scripts belong under " "scripts/."
 
 
 class InspectionError(Exception):
@@ -68,21 +65,10 @@ def selected_allowlist(repo: Path, source: str) -> set[str]:
     for entry in value:
         if not isinstance(entry, str):
             raise InspectionError(f"invalid {ALLOWLIST_PATH}: every entry must be a string")
-        if (
-            not entry
-            or entry in {".", "..", ".agent-tmp"}
-            or "/" in entry
-            or any(character in entry for character in "*?[]")
-            or entry.endswith(".py")
-        ):
-            raise InspectionError(
-                f"invalid {ALLOWLIST_PATH} entry: {json.dumps(entry, ensure_ascii=True)}"
-            )
+        if not entry or entry in {".", "..", ".agent-tmp"} or "/" in entry or any(character in entry for character in "*?[]") or entry.endswith(".py"):
+            raise InspectionError(f"invalid {ALLOWLIST_PATH} entry: {json.dumps(entry, ensure_ascii=True)}")
         if entry in entries:
-            raise InspectionError(
-                f"invalid {ALLOWLIST_PATH}: duplicate entry "
-                f"{json.dumps(entry, ensure_ascii=True)}"
-            )
+            raise InspectionError(f"invalid {ALLOWLIST_PATH}: duplicate entry " f"{json.dumps(entry, ensure_ascii=True)}")
         entries.add(entry)
     return entries
 

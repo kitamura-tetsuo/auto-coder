@@ -1500,6 +1500,78 @@ def _extract_claude_jsonl_result(response: str) -> tuple[bool, Optional[str], Op
     return True, result, None
 
 
+def _extract_muse_jsonl_result(response: str) -> tuple[bool, Optional[str], Optional[str]]:
+    """Extract final assistant output from a Muse ``--json`` event stream.
+
+    Returns ``(detected, message, error)``.
+    Once a Muse JSONL envelope is detected, malformed lines or failure events
+    are reported instead of being ignored.
+    """
+    lines = [line for line in response.splitlines() if line.strip()]
+    if not lines:
+        return False, None, None
+
+    # Skip any non-JSON preamble lines from muse (e.g. 'muse: ...')
+    first_index = -1
+    for i, line in enumerate(lines):
+        try:
+            parsed = json.loads(line)
+            if isinstance(parsed, dict) and "record_type" in parsed and "payload_type" in parsed:
+                first_index = i
+                break
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    if first_index == -1:
+        return False, None, None
+
+    terminal_text: Optional[str] = None
+    terminal_error: Optional[str] = None
+    delta_texts: list[str] = []
+
+    for line_number, line in enumerate(lines[first_index:], start=first_index + 1):
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return True, None, f"non-JSON content in Muse event stream at line {line_number}: {exc}"
+        if not isinstance(event, dict):
+            return True, None, f"Muse event at line {line_number} is not an object"
+
+        payload_type = event.get("payload_type")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+
+        if payload_type == "run.terminal.completed":
+            text = payload.get("text")
+            if isinstance(text, str):
+                terminal_text = text
+        elif payload_type == "run.terminal.failed":
+            reason = payload.get("reason")
+            terminal_error = str(reason) if reason else "Muse run terminal failed"
+        elif payload_type == "task.lifecycle.failed":
+            event_obj = payload.get("event")
+            if isinstance(event_obj, dict) and event_obj.get("reason"):
+                terminal_error = str(event_obj["reason"])
+            elif not terminal_error:
+                terminal_error = "Muse task lifecycle failed"
+        elif payload_type == "run.output.delta":
+            delta = payload.get("text")
+            if isinstance(delta, str):
+                delta_texts.append(delta)
+
+    if terminal_error:
+        return True, None, f"Muse emitted failure event: {terminal_error}"
+
+    if terminal_text is not None:
+        return True, terminal_text, None
+
+    if delta_texts:
+        return True, "".join(delta_texts), None
+
+    return True, None, "Muse event stream contained no terminal completed text"
+
+
 def _parse_error(response: str, category: str, summary: str, reason: str) -> AdversarialValidationResult:
     """Create and diagnose a fail-closed adversarial parse result."""
     response_length = len(response)
@@ -1711,6 +1783,15 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                 raw_response,
                 "cli_event_stream_error",
                 f"Invalid Claude validator event stream: {jsonl_error}",
+                jsonl_error,
+            )
+    if not jsonl_detected:
+        jsonl_detected, extracted_message, jsonl_error = _extract_muse_jsonl_result(raw_response)
+        if jsonl_detected and jsonl_error:
+            return _parse_error(
+                raw_response,
+                "cli_event_stream_error",
+                f"Invalid Muse validator event stream: {jsonl_error}",
                 jsonl_error,
             )
     effective_response = extracted_message if jsonl_detected and extracted_message is not None else raw_response
