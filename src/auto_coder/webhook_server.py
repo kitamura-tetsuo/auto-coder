@@ -312,5 +312,8 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
         return {"status": "received"}
 
     init_dashboard(app, engine, repo_name)
+    from .dashboard_adjudication import init_dashboard_adjudication
+
+    init_dashboard_adjudication(app, engine, repo_name)
 
     return app
