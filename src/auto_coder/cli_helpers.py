@@ -4,6 +4,8 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, cast
@@ -1009,6 +1011,132 @@ def _build_adversarial_validation_manager_from_capable_backends(capable_backends
         return None
 
 
+def _resolve_adversarial_validation_candidate_route(validation_kind: Optional[str], config: Any) -> List[str]:
+    """Return the raw, unfiltered candidate route for adversarial validation.
+
+    Implements the precedence a present PR-specific (or issue-specific) dedicated
+    order/single-backend configuration is authoritative; otherwise the legacy
+    [backend_adversarial_validation] order/single-backend configuration is used;
+    otherwise the configured high-score fallback. A present dedicated
+    configuration never falls further even when it later turns out to contain no
+    otherwise-valid candidate.
+    """
+    dedicated_order: List[str] = []
+    dedicated_config = None
+    if validation_kind == "issue":
+        dedicated_order = config.get_issue_adversarial_validation_backend_order()
+        dedicated_config = config.get_backend_issue_adversarial_validation()
+    elif validation_kind == "pr":
+        dedicated_order = config.get_pr_adversarial_validation_backend_order()
+        dedicated_config = config.get_backend_pr_adversarial_validation()
+
+    if dedicated_order or dedicated_config is not None:
+        dedicated_candidates: List[str] = list(dedicated_order)
+        if not dedicated_candidates and dedicated_config is not None:
+            dedicated_candidates = [dedicated_config.name]
+        return dedicated_candidates
+
+    adv_order = config.get_adversarial_validation_backend_order()
+    adv_config = config.get_backend_adversarial_validation()
+
+    if adv_order and isinstance(adv_order, list):
+        return adv_order
+    if adv_config and hasattr(adv_config, "name"):
+        return [adv_config.name]
+
+    # Fallback to high score order if defined
+    if hasattr(config, "get_high_score_backend_order"):
+        return config.get_high_score_backend_order() or []
+    if hasattr(config, "backend_with_high_score_order"):
+        high_score_order = getattr(config, "backend_with_high_score_order", None)
+        if isinstance(high_score_order, list):
+            return high_score_order
+    return []
+
+
+def _is_backend_enabled(backend_name: str, config: Any) -> bool:
+    """Return whether a backend is enabled in configuration (default True)."""
+    try:
+        backend_config = config.get_backend_config(backend_name)
+    except Exception:
+        return True
+    if backend_config is None:
+        return True
+    return getattr(backend_config, "enabled", True) is not False
+
+
+# Finite cooldown used to schedule an EXHAUSTED retry when no candidate carries
+# an authoritative quota-reset time (REQ-006).
+ADVERSARIAL_VALIDATION_EXHAUSTION_DEFAULT_COOLDOWN_SECONDS = 1800.0
+
+
+@dataclass
+class AdversarialValidationAvailability:
+    """Classified outcome of resolving a PR/issue adversarial-validation backend.
+
+    ``exhausted`` is True only when the otherwise-valid candidate set (capable,
+    enabled candidates from the authoritative route) is non-empty and every
+    candidate in it is confirmed quota/usage-capacity exhausted (REQ-003,
+    REQ-004). ``retry_not_before_epoch`` carries the earliest authoritative
+    quota reset time among the exhausted candidates when every one of them
+    reported one, else a finite cooldown from now (REQ-006).
+    """
+
+    backend_manager: Optional[BackendManager] = None
+    exhausted: bool = False
+    retry_not_before_epoch: Optional[float] = None
+
+
+def resolve_adversarial_validation_availability(validation_kind: Optional[str] = None) -> AdversarialValidationAvailability:
+    """Resolve a PR/issue adversarial-validation backend, classifying exhaustion.
+
+    Distinguishes three outcomes for the authoritative candidate route
+    (REQ-002): a usable backend manager; no otherwise-valid candidate at all
+    (disabled/incapable/unconfigured -- never exhaustion); and every
+    otherwise-valid candidate confirmed quota/usage exhausted (REQ-004), which
+    is reported instead of collapsing into the same "no manager" outcome as
+    every other failure mode.
+    """
+    config = get_llm_config()
+    if config is None:
+        return AdversarialValidationAvailability()
+
+    raw_candidates = _resolve_adversarial_validation_candidate_route(validation_kind, config)
+    if not raw_candidates:
+        return AdversarialValidationAvailability()
+
+    # Disabled candidates and candidates whose resolved effective backend type
+    # is not synchronous-read-only-capable are excluded from the otherwise-valid
+    # candidate set entirely (REQ-002): they can neither block nor cause EXHAUSTED.
+    otherwise_valid = [b for b in raw_candidates if is_read_only_review_capable_backend(b, config) and _is_backend_enabled(b, config)]
+    if not otherwise_valid:
+        return AdversarialValidationAvailability()
+
+    from .quota_selector import evaluate_backend_quota
+
+    evaluations = [evaluate_backend_quota(backend_name=b, config=config) for b in otherwise_valid]
+    quota_eligible = [evaluation.backend_name for evaluation in evaluations if evaluation.is_eligible]
+
+    if not quota_eligible:
+        # Every otherwise-valid candidate is confirmed quota/usage exhausted
+        # (REQ-003, REQ-004, AS-001). Any candidate excluded above (disabled or
+        # incapable) never reaches this point, so it cannot suppress EXHAUSTED.
+        reset_ats = [evaluation.reset_at for evaluation in evaluations]
+        if reset_ats and all(reset_at is not None for reset_at in reset_ats):
+            retry_not_before_epoch = min(reset_at.timestamp() for reset_at in reset_ats if reset_at is not None)
+        else:
+            retry_not_before_epoch = time.time() + ADVERSARIAL_VALIDATION_EXHAUSTION_DEFAULT_COOLDOWN_SECONDS
+        return AdversarialValidationAvailability(exhausted=True, retry_not_before_epoch=retry_not_before_epoch)
+
+    # At least one otherwise-valid candidate is quota-runnable (including a
+    # candidate whose usage could not be retrieved, which remains runnable per
+    # REQ-003). A construction/execution failure for it falls back to the
+    # existing generic None outcome (non-quota unavailable, REQ-003), never
+    # EXHAUSTED, because it is not part of the quota-ineligible set above.
+    manager = _build_adversarial_validation_manager_from_capable_backends(quota_eligible, config)
+    return AdversarialValidationAvailability(backend_manager=manager)
+
+
 def create_adversarial_validation_backend_manager(validation_kind: Optional[str] = None) -> Optional[BackendManager]:
     """Create a BackendManager for the adversarial validation configuration.
 
@@ -1030,55 +1158,4 @@ def create_adversarial_validation_backend_manager(validation_kind: Optional[str]
         BackendManager instance configured strictly with read-only capable models,
         or None if no read-only capable backend is available (fail-closed).
     """
-    config = get_llm_config()
-    if config is None:
-        return None
-
-    dedicated_order: List[str] = []
-    dedicated_config = None
-    if validation_kind == "issue":
-        dedicated_order = config.get_issue_adversarial_validation_backend_order()
-        dedicated_config = config.get_backend_issue_adversarial_validation()
-    elif validation_kind == "pr":
-        dedicated_order = config.get_pr_adversarial_validation_backend_order()
-        dedicated_config = config.get_backend_pr_adversarial_validation()
-
-    if dedicated_order or dedicated_config is not None:
-        dedicated_candidates: List[str] = list(dedicated_order)
-        if not dedicated_candidates and dedicated_config is not None:
-            dedicated_candidates = [dedicated_config.name]
-        capable_dedicated_backends = [b for b in dedicated_candidates if is_read_only_review_capable_backend(b, config)]
-        if not capable_dedicated_backends:
-            # A present dedicated configuration is authoritative (REQ-006): an
-            # ineligible dedicated selection must not fall back to the legacy
-            # backend_adversarial_validation configuration.
-            return None
-        return _build_adversarial_validation_manager_from_capable_backends(capable_dedicated_backends, config)
-
-    adv_order = config.get_adversarial_validation_backend_order()
-    adv_config = config.get_backend_adversarial_validation()
-
-    candidates: List[str] = []
-    if adv_order and isinstance(adv_order, list):
-        candidates = adv_order
-    elif adv_config and hasattr(adv_config, "name"):
-        candidates = [adv_config.name]
-    else:
-        # Fallback to high score order if defined
-        if hasattr(config, "get_high_score_backend_order"):
-            candidates = config.get_high_score_backend_order() or []
-        elif hasattr(config, "backend_with_high_score_order"):
-            high_score_order = getattr(config, "backend_with_high_score_order", None)
-            if isinstance(high_score_order, list):
-                candidates = high_score_order
-
-    if not candidates:
-        return None
-
-    # Strict capability filter on EVERY backend in the candidate list
-    capable_backends = [b for b in candidates if is_read_only_review_capable_backend(b, config)]
-
-    if not capable_backends:
-        return None
-
-    return _build_adversarial_validation_manager_from_capable_backends(capable_backends, config)
+    return resolve_adversarial_validation_availability(validation_kind).backend_manager

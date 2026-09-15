@@ -321,6 +321,51 @@ class TestDifficultIssueHandling:
 
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
+    @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
+    def test_automation_engine_routes_difficult_issue_to_high_score_cloud_even_when_jules_mode_is_false(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
+        """Difficult issues always bypass Jules and delegate to high score cloud, regardless of jules_mode."""
+        mock_high_score_cloud.return_value = ["High score cloud action"]
+        mock_ctx = MagicMock()
+        mock_ctx.__bool__.return_value = True
+        mock_label_manager.return_value.__enter__.return_value = mock_ctx
+
+        mock_github = MagicMock()
+        mock_github.get_item_type_strict.return_value = "issue"
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
+            "number": number,
+            "body": "",
+            "labels": [{"name": "implementation-ready"}, {"name": "difficult"}],
+        }
+        mock_github.get_all_sub_issues.return_value = []
+
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github, config)
+
+        candidate = Candidate(
+            type="issue",
+            priority=100,
+            data={
+                "number": 101,
+                "title": "Difficult problem",
+                "labels": [{"name": "difficult"}],
+            },
+        )
+
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            candidate,
+            config,
+            jules_mode=False,  # Jules mode is OFF
+        )
+
+        # Should still route to high score cloud, not fall back to local processing
+        mock_high_score_cloud.assert_called_once()
+        mock_take_actions.assert_not_called()
+        assert result.success is True
+        assert result.actions == ["High score cloud action"]
+
+    @patch("auto_coder.automation_engine.LabelManager")
+    @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
     @patch("auto_coder.issue_processor._process_issue_jules_mode")
     def test_automation_engine_routes_non_difficult_to_jules(self, mock_jules_mode, mock_high_score_cloud, mock_label_manager):
         """Test that candidate without difficult label routes to Jules when jules_mode is True."""

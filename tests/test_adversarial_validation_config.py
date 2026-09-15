@@ -1,13 +1,16 @@
 """Tests for adversarial validation configuration and backend manager initialization."""
 
 import os
+import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from auto_coder.automation_config import AutomationConfig
-from auto_coder.cli_helpers import create_adversarial_validation_backend_manager
+from auto_coder.cli_helpers import create_adversarial_validation_backend_manager, resolve_adversarial_validation_availability
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from auto_coder.quota_selector import BackendQuotaEvaluation
 
 
 class TestAdversarialValidationConfiguration:
@@ -384,3 +387,158 @@ class TestCreateAdversarialValidationBackendManager:
         assert is_read_only_review_capable_backend("custom-reviewer", mock_config) is True
         assert is_read_only_review_capable_backend("claude-custom-routine", mock_config) is False
         assert is_read_only_review_capable_backend("muse-spark-reviewer", mock_config) is True
+
+
+class TestResolveAdversarialValidationAvailabilityExhaustion:
+    """REQ-002/REQ-003/REQ-004: classify PR backend availability, including EXHAUSTED."""
+
+    @staticmethod
+    def _backend_configs(types_by_name, disabled=()):
+        def _get(name):
+            return MagicMock(backend_type=types_by_name.get(name, name), enabled=name not in disabled)
+
+        return _get
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    def test_whole_otherwise_valid_set_exhausted_is_reported(self, mock_get_config):
+        """AS-001: every otherwise-valid candidate confirmed quota-exhausted -> EXHAUSTED."""
+        mock_config = MagicMock()
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = ["claude", "codex"]
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_backend_config.side_effect = self._backend_configs({"claude": "claude", "codex": "codex"})
+        mock_get_config.return_value = mock_config
+
+        reset_a = datetime.now(timezone.utc) + timedelta(hours=1)
+        reset_b = datetime.now(timezone.utc) + timedelta(hours=3)
+
+        def fake_evaluate(backend_name, config=None, **kwargs):
+            reset_at = reset_a if backend_name == "claude" else reset_b
+            return BackendQuotaEvaluation(backend_name=backend_name, is_eligible=False, reset_at=reset_at, reason="quota insufficient")
+
+        with patch("auto_coder.quota_selector.evaluate_backend_quota", side_effect=fake_evaluate):
+            availability = resolve_adversarial_validation_availability(validation_kind="pr")
+
+        assert availability.backend_manager is None
+        assert availability.exhausted is True
+        assert availability.retry_not_before_epoch == pytest.approx(reset_a.timestamp())
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    def test_disabled_and_incapable_candidates_do_not_block_exhaustion(self, mock_get_config):
+        """AS-002 (first half): excluded candidates never suppress EXHAUSTED."""
+        mock_config = MagicMock()
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = ["claude", "disabled-codex", "cloud-agent"]
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_backend_config.side_effect = self._backend_configs(
+            {"claude": "claude", "disabled-codex": "codex", "cloud-agent": "codex-cloud"},
+            disabled=("disabled-codex",),
+        )
+        mock_get_config.return_value = mock_config
+
+        def fake_evaluate(backend_name, config=None, **kwargs):
+            assert backend_name == "claude"  # only the otherwise-valid candidate is ever evaluated
+            return BackendQuotaEvaluation(backend_name=backend_name, is_eligible=False, reason="quota insufficient")
+
+        with patch("auto_coder.quota_selector.evaluate_backend_quota", side_effect=fake_evaluate):
+            availability = resolve_adversarial_validation_availability(validation_kind="pr")
+
+        assert availability.exhausted is True
+        assert availability.backend_manager is None
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    def test_non_quota_unavailable_candidate_prevents_exhaustion(self, mock_get_config):
+        """AS-002 (second half): a non-quota-unavailable otherwise-valid candidate blocks EXHAUSTED."""
+        mock_config = MagicMock()
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = ["claude", "codex"]
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_backend_config.side_effect = self._backend_configs({"claude": "claude", "codex": "codex"})
+        mock_config.get_model_for_backend.side_effect = lambda b: f"model-{b}"
+        mock_get_config.return_value = mock_config
+
+        def fake_evaluate(backend_name, config=None, **kwargs):
+            if backend_name == "claude":
+                return BackendQuotaEvaluation(backend_name=backend_name, is_eligible=False, reason="quota insufficient")
+            return BackendQuotaEvaluation(backend_name=backend_name, is_eligible=True, reason="Eligible")
+
+        with patch("auto_coder.quota_selector.evaluate_backend_quota", side_effect=fake_evaluate), patch("auto_coder.cli_helpers.build_backend_manager", side_effect=RuntimeError("codex CLI not found")):
+            with patch("pathlib.Path.is_file", return_value=False):
+                availability = resolve_adversarial_validation_availability(validation_kind="pr")
+
+        assert availability.backend_manager is None
+        assert availability.exhausted is False
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    def test_runnable_candidate_proceeds_without_exhaustion(self, mock_get_config):
+        """AS-003 (first half): a runnable candidate is used even if another is exhausted."""
+        mock_config = MagicMock()
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = ["claude", "codex"]
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_backend_config.side_effect = self._backend_configs({"claude": "claude", "codex": "codex"})
+        mock_config.get_model_for_backend.side_effect = lambda b: f"model-{b}"
+        mock_get_config.return_value = mock_config
+
+        def fake_evaluate(backend_name, config=None, **kwargs):
+            if backend_name == "claude":
+                return BackendQuotaEvaluation(backend_name=backend_name, is_eligible=False, reason="quota insufficient")
+            return BackendQuotaEvaluation(backend_name=backend_name, is_eligible=True, reason="Eligible")
+
+        with patch("auto_coder.quota_selector.evaluate_backend_quota", side_effect=fake_evaluate), patch("auto_coder.cli_helpers.build_backend_manager") as mock_build:
+            with patch("pathlib.Path.is_file", return_value=False):
+                availability = resolve_adversarial_validation_availability(validation_kind="pr")
+
+        assert availability.exhausted is False
+        assert availability.backend_manager is mock_build.return_value
+        assert mock_build.call_args.kwargs["selected_backends"] == ["codex"]
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    def test_quota_unknown_candidate_remains_runnable(self, mock_get_config):
+        """AS-003 (second half): usage_retrieval_failed must not be counted as exhaustion."""
+        mock_config = MagicMock()
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = ["claude"]
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_backend_config.side_effect = self._backend_configs({"claude": "claude"})
+        mock_config.get_model_for_backend.side_effect = lambda b: f"model-{b}"
+        mock_get_config.return_value = mock_config
+
+        def fake_evaluate(backend_name, config=None, **kwargs):
+            return BackendQuotaEvaluation(backend_name=backend_name, is_eligible=True, usage_retrieval_failed=True, reason="usage unavailable")
+
+        with patch("auto_coder.quota_selector.evaluate_backend_quota", side_effect=fake_evaluate), patch("auto_coder.cli_helpers.build_backend_manager") as mock_build:
+            with patch("pathlib.Path.is_file", return_value=False):
+                availability = resolve_adversarial_validation_availability(validation_kind="pr")
+
+        assert availability.exhausted is False
+        assert availability.backend_manager is mock_build.return_value
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    def test_missing_reset_time_uses_finite_cooldown(self, mock_get_config):
+        """REQ-006: no known reset time falls back to a finite, non-zero cooldown."""
+        mock_config = MagicMock()
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = ["claude"]
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_backend_config.side_effect = self._backend_configs({"claude": "claude"})
+        mock_get_config.return_value = mock_config
+
+        def fake_evaluate(backend_name, config=None, **kwargs):
+            return BackendQuotaEvaluation(backend_name=backend_name, is_eligible=False, reset_at=None, reason="quota insufficient")
+
+        before = time.time()
+        with patch("auto_coder.quota_selector.evaluate_backend_quota", side_effect=fake_evaluate):
+            availability = resolve_adversarial_validation_availability(validation_kind="pr")
+
+        assert availability.exhausted is True
+        assert availability.retry_not_before_epoch is not None
+        assert availability.retry_not_before_epoch > before
+
+    @patch("auto_coder.cli_helpers.get_llm_config")
+    def test_no_otherwise_valid_candidate_is_not_exhaustion(self, mock_get_config):
+        """REQ-002: an empty otherwise-valid candidate set must never report EXHAUSTED."""
+        mock_config = MagicMock()
+        mock_config.get_pr_adversarial_validation_backend_order.return_value = ["cloud-only"]
+        mock_config.get_backend_pr_adversarial_validation.return_value = None
+        mock_config.get_backend_config.side_effect = self._backend_configs({"cloud-only": "codex-cloud"})
+        mock_get_config.return_value = mock_config
+
+        availability = resolve_adversarial_validation_availability(validation_kind="pr")
+
+        assert availability.exhausted is False
+        assert availability.backend_manager is None

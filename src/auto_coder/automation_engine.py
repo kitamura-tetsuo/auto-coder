@@ -5621,9 +5621,12 @@ class AutomationEngine:
             Processing result
         """
         # Check if Jules mode should be used based on configuration
-        from .llm_backend_config import is_jules_mode_enabled
+        if self.config.jules_mode is not None:
+            jules_mode = self.config.jules_mode
+        else:
+            from .llm_backend_config import is_jules_mode_enabled
 
-        jules_mode = is_jules_mode_enabled()
+            jules_mode = is_jules_mode_enabled(repo_name=repo_name)
 
         return self._process_single_candidate_unified(
             repo_name,

@@ -123,6 +123,40 @@ class TestDispatchRouteRecorded:
 
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
+    @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
+    def test_difficult_label_with_no_jules_mode_still_routes_to_high_score_cloud(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
+        mock_high_score_cloud.return_value = ["High score cloud action"]
+        mock_ctx = MagicMock()
+        mock_ctx.__bool__.return_value = True
+        mock_label_manager.return_value.__enter__.return_value = mock_ctx
+
+        mock_github = MagicMock()
+        mock_github.get_item_type_strict.return_value = "issue"
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
+            "number": number,
+            "body": "",
+            "labels": [{"name": "implementation-ready"}, {"name": "difficult"}],
+        }
+        mock_github.get_all_sub_issues.return_value = []
+
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github, config)
+        candidate = Candidate(type="issue", priority=100, data={"number": 604, "title": "Difficult problem", "labels": [{"name": "difficult"}]})
+
+        result = engine._process_single_candidate_unified("owner/repo", candidate, config, jules_mode=False)
+
+        assert result.success is True
+        mock_high_score_cloud.assert_called_once()
+        mock_take_actions.assert_not_called()
+
+        snapshot = get_trace_collector().get_snapshot(item_type="issue", item_number=604)
+        route_events = [e for e in snapshot.events if e.stage_id == "issue.dispatch-route"]
+        assert len(route_events) == 1
+        assert route_events[0].outcome == Outcome.COMPLETED.value
+        assert route_events[0].facts["route"] == "high-score-cloud"
+
+    @patch("auto_coder.automation_engine.LabelManager")
+    @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
     @patch("auto_coder.issue_processor._process_issue_jules_mode")
     def test_non_difficult_issue_routes_to_cloud(self, mock_jules_mode, mock_high_score_cloud, mock_label_manager):
         mock_jules_mode.return_value = ["Jules action"]

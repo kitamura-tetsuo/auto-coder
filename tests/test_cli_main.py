@@ -4,7 +4,7 @@ Tests for main CLI commands and help functionality.
 
 from click.testing import CliRunner
 
-from src.auto_coder.cli import create_feature_issues, main, process_issues
+from src.auto_coder.cli import create_feature_issues, main, process_issues, serve
 
 
 class TestCLIMain:
@@ -32,6 +32,20 @@ class TestCLIMain:
         assert result.exit_code == 0
         # Click help may split flag across lines; check presence of at least one alias
         assert "--skip-main-update" in result.output
+
+    def test_process_issues_help_includes_jules_mode_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(process_issues, ["--help"])
+        assert result.exit_code == 0
+        assert "--jules-mode" in result.output
+        assert "--no-jules-mode" in result.output
+
+    def test_serve_help_includes_jules_mode_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(serve, ["--help"])
+        assert result.exit_code == 0
+        assert "--jules-mode" in result.output
+        assert "--no-jules-mode" in result.output
 
     def test_process_issues_help_includes_only_flag(self):
         runner = CliRunner()

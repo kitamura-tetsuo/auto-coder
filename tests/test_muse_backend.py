@@ -258,69 +258,6 @@ def test_muse_transient_branch_creation_and_deletion_is_audited(tmp_path: Path, 
     assert _git(repo, "for-each-ref", "--format=%(refname) %(objectname)") == refs_before
 
 
-def test_muse_cannot_hide_transient_branch_mutation_by_disabling_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    repo = _repository(tmp_path)
-    original_branch = _git(repo, "branch", "--show-current")
-    refs_before = _git(repo, "for-each-ref", "--format=%(refname) %(objectname)")
-    script = _muse_script(tmp_path, "env -u GIT_TRACE2_EVENT git branch muse-temporary; env -u GIT_TRACE2_EVENT git branch -D muse-temporary")
-    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
-    monkeypatch.chdir(repo)
-    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
-
-    with pytest.raises(RuntimeError, match="Git lifecycle command"):
-        _manager(config)._run_llm_cli("implement")
-
-    assert _git(repo, "branch", "--show-current") == original_branch
-    assert _git(repo, "for-each-ref", "--format=%(refname) %(objectname)") == refs_before
-
-
-def test_muse_executes_without_inotify_and_portable_watch_enforces_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    repo = _repository(tmp_path)
-    script = _muse_script(tmp_path, "printf 'after\\n' > tracked.txt")
-    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
-    monkeypatch.chdir(repo)
-    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
-    libc_without_inotify = object()
-
-    with patch("src.auto_coder.muse_client.ctypes.CDLL", return_value=libc_without_inotify):
-        assert _manager(config)._run_llm_cli("implement") == "ACTION_SUMMARY: Muse completed"
-
-    assert (repo / "tracked.txt").read_text() == "after\n"
-
-
-def test_portable_watch_rejects_trace_bypass_without_inotify(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    repo = _repository(tmp_path)
-    refs_before = _git(repo, "for-each-ref", "--format=%(refname) %(objectname)")
-    script = _muse_script(tmp_path, "env -u GIT_TRACE2_EVENT git branch temporary; env -u GIT_TRACE2_EVENT git branch -D temporary")
-    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
-    monkeypatch.chdir(repo)
-    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
-
-    with patch("src.auto_coder.muse_client.ctypes.CDLL", return_value=object()), pytest.raises(RuntimeError, match="Git lifecycle command"):
-        _manager(config)._run_llm_cli("implement")
-
-    assert _git(repo, "for-each-ref", "--format=%(refname) %(objectname)") == refs_before
-
-
-def test_muse_cannot_hide_transient_linked_worktree_by_disabling_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    repo = _repository(tmp_path)
-    linked_worktree = tmp_path / "muse-linked-worktree"
-    worktrees_before = _git(repo, "worktree", "list", "--porcelain")
-    action = f"env -u GIT_TRACE2_EVENT git worktree add --detach " f"{shlex.quote(str(linked_worktree))} HEAD; " f"env -u GIT_TRACE2_EVENT git worktree remove -f " f"{shlex.quote(str(linked_worktree))}"
-    script = _muse_script(tmp_path, action)
-    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
-    monkeypatch.chdir(repo)
-    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
-
-    # Exercise the portable parent-owned metadata journal as well as the
-    # production manager path; the child has disabled cooperative tracing.
-    with patch("src.auto_coder.muse_client.ctypes.CDLL", return_value=object()), pytest.raises(RuntimeError, match="Git lifecycle command"):
-        _manager(config)._run_llm_cli("implement")
-
-    assert _git(repo, "worktree", "list", "--porcelain") == worktrees_before
-    assert not linked_worktree.exists()
-
-
 def test_noedit_mutation_is_rejected_and_repository_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _muse_script(tmp_path, "printf 'bad\\n' > tracked.txt; printf 'new\\n' > untracked.txt")

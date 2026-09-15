@@ -77,6 +77,7 @@ class AutomationConfig:
     TEST_SCRIPT_PATH: str = "scripts/test.sh"
     JULES_ONLY_MODE: bool = False
     repo_name: Optional[str] = None
+    jules_mode: Optional[bool] = None
 
     # Label prompt mappings for label-based issue/PR processing
     # Maps labels to prompt template keys
@@ -187,6 +188,7 @@ class AutomationConfig:
         enable_adversarial_validation: Optional[bool] = None,
         pr_review_thread_gate: Optional[bool] = None,
         automatic_test_fix: Optional[bool] = None,
+        jules_mode: Optional[bool] = None,
     ):
         """Initialize AutomationConfig with optional environment variable overrides.
 
@@ -302,6 +304,7 @@ class AutomationConfig:
         object.__setattr__(self, "PR_LABEL_COPYING_ENABLED", True)
         object.__setattr__(self, "PR_LABEL_MAX_COUNT", 3)
         object.__setattr__(self, "JULES_ONLY_MODE", False)
+        object.__setattr__(self, "jules_mode", jules_mode)
         object.__setattr__(
             self,
             "PR_LABEL_PRIORITIES",

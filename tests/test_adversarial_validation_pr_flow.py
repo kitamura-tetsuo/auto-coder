@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import time
 from datetime import datetime, timezone
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -1335,6 +1336,197 @@ class TestAdversarialValidationPRFlow:
         assert any("Forcing a new adversarial-validation attempt" in action for action in actions)
         mock_merge_pr.assert_not_called()
         stale_registry.save.assert_not_called()
+        assert any("newer attempt is already applicable" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_fresh_exhaustion_publishes_exhausted_and_does_not_merge(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        """REQ-001, REQ-004, REQ-010: a fresh EXHAUSTED result is published and never authorizes merge."""
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        head_sha = "abc123456789"
+        retry_epoch = time.time() + 1800
+        mock_run_validation.return_value = AdversarialValidationResult(
+            result="EXHAUSTED",
+            summary="Every otherwise-valid adversarial-validation backend is currently quota/usage exhausted",
+            retry_not_before_epoch=retry_epoch,
+        )
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = []
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_called_once()
+        mock_merge_pr.assert_not_called()
+        assert any("deferred" in action.lower() for action in actions)
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_exhausted_same_sha_not_due_skips_revalidation(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+    ):
+        """REQ-005, REQ-006: an EXHAUSTED retry must not run before it is due."""
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        head_sha = "abc123456789"
+        future_retry = time.time() + 3600
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = [
+            {
+                "body": format_adversarial_validation_comment(
+                    AdversarialValidationResult(result="EXHAUSTED", summary="Every backend is quota exhausted", retry_not_before_epoch=future_retry),
+                    head_sha,
+                )
+            }
+        ]
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_not_called()
+        mock_merge_pr.assert_not_called()
+        assert any("already validated as EXHAUSTED" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository")
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_exhausted_same_sha_due_triggers_automatic_retry_without_force(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+        attempt_repository_type,
+    ):
+        """REQ-005, REQ-006, REQ-007, AS-004: a due EXHAUSTED retry runs automatically without --force."""
+        from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
+
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        head_sha = "abc123456789"
+        past_retry = time.time() - 10
+        mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Backend capacity recovered")
+        attempt_repository = attempt_repository_type.return_value
+        attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-retry", 2)
+        attempt_repository.latest_sequence.return_value = 2
+        attempt_repository.latest_published_sequence.return_value = 2
+
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = [
+            {
+                "body": format_adversarial_validation_comment(
+                    AdversarialValidationResult(result="EXHAUSTED", summary="Every backend is quota exhausted", retry_not_before_epoch=past_retry),
+                    head_sha,
+                )
+            }
+        ]
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_called_once()
+        # No --force was passed; the due retry ran on its own (REQ-005).
+        assert any("due for automatic retry" in action for action in actions)
+
+    @patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository")
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor.has_unresolved_review_threads", return_value=False)
+    @patch("auto_coder.pr_processor.run_adversarial_validation")
+    @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_exhausted_retry_superseded_by_newer_attempt_performs_no_publication(
+        self,
+        mock_merge_pr,
+        mock_worktree,
+        mock_run_validation,
+        mock_threads,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+        attempt_repository_type,
+    ):
+        """REQ-012, AS-008: a newer same-HEAD attempt supersedes a due EXHAUSTED retry."""
+        from auto_coder.adversarial_validation_attempts import AdversarialValidationAttempt
+
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        head_sha = "abc123456789"
+        past_retry = time.time() - 10
+        mock_run_validation.return_value = AdversarialValidationResult(result="PASS", summary="Backend capacity recovered")
+        attempt_repository = attempt_repository_type.return_value
+        attempt_repository.start.return_value = AdversarialValidationAttempt("attempt-retry", 2)
+        # A newer attempt (e.g. a concurrent force/provenance trigger) already
+        # registered a higher sequence before this retry's publication check.
+        attempt_repository.latest_sequence.return_value = 3
+
+        client = MagicMock()
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = [
+            {
+                "body": format_adversarial_validation_comment(
+                    AdversarialValidationResult(result="EXHAUSTED", summary="Every backend is quota exhausted", retry_not_before_epoch=past_retry),
+                    head_sha,
+                )
+            }
+        ]
+        client.get_pull_request.return_value = {"head": {"sha": head_sha}}
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
+
+        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_run_validation.assert_called_once()
+        mock_merge_pr.assert_not_called()
         assert any("newer attempt is already applicable" in action for action in actions)
 
     @patch("auto_coder.pr_processor.AdversarialValidationAttemptRepository")
