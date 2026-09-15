@@ -189,7 +189,14 @@ class IssueReviewService:
             stored = self._decomp().store.get(descriptor.identity)
             if stored is None or stored.verdict not in TERMINAL_VERDICTS:
                 return None
-            decided = self._decomp().decide(descriptor.identity, descriptor.parent_issue, descriptor.child_issues)
+            decided = self._trace_job(
+                self._repository,
+                descriptor.parent_number,
+                "issue.decomposition-validation-job",
+                f"issue#{descriptor.parent_number} decomposition validation job",
+                {"parent_number": descriptor.parent_number, "caller_origin": "completed-handoff-recovery"},
+                lambda: self._decomp().decide(descriptor.identity, descriptor.parent_issue, descriptor.child_issues),
+            )
             if not isinstance(decided, DecompositionDecision) or decided.identity.key != descriptor.identity_key:
                 return None
             return decided if decided.verdict in TERMINAL_VERDICTS else None
@@ -198,7 +205,14 @@ class IssueReviewService:
         individual_stored = self._spec().store.get(individual_identity)
         if individual_stored is None or individual_stored.verdict not in TERMINAL_VERDICTS:
             return None
-        individual_decided = self._spec().decide(descriptor.manifest, descriptor.title, descriptor.body, descriptor.relationship)
+        individual_decided = self._trace_job(
+            self._repository,
+            descriptor.number,
+            "issue.individual-validation-job",
+            f"issue#{descriptor.number} individual validation job",
+            {"issue_number": descriptor.number, "review_kind": "individual", "validation_identity": descriptor.identity_key, "caller_origin": "completed-handoff-recovery"},
+            lambda: self._spec().decide(descriptor.manifest, descriptor.title, descriptor.body, descriptor.relationship),
+        )
         if not isinstance(individual_decided, ValidationDecision) or individual_decided.identity.key != descriptor.identity_key:
             return None
         return individual_decided if individual_decided.verdict in TERMINAL_VERDICTS else None
