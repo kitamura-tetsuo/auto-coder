@@ -88,79 +88,6 @@ def _execution_cwd() -> Path:
     return Path(override) if override else Path.cwd()
 
 
-class _GitMetadataWatch:
-    """Watch repository metadata using inotify or a portable stat journal."""
-
-    _WRITE_EVENTS = 0x00000FCE
-
-    def __init__(self, cwd: Optional[Path] = None) -> None:
-        self._fd = -1
-        self._cwd = cwd or _execution_cwd()
-        git_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-dir"], cwd=self._cwd, capture_output=True, text=True)
-        common_dir_result = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=self._cwd, capture_output=True, text=True)
-        if git_dir_result.returncode != 0 or common_dir_result.returncode != 0:
-            self.close()
-            raise RuntimeError("Unable to locate Git metadata for Muse lifecycle enforcement")
-        git_dir = Path(git_dir_result.stdout.strip())
-        common_dir = Path(common_dir_result.stdout.strip())
-        # Include the common directory itself so endpoint-neutral creation and
-        # removal of metadata namespaces (for example ``worktrees``) still
-        # changes the parent directory journal and is observable after Muse
-        # exits.  Watching only currently existing children cannot detect a
-        # namespace that is both created and removed during one execution.
-        self._files = (git_dir / "HEAD", git_dir / "index", common_dir)
-        self._roots = tuple({common_dir / "refs", common_dir / "logs", common_dir / "worktrees"})
-        self._baseline = self._metadata_snapshot()
-        try:
-            libc = ctypes.CDLL(None, use_errno=True)
-            inotify_init1 = libc.inotify_init1
-            inotify_add_watch = libc.inotify_add_watch
-        except AttributeError:
-            return
-        self._fd = inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-        if self._fd < 0:
-            return
-        paths = list(self._files)
-        for root in self._roots:
-            if root.exists():
-                paths.extend(path for path in (root, *root.rglob("*")) if path.is_dir())
-        for path in paths:
-            if path.exists() and inotify_add_watch(self._fd, os.fsencode(path), self._WRITE_EVENTS) < 0:
-                self.close()
-                return
-
-    def _metadata_snapshot(self) -> tuple[tuple[str, int, int, int, int], ...]:
-        paths = [path for path in self._files if path.exists()]
-        for root in self._roots:
-            if root.exists():
-                paths.extend((root, *root.rglob("*")))
-        snapshot = []
-        for path in paths:
-            stat = path.lstat()
-            snapshot.append((str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
-        return tuple(sorted(snapshot))
-
-    def mutation_observed(self) -> bool:
-        if self._fd >= 0:
-            try:
-                data = os.read(self._fd, 1024 * 1024)
-                if data:
-                    logger.warning("Git metadata watch observed inotify event (%d bytes)", len(data))
-                    return True
-            except BlockingIOError:
-                pass
-        snapshot = self._metadata_snapshot()
-        if snapshot != self._baseline:
-            logger.warning("Git metadata watch baseline mismatch: baseline=%r current=%r", self._baseline, snapshot)
-            return True
-        return False
-
-    def close(self) -> None:
-        if getattr(self, "_fd", -1) >= 0:
-            os.close(self._fd)
-            self._fd = -1
-
-
 @dataclass(frozen=True)
 class _WorkspaceFile:
     path: str
@@ -320,7 +247,7 @@ class MuseClient(LLMClientBase):
             if restored.returncode != 0:
                 restored = self._git("checkout", "-B", state.branch, state.head, cwd=target_cwd)
         else:
-            restored = self._git("checkout", "--detach", "-f", state.head, cwd=target_cwd)
+            restored = self._git("update-ref", "--no-deref", "HEAD", state.head, cwd=target_cwd)
         reset = self._git("reset", "--mixed", state.head, cwd=target_cwd)
         if restored.returncode != 0 or reset.returncode != 0:
             raise RuntimeError("Muse changed Git lifecycle state and Auto-Coder could not restore it")
@@ -415,7 +342,7 @@ class MuseClient(LLMClientBase):
             if mutation_observed:
                 detail = "Git lifecycle command"
             logger.warning(
-                "Muse Git-state invariant violated: detail=%s lifecycle=%s refs=%s index=%s noedit=%s mutation_observed=%s",
+                "Muse Git-state invariant violated: detail={} lifecycle={} refs={} index={} noedit={} mutation_observed={}",
                 detail,
                 lifecycle_changed,
                 refs_changed,
@@ -442,7 +369,10 @@ class MuseClient(LLMClientBase):
             result = self._git("rev-parse", "--path-format=absolute", argument, cwd=cwd)
             if result.returncode != 0:
                 raise RuntimeError("Unable to locate Git metadata for Muse prompt isolation")
-            protected.append(Path(os.fsdecode(result.stdout).strip()).resolve())
+            meta_path = Path(os.fsdecode(result.stdout).strip()).resolve()
+            protected.append(meta_path)
+            if meta_path.name == ".git":
+                protected.append(meta_path.parent)
 
         candidates = [Path(tempfile.gettempdir())]
         if os.name == "posix":
@@ -520,11 +450,9 @@ class MuseClient(LLMClientBase):
         trace_path = trace_file.name
         trace_file.close()
         env["GIT_TRACE2_EVENT"] = trace_path
-        metadata_watch = _GitMetadataWatch(cwd=cwd)
         try:
             prompt_path = self._create_prompt_file(rendered_prompt)
         except BaseException:
-            metadata_watch.close()
             try:
                 os.unlink(trace_path)
             except OSError as cleanup_exc:
@@ -538,7 +466,7 @@ class MuseClient(LLMClientBase):
             try:
                 result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=self.timeout, env=env)
             except subprocess.TimeoutExpired as exc:
-                mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
+                mutation_observed = self._trace_contains_git_mutation(trace_path)
                 self._assert_invariants(before, effective_noedit, mutation_observed)
                 raise AutoCoderTimeoutError(f"Muse Code CLI timed out after {self.timeout} seconds") from exc
             except OSError as exc:
@@ -547,7 +475,7 @@ class MuseClient(LLMClientBase):
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
             combined_output = "\n".join(part for part in (stdout, stderr) if part).strip()
-            mutation_observed = metadata_watch.mutation_observed() or self._trace_contains_git_mutation(trace_path)
+            mutation_observed = self._trace_contains_git_mutation(trace_path)
             self._assert_invariants(before, effective_noedit, mutation_observed)
             markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded", "429"]
             if has_usage_marker_match(combined_output, markers):
@@ -584,7 +512,6 @@ class MuseClient(LLMClientBase):
                 raise RuntimeError(f"Muse completed but its prompt file could not be removed: {cleanup_exc}") from cleanup_exc
             return final_output
         finally:
-            metadata_watch.close()
             try:
                 os.unlink(trace_path)
             except OSError as exc:

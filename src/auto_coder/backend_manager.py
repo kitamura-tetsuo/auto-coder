@@ -21,8 +21,11 @@ from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .shutdown_context import new_work_allowed
+from .worktree_utils import isolated_local_llm_worktree
 
 logger = get_logger(__name__)
+
+_CLOUD_BACKEND_TYPES = frozenset({"claude-routine", "codex-cloud", "jules"})
 
 # Global singleton instance for general LLM operations
 _llm_instance: Optional[BackendManager] = None
@@ -665,10 +668,15 @@ class BackendManager(LLMBackendManagerBase):
                 try:
                     # Determine if this is a no-edit operation
                     is_noedit = getattr(self, "_is_noedit", False)
-                    if session_id:
-                        out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
-                    else:
-                        out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                    config_backend = getattr(cli, "config_backend", None)
+                    backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
+                    is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
+                    worktree_ctx = isolated_local_llm_worktree(is_noedit=is_noedit) if is_local else contextlib.nullcontext()
+                    with worktree_ctx:
+                        if session_id:
+                            out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
+                        else:
+                            out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
                     self._last_backend = backend_name
                     self._last_model = getattr(cli, "model_name", None)
                     self._provider_manager.mark_provider_used(backend_name, provider_name)

@@ -353,7 +353,7 @@ def test_parent_routing_snapshot_failure_cannot_abandon_validation_batch(monkeyp
     monkeypatch.setattr(
         engine,
         "_schedule_parent_validations",
-        lambda *_args: (
+        lambda *_args, **_kwargs: (
             engine.validation_scheduler.submit("decomposition:routing", decomposition),
             {22: engine.validation_scheduler.submit("individual:routing", individual)},
         ),
@@ -413,7 +413,7 @@ def test_refill_inherited_validation_error_joins_running_child(monkeypatch, tmp_
     monkeypatch.setattr(
         engine,
         "_schedule_parent_validations",
-        lambda *_args: (
+        lambda *_args, **_kwargs: (
             engine.validation_scheduler.submit("decomposition:refill", decomposition),
             {22: engine.validation_scheduler.submit("individual:refill", individual)},
         ),
