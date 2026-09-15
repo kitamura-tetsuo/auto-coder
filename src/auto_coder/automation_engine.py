@@ -47,6 +47,13 @@ from .implementation_slots import (
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
 from .issue_processor import create_feature_issues
+from .issue_review_service import (
+    IssueReviewService,
+    LaneItemOutcome,
+    ReconciledReviewTarget,
+    build_decomposition_descriptor,
+    build_individual_descriptor,
+)
 from .issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -677,6 +684,10 @@ class AutomationEngine:
         self._specification_validator_providers: Dict[str, str] = {}
         self._decomposition_validator_providers: Dict[str, str] = {}
         self.validation_scheduler = ValidationScheduler(self.config.validation_concurrency)
+        # The Review lane runs on its own capacity boundary so occupied
+        # implementation slots cannot consume Review worker capacity and
+        # long-running reviews cannot occupy Implementation workers (REQ-009).
+        self.review_scheduler = ValidationScheduler(self.config.validation_concurrency)
         self.adversarial_validation_scheduler = AdversarialValidationScheduler(self.config.adversarial_validation_concurrency)
         self._lifecycle = EngineLifecycle.RUNNING
         self._lifecycle_lock = threading.Lock()
@@ -961,7 +972,9 @@ class AutomationEngine:
         if not isinstance(parent, dict) or parent.get("number") != parent_number or "pull_request" in parent:
             return None
         if not isinstance(self.github, GitHubClient):
-            members = self.github.get_direct_sub_issues_strict(repo_name, parent_number)
+            members = self._native_direct_children(repo_name, parent_number)
+            if members is None:
+                members = []
             if not isinstance(members, list):
                 return None
             authoritative_children = []
@@ -1144,6 +1157,20 @@ class AutomationEngine:
             return record(True, "Completed - closed container parent after all direct children completed")
         except Exception as exc:
             return record(False, f"authoritative parent completion failed: {exc}")
+
+    def _native_direct_children(self, repo_name: str, issue_number: int) -> Optional[List[Dict[str, Any]]]:
+        """Read native direct children, tolerating legacy adapters without hierarchy surface.
+
+        Small legacy adapters represent only standalone Issues and expose no
+        native hierarchy readers; lane callers treat an absent surface as an
+        empty membership rather than failing admission refresh. Transport
+        errors still propagate so retry and deferral keep working.
+        """
+        reader = getattr(self.github, "get_direct_sub_issues_strict", None)
+        if not callable(reader):
+            return None
+        members = reader(repo_name, issue_number)
+        return list(members) if isinstance(members, list) else []
 
     def _get_authoritative_parent_number(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[int]:
         """Resolve the current native parent without trusting collected hints."""
@@ -1566,6 +1593,7 @@ class AutomationEngine:
         identity_key: str,
         operation: Any,
         origin: str,
+        scheduler: Optional[ValidationScheduler] = None,
     ) -> ValidationJob[ValidationDecision]:
         """Submit every individual review through the diagnostic job boundary.
 
@@ -1587,7 +1615,8 @@ class AutomationEngine:
             Outcome.DEFERRED,
             {**facts, "observation": "submitted-or-joined"},
         )
-        return self.validation_scheduler.submit(
+        bound = scheduler if scheduler is not None else self.validation_scheduler
+        return bound.submit(
             f"individual:{identity_key}",
             partial(
                 self._traced_validation_job,
@@ -1646,8 +1675,13 @@ class AutomationEngine:
         authoritative_set: tuple[Dict[str, Any], List[Dict[str, Any]]],
         config: Optional[AutomationConfig] = None,
         selected_child_number: Optional[int] = None,
+        scheduler: Optional[ValidationScheduler] = None,
     ) -> tuple[Optional[ValidationJob[DecompositionDecision]], dict[int, ValidationJob[ValidationDecision]]]:
-        """Eagerly submit a stable parent generation under the shared bound."""
+        """Eagerly submit a stable parent generation under the given bound.
+
+        The default shared bound preserves the historical eager paths; Review
+        production callers pass the independent review scheduler (REQ-009).
+        """
         parent, children = authoritative_set
         parent_number = int(parent["number"])
         if isinstance(self.github, GitHubClient):
@@ -1675,7 +1709,8 @@ class AutomationEngine:
                 )
                 for child in children
             ]
-            set_job = self.validation_scheduler.submit(
+            bound = scheduler if scheduler is not None else self.validation_scheduler
+            set_job = bound.submit(
                 f"decomposition:{set_identity.key}",
                 lambda: self._traced_validation_job(
                     repo_name,
@@ -1712,6 +1747,7 @@ class AutomationEngine:
                     identity.key,
                     partial(individual.decide, manifest, title, body, relationship_context),
                     "parent-child-scheduling",
+                    scheduler,
                 )
         return set_job, child_jobs
 
@@ -1924,9 +1960,10 @@ class AutomationEngine:
                 repo_name,
                 authoritative_set,
                 selected_child_number=issue_number,
+                scheduler=self.review_scheduler,
             )
         else:
-            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, scheduler=self.review_scheduler)
         # Do not acknowledge the durable invalidation until every missing
         # identity has either persisted reusable evidence or returned ERROR.
         failures: list[str] = []
@@ -2007,7 +2044,9 @@ class AutomationEngine:
             decomposition_validator = self._get_decomposition_validator(repo_name)
             if decomposition_validator.is_reissue_required(parent_number) is True:
                 return None
-            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+            # The Review lane owns semantic execution for the submitted
+            # family; this intake path observes durable decisions (REQ-010).
+            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, scheduler=self.review_scheduler)
             decomposition_decision, joined_child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
             if decomposition_enabled and decomposition_decision is not None:
                 if decomposition_decision.verdict == "BLOCKED":
@@ -2054,8 +2093,12 @@ class AutomationEngine:
             if parent_number is not None:
                 decision = joined_child_decisions[issue_number]
             else:
-                job = self._submit_individual_validation(repo_name, issue_number, individual_identity.key, lambda: validator.decide(manifest, title, body), "standalone-intake")
-                decision = self._consume_individual_validation(issue_number, individual_identity.key, job, "standalone-intake")
+                # Semantic review is owned by the Review lane; this intake
+                # path observes the durable decision instead of submitting a
+                # new validation job (REQ-010).
+                decision, lane_applied = self._review_individual_via_lane(repo_name, issue_number, title, body, None, "standalone-intake", snapshot)
+            if decision is None:
+                return None
             if decision.verdict == "BLOCKED":
                 if parent_number is not None:
 
@@ -2606,13 +2649,15 @@ class AutomationEngine:
                 raise ParentOperationalError("authoritative child family is unavailable")
             self._route_issue_family(repo_name, *family)
             return
-        members = self.github.get_direct_sub_issues_strict(repo_name, issue_number)
-        if not isinstance(members, list):
-            if isinstance(self.github, GitHubClient):
-                raise ParentOperationalError("authoritative direct-child membership is unavailable")
+        members = self._native_direct_children(repo_name, issue_number)
+        if members is None:
             # Small legacy adapters have no native hierarchy surface. They can
             # represent only standalone Issues; they must never synthesize a
             # family from body declarations.
+            members = []
+        if not isinstance(members, list):
+            if isinstance(self.github, GitHubClient):
+                raise ParentOperationalError("authoritative direct-child membership is unavailable")
             members = []
         if members:
             family = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
@@ -2637,6 +2682,272 @@ class AutomationEngine:
         if not isinstance(snapshot, dict) or snapshot.get("number") != issue_number or "pull_request" in snapshot:
             raise ParentOperationalError(f"cannot refresh Issue #{issue_number} routing from ambiguous authority")
         self._route_issue_stages_authoritatively(repo_name, issue_number, snapshot)
+
+    def _get_review_service(self, repo_name: str) -> IssueReviewService:
+        """Build the Review-lane execution owner for one repository.
+
+        Semantic Issue review runs only inside this service on the
+        independent review scheduler. Implementation-start paths observe
+        durable decisions through ``_review_individual_via_lane`` instead
+        of submitting new validation jobs themselves (REQ-010).
+        """
+        return IssueReviewService(
+            routing=self.issue_stage_routing,
+            scheduler=self.review_scheduler,
+            repository=repo_name,
+            specification_factory=lambda: self._get_specification_validator(repo_name),
+            decomposition_factory=lambda: self._get_decomposition_validator(repo_name),
+            reconcile=lambda number, snapshot=None: self._reconcile_review_target(repo_name, number, snapshot),
+            describe=lambda number: self._describe_current_review_identities(repo_name, number),
+            github_provider=lambda: self.github,
+            fetch_set=lambda number: self._fetch_authoritative_decomposition_set(repo_name, number),
+            trace_job=self._traced_validation_job,
+        )
+
+    def pump_issue_review_lane(self, repo_name: str, origin: str = "review-lane-pump", max_items: int = 8) -> list[LaneItemOutcome]:
+        """Execute pending Review-lane work; startup, webhook, and recovery origins use this.
+
+        This is the production execution owner for semantic Issue review.
+        It never acquires implementation slots or dispatches implementation.
+        """
+        return self._get_review_service(repo_name).pump(origin, max_items)
+
+    def _reconcile_review_target(self, repo_name: str, issue_number: int, snapshot: Optional[Dict[str, Any]] = None) -> Optional[ReconciledReviewTarget]:
+        """Refresh one Review target from authoritative state for one lane attempt."""
+        if snapshot is None:
+            snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+        if not isinstance(snapshot, dict):
+            return None
+        try:
+            self._route_issue_stages_authoritatively(repo_name, issue_number, snapshot)
+        except (ParentSpecificationError, ParentOperationalError):
+            return None
+        item = self.issue_stage_routing.get(repo_name, REVIEW_STAGE, issue_number)
+        if item is None:
+            try:
+                parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
+            except (ParentSpecificationError, ParentOperationalError):
+                return None
+            if parent_number is not None and parent_number != issue_number:
+                return self._reconcile_review_target(repo_name, parent_number)
+            return self._terminal_recovery_target(repo_name, issue_number, snapshot)
+        try:
+            descriptors = self._review_target_descriptors(repo_name, issue_number, snapshot)
+        except (ParentSpecificationError, ParentOperationalError):
+            return None
+        if descriptors is None or not set(item.remaining_identity_keys).issubset({descriptor.identity_key for descriptor in descriptors}):
+            return None
+
+        def reevaluate() -> None:
+            try:
+                self._refresh_issue_stage_routing(repo_name, issue_number)
+            except Exception:
+                logger.opt(exception=True).debug("Review handoff reevaluation failed for issue#{}; leaving durable state", issue_number)
+
+        return ReconciledReviewTarget(issue_number, item.generation, descriptors, reevaluate)
+
+    def _terminal_recovery_target(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[ReconciledReviewTarget]:
+        """Rebuild a completed generation from durable terminal decisions.
+
+        After a crash between decision persistence and the routing wake, the
+        pending item is gone but every enabled exact-current identity is
+        durably terminal. The generation is recomputed from the same
+        contracts and stored verdicts the routing classification uses, so
+        recovery re-issues effects and the wake without a new review.
+        """
+        try:
+            descriptors = self._review_target_descriptors(repo_name, issue_number, snapshot)
+        except (ParentSpecificationError, ParentOperationalError):
+            return None
+        if not descriptors:
+            return None
+        validator = self._get_specification_validator(repo_name)
+        decomposition_validator = self._get_decomposition_validator(repo_name)
+        requirements: list[ReviewRequirement] = []
+        for descriptor in descriptors:
+            if descriptor.kind == "decomposition":
+                if descriptor.identity is None:
+                    return None
+                decomposition_stored = decomposition_validator.store.get(descriptor.identity)
+                if decomposition_stored is None or decomposition_stored.verdict not in {"READY", "BLOCKED"}:
+                    return None
+                requirements.append(ReviewRequirement("decomposition", issue_number, descriptor.identity_key, decomposition_stored.verdict))
+            else:
+                individual_identity = validator.identity(descriptor.number, descriptor.title, descriptor.body, descriptor.relationship)
+                if individual_identity.key != descriptor.identity_key:
+                    return None
+                individual_stored = validator.store.get(individual_identity)
+                if individual_stored is None or individual_stored.verdict not in {"READY", "BLOCKED"}:
+                    return None
+                requirements.append(ReviewRequirement(descriptor.kind, descriptor.number, descriptor.identity_key, individual_stored.verdict))
+        parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
+        if parent_number is not None:
+            return None
+        members = self._native_direct_children(repo_name, issue_number)
+        if members is None:
+            members = []
+        if not isinstance(members, list):
+            members = []
+        if members:
+            family = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
+            if family is None:
+                return None
+            parent_contract = self._routing_contract(repo_name, family[0], "parent")
+            child_contracts = [self._routing_contract(repo_name, child, "child") for child in family[1]]
+            generation = family_review_generation(repo_name, parent_contract, child_contracts, requirements)
+        else:
+            contract = self._routing_contract(repo_name, snapshot, "standalone")
+            generation = standalone_review_generation(contract, requirements)
+
+        def reevaluate() -> None:
+            try:
+                self._refresh_issue_stage_routing(repo_name, issue_number)
+            except Exception:
+                logger.opt(exception=True).debug("Review recovery reevaluation failed for issue#{}; leaving durable state", issue_number)
+
+        return ReconciledReviewTarget(issue_number, generation, descriptors, reevaluate)
+
+    def _describe_current_review_identities(self, repo_name: str, issue_number: int) -> Optional[tuple[Any, ...]]:
+        """Describe enabled exact-current identities without requiring a pending item.
+
+        Effect-authority checks use this so a persisted terminal decision can
+        authorize its publication effects even after routing removed the
+        completed pending item.
+        """
+        try:
+            snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+        except Exception:
+            return None
+        if not isinstance(snapshot, dict):
+            return None
+        try:
+            return self._review_target_descriptors(repo_name, issue_number, snapshot)
+        except (ParentSpecificationError, ParentOperationalError):
+            return None
+        except Exception:
+            logger.opt(exception=True).debug("Review identity refresh failed for issue#{}; deferring", issue_number)
+            return None
+
+    def _review_target_descriptors(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[tuple[Any, ...]]:
+        """Describe every enabled exact-current validation identity for one lane target."""
+        parent_number = self._get_authoritative_parent_number(repo_name, issue_number, snapshot)
+        if parent_number is not None:
+            family = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
+            if family is None:
+                return None
+            member_numbers = {int(parent_number)}
+            member_numbers.update(int(child["number"]) for child in family[1] if isinstance(child.get("number"), int))
+            if issue_number not in member_numbers:
+                return None
+            return self._family_review_descriptors(repo_name, family)
+        members = self._native_direct_children(repo_name, issue_number)
+        if members is None:
+            members = []
+        if not isinstance(members, list):
+            if isinstance(self.github, GitHubClient):
+                return None
+            members = []
+        if members:
+            family = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
+            if family is None:
+                return None
+            return self._family_review_descriptors(repo_name, family)
+        if not self._is_issue_specification_validation_enabled(repo_name):
+            return ()
+        validator = self._get_specification_validator(repo_name)
+        title = str(snapshot.get("title") or "")
+        body = str(snapshot.get("body") or "")
+        manifest = build_normative_issue_manifest(issue_number, title, body)
+        return (build_individual_descriptor(validator, issue_number, title, body, manifest),)
+
+    def _family_review_descriptors(self, repo_name: str, authoritative_set: tuple[Dict[str, Any], List[Dict[str, Any]]]) -> tuple[Any, ...]:
+        """Describe the decomposition identity plus every enabled child identity."""
+        parent, children = authoritative_set
+        parent_number = int(parent["number"])
+        descriptors: list[Any] = []
+        if self._is_issue_decomposition_validation_enabled(repo_name):
+            decomposition = self._get_decomposition_validator(repo_name)
+            parent_manifest = build_normative_issue_manifest(parent_number, str(parent.get("title") or ""), str(parent.get("body") or ""))
+            child_inputs = [
+                DecompositionIssue(
+                    build_normative_issue_manifest(int(child["number"]), str(child.get("title") or ""), str(child.get("body") or "")),
+                    str(child.get("body") or ""),
+                )
+                for child in children
+            ]
+            descriptors.append(
+                build_decomposition_descriptor(
+                    decomposition,
+                    parent_number,
+                    parent,
+                    children,
+                    DecompositionIssue(parent_manifest, str(parent.get("body") or "")),
+                    child_inputs,
+                )
+            )
+        if self._is_issue_specification_validation_enabled(repo_name):
+            individual = self._get_specification_validator(repo_name)
+            for child in children:
+                number = int(child["number"])
+                title = str(child.get("title") or "")
+                body = str(child.get("body") or "")
+                manifest = build_normative_issue_manifest(number, title, body)
+                relationship = self._child_review_context(parent, children, number)
+                descriptors.append(build_individual_descriptor(individual, number, title, body, manifest, relationship, "child", parent_number))
+        return tuple(descriptors)
+
+    def _review_individual_via_lane(
+        self,
+        repo_name: str,
+        issue_number: int,
+        title: str,
+        body: str,
+        relationship_context: Optional[IndividualRelationshipContext],
+        origin: str,
+        snapshot: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Optional[ValidationDecision], bool]:
+        """Observe a durable individual decision; the Review lane owns execution.
+
+        Implementation-start paths call this instead of submitting a new
+        validation job. A reusable terminal decision is returned without a
+        new reviewer-backend invocation; otherwise the lane reviews the
+        exact-current identity and the caller observes the durable outcome.
+        The flag reports whether this pass already applied the decision's
+        BLOCKED effects, so gates never publish twice for one observation.
+        """
+        validator = self._get_specification_validator(repo_name)
+        identity = validator.identity(issue_number, title, body, relationship_context)
+        outcome = self._get_review_service(repo_name).pump_target(issue_number, origin, snapshot)
+        if outcome is not None:
+            decision = outcome.decisions.get(identity.key)
+            if isinstance(decision, ValidationDecision):
+                return decision, identity.key in outcome.applied_identity_keys
+        return self._verify_stored_individual_decision(validator, issue_number, title, body, relationship_context, identity), False
+
+    @staticmethod
+    def _verify_stored_individual_decision(
+        validator: SpecificationValidationLifecycle,
+        issue_number: int,
+        title: str,
+        body: str,
+        relationship_context: Optional[IndividualRelationshipContext],
+        identity: Any,
+    ) -> Optional[ValidationDecision]:
+        """Re-establish terminal-reuse authority for an already-persisted identity.
+
+        This re-validation never invokes the reviewer backend for an
+        authorized terminal: the lifecycle returns the stored decision after
+        checking evidence, baselines, and Objective anchors, and unavailable
+        or inconsistent authority becomes retryable ERROR (REQ-019).
+        """
+        stored = validator.store.get(identity)
+        if stored is None or stored.verdict not in {"READY", "BLOCKED"}:
+            return None
+        manifest = build_normative_issue_manifest(issue_number, title, body)
+        verified = validator.decide(manifest, title, body, relationship_context)
+        if verified.verdict in {"READY", "BLOCKED"} and verified.identity == identity:
+            return verified
+        return None
 
     async def _refill_normal_implementation_slots(self, repo_name: str) -> bool:
         """Evaluate one level-triggered refill obligation from fresh GitHub state.
@@ -4136,7 +4447,7 @@ class AutomationEngine:
                     # Validation eligibility belongs to the submitted generation,
                     # not to implementation eligibility. Submit the complete set
                     # before closed-child filtering or retained-owner routing.
-                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set, config)
+                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set, config, scheduler=self.review_scheduler)
                     parent_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
                     _, authoritative_children = parent_submission_set
                     open_children = sorted(
@@ -4296,25 +4607,22 @@ class AutomationEngine:
                         if owned_manifest.error is None and self._is_issue_specification_validation_enabled(repo_name, config):
                             owned_validator = self._get_specification_validator(repo_name)
                             owned_identity = owned_validator.identity(item_number, owned_title, owned_body)
-                            owned_job = self._submit_individual_validation(
-                                repo_name,
-                                item_number,
-                                owned_identity.key,
-                                lambda: owned_validator.decide(owned_manifest, owned_title, owned_body),
-                                "retained-owner-reevaluation",
-                            )
-                            owned_decision = self._consume_individual_validation(item_number, owned_identity.key, owned_job, "retained-owner-reevaluation")
-                            if owned_decision.verdict == "ERROR":
+                            # The Review lane owns semantic execution; this
+                            # retained-owner gate observes the durable decision
+                            # instead of submitting a new validation job (REQ-010).
+                            owned_decision, owned_lane_applied = self._review_individual_via_lane(repo_name, item_number, owned_title, owned_body, None, "retained-owner-reevaluation", owned_snapshot)
+                            if owned_decision is None or owned_decision.verdict == "ERROR":
                                 result.error = "Specification validation failed; implementation-ready was preserved for retry"
                                 result.refill_retry_required = True
                                 return result
                             if owned_decision.verdict == "BLOCKED":
-                                self._authorize_and_apply_blocked(
-                                    owned_validator,
-                                    self.github,
-                                    owned_decision,
-                                    lambda: self._standalone_validation_is_current(repo_name, owned_decision),
-                                )
+                                if not owned_lane_applied:
+                                    self._authorize_and_apply_blocked(
+                                        owned_validator,
+                                        self.github,
+                                        owned_decision,
+                                        lambda: self._standalone_validation_is_current(repo_name, owned_decision),
+                                    )
                                 result.error = "Specification validation found material defects"
                                 result.target_outcome = ExplicitTargetOutcome.BLOCKED
                                 result.actions = ["Rejected - blocked specification"]
@@ -4453,7 +4761,7 @@ class AutomationEngine:
                     result.actions = ["Rejected - child is durably reissue-required"]
                     result.blocked_cacheable = True
                     return result
-                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config)
+                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config, scheduler=self.review_scheduler)
                 decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
                 if decomposition_enabled and decomposition_decision is not None:
                     if decomposition_decision.verdict == "ERROR":
@@ -4563,14 +4871,16 @@ class AutomationEngine:
                     # READY completion order cannot bypass either authorization gate.
                     decision = eager_child_jobs[item_number].result()
                 else:
-                    job = self._submit_individual_validation(
-                        repo_name,
-                        item_number,
-                        individual_identity.key,
-                        lambda: validator.decide(contract, current_title, current_body),
-                        "normal-worker-processing",
-                    )
-                    decision = self._consume_individual_validation(item_number, individual_identity.key, job, "normal-worker-processing")
+                    # The Review lane owns semantic execution; this gate
+                    # observes the durable decision instead of submitting a
+                    # new validation job (REQ-010).
+                    decision, lane_applied = self._review_individual_via_lane(repo_name, item_number, current_title, current_body, relationship_context, "normal-worker-processing", current_issue)
+                    if decision is None:
+                        result.error = "Specification validation failed; implementation-ready was preserved for retry"
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.actions = ["Deferred - specification validation error"]
+                        result.refill_retry_required = True
+                        return result
                 if decision.verdict == "ERROR":
                     result.error = "Specification validation failed; implementation-ready was preserved for retry"
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED
@@ -4578,8 +4888,11 @@ class AutomationEngine:
                     result.refill_retry_required = True
                     return result
                 if decision.verdict == "BLOCKED":
+                    lane_already_applied = inherited_parent_number is None and lane_applied
                     try:
-                        if inherited_parent_number is not None:
+                        if lane_already_applied:
+                            side_effect_error = None
+                        elif inherited_parent_number is not None:
                             decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
 
                             def _set_is_current() -> bool:
