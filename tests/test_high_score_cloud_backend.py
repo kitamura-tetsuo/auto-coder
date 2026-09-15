@@ -322,9 +322,9 @@ class TestDifficultIssueHandling:
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
     @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
-    def test_automation_engine_routes_difficult_to_local_when_jules_mode_is_false(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
-        """Test that candidate with difficult label routes to local mode when jules_mode is False."""
-        mock_take_actions.return_value = ["Local action for difficult issue"]
+    def test_automation_engine_routes_difficult_issue_to_high_score_cloud_even_when_jules_mode_is_false(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
+        """Difficult issues always bypass Jules and delegate to high score cloud, regardless of jules_mode."""
+        mock_high_score_cloud.return_value = ["High score cloud action"]
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
         mock_label_manager.return_value.__enter__.return_value = mock_ctx
@@ -358,12 +358,11 @@ class TestDifficultIssueHandling:
             jules_mode=False,  # Jules mode is OFF
         )
 
-        # Should NOT call high score cloud because jules_mode is False
-        mock_high_score_cloud.assert_not_called()
-        # Should call local take_issue_actions
-        mock_take_actions.assert_called_once()
+        # Should still route to high score cloud, not fall back to local processing
+        mock_high_score_cloud.assert_called_once()
+        mock_take_actions.assert_not_called()
         assert result.success is True
-        assert result.actions == ["Local action for difficult issue"]
+        assert result.actions == ["High score cloud action"]
 
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")

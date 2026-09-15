@@ -124,8 +124,8 @@ class TestDispatchRouteRecorded:
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
     @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
-    def test_difficult_label_with_no_jules_mode_routes_to_local(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
-        mock_take_actions.return_value = ["Local action"]
+    def test_difficult_label_with_no_jules_mode_still_routes_to_high_score_cloud(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
+        mock_high_score_cloud.return_value = ["High score cloud action"]
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
         mock_label_manager.return_value.__enter__.return_value = mock_ctx
@@ -146,14 +146,14 @@ class TestDispatchRouteRecorded:
         result = engine._process_single_candidate_unified("owner/repo", candidate, config, jules_mode=False)
 
         assert result.success is True
-        mock_high_score_cloud.assert_not_called()
-        mock_take_actions.assert_called_once()
+        mock_high_score_cloud.assert_called_once()
+        mock_take_actions.assert_not_called()
 
         snapshot = get_trace_collector().get_snapshot(item_type="issue", item_number=604)
         route_events = [e for e in snapshot.events if e.stage_id == "issue.dispatch-route"]
         assert len(route_events) == 1
         assert route_events[0].outcome == Outcome.COMPLETED.value
-        assert route_events[0].facts["route"] == "local"
+        assert route_events[0].facts["route"] == "high-score-cloud"
 
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
