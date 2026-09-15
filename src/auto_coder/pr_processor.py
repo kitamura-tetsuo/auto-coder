@@ -2405,12 +2405,51 @@ def _get_legacy_adversarial_validation_comment(
 
 def _parse_adversarial_validation_status(body: str) -> str:
     """Extract the verdict recorded in a validation marker body."""
-    match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|NEEDS_TESTS|BLOCKED|INCONCLUSIVE|ERROR)\s*$", body, re.MULTILINE)
+    match = re.search(r"^## .*adversarial validation: (PASS|NEEDS_FIX|NEEDS_TESTS|BLOCKED|INCONCLUSIVE|ERROR|EXHAUSTED)\s*$", body, re.MULTILINE)
     if not match:
         return "ERROR"
     if match.group(1) == "PASS" and "### Specification gaps (" in body:
         return "PASS_WITH_SPECIFICATION_GAPS"
     return match.group(1)
+
+
+def _parse_adversarial_validation_retry_not_before(body: str) -> Optional[float]:
+    """Extract the durable retry-not-before epoch from an EXHAUSTED marker body."""
+    match = re.search(r"<!--\s*auto-coder-adversarial-validation-retry-not-before:v1:([0-9.]+)\s*-->", body)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _adversarial_validation_exhaustion_retry_due(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    published_status: Optional[str],
+) -> Tuple[bool, Optional[str]]:
+    """Return whether a currently applicable published EXHAUSTED result is due for retry.
+
+    Implements REQ-005/REQ-006/REQ-007: a deferred retry is bound to the exact
+    HEAD SHA that published EXHAUSTED (a status for a different or newer HEAD
+    never reaches this helper) and is re-derived fresh from the durable
+    GitHub-published state on every call rather than from cached local state,
+    so it survives restart (REQ-007) without a bespoke store (AS-005). A
+    missing or malformed retry marker is treated as due immediately so a
+    still-applicable EXHAUSTED state can never get stuck (AS-005).
+    """
+    if published_status != "EXHAUSTED":
+        return False, None
+    body, error = _get_published_adversarial_validation_comment(github_client, repo_name, pr_number, head_sha)
+    if error:
+        return False, error
+    retry_not_before = _parse_adversarial_validation_retry_not_before(body or "")
+    if retry_not_before is None:
+        return True, None
+    return time.time() >= retry_not_before, None
 
 
 def _get_published_adversarial_validation_status(
@@ -2933,22 +2972,32 @@ def _handle_pr_merge(
                         return actions
 
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
-                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads:
+                    current_head_sha = pr_data.get("head", {}).get("sha", "")
+                    saved_status, saved_status_error = _get_published_adversarial_validation_status(
+                        github_client,
+                        repo_name,
+                        pr_number,
+                        current_head_sha,
+                    )
+                    if saved_status_error:
+                        actions.append(f"Could not check unresolved specification gaps for PR #{pr_number}: {saved_status_error}; merge not attempted")
+                        if processing_status is not None:
+                            processing_status.error = saved_status_error
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                        return actions
+                    # A currently applicable published EXHAUSTED result establishes
+                    # a deferred retry obligation that bypasses the review-count
+                    # limit once due, without needing --force (REQ-005, REQ-006).
+                    exhaustion_retry_due, exhaustion_retry_error = _adversarial_validation_exhaustion_retry_due(github_client, repo_name, pr_number, current_head_sha, saved_status)
+                    if exhaustion_retry_error:
+                        actions.append(f"Could not check deferred adversarial-validation retry state for PR #{pr_number}: {exhaustion_retry_error}; validation not started")
+                        if processing_status is not None:
+                            processing_status.error = exhaustion_retry_error
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                        return actions
+                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not exhaustion_retry_due:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
                         logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
-                        current_head_sha = pr_data.get("head", {}).get("sha", "")
-                        saved_status, saved_status_error = _get_published_adversarial_validation_status(
-                            github_client,
-                            repo_name,
-                            pr_number,
-                            current_head_sha,
-                        )
-                        if saved_status_error:
-                            actions.append(f"Could not check unresolved specification gaps for PR #{pr_number}: {saved_status_error}; merge not attempted")
-                            if processing_status is not None:
-                                processing_status.error = saved_status_error
-                                processing_status.outcome = PRProcessingOutcome.FAILED
-                            return actions
                         if saved_status == "PASS_WITH_SPECIFICATION_GAPS":
                             actions.append(f"Automatic merge disabled for PR #{pr_number}: unresolved specification gaps require human policy review")
                             _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.BLOCKED, {"reason": "unresolved specification gaps", "saved_status": saved_status})
@@ -2958,12 +3007,20 @@ def _handle_pr_merge(
                             _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.BLOCKED, {"reason": "unresolved test-oracle gaps", "saved_status": saved_status})
                             return actions
                         should_run_validation = False
-                        _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SKIPPED, {"reason": "reached maximum adversarial review limit", "max_adv_reviews": max_adv_reviews, "saved_status": saved_status})
+                        _record_pr_stage(
+                            pr_number,
+                            "pr.adversarial-validation",
+                            f"pr#{pr_number} adversarial validation",
+                            Outcome.DEFERRED if saved_status == "EXHAUSTED" else Outcome.SKIPPED,
+                            {"reason": "reached maximum adversarial review limit", "max_adv_reviews": max_adv_reviews, "saved_status": saved_status},
+                        )
                     else:
                         if adv_review_count >= max_adv_reviews and force_adversarial_validation:
                             actions.append(f"Forcing adversarial validation for PR #{pr_number} beyond the normal review limit")
                         elif adv_review_count >= max_adv_reviews and revalidating_older_head_threads:
                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because unresolved findings have not been adjudicated on the current head")
+                        elif adv_review_count >= max_adv_reviews and exhaustion_retry_due:
+                            actions.append(f"Retrying adversarial validation for PR #{pr_number} beyond the review limit: prior backend quota/usage exhaustion is due for automatic retry")
                         elif adv_review_count >= max_adv_reviews:
                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
                         should_run_validation = True
@@ -3040,7 +3097,21 @@ def _handle_pr_merge(
                             return actions
                         has_new_provenance_evidence = bool(published_report and provenance_fingerprint not in published_report) or saved_pass_has_unresolved_provenance
 
-                    if published_status and not has_new_provenance_evidence and not force_adversarial_validation:
+                    # A currently applicable published EXHAUSTED result must not
+                    # be a terminal same-HEAD deduplication result: once its
+                    # deferred retry is due, revalidation proceeds without a new
+                    # commit, manual activity, or --force (REQ-005, REQ-006,
+                    # REQ-007). BLOCKED/ERROR/INCONCLUSIVE deliberately have no
+                    # equivalent bypass (REQ-008).
+                    exhaustion_retry_due, exhaustion_retry_error = _adversarial_validation_exhaustion_retry_due(github_client, repo_name, pr_number, head_sha, published_status)
+                    if exhaustion_retry_error:
+                        actions.append(f"Could not check deferred adversarial-validation retry state for PR #{pr_number}: {exhaustion_retry_error}; validation not started")
+                        if processing_status is not None:
+                            processing_status.error = exhaustion_retry_error
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                        return actions
+
+                    if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and not force_adversarial_validation:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                         if published_status == "ERROR":
                             saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
@@ -3081,6 +3152,8 @@ def _handle_pr_merge(
                                 actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} because a saved PASS still has an unresolved provenance thread")
                             else:
                                 actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]} using new implementer provenance evidence")
+                        elif exhaustion_retry_due:
+                            actions.append(f"Retrying adversarial validation for PR #{pr_number} at unchanged commit {head_sha[:8]}: prior backend quota/usage exhaustion is due for automatic retry")
                         # From here onward only this attempt's validated result may
                         # drive the decision; a saved same-head verdict is history.
                         published_status = None
@@ -3326,10 +3399,16 @@ def _handle_pr_merge(
                         return actions
 
                     elif not val_result.is_pass:
-                        # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR) - fail-closed: do not merge!
+                        # Non-pass result (BLOCKED, INCONCLUSIVE, ERROR, EXHAUSTED) - fail-closed: do not merge!
+                        # EXHAUSTED is never an actionable corrective verdict (REQ-010);
+                        # its retry-not-before marker (already durably published above)
+                        # is what makes it self-recovering, not this stage's outcome.
                         is_error = val_result.result.strip().upper() == "ERROR"
+                        is_exhausted = val_result.is_exhausted
                         if is_error:
                             actions.append(f"ERROR: Adversarial validation failed for PR #{pr_number}: {val_result.summary}")
+                        elif is_exhausted:
+                            actions.append(f"Adversarial validation deferred for PR #{pr_number}: {val_result.summary}")
                         else:
                             actions.append(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
                         logger.warning(f"Adversarial validation blocked PR #{pr_number}: {val_result.summary}")
@@ -3337,13 +3416,14 @@ def _handle_pr_merge(
                             pr_number,
                             "pr.adversarial-validation",
                             f"pr#{pr_number} adversarial validation",
-                            Outcome.FAILED if is_error else Outcome.BLOCKED,
+                            Outcome.FAILED if is_error else Outcome.DEFERRED if is_exhausted else Outcome.BLOCKED,
                             {
                                 "examined_head": head_sha,
                                 "result": val_result.result,
                                 "summary": val_result.summary,
                                 "diagnostic_category": val_result.diagnostic_category,
                                 "diagnostic_reason": val_result.diagnostic_reason,
+                                **({"retry_not_before_epoch": val_result.retry_not_before_epoch} if is_exhausted else {}),
                             },
                         )
                         return actions

@@ -2869,9 +2869,12 @@ class TestRunAdversarialValidation:
         mock_run_prompt.assert_not_called()
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
-    @patch("auto_coder.cli_helpers.create_adversarial_validation_backend_manager", return_value=None)
-    def test_run_adversarial_validation_no_backend_available_fails_closed(self, mock_mgr, mock_build_ctx):
+    @patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability")
+    def test_run_adversarial_validation_no_backend_available_fails_closed(self, mock_availability, mock_build_ctx):
         """No strong backend configured or available must fail closed to BLOCKED."""
+        from auto_coder.cli_helpers import AdversarialValidationAvailability
+
+        mock_availability.return_value = AdversarialValidationAvailability(backend_manager=None, exhausted=False)
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=100,
@@ -2890,6 +2893,38 @@ class TestRunAdversarialValidation:
         assert result.is_blocked
         assert result.result == "BLOCKED"
         assert "No strong adversarial validation backend configured" in result.summary
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability")
+    def test_run_adversarial_validation_reports_exhaustion_instead_of_blocked(self, mock_availability, mock_build_ctx):
+        """REQ-001, REQ-004: whole-set quota exhaustion must publish EXHAUSTED, not BLOCKED."""
+        from auto_coder.cli_helpers import AdversarialValidationAvailability
+
+        retry_epoch = 1234567890.0
+        mock_availability.return_value = AdversarialValidationAvailability(backend_manager=None, exhausted=True, retry_not_before_epoch=retry_epoch)
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=101,
+            pr_title="Add feature",
+            pr_body="Fixes #1",
+            pr_diff="diff content",
+            changed_tests=[],
+            issue_context="Spec content",
+        )
+
+        config = AutomationConfig()
+        pr_data = {"number": 101, "title": "Add feature", "body": "Fixes #1", "head_sha": "c" * 40}
+
+        result = run_adversarial_validation("owner/repo", pr_data, config, backend_manager=None)
+
+        assert result.result == "EXHAUSTED"
+        assert result.is_exhausted
+        assert result.is_blocked
+        assert not result.is_pass
+        assert not result.needs_fix
+        assert not result.needs_tests
+        assert not result.allows_auto_merge
+        assert result.retry_not_before_epoch == retry_epoch
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
