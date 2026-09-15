@@ -2126,6 +2126,96 @@ def get_pr_review_allowlist_from_config(
     return list(raw_list)
 
 
+@dataclass(frozen=True)
+class DashboardAdjudicationConfig:
+    enabled: bool
+    operator_secret_file: str
+    github_token_file: str
+    allowed_origin: str
+
+
+def get_dashboard_adjudication_config(
+    repo_name: str,
+    config_path: Optional[str] = None,
+) -> DashboardAdjudicationConfig:
+    """Read [dashboard_adjudication] configuration from config.toml."""
+    enabled = _get_config_value(
+        section="dashboard_adjudication",
+        key="enabled",
+        default=False,
+        config_path=config_path,
+        value_type=bool,
+        repo_name=repo_name,
+    )
+    if not enabled:
+        return DashboardAdjudicationConfig(enabled=False, operator_secret_file="", github_token_file="", allowed_origin="")
+
+    operator_secret_file = _get_config_value(
+        section="dashboard_adjudication",
+        key="operator_secret_file",
+        default="",
+        config_path=config_path,
+        value_type=str,
+        repo_name=repo_name,
+    )
+    github_token_file = _get_config_value(
+        section="dashboard_adjudication",
+        key="github_token_file",
+        default="",
+        config_path=config_path,
+        value_type=str,
+        repo_name=repo_name,
+    )
+    allowed_origin = _get_config_value(
+        section="dashboard_adjudication",
+        key="allowed_origin",
+        default="",
+        config_path=config_path,
+        value_type=str,
+        repo_name=repo_name,
+    )
+
+    diagnostic = ""
+    if not operator_secret_file or not github_token_file or not allowed_origin:
+        diagnostic = "[dashboard_adjudication] enabling requires operator_secret_file, github_token_file, and allowed_origin"
+    else:
+        try:
+            with open(os.path.expanduser(operator_secret_file), "r", encoding="utf-8") as f:
+                secret = f.read().strip()
+                if len(secret.encode("utf-8")) < 32:
+                    diagnostic = "operator_secret_file must contain at least 32 bytes"
+        except OSError as e:
+            diagnostic = f"operator_secret_file is not readable: {e}"
+
+        try:
+            with open(os.path.expanduser(github_token_file), "r", encoding="utf-8") as f:
+                f.read()
+        except OSError as e:
+            diagnostic = f"github_token_file is not readable: {e}"
+
+        parsed_origin = urlparse(allowed_origin)
+        if parsed_origin.scheme == "https":
+            pass
+        elif parsed_origin.scheme == "http" and parsed_origin.hostname in ("127.0.0.1", "localhost", "::1"):
+            pass
+        else:
+            diagnostic = "allowed_origin must be exactly one HTTPS origin or a direct loopback HTTP origin"
+
+    if diagnostic:
+        from .logger_config import get_logger
+
+        logger = get_logger(__name__)
+        logger.error(f"Disabling dashboard_adjudication write capability: {diagnostic}")
+        return DashboardAdjudicationConfig(enabled=False, operator_secret_file="", github_token_file="", allowed_origin="")
+
+    return DashboardAdjudicationConfig(
+        enabled=True,
+        operator_secret_file=operator_secret_file,
+        github_token_file=github_token_file,
+        allowed_origin=allowed_origin,
+    )
+
+
 def get_review_adjudicator_allowlist_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,
