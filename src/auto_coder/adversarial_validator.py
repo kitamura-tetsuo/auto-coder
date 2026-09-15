@@ -23,6 +23,8 @@ from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import build_normative_issue_manifest
+from .review_adjudication import AdjudicationStatus
+from .review_adjudication_github import AdjudicationSnapshot
 from .reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
@@ -514,6 +516,7 @@ class AdversarialValidationContext:
     unresolvable_file_count: int = 0
     file_change_identities: dict[str, str] = field(default_factory=dict)
     requirement_manifest_identity: str = ""
+    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = field(default_factory=tuple)
 
     @property
     def has_complete_file_coverage(self) -> bool:
@@ -1168,6 +1171,7 @@ def build_adversarial_validation_context(
     config: AutomationConfig,
     github_client: Optional[Any] = None,
     bypass_cache: bool = False,
+    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
 ) -> AdversarialValidationContext:
     """Compile issue specification, PR diff, and changed tests for validation.
 
@@ -1312,6 +1316,7 @@ def build_adversarial_validation_context(
         unresolvable_file_count=unresolvable_file_count,
         file_change_identities={str(record.get("filename", "")): identity for record in changed_file_records if str(record.get("filename", "")) and (identity := _complete_file_change_identity(record))},
         requirement_manifest_identity=_requirement_manifest_identity(manifest.requirements),
+        adjudication_snapshots=adjudication_snapshots,
     )
 
 
@@ -2933,6 +2938,7 @@ def run_adversarial_validation(
     defer_session_persistence: bool = False,
     ci_status: Optional["GitHubActionsStatusResult"] = None,
     refresh_ci_status: Optional[Callable[[], "GitHubActionsStatusResult"]] = None,
+    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
 
@@ -2973,7 +2979,7 @@ def run_adversarial_validation(
     get_trace_logger().log("Adversarial Validation", f"Validating PR #{pr_number} against specification", item_type="pr", item_number=pr_number)
 
     # 1. Build validation context
-    context = build_adversarial_validation_context(repo_name, pr_data, config, github_client)
+    context = build_adversarial_validation_context(repo_name, pr_data, config, github_client, adjudication_snapshots=adjudication_snapshots)
 
     # Oracle acquisition check: If no specification context exists, fail closed
     if not context.issue_context or not context.issue_context.strip():
@@ -3369,7 +3375,7 @@ def run_adversarial_validation(
     if recovery_ledger_active:
         if github_client is None:
             try:
-                refreshed = build_adversarial_validation_context(repo_name, pr_data, config, github_client, bypass_cache=True)
+                refreshed = build_adversarial_validation_context(repo_name, pr_data, config, github_client, bypass_cache=True, adjudication_snapshots=adjudication_snapshots)
                 snapshot_current = bool(context.validation_snapshot) and refreshed.validation_snapshot == context.validation_snapshot
             except Exception:
                 snapshot_current = False
@@ -3382,6 +3388,21 @@ def run_adversarial_validation(
                 diagnostic_category="validation_snapshot_stale",
                 diagnostic_reason="PR head, base/change representation, or Issue Requirement manifest changed or could not be reconfirmed",
             )
+
+    # REQ-001 - REQ-014: Apply adjudications before final result projections
+    applicable_snapshots = [s for s in adjudication_snapshots if s.result.status.value == "APPLICABLE"]
+    for snap in applicable_snapshots:
+        if snap.result.directive == "NO_CHANGE":
+            # Match against TestOracleGaps (by ID, e.g., thread comment ID mapped to gap)
+            for gap in result.test_oracle_gaps:
+                if gap.gap_id == snap.raw_finding:
+                    gap.status = "INVALID"
+
+            # Match against Findings
+            result.findings = [f for f in result.findings if f.finding_identity != snap.raw_finding and f.finding_identity != snap.result.context_id]
+
+            # Override thread dispositions so resolution logic picks it up
+            result.thread_dispositions.append(ReviewThreadDisposition(thread_id=snap.raw_finding, status="ADDRESSED", rationale="OVERRULED by adjudication", evidence=snap.result.reason))
 
     result = _apply_coverage_and_verdict_precedence(result, context)
 

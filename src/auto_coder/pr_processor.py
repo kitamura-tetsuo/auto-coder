@@ -65,6 +65,8 @@ from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repa
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
+from .review_adjudication import AdjudicationStatus
+from .review_adjudication_github import AdjudicationSnapshot
 from .review_thread_validation import (
     ClaimedReviewThread,
     StaleReviewThreadRegistryError,
@@ -657,6 +659,7 @@ def process_pull_request(
     *,
     force_adversarial_validation: bool = False,
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
+    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
 ) -> ProcessedPRResult:
     """Process a single pull request with priority order."""
     try:
@@ -797,6 +800,7 @@ def process_pull_request(
                     config,
                     force_adversarial_validation=force_adversarial_validation,
                     adversarial_validation_scheduler=adversarial_validation_scheduler,
+                    adjudication_snapshots=adjudication_snapshots,
                 )
                 processed_pr.actions_taken = processed_pr_result.actions_taken
                 processed_pr.priority = processed_pr_result.priority
@@ -1854,6 +1858,7 @@ def _process_pr_for_merge(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
+    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
 ) -> ProcessedPRResult:
     """Process a passing PR through the shared merge transition workflow.
 
@@ -1895,7 +1900,7 @@ def _process_pr_for_merge(
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)
+        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr, adjudication_snapshots=adjudication_snapshots)
         if any("Successfully merged" in action for action in processed_pr.actions_taken):
             should_process.keep_label()
         return processed_pr
@@ -1909,6 +1914,7 @@ def _process_pr_for_fixes(
     *,
     force_adversarial_validation: bool = False,
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
+    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
 ) -> ProcessedPRResult:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
     processed_pr = ProcessedPRResult(
@@ -1948,6 +1954,7 @@ def _process_pr_for_fixes(
                     processing_status,
                     force_adversarial_validation=force_adversarial_validation,
                     adversarial_validation_scheduler=adversarial_validation_scheduler,
+                    adjudication_snapshots=adjudication_snapshots,
                 )
                 processed_pr.actions_taken = actions
                 processed_pr.error = processing_status.error
@@ -1977,6 +1984,7 @@ def _take_pr_actions(
     *,
     force_adversarial_validation: bool = False,
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
+    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
 ) -> PRActionList:
     """Take actions on a PR including merge handling and analysis."""
     actions = PRActionList()
@@ -1994,6 +2002,7 @@ def _take_pr_actions(
             processing_status,
             force_adversarial_validation=force_adversarial_validation,
             adversarial_validation_scheduler=adversarial_validation_scheduler,
+            adjudication_snapshots=adjudication_snapshots,
         )
         actions.extend(merge_actions)
         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
@@ -2616,6 +2625,7 @@ def _handle_pr_merge(
     *,
     force_adversarial_validation: bool = False,
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
+    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
 ) -> PRActionList:
     """Handle PR merge process following the intended flow."""
     actions = PRActionList()
@@ -2995,7 +3005,10 @@ def _handle_pr_merge(
                             processing_status.error = exhaustion_retry_error
                             processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
-                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not exhaustion_retry_due:
+
+                    has_new_adjudication = any(snap.result.status in {AdjudicationStatus.APPLICABLE, AdjudicationStatus.UNDECIDED, AdjudicationStatus.CONFLICT, AdjudicationStatus.STALE, AdjudicationStatus.REVOKED} for snap in adjudication_snapshots)
+
+                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not exhaustion_retry_due and not has_new_adjudication:
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
                         logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
                         if saved_status == "PASS_WITH_SPECIFICATION_GAPS":
@@ -3021,6 +3034,8 @@ def _handle_pr_merge(
                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because unresolved findings have not been adjudicated on the current head")
                         elif adv_review_count >= max_adv_reviews and exhaustion_retry_due:
                             actions.append(f"Retrying adversarial validation for PR #{pr_number} beyond the review limit: prior backend quota/usage exhaustion is due for automatic retry")
+                        elif adv_review_count >= max_adv_reviews and has_new_adjudication:
+                            actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new adjudication decisions are present")
                         elif adv_review_count >= max_adv_reviews:
                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
                         should_run_validation = True
@@ -3183,6 +3198,7 @@ def _handle_pr_merge(
                                     defer_session_persistence=True,
                                     ci_status=github_checks,
                                     refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
+                                    adjudication_snapshots=adjudication_snapshots,
                                 )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]

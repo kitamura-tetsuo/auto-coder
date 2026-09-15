@@ -5402,6 +5402,7 @@ class AutomationEngine:
                         candidate.data,
                         force_adversarial_validation=force_adversarial_validation,
                         adversarial_validation_scheduler=self.adversarial_validation_scheduler,
+                        adjudication_snapshots=self.get_review_adjudication_snapshots(repo_name, item_number),
                     )
                     result.actions = pr_result.actions_taken
                     # Check if there was an error during processing

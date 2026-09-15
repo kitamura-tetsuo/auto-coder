@@ -2776,6 +2776,7 @@ class TestAdversarialValidationPRFlow:
             defer_session_persistence=True,
             ci_status=mock_checks.return_value,
             refresh_ci_status=ANY,
+            adjudication_snapshots=(),
         )
         mock_merge_pr.assert_called_once()
 
