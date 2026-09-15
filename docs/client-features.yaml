@@ -1513,7 +1513,7 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
 
     [backends.auggie]
     model = "GPT-5"
-    usage_markers = ["rate limit", "quota", "429"]
+    usage_markers = ["rate limit", "quota"]
 
     [backends.qwen]
     model = "qwen3-coder-plus"

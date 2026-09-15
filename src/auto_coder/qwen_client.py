@@ -330,7 +330,6 @@ class QwenClient(LLMClientBase):
             usage_markers = [
                 "rate limit",
                 "quota",
-                "429",
             ]
 
         usage_limit_detected = has_usage_marker_match(message, usage_markers)

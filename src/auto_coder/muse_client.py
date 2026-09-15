@@ -477,7 +477,7 @@ class MuseClient(LLMClientBase):
             combined_output = "\n".join(part for part in (stdout, stderr) if part).strip()
             mutation_observed = self._trace_contains_git_mutation(trace_path)
             self._assert_invariants(before, effective_noedit, mutation_observed)
-            markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded", "429"]
+            markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded"]
             if has_usage_marker_match(combined_output, markers):
                 raise AutoCoderUsageLimitError(combined_output or "Muse Code usage limit reached")
             if result.returncode != 0:
