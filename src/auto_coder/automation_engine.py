@@ -5026,7 +5026,7 @@ class AutomationEngine:
                                 is_difficult = True
                                 break
 
-                    if jules_mode and is_difficult:
+                    if is_difficult:
                         # For difficult issues, bypass Jules and delegate to backend_with_high_score_cloud directly
                         logger.info(f"Issue #{item_number} has 'difficult' label. Delegating to backend_with_high_score_cloud.")
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to High Score Cloud Backend (difficult label)", item_type="issue", item_number=item_number, details={"mode": "high_score_cloud"})
@@ -5062,12 +5062,7 @@ class AutomationEngine:
                         # Regular issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode", item_type="issue", item_number=item_number, details={"mode": "local"})
                         _record_issue_stage_result(item_number, "issue.dispatch-route", f"issue#{item_number} dispatch route", Outcome.COMPLETED, {"route": "local"})
-                        backend_mgr = None
-                        if is_difficult:
-                            from .cli_helpers import create_high_score_backend_manager
-
-                            backend_mgr = create_high_score_backend_manager()
-                        result.actions = self._take_issue_actions(repo_name, candidate.data, backend_manager=backend_mgr)
+                        result.actions = self._take_issue_actions(repo_name, candidate.data)
 
                     # Cloud launchers persist the authoritative provider task in
                     # CloudManager. Mirror that production output into logical
@@ -5076,7 +5071,7 @@ class AutomationEngine:
                     from .cloud_manager import CloudManager
 
                     binding = CloudManager(repo_name).get_binding(item_number)
-                    if manual_retry and jules_mode:
+                    if manual_retry and (jules_mode or is_difficult):
                         if binding is None or binding == previous_binding:
                             raise RuntimeError("Manual retry did not establish a new provider tracking target")
                     if binding is not None:

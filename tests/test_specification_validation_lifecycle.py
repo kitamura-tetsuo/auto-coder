@@ -990,7 +990,7 @@ def test_real_local_pr_creation_preserves_capacity_across_issue_edit(tmp_path):
     api = Mock()
     api.pulls.create.return_value = {"number": 100, "html_url": "https://github.test/pull/100"}
 
-    def create_real_pr(_repo, issue_data, _backend_manager=None):
+    def create_real_pr(_repo, issue_data, backend_manager=None):
         return [
             _create_pr_for_issue(
                 "owner/repo",
