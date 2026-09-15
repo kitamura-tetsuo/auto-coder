@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Sequence
 
@@ -421,10 +422,12 @@ class AdversarialValidationResult:
     Fail-closed design:
     - Only 'PASS' with 0 findings evaluates to is_pass=True.
     - Only findings carrying demonstrated reachability evidence normalize to 'NEEDS_FIX'.
-    - Empty, malformed, 'BLOCKED', 'INCONCLUSIVE', or 'ERROR' evaluates to is_blocked=True.
+    - Empty, malformed, 'BLOCKED', 'INCONCLUSIVE', 'ERROR', or 'EXHAUSTED' evaluates to is_blocked=True.
+    - 'EXHAUSTED' is never actionable/corrective; unlike the other non-pass
+      results it self-recovers via ``retry_not_before_epoch``.
     """
 
-    result: str = "ERROR"  # "PASS", "NEEDS_FIX", "NEEDS_TESTS", "BLOCKED", "INCONCLUSIVE", "ERROR"
+    result: str = "ERROR"  # "PASS", "NEEDS_FIX", "NEEDS_TESTS", "BLOCKED", "INCONCLUSIVE", "ERROR", "EXHAUSTED"
     summary: str = ""
     findings: List[AdversarialValidationFinding] = field(default_factory=list)
     raw_response: str = ""
@@ -445,6 +448,10 @@ class AdversarialValidationResult:
     attempt_sequence: int = 0
     reviewer_session_checkpoint: Optional[ReviewerSession] = field(default=None, repr=False)
     reviewer_session_registry: Optional[ReviewerSessionRegistry] = field(default=None, repr=False)
+    # Only set for result="EXHAUSTED": the earliest epoch time at which an
+    # automatic retry may run (REQ-006). Published durably in the comment
+    # marker so a deferred retry survives restart without local state (REQ-007).
+    retry_not_before_epoch: Optional[float] = None
 
     @property
     def is_pass(self) -> bool:
@@ -475,6 +482,12 @@ class AdversarialValidationResult:
     def is_blocked(self) -> bool:
         """Return True if validation could not complete or produced non-pass status."""
         return not self.is_pass and not self.needs_fix and not self.needs_tests
+
+    @property
+    def is_exhausted(self) -> bool:
+        """Return True if validation could not run because every otherwise-valid
+        adversarial-validation backend is confirmed quota/usage exhausted."""
+        return self.result.strip().upper() == "EXHAUSTED"
 
 
 @dataclass
@@ -652,12 +665,17 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
     lines = [
         adversarial_validation_comment_marker(head_sha),
         *([f"<!-- auto-coder-adversarial-validation-attempt:v1:{result.attempt_sequence}:{result.attempt_id} -->"] if result.attempt_id else []),
+        *([f"<!-- auto-coder-adversarial-validation-retry-not-before:v1:{result.retry_not_before_epoch} -->"] if result.retry_not_before_epoch is not None else []),
         f"## {status_icon} Auto-Coder adversarial validation: {status}",
         "",
         f"Validated commit: `{head_sha}`",
         "",
         _bounded_comment_field(result.summary) or "No validation summary was provided.",
     ]
+
+    if result.retry_not_before_epoch is not None:
+        retry_at = datetime.fromtimestamp(result.retry_not_before_epoch, tz=timezone.utc).isoformat()
+        lines.extend(["", f"Automatic retry not before: `{retry_at}`"])
 
     if result.dynamic_check_requested:
         lines.extend(["", f"Dynamic check requested: `{_bounded_comment_field(result.dynamic_check_requested)}`"])
@@ -3003,9 +3021,23 @@ def run_adversarial_validation(
 
     # 2. Select strong backend manager
     if backend_manager is None:
-        from .cli_helpers import create_adversarial_validation_backend_manager
+        from .cli_helpers import resolve_adversarial_validation_availability
 
-        backend_manager = create_adversarial_validation_backend_manager(validation_kind="pr")
+        availability = resolve_adversarial_validation_availability(validation_kind="pr")
+        backend_manager = availability.backend_manager
+
+        if backend_manager is None and availability.exhausted:
+            # Every otherwise-valid backend is confirmed quota/usage exhausted
+            # (REQ-001, REQ-003, REQ-004): this is a temporary, self-recovering
+            # non-result, not a configuration/capability failure, so it must not
+            # collapse into the generic fail-closed BLOCKED below.
+            logger.warning(f"Adversarial validation backends are quota/usage exhausted for PR #{pr_number}; deferring to automatic retry.")
+            return AdversarialValidationResult(
+                result="EXHAUSTED",
+                summary="Every otherwise-valid adversarial-validation backend is currently quota/usage exhausted; an automatic retry is deferred until capacity is expected to recover",
+                diagnostic_category="adversarial_validation_backend_exhausted",
+                retry_not_before_epoch=availability.retry_not_before_epoch,
+            )
 
     if backend_manager is None:
         logger.error("No strong adversarial validation backend configured or available. Blocking merge.")
