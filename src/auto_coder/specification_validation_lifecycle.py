@@ -104,6 +104,7 @@ class ValidationDecision:
     remediation: str = "NONE"
     remediation_reason: Optional[str] = None
     evaluation_source: str = "model"
+    execution_provenance: Optional[str] = None
 
 
 def _contract_evidence(manifest: NormativeIssueManifest, title: str, body: str) -> str:
@@ -196,17 +197,19 @@ def specification_digest(title: str, body: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def validation_policy_identity(provider_identity: str) -> str:
-    """Identify every configured input which can alter the semantic decision."""
+def validation_policy_contract() -> dict:
     issue_prompts = load_prompts().get("issue")
     prompt = issue_prompts.get("adversarial_specification_analysis") if isinstance(issue_prompts, dict) else None
-    contract = {
+    return {
         "version": VALIDATION_SCHEMA_VERSION,
         "prompt": prompt,
         "categories": sorted(SPECIFICATION_FINDING_CATEGORIES),
         "result_fields": ["verdict", "remediation", "findings"],
-        "provider": provider_identity,
     }
+
+
+def validation_policy_identity() -> str:
+    contract = validation_policy_contract()
     return hashlib.sha256(json.dumps(contract, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
@@ -247,7 +250,95 @@ class SpecificationValidationStore:
                     fcntl.flock(stream, fcntl.LOCK_UN)
 
     def get(self, identity: ValidationIdentity) -> Optional[ValidationDecision]:
-        raw = self._read().get(identity.key)
+        state = self._read()
+        raw = state.get(identity.key)
+
+        if raw is None:
+            # Reconstruct legacy key with current semantics and configured provider identity
+            from .llm_backend_config import get_llm_config
+            import os
+
+            override = os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATOR_IDENTITY")
+
+            providers: list[str] = []
+            if override:
+                providers.append(override)
+
+            if not providers:
+                config = get_llm_config()
+                if config:
+                    providers_order = config.get_adversarial_validation_backend_order()
+                    try:
+                        providers = list(providers_order) if providers_order else []
+                    except TypeError:
+                        providers = []
+                    if not providers:
+                        default_backend = config.get_adversarial_validation_default_backend()
+                        try:
+                            providers = [str(default_backend)] if default_backend else []
+                        except Exception:
+                            providers = []
+                    if not providers:
+                        getter = getattr(config, "get_high_score_backend_order", None)
+                        try:
+                            providers = list(getter() if callable(getter) else getattr(config, "backend_with_high_score_order", []))
+                        except TypeError:
+                            providers = []
+
+            legacy = None
+            import json
+            import hashlib
+            from dataclasses import asdict
+
+            legacy_identity_dict = asdict(identity)
+
+            for provider in providers:
+                if not provider:
+                    continue
+                contract = validation_policy_contract()
+                contract["provider"] = str(provider)
+                legacy_policy_identity = hashlib.sha256(json.dumps(contract, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+                legacy_identity_dict["policy_identity"] = legacy_policy_identity
+                legacy_key = hashlib.sha256(json.dumps(legacy_identity_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+                potential_legacy = state.get(legacy_key)
+                if isinstance(potential_legacy, dict) and "semantic_policy_contract" not in potential_legacy:
+                    if potential_legacy.get("identity") == legacy_identity_dict and potential_legacy.get("verdict") in {"READY", "BLOCKED"}:
+                        legacy = potential_legacy
+                        break
+
+            if legacy:
+                findings = tuple(SpecificationFinding(**item) for item in legacy.get("findings", []) if isinstance(item, dict))
+                remediation = str(legacy.get("remediation", "NONE"))
+                return ValidationDecision(
+                    identity,
+                    str(legacy["verdict"]),
+                    findings,
+                    bool(legacy.get("findings_published")),
+                    bool(legacy.get("readiness_removed")),
+                    remediation,
+                    legacy.get("remediation_reason") if isinstance(legacy.get("remediation_reason"), str) else None,
+                    "stored-decision-reuse",
+                    legacy.get("execution_provenance") if isinstance(legacy.get("execution_provenance"), str) else None,
+                )
+
+            # Check if there's any matching legacy record that we COULD NOT prove compatible (meaning semantic hash has changed)
+            for k, entry in state.items():
+                if not isinstance(entry, dict) or "semantic_policy_contract" in entry:
+                    continue
+                entry_identity = entry.get("identity")
+                if not isinstance(entry_identity, dict):
+                    continue
+                if entry_identity.get("repository") == identity.repository and entry_identity.get("issue_number") == identity.issue_number and entry_identity.get("specification_digest") == identity.specification_digest and entry_identity.get("relationship_digest") == identity.relationship_digest:
+                    return ValidationDecision(
+                        identity,
+                        "ERROR",
+                        evaluation_source="legacy-miss",
+                        remediation_reason="legacy_policy_unproven",
+                    )
+            return None
+
         if not isinstance(raw, dict) or raw.get("verdict") not in {"READY", "BLOCKED"}:
             return None
         if raw.get("identity") != asdict(identity):
@@ -263,6 +354,7 @@ class SpecificationValidationStore:
             remediation,
             raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None,
             "stored-decision-reuse",
+            raw.get("execution_provenance") if isinstance(raw.get("execution_provenance"), str) else None,
         )
 
     def save(self, decision: ValidationDecision) -> None:
@@ -272,12 +364,14 @@ class SpecificationValidationStore:
             state = self._read()
             state[decision.identity.key] = {
                 "identity": asdict(decision.identity),
+                "semantic_policy_contract": validation_policy_contract(),
                 "verdict": decision.verdict,
                 "findings": [asdict(item) for item in decision.findings],
                 "findings_published": decision.findings_published,
                 "readiness_removed": decision.readiness_removed,
                 "remediation": decision.remediation,
                 "remediation_reason": decision.remediation_reason,
+                "execution_provenance": decision.execution_provenance,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -293,7 +387,8 @@ class SpecificationValidationLifecycle:
 
     def __init__(self, repository: str, provider_identity: str, path: Optional[Path] = None, analyzer: Optional[Analyzer] = None) -> None:
         self.repository = repository
-        self.policy_identity = validation_policy_identity(provider_identity)
+        self.provider_identity = provider_identity
+        self.policy_identity = validation_policy_identity()
         self.store = SpecificationValidationStore(repository, path)
         terminal_path = path.with_name("reissue_required.json") if path is not None else None
         history_path = path.with_name("individual_review_history.json") if path is not None else None
@@ -348,7 +443,10 @@ class SpecificationValidationLifecycle:
                     return decision
             existing = self.store.get(identity)
             if existing is not None:
-                return existing
+                if getattr(existing, "evaluation_source", None) == "legacy-miss":
+                    pass
+                else:
+                    return existing
             if not manifest.explicit_contract_present or not manifest.explicit_contract_valid:
                 if self.analyzer is not None:
                     analyzed = self.analyzer(manifest, body)
@@ -363,6 +461,8 @@ class SpecificationValidationLifecycle:
                     analyzed.findings,
                     remediation=analyzed.remediation,
                     remediation_reason=analyzed.error,
+                    evaluation_source="model",
+                    execution_provenance=self.provider_identity,
                 )
                 if analyzed.verdict in {"READY", "BLOCKED"}:
                     self.store.save(decision)
@@ -378,6 +478,8 @@ class SpecificationValidationLifecycle:
                 analyzed.findings,
                 remediation=analyzed.remediation,
                 remediation_reason=analyzed.error,
+                evaluation_source="model",
+                execution_provenance=self.provider_identity,
             )
             if analyzed.verdict in {"READY", "BLOCKED"}:
                 self.store.save(decision)

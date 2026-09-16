@@ -574,7 +574,7 @@ def test_strict_membership_keeps_closed_child_and_reuses_ready_after_restart(tmp
     assert calls.call_count == 1
 
 
-def test_engine_validator_model_change_invalidates_persisted_set(monkeypatch, tmp_path):
+def test_engine_validator_model_change_does_not_invalidate_persisted_set(monkeypatch, tmp_path):
     monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", str(tmp_path))
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     children = [issue(11, "Child", CHILD_BODY)]
@@ -592,7 +592,9 @@ def test_engine_validator_model_change_invalidates_persisted_set(monkeypatch, tm
         restarted_gate = restarted_engine._get_decomposition_validator("owner/repo")
     restarted_gate.analyzer = calls
     changed_identity = restarted_gate.identity(parent, children)
-    assert changed_identity != first_identity
+    assert changed_identity == first_identity
+    assert restarted_gate.decide(changed_identity, parent_input, child_inputs).verdict == "READY"
+    assert calls.call_count == 0
     assert restarted_gate.decide(changed_identity, parent_input, child_inputs).verdict == "READY"
     calls.assert_called_once()
 

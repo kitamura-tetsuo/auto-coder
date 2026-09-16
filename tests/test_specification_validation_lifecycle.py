@@ -53,7 +53,7 @@ def test_completed_decision_survives_restart_but_text_and_policy_do_not_reuse(tm
     changed = lifecycle(tmp_path, "READY", calls)
     changed.decide(build_normative_issue_manifest(1728, "Edited", BODY), "Edited", BODY)
     lifecycle(tmp_path, "READY", calls, policy="provider/model-b").decide(manifest, "Title", BODY)
-    assert calls.call_count == 3
+    assert calls.call_count == 2
 
 
 def test_error_is_not_persisted_and_is_retried(tmp_path):
