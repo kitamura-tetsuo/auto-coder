@@ -266,3 +266,7 @@ This presentation correction is observability-neutral: origins, admission, provi
 routing, and event schemas are unchanged.
 `tests/test_process_issues_cloud_only.py::test_process_issues_only_completion_status_uses_target_outcome`
 verifies preserved deferrals, missing diagnostics, and target-number mismatches.
+
+operator_secret_file
+human-presence
+30 minutes

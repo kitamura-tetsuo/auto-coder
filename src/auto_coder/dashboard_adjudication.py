@@ -179,6 +179,16 @@ def require_auth(req: Request, service: "AdjudicationService") -> tuple[SessionD
     if not session or session.repository != repo_name:
         raise HTTPException(status_code=401, detail="Invalid session")
 
+    try:
+        with open(os.path.expanduser(config.operator_secret_file), "r", encoding="utf-8") as f:
+            expected_secret = f.read().strip()
+            expected_hash = hashlib.sha256(expected_secret.encode("utf-8")).hexdigest()
+            if getattr(session, "secret_hash", None) != expected_hash:
+                service.session_manager.invalidate_session(session_id)
+                raise HTTPException(status_code=401, detail="Invalid session (secret changed)")
+    except OSError:
+        raise HTTPException(status_code=500, detail="Cannot read operator secret")
+
     return session, config
 
 
@@ -364,9 +374,9 @@ class AdjudicationService:
                     if cur_state == "outcome-unknown":
                         # Attempt reconciliation
                         try:
-                            comments = gh_client.issues.list_comments(owner=repo_name.split("/")[0], repo=repo_name.split("/")[1], issue_number=pr_number)
+                            comments = gh_client.pulls.list_review_comments(owner=repo_name.split("/")[0], repo=repo_name.split("/")[1], pull_number=pr_number)
                             for c in comments:
-                                if f'"decision_id": "{payload.decision_id}"' in c.body:
+                                if c.user.id == publisher_id and f'"decision_id": "{payload.decision_id}"' in c.body:
                                     self.journal.transition_state(payload.decision_id, "outcome-unknown", "confirmed-published", c.id)
                                     import asyncio
 
@@ -394,7 +404,7 @@ class AdjudicationService:
 
             try:
                 root_id = snapshot.context.root_comment_id
-                url = f"https://api.github.com/repos/{repo_name}/issues/{pr_number}/comments"
+                url = f"https://api.github.com/repos/{repo_name}/pulls/{pr_number}/comments/{root_id}/replies"
 
                 async with httpx.AsyncClient() as client:
                     res = await client.post(
@@ -402,8 +412,9 @@ class AdjudicationService:
                         headers={
                             "Authorization": f"token {token}",
                             "Accept": "application/vnd.github.v3+json",
+                            "X-GitHub-Api-Version": "2022-11-28",
                         },
-                        json={"body": body, "in_reply_to": root_id},
+                        json={"body": body},
                         timeout=10.0,
                     )
                     res.raise_for_status()
@@ -442,10 +453,14 @@ class AdjudicationService:
                     pr_number = row[0]
                     try:
                         gh_client = get_ghapi_client(self.engine.github.token)
-                        comments = gh_client.issues.list_comments(owner=repo_name.split("/")[0], repo=repo_name.split("/")[1], issue_number=pr_number)
-                        for c in comments:
-                            if f'"decision_id": "{decision_id}"' in c.body:
-                                self.journal.transition_state(decision_id, "outcome-unknown", "confirmed-published", c.id)
+                        comments = gh_client.pulls.list_review_comments(owner=repo_name.split("/")[0], repo=repo_name.split("/")[1], pull_number=pr_number)
+                        cur.execute("SELECT publisher_id FROM publications WHERE decision_id = ?", (decision_id,))
+                        pub_row = cur.fetchone()
+                        if pub_row:
+                            publisher_id = pub_row[0]
+                            for c in comments:
+                                if c.user.id == publisher_id and f'"decision_id": "{decision_id}"' in c.body:
+                                    self.journal.transition_state(decision_id, "outcome-unknown", "confirmed-published", c.id)
                                 state = "confirmed-published"
                                 gh_id = c.id
                                 break
