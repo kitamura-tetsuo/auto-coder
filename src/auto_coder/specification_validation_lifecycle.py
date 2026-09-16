@@ -7,13 +7,14 @@ import json
 import os
 import threading
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 from loguru import logger
 
 from .github_pending_work import WorkIdentity, get_pending_work_store
+from .issue_review_publication import find_confirmed_publication
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
@@ -32,6 +33,7 @@ from .specification_analyzer import (
 )
 from .specification_repair_rounds import RepairRoundApplication, SpecificationRepairRoundStore
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
+from .util.github_request_outcome import GitHubRequestError
 
 VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v5-routing-independent-policy"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
@@ -50,6 +52,23 @@ READINESS_WITHDRAWAL_EFFECT = "readiness-withdrawal"
 def validation_publication_identity(repository: str, issue_number: int, decision_identity_key: str) -> WorkIdentity:
     """Durable obligation identity for one BLOCKED decision's publication effects."""
     return WorkIdentity(repository, f"issue:{issue_number}", VALIDATION_PUBLICATION_STAGE, decision_identity_key)
+
+
+def publication_trusted_complete(decision: object) -> bool:
+    """Whether a durable ``findings_published`` flag needs no re-verification.
+
+    True for a pre-App-routing legacy record (``publication_schema_version
+    == 0``) and for a post-routing record carrying its confirmed receipt. A
+    tagged post-change record with a missing/corrupt receipt is not trusted:
+    it falls through to authoritative re-verification against live comments
+    instead of being silently grandfathered as historical success (Issue
+    #2026, REQ-008).
+    """
+    if not getattr(decision, "findings_published", False):
+        return False
+    if getattr(decision, "publication_schema_version", 0) == 0:
+        return True
+    return getattr(decision, "publication_receipt", None) is not None
 
 
 def configured_provider_identity() -> str:
@@ -125,6 +144,14 @@ class ValidationDecision:
     remediation: str = "NONE"
     remediation_reason: Optional[str] = None
     evaluation_source: str = "model"
+    # Publication provenance (Issue #2026, REQ-008). A record predating this
+    # change is never written with a nonzero version, so ``0`` durably means
+    # "findings_published was set by the pre-App-routing code path" and must
+    # never be relabeled as proven reviewer-App authorship. ``1`` means this
+    # code initialized versioned ownership before handling the record;
+    # ``publication_receipt`` is only trustworthy when both are set.
+    publication_schema_version: int = 0
+    publication_receipt: Optional[dict] = None
     # Execution provenance (REQ-005): the exact `configured_provider_identity()`
     # route snapshot captured at the moment a real analyzer call actually
     # produced this decision. ``None`` for local-only decisions (no analyzer
@@ -296,6 +323,8 @@ class SpecificationValidationStore:
             return None
         findings = tuple(SpecificationFinding(**item) for item in raw.get("findings", []) if isinstance(item, dict))
         remediation = str(raw.get("remediation", "NONE"))
+        raw_receipt = raw.get("publication_receipt")
+        publication_receipt = raw_receipt if isinstance(raw_receipt, dict) else None
         # A reuse preserves the original producing execution's provenance
         # verbatim (REQ-005): it is never recomputed or relabeled with the
         # current configuration. Absent for pre-migration/legacy records.
@@ -309,6 +338,8 @@ class SpecificationValidationStore:
             remediation,
             raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None,
             "stored-decision-reuse",
+            int(raw.get("publication_schema_version") or 0),
+            publication_receipt,
             provenance if isinstance(provenance, str) else None,
         )
 
@@ -352,6 +383,8 @@ class SpecificationValidationStore:
                 "readiness_removed": decision.readiness_removed,
                 "remediation": decision.remediation,
                 "remediation_reason": decision.remediation_reason,
+                "publication_schema_version": decision.publication_schema_version,
+                "publication_receipt": decision.publication_receipt,
                 "execution_provenance": decision.execution_provenance,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -534,7 +567,8 @@ class SpecificationValidationLifecycle:
             # may be exactly that earlier withdrawal, and must not hide a
             # still-missing diagnostic behind a stale currentness check
             # (REQ-004).
-            if current_decision.findings_published:
+            diagnostic_trusted = publication_trusted_complete(current_decision)
+            if diagnostic_trusted:
                 pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
             if current_decision.readiness_removed:
                 pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
@@ -584,47 +618,45 @@ class SpecificationValidationLifecycle:
                     self.reissue_store.mark(issue_number)
                 except OSError as exc:
                     return f"durable reissue-required marker failed: {exc}"
-            if not current_decision.findings_published:
+            if not diagnostic_trusted:
                 marker = f"{FINDINGS_MARKER_PREFIX}:{current_decision.identity.key}"
+                expected_body = self.findings_comment(current_decision)
                 comments = github.get_issue_comments_strict(self.repository, issue_number)  # type: ignore[attr-defined]
                 # Comment enumeration is external I/O. An edit during that read
                 # invalidates publication just as an edit before the read does.
                 if not diagnostic_is_current():
                     return None
-                if not any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict)):
-                    github.add_comment_to_issue(self.repository, issue_number, self.findings_comment(current_decision))  # type: ignore[attr-defined]
-                current_decision = ValidationDecision(
-                    current_decision.identity,
-                    current_decision.verdict,
-                    current_decision.findings,
-                    True,
-                    current_decision.readiness_removed,
-                    current_decision.remediation,
-                    current_decision.remediation_reason,
-                    current_decision.evaluation_source,
-                    current_decision.execution_provenance,
-                    current_decision.legacy_candidates_detected,
-                )
-                self.store.save(current_decision)
-                pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
+                if current_decision.publication_schema_version == 0:
+                    # Initialize versioned publication ownership before this
+                    # unfinished record is handled, so a crash partway through
+                    # cannot later masquerade as legacy (pre-App) completion
+                    # (REQ-008).
+                    current_decision = replace(current_decision, publication_schema_version=1)
+                    self.store.save(current_decision)
+                try:
+                    reviewer_identity = github.reviewer_app_identity(self.repository)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    return f"reviewer identity unavailable: {exc}"
+                receipt, conflicting = find_confirmed_publication(comments, marker, expected_body, reviewer_identity)
+                if receipt is None and not conflicting:
+                    receipt = github.publish_issue_review_comment(self.repository, issue_number, expected_body, diagnostic_is_current)  # type: ignore[attr-defined]
+                if receipt is not None:
+                    current_decision = replace(current_decision, findings_published=True, publication_schema_version=1, publication_receipt=receipt.as_dict())
+                    self.store.save(current_decision)
+                    pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
+                elif conflicting:
+                    # A marker-bearing comment exists but is not confirmed as
+                    # authored by the reviewer App: this stays an explicit
+                    # unconfirmed conflict rather than a duplicate repost or a
+                    # silently accepted success (REQ-005).
+                    return "findings publication conflict: existing marker comment is not confirmed reviewer-App authored"
             if blocked_snapshot() is None:
                 return None
             # readiness_removed describes the previous submission, not all future
             # submissions. If the label is currently present it was explicitly
             # re-added and must be removed again, while the findings stay unique.
             github.remove_labels(self.repository, issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
-            current_decision = ValidationDecision(
-                current_decision.identity,
-                current_decision.verdict,
-                current_decision.findings,
-                current_decision.findings_published,
-                True,
-                current_decision.remediation,
-                current_decision.remediation_reason,
-                current_decision.evaluation_source,
-                current_decision.execution_provenance,
-                current_decision.legacy_candidates_detected,
-            )
+            current_decision = replace(current_decision, readiness_removed=True)
             self.store.save(current_decision)
             pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
         return None
@@ -650,7 +682,8 @@ class SpecificationValidationLifecycle:
             if current is None or current.verdict != "BLOCKED":
                 return "durable child BLOCKED decision is unavailable"
 
-            if current.findings_published:
+            diagnostic_trusted = publication_trusted_complete(current)
+            if diagnostic_trusted:
                 pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
             if current.readiness_removed:
                 pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
@@ -677,38 +710,43 @@ class SpecificationValidationLifecycle:
                     self.reissue_store.mark(issue_number)
                 except OSError as exc:
                     return f"durable reissue-required marker failed: {exc}"
-            if not current.findings_published:
+            if not diagnostic_trusted:
                 marker = f"{FINDINGS_MARKER_PREFIX}:{current.identity.key}"
+                expected_body = self.findings_comment(current)
                 try:
                     comments = github.get_issue_comments_strict(self.repository, issue_number)  # type: ignore[attr-defined]
                 except Exception as exc:
                     failures.append(f"findings lookup failed: {exc}")
+                    if isinstance(exc, GitHubRequestError):
+                        pending_work_store.defer(publication_identity, exc, (DIAGNOSTIC_EFFECT,))
                     comments = None
                 if not still_current():
                     return "; ".join(failures) or None
                 if comments is not None:
-                    published = any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict))
-                    if not published:
-                        try:
-                            github.add_comment_to_issue(self.repository, issue_number, self.findings_comment(current))  # type: ignore[attr-defined]
-                            published = True
-                        except Exception as exc:
-                            failures.append(f"findings publication failed: {exc}")
-                    if published:
-                        current = ValidationDecision(
-                            current.identity,
-                            current.verdict,
-                            current.findings,
-                            True,
-                            current.readiness_removed,
-                            current.remediation,
-                            current.remediation_reason,
-                            current.evaluation_source,
-                            current.execution_provenance,
-                            current.legacy_candidates_detected,
-                        )
+                    if current.publication_schema_version == 0:
+                        current = replace(current, publication_schema_version=1)
                         self.store.save(current)
-                        pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
+                    try:
+                        reviewer_identity = github.reviewer_app_identity(self.repository)  # type: ignore[attr-defined]
+                    except Exception as exc:
+                        failures.append(f"reviewer identity unavailable: {exc}")
+                        reviewer_identity = None
+                    if reviewer_identity is not None:
+                        receipt, conflicting = find_confirmed_publication(comments, marker, expected_body, reviewer_identity)
+                        if receipt is None and not conflicting:
+                            try:
+                                receipt = github.publish_issue_review_comment(self.repository, issue_number, expected_body, still_current)  # type: ignore[attr-defined]
+                            except Exception as exc:
+                                failures.append(f"findings publication failed: {exc}")
+                                if isinstance(exc, GitHubRequestError):
+                                    pending_work_store.defer(publication_identity, exc, (DIAGNOSTIC_EFFECT,))
+                                receipt = None
+                        if receipt is not None:
+                            current = replace(current, findings_published=True, publication_schema_version=1, publication_receipt=receipt.as_dict())
+                            self.store.save(current)
+                            pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
+                        elif conflicting:
+                            failures.append("findings publication conflict: existing marker comment is not confirmed reviewer-App authored")
             if not still_current():
                 return "; ".join(failures) or None
             try:
@@ -721,23 +759,12 @@ class SpecificationValidationLifecycle:
                     github.remove_labels(self.repository, issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
                 if not still_current():
                     return "; ".join(failures) or None
-                self.store.save(
-                    ValidationDecision(
-                        current.identity,
-                        current.verdict,
-                        current.findings,
-                        current.findings_published,
-                        True,
-                        current.remediation,
-                        current.remediation_reason,
-                        current.evaluation_source,
-                        current.execution_provenance,
-                        current.legacy_candidates_detected,
-                    )
-                )
+                self.store.save(replace(current, readiness_removed=True))
                 pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
+                if isinstance(exc, GitHubRequestError):
+                    pending_work_store.defer(publication_identity, exc, (READINESS_WITHDRAWAL_EFFECT,))
         return "; ".join(failures) or None
 
     def _apply_repair_round_policy(self, decision: ValidationDecision) -> ValidationDecision:
@@ -753,18 +780,11 @@ class SpecificationValidationLifecycle:
         )
         if (applied.remediation, applied.reason) == (decision.remediation, decision.remediation_reason):
             return decision
-        updated = ValidationDecision(
-            decision.identity,
-            decision.verdict,
-            decision.findings,
-            decision.findings_published,
-            decision.readiness_removed,
-            applied.remediation,
-            applied.reason,
-            decision.evaluation_source,
-            decision.execution_provenance,
-            decision.legacy_candidates_detected,
-        )
+        # A repair-round policy change never touches publication state: an
+        # already App-confirmed receipt must survive this reconstruction
+        # rather than being silently reset to legacy (Issue #2026, REQ-003,
+        # REQ-008).
+        updated = replace(decision, remediation=applied.remediation, remediation_reason=applied.reason)
         self.store.save(updated)
         return updated
 

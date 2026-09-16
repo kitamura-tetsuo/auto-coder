@@ -45,3 +45,47 @@ To preserve the principle of least privilege, the client explicitly requests sep
 
 This strict capability separation ensures that operations crossing contexts do not inadvertently leak permission scopes.
 Like PR publication, Issue comment publication operates securely with zero fallbacks. If the App is unconfigured, or an identity/token lookup fails, the publisher does not fall back to the ordinary user credential or global/environment variables (e.g., `$GITHUB_TOKEN`).
+
+### Issue specification/decomposition validation findings routing
+
+`SpecificationValidationLifecycle.apply_blocked`/`apply_inherited_blocked` and
+`DecompositionValidationLifecycle.apply_blocked` publish their BLOCKED
+findings comments exclusively through `GitHubClient.publish_issue_review_comment`
+(a thin wrapper over `publish_issue_review`), never through the ordinary
+`add_comment_to_issue` credential path. A pre-existing comment only counts as
+already-published when its body is an exact match for the decision's marker
+**and** its author is the reviewer App's own resolved identity
+(`GitHubClient.reviewer_app_identity`) -- a body-substring match alone is
+never sufficient, and a marker-bearing comment from another actor is reported
+as an unconfirmed conflict rather than silently accepted or reposted.
+
+Label withdrawal (`implementation-ready` removal) always stays on the
+ordinary controller credential: only the findings comment itself is
+App-authored.
+
+Each `ValidationDecision`/`DecompositionDecision` carries a
+`publication_schema_version` and an optional `publication_receipt`
+(confirmed comment id, publisher login, publisher App id). A decision
+persisted before this routing existed keeps `publication_schema_version == 0`
+forever and is never reinterpreted as App-authored, reposted, or edited. A
+decision produced after this change is stamped `publication_schema_version =
+1` before its first send attempt; `findings_published` is only trusted
+without re-verification once a receipt is durably attached, so a crash
+between an accepted POST and receipt persistence cannot masquerade as
+complete -- it is re-checked against the live comment list on the next pass.
+
+Both the specification decomposition-child (inherited) and decomposition
+(parent-set) publication routes participate in the durable pending-work
+store (`github_pending_work.py`), matching the standalone specification
+route: a `GitHubRequestError` while posting the comment or removing the
+label is deferred as a named effect (`diagnostic`/`readiness-withdrawal`)
+and resumed by a registered stage handler
+(`VALIDATION_PUBLICATION_STAGE` for specification,
+`DECOMPOSITION_PUBLICATION_STAGE` for decomposition) rather than only being
+recorded in a returned failure string.
+
+A confirmed reviewer-App findings comment delivered back as its own
+`issue_comment` webhook is recognized (marker + resolved reviewer identity)
+and does not enqueue a redundant re-evaluation; this check is scoped to that
+exact combination and is not a general bot/comment filter, so an unrelated
+comment, human reply, or genuine Issue edit is unaffected.

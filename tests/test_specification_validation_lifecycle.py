@@ -258,6 +258,10 @@ def test_concurrent_paths_coalesce_semantic_validation(tmp_path):
     assert calls == 1
 
 
+REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
+REVIEWER_APP_ID = 990001
+
+
 class GitHubFlow:
     def __init__(self, snapshots):
         self.snapshots = list(snapshots)
@@ -275,6 +279,18 @@ class GitHubFlow:
 
     def add_comment_to_issue(self, _repo, _number, body):
         self.comments.append({"body": body})
+
+    def publish_issue_review_comment(self, repo, number, body, authorize_fn):
+        from auto_coder.issue_review_publication import PublicationReceipt
+
+        comment_id = len(self.comments) + 1
+        self.comments.append({"id": comment_id, "body": body, "user": {"login": REVIEWER_LOGIN}, "performed_via_github_app": {"id": REVIEWER_APP_ID}})
+        return PublicationReceipt(comment_id, REVIEWER_LOGIN, REVIEWER_APP_ID)
+
+    def reviewer_app_identity(self, _repo):
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        return ReviewerAppIdentity(login=REVIEWER_LOGIN, app_id=REVIEWER_APP_ID)
 
     def remove_labels(self, _repo, _number, _labels, item_type="issue"):
         assert item_type == "issue"
@@ -1282,9 +1298,10 @@ def test_inherited_blocked_edit_after_comment_preserves_both_labels(tmp_path):
     decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
 
     class EditingGitHub(GitHubFlow):
-        def add_comment_to_issue(self, repo, number, body):
-            super().add_comment_to_issue(repo, number, body)
+        def publish_issue_review_comment(self, repo, number, body, authorize_fn):
+            receipt = super().publish_issue_review_comment(repo, number, body, authorize_fn)
             self.last = snapshot(body=BODY + " edited")
+            return receipt
 
     github = EditingGitHub([snapshot()])
     assert gate.apply_inherited_blocked(github, decision, lambda: True) is None
@@ -1642,3 +1659,102 @@ def test_validator_identity_override_env_var_is_provenance_only(tmp_path, monkey
     # decision, but reusing the earlier decision preserves its original
     # provenance rather than relabeling it with the current override.
     assert reused.execution_provenance == "override-a"
+
+
+def test_legacy_findings_published_record_is_never_reposted_or_relabeled(tmp_path):
+    """Issue #2026 REQ-008: a pre-App-routing findings_published record stays trusted-complete."""
+    from dataclasses import replace
+
+    gate = lifecycle(tmp_path, "BLOCKED")
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    legacy = replace(decision, findings_published=True, publication_schema_version=0, publication_receipt=None)
+    gate.store.save(legacy)
+
+    github = GitHubFlow([snapshot()])
+    assert gate.apply_blocked(github, legacy) is None
+    assert github.comments == [], "legacy completion must never trigger a repost"
+    saved = gate.store.get(decision.identity)
+    assert saved.findings_published is True
+    assert saved.publication_schema_version == 0, "legacy record must never be relabeled as proven App-authored"
+    assert saved.publication_receipt is None
+
+
+def test_post_change_record_with_missing_receipt_is_not_silently_grandfathered(tmp_path):
+    """Issue #2026 REQ-008: a tagged post-change record without its receipt is re-verified, not trusted."""
+    from dataclasses import replace
+
+    gate = lifecycle(tmp_path, "BLOCKED")
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    corrupt = replace(decision, findings_published=True, publication_schema_version=1, publication_receipt=None)
+    gate.store.save(corrupt)
+
+    github = GitHubFlow([snapshot()])
+    assert gate.apply_blocked(github, corrupt) is None
+    assert len(github.comments) == 1, "missing receipt must trigger re-verification and (re)publication"
+    saved = gate.store.get(decision.identity)
+    assert saved.publication_receipt is not None
+    assert saved.publication_receipt["comment_id"] == github.comments[0]["id"]
+
+
+def test_new_decision_is_stamped_before_first_send_and_receipt_persists(tmp_path):
+    """Issue #2026 REQ-008: versioned publication ownership is initialized before the first send attempt."""
+    gate = lifecycle(tmp_path, "BLOCKED")
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    assert decision.publication_schema_version == 0
+    assert decision.publication_receipt is None
+
+    github = GitHubFlow([snapshot()])
+    assert gate.apply_blocked(github, decision) is None
+    saved = gate.store.get(decision.identity)
+    assert saved.publication_schema_version == 1
+    assert saved.publication_receipt == {"comment_id": 1, "publisher_login": REVIEWER_LOGIN, "publisher_app_id": REVIEWER_APP_ID}
+
+
+def test_repair_round_policy_reconstruction_preserves_publication_receipt(tmp_path):
+    """Issue #2026 REQ-003/REQ-008: a repair-round reason change must never drop an already-confirmed receipt.
+
+    Found by adversarial review: ``_apply_repair_round_policy`` rebuilt the
+    decision without copying ``publication_schema_version``/
+    ``publication_receipt`` (or ``evaluation_source``) whenever the repair
+    round policy produced a different remediation/reason, silently
+    downgrading an App-confirmed record to indistinguishable-from-legacy.
+    """
+    from dataclasses import replace
+    from unittest.mock import patch as mock_patch
+
+    from auto_coder.specification_repair_rounds import RepairRoundApplication
+
+    gate = lifecycle(tmp_path, "BLOCKED")
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    receipt = {"comment_id": 42, "publisher_login": REVIEWER_LOGIN, "publisher_app_id": REVIEWER_APP_ID}
+    confirmed = replace(decision, findings_published=True, publication_schema_version=1, publication_receipt=receipt)
+    gate.store.save(confirmed)
+
+    # Simulate the repair-round policy newly reaching its pause limit for
+    # this exact generation, exactly as a real budget exhaustion would,
+    # without needing to choreograph the full multi-generation sequence.
+    with mock_patch.object(gate.repair_rounds, "apply", return_value=RepairRoundApplication("EDIT_IN_PLACE", 3, reason="automatic_repair_paused(repair_round_limit_reached)", paused=True)):
+        updated = gate._apply_repair_round_policy(confirmed)
+
+    assert updated.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)"
+    assert updated.publication_schema_version == 1
+    assert updated.publication_receipt == receipt
+    assert updated.findings_published is True
+    saved = gate.store.get(decision.identity)
+    assert saved.publication_schema_version == 1
+    assert saved.publication_receipt == receipt
+
+
+def test_existing_comment_with_wrong_author_is_an_unconfirmed_conflict_not_a_repost(tmp_path):
+    """Issue #2026 REQ-005: a marker-bearing comment from another actor must not be silently accepted or reposted."""
+    gate = lifecycle(tmp_path, "BLOCKED")
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    github = GitHubFlow([snapshot()])
+    github.comments.append({"id": 1, "body": gate.findings_comment(decision), "user": {"login": "human-imitator"}})
+
+    error = gate.apply_blocked(github, decision)
+
+    assert error is not None and "conflict" in error
+    assert len(github.comments) == 1, "must never repost over an unresolved conflict"
+    saved = gate.store.get(decision.identity)
+    assert saved.findings_published is False

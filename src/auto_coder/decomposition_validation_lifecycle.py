@@ -7,7 +7,7 @@ import json
 import os
 import threading
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterator, Optional, Sequence
 
@@ -24,17 +24,39 @@ from .decomposition_analyzer import (
     decomposition_review_evidence,
     objective_integrity_result,
 )
+from .github_pending_work import WorkIdentity, get_pending_work_store
+from .issue_review_publication import find_confirmed_publication
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
 from .role_structural_assessment import ROLE_IMPLEMENTATION_CHILD, ROLE_TRACKING_PARENT, assess_role_structure
 from .runtime_locks import ensure_lock_directory, lock_path
 from .specification_repair_rounds import RepairRoundApplication, SpecificationRepairRoundStore
-from .specification_validation_lifecycle import configured_provider_identity, specification_digest
+from .specification_validation_lifecycle import (
+    DIAGNOSTIC_EFFECT,
+    READINESS_WITHDRAWAL_EFFECT,
+    configured_provider_identity,
+    publication_trusted_complete,
+    specification_digest,
+)
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
+from .util.github_request_outcome import GitHubRequestError
 
 DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v6-routing-independent-policy"
 DECOMPOSITION_FINDINGS_MARKER = "auto-coder-decomposition-validation"
+
+# Pending-work stage for the decomposition-route publication effects (Issue
+# #2026, REQ-007): mirrors ``VALIDATION_PUBLICATION_STAGE`` in
+# ``specification_validation_lifecycle`` but reconstructs a
+# ``DecompositionIdentity`` on recovery instead of an individual
+# ``ValidationIdentity``, so the two routes cannot collide on the same
+# pending-work key even for the same parent Issue number.
+DECOMPOSITION_PUBLICATION_STAGE = "decomposition-validation-publication"
+
+
+def decomposition_publication_identity(repository: str, parent_issue_number: int, decision_identity_key: str) -> WorkIdentity:
+    """Durable obligation identity for one decomposition BLOCKED decision's publication effects."""
+    return WorkIdentity(repository, f"issue:{parent_issue_number}", DECOMPOSITION_PUBLICATION_STAGE, decision_identity_key)
 
 
 @dataclass(frozen=True)
@@ -71,6 +93,10 @@ class DecompositionDecision:
     # "local-only" when only structural assessment/Objective-integrity ran,
     # and "stored-decision-reuse" for a durable decision returned unchanged.
     evaluation_source: str = "model"
+    # Publication provenance (Issue #2026, REQ-008); see ValidationDecision
+    # for the exact legacy/new-format completion semantics this mirrors.
+    publication_schema_version: int = 0
+    publication_receipt: Optional[dict] = None
     # Execution provenance (REQ-005): the exact `configured_provider_identity()`
     # route snapshot captured at the moment a real analyzer call actually
     # produced this decision. ``None`` for local-only decisions (no analyzer
@@ -154,6 +180,8 @@ class DecompositionValidationStore:
             for item in raw.get("findings", [])
             if isinstance(item, dict)
         )
+        raw_receipt = raw.get("publication_receipt")
+        publication_receipt = raw_receipt if isinstance(raw_receipt, dict) else None
         # A reuse preserves the original producing execution's provenance
         # verbatim (REQ-005): it is never recomputed or relabeled with the
         # current configuration. Absent for pre-migration/legacy records.
@@ -167,6 +195,8 @@ class DecompositionValidationStore:
             str(raw.get("remediation", "NONE")),
             raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None,
             "stored-decision-reuse",
+            int(raw.get("publication_schema_version") or 0),
+            publication_receipt,
             provenance if isinstance(provenance, str) else None,
         )
 
@@ -204,6 +234,8 @@ class DecompositionValidationStore:
                 "readiness_removed": decision.readiness_removed,
                 "remediation": decision.remediation,
                 "remediation_reason": decision.remediation_reason,
+                "publication_schema_version": decision.publication_schema_version,
+                "publication_receipt": decision.publication_receipt,
                 "execution_provenance": decision.execution_provenance,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -438,17 +470,58 @@ class DecompositionValidationLifecycle:
             return applied
 
     def apply_blocked(self, github: object, decision: DecompositionDecision, fetch_set: Callable[[int], Optional[tuple[dict[str, object], list[dict[str, object]]]]]) -> Optional[str]:
+        """Apply idempotent parent-scoped effects only while BLOCKED evidence is authoritative.
+
+        The findings comment and the readiness withdrawal are independently
+        completed against the durable pending-work store, mirroring
+        ``SpecificationValidationLifecycle.apply_blocked`` (Issue #2026,
+        REQ-001, REQ-002, REQ-007): each is confirmed via ``complete_effect``
+        exactly when its own GitHub mutation is established, and a
+        ``GitHubRequestError`` from either effect is durably deferred rather
+        than only recorded in the returned failure string, so a controller
+        restart resumes exactly the effect that did not yet succeed.
+        """
+        parent_number = decision.identity.parent.issue_number
+        publication_identity = decomposition_publication_identity(self.repository, parent_number, decision.identity.key)
+        pending_work_store = get_pending_work_store()
         with self.store.locked(decision.identity.key):
             failures: list[str] = []
             current = self.store.get(decision.identity)
             if current is None or current.verdict != "BLOCKED":
                 return "durable decomposition BLOCKED decision is unavailable"
 
+            diagnostic_trusted = publication_trusted_complete(current)
+            if diagnostic_trusted:
+                pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
+            if current.readiness_removed:
+                pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
+
+            def identity_matches() -> bool:
+                fetched = fetch_set(decision.identity.parent.issue_number)
+                return fetched is not None and str(fetched[0].get("state") or "").lower() == "open" and self.identity(*fetched) == decision.identity
+
             def still_current() -> bool:
                 fetched = fetch_set(decision.identity.parent.issue_number)
                 return fetched is not None and str(fetched[0].get("state") or "").lower() == "open" and is_implementation_ready(fetched[0]) and self.identity(*fetched) == decision.identity
 
-            if not still_current():
+            def diagnostic_is_current() -> bool:
+                """Currentness for the diagnostic comment.
+
+                Same full currentness as the label withdrawal, except when
+                that check is failing only because this exact decision's own
+                readiness withdrawal already completed: that specific
+                absence of the label must not hide a still-missing
+                diagnostic comment (REQ-004, mirrors
+                ``SpecificationValidationLifecycle.apply_blocked``).
+                """
+                if still_current():
+                    return True
+                if not identity_matches():
+                    return False
+                recorded = self.store.get(decision.identity)
+                return recorded is not None and recorded.readiness_removed
+
+            if not diagnostic_is_current():
                 return None
             from .llm_backend_config import get_specification_repair_round_limit_from_config
 
@@ -461,18 +534,11 @@ class DecompositionValidationLifecycle:
                 get_specification_repair_round_limit_from_config(repo_name=self.repository),
             )
             if (applied.remediation, applied.reason) != (current.remediation, current.remediation_reason):
-                current = DecompositionDecision(
-                    current.identity,
-                    current.verdict,
-                    current.findings,
-                    current.findings_published,
-                    current.readiness_removed,
-                    applied.remediation,
-                    applied.reason,
-                    current.evaluation_source,
-                    current.execution_provenance,
-                    current.legacy_candidates_detected,
-                )
+                # A repair-round policy change never touches publication
+                # state: an already App-confirmed receipt must survive this
+                # reconstruction rather than being silently reset to legacy
+                # (Issue #2026, REQ-003, REQ-008).
+                current = replace(current, remediation=applied.remediation, remediation_reason=applied.reason)
                 self.store.save(current)
             self.history_store.record_applied(
                 current.identity.parent.issue_number,
@@ -492,57 +558,54 @@ class DecompositionValidationLifecycle:
                     self.reissue_store.mark(current.identity.parent.issue_number)
                 except OSError as exc:
                     return f"durable reissue-required marker failed: {exc}"
-            if not current.findings_published:
+            if not diagnostic_trusted:
                 marker = f"{DECOMPOSITION_FINDINGS_MARKER}:{current.identity.key}"
+                expected_body = self.findings_comment(current)
                 try:
-                    comments = github.get_issue_comments_strict(self.repository, current.identity.parent.issue_number)  # type: ignore[attr-defined]
+                    comments = github.get_issue_comments_strict(self.repository, parent_number)  # type: ignore[attr-defined]
                 except Exception as exc:
                     failures.append(f"findings lookup failed: {exc}")
+                    if isinstance(exc, GitHubRequestError):
+                        pending_work_store.defer(publication_identity, exc, (DIAGNOSTIC_EFFECT,))
                     comments = None
-                if not still_current():
+                if not diagnostic_is_current():
                     return "; ".join(failures) or None
                 if comments is not None:
-                    published = any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict))
-                    if not published:
-                        try:
-                            github.add_comment_to_issue(self.repository, current.identity.parent.issue_number, self.findings_comment(current))  # type: ignore[attr-defined]
-                            published = True
-                        except Exception as exc:
-                            failures.append(f"findings publication failed: {exc}")
-                    if published:
-                        current = DecompositionDecision(
-                            current.identity,
-                            current.verdict,
-                            current.findings,
-                            True,
-                            current.readiness_removed,
-                            current.remediation,
-                            current.remediation_reason,
-                            current.evaluation_source,
-                            current.execution_provenance,
-                            current.legacy_candidates_detected,
-                        )
+                    if current.publication_schema_version == 0:
+                        current = replace(current, publication_schema_version=1)
                         self.store.save(current)
+                    try:
+                        reviewer_identity = github.reviewer_app_identity(self.repository)  # type: ignore[attr-defined]
+                    except Exception as exc:
+                        failures.append(f"reviewer identity unavailable: {exc}")
+                        reviewer_identity = None
+                    if reviewer_identity is not None:
+                        receipt, conflicting = find_confirmed_publication(comments, marker, expected_body, reviewer_identity)
+                        if receipt is None and not conflicting:
+                            try:
+                                receipt = github.publish_issue_review_comment(self.repository, parent_number, expected_body, diagnostic_is_current)  # type: ignore[attr-defined]
+                            except Exception as exc:
+                                failures.append(f"findings publication failed: {exc}")
+                                if isinstance(exc, GitHubRequestError):
+                                    pending_work_store.defer(publication_identity, exc, (DIAGNOSTIC_EFFECT,))
+                                receipt = None
+                        if receipt is not None:
+                            current = replace(current, findings_published=True, publication_schema_version=1, publication_receipt=receipt.as_dict())
+                            self.store.save(current)
+                            pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
+                        elif conflicting:
+                            failures.append("findings publication conflict: existing marker comment is not confirmed reviewer-App authored")
             if not still_current():
                 return "; ".join(failures) or None
             try:
-                github.remove_labels(self.repository, current.identity.parent.issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
-                self.store.save(
-                    DecompositionDecision(
-                        current.identity,
-                        current.verdict,
-                        current.findings,
-                        current.findings_published,
-                        True,
-                        current.remediation,
-                        current.remediation_reason,
-                        current.evaluation_source,
-                        current.execution_provenance,
-                        current.legacy_candidates_detected,
-                    )
-                )
+                github.remove_labels(self.repository, parent_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
+                current = replace(current, readiness_removed=True)
+                self.store.save(current)
+                pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
+                if isinstance(exc, GitHubRequestError):
+                    pending_work_store.defer(publication_identity, exc, (READINESS_WITHDRAWAL_EFFECT,))
         return "; ".join(failures) or None
 
     @staticmethod
