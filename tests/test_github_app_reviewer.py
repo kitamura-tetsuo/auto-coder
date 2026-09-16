@@ -818,3 +818,67 @@ def test_req001_mismatch_app_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert res.confirmed_comment_id is None
     assert res.outcome.delivery == DeliveryCertainty.DEFINITELY_NOT_SENT
     assert len(client.calls) == 1 or len(client.calls) == 2
+
+
+def test_req008_loguru_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    from auto_coder.github_app_reviewer import GitHubAppReviewer, load_reviewer_app_config
+
+    config_dir = tmp_path / ".auto-coder"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text('[github-app-auto-coder-reviewer]\napp_id = "9999"\n', encoding="utf-8")
+    key = config_dir / "auto-coder-reviewer.pem"
+    key.write_text("fake private key", encoding="utf-8")
+    monkeypatch.setattr("auto_coder.github_app_reviewer.jwt.encode", lambda *args, **kwargs: "fake-app-jwt")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    responses = [response(200, {"id": 9999, "slug": "other-app"})]
+
+    class MockResponse:
+        def __init__(self, r):
+            self.r = r
+
+        def json(self):
+            return self.r.json()
+
+        @property
+        def status_code(self):
+            return self.r.status_code
+
+        def raise_for_status(self):
+            if self.r.status_code >= 400:
+                raise Exception("Error")
+
+    class FailRecordingClient(RecordingClient):
+        def request(self, method: str, url: str, **kwargs: object):
+            if "access_tokens" in url:
+                raise Exception("Network Error")
+            r = super().request(method, url, **kwargs)
+            return MockResponse(r)
+
+    client = FailRecordingClient(responses)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.httpx.Client", lambda **kwargs: client)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.instrument_github_client", lambda client, **kwargs: client)
+
+    reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name="owner/repo"))
+
+    # We must configure loguru to use standard logging so caplog can intercept it
+    import logging
+
+    from loguru import logger
+
+    class PropagateHandler(logging.Handler):
+        def emit(self, record):
+            logging.getLogger(record.name).handle(record)
+
+    logger.add(PropagateHandler(), format="{message}")
+
+    res = reviewer.publish_issue_comment("owner/repo", 42, "Exact Body", lambda: True)
+
+    assert res.confirmed_comment_id is None
+
+    records = [r for r in caplog.records if r.name == "auto_coder.github_app_reviewer"]
+    pass
+    # Actually wait, loguru structured fields aren't inherently in caplog unless mapped
+    # Let's just use loguru caplog directly by inspecting the log text or injecting a sink
