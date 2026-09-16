@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
@@ -426,6 +426,79 @@ class MuseClient(LLMClientBase):
             if argument in {"--prompt", "--prompt-file"} or argument.startswith(("--prompt=", "--prompt-file=")):
                 raise RuntimeError("Muse options must not configure a prompt source; Auto-Coder owns --prompt-file")
 
+    @classmethod
+    def _is_usage_limit_exhausted(
+        cls,
+        stdout: str,
+        stderr: str,
+        returncode: int,
+        usage_markers: Sequence[object],
+    ) -> bool:
+        """Check whether Muse exhausted its quota or hit a rate limit.
+
+        When stdout is a Muse JSONL stream, usage markers and HTTP 429 checks are
+        evaluated ONLY against explicit diagnostic/error events or stderr rather
+        than raw stdout. This prevents false positives caused by user prompts, git
+        diffs (e.g. documentation changes containing 'rate limit' or 'error: 429'),
+        or tool outputs echoed in the JSONL stream.
+        """
+        combined_output = "\n".join(part for part in (stdout, stderr) if part).strip()
+        if not combined_output:
+            return False
+
+        events: list[dict[str, object]] = []
+        is_jsonl_stream = False
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("muse:"):
+                continue
+            try:
+                parsed = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(parsed, dict) and ("record_type" in parsed or "payload_type" in parsed):
+                is_jsonl_stream = True
+                events.append(parsed)
+
+        if not is_jsonl_stream:
+            return has_usage_marker_match(combined_output, usage_markers) or has_http_429_marker(combined_output)
+
+        # In a JSONL stream, extract diagnostic/error events
+        diagnostic_events: list[dict[str, object]] = []
+        for event in events:
+            payload_type = str(event.get("payload_type", ""))
+            payload = event.get("payload")
+            record_type = str(event.get("record_type", ""))
+
+            is_diagnostic = False
+            if record_type == "error" or payload_type in {"run.terminal.failed", "task.lifecycle.failed", "error"}:
+                is_diagnostic = True
+            elif isinstance(payload, dict):
+                payload_kind = str(payload.get("kind", ""))
+                event_obj = payload.get("event")
+                if payload_kind == "run":
+                    if isinstance(event_obj, dict):
+                        event_kind = str(event_obj.get("kind", ""))
+                        if event_kind in {"failed", "error"} or event_obj.get("terminal") == "failed" or "error" in event_obj:
+                            is_diagnostic = True
+                    if payload.get("terminal") == "failed" or "error" in payload:
+                        is_diagnostic = True
+
+            if is_diagnostic:
+                diagnostic_events.append(event)
+
+        diagnostic_parts = [stderr] if stderr else []
+        diagnostic_parts.extend(json.dumps(ev, ensure_ascii=False) for ev in diagnostic_events)
+        diagnostic_output = "\n".join(diagnostic_parts).strip()
+
+        if diagnostic_output:
+            return has_usage_marker_match(diagnostic_output, usage_markers) or has_http_429_marker(diagnostic_output)
+
+        if returncode != 0 and not events:
+            return has_usage_marker_match(combined_output, usage_markers) or has_http_429_marker(combined_output)
+
+        return False
+
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         cwd = self._execution_cwd()
         before = self._snapshot()
@@ -478,8 +551,8 @@ class MuseClient(LLMClientBase):
             mutation_observed = self._trace_contains_git_mutation(trace_path)
             self._assert_invariants(before, effective_noedit, mutation_observed)
             markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded"]
-            if has_usage_marker_match(combined_output, markers) or has_http_429_marker(combined_output):
-                raise AutoCoderUsageLimitError(combined_output or "Muse Code usage limit reached")
+            if self._is_usage_limit_exhausted(stdout, stderr, result.returncode, markers):
+                raise AutoCoderUsageLimitError(stderr or combined_output or "Muse Code usage limit reached")
             if result.returncode != 0:
                 from .adversarial_validator import _extract_muse_jsonl_result
 

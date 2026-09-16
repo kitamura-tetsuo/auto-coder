@@ -1544,6 +1544,7 @@ def _extract_muse_jsonl_result(response: str) -> tuple[bool, Optional[str], Opti
         return False, None, None
 
     terminal_text: Optional[str] = None
+    assistant_text: Optional[str] = None
     terminal_error: Optional[str] = None
     delta_texts: list[str] = []
 
@@ -1577,12 +1578,31 @@ def _extract_muse_jsonl_result(response: str) -> tuple[bool, Optional[str], Opti
             delta = payload.get("text")
             if isinstance(delta, str):
                 delta_texts.append(delta)
-
-    if terminal_error:
-        return True, None, f"Muse emitted failure event: {terminal_error}"
+        elif payload_type == "runtime.session":
+            event_obj = payload.get("event")
+            if isinstance(event_obj, dict):
+                event_kind = event_obj.get("kind")
+                payload_kind = payload.get("kind")
+                if event_kind == "assistant_message_committed":
+                    text = event_obj.get("text")
+                    if isinstance(text, str):
+                        assistant_text = text
+                elif event_kind == "terminal":
+                    if event_obj.get("terminal") == "failed":
+                        terminal_error = str(event_obj.get("reason") or "Muse run terminal failed")
+                    elif event_obj.get("terminal") == "completed" and isinstance(event_obj.get("text"), str):
+                        terminal_text = event_obj.get("text")
+                elif payload_kind == "run" and event_kind == "failed":
+                    terminal_error = str(event_obj.get("reason") or "Muse run failed")
 
     if terminal_text is not None:
         return True, terminal_text, None
+
+    if assistant_text is not None:
+        return True, assistant_text, None
+
+    if terminal_error:
+        return True, None, f"Muse emitted failure event: {terminal_error}"
 
     if delta_texts:
         return True, "".join(delta_texts), None

@@ -730,3 +730,204 @@ print({repr(json.dumps(event_payload))})
         output = manager._run_llm_cli("review the code")
 
     assert output == '{"verdict": "READY", "findings": []}'
+
+
+def test_extract_muse_jsonl_result_runtime_session_assistant_message() -> None:
+    from src.auto_coder.adversarial_validator import _extract_muse_jsonl_result
+
+    raw = """muse: workspace root: /workspace
+{"schema_version":1,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"{\\"result\\": \\"PASS\\"}"}}}
+{"schema_version":1,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"run","event":{"kind":"terminal","terminal":"completed"}}}
+"""
+    detected, text, error = _extract_muse_jsonl_result(raw)
+    assert detected is True
+    assert text == '{"result": "PASS"}'
+    assert error is None
+
+
+def test_extract_muse_jsonl_result_runtime_session_terminal_failed() -> None:
+    from src.auto_coder.adversarial_validator import _extract_muse_jsonl_result
+
+    raw = """{"schema_version":1,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"run","event":{"kind":"terminal","terminal":"failed","reason":"execution timed out"}}}
+"""
+    detected, text, error = _extract_muse_jsonl_result(raw)
+    assert detected is True
+    assert text is None
+    assert error == "Muse emitted failure event: execution timed out"
+
+
+def test_muse_is_usage_limit_exhausted_ignores_prompt_and_diff() -> None:
+    from src.auto_coder.muse_client import MuseClient
+
+    prompt_payload = {
+        "schema_version": 1,
+        "record_type": "event",
+        "payload_type": "runtime.user_intent.accepted",
+        "payload": {
+            "model_messages": [
+                {
+                    "content": [
+                        {
+                            "text": 'PR diff:\n+ usage_markers = ["rate limit", "usage limit", "api error: 429", "quota exceeded"]\n',
+                        }
+                    ]
+                }
+            ]
+        },
+    }
+    assistant_payload = {
+        "schema_version": 1,
+        "record_type": "event",
+        "payload_type": "runtime.session",
+        "payload": {
+            "kind": "run",
+            "event": {
+                "kind": "assistant_message_committed",
+                "text": '{"result": "PASS"}',
+            },
+        },
+    }
+    completed_payload = {
+        "schema_version": 1,
+        "record_type": "event",
+        "payload_type": "runtime.session",
+        "payload": {
+            "kind": "run",
+            "event": {
+                "kind": "terminal",
+                "terminal": "completed",
+            },
+        },
+    }
+    stdout = "\n".join([json.dumps(prompt_payload), json.dumps(assistant_payload), json.dumps(completed_payload)])
+    markers = ["rate limit", "usage limit", "quota exceeded"]
+
+    assert MuseClient._is_usage_limit_exhausted(stdout, "", 0, markers) is False
+
+
+def test_muse_is_usage_limit_exhausted_detects_diagnostic_failure() -> None:
+    from src.auto_coder.muse_client import MuseClient
+
+    # Diagnostic event in stream
+    failed_payload = {
+        "schema_version": 1,
+        "record_type": "event",
+        "payload_type": "run.terminal.failed",
+        "payload": {
+            "reason": "rate limit exceeded: please wait 60s",
+        },
+    }
+    stdout = json.dumps(failed_payload)
+    markers = ["rate limit", "usage limit", "quota exceeded"]
+    assert MuseClient._is_usage_limit_exhausted(stdout, "", 1, markers) is True
+
+    # Diagnostic failure in runtime.session event
+    session_failed = {
+        "schema_version": 1,
+        "record_type": "event",
+        "payload_type": "runtime.session",
+        "payload": {
+            "kind": "run",
+            "event": {
+                "kind": "terminal",
+                "terminal": "failed",
+                "reason": "quota exceeded for this project",
+            },
+        },
+    }
+    assert MuseClient._is_usage_limit_exhausted(json.dumps(session_failed), "", 0, markers) is True
+
+    # HTTP 429 in stderr
+    assert MuseClient._is_usage_limit_exhausted("{}", "HTTP/1.1 429 Too Many Requests", 1, markers) is True
+
+
+def test_muse_run_llm_cli_with_pr2103_diff_succeeds_without_usage_limit_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    script = tmp_path / "muse"
+    prompt_event = {
+        "schema_version": 1,
+        "record_type": "event",
+        "payload_type": "runtime.user_intent.accepted",
+        "payload": {
+            "model_messages": [
+                {
+                    "content": [
+                        {
+                            "text": 'diff --git a/docs/client-features.yaml\n+ usage_markers = ["api error: 429", "usage limit exceeded", "5-hour limit reached"]\n+ usage_markers = ["rate limit", "usage limit", "upgrade to pro"]',
+                        }
+                    ]
+                }
+            ]
+        },
+    }
+    assistant_event = {
+        "schema_version": 1,
+        "record_type": "event",
+        "payload_type": "runtime.session",
+        "payload": {
+            "kind": "run",
+            "event": {
+                "kind": "assistant_message_committed",
+                "text": '{"result": "PASS", "summary": "Looks good"}',
+            },
+        },
+    }
+    terminal_event = {
+        "schema_version": 1,
+        "record_type": "event",
+        "payload_type": "runtime.session",
+        "payload": {
+            "kind": "run",
+            "event": {
+                "kind": "terminal",
+                "terminal": "completed",
+            },
+        },
+    }
+    script.write_text(
+        f"""#!/usr/bin/env python3
+import sys
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code 1.2.1")
+    raise SystemExit(0)
+print("muse: workspace root: /workspace")
+print({repr(json.dumps(prompt_event))})
+print({repr(json.dumps(assistant_event))})
+print({repr(json.dumps(terminal_event))})
+"""
+    )
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(
+        backends={
+            "muse-spark": BackendConfig(
+                name="muse-spark",
+                backend_type="muse",
+                model="muse-spark-1.3",
+                options_for_noedit=["--json", "--reasoning-effort", "low"],
+            )
+        }
+    )
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config):
+        manager = build_backend_manager(["muse-spark"], "muse-spark", {"muse-spark": "muse-spark-1.3"}, use_noedit_options=True)
+        manager._is_noedit = True
+        output = manager._run_llm_cli("review the code")
+
+    assert output == '{"result": "PASS", "summary": "Looks good"}'
+
+
+def test_extract_muse_jsonl_result_ignores_failed_tool_task_when_assistant_message_succeeds() -> None:
+    from src.auto_coder.adversarial_validator import _extract_muse_jsonl_result
+
+    raw = """muse: workspace root: /workspace
+{"schema_version":1,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"task","event":{"kind":"failed","reason":"No such file or directory: docs/client-features.yaml"}}}
+{"schema_version":1,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"run","event":{"kind":"assistant_message_committed","text":"{\\"result\\": \\"PASS\\"}"}}}
+{"schema_version":1,"record_type":"event","payload_type":"runtime.session","payload":{"kind":"run","event":{"kind":"terminal","terminal":"completed"}}}
+"""
+    detected, text, error = _extract_muse_jsonl_result(raw)
+    assert detected is True
+    assert text == '{"result": "PASS"}'
+    assert error is None
