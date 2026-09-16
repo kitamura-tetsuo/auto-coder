@@ -22,6 +22,8 @@ from auto_coder.specification_validation_lifecycle import SpecificationValidatio
 REPO = "owner/repo"
 BODY = "## Objective\n\nShip the widget.\n\n## Requirements\n- REQ-001: Return the current value."
 FINDING = SpecificationFinding("material_ambiguity", ("REQ-001",), "The current value is undefined.", "Define its source.", "", "")
+REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
+REVIEWER_APP_ID = 990001
 
 
 def ready_body(extra: str = "") -> str:
@@ -57,10 +59,22 @@ class FakeGitHub:
         return {"number": parent} if parent is not None else None
 
     def get_issue_comments_strict(self, _repo, number):
-        return [{"body": body} for _, body in self.comments if _ == number]
+        return [{"id": index + 1, "body": body, "user": {"login": REVIEWER_LOGIN}, "performed_via_github_app": {"id": REVIEWER_APP_ID}} for index, (n, body) in enumerate(self.comments) if n == number]
 
     def add_comment_to_issue(self, _repo, number, body):
         self.comments.append((number, body))
+
+    def publish_issue_review_comment(self, _repo, number, body, authorize_fn):
+        from auto_coder.issue_review_publication import PublicationReceipt
+
+        comment_id = len(self.comments) + 1
+        self.comments.append((number, body))
+        return PublicationReceipt(comment_id, REVIEWER_LOGIN, REVIEWER_APP_ID)
+
+    def reviewer_app_identity(self, _repo):
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        return ReviewerAppIdentity(login=REVIEWER_LOGIN, app_id=REVIEWER_APP_ID)
 
     def remove_labels(self, _repo, number, labels, item_type="issue"):
         assert item_type == "issue"

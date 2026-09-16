@@ -47,6 +47,8 @@ SPEC_FINDING = SpecificationFinding(
     "",
     "",
 )
+REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
+REVIEWER_APP_ID = 990001
 
 
 def make_parent(
@@ -131,6 +133,18 @@ class DecompositionGitHubFlow:
 
     def add_comment_to_issue(self, _repo: str, number: int, body: str) -> None:
         self.comments.append({"number": number, "body": body})
+
+    def publish_issue_review_comment(self, _repo: str, number: int, body: str, authorize_fn) -> Any:
+        from auto_coder.issue_review_publication import PublicationReceipt
+
+        comment_id = len(self.comments) + 1
+        self.comments.append({"id": comment_id, "number": number, "body": body, "user": {"login": REVIEWER_LOGIN}, "performed_via_github_app": {"id": REVIEWER_APP_ID}})
+        return PublicationReceipt(comment_id, REVIEWER_LOGIN, REVIEWER_APP_ID)
+
+    def reviewer_app_identity(self, _repo: str) -> Any:
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        return ReviewerAppIdentity(login=REVIEWER_LOGIN, app_id=REVIEWER_APP_ID)
 
     def remove_labels(self, _repo: str, number: int, labels: list[str], item_type: str = "issue") -> None:
         assert item_type == "issue"

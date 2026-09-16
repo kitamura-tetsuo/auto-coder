@@ -13,7 +13,7 @@ from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, cast
 
 import httpx
 from ghapi.all import GhApi
@@ -47,6 +47,10 @@ from .github_request_outcome import (
     response_metadata,
     take_wire_outcomes,
 )
+
+if TYPE_CHECKING:
+    from .github_app_reviewer import ReviewerAppIdentity
+    from .issue_review_publication import PublicationReceipt
 
 logger = get_logger(__name__)
 IMPLEMENTATION_READY_LABEL = "implementation-ready"
@@ -2505,6 +2509,30 @@ class GitHubClient:
         except Exception as e:
             logger.error(f"Failed to add comment to issue #{issue_number}: {e}")
             raise
+
+    def publish_issue_review_comment(self, repo_name: str, issue_number: int, body: str, authorize_fn: Callable[[], bool]) -> "PublicationReceipt":
+        """Publish an Issue validation findings comment via the dedicated reviewer App.
+
+        Deliberately never uses ``self.token`` (Issue #2026, REQ-002): Issue
+        specification/decomposition validation findings must be authored by
+        the dedicated reviewer App identity, never the ordinary controller
+        credential this class otherwise uses for label/edit/close mutations.
+        """
+        from .issue_review_publication import publish_findings_comment
+
+        return publish_findings_comment(repo_name, issue_number, body, authorize_fn)
+
+    def reviewer_app_identity(self, repo_name: str) -> "ReviewerAppIdentity":
+        """Resolve the dedicated reviewer App's own bot identity for authorship checks.
+
+        Kept behind this duck-typed method (rather than a free function
+        called directly from validation-lifecycle code) so every reviewer-App
+        interaction goes through the same ``github``-shaped boundary as
+        comments/labels/snapshots.
+        """
+        from .github_app_reviewer import resolve_reviewer_app_identity
+
+        return resolve_reviewer_app_identity(repo_name)
 
     def close_issue(self, repo_name: str, issue_number: int, comment: Optional[str] = None) -> None:
         """Close an issue with optional comment."""

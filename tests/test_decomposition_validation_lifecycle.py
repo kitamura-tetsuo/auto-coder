@@ -56,6 +56,31 @@ def configured_engine(tmp_path, github, set_result, child_result):
     return engine
 
 
+REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
+REVIEWER_APP_ID = 990001
+
+
+def _stub_reviewer_publication(github):
+    """Give a MagicMock ``github`` double a working App-publication surface.
+
+    Without this, ``publish_issue_review_comment``/``reviewer_app_identity``
+    auto-vivify as MagicMocks: a "successful" call would return a MagicMock
+    instead of a real ``PublicationReceipt``, which fails to serialize once
+    the lifecycle tries to persist it (Issue #2026).
+    """
+    from auto_coder.github_app_reviewer import ReviewerAppIdentity
+    from auto_coder.issue_review_publication import PublicationReceipt
+
+    counter = {"n": 0}
+
+    def _publish(_repo, _number, _body, _authorize_fn):
+        counter["n"] += 1
+        return PublicationReceipt(counter["n"], REVIEWER_LOGIN, REVIEWER_APP_ID)
+
+    github.publish_issue_review_comment.side_effect = _publish
+    github.reviewer_app_identity.return_value = ReviewerAppIdentity(login=REVIEWER_LOGIN, app_id=REVIEWER_APP_ID)
+
+
 def relationship_github(parent, children):
     github = MagicMock()
     snapshots = {parent["number"]: parent, **{child["number"]: child for child in children}}
@@ -65,6 +90,7 @@ def relationship_github(parent, children):
     github.get_issue_comments_strict.return_value = []
     github.has_linked_pr.return_value = False
     github.get_issue_timeline.return_value = []
+    _stub_reviewer_publication(github)
     return github
 
 
@@ -454,7 +480,7 @@ def test_set_blocked_comment_failure_still_withdraws_parent(tmp_path):
     child = issue(11, "Child", CHILD_BODY)
     child["parent_issue_number"] = 10
     github = relationship_github(parent, [child])
-    github.add_comment_to_issue.side_effect = RuntimeError("comment unavailable")
+    github.publish_issue_review_comment.side_effect = RuntimeError("comment unavailable")
     engine = configured_engine(tmp_path, github, lambda *_args: DecompositionAnalysisResult("BLOCKED", (SET_FINDING,)), lambda *_args: SpecificationAnalysisResult("READY"))
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", GitHubClient.get_issue_details(github, child), 0, issue_number=11), engine.config)
@@ -468,7 +494,7 @@ def test_inherited_child_blocked_comment_failure_preserves_parent(tmp_path):
     child = issue(11, "Child", CHILD_BODY)
     child["parent_issue_number"] = 10
     github = relationship_github(parent, [child])
-    github.add_comment_to_issue.side_effect = RuntimeError("comment unavailable")
+    github.publish_issue_review_comment.side_effect = RuntimeError("comment unavailable")
     engine = configured_engine(
         tmp_path,
         github,
@@ -650,6 +676,7 @@ def test_parent_relationship_added_during_individual_validation_blocks_standalon
     github.get_issue_comments_strict.return_value = []
     github.has_linked_pr.return_value = False
     github.get_issue_timeline.return_value = []
+    _stub_reviewer_publication(github)
 
     def analyze_child(*_args):
         nonlocal attached
@@ -930,5 +957,45 @@ def test_blocked_sibling_prevents_ready_child_dispatch(tmp_path, blocked_sibling
     assert result.actions == ["Rejected - blocked child specification prerequisite"]
     assert result.target_outcome.value == "blocked"
     assert engine.implementation_slots.active_owners() == ()
-    assert github.add_comment_to_issue.call_count == 1
-    assert github.add_comment_to_issue.call_args.args[1] == 12
+    assert github.publish_issue_review_comment.call_count == 1
+    assert github.publish_issue_review_comment.call_args.args[1] == 12
+
+
+def test_legacy_findings_published_record_is_never_reposted_or_relabeled(tmp_path):
+    """Issue #2026 REQ-008: a pre-App-routing findings_published record stays trusted-complete."""
+    from dataclasses import replace
+
+    gate = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", lambda *_a: DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE"))
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    legacy = replace(decision, findings_published=True, publication_schema_version=0, publication_receipt=None)
+    gate.store.save(legacy)
+
+    github = relationship_github(parent, children)
+    assert gate.apply_blocked(github, legacy, lambda _number: (parent, children)) is None
+    github.publish_issue_review_comment.assert_not_called()
+    saved = gate.store.get(decision.identity)
+    assert saved.findings_published is True
+    assert saved.publication_schema_version == 0
+    assert saved.publication_receipt is None
+
+
+def test_post_change_record_with_missing_receipt_is_not_silently_grandfathered(tmp_path):
+    """Issue #2026 REQ-008: a tagged post-change record without its receipt is re-verified, not trusted."""
+    from dataclasses import replace
+
+    gate = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", lambda *_a: DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE"))
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    corrupt = replace(decision, findings_published=True, publication_schema_version=1, publication_receipt=None)
+    gate.store.save(corrupt)
+
+    github = relationship_github(parent, children)
+    assert gate.apply_blocked(github, corrupt, lambda _number: (parent, children)) is None
+    github.publish_issue_review_comment.assert_called_once()
+    saved = gate.store.get(decision.identity)
+    assert saved.publication_receipt is not None

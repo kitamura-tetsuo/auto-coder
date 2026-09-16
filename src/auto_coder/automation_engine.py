@@ -22,7 +22,11 @@ from .automation_config import AutomationConfig, Candidate, CandidateProcessingR
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .candidate_queue import CandidateQueue
 from .decomposition_analyzer import DecompositionIssue
-from .decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
+from .decomposition_validation_lifecycle import (
+    DECOMPOSITION_PUBLICATION_STAGE,
+    DecompositionDecision,
+    DecompositionValidationLifecycle,
+)
 from .dependency_observation_cache import DEPENDENCY_OBSERVATION_TTL, DependencyObservationCache
 from .deployment_channel import repository_dispatch_authority
 from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity, issue_stabilization_deadline
@@ -622,6 +626,97 @@ class _ValidationPublicationStageHandler:
         if current is None:
             # Every effect this obligation named has been durably completed
             # via complete_effect() from inside apply_blocked/apply_inherited_blocked.
+            return StageOutcome(completed_effects=obligation.unfinished_effects)
+        return StageOutcome()
+
+
+class _DecompositionPublicationStageHandler:
+    """Resumes a decomposition (parent-set) BLOCKED publication.
+
+    Mirrors ``_ValidationPublicationStageHandler`` but reconstructs a fresh
+    ``DecompositionIdentity`` from the authoritative parent/direct-child set
+    rather than an individual ``ValidationIdentity`` (Issue #2026, REQ-007):
+    the inspected specification-only resumption handler never reached
+    decomposition decisions, so their publication effects had no recovery
+    path at all before this handler existed.
+    """
+
+    def __init__(self, engine: "AutomationEngine", repo_name: str) -> None:
+        self._engine = engine
+        self._repo_name = repo_name
+
+    def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def recover(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def _run(self, obligation: PendingObligation) -> StageOutcome:
+        repo_name = self._repo_name
+        entity = obligation.identity.entity
+        parent_number: Optional[int] = None
+        if entity.startswith("issue:"):
+            try:
+                parent_number = int(entity.split(":", 1)[1])
+            except ValueError:
+                parent_number = None
+        if parent_number is None:
+            logger.warning("Malformed decomposition-publication pending-work identity {!r}; discarding obligation", entity)
+            return StageOutcome(superseded=True)
+        try:
+            handle_cm = get_trace_collector().start_execution(
+                repository=repo_name,
+                item_type="issue",
+                item_number=parent_number,
+                origin="decomposition-publication-resumption",
+                stage_id="issue.decomposition-publication-resume",
+                label=f"issue#{parent_number} decomposition-publication resumption",
+            )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed opening execution scope for issue#{}; continuing untraced", parent_number)
+            return self._run_impl(obligation, parent_number)
+        with handle_cm as handle:
+            outcome = self._run_impl(obligation, parent_number)
+            try:
+                if outcome.error is not None:
+                    handle.set_outcome(Outcome.DEFERRED)
+                elif outcome.superseded:
+                    handle.set_outcome(Outcome.SUPERSEDED)
+                elif outcome.completed_effects:
+                    handle.set_outcome(Outcome.COMPLETED)
+                else:
+                    handle.set_outcome(Outcome.DEFERRED)
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed finishing execution scope for issue#{}; continuing", parent_number)
+            return outcome
+
+    def _run_impl(self, obligation: PendingObligation, parent_number: int) -> StageOutcome:
+        repo_name = self._repo_name
+        engine = self._engine
+        try:
+            authoritative_set = engine._fetch_authoritative_decomposition_set(repo_name, parent_number)
+        except GitHubRequestError as exc:
+            return StageOutcome(error=exc)
+        if authoritative_set is None or not engine._is_open_issue(authoritative_set[0]):
+            return StageOutcome(superseded=True)
+        validator = engine._get_decomposition_validator(repo_name)
+        fresh_identity = validator.identity(*authoritative_set)
+        if fresh_identity.key != obligation.identity.revision:
+            # An edited parent/child, a changed membership, or a new
+            # readiness submission produces a different identity; the
+            # retained obligation described a now-obsolete result.
+            return StageOutcome(superseded=True)
+        decision = validator.store.get(fresh_identity)
+        if decision is None or decision.verdict != "BLOCKED":
+            return StageOutcome(superseded=True)
+        side_effect_error = validator.apply_blocked(engine.github, decision, lambda number: engine._fetch_authoritative_decomposition_set(repo_name, number))
+        if side_effect_error:
+            logger.warning("Decomposition publication effects remain incomplete for parent Issue #{}: {}", parent_number, side_effect_error)
+            return StageOutcome()
+        current = get_pending_work_store().get(obligation.identity)
+        if current is None:
+            # Every effect this obligation named has been durably completed
+            # via complete_effect() from inside apply_blocked.
             return StageOutcome(completed_effects=obligation.unfinished_effects)
         return StageOutcome()
 
@@ -2197,6 +2292,7 @@ class AutomationEngine:
         self.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(VALIDATION_PUBLICATION_STAGE, _ValidationPublicationStageHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(DECOMPOSITION_PUBLICATION_STAGE, _DecompositionPublicationStageHandler(self, repo_name))
 
         # A pending approval/merge effect (Issue #1939) is resumed by its own
         # dedicated scheduler rather than PR_PROCESSING_STAGE: its deadlines,
