@@ -455,7 +455,7 @@ class ReviewAuditStore:
                             redact_sensitive_data(interaction.provider_alias, credentials) if interaction.provider_alias else None,
                             redact_sensitive_data(interaction.requested_model, credentials) if interaction.requested_model else None,
                             redact_sensitive_data(interaction.reported_model, credentials) if interaction.reported_model else None,
-                            interaction.invocation_mode,
+                            redact_sensitive_data(interaction.invocation_mode, credentials) if interaction.invocation_mode else None,
                             redact_sensitive_data(interaction.session_identity, credentials) if interaction.session_identity else None,
                             interaction.completion_status,
                         ),

@@ -138,7 +138,6 @@ def test_terminal_overwrite_immutability(tmp_path):
 def test_interaction_persistence_redaction(tmp_path):
     store = ReviewAuditStore(tmp_path)
 
-    # Write a dummy evaluation first to satisfy foreign key (actually we didn't add FK, but good practice)
     rec1 = ReviewAuditRecord(
         review_id="rev-i1",
         repository="repo",
@@ -169,27 +168,78 @@ def test_interaction_persistence_redaction(tmp_path):
         duration_ms=10,
         backend_alias="alias",
         backend_type="type",
-        provider_alias="prov",
-        requested_model="model_ghp_1234567890abcdefGH",
-        reported_model="report_sk-proj-xyz123",
-        invocation_mode="api",
-        session_identity="sess_SUPER_SECRET",
+        provider_alias="prov_AIzaSyB1234567890abcdefghijklmnopqrstuv",
+        requested_model="model_sk-0123456789abcdef0123456789abcdef0123456789abcdef",
+        reported_model="report_sk-ant-api03-12345678901234567890 AKIA1234567890ABCDEF",
+        invocation_mode="api_xoxb-123456789012-1234567890123-12345",
+        session_identity="sess_glpat-0123456789abcdefghij_SUPER_SECRET",
         completion_status="RETURNED",
     )
 
-    # Store with credentials
     assert store.record_interaction("repo", inter, credentials=["SUPER_SECRET"]) is True
 
-    # Inspect raw sqlite bytes/rows
     db_path = store._get_db_path("repo")
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM interaction WHERE interaction_id = 'int-1'").fetchone()
     conn.close()
 
+    assert row["provider_alias"] == "prov_[REDACTED]"
     assert row["requested_model"] == "model_[REDACTED]"
-    assert row["reported_model"] == "report_[REDACTED]"
-    assert row["session_identity"] == "sess_[REDACTED]"
+    assert row["reported_model"] == "report_[REDACTED] [REDACTED]"
+    assert row["invocation_mode"] == "api_[REDACTED]-1234567890123-12345"
+    assert row["session_identity"] == "sess_[REDACTED]_[REDACTED]"
+
+    # Test near miss and other variations
+    rec2 = ReviewAuditRecord(
+        review_id="rev-i2",
+        repository="repo",
+        target_type="pr",
+        target_number="1",
+        review_kind="pr",
+        origin="t",
+        process_identity="p",
+        creation_time="t",
+        creation_sequence=2,
+        reviewed_generation="g",
+        policy_identity="p",
+        related_issue_membership=None,
+        diagnostic_execution_references=None,
+        lifecycle=EvaluationLifecycle.QUEUED,
+        execution_mode=ExecutionMode.UNKNOWN,
+        native_verdict=None,
+        native_report=None,
+        source_review_id=None,
+    )
+    store.record_evaluation(rec2)
+
+    inter2 = ReviewInteractionRecord(
+        interaction_id="int-2",
+        review_id="rev-i2",
+        start_time="time",
+        end_time="time",
+        duration_ms=10,
+        backend_alias="alias",
+        backend_type="type",
+        provider_alias="prov_aIzaSyB1234567890abcdefghijklmnopqrstuv",  # lowercase a -> near miss
+        requested_model="model_sk-proj-1234 ghp_0123456789abcdefghij0123456789abcde github_pat_11AAAAA",
+        reported_model="report_ASIA1234567890ABCDEF ABIA1234567890ABCDEF ACCA1234567890ABCDEF",
+        invocation_mode="api_xoxp-12345_xoxr-12345_xoxa-12345_xoxs-12345",
+        session_identity="sess_GLPAT-0123456789abcdefghij_super_secret",  # uppercase GLPAT -> near miss, lowercase super_secret -> near miss
+        completion_status="RETURNED",
+    )
+
+    assert store.record_interaction("repo", inter2, credentials=["SUPER_SECRET"]) is True
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    row2 = conn.execute("SELECT * FROM interaction WHERE interaction_id = 'int-2'").fetchone()
+    conn.close()
+
+    assert row2["provider_alias"] == "prov_aIzaSyB1234567890abcdefghijklmnopqrstuv"
+    assert row2["requested_model"] == "model_[REDACTED] [REDACTED] [REDACTED]"
+    assert row2["reported_model"] == "report_[REDACTED] [REDACTED] [REDACTED]"
+    assert row2["invocation_mode"] == "api_[REDACTED]12345_[REDACTED]12345_[REDACTED]12345_[REDACTED]12345"
+    assert row2["session_identity"] == "sess_GLPAT-0123456789abcdefghij_super_secret"
 
 
 def test_pagination_and_invalid_limit(tmp_path):
