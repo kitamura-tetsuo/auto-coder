@@ -358,6 +358,29 @@ class IssueStageRoutingStore:
             )
             return True
 
+    def record_implementation_owned(self, repository: str, target_number: int, generation: str, now: Optional[float] = None) -> None:
+        """Durably tombstone a generation whose production start was independently proven.
+
+        Unlike :meth:`mark_implementation_owned`, this does not require a
+        durable ``starting`` arrival for *generation*: it is the entry point
+        used by the production ownership adapter (``implementation_ownership.py``,
+        #2061) that binds this tombstone to real ``ImplementationSlotRepository``
+        acquisition on the current dispatch path, ahead of the dedicated
+        Implementation worker's own ``begin()``/``starting`` lifecycle (#2055).
+        Idempotent: recording an already-owned generation is a no-op beyond
+        clearing any pending/starting arrival still tracking it.
+        """
+        timestamp = time.time() if now is None else now
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT OR IGNORE INTO implementation_owned_starts(repository,target_number,generation,owned_at) VALUES(?,?,?,?)",
+                (repository, target_number, generation, timestamp),
+            )
+            self._connection.execute(
+                "DELETE FROM issue_lane_arrivals WHERE repository=? AND stage='implementation' AND target_number=? AND generation=?",
+                (repository, target_number, generation),
+            )
+
     def recover(self, repository: str) -> None:
         """Make pre-ownership attempts retryable while retaining owned tombstones."""
         with self._lock, self._connection:

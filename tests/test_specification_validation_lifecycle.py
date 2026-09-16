@@ -12,6 +12,7 @@ from auto_coder.automation_config import AutomationConfig, Candidate, CandidateP
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_trace_collector
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import IndividualRelationshipContext, SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -285,6 +286,9 @@ def engine_with_gate(tmp_path, github, gate):
     engine = AutomationEngine(github, config=AutomationConfig())
     engine._specification_validators["owner/repo"] = gate
     engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    # Isolated from the real default path so production-ownership tombstones
+    # (#2061) from one test/engine instance can never leak into another.
+    engine.issue_stage_routing = IssueStageRoutingStore(tmp_path / "routing.sqlite3")
     engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult("issue", 1728, "Title", True, ["dispatched"]))
     candidate = Candidate(type="issue", data={"number": 1728, "title": "Title", "body": BODY}, priority=0)
     return engine, candidate
@@ -1275,7 +1279,12 @@ def test_manual_retry_retained_provider_admission_and_trace(tmp_path, explicit_o
     engine, candidate = engine_with_gate(tmp_path, github, lifecycle(tmp_path, "READY"))
     slots = engine.implementation_slots
     owner = ImplementationOwner("issue", 1728)
-    execution = slots.start_execution(owner)
+    # Seed retained evidence the way a real prior admission would have bound
+    # it (#2061), so this manual retry is recognized as a continuation of
+    # the same Implementation generation rather than failing closed on an
+    # unrecognized (legacy-shaped) binding.
+    generation = engine._compute_implementation_generation("owner/repo", snapshot(), None)
+    execution = slots.start_execution(owner, generation=generation)
     assert slots.record_provider_session(owner, "old-session")
     slots.finish_execution(owner, execution)
     TraceCollector._instance = None

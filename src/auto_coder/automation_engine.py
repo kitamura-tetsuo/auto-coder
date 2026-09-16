@@ -36,6 +36,12 @@ from .github_ci_observer import ci_read_phase_method, end_ci_read_phase
 from .github_pending_work import PendingObligation, PendingWorkScheduler, StageOutcome, WorkIdentity, get_pending_work_store
 from .github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
+from .implementation_ownership import (
+    OwnershipStartDecision,
+    begin_implementation_ownership,
+    confirm_implementation_ownership,
+    evaluate_implementation_start,
+)
 from .implementation_slots import (
     ImplementationHierarchyConflict,
     ImplementationHierarchyUnavailable,
@@ -875,6 +881,7 @@ class AutomationEngine:
                 self.github,
                 implementation_slots=self._get_implementation_slots(repo_name),
                 authorize_dispatch=self._authorize_stale_jules_dispatch,
+                routing=self.issue_stage_routing,
             )
             for action in stale_result.actions:
                 logger.info(f"Stale Jules issue session: {action}")
@@ -2539,6 +2546,66 @@ class AutomationEngine:
         stable_id = snapshot.get("id")
         issue_id = stable_id if isinstance(stable_id, int) and not isinstance(stable_id, bool) else number
         return ContractIdentity(repo_name, number, issue_id, str(snapshot.get("title") or ""), str(snapshot.get("body") or ""), role)
+
+    def _compute_implementation_generation(
+        self,
+        repo_name: str,
+        snapshot: Dict[str, Any],
+        family_set: Optional[tuple[Dict[str, Any], List[Dict[str, Any]]]],
+    ) -> str:
+        """Recompute the exact Implementation generation from freshly authoritative state.
+
+        Mirrors ``_route_standalone_issue``/``_route_issue_family`` exactly
+        (same ``ContractIdentity`` construction, same family-key set) so the
+        generation bound at production ownership-acquisition time (#2061)
+        always agrees with the generation the routing store itself would
+        compute for the same authoritative snapshot (#2053).
+        """
+        if family_set is None:
+            return implementation_generation(self._routing_contract(repo_name, snapshot, "standalone"))
+        parent, children = family_set
+        parent_contract = self._routing_contract(repo_name, parent, "parent")
+        child_contracts = {int(child["number"]): self._routing_contract(repo_name, child, "child") for child in children if isinstance(child.get("number"), int)}
+        family_keys = (parent_contract.key, *(contract.key for contract in child_contracts.values()))
+        target_number = snapshot.get("number")
+        if not isinstance(target_number, int) or target_number not in child_contracts:
+            raise ParentOperationalError("authoritative family snapshot omitted the target child")
+        return implementation_generation(child_contracts[target_number], family_keys)
+
+    def _start_issue_implementation_execution(
+        self,
+        repo_name: str,
+        slots: ImplementationSlotRepository,
+        owner: ImplementationOwner,
+        generation: Optional[str],
+        **start_kwargs: Any,
+    ) -> tuple[Optional[str], bool]:
+        """Start a durable local execution, binding it to production ownership (#2061).
+
+        Returns ``(execution_id, already_owned)``. ``already_owned`` is
+        ``True`` only when this exact Implementation generation already has a
+        durable production start recorded elsewhere (REQ-002, REQ-006) and
+        must not be attempted again; every other refusal is an ordinary
+        capacity/hierarchy/generation-conflict deferral indicated by a
+        ``None`` execution id, identical to today's behavior.
+
+        ``generation`` is ``None`` for owners the ownership adapter does not
+        track (a standalone PR, or a recurrent provider-owned task); in that
+        case this is a plain passthrough to ``slots.start_execution``.
+        """
+        if generation is None:
+            return slots.start_execution(owner, **start_kwargs), False
+        routing = self.issue_stage_routing
+        gate = evaluate_implementation_start(routing, slots, repo_name, owner, generation)
+        if gate.decision is OwnershipStartDecision.ALREADY_OWNED:
+            return None, True
+        if not gate.may_start:
+            return None, False
+        begin_implementation_ownership(routing, repo_name, owner, gate)
+        execution_id = slots.start_execution(owner, generation=generation, **start_kwargs)
+        if execution_id is not None:
+            confirm_implementation_ownership(routing, repo_name, owner, generation)
+        return execution_id, False
 
     def _routing_members_are_stable(self, repo_name: str, members: List[Dict[str, Any]]) -> bool:
         """Retain creation-anchored invalidations until every member is stable."""
@@ -5042,6 +5109,8 @@ class AutomationEngine:
         labels = candidate.data.get("labels", [])
         urgent_issue = candidate.type == "issue" and isinstance(labels, list) and any(label == "urgent" or (isinstance(label, dict) and label.get("name") == "urgent") for label in labels)
 
+        generation_context: Dict[str, Any] = {}
+
         def issue_generation_is_current() -> bool:
             if candidate.type != "issue":
                 return True
@@ -5052,6 +5121,11 @@ class AutomationEngine:
                 current_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                 if current_set is not None:
                     latest_relationship = self._child_review_context(*current_set, item_number)
+            # Captured unconditionally: the Implementation generation this
+            # freshest authoritative read would produce (#2061), used below
+            # only once this function's own freshness checks return True.
+            generation_context["snapshot"] = latest
+            generation_context["family_set"] = current_set
             child_current = isinstance(latest, dict) and self._is_open_issue(latest) and validator.identity(item_number, str(latest.get("title") or ""), str(latest.get("body") or ""), latest_relationship) == expected_identity
             if not child_current:
                 return False
@@ -5097,17 +5171,22 @@ class AutomationEngine:
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             owner_existed_before_admission = owner in slots.active_owners()
+            already_owned = False
             try:
                 if not inherited_execution:
-                    execution_id = slots.start_execution(
+                    implementation_key = self._compute_implementation_generation(repo_name, generation_context["snapshot"], generation_context.get("family_set")) if candidate.type == "issue" else None
+                    execution_id, already_owned = self._start_issue_implementation_execution(
+                        repo_name,
+                        slots,
                         owner,
+                        implementation_key,
                         implementation_pr=implementation_pr,
                         bypass_capacity=explicit_only,
                         bypass_active_execution=explicit_only and force and candidate.type == "pr",
                         allow_urgent_emergency=urgent_issue,
                         github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
                     )
-                if execution_id is None and not explicit_only:
+                if execution_id is None and not already_owned and not explicit_only:
                     slots.reconcile(self.github)
                     try:
                         generation_is_current = issue_generation_is_current()
@@ -5119,8 +5198,12 @@ class AutomationEngine:
                         result.target_outcome = ExplicitTargetOutcome.SKIPPED
                         result.actions = ["Skipped - validated Issue generation changed during capacity reconciliation"]
                         return result
-                    execution_id = slots.start_execution(
+                    implementation_key = self._compute_implementation_generation(repo_name, generation_context["snapshot"], generation_context.get("family_set")) if candidate.type == "issue" else None
+                    execution_id, already_owned = self._start_issue_implementation_execution(
+                        repo_name,
+                        slots,
                         owner,
+                        implementation_key,
                         implementation_pr=implementation_pr,
                         allow_urgent_emergency=urgent_issue,
                         github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
@@ -5133,6 +5216,10 @@ class AutomationEngine:
                 result.error = f"Cannot establish authoritative hierarchy for implementation admission: {exc}"
                 result.refill_retry_required = True
                 return result
+        if already_owned:
+            result.target_outcome = ExplicitTargetOutcome.SKIPPED
+            result.actions = ["Skipped - Implementation generation already has a durable production start"]
+            return result
         if execution_id is None:
             reason = "active execution already exists" if slots.active_execution_ids(owner) else "logical implementation limit is occupied"
             if candidate.type == "pr":

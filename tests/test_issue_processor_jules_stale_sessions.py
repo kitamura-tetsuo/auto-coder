@@ -425,6 +425,7 @@ class TestAutomationEngineHook:
             github_client,
             implementation_slots=engine._get_implementation_slots("owner/repo"),
             authorize_dispatch=engine._authorize_stale_jules_dispatch,
+            routing=engine.issue_stage_routing,
         )
         assert actions == stale_result.actions
 
