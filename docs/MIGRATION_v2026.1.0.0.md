@@ -92,7 +92,7 @@ This is a **breaking change** because:
 If you encounter issues during migration:
 
 1. Check your `~/.auto-coder/llm_config.toml` configuration
-2. Review the documentation in `docs/client-features.yaml`
+2. Review the documentation under `docs/client-features/`
 3. Report issues at https://github.com/kitamura-tetsuo/auto-coder/issues
 
 ## Version History

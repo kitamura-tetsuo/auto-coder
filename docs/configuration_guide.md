@@ -562,6 +562,6 @@ To add custom placeholders, modify the `BackendConfig.replace_placeholders()` me
 ## See Also
 
 - [Main README](../README.md) - General Auto-Coder documentation
-- [Client Features Documentation](client-features.yaml) - Complete feature reference
+- [Client Features Documentation](client-features/README.md) - Complete feature reference
 - [Example Configuration File](llm_backend_config.example.toml) - Complete example configuration
 - [Migration Guide for CLI Options](MIGRATION_CLI_OPTIONS.md) - Detailed migration instructions

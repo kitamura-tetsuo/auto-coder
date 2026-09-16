@@ -38,7 +38,7 @@ This feature is controlled by the `ENABLE_MERGEABILITY_REMEDIATION` configuratio
 - `ENABLE_MERGEABILITY_REMEDIATION` (default: true) - Enables automatic remediation
 - `SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL` (default: true) - Controls base branch updates during fix flows
 
-See [docs/client-features.yaml](docs/client-features.yaml) for complete technical documentation.
+See [docs/client-features/](docs/client-features/README.md) for complete technical documentation.
 
 ### 📊 Logging and Monitoring
 - **Real-time Dashboard**: Visualize queue status and active workers at `http://localhost:8000/dashboard/`. See [docs/DASHBOARD.md](docs/DASHBOARD.md) for details.
@@ -1493,7 +1493,7 @@ auto-coder config show
 
 For complete documentation with all options and best practices, see:
 - [Label-Based Prompt Configurations](examples/label-based-prompt-configurations.md)
-- [client-features.yaml](docs/client-features.yaml) (technical specification)
+- [Client Features Documentation](docs/client-features/README.md) (technical specification)
 
 ## Development
 

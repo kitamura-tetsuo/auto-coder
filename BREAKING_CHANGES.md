@@ -228,7 +228,7 @@ However, we recommend updating to the new configuration system as it provides:
 #### Resources
 
 - [Configuration Example](../docs/llm_backend_config.example.toml) - Full configuration reference with examples
-- [Client Features Documentation](../docs/client-features.yaml) - Complete feature documentation
+- [Client Features Documentation](../docs/client-features/README.md) - Complete feature documentation
 - GitHub Issue #[906](https://github.com/kitamura-tetsuo/auto-coder/issues/906) - Original issue tracking this breaking change
 
 ---
