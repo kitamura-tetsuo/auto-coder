@@ -179,11 +179,11 @@ class ReviewAuditStore:
         return Path.home() / ".auto-coder" / "review_audit"
 
     def _get_db_path(self, repository: str) -> Path:
-        # Prevent path traversal
-        sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", repository)
-        if not sanitized:
-            sanitized = "unknown_repo"
-        repo_dir = self._audit_root / sanitized
+        import hashlib
+
+        # Hash to prevent collision and path traversal
+        hash_digest = hashlib.sha256(repository.encode("utf-8")).hexdigest()
+        repo_dir = self._audit_root / hash_digest
         return repo_dir / "audit.db"
 
     def _connect_readonly(self, repository: str) -> Tuple[Optional[sqlite3.Connection], StorageHealth]:
@@ -343,9 +343,14 @@ class ReviewAuditStore:
 
                         # Terminal states: FINISHED, CANCELLED
                         # If existing is terminal and new is not, conflict
-                        if existing["lifecycle"] in (EvaluationLifecycle.FINISHED.value, EvaluationLifecycle.CANCELLED.value) and record.lifecycle.value not in (EvaluationLifecycle.FINISHED.value, EvaluationLifecycle.CANCELLED.value):
-                            logger.error(f"Audit conflict: review_id {record.review_id} is terminal {existing['lifecycle']}, got {record.lifecycle.value}")
-                            return False
+                        if existing["lifecycle"] in (EvaluationLifecycle.FINISHED.value, EvaluationLifecycle.CANCELLED.value):
+                            if record.lifecycle.value != existing["lifecycle"]:
+                                return False
+                            if record.execution_mode.value != existing["execution_mode"] and record.execution_mode != ExecutionMode.UNKNOWN:
+                                return False
+                            if record.native_verdict and record.native_verdict != existing["native_verdict"]:
+                                return False
+                            return True
 
                         # Update fields
                         updates = []
@@ -397,9 +402,14 @@ class ReviewAuditStore:
                     return False
 
                 # Terminal state check
-                if existing["lifecycle"] in (EvaluationLifecycle.FINISHED.value, EvaluationLifecycle.CANCELLED.value) and lifecycle.value not in (EvaluationLifecycle.FINISHED.value, EvaluationLifecycle.CANCELLED.value):
-                    logger.error(f"Audit update conflict: review_id {review_id} is terminal {existing['lifecycle']}, got {lifecycle.value}")
-                    return False
+                if existing["lifecycle"] in (EvaluationLifecycle.FINISHED.value, EvaluationLifecycle.CANCELLED.value):
+                    if lifecycle.value != existing["lifecycle"]:
+                        return False
+                    if execution_mode.value != existing["execution_mode"] and execution_mode != ExecutionMode.UNKNOWN:
+                        return False
+                    if native_verdict and native_verdict != existing["native_verdict"]:
+                        return False
+                    return True
 
                 updates = ["lifecycle = ?", "execution_mode = ?"]
                 params: list[Any] = [lifecycle.value, execution_mode.value]
@@ -418,7 +428,7 @@ class ReviewAuditStore:
             logger.error(f"Failed to update evaluation {review_id}: {e}")
             return False
 
-    def record_interaction(self, repository: str, interaction: ReviewInteractionRecord) -> bool:
+    def record_interaction(self, repository: str, interaction: ReviewInteractionRecord, credentials: Optional[Sequence[str]] = None) -> bool:
         conn = self._ensure_db(repository)
         if not conn:
             return False
@@ -442,11 +452,11 @@ class ReviewAuditStore:
                             interaction.duration_ms,
                             interaction.backend_alias,
                             interaction.backend_type,
-                            interaction.provider_alias,
-                            interaction.requested_model,
-                            interaction.reported_model,
+                            redact_sensitive_data(interaction.provider_alias, credentials) if interaction.provider_alias else None,
+                            redact_sensitive_data(interaction.requested_model, credentials) if interaction.requested_model else None,
+                            redact_sensitive_data(interaction.reported_model, credentials) if interaction.reported_model else None,
                             interaction.invocation_mode,
-                            interaction.session_identity,
+                            redact_sensitive_data(interaction.session_identity, credentials) if interaction.session_identity else None,
                             interaction.completion_status,
                         ),
                     )
@@ -532,11 +542,11 @@ class ReviewAuditStore:
             logger.error(f"Failed to get evaluation {review_id}: {e}")
             return AuditSingleReadResult(health=StorageHealth.UNAVAILABLE, record=None)
 
-    def get_recent_history(self, repository: str, limit: int = 50, high_water_mark_seq: Optional[int] = None) -> AuditReadResult:
+    def get_recent_history(self, repository: str, limit: int = 50, high_water_mark_seq: Optional[int] = None, before_seq: Optional[int] = None) -> AuditReadResult:
         """Gets recent evaluations. Page sizes strictly 1-200."""
         if not 1 <= limit <= 200:
             logger.error("Page size must be between 1 and 200")
-            return AuditReadResult(health=StorageHealth.AVAILABLE, records=[])
+            return AuditReadResult(health=StorageHealth.UNAVAILABLE, records=[])
 
         conn, health = self._connect_readonly(repository)
         if not conn:
@@ -544,13 +554,25 @@ class ReviewAuditStore:
 
         try:
             with conn:
+                query = "SELECT * FROM evaluation"
+                params: list[Any] = []
+                conditions = []
+
                 if high_water_mark_seq is not None:
-                    # ASC so older pages don't get skipped if new arrive. Wait, if it's descending creation time?
-                    # "paginate by durable creation sequence with a fixed snapshot high-water mark so new records do not skip/duplicate older pages"
-                    # We want records WHERE creation_sequence <= high_water_mark_seq ORDER BY creation_sequence DESC LIMIT limit
-                    cursor = conn.execute("SELECT * FROM evaluation WHERE creation_sequence <= ? ORDER BY creation_sequence DESC LIMIT ?", (high_water_mark_seq, limit))
-                else:
-                    cursor = conn.execute("SELECT * FROM evaluation ORDER BY creation_sequence DESC LIMIT ?", (limit,))
+                    conditions.append("creation_sequence <= ?")
+                    params.append(high_water_mark_seq)
+
+                if before_seq is not None:
+                    conditions.append("creation_sequence < ?")
+                    params.append(before_seq)
+
+                if conditions:
+                    query += " WHERE " + " AND ".join(conditions)
+
+                query += " ORDER BY creation_sequence DESC LIMIT ?"
+                params.append(limit)
+
+                cursor = conn.execute(query, params)
 
                 records = []
                 for row in cursor.fetchall():
@@ -583,7 +605,7 @@ class ReviewAuditStore:
                     query += " AND review_kind = ?"
                     params.append(review_kind)
 
-                query += " ORDER BY creation_sequence ASC"
+                query += " ORDER BY creation_sequence ASC LIMIT 500"
                 cursor = conn.execute(query, params)
 
                 records = []
