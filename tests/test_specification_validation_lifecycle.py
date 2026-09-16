@@ -1433,6 +1433,41 @@ def test_new_decision_is_stamped_before_first_send_and_receipt_persists(tmp_path
     assert saved.publication_receipt == {"comment_id": 1, "publisher_login": REVIEWER_LOGIN, "publisher_app_id": REVIEWER_APP_ID}
 
 
+def test_repair_round_policy_reconstruction_preserves_publication_receipt(tmp_path):
+    """Issue #2026 REQ-003/REQ-008: a repair-round reason change must never drop an already-confirmed receipt.
+
+    Found by adversarial review: ``_apply_repair_round_policy`` rebuilt the
+    decision without copying ``publication_schema_version``/
+    ``publication_receipt`` (or ``evaluation_source``) whenever the repair
+    round policy produced a different remediation/reason, silently
+    downgrading an App-confirmed record to indistinguishable-from-legacy.
+    """
+    from dataclasses import replace
+    from unittest.mock import patch as mock_patch
+
+    from auto_coder.specification_repair_rounds import RepairRoundApplication
+
+    gate = lifecycle(tmp_path, "BLOCKED")
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    receipt = {"comment_id": 42, "publisher_login": REVIEWER_LOGIN, "publisher_app_id": REVIEWER_APP_ID}
+    confirmed = replace(decision, findings_published=True, publication_schema_version=1, publication_receipt=receipt)
+    gate.store.save(confirmed)
+
+    # Simulate the repair-round policy newly reaching its pause limit for
+    # this exact generation, exactly as a real budget exhaustion would,
+    # without needing to choreograph the full multi-generation sequence.
+    with mock_patch.object(gate.repair_rounds, "apply", return_value=RepairRoundApplication("EDIT_IN_PLACE", 3, reason="automatic_repair_paused(repair_round_limit_reached)", paused=True)):
+        updated = gate._apply_repair_round_policy(confirmed)
+
+    assert updated.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)"
+    assert updated.publication_schema_version == 1
+    assert updated.publication_receipt == receipt
+    assert updated.findings_published is True
+    saved = gate.store.get(decision.identity)
+    assert saved.publication_schema_version == 1
+    assert saved.publication_receipt == receipt
+
+
 def test_existing_comment_with_wrong_author_is_an_unconfirmed_conflict_not_a_repost(tmp_path):
     """Issue #2026 REQ-005: a marker-bearing comment from another actor must not be silently accepted or reposted."""
     gate = lifecycle(tmp_path, "BLOCKED")

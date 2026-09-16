@@ -999,3 +999,37 @@ def test_post_change_record_with_missing_receipt_is_not_silently_grandfathered(t
     github.publish_issue_review_comment.assert_called_once()
     saved = gate.store.get(decision.identity)
     assert saved.publication_receipt is not None
+
+
+def test_repair_round_reconstruction_preserves_publication_receipt(tmp_path):
+    """Issue #2026 REQ-003/REQ-008: a repair-round reason change must never drop an already-confirmed receipt.
+
+    Found by adversarial review: the inline repair-round update in
+    ``apply_blocked`` rebuilt the decision without copying
+    ``publication_schema_version``/``publication_receipt`` whenever the
+    repair round policy produced a different remediation/reason, silently
+    downgrading an App-confirmed record to indistinguishable-from-legacy.
+    """
+    from dataclasses import replace
+    from unittest.mock import patch as mock_patch
+
+    from auto_coder.specification_repair_rounds import RepairRoundApplication
+
+    gate = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json", lambda *_a: DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE"))
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    receipt = {"comment_id": 42, "publisher_login": "auto-coder-reviewer[bot]", "publisher_app_id": 990001}
+    confirmed = replace(decision, findings_published=True, publication_schema_version=1, publication_receipt=receipt)
+    gate.store.save(confirmed)
+
+    github = relationship_github(parent, children)
+    with mock_patch.object(gate.repair_rounds, "apply", return_value=RepairRoundApplication("EDIT_IN_PLACE", 3, reason="automatic_repair_paused(repair_round_limit_reached)", paused=True)):
+        assert gate.apply_blocked(github, confirmed, lambda _number: (parent, children)) is None
+
+    saved = gate.store.get(decision.identity)
+    assert saved.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)"
+    assert saved.publication_schema_version == 1
+    assert saved.publication_receipt == receipt
+    github.publish_issue_review_comment.assert_not_called()

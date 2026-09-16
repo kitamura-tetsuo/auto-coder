@@ -669,15 +669,11 @@ class SpecificationValidationLifecycle:
         )
         if (applied.remediation, applied.reason) == (decision.remediation, decision.remediation_reason):
             return decision
-        updated = ValidationDecision(
-            decision.identity,
-            decision.verdict,
-            decision.findings,
-            decision.findings_published,
-            decision.readiness_removed,
-            applied.remediation,
-            applied.reason,
-        )
+        # A repair-round policy change never touches publication state: an
+        # already App-confirmed receipt must survive this reconstruction
+        # rather than being silently reset to legacy (Issue #2026, REQ-003,
+        # REQ-008).
+        updated = replace(decision, remediation=applied.remediation, remediation_reason=applied.reason)
         self.store.save(updated)
         return updated
 

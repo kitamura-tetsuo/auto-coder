@@ -450,15 +450,11 @@ class DecompositionValidationLifecycle:
                 get_specification_repair_round_limit_from_config(repo_name=self.repository),
             )
             if (applied.remediation, applied.reason) != (current.remediation, current.remediation_reason):
-                current = DecompositionDecision(
-                    current.identity,
-                    current.verdict,
-                    current.findings,
-                    current.findings_published,
-                    current.readiness_removed,
-                    applied.remediation,
-                    applied.reason,
-                )
+                # A repair-round policy change never touches publication
+                # state: an already App-confirmed receipt must survive this
+                # reconstruction rather than being silently reset to legacy
+                # (Issue #2026, REQ-003, REQ-008).
+                current = replace(current, remediation=applied.remediation, remediation_reason=applied.reason)
                 self.store.save(current)
             self.history_store.record_applied(
                 current.identity.parent.issue_number,
