@@ -296,6 +296,13 @@ class ReviewAuditStore:
             return False
 
         redacted_report = redact_sensitive_data(record.native_report, credentials) if record.native_report else None
+        redacted_origin = redact_sensitive_data(record.origin, credentials) if record.origin else None
+        redacted_process_identity = redact_sensitive_data(record.process_identity, credentials) if record.process_identity else None
+        redacted_reviewed_generation = redact_sensitive_data(record.reviewed_generation, credentials) if record.reviewed_generation else None
+        redacted_policy_identity = redact_sensitive_data(record.policy_identity, credentials) if record.policy_identity else None
+        redacted_related_issue_membership = redact_sensitive_data(record.related_issue_membership, credentials) if record.related_issue_membership else None
+        redacted_diagnostic = redact_sensitive_data(record.diagnostic_execution_references, credentials) if record.diagnostic_execution_references else None
+        redacted_native_verdict = redact_sensitive_data(record.native_verdict, credentials) if record.native_verdict else None
 
         try:
             with conn:
@@ -315,17 +322,17 @@ class ReviewAuditStore:
                             record.target_type,
                             record.target_number,
                             record.review_kind,
-                            record.origin,
-                            record.process_identity,
+                            redacted_origin,
+                            redacted_process_identity,
                             record.creation_time,
                             record.creation_sequence,
-                            record.reviewed_generation,
-                            record.policy_identity,
-                            record.related_issue_membership,
-                            json.dumps(record.diagnostic_execution_references) if record.diagnostic_execution_references else None,
+                            redacted_reviewed_generation,
+                            redacted_policy_identity,
+                            redacted_related_issue_membership,
+                            json.dumps(redacted_diagnostic) if redacted_diagnostic else None,
                             record.lifecycle.value,
                             record.execution_mode.value,
-                            record.native_verdict,
+                            redacted_native_verdict,
                             json.dumps(redacted_report) if redacted_report is not None else None,
                             record.source_review_id,
                         ),
@@ -363,9 +370,22 @@ class ReviewAuditStore:
                             updates.append("execution_mode = ?")
                             params.append(record.execution_mode.value)
 
-                        if record.native_verdict and not existing["native_verdict"]:
+                        # Non-terminal conflict checks: if supplied value exists but differs from existing populated value, conflict!
+                        if redacted_native_verdict and existing["native_verdict"] and existing["native_verdict"] != redacted_native_verdict:
+                            return False
+
+                        if redacted_report:
+                            existing_report = json.loads(existing["native_report"]) if existing["native_report"] else None
+                            if existing_report is not None and existing_report != redacted_report:
+                                return False
+
+                        if record.execution_mode != ExecutionMode.UNKNOWN and existing["execution_mode"] != ExecutionMode.UNKNOWN.value:
+                            if existing["execution_mode"] != record.execution_mode.value:
+                                return False
+
+                        if redacted_native_verdict and not existing["native_verdict"]:
                             updates.append("native_verdict = ?")
-                            params.append(record.native_verdict)
+                            params.append(redacted_native_verdict)
 
                         if redacted_report and not existing["native_report"]:
                             updates.append("native_report = ?")
@@ -392,6 +412,7 @@ class ReviewAuditStore:
             return False
 
         redacted_report = redact_sensitive_data(native_report, credentials) if native_report else None
+        redacted_native_verdict = redact_sensitive_data(native_verdict, credentials) if native_verdict else None
 
         try:
             with conn:
@@ -414,9 +435,9 @@ class ReviewAuditStore:
                 updates = ["lifecycle = ?", "execution_mode = ?"]
                 params: list[Any] = [lifecycle.value, execution_mode.value]
 
-                if native_verdict:
+                if redacted_native_verdict:
                     updates.append("native_verdict = ?")
-                    params.append(native_verdict)
+                    params.append(redacted_native_verdict)
                 if redacted_report:
                     updates.append("native_report = ?")
                     params.append(json.dumps(redacted_report))
@@ -450,8 +471,8 @@ class ReviewAuditStore:
                             interaction.start_time,
                             interaction.end_time,
                             interaction.duration_ms,
-                            interaction.backend_alias,
-                            interaction.backend_type,
+                            redact_sensitive_data(interaction.backend_alias, credentials) if interaction.backend_alias else None,
+                            redact_sensitive_data(interaction.backend_type, credentials) if interaction.backend_type else None,
                             redact_sensitive_data(interaction.provider_alias, credentials) if interaction.provider_alias else None,
                             redact_sensitive_data(interaction.requested_model, credentials) if interaction.requested_model else None,
                             redact_sensitive_data(interaction.reported_model, credentials) if interaction.reported_model else None,

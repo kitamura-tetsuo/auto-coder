@@ -282,3 +282,115 @@ def test_pagination_and_invalid_limit(tmp_path):
 
     res_inv2 = store.get_recent_history("repo", limit=201)
     assert res_inv2.health == StorageHealth.UNAVAILABLE
+
+
+def test_omitted_fields_persistence_redaction(tmp_path):
+    store = ReviewAuditStore(tmp_path)
+
+    rec = ReviewAuditRecord(
+        review_id="rev-omitted",
+        repository="repo",
+        target_type="pr",
+        target_number="1",
+        review_kind="pr",
+        origin="origin_SUPER_SECRET_123_AIzaSyB1234567890abcdefghijklmnopqrstuv",
+        process_identity="proc_sk-1234567890abcdef1234567890abcdef1234567890abcdef",
+        creation_time="time",
+        creation_sequence=1,
+        reviewed_generation="gen_sk-proj-xyz sk-ant-api03-12345678901234567890",
+        policy_identity="pol_AKIA1234567890ABCDEF xoxb-123456789012-1234567890123-12345",
+        related_issue_membership="mem_glpat-0123456789abcdefghij",
+        diagnostic_execution_references=["exec-SUPER_SECRET_123", "ghp_1234567890abcdefghij0123456789abcde"],
+        lifecycle=EvaluationLifecycle.QUEUED,
+        execution_mode=ExecutionMode.UNKNOWN,
+        native_verdict="verdict_github_pat_11AAAAA",
+        native_report=None,
+        source_review_id=None,
+    )
+    assert store.record_evaluation(rec, credentials=["SUPER_SECRET_123"]) is True
+
+    inter = ReviewInteractionRecord(
+        interaction_id="int-omitted",
+        review_id="rev-omitted",
+        start_time="time",
+        end_time="time",
+        duration_ms=10,
+        backend_alias="alias_SUPER_SECRET_123",
+        backend_type="type_AIzaSyB1234567890abcdefghijklmnopqrstuv",
+        provider_alias="prov",
+        requested_model="model",
+        reported_model="report",
+        invocation_mode="api",
+        session_identity="sess",
+        completion_status="RETURNED",
+    )
+    assert store.record_interaction("repo", inter, credentials=["SUPER_SECRET_123"]) is True
+
+    db_path = store._get_db_path("repo")
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    row_eval = conn.execute("SELECT * FROM evaluation WHERE review_id = 'rev-omitted'").fetchone()
+    row_inter = conn.execute("SELECT * FROM interaction WHERE interaction_id = 'int-omitted'").fetchone()
+    conn.close()
+
+    assert row_eval["origin"] == "origin_[REDACTED]_[REDACTED]"
+    assert row_eval["process_identity"] == "proc_[REDACTED]"
+    assert row_eval["reviewed_generation"] == "gen_[REDACTED] [REDACTED]"
+    assert row_eval["policy_identity"] == "pol_[REDACTED] [REDACTED]-1234567890123-12345"
+    assert row_eval["related_issue_membership"] == "mem_[REDACTED]"
+    assert row_eval["diagnostic_execution_references"] == '["exec-[REDACTED]", "[REDACTED]"]'
+    assert row_eval["native_verdict"] == "verdict_[REDACTED]"
+
+    assert row_inter["backend_alias"] == "alias_[REDACTED]"
+    assert row_inter["backend_type"] == "type_[REDACTED]"
+
+
+def test_non_terminal_conflict_overwrite(tmp_path):
+    store = ReviewAuditStore(tmp_path)
+
+    rec1 = ReviewAuditRecord(
+        review_id="rev-conflict",
+        repository="repo",
+        target_type="pr",
+        target_number="1",
+        review_kind="pr",
+        origin="test",
+        process_identity="p1",
+        creation_time="time",
+        creation_sequence=1,
+        reviewed_generation="gen1",
+        policy_identity="pol1",
+        related_issue_membership=None,
+        diagnostic_execution_references=None,
+        lifecycle=EvaluationLifecycle.RUNNING,
+        execution_mode=ExecutionMode.EXECUTED,
+        native_verdict="READY",
+        native_report=None,
+        source_review_id=None,
+    )
+    assert store.record_evaluation(rec1) is True
+
+    rec_conflict = ReviewAuditRecord(
+        review_id="rev-conflict",
+        repository="repo",
+        target_type="pr",
+        target_number="1",
+        review_kind="pr",
+        origin="test",
+        process_identity="p1",
+        creation_time="time",
+        creation_sequence=1,
+        reviewed_generation="gen1",
+        policy_identity="pol1",
+        related_issue_membership=None,
+        diagnostic_execution_references=None,
+        lifecycle=EvaluationLifecycle.RUNNING,
+        execution_mode=ExecutionMode.EXECUTED,
+        native_verdict="BLOCKED",
+        native_report=None,
+        source_review_id=None,
+    )
+    assert store.record_evaluation(rec_conflict) is False
+
+    res = store.get_evaluation("repo", "rev-conflict")
+    assert res.record.native_verdict == "READY"
