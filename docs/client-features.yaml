@@ -1554,6 +1554,7 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
     - When not configured, clients fall back to their built-in default markers
     - Markers are matched case-insensitively against the CLI output
     - JSON markers are matched as partial JSON (subset) against any JSON payload found in the CLI output, including structured log lines
+    - Independently of configured/default markers, `qwen`, `auggie`, and `muse` backends also detect an unambiguous HTTP 429 (Too Many Requests) status reference (e.g. "HTTP 429", "Error 429:", "status: 429", "429 Too Many Requests") via `has_http_429_marker` in `usage_marker_utils.py`. This requires context around the number (a preceding "http"/"error"/"status"/"code" label, or a following "too many requests"), unlike a bare `"429"` usage marker, so it does not misdetect unrelated numbers such as line numbers, ports, or counts.
   - Configuration file: "~/.auto-coder/llm_config.toml"
   - Optional field: Backward compatible with existing configurations
 
