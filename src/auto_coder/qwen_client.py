@@ -22,7 +22,7 @@ from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .usage_marker_utils import has_usage_marker_match
+from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -332,8 +332,10 @@ class QwenClient(LLMClientBase):
                 "quota",
             ]
 
-        usage_limit_detected = has_usage_marker_match(message, usage_markers)
-        return usage_limit_detected
+        if has_usage_marker_match(message, usage_markers):
+            return True
+
+        return has_http_429_marker(message)
 
     # ----- Feature suggestion helpers (copy of GeminiClient behavior) -----
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -23,7 +23,7 @@ from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
-from .usage_marker_utils import has_usage_marker_match
+from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
 
 logger = get_logger(__name__)
 
@@ -293,7 +293,7 @@ class AuggieClient(LLMClientBase):
                 # Default hardcoded usage markers
                 usage_markers = ["rate limit", "quota"]
 
-            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+            usage_limit_detected = has_usage_marker_match(full_output, usage_markers) or has_http_429_marker(full_output)
 
             if return_code != 0:
                 if usage_limit_detected:
