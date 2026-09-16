@@ -71,7 +71,7 @@ def configured_reviewer(tmp_path: Path, client: RecordingClient, monkeypatch: py
     key = tmp_path / "reviewer.pem"
     key.write_text("fake private key", encoding="utf-8")
     monkeypatch.setattr("auto_coder.github_app_reviewer.jwt.encode", lambda *args, **kwargs: "fake-app-jwt")
-    return GitHubAppReviewer(ReviewerAppConfig("123", "client", key), api_url="https://api.github.test", client=client, clock=lambda: now)
+    return GitHubAppReviewer(ReviewerAppConfig("4765828", "client", key), api_url="https://api.github.test", client=client, clock=lambda: now)
 
 
 def auth_responses(head_sha: str = "sha-a") -> list[httpx.Response]:
@@ -447,7 +447,7 @@ def test_get_identity_resolves_bot_login_from_app_slug(tmp_path: Path, monkeypat
 
 def test_get_identity_is_cached_after_first_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
-    client = PatchedRecordingClient([response(200, {"id": 1, "slug": "auto-coder-reviewer"})])
+    client = PatchedRecordingClient([response(200, {"id": 4765828, "slug": "auto-coder-reviewer"})])
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
 
     first = reviewer.get_identity()

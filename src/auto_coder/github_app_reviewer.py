@@ -219,11 +219,13 @@ class GitHubAppReviewer:
                 elapsed_ms=0.0,
                 message="Reviewer GitHub App identity could not be resolved",
             )
+            logger.bind(repository=repo_name, target=str(issue_number), phase="publication", failure_category="authentication_failure").error("Reviewer GitHub App identity could not be resolved")
             return IssuePublicationResult(None, None, outcome)
 
         try:
             token = self._installation_token(repo_name, frozenset([("issues", "write")]))
         except GitHubRequestError as exc:
+            logger.bind(repository=repo_name, target=str(issue_number), phase="publication", failure_category=exc.outcome.classification.value).error(f"Dedicated reviewer GitHub App request failed: {exc.outcome.message}")
             return IssuePublicationResult(None, identity, exc.outcome)
         except Exception as exc:
             outcome = GitHubRequestOutcome(
@@ -236,6 +238,7 @@ class GitHubAppReviewer:
                 elapsed_ms=0.0,
                 message="GitHub did not return a reviewer installation token",
             )
+            logger.bind(repository=repo_name, target=str(issue_number), phase="publication", failure_category=outcome.classification.value).error(outcome.message)
             return IssuePublicationResult(None, identity, outcome)
 
         try:
@@ -254,6 +257,7 @@ class GitHubAppReviewer:
                 elapsed_ms=0.0,
                 message="Publication check refused authorization before sending",
             )
+            logger.bind(repository=repo_name, target=str(issue_number), phase="publication", failure_category=outcome.classification.value).error(outcome.message)
             return IssuePublicationResult(None, identity, outcome)
 
         try:
@@ -264,6 +268,7 @@ class GitHubAppReviewer:
                 json={"body": body},
             )
         except GitHubRequestError as exc:
+            logger.bind(repository=repo_name, target=str(issue_number), phase="publication", failure_category=exc.outcome.classification.value).error(f"Dedicated reviewer GitHub App request failed: {exc.outcome.message}")
             return IssuePublicationResult(None, identity, exc.outcome)
         except Exception as exc:
             outcome = GitHubRequestOutcome(
@@ -276,6 +281,7 @@ class GitHubAppReviewer:
                 elapsed_ms=0.0,
                 message="Transport failure during Issue comment POST",
             )
+            logger.bind(repository=repo_name, target=str(issue_number), phase="publication", failure_category=outcome.classification.value).error(outcome.message)
             return IssuePublicationResult(None, identity, outcome)
 
         data = response.json()
@@ -291,6 +297,7 @@ class GitHubAppReviewer:
                 elapsed_ms=0.0,
                 message="Invalid JSON response",
             )
+            logger.bind(repository=repo_name, target=str(issue_number), phase="publication", failure_category=outcome.classification.value).error(outcome.message)
             return IssuePublicationResult(None, identity, outcome)
 
         comment_id = data.get("id")
@@ -337,6 +344,7 @@ class GitHubAppReviewer:
                 elapsed_ms=0.0,
                 message="Comment response identity or target mismatch",
             )
+            logger.bind(repository=repo_name, target=str(issue_number), phase="publication", failure_category=outcome.classification.value).error(outcome.message)
             return IssuePublicationResult(None, identity, outcome)
 
     def get_identity(self) -> ReviewerAppIdentity:
@@ -355,6 +363,8 @@ class GitHubAppReviewer:
             slug = info.get("slug") if isinstance(info, dict) else None
             app_id = info.get("id") if isinstance(info, dict) else None
             if not isinstance(slug, str) or not slug or not isinstance(app_id, int):
+                raise RuntimeError("Reviewer GitHub App identity could not be resolved")
+            if str(app_id) != str(self._config.app_id):
                 raise RuntimeError("Reviewer GitHub App identity could not be resolved")
             identity = ReviewerAppIdentity(login=f"{slug}[bot]", app_id=app_id)
             self._identity = identity
@@ -588,6 +598,7 @@ def publish_issue_review(repo_name: str, issue_number: int, body: str, authorize
             elapsed_ms=0.0,
             message="Dedicated reviewer GitHub App configuration is unavailable",
         )
+        logger.bind(repository=repo_name, target=str(issue_number), phase="publication", failure_category="authentication_failure").error("Reviewer GitHub App identity could not be resolved")
         return IssuePublicationResult(None, None, outcome)
 
     return reviewer.publish_issue_comment(repo_name, issue_number, body, authorize_fn)
