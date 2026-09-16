@@ -12,6 +12,9 @@ from src.auto_coder.github_ci_observer import ci_observation_merge_authority, ci
 from src.auto_coder.util.gh_cache import GitHubClient
 from src.auto_coder.webhook_server import create_app
 
+REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
+REVIEWER_APP_ID = 990001
+
 
 class MockInvalidations(list):
     def accept_ci_delivery(self, delivery):
@@ -38,6 +41,11 @@ class MockGitHubClient:
 
     def get_pull_request_numbers_for_commit(self, repo_name, sha):
         return self.commit_pull_requests
+
+    def reviewer_app_identity(self, repo_name):
+        from src.auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        return ReviewerAppIdentity(login=REVIEWER_LOGIN, app_id=REVIEWER_APP_ID)
 
 
 class MockQueue:
@@ -172,6 +180,76 @@ def test_material_webhooks_are_normalized_at_http_boundary(mock_init_dashboard, 
     assert response.status_code == 200
     number = payload.get("pull_request", payload.get("issue"))["number"]
     assert engine.invalidations == [("owner/repo", expected_type, number, "delivery-uuid", event_type, payload["action"])]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "auto-coder-specification-validation:abc123",
+        "auto-coder-decomposition-validation:abc123",
+    ],
+)
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_reviewer_app_own_findings_comment_echo_does_not_invalidate(mock_init_dashboard, marker):
+    """Issue #2026 REQ-009: our own confirmed findings comment must not spend a repair round."""
+    engine = MockEngine()
+    app = create_app(engine, "owner/repo")
+    payload = {
+        "action": "created",
+        "issue": {"number": 11},
+        "comment": {"body": f"<!-- {marker} -->\n## Findings", "user": {"login": REVIEWER_LOGIN}, "performed_via_github_app": {"id": REVIEWER_APP_ID}},
+        "repository": {"full_name": "owner/repo"},
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json=payload,
+            headers={"X-GitHub-Event": "issue_comment", "X-GitHub-Delivery": "delivery-uuid"},
+        )
+    assert response.status_code == 200
+    assert engine.invalidations == []
+
+
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_unrelated_comment_from_reviewer_app_still_invalidates(mock_init_dashboard):
+    """The echo guard is scoped to our own findings markers, not every reviewer-App comment."""
+    engine = MockEngine()
+    app = create_app(engine, "owner/repo")
+    payload = {
+        "action": "created",
+        "issue": {"number": 11},
+        "comment": {"body": "An unrelated reviewer-App comment.", "user": {"login": REVIEWER_LOGIN}, "performed_via_github_app": {"id": REVIEWER_APP_ID}},
+        "repository": {"full_name": "owner/repo"},
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json=payload,
+            headers={"X-GitHub-Event": "issue_comment", "X-GitHub-Delivery": "delivery-uuid"},
+        )
+    assert response.status_code == 200
+    assert engine.invalidations == [("owner/repo", "issue", 11, "delivery-uuid", "issue_comment", "created")]
+
+
+@patch("src.auto_coder.webhook_server.init_dashboard")
+def test_findings_marker_from_a_different_author_still_invalidates(mock_init_dashboard):
+    """A copied marker from a non-reviewer actor is not our own echo (REQ-009 is identity-scoped)."""
+    engine = MockEngine()
+    app = create_app(engine, "owner/repo")
+    payload = {
+        "action": "created",
+        "issue": {"number": 11},
+        "comment": {"body": "<!-- auto-coder-specification-validation:abc123 -->\n## Findings", "user": {"login": "human-imitator"}},
+        "repository": {"full_name": "owner/repo"},
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/hooks/github",
+            json=payload,
+            headers={"X-GitHub-Event": "issue_comment", "X-GitHub-Delivery": "delivery-uuid"},
+        )
+    assert response.status_code == 200
+    assert engine.invalidations == [("owner/repo", "issue", 11, "delivery-uuid", "issue_comment", "created")]
 
 
 @patch("src.auto_coder.webhook_server.init_dashboard")

@@ -49,6 +49,8 @@ from auto_coder.util.github_request_outcome import (
 
 BODY = "## Requirements\n- REQ-001: Return the current value."
 FINDING = SpecificationFinding("material_ambiguity", ("REQ-001",), "The current value is undefined.", "Define its source.", "", "")
+REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
+REVIEWER_APP_ID = 990001
 
 
 def _github_error(classification, *, delivery=DeliveryCertainty.HTTP_RESPONSE_RECEIVED, retry_after=0.0, status=403):
@@ -97,6 +99,20 @@ class _FakeGitHub:
         if self.comment_error is not None:
             raise self.comment_error
         self.comments.append({"body": body})
+
+    def publish_issue_review_comment(self, _repo, _number, body, authorize_fn):
+        from auto_coder.issue_review_publication import PublicationReceipt
+
+        if self.comment_error is not None:
+            raise self.comment_error
+        comment_id = len(self.comments) + 1
+        self.comments.append({"id": comment_id, "body": body, "user": {"login": REVIEWER_LOGIN}, "performed_via_github_app": {"id": REVIEWER_APP_ID}})
+        return PublicationReceipt(comment_id, REVIEWER_LOGIN, REVIEWER_APP_ID)
+
+    def reviewer_app_identity(self, _repo):
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        return ReviewerAppIdentity(login=REVIEWER_LOGIN, app_id=REVIEWER_APP_ID)
 
     def remove_labels(self, _repo, _number, _labels, item_type="issue"):
         if self.label_error is not None:

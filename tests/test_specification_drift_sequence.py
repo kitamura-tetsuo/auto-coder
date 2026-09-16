@@ -34,6 +34,18 @@ class CurrentIssue:
     def add_comment_to_issue(self, _repository: str, _number: int, body: str) -> None:
         self.comments.append({"body": body})
 
+    def publish_issue_review_comment(self, _repository: str, _number: int, body: str, authorize_fn) -> object:
+        from auto_coder.issue_review_publication import PublicationReceipt
+
+        comment_id = len(self.comments) + 1
+        self.comments.append({"id": comment_id, "body": body, "user": {"login": "auto-coder-reviewer[bot]"}, "performed_via_github_app": {"id": 990001}})
+        return PublicationReceipt(comment_id, "auto-coder-reviewer[bot]", 990001)
+
+    def reviewer_app_identity(self, _repository: str) -> object:
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        return ReviewerAppIdentity(login="auto-coder-reviewer[bot]", app_id=990001)
+
     def remove_labels(self, _repository: str, _number: int, _labels: list[str], item_type: str) -> None:
         assert item_type == "issue"
 

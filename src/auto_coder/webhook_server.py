@@ -11,10 +11,12 @@ from pydantic import BaseModel
 from .automation_engine import AutomationEngine
 from .dashboard import init_dashboard
 from .dashboard_adjudication import init_dashboard_adjudication
+from .decomposition_validation_lifecycle import DECOMPOSITION_FINDINGS_MARKER
 from .entity_invalidation import ISSUE_STABILIZATION_SECONDS, CIWebhookDelivery, issue_stabilization_deadline
 from .github_ci_observer import accept_and_fence_ci_delivery
 from .label_manager import LEGACY_AUTO_CODER_LABEL
 from .logger_config import get_logger
+from .specification_validation_lifecycle import FINDINGS_MARKER_PREFIX
 
 logger = get_logger(__name__)
 
@@ -55,6 +57,34 @@ def _is_legacy_auto_coder_label_change(event_type: Optional[str], action: Option
         return False
     label = payload.get("label")
     return isinstance(label, Mapping) and label.get("name") == LEGACY_AUTO_CODER_LABEL
+
+
+def _is_reviewer_app_findings_echo(engine: AutomationEngine, event_type: Optional[str], action: Optional[str], payload: Dict[str, Any], repo_name: str) -> bool:
+    """Detect our own confirmed Issue-validation findings comment echoing back.
+
+    Scoped narrowly to an ``issue_comment`` "created" delivery whose body
+    carries one of the two findings markers *and* whose commenting actor is
+    the resolved reviewer App identity for this repository (Issue #2026,
+    REQ-009). This is not a blanket bot/comment filter: an unrelated
+    comment, a different bot or human author, or a genuine Issue edit still
+    reaches normal invalidation unaffected, and an unavailable reviewer
+    identity never suppresses a real invalidation.
+    """
+    if event_type != "issue_comment" or action != "created":
+        return False
+    comment = payload.get("comment")
+    body = comment.get("body") if isinstance(comment, Mapping) else None
+    if not isinstance(body, str) or (FINDINGS_MARKER_PREFIX not in body and DECOMPOSITION_FINDINGS_MARKER not in body):
+        return False
+    user = comment.get("user") if isinstance(comment, Mapping) else None
+    login = user.get("login") if isinstance(user, Mapping) else None
+    if not isinstance(login, str):
+        return False
+    try:
+        identity = engine.github.reviewer_app_identity(repo_name)  # type: ignore[attr-defined]
+    except Exception:
+        return False
+    return bool(identity.matches_login(login))
 
 
 class SentryWebhookPayload(BaseModel):
@@ -193,28 +223,31 @@ async def process_github_payload(
         "pull_request_review_thread": {"resolved", "unresolved"},
         "issue_comment": {"created", "edited", "deleted"},
     }
-    if event_type in entity_actions and action in entity_actions[event_type] and not _is_legacy_auto_coder_label_change(event_type, action, payload):
-        if event_type == "issues":
-            entity, entity_type = payload.get("issue"), "issue"
-        elif event_type == "issue_comment":
-            entity = payload.get("issue")
-            entity_type = "pr" if isinstance(entity, Mapping) and "pull_request" in entity else "issue"
+    if event_type in entity_actions and action in entity_actions[event_type]:
+        if _is_legacy_auto_coder_label_change(event_type, action, payload):
+            logger.info(f"Ignoring {event_type} {action} webhook for the retired '{LEGACY_AUTO_CODER_LABEL}' label: no invalidation created")
+        elif _is_reviewer_app_findings_echo(engine, event_type, action, payload, repo_name):
+            logger.info(f"Ignoring self-authored reviewer-App findings comment echo for {event_type} {action}: no invalidation created")
         else:
-            entity, entity_type = payload.get("pull_request"), "pr"
-        number = entity.get("number") if isinstance(entity, Mapping) else None
-        if isinstance(number, int):
-            identities.add((entity_type, number))
-        # Issue lifecycle, declarations, and readiness labels can change the
-        # eligibility of Issues which never receive their own webhook.
-        if event_type == "issues":
-            changed_label = payload.get("label")
-            dependency_reevaluation = action in {"opened", "closed", "reopened", "deleted", "transferred"}
-            dependency_reevaluation = dependency_reevaluation or (action == "edited" and isinstance(payload.get("changes"), Mapping) and "body" in payload["changes"])
-            dependency_reevaluation = dependency_reevaluation or (action in _LABEL_CHANGE_ACTIONS and isinstance(changed_label, Mapping) and changed_label.get("name") == "implementation-ready")
-        if event_type == "pull_request" and action == "closed":
-            engine.notify_pr_merged_or_closed()
-    elif event_type in entity_actions and action in entity_actions[event_type]:
-        logger.info(f"Ignoring {event_type} {action} webhook for the retired '{LEGACY_AUTO_CODER_LABEL}' label: no invalidation created")
+            if event_type == "issues":
+                entity, entity_type = payload.get("issue"), "issue"
+            elif event_type == "issue_comment":
+                entity = payload.get("issue")
+                entity_type = "pr" if isinstance(entity, Mapping) and "pull_request" in entity else "issue"
+            else:
+                entity, entity_type = payload.get("pull_request"), "pr"
+            number = entity.get("number") if isinstance(entity, Mapping) else None
+            if isinstance(number, int):
+                identities.add((entity_type, number))
+            # Issue lifecycle, declarations, and readiness labels can change the
+            # eligibility of Issues which never receive their own webhook.
+            if event_type == "issues":
+                changed_label = payload.get("label")
+                dependency_reevaluation = action in {"opened", "closed", "reopened", "deleted", "transferred"}
+                dependency_reevaluation = dependency_reevaluation or (action == "edited" and isinstance(payload.get("changes"), Mapping) and "body" in payload["changes"])
+                dependency_reevaluation = dependency_reevaluation or (action in _LABEL_CHANGE_ACTIONS and isinstance(changed_label, Mapping) and changed_label.get("name") == "implementation-ready")
+            if event_type == "pull_request" and action == "closed":
+                engine.notify_pr_merged_or_closed()
 
     if event_type in _DEPENDENCY_EVENTS:
         dependency_reevaluation = True
