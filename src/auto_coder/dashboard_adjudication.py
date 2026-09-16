@@ -134,6 +134,7 @@ class SubmitRequest(BaseModel):
     rationale: str
     context_id: str
     head_sha: str
+    contract_digest: str
     supersedes: Tuple[str, ...]
 
 
@@ -297,6 +298,12 @@ class AdjudicationService:
         @self.router.post("/submit")
         async def submit(req: Request, payload: SubmitRequest):
             session, config = require_auth(req, self)
+            valid_pairs = [("UPHOLD", "FIX"), ("OVERRULE", "NO_CHANGE"), ("UNDECIDED", "NONE")]
+            if (payload.verdict, payload.directive) not in valid_pairs:
+                raise HTTPException(status_code=409, detail="Invalid verdict/directive pair")
+            if not payload.rationale or payload.rationale.strip() == "":
+                raise HTTPException(status_code=409, detail="Rationale must be nonblank")
+
             require_csrf(req, session)
 
             repo_name = session.repository

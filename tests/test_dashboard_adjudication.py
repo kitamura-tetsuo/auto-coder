@@ -65,7 +65,7 @@ def test_as_002_browser_form_authority():
     client.app.include_router(service.router)
 
     # Missing CSRF
-    res = client.post("/submit?repository=r", json={"pr_number": 1, "decision_id": "test", "verdict": "UPHOLD", "directive": "FIX", "rationale": "ok", "context_id": "c1", "head_sha": "sha1", "supersedes": []}, headers={"origin": "https://example.com"})
+    res = client.post("/submit?repository=r", json={"pr_number": 1, "decision_id": "test", "verdict": "UPHOLD", "directive": "FIX", "rationale": "ok", "context_id": "c1", "head_sha": "sha1", "contract_digest": "cd1", "supersedes": []}, headers={"origin": "https://example.com"})
     assert res.status_code == 401
 
     os.unlink(secret_file)
@@ -175,7 +175,7 @@ def test_invalid_verdict_rejection():
         },
         headers={"origin": "https://example.com", "x-csrf-token": csrf},
     )
-    assert res.status_code in [400, 403]
+    assert res.status_code in [400, 403, 409]
     patcher.stop()
     patcher_allow.stop()
     patcher_ghapi.stop()
