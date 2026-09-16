@@ -429,9 +429,14 @@ async def test_standalone_ready_from_ordinary_processing_immediately_hands_off(t
 
     assert engine._specification_validators[REPO].store.get(engine._specification_validators[REPO].identity(1, "Standalone", body)).verdict == "READY"
     assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
-    implementation = engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)
-    assert len(implementation) == 1
-    assert implementation[0].target_number == 1
+    # Real production admission (#2061) durably acquires ownership for this
+    # Implementation generation as soon as it starts a local execution, which
+    # removes the pending arrival and tombstones the generation instead of
+    # leaving it pending forever; ``_process_single_candidate_reserved`` is
+    # mocked only to skip the dispatch work itself.
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+    expected_generation = implementation_generation(ContractIdentity(REPO, 1, 101, "Standalone", body, "standalone"))
+    assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, expected_generation)
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)
 

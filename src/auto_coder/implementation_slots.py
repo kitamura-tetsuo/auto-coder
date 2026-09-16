@@ -592,12 +592,20 @@ class ImplementationSlotRepository:
         bypass_active_execution: bool = False,
         allow_urgent_emergency: bool = False,
         github_client: Optional[Any] = None,
+        generation: Optional[str] = None,
     ) -> Optional[str]:
         """Atomically admit and durably identify one mutating execution.
 
         Capacity and duplicate-execution admission are deliberately independent:
         explicit ``--only`` work may bypass the former, while only the additional
         operator ``--force`` flag may bypass the latter.
+
+        ``generation`` binds the durable Implementation generation this
+        execution belongs to (see :mod:`implementation_ownership`) atomically
+        with the execution record it creates, so the binding survives a
+        stale-execution reclaim and a crash before any further tombstone
+        write. It is ``None`` for owners the ownership adapter does not track
+        (a standalone PR, or a recurrent provider-owned task).
         """
         if implementation_pr is not None and (owner.kind == "pr" or isinstance(implementation_pr, bool) or not isinstance(implementation_pr, int)):
             raise ValueError("implementation_pr must identify a PR belonging to a non-PR implementation owner")
@@ -654,6 +662,18 @@ class ImplementationSlotRepository:
                         "children": list(admission_hierarchy[1]),
                     }
                 owners[owner.key] = record
+            if generation is not None:
+                # A generation binding is rebound here only for a fresh or
+                # fully idle owner; the caller (implementation_ownership.py)
+                # is responsible for tombstoning a still-bound different
+                # generation before requesting this rebind, so retained
+                # qualifying evidence for another generation must refuse
+                # rather than silently mix attempts under one owner record.
+                existing_generation = record.get("implementation_generation")
+                if isinstance(existing_generation, str) and existing_generation != generation:
+                    retained = record.get("executions") or record.get("provider_sessions") or record.get("implementation_prs")
+                    if retained:
+                        return None
             executions = record.setdefault("executions", [])
             if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
                 raise ImplementationSlotUnavailable("Cannot safely parse active implementation executions")
@@ -668,6 +688,8 @@ class ImplementationSlotRepository:
             if process_identity is not None:
                 execution.update({"boot_id": process_identity.boot_id, "process_start_ticks": process_identity.start_ticks})
             executions.append(execution)
+            if generation is not None:
+                record["implementation_generation"] = generation
             self._write(owners)
             if admission_hierarchy is not None:
                 try:
@@ -991,6 +1013,40 @@ class ImplementationSlotRepository:
             owners.pop(owner.key)
             self._write(owners)
             return True
+
+    def implementation_generation(self, owner: ImplementationOwner) -> Optional[str]:
+        """Return the durable Implementation generation captured for *owner*.
+
+        This is the production ownership-adapter binding consumed by
+        :mod:`implementation_ownership`; it is distinct from
+        ``validation_identity`` (the specification validator's identity hash).
+        """
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return None
+        generation = record.get("implementation_generation")
+        if generation is not None and not isinstance(generation, str):
+            raise ImplementationSlotUnavailable("Cannot safely parse implementation generation binding")
+        return generation
+
+    def has_qualifying_implementation_activity(self, owner: ImplementationOwner) -> bool:
+        """Return whether *owner* retains durable implementation-mutating evidence.
+
+        Qualifying evidence is a durable local execution, a retained provider
+        session, or implementation-PR membership (REQ-003 of #2061); a bare
+        idle reservation with none of these does not qualify.
+        """
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return False
+        executions = record.get("executions", [])
+        sessions = record.get("provider_sessions", [])
+        prs = record.get("implementation_prs", [])
+        if not isinstance(executions, list) or not isinstance(sessions, list) or not isinstance(prs, list):
+            raise ImplementationSlotUnavailable("Cannot safely parse retained implementation ownership")
+        return bool(executions or sessions or prs)
 
     def record_validation_identity(self, owner: ImplementationOwner, identity: str) -> bool:
         """Bind logical Issue ownership to its authorized specification identity."""

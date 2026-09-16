@@ -881,8 +881,14 @@ def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_pat
         # Re-enter the real worker path with the same authoritative input. The
         # lifecycle must reuse the durable decision without another analyzer
         # call, and the producer evidence must say so explicitly.
+        from auto_coder.issue_stage_routing import IssueStageRoutingStore
+
         repeated_engine = AutomationEngine(github, config)
         repeated_engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "repeated-slots.json")
+        # A fully independent runtime (not this same process's durable
+        # production-ownership state, #2061) is what this re-entry is
+        # simulating; it must not inherit the first engine's routing tombstone.
+        repeated_engine.issue_stage_routing = IssueStageRoutingStore(tmp_path / "repeated-routing.sqlite3")
         repeated_engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "test/model", tmp_path / "spec.json", analyzer)
         with patch.object(
             repeated_engine,
@@ -956,7 +962,12 @@ def test_manual_retry_authorization_reaches_mounted_detail(mock_ui, tmp_path):
     engine, candidate = engine_with_gate(tmp_path, GitHubFlow([snapshot()]), lifecycle(tmp_path, "READY"))
     slots = engine.implementation_slots
     owner = ImplementationOwner("issue", 1728)
-    execution = slots.start_execution(owner)
+    # Seed retained evidence the way a real prior admission would have bound
+    # it (#2061), so this manual retry is recognized as a continuation of
+    # the same Implementation generation rather than failing closed on an
+    # unrecognized (legacy-shaped) binding.
+    generation = engine._compute_implementation_generation("owner/repo", snapshot(), None)
+    execution = slots.start_execution(owner, generation=generation)
     assert slots.record_provider_session(owner, "old-session")
     slots.finish_execution(owner, execution)
     engine._process_single_candidate_unified("owner/repo", candidate, engine.config, explicit_only=True, force=True, retry=True, origin="explicit-single-target")

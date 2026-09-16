@@ -23,8 +23,10 @@ from .execution_trace import EventKind, Outcome, get_trace_collector
 from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
+from .implementation_ownership import confirm_implementation_ownership
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .issue_context import get_linked_issues_context, validate_issue_references
+from .issue_stage_routing import IssueStageRoutingStore
 from .jules_client import JulesClient
 from .jules_engine import get_session_pull_request, is_session_stopped, mark_session_stopped
 from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, filter_legacy_auto_coder_label, resolve_pr_labels_with_priority
@@ -839,6 +841,7 @@ def handle_stale_jules_issue_sessions(
     github_client: GitHubClient,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
     authorize_dispatch: Optional[Callable[[str, int, Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    routing: Optional[IssueStageRoutingStore] = None,
 ) -> StaleJulesIssueResult:
     """Take issues away from Jules sessions that ran out of time without opening a PR.
 
@@ -966,6 +969,14 @@ def handle_stale_jules_issue_sessions(
                 if authorize_dispatch is None:
                     logger.warning(f"Skipping stale Jules session {session_id}: specification dispatch authorization is unavailable")
                     continue
+                # Captured before any of the stop/finish/release calls below,
+                # which may fully release and later recreate this owner
+                # record. This resumption is a continuation of whichever
+                # Implementation generation was already durably acquired
+                # (REQ-007 of #2061), never a fresh routing admission, so the
+                # replacement execution below must carry the same captured
+                # generation forward rather than recomputing "current" state.
+                captured_generation = implementation_slots.implementation_generation(owner)
                 if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client):
                     continue
 
@@ -994,10 +1005,15 @@ def handle_stale_jules_issue_sessions(
                 replacement_execution_id = implementation_slots.start_execution(
                     owner,
                     github_client=github_client if isinstance(github_client, GitHubClient) else None,
+                    generation=captured_generation,
                 )
                 if replacement_execution_id is None:
                     logger.info(f"Deferring stale Jules replacement for issue #{issue_number}: implementation capacity is occupied")
                     continue
+                if captured_generation is not None and routing is not None:
+                    # Recover the routing tombstone now in case the earlier
+                    # acquisition crashed before it was persisted (REQ-004).
+                    confirm_implementation_ownership(routing, repo_name, owner, captured_generation)
 
                 try:
                     result.actions.append(f"Stopped Jules session '{session_id}' for issue #{issue_number} (no PR within {timeout_hours}h)")

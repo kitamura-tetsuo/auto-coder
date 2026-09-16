@@ -31,6 +31,35 @@ eligibility; it emits no provider execution or dashboard event until an existing
 validation or implementation boundary actually runs. The production routing
 suite covers model changes and exact restoration for standalone and family work.
 
+Issue #2061 binds each durable Implementation generation (`issue_stage_routing.py`)
+to the existing production implementation-ownership authority
+(`ImplementationSlotRepository`, `implementation_slots.json`) via the new
+`implementation_ownership.py` adapter, ahead of the dedicated Implementation
+worker migration (#2055) that will later drain the Implementation lane
+directly. This is an admission-gate and durable-resumption change, not a new
+processing origin, outcome, provider route, or structured event: the real
+admission boundary in `AutomationEngine._process_single_candidate_unified`
+(and the stale-Jules-provider-recovery boundary in
+`issue_processor.handle_stale_jules_issue_sessions`) already reported
+`ExplicitTargetOutcome.SKIPPED`/`DEFERRED` for every other admission refusal
+before this change; a generation already durably owned now reports the same
+existing `SKIPPED` outcome with the action text "Skipped - Implementation
+generation already has a durable production start" instead of falling
+through to a capacity/duplicate-execution refusal, and a superseded or
+ambiguous binding reports the same existing `DEFERRED` outcome family. No new
+execution-trace stage, event kind, or dashboard projection is introduced. The
+one new durable field this adds — `implementation_generation` on an
+`ImplementationSlotRepository` owner record — is adapter-internal bookkeeping
+analogous to the pre-existing, likewise unexposed `validation_identity`
+field on the same owner record; it is not surfaced in
+`ImplementationOwnerSnapshot` or the Implementation Slots panel, consistent
+with that existing field.
+Production-boundary regressions for this handoff, including crash-before-
+acquisition, persisted-execution acquisition, supersession/exact-reversion,
+ambiguous/legacy bindings, and stale-provider-recovery continuation, live in
+`tests/test_implementation_ownership.py`; run
+`bash scripts/test.sh tests/test_implementation_ownership.py` for this boundary.
+
 The detail view is a projection of **observed local evidence**. It does not query
 GitHub or a provider and it does not turn absent, unavailable, partial, throttled,
 or superseded evidence into a pass or failure. An accepted provider submission is
