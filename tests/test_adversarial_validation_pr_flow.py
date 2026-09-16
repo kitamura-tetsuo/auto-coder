@@ -3330,6 +3330,42 @@ class TestClaimedReviewThreadValidationFlow:
         assert new_state.unresolved == (thread,)
         assert thread.is_resolved is False
 
+    @pytest.mark.parametrize("forced", [False, True])
+    @pytest.mark.parametrize("heading", ["### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"])
+    def test_allow_older_head_adversarial_threads_matches_heading_after_leading_whitespace(self, heading, forced):
+        """Issue #2106 REQ-003: the recognized root headings match "at the
+        beginning of the root after leading whitespace", exactly like the
+        sibling eligibility checks (``is_authoritative_adversarial_thread``,
+        ``_filter_unresolved_review_threads_for_disabled_validator``)."""
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState, _allow_older_head_adversarial_threads
+
+        reviewer_login = "auto-coder-reviewer"
+        thread = ReviewThread(
+            id="thread-whitespace-prefixed",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=17,
+                    body=f"  \n{heading}\n\n`REQ-001`: still broken",
+                    author_login=reviewer_login,
+                    author_id=1,
+                )
+            ],
+        )
+        initial_state = ClaimedReviewThreadGateState(
+            unresolved=(thread,),
+            blocking_unresolved=(thread,),
+            has_blocking_unresolved=True,
+        )
+
+        new_state = _allow_older_head_adversarial_threads(initial_state, reviewer_login, forced=forced)
+
+        assert new_state.has_blocking_unresolved is False
+        assert len(new_state.claimed) == 1
+        assert new_state.claimed[0].thread_id == "thread-whitespace-prefixed"
+        assert new_state.claimed[0].revalidation_forced is forced
+        assert new_state.claimed[0].revalidation_after_head_change is not forced
+
     @pytest.mark.parametrize(
         ("author_login", "body", "truncated", "has_root"),
         [
@@ -3547,6 +3583,88 @@ class TestClaimedReviewThreadValidationFlow:
         resolve_threads.assert_called_once()
         merge_pr.assert_called_once()
         assert thread.is_resolved is False
+
+    def test_forced_revalidation_promotes_authentic_root_with_leading_whitespace(self):
+        """Issue #2106 REQ-003: a real GitHub root comment whose body starts
+        with leading whitespace/newlines before the recognized heading must
+        still be promoted for forced revalidation, not left as a generic
+        merge blocker."""
+        from auto_coder.adversarial_validator import ReviewThreadDisposition, adversarial_validation_comment_marker
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        head_sha = "1111222233334444555566667777888899990000"
+        reviewer_login = "auto-coder-reviewer"
+        thread = ReviewThread(
+            id="thread-leading-whitespace",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=17,
+                    body="  \n### Auto-Coder adversarial finding\n\n**Violated requirement**\n\n`REQ-001`: still broken",
+                    author_login=reviewer_login,
+                    author_id=1,
+                )
+            ],
+        )
+        client = GitHubClient("test-token")
+        client.get_pr_review_threads_strict = MagicMock(return_value=[thread])
+        client.get_pr_reviews_strict = MagicMock(
+            return_value=[
+                {
+                    "body": f"{adversarial_validation_comment_marker(head_sha)}\n## ❌ Auto-Coder adversarial validation: ERROR",
+                    "user": {"login": reviewer_login},
+                }
+            ]
+        )
+        client.get_pr_comments = MagicMock(return_value=[])
+        client.get_pr_comments_strict = MagicMock(return_value=[])
+        client.get_pull_request = MagicMock(return_value={"head": {"sha": head_sha}})
+
+        with patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[]):
+            initial_state = _get_claimed_review_thread_state(client, "owner/repo", 150)
+        assert initial_state.has_blocking_unresolved is True
+
+        validation = AdversarialValidationResult(
+            result="PASS",
+            summary="Re-verified after force",
+            thread_dispositions=[
+                ReviewThreadDisposition(
+                    thread_id="thread-leading-whitespace",
+                    status="ADDRESSED",
+                    rationale="Fixed and covered by a new regression test",
+                    evidence="tests/test_x.py::test_y",
+                )
+            ],
+        )
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 150, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
+        client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
+
+        with (
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch(
+                "auto_coder.pr_processor._get_claimed_review_thread_state",
+                side_effect=[initial_state, ClaimedReviewThreadGateState()],
+            ),
+            patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
+            patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=reviewer_login, app_id=1)),
+            patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
+            patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "COMMENT", "")),
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["thread-leading-whitespace"]) as resolve_threads,
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge_pr,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
+
+        run_validation.assert_called_once()
+        validation_threads = run_validation.call_args.kwargs["claimed_review_threads_section"]
+        assert "### Forced adversarial-validation revalidation (explicit --force): thread-leading-whitespace" in validation_threads
+        resolve_threads.assert_called_once()
+        merge_pr.assert_called_once()
 
     @pytest.mark.parametrize("app_identity_login", ["auto-coder-reviewer", "auto-coder-reviewer[bot]"])
     def test_forced_revalidation_with_mixed_threads_only_promotes_authentic_root(self, app_identity_login):

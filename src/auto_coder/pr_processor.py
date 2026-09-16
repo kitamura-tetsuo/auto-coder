@@ -514,7 +514,7 @@ def _allow_older_head_adversarial_threads(
     for thread in state.blocking_unresolved:
         comments = thread.comments or []
         root = comments[0] if comments else None
-        if root is None or thread.comments_truncated or not is_same_github_login(root.author_login, reviewer_login) or not any(root.body.startswith(heading) for heading in _ADVERSARIAL_THREAD_HEADINGS):
+        if root is None or thread.comments_truncated or not is_same_github_login(root.author_login, reviewer_login) or not any(root.body.startswith(heading) or root.body.lstrip().startswith(heading) for heading in _ADVERSARIAL_THREAD_HEADINGS):
             remaining.append(thread)
             continue
         promoted.append(
