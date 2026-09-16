@@ -442,7 +442,8 @@ async def test_standalone_ready_from_ordinary_processing_immediately_hands_off(t
 
 
 @pytest.mark.asyncio
-async def test_running_engine_reclassifies_standalone_after_provider_policy_change(tmp_path, monkeypatch):
+async def test_running_engine_retains_standalone_classification_across_provider_policy_change(tmp_path, monkeypatch):
+    """Issue #2081, REQ-001/REQ-008: a backend-only change is not a new Review arrival."""
     created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
     snapshots = {
@@ -473,16 +474,17 @@ async def test_running_engine_reclassifies_standalone_after_provider_policy_chan
     assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
     assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [1]
 
+    # Execution routing (backend/model) is not semantic policy: the identity,
+    # the engine's cached lifecycle, and the durable Implementation
+    # classification must all remain unchanged, with no Review requeue.
     policy["value"] = "provider/model-b"
     await engine.invalidate_entity(REPO, "issue", 1)
     await asyncio.wait_for(engine.queue.join(), timeout=5)
     validator_b = engine._get_specification_validator(REPO)
-    assert validator_b is not validator_a
-    assert validator_b.identity(1, "Standalone", body) != identity_a
-    review = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
-    assert len(review) == 1
-    assert review[0].remaining_identity_keys == (validator_b.identity(1, "Standalone", body).key,)
-    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+    assert validator_b is validator_a
+    assert validator_b.identity(1, "Standalone", body) == identity_a
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [1]
 
     policy["value"] = "provider/model-a"
     await engine.invalidate_entity(REPO, "issue", 1)
@@ -495,7 +497,8 @@ async def test_running_engine_reclassifies_standalone_after_provider_policy_chan
 
 
 @pytest.mark.asyncio
-async def test_running_engine_reclassifies_both_family_categories_after_policy_change(tmp_path, monkeypatch):
+async def test_running_engine_retains_both_family_categories_across_policy_change(tmp_path, monkeypatch):
+    """Issue #2081, REQ-001/REQ-008: a backend-only change re-reviews neither decomposition nor children."""
     created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     parent_body = "## Objective\n\nCoordinate delivery."
     child_body = "Parent-Issue: #10\n\n## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
@@ -529,17 +532,21 @@ async def test_running_engine_reclassifies_both_family_categories_after_policy_c
     assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
     assert {item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)} == {11, 12}
 
+    # Execution routing (backend/model) is not semantic policy: neither the
+    # decomposition identity nor either child's individual identity changes,
+    # the engine's cached lifecycles are retained, and nothing is requeued
+    # into Review.
     policy["value"] = "provider/model-b"
     await engine.invalidate_entity(REPO, "issue", 10)
     await asyncio.wait_for(engine.queue.join(), timeout=5)
     decomposition_b = engine._get_decomposition_validator(REPO)
     individual_b = engine._get_specification_validator(REPO)
-    expected_b = {decomposition_b.identity(*family).key}
-    expected_b.update(individual_b.identity(child["number"], child["title"], child["body"], engine._child_review_context(*family, child["number"])).key for child in family[1])
-    review = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
-    assert len(review) == 1
-    assert set(review[0].remaining_identity_keys) == expected_b
-    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+    assert decomposition_b is decomposition_a
+    assert individual_b is individual_a
+    assert decomposition_b.identity(*family) == decomposition_identity_a
+    assert [individual_b.identity(child["number"], child["title"], child["body"], engine._child_review_context(*family, child["number"])) for child in family[1]] == individual_identities_a
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert {item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)} == {11, 12}
 
     policy["value"] = "provider/model-a"
     await engine.invalidate_entity(REPO, "issue", 10)
@@ -549,5 +556,57 @@ async def test_running_engine_reclassifies_both_family_categories_after_policy_c
     assert [restored_individual.identity(child["number"], child["title"], child["body"], engine._child_review_context(*family, child["number"])) for child in family[1]] == individual_identities_a
     assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
     assert {item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)} == {11, 12}
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_close_reopen_and_relabel_reuse_review_through_real_worker_pipeline(tmp_path, monkeypatch):
+    """Issue #2081, REQ-003: closing/reopening/relabeling reuses the durable Review decision; a body edit does not."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = {
+        1: {"id": 101, "number": 1, "title": "Standalone", "body": body, "state": "open", "created_at": created_at, "labels": [{"name": "implementation-ready"}]},
+    }
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
+    validator = engine._get_specification_validator(REPO)
+    baseline_identity = validator.identity(1, "Standalone", body)
+    validator.store.save(ValidationDecision(baseline_identity, "READY"))
+
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [1]
+
+    # Closing then reopening the Issue must not re-review it: identity binds
+    # only repository/Issue number/title/body/relationship, never state.
+    snapshots[1]["state"] = "closed"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "open"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([OpenGitHubIssue(1, created_at)], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert engine._get_specification_validator(REPO).identity(1, "Standalone", body) == baseline_identity
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [1]
+
+    # Changing readiness/priority labels must not re-review it either.
+    snapshots[1]["labels"] = [{"name": "implementation-ready"}, {"name": "priority-high"}]
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    assert engine._get_specification_validator(REPO).identity(1, "Standalone", body) == baseline_identity
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [1]
+
+    # An actual body/title edit does produce a different identity, through
+    # the same production `identity()` method fed by the real snapshot.
+    edited_identity = engine._get_specification_validator(REPO).identity(1, "Standalone", body + "\nEdited.")
+    assert edited_identity != baseline_identity
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)

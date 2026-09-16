@@ -1,5 +1,7 @@
 """Generation-bound parent submission lifecycle and production-path tests."""
 
+import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Lock
 from types import SimpleNamespace
@@ -600,7 +602,14 @@ def test_strict_membership_keeps_closed_child_and_reuses_ready_after_restart(tmp
     assert calls.call_count == 1
 
 
-def test_engine_validator_model_change_invalidates_persisted_set(monkeypatch, tmp_path):
+def test_engine_validator_model_change_reuses_persisted_set(monkeypatch, tmp_path):
+    """Issue #2081, REQ-001/REQ-004: a backend/model-only change reuses the durable decision.
+
+    The engine-owned per-repository cache (``_get_decomposition_validator``)
+    must not rebuild the lifecycle, and the resulting identity must not
+    change, for an execution-routing-only configuration change; the durable
+    READY decision is returned without a new analyzer call.
+    """
     monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", str(tmp_path))
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     children = [issue(11, "Child", CHILD_BODY)]
@@ -612,15 +621,15 @@ def test_engine_validator_model_change_invalidates_persisted_set(monkeypatch, tm
     first_identity = first_gate.identity(parent, children)
     assert first_gate.decide(first_identity, parent_input, child_inputs).verdict == "READY"
 
-    calls = Mock(return_value=DecompositionAnalysisResult("READY"))
+    calls = Mock(side_effect=AssertionError("must reuse"))
     with patch("auto_coder.automation_engine.configured_provider_identity", return_value="provider/model-b"):
         restarted_engine = AutomationEngine(MagicMock(), AutomationConfig())
         restarted_gate = restarted_engine._get_decomposition_validator("owner/repo")
     restarted_gate.analyzer = calls
     changed_identity = restarted_gate.identity(parent, children)
-    assert changed_identity != first_identity
+    assert changed_identity == first_identity
     assert restarted_gate.decide(changed_identity, parent_input, child_inputs).verdict == "READY"
-    calls.assert_called_once()
+    calls.assert_not_called()
 
 
 def test_parent_readiness_removed_during_final_check_prevents_child_dispatch(tmp_path):
@@ -959,6 +968,171 @@ def test_blocked_sibling_prevents_ready_child_dispatch(tmp_path, blocked_sibling
     assert engine.implementation_slots.active_owners() == ()
     assert github.publish_issue_review_comment.call_count == 1
     assert github.publish_issue_review_comment.call_args.args[1] == 12
+
+
+# ---------------------------------------------------------------------------
+# Issue #2081: routing-independent decomposition policy identity, execution
+# provenance, non-policy identity invariance, and legacy migration handling.
+# ---------------------------------------------------------------------------
+
+
+def test_closing_reopening_or_relabeling_child_does_not_change_identity_but_edit_does(tmp_path):
+    """REQ-003: decomposition identity excludes parent/child state and labels; content changes it."""
+    gate = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json")
+    parent_open = issue(10, "Parent", PARENT_BODY, ready=True, state="open")
+    child_open = issue(11, "Child", CHILD_BODY, ready=False, state="open")
+    baseline = gate.identity(parent_open, [child_open])
+
+    child_closed = issue(11, "Child", CHILD_BODY, ready=False, state="closed")
+    assert gate.identity(parent_open, [child_closed]) == baseline
+
+    parent_closed = issue(10, "Parent", PARENT_BODY, ready=True, state="closed")
+    assert gate.identity(parent_closed, [child_open]) == baseline
+
+    child_relabeled = {**child_open, "labels": [{"name": "priority-high"}]}
+    assert gate.identity(parent_open, [child_relabeled]) == baseline
+
+    child_edited = issue(11, "Edited Child", CHILD_BODY, ready=False, state="open")
+    assert gate.identity(parent_open, [child_edited]) != baseline
+
+    parent_edited = issue(10, "Parent", PARENT_BODY + "\nedited", ready=True, state="open")
+    assert gate.identity(parent_edited, [child_open]) != baseline
+
+
+def test_decomposition_execution_provenance_captured_and_preserved_on_reuse(tmp_path):
+    """REQ-005: provenance reflects the route effective when the analyzer starts, and reuse never relabels it."""
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    path = tmp_path / "sets.json"
+
+    with patch("auto_coder.decomposition_validation_lifecycle.configured_provider_identity", return_value="route-a"):
+        gate_a = DecompositionValidationLifecycle("owner/repo", "provider/model", path, lambda *_args: DecompositionAnalysisResult("READY"))
+        identity = gate_a.identity(parent, children)
+        decision = gate_a.decide(identity, parent_input, child_inputs)
+    assert decision.evaluation_source == "model"
+    assert decision.execution_provenance == "route-a"
+
+    with patch("auto_coder.decomposition_validation_lifecycle.configured_provider_identity", return_value="route-b"):
+        gate_b = DecompositionValidationLifecycle("owner/repo", "provider/model", path, Mock(side_effect=AssertionError("must reuse")))
+        reused = gate_b.decide(identity, parent_input, child_inputs)
+    assert reused.evaluation_source == "stored-decision-reuse"
+    assert reused.execution_provenance == "route-a"
+
+
+def test_decomposition_objective_conflict_never_calls_configured_provider_identity(tmp_path):
+    """REQ-005: a local-only (Objective-integrity) decision records no provenance and never probes routing."""
+    path = tmp_path / "sets.json"
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    gate = DecompositionValidationLifecycle("owner/repo", "provider/model", path, lambda *_args: DecompositionAnalysisResult("READY"))
+    first_identity = gate.identity(parent, children)
+    first = gate.decide(first_identity, parent_input, child_inputs)
+    assert first.verdict == "READY"
+
+    edited_parent = issue(10, "Parent", PARENT_BODY.replace("Coordinate the tracked child behaviors.", "Coordinate something else entirely."), ready=True)
+    edited_parent_input, edited_child_inputs = decomposition_issues(edited_parent, children)
+    edited_identity = gate.identity(edited_parent, children)
+    with patch("auto_coder.decomposition_validation_lifecycle.configured_provider_identity", side_effect=AssertionError("must not be called for a local-only decision")):
+        decision = gate.decide(edited_identity, edited_parent_input, edited_child_inputs)
+    assert decision.verdict == "BLOCKED"
+    assert decision.evaluation_source == "local-only"
+    assert decision.execution_provenance is None
+
+
+def test_individual_prompt_change_invalidates_only_individual_policy(tmp_path, monkeypatch):
+    """AS-003: changing only the individual prompt invalidates individual decisions without touching decomposition policy."""
+    from auto_coder import decomposition_validation_lifecycle as decomp_module
+    from auto_coder import specification_validation_lifecycle as spec_module
+
+    prompts = {"issue": {"adversarial_specification_analysis": "Prompt A", "adversarial_decomposition_analysis": "Decomposition Prompt"}}
+    monkeypatch.setattr(spec_module, "load_prompts", lambda: prompts)
+    monkeypatch.setattr(decomp_module, "load_prompts", lambda: prompts)
+
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    before_individual = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "children.json").identity(11, "Child", CHILD_BODY)
+    before_decomposition = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json").identity(parent, children)
+
+    prompts["issue"]["adversarial_specification_analysis"] = "Prompt B (decision-affecting change)"
+
+    after_individual = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "children.json").identity(11, "Child", CHILD_BODY)
+    after_decomposition = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json").identity(parent, children)
+
+    assert after_individual != before_individual
+    assert after_decomposition == before_decomposition
+
+    prompts["issue"]["adversarial_decomposition_analysis"] = "Decomposition Prompt B (decision-affecting change)"
+    after_decomposition_prompt_change = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "sets.json").identity(parent, children)
+    assert after_decomposition_prompt_change != after_decomposition
+
+
+def test_legacy_decomposition_record_is_retained_but_not_authoritative(tmp_path):
+    """AS-005/REQ-006/REQ-007/REQ-009: a pre-migration decomposition record is retained and diagnosed, never silently reused."""
+    path = tmp_path / "sets.json"
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    probe = DecompositionValidationLifecycle("owner/repo", "provider/model", path)
+    identity = probe.identity(parent, children)
+
+    from dataclasses import asdict as dataclass_asdict
+
+    legacy_policy_identity = hashlib.sha256(b"legacy-combined-provider-and-prompt-hash").hexdigest()
+    legacy_identity = json.loads(json.dumps(dataclass_asdict(identity)))
+    legacy_identity["policy_identity"] = legacy_policy_identity
+    legacy_key = hashlib.sha256(json.dumps(legacy_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                legacy_key: {
+                    "identity": legacy_identity,
+                    "verdict": "READY",
+                    "findings": [],
+                    "findings_published": False,
+                    "readiness_removed": False,
+                    "remediation": "NONE",
+                    "remediation_reason": None,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Durable state this migration must never touch (REQ-007): pre-existing
+    # decomposition review history for this parent number.
+    history_path = path.with_name("decomposition_review_history.json")
+    original_contract = json.dumps({"parent": {"issue_number": 10}, "direct_children": []})
+    history_path.write_text(json.dumps({"10": {"baseline": original_contract, "applied_outcomes": ["legacy-outcome"], "applied_identity_keys": ["legacy-key"]}}), encoding="utf-8")
+
+    calls = Mock(return_value=DecompositionAnalysisResult("READY"))
+    live_gate = DecompositionValidationLifecycle("owner/repo", "provider/model", path, calls)
+    with patch("auto_coder.decomposition_validation_lifecycle.logger") as mock_logger:
+        fresh = live_gate.decide(identity, parent_input, child_inputs)
+
+    assert fresh.verdict == "READY"
+    assert calls.call_count == 1
+    assert fresh.identity.key != legacy_key
+    assert fresh.legacy_candidates_detected == 1
+    assert mock_logger.warning.call_count == 1
+    assert "legacy_policy_unproven" in mock_logger.warning.call_args.args[0]
+
+    raw = json.loads(path.read_text())
+    assert raw[legacy_key]["verdict"] == "READY"
+    assert raw[legacy_key]["identity"]["policy_identity"] == legacy_policy_identity
+
+    history_after = json.loads(history_path.read_text())
+    assert history_after["10"]["baseline"] == original_contract
+    assert history_after["10"]["applied_outcomes"] == ["legacy-outcome"]
+
+    with patch("auto_coder.decomposition_validation_lifecycle.logger") as reuse_logger:
+        restarted = DecompositionValidationLifecycle("owner/repo", "provider/model-b", path, Mock(side_effect=AssertionError("must reuse")))
+        reused = restarted.decide(identity, parent_input, child_inputs)
+    assert reused.verdict == "READY"
+    assert reused.evaluation_source == "stored-decision-reuse"
+    reuse_logger.warning.assert_not_called()
 
 
 def test_legacy_findings_published_record_is_never_reposted_or_relabeled(tmp_path):

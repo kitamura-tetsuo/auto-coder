@@ -1,6 +1,7 @@
 """Generation-bound Issue specification validation lifecycle regressions."""
 
 import asyncio
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event, Lock
@@ -43,17 +44,22 @@ def test_caller_reconciled_relationship_context_participates_in_durable_identity
     assert calls.call_count == 2
 
 
-def test_completed_decision_survives_restart_but_text_and_policy_do_not_reuse(tmp_path):
+def test_completed_decision_survives_restart_and_provider_change_but_not_text_change(tmp_path):
+    """Issue #2081, REQ-001/REQ-004: only a text change invalidates; a routing-only change never does."""
     calls = Mock(return_value=SpecificationAnalysisResult("READY"))
     manifest = build_normative_issue_manifest(1728, "Title", BODY)
     first = lifecycle(tmp_path, "READY", calls)
     assert first.decide(manifest, "Title", BODY).verdict == "READY"
     restarted = lifecycle(tmp_path, "READY", Mock(side_effect=AssertionError("must reuse")))
     assert restarted.decide(manifest, "Title", BODY).verdict == "READY"
+    # A different configured provider/backend/model string is execution
+    # routing, not semantic policy: it must not create a new identity and
+    # must reuse the durable decision without any backend call at all.
+    reused = lifecycle(tmp_path, "READY", Mock(side_effect=AssertionError("must reuse")), policy="provider/model-b").decide(manifest, "Title", BODY)
+    assert reused.verdict == "READY"
     changed = lifecycle(tmp_path, "READY", calls)
     changed.decide(build_normative_issue_manifest(1728, "Edited", BODY), "Edited", BODY)
-    lifecycle(tmp_path, "READY", calls, policy="provider/model-b").decide(manifest, "Title", BODY)
-    assert calls.call_count == 3
+    assert calls.call_count == 2
 
 
 def test_error_is_not_persisted_and_is_retried(tmp_path):
@@ -678,7 +684,14 @@ def test_resubmitted_unchanged_blocked_generation_removes_label_again_after_rest
     assert len(github.comments) == 1
 
 
-def test_supported_high_score_fallback_model_changes_production_policy_identity(monkeypatch):
+def test_supported_high_score_fallback_model_changes_execution_provenance(monkeypatch):
+    """``configured_provider_identity()`` still varies with the configured model.
+
+    Issue #2081, REQ-005: this is execution *provenance*, not the semantic
+    *policy* identity used for decision reuse (see
+    ``validation_policy_identity`` and ``ValidationDecision.execution_provenance``);
+    this route snapshot is expected to keep varying with configuration.
+    """
     from auto_coder.llm_backend_config import LLMBackendConfiguration
     from auto_coder.specification_validation_lifecycle import configured_provider_identity
 
@@ -711,7 +724,14 @@ def test_concurrent_different_issue_records_both_survive_restart(tmp_path):
     assert sorted(calls) == [1, 2]
 
 
-def test_supported_alias_provider_change_invalidates_production_policy(monkeypatch):
+def test_supported_alias_provider_change_changes_execution_provenance(monkeypatch):
+    """``configured_provider_identity()`` still varies with the configured backend alias.
+
+    Issue #2081, REQ-001/REQ-005: this route snapshot is execution provenance
+    only. It must keep varying with configuration for observability, but a
+    change here must never, by itself, invalidate a durable decision (see
+    the reuse regressions in this module for that half of the contract).
+    """
     from auto_coder.llm_backend_config import LLMBackendConfiguration
     from auto_coder.specification_validation_lifecycle import configured_provider_identity
 
@@ -1382,6 +1402,263 @@ def test_semantic_reissue_is_not_changed_by_repair_episode_budget(tmp_path):
     semantic = rounds.apply("decomposition", 8, "g2", "REISSUE_REQUIRED", 1)
     assert semantic.remediation == "REISSUE_REQUIRED"
     assert semantic.previous_rounds == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #2081: routing-independent policy identity, execution provenance, and
+# legacy on-disk migration handling.
+# ---------------------------------------------------------------------------
+
+
+def test_execution_provenance_captured_for_fresh_model_decision_and_preserved_on_reuse(tmp_path):
+    """REQ-005: provenance reflects the route effective when the analyzer starts, and reuse never relabels it."""
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    with patch("auto_coder.specification_validation_lifecycle.configured_provider_identity", return_value="route-a"):
+        decision = lifecycle(tmp_path, "READY").decide(manifest, "Title", BODY)
+    assert decision.evaluation_source == "model"
+    assert decision.execution_provenance == "route-a"
+
+    with patch("auto_coder.specification_validation_lifecycle.configured_provider_identity", return_value="route-b"):
+        reused = lifecycle(tmp_path, "READY", Mock(side_effect=AssertionError("must reuse"))).decide(manifest, "Title", BODY)
+    assert reused.evaluation_source == "stored-decision-reuse"
+    assert reused.execution_provenance == "route-a"
+
+    # A restart (a brand-new lifecycle/store instance over the same file)
+    # must still return the original producing provenance verbatim.
+    restarted = SpecificationValidationLifecycle("owner/repo", "route-c", tmp_path / "decisions.json", Mock(side_effect=AssertionError("must reuse")))
+    assert restarted.decide(manifest, "Title", BODY).execution_provenance == "route-a"
+
+
+def test_local_only_objective_conflict_never_calls_configured_provider_identity(tmp_path):
+    """REQ-005: a local-only decision (no analyzer call) records no provenance and never probes routing."""
+    body_with_objective = "## Objective\n\nShip the widget.\n\n## Requirements\n- REQ-001: Return the current value."
+    manifest = build_normative_issue_manifest(1728, "Title", body_with_objective)
+    gate = lifecycle(tmp_path, "READY")
+    first = gate.decide(manifest, "Title", body_with_objective)
+    assert first.verdict == "READY"
+    assert first.execution_provenance is not None
+
+    edited_objective_body = body_with_objective.replace("Ship the widget.", "Ship something else entirely.")
+    edited_manifest = build_normative_issue_manifest(1728, "Title", edited_objective_body)
+    with patch("auto_coder.specification_validation_lifecycle.configured_provider_identity", side_effect=AssertionError("must not be called for a local-only decision")):
+        conflict = gate.decide(edited_manifest, "Title", edited_objective_body)
+    assert conflict.verdict == "BLOCKED"
+    assert conflict.evaluation_source == "local-only"
+    assert conflict.execution_provenance is None
+
+
+def test_ready_and_blocked_decisions_both_reuse_across_route_change(tmp_path):
+    """AS-002: READY and BLOCKED both reuse across a route-only change without a new backend call."""
+    ready_manifest = build_normative_issue_manifest(1728, "Ready Title", BODY)
+    blocked_body = BODY + "\nBlocked variant."
+    blocked_manifest = build_normative_issue_manifest(1729, "Blocked Title", blocked_body)
+    blocked_result = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+
+    gate_a = lifecycle(tmp_path, "READY", Mock(return_value=SpecificationAnalysisResult("READY")), policy="route-a")
+    ready = gate_a.decide(ready_manifest, "Ready Title", BODY)
+    gate_a_blocked = lifecycle(tmp_path, "BLOCKED", Mock(return_value=blocked_result), policy="route-a")
+    blocked = gate_a_blocked.decide(blocked_manifest, "Blocked Title", blocked_body)
+    assert ready.verdict == "READY" and blocked.verdict == "BLOCKED"
+
+    never_call = Mock(side_effect=AssertionError("must reuse"))
+    gate_b = lifecycle(tmp_path, "READY", never_call, policy="route-b")
+    assert gate_b.decide(ready_manifest, "Ready Title", BODY).verdict == "READY"
+    assert gate_b.decide(blocked_manifest, "Blocked Title", blocked_body).verdict == "BLOCKED"
+    never_call.assert_not_called()
+
+
+def test_in_flight_route_change_is_not_a_rerun(tmp_path):
+    """AS-004: a route change while an analyzer call is in flight causes no second execution."""
+    entered = Barrier(2)
+    release = Barrier(2)
+    calls = []
+    route = {"value": "provider/model-a"}
+
+    def analyze(_manifest, _body):
+        calls.append(route["value"])
+        if len(calls) == 1:
+            entered.wait(timeout=5)
+            release.wait(timeout=5)
+        return SpecificationAnalysisResult("READY")
+
+    gate = lifecycle(tmp_path, "READY", analyze)
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+
+    with patch("auto_coder.specification_validation_lifecycle.configured_provider_identity", lambda: route["value"]):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(gate.decide, manifest, "Title", BODY)
+            entered.wait(timeout=5)
+            route["value"] = "provider/model-b"
+            second = pool.submit(gate.decide, manifest, "Title", BODY)
+            release.wait(timeout=5)
+            decision_1 = first.result(timeout=5)
+            decision_2 = second.result(timeout=5)
+
+    # The route changed mid-flight, but only one analyzer call happened, and
+    # it observed the route effective when it actually started (REQ-001,
+    # REQ-004, REQ-008).
+    assert calls == ["provider/model-a"]
+    assert decision_1.verdict == "READY" and decision_2.verdict == "READY"
+    assert decision_1.identity == decision_2.identity
+    assert decision_1.execution_provenance == "provider/model-a"
+    assert decision_2.execution_provenance == "provider/model-a"
+
+    # A later, genuinely new review (a different identity) uses the new route.
+    edited_body = BODY + "\nEdited."
+    edited_manifest = build_normative_issue_manifest(1728, "Title", edited_body)
+    with patch("auto_coder.specification_validation_lifecycle.configured_provider_identity", lambda: route["value"]):
+        fresh = gate.decide(edited_manifest, "Title", edited_body)
+    assert fresh.execution_provenance == "provider/model-b"
+
+
+def test_legacy_terminal_record_is_retained_but_not_authoritative(tmp_path):
+    """AS-005/REQ-006/REQ-007/REQ-009: a pre-migration record is retained and diagnosed, never silently reused.
+
+    Hand-constructs the exact pre-migration on-disk shape (an opaque combined
+    policy hash that mixed provider routing into the same fields this
+    Issue's contract fixes, with no ``execution_provenance`` key at all) and
+    drives the real ``decide()`` production path over it.
+    """
+    path = tmp_path / "decisions.json"
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    probe = SpecificationValidationLifecycle("owner/repo", "provider/model", path)
+    identity = probe.identity(1728, "Title", BODY)
+
+    legacy_policy_identity = hashlib.sha256(b"legacy-combined-provider-and-prompt-hash").hexdigest()
+    legacy_identity = {
+        "repository": identity.repository,
+        "issue_number": identity.issue_number,
+        "specification_digest": identity.specification_digest,
+        "policy_identity": legacy_policy_identity,
+        "relationship_digest": identity.relationship_digest,
+    }
+    legacy_key = hashlib.sha256(json.dumps(legacy_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                legacy_key: {
+                    "identity": legacy_identity,
+                    "verdict": "READY",
+                    "findings": [],
+                    "findings_published": False,
+                    "readiness_removed": False,
+                    "remediation": "NONE",
+                    "remediation_reason": None,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Durable state this migration must never touch (REQ-007): a pre-existing
+    # immutable baseline plus applied-outcome history for this Issue number.
+    history_path = path.with_name("individual_review_history.json")
+    original_contract = json.dumps({"issue_number": 1728, "title": "Original", "body": "## Requirements\n- REQ-001: Original.", "requirements": []})
+    history_path.write_text(json.dumps({"1728": {"baseline": original_contract, "applied_outcomes": ["legacy-outcome"], "applied_identity_keys": ["legacy-key"]}}), encoding="utf-8")
+
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    live_gate = SpecificationValidationLifecycle("owner/repo", "provider/model", path, calls)
+    with patch("auto_coder.specification_validation_lifecycle.logger") as mock_logger:
+        fresh = live_gate.decide(manifest, "Title", BODY)
+
+    # A legacy-compatibility miss still runs a genuine, currently authorized
+    # review (REQ-006): it is never shortcut into BLOCKED or READY, and never
+    # skips the analyzer.
+    assert fresh.verdict == "READY"
+    assert calls.call_count == 1
+    assert fresh.identity.key != legacy_key
+
+    # The distinct diagnostic signal fires exactly once, before the fresh
+    # decision, and reports the true legacy-candidate count (REQ-009).
+    assert fresh.legacy_candidates_detected == 1
+    assert mock_logger.warning.call_count == 1
+    assert "legacy_policy_unproven" in mock_logger.warning.call_args.args[0]
+
+    # The legacy record is retained exactly as-is: never deleted, overwritten,
+    # or "promoted" into the new format (REQ-006).
+    raw = json.loads(path.read_text())
+    assert raw[legacy_key]["verdict"] == "READY"
+    assert raw[legacy_key]["identity"]["policy_identity"] == legacy_policy_identity
+
+    # Pre-existing baseline/history for this Issue number is untouched by the
+    # migration (REQ-007); ``decide()`` alone (no ``apply_blocked``) does not
+    # append a new applied outcome either.
+    history_after = json.loads(history_path.read_text())
+    assert history_after["1728"]["baseline"] == original_contract
+    assert history_after["1728"]["applied_outcomes"] == ["legacy-outcome"]
+
+    # A cache miss with zero legacy candidates is a distinguishable signal
+    # from this legacy-compatibility miss (REQ-009).
+    other_manifest = build_normative_issue_manifest(1730, "Other", BODY)
+    with patch("auto_coder.specification_validation_lifecycle.logger") as ordinary_logger:
+        ordinary = live_gate.decide(other_manifest, "Other", BODY)
+    assert ordinary.legacy_candidates_detected == 0
+    ordinary_logger.warning.assert_not_called()
+
+    # After a valid new-format evaluation is persisted, further route changes
+    # and restarts reuse it rather than repeating the migration miss.
+    with patch("auto_coder.specification_validation_lifecycle.logger") as reuse_logger:
+        restarted = SpecificationValidationLifecycle("owner/repo", "provider/model-b", path, Mock(side_effect=AssertionError("must reuse")))
+        reused = restarted.decide(manifest, "Title", BODY)
+    assert reused.verdict == "READY"
+    assert reused.evaluation_source == "stored-decision-reuse"
+    reuse_logger.warning.assert_not_called()
+
+
+def test_conflicting_legacy_candidates_are_reported_without_preferring_ready(tmp_path):
+    """REQ-006: multiple conflicting legacy terminal records are reported as a count, not resolved by preferring READY."""
+    path = tmp_path / "decisions.json"
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    probe = SpecificationValidationLifecycle("owner/repo", "provider/model", path)
+    identity = probe.identity(1728, "Title", BODY)
+
+    def legacy_record(policy_suffix: str, verdict: str) -> tuple[str, dict]:
+        legacy_identity = {
+            "repository": identity.repository,
+            "issue_number": identity.issue_number,
+            "specification_digest": identity.specification_digest,
+            "policy_identity": hashlib.sha256(f"legacy-{policy_suffix}".encode()).hexdigest(),
+            "relationship_digest": identity.relationship_digest,
+        }
+        key = hashlib.sha256(json.dumps(legacy_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return key, {"identity": legacy_identity, "verdict": verdict, "findings": [], "findings_published": False, "readiness_removed": False, "remediation": "NONE", "remediation_reason": None}
+
+    ready_key, ready_record = legacy_record("a", "READY")
+    blocked_key, blocked_record = legacy_record("b", "BLOCKED")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({ready_key: ready_record, blocked_key: blocked_record}), encoding="utf-8")
+
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    gate = SpecificationValidationLifecycle("owner/repo", "provider/model", path, calls)
+    with patch("auto_coder.specification_validation_lifecycle.logger") as mock_logger:
+        fresh = gate.decide(manifest, "Title", BODY)
+    assert fresh.verdict == "READY"
+    assert fresh.legacy_candidates_detected == 2
+    assert calls.call_count == 1
+    assert mock_logger.warning.call_args.kwargs == {} and "2" in str(mock_logger.warning.call_args)
+
+
+def test_validator_identity_override_env_var_is_provenance_only(tmp_path, monkeypatch):
+    """AS-006/REQ-001: ``AUTO_CODER_SPECIFICATION_VALIDATOR_IDENTITY`` is execution provenance,
+    never a hidden cache-invalidation input for the semantic policy identity."""
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+
+    monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATOR_IDENTITY", "override-a")
+    first_identity = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "decisions.json").identity(1728, "Title", BODY)
+    decision = lifecycle(tmp_path, "READY").decide(manifest, "Title", BODY)
+    assert decision.execution_provenance == "override-a"
+
+    monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATOR_IDENTITY", "override-b")
+    second_identity = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "decisions.json").identity(1728, "Title", BODY)
+    assert second_identity == first_identity
+
+    reused = lifecycle(tmp_path, "READY", Mock(side_effect=AssertionError("must reuse"))).decide(manifest, "Title", BODY)
+    assert reused.verdict == "READY"
+    # The overridden route is honest execution provenance for a fresh
+    # decision, but reusing the earlier decision preserves its original
+    # provenance rather than relabeling it with the current override.
+    assert reused.execution_provenance == "override-a"
 
 
 def test_legacy_findings_published_record_is_never_reposted_or_relabeled(tmp_path):
