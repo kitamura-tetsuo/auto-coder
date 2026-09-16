@@ -261,6 +261,8 @@ def test_as_005_context_isolation_survives_interleaving_and_exceptions(backend_m
     import threading
     import time
 
+    from src.auto_coder.exceptions import AutoCoderUsageLimitError
+
     backend_manager._clients["backend-A"] = MockClient("backend-A")
     backend_manager._clients["backend-B"] = MockClient("backend-B")
 
@@ -270,7 +272,6 @@ def test_as_005_context_isolation_survives_interleaving_and_exceptions(backend_m
         with bind_review_context("rev-101", "org/repo", "Issue", "42", "spec", "gen-5"):
             time.sleep(0.1)  # Interleave
             try:
-                # We need to make sure backend-A works for task1
                 res = backend_manager.run_prompt("task1")
                 results.append(("task1", res))
             except Exception as e:
@@ -278,21 +279,26 @@ def test_as_005_context_isolation_survives_interleaving_and_exceptions(backend_m
 
     def task2():
         with bind_review_context("rev-102", "other/repo", "Issue", "42", "spec", "gen-5"):
-            # Task2 will forcefully fail on its execution block. We mock cli directly for task2
             try:
-                client = MockClient("backend-A", throws=AutoCoderUsageLimitError("Limit"))
-                with patch.object(backend_manager, "_get_or_create_client", return_value=client):
-                    res = backend_manager.run_prompt("task2")
-                    results.append(("task2", res))
+                res = backend_manager.run_prompt("fail_task2")
+                results.append(("task2", res))
             except Exception as e:
                 results.append(("task2", e))
 
-    t1 = threading.Thread(target=task1)
-    t2 = threading.Thread(target=task2)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    def mock_run_cli(self, prompt, is_noedit=False):
+        if self.throws:
+            raise self.throws
+        if "fail_task2" in prompt:
+            raise AutoCoderUsageLimitError("Limit")
+        return f"Response from {self.name}"
+
+    with patch.object(MockClient, "_run_llm_cli", new=mock_run_cli):
+        t1 = threading.Thread(target=task1)
+        t2 = threading.Thread(target=task2)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
 
     # Run an unbound implementation call on main thread
     # Clear any stale states from mocks
