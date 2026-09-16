@@ -25,11 +25,43 @@ does not claim Review execution, READY evidence, or provider admission.
 The final post-processing routing refresh likewise emits no additional stage:
 it consumes durable validation evidence for lane bookkeeping, while the existing
 validation and implementation-admission events remain the observable outcomes.
-Effective validation-route changes now rebind the engine-owned lifecycle before
-classification. This changes only durable Review/Implementation identities and
-eligibility; it emits no provider execution or dashboard event until an existing
-validation or implementation boundary actually runs. The production routing
-suite covers model changes and exact restoration for standalone and family work.
+Issue #2081 corrected an earlier defect in this same area: an
+execution-routing-only change (configured backend, alias, model, fallback
+order/membership, quota-based selection) no longer rebinds the engine-owned
+`SpecificationValidationLifecycle`/`DecompositionValidationLifecycle`
+instances, no longer changes `ValidationIdentity`/`DecompositionIdentity`,
+and is not interpreted as a new Review arrival or Implementation generation.
+`AutomationEngine._get_specification_validator`/`_get_decomposition_validator`
+now cache one lifecycle per repository unconditionally for the process
+lifetime; execution routing is read fresh only inside `decide()`, once per
+freshly model-computed decision, purely to record as diagnostic execution
+provenance (`ValidationDecision.execution_provenance` /
+`DecompositionDecision.execution_provenance`), never to gate reuse. This is
+observability-neutral for the dashboard's trace stages, origins, outcomes,
+and event schemas: no new stage, origin, outcome, or event is introduced, and
+`evaluation_source` keeps the same three values (`model`,
+`local-only`, `stored-decision-reuse`) it already had for individual
+validation. `DecompositionDecision` did not previously carry an
+`evaluation_source` field at all, so `issue.decomposition-validation-job`
+facts always reported the generic `getattr(...)` fallback `"unrecorded"`;
+decomposition decisions now report their real evaluation source the same
+way individual decisions already did (mirrored for REQ-009 symmetry), which
+is a genuine, intentional improvement to that job's observed facts, not a
+regression to guard against. What otherwise changed is durable *reuse
+eligibility* and *identity*, not the dashboard's stages, origins, or event
+schemas. The production routing suite in
+`tests/test_issue_stage_routing.py` (see
+`test_running_engine_retains_standalone_classification_across_provider_policy_change`
+and `test_running_engine_retains_both_family_categories_across_policy_change`)
+covers backend/model changes and exact restoration for standalone and family
+work, proving zero additional backend invocations and no Review requeue.
+`tests/test_specification_validation_lifecycle.py` and
+`tests/test_decomposition_validation_lifecycle.py` cover execution
+provenance capture/preservation, an in-flight route change during an
+analyzer call, and retained-but-non-authoritative legacy on-disk records
+from before this migration (`legacy_policy_unproven`). Run
+`bash scripts/test.sh tests/test_issue_stage_routing.py tests/test_specification_validation_lifecycle.py tests/test_decomposition_validation_lifecycle.py`
+for this boundary.
 
 Issue #2061 binds each durable Implementation generation (`issue_stage_routing.py`)
 to the existing production implementation-ownership authority
