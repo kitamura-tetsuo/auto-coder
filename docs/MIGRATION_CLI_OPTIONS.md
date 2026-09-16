@@ -426,7 +426,7 @@ This will:
 
 - [Configuration Guide](configuration.md): Detailed configuration documentation
 - [Backend Configuration Example](../llm_backend_config.example.toml): Complete example configuration
-- [client-features.yaml](../client-features.yaml): Technical specification
+- [Client Features Documentation](client-features/README.md): Technical specification
 
 ## Support
 

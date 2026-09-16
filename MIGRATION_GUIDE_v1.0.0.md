@@ -107,7 +107,7 @@ These will log deprecation warnings but continue to work.
 
 If you encounter issues during migration:
 1. Check the example config: `docs/llm_backend_config.example.toml`
-2. Review the updated documentation: `docs/client-features.yaml`
+2. Review the updated documentation: `docs/client-features/`
 3. File an issue: https://github.com/kitamura-tetsuo/auto-coder/issues
 
 ## Example: Complete Migration

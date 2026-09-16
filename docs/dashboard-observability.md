@@ -201,8 +201,9 @@ or event schema:
    boundary, read the real collector snapshot, and take that snapshot through the
    mounted detail-page refresh. Assert business results and effect counts separately
    from displayed stages and outcomes.
-3. Update this guide and `docs/client-features.yaml`, or state a concrete reason in
-   the PR description why the change is observability-neutral.
+3. Update this guide and the relevant fragment(s) under `docs/client-features/`,
+   or state a concrete reason in the PR description why the change is
+   observability-neutral.
 4. Run `bash scripts/test.sh tests/test_dashboard_observability.py` locally. The same
    file is collected by the ordinary `PR Tests` shards; failures are mandatory test
    failures, not semantic prompt-evaluation advice.

@@ -24,8 +24,12 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 ### Project Structure
 
 * Maintain a standard Python project structure.
-* Document all features in `docs/client-features.yaml` as soon as possible.
-* Read `docs/client-features.yaml` to comply with specifications and not to degrade.
+* Document all features as soon as possible by adding or updating a standalone
+  Markdown fragment under `docs/client-features/`; see
+  `docs/client-features/README.md` for discovery and ownership rules.
+* Before changing behavior, search `docs/client-features/` for the fragment(s)
+  describing it and read them to comply with specifications and not to degrade
+  documented behavior.
 * Do not create duplicate functions in multiple locations.
 * Put disposable investigation scripts, debugging scripts, one-shot rewrite scripts,
   and their outputs under `.agent-tmp/`; these files must remain untracked and must
