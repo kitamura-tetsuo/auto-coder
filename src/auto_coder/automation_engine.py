@@ -5094,6 +5094,21 @@ class AutomationEngine:
                 result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = ["Deferred - graceful shutdown began before implementation ownership admission"]
                 return result
+            routing_generation_val = candidate.data.get("routing_generation")
+            if candidate.type == "issue" and routing_generation_val and self.issue_stage_routing.is_implementation_owned(repo_name, item_number, str(routing_generation_val)):
+                from auto_coder.automation_config import ExplicitTargetOutcome as LocalExplicitTargetOutcome
+
+                result = CandidateProcessingResult(
+                    type=candidate.type,
+                    number=item_number,
+                    title=candidate.data.get("title", ""),
+                    success=True,
+                    actions=["Deferred - duplicate implementation start suppressed"],
+                    target_outcome=LocalExplicitTargetOutcome.DEFERRED,
+                )
+                result.error = "Implementation start already durably owned for this generation."
+                return result
+
             execution_id = slots.current_execution_id(owner) if continue_execution else None
             inherited_execution = execution_id is not None
             owner_existed_before_admission = owner in slots.active_owners()
@@ -5150,6 +5165,31 @@ class AutomationEngine:
                 slots.finish_execution(owner, execution_id)
                 result.error = "Could not bind implementation ownership to validated Issue generation"
                 return result
+
+            # REQ-003, REQ-005: Mark ownership durably acquired
+            if candidate.data.get("routing_generation"):
+                try:
+                    from .issue_stage_routing import IMPLEMENTATION_STAGE
+
+                    lane_item = self.issue_stage_routing.get(repo_name, IMPLEMENTATION_STAGE, item_number)
+                    if not lane_item or lane_item.generation != candidate.data.get("routing_generation"):
+                        self.issue_stage_routing._connection.execute(
+                            "INSERT OR REPLACE INTO issue_lane_arrivals(repository,stage,target_number,generation,priority,state,remaining_json,family_parent_number,created_at) VALUES(?,?,?,?,?,'starting','[]',?,0)",
+                            (repo_name, IMPLEMENTATION_STAGE, item_number, candidate.data.get("routing_generation"), 0, None),
+                        )
+                        lane_item = self.issue_stage_routing.get(repo_name, IMPLEMENTATION_STAGE, item_number)
+
+                    if lane_item and lane_item.generation == candidate.data.get("routing_generation"):
+                        if lane_item.state != "starting":
+                            self.issue_stage_routing._connection.execute("UPDATE issue_lane_arrivals SET state='starting' WHERE repository=? AND stage=? AND target_number=? AND generation=?", (repo_name, IMPLEMENTATION_STAGE, item_number, candidate.data.get("routing_generation")))
+                            lane_item = self.issue_stage_routing.get(repo_name, IMPLEMENTATION_STAGE, item_number)
+                        if lane_item:
+                            self.issue_stage_routing.mark_implementation_owned(lane_item)
+                except Exception as e:
+                    import logging
+
+                    _logger = logging.getLogger(__name__)
+                    _logger.warning(f"Could not bind implementation ownership: {e}")
 
         try:
             # Issue force changes scheduling eligibility, not generation-level
