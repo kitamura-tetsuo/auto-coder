@@ -18,6 +18,7 @@
           - "--token: Explicit Claude OAuth token to use for verification"
         behavior:
           - "Claude: Displays 5-hour window, 7-day window, model-specific windows (Sonnet/Opus/OAuth Apps), and extra usage / overage credit details."
+          - "Claude quota caching: Valid quota checks are cached in memory and persisted to `~/.auto-coder/claude_usage_cache.json`. When the Anthropic usage API returns HTTP 429 (rate limit on the usage check endpoint), Auto-Coder falls back to the cached quota instead of marking the backend as quota-insufficient, and HTTP 429 errors do not overwrite valid cache entries."
           - "Claude credential discovery preserves explicit and environment token precedence, then supports Claude Code's platform storage (including macOS Keychain and `.credentials.json`) after verifying and refreshing an authenticated session through the Claude CLI. Authenticated credential-acquisition failures are reported separately from missing login, while unauthenticated users are directed to `claude auth login`."
           - "Codex: Displays weekly rate-limit window utilization, remaining percentage, reset timestamp, days until reset, minimum required threshold, and task execution allowance."
           - "Codex requires a CLI with app-server account/rateLimits/read support (verified with 0.154.0). A short-lived stdio process has a 15-second request deadline and is terminated and reaped after each read. Server output and credentials are not logged."

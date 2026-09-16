@@ -8,6 +8,7 @@ or if rate limit errors (HTTP 429), extra usage restrictions occur, or usage dat
 it raises AutoCoderUsageLimitError to defer LLM invocations and route to next backend.
 """
 
+import hashlib
 import json
 import os
 import platform
@@ -88,18 +89,184 @@ class ClaudeCredentialResolution:
 
 _cache_lock = threading.Lock()
 _cached_quota: Optional[ClaudeUsageQuota] = None
-
+_cached_quotas: dict[str, ClaudeUsageQuota] = {}
 
 _last_refresh_failed_at: float = 0.0
+_last_429_at: float = 0.0
 DEFAULT_REFRESH_COOLDOWN_SECONDS: float = 60.0
+DEFAULT_429_COOLDOWN_SECONDS: float = 60.0
+
+
+def get_claude_usage_cache_path() -> Path:
+    """Get path to the Claude usage cache file."""
+    env_path = os.environ.get("AUTO_CODER_CLAUDE_USAGE_CACHE_FILE")
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path.home() / ".auto-coder" / "claude_usage_cache.json"
+
+
+def _token_cache_key(token: Any) -> str:
+    """Generate a stable cache key from an OAuth token."""
+    if not token or not isinstance(token, str):
+        return "default"
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _quota_to_dict(quota: ClaudeUsageQuota) -> dict:
+    """Serialize ClaudeUsageQuota to a JSON-serializable dict."""
+    return {
+        "five_hour": {"utilization": quota.five_hour.utilization, "resets_at": quota.five_hour.resets_at},
+        "seven_day": {"utilization": quota.seven_day.utilization, "resets_at": quota.seven_day.resets_at},
+        "seven_day_sonnet": {
+            "utilization": quota.seven_day_sonnet.utilization,
+            "resets_at": quota.seven_day_sonnet.resets_at,
+        },
+        "seven_day_opus": {
+            "utilization": quota.seven_day_opus.utilization,
+            "resets_at": quota.seven_day_opus.resets_at,
+        },
+        "seven_day_oauth_apps": {
+            "utilization": quota.seven_day_oauth_apps.utilization,
+            "resets_at": quota.seven_day_oauth_apps.resets_at,
+        },
+        "extra_usage": {
+            "is_enabled": quota.extra_usage.is_enabled,
+            "monthly_limit": quota.extra_usage.monthly_limit,
+            "used_credits": quota.extra_usage.used_credits,
+            "utilization": quota.extra_usage.utilization,
+            "currency": quota.extra_usage.currency,
+            "disabled_reason": quota.extra_usage.disabled_reason,
+        },
+        "is_quota_insufficient": quota.is_quota_insufficient,
+        "reason": quota.reason,
+        "cached_at": quota.cached_at,
+    }
+
+
+def _dict_to_quota(data: dict) -> ClaudeUsageQuota:
+    """Deserialize dict into a ClaudeUsageQuota object."""
+
+    def _parse_window(d: Any) -> ClaudeUsageWindow:
+        if isinstance(d, dict):
+            return ClaudeUsageWindow(
+                utilization=float(d["utilization"]) if d.get("utilization") is not None else None,
+                resets_at=d.get("resets_at"),
+            )
+        return ClaudeUsageWindow()
+
+    raw_extra = data.get("extra_usage")
+    if isinstance(raw_extra, dict):
+        extra_usage = ClaudeExtraUsage(
+            is_enabled=raw_extra.get("is_enabled"),
+            monthly_limit=float(raw_extra["monthly_limit"]) if raw_extra.get("monthly_limit") is not None else None,
+            used_credits=float(raw_extra["used_credits"]) if raw_extra.get("used_credits") is not None else None,
+            utilization=float(raw_extra["utilization"]) if raw_extra.get("utilization") is not None else None,
+            currency=raw_extra.get("currency"),
+            disabled_reason=raw_extra.get("disabled_reason"),
+        )
+    else:
+        extra_usage = ClaudeExtraUsage()
+
+    return ClaudeUsageQuota(
+        five_hour=_parse_window(data.get("five_hour")),
+        seven_day=_parse_window(data.get("seven_day")),
+        seven_day_sonnet=_parse_window(data.get("seven_day_sonnet")),
+        seven_day_opus=_parse_window(data.get("seven_day_opus")),
+        seven_day_oauth_apps=_parse_window(data.get("seven_day_oauth_apps")),
+        extra_usage=extra_usage,
+        is_quota_insufficient=bool(data.get("is_quota_insufficient", False)),
+        reason=str(data.get("reason", "")),
+        cached_at=float(data.get("cached_at", time.time())),
+    )
+
+
+def _load_cached_quotas_from_disk() -> dict[str, ClaudeUsageQuota]:
+    """Load cached quotas from disk file."""
+    try:
+        path = get_claude_usage_cache_path()
+        if path.exists():
+            content = path.read_text(encoding="utf-8")
+            if not content.strip():
+                return {}
+            data = json.loads(content)
+            if isinstance(data, dict):
+                result = {}
+                for k, v in data.items():
+                    if isinstance(v, dict):
+                        result[k] = _dict_to_quota(v)
+                return result
+    except Exception as e:
+        logger.debug(f"Failed to read Claude usage cache file: {e}")
+    return {}
+
+
+def _save_cached_quota_to_disk(token_key: str, quota: ClaudeUsageQuota) -> None:
+    """Persist cached quota to disk atomically."""
+    try:
+        path = get_claude_usage_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        current = {}
+        if path.exists():
+            try:
+                content = path.read_text(encoding="utf-8")
+                if content.strip():
+                    raw = json.loads(content)
+                    if isinstance(raw, dict):
+                        current = raw
+            except Exception:
+                current = {}
+        current[token_key] = _quota_to_dict(quota)
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        temp_path.replace(path)
+    except Exception as e:
+        logger.debug(f"Failed to write Claude usage cache file: {e}")
+
+
+def _get_cached_quota(token_key: str) -> Optional[ClaudeUsageQuota]:
+    """Retrieve cached quota for token_key from memory or disk."""
+    global _cached_quota
+    if token_key in _cached_quotas:
+        return _cached_quotas[token_key]
+    disk_quotas = _load_cached_quotas_from_disk()
+    if token_key in disk_quotas:
+        _cached_quotas[token_key] = disk_quotas[token_key]
+        _cached_quota = disk_quotas[token_key]
+        return disk_quotas[token_key]
+    if token_key == "default" and disk_quotas:
+        first_val = next(iter(disk_quotas.values()))
+        _cached_quota = first_val
+        return first_val
+    if token_key != "default" and "default" in disk_quotas:
+        _cached_quota = disk_quotas["default"]
+        return disk_quotas["default"]
+    if _cached_quota is not None:
+        return _cached_quota
+    return None
+
+
+def _set_cached_quota(token_key: str, quota: ClaudeUsageQuota) -> None:
+    """Store cached quota in memory and on disk."""
+    global _cached_quota
+    _cached_quota = quota
+    _cached_quotas[token_key] = quota
+    _save_cached_quota_to_disk(token_key, quota)
 
 
 def clear_claude_usage_cache() -> None:
-    """Clear in-memory cached quota state and refresh cooldown."""
-    global _cached_quota, _last_refresh_failed_at
+    """Clear in-memory and on-disk cached quota state and refresh cooldown."""
+    global _cached_quota, _last_refresh_failed_at, _last_429_at
     with _cache_lock:
         _cached_quota = None
+        _cached_quotas.clear()
         _last_refresh_failed_at = 0.0
+        _last_429_at = 0.0
+        try:
+            path = get_claude_usage_cache_path()
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
 
 
 def get_claude_credentials_path() -> Path:
@@ -546,13 +713,20 @@ def check_claude_usage(
     Returns:
         ClaudeUsageQuota instance.
     """
-    global _cached_quota
+    global _cached_quota, _last_429_at
+
+    resolved_token = resolve_claude_oauth_token(token)
+    token_key = _token_cache_key(resolved_token or token)
 
     now = time.time()
     if use_cache:
         with _cache_lock:
-            if _cached_quota is not None and (now - _cached_quota.cached_at) < cache_ttl:
-                return _cached_quota
+            cached = _get_cached_quota(token_key)
+            if cached is not None and (now - cached.cached_at) < cache_ttl:
+                return cached
+            if cached is not None and (now - _last_429_at) < DEFAULT_429_COOLDOWN_SECONDS:
+                logger.debug(f"Skipping Claude usage check during 429 cooldown ({int(now - _last_429_at)}s < {DEFAULT_429_COOLDOWN_SECONDS}s). Using cached quota.")
+                return cached
 
     raw_data = fetch_claude_usage_data(token=token)
     if not raw_data:
@@ -565,6 +739,22 @@ def check_claude_usage(
         with _cache_lock:
             _cached_quota = quota
         return quota
+
+    # Check for direct rate limit error indicators in response
+    is_429 = isinstance(raw_data, dict) and (
+        raw_data.get("http_status") == 429
+        or (raw_data.get("is_rate_limited") is True and "429" in str(raw_data.get("error", "")))
+        or (raw_data.get("is_rate_limited") is True and "rate limit" in str(raw_data.get("error", "")).lower())
+        or (isinstance(raw_data.get("error"), dict) and raw_data.get("error", {}).get("type") == "rate_limit_error")
+    )
+
+    if is_429:
+        with _cache_lock:
+            _last_429_at = now
+            cached = _get_cached_quota(token_key)
+            if cached is not None:
+                logger.warning(f"Claude OAuth usage API returned HTTP 429: Rate limit exceeded. Using cached quota from {int(now - cached.cached_at)}s ago.")
+                return cached
 
     is_insufficient = False
     reasons: List[str] = []
@@ -682,8 +872,9 @@ def check_claude_usage(
         cached_at=now,
     )
 
-    with _cache_lock:
-        _cached_quota = quota
+    if not is_429:
+        with _cache_lock:
+            _set_cached_quota(token_key, quota)
 
     return quota
 

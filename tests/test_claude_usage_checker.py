@@ -17,6 +17,7 @@ from auto_coder.claude_usage_checker import (
     check_claude_usage_or_raise,
     clear_claude_usage_cache,
     fetch_claude_usage_data,
+    get_claude_usage_cache_path,
     refresh_claude_access_token,
     refresh_claude_token_via_cli,
     resolve_claude_oauth_token,
@@ -606,3 +607,103 @@ class TestClaudeUsageChecker:
         assert quota.seven_day.remaining_percent == 0.0
         assert "Weekly weekly_all limit remaining 0.0%" in quota.reason
         assert "2026-08-25T21:00:00Z" in quota.reason
+
+    def test_check_claude_usage_http_429_uses_cached_quota(self):
+        """Test check_claude_usage falls back to cached quota when API returns HTTP 429."""
+        valid_data = {
+            "five_hour": {"utilization": 20.0, "resets_at": "2026-08-16T18:30:00Z"},
+            "seven_day": {"utilization": 28.0, "resets_at": "2026-08-18T21:00:00Z"},
+        }
+        mock_429_data = {
+            "is_rate_limited": True,
+            "http_status": 429,
+            "error": {"type": "rate_limit_error", "message": "Rate limit reached (HTTP 429)"},
+        }
+
+        # Step 1: Initial successful check populates cache
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=valid_data):
+            quota1 = check_claude_usage(token="test-token", use_cache=True)
+            assert quota1.is_quota_insufficient is False
+            assert quota1.seven_day.remaining_percent == 72.0
+
+        # Step 2: Second check gets HTTP 429 from usage API
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=mock_429_data):
+            # Even with use_cache=False, 429 should fall back to cached quota
+            quota2 = check_claude_usage(token="test-token", use_cache=False)
+            assert quota2.is_quota_insufficient is False
+            assert quota2.seven_day.remaining_percent == 72.0
+            assert quota2.five_hour.remaining_percent == 80.0
+
+    def test_check_claude_usage_http_429_does_not_poison_cache(self):
+        """Test HTTP 429 error is not stored in cache and does not overwrite valid quota."""
+        valid_data = {
+            "five_hour": {"utilization": 10.0, "resets_at": "2026-08-16T18:30:00Z"},
+            "seven_day": {"utilization": 30.0, "resets_at": "2026-08-18T21:00:00Z"},
+        }
+        mock_429_data = {
+            "is_rate_limited": True,
+            "http_status": 429,
+            "error": {"type": "rate_limit_error", "message": "Rate limit reached (HTTP 429)"},
+        }
+
+        # Seed valid cache
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=valid_data):
+            check_claude_usage(token="test-token", use_cache=True)
+
+        # Trigger 429
+        with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=mock_429_data):
+            quota_429 = check_claude_usage(token="test-token", use_cache=False)
+            assert quota_429.is_quota_insufficient is False
+
+        # Verify cached quota retains valid data
+        quota_cached = check_claude_usage(token="test-token", use_cache=True)
+        assert quota_cached.is_quota_insufficient is False
+        assert quota_cached.seven_day.remaining_percent == 70.0
+
+    def test_check_claude_usage_http_429_uses_disk_cached_quota(self, tmp_path):
+        """Test check_claude_usage loads and uses disk cache when memory cache is empty and 429 occurs."""
+        cache_file = tmp_path / "claude_usage_cache.json"
+        valid_data = {
+            "five_hour": {"utilization": 15.0, "resets_at": "2026-08-16T18:30:00Z"},
+            "seven_day": {"utilization": 25.0, "resets_at": "2026-08-18T21:00:00Z"},
+        }
+        mock_429_data = {
+            "is_rate_limited": True,
+            "http_status": 429,
+            "error": {"type": "rate_limit_error", "message": "Rate limit reached (HTTP 429)"},
+        }
+
+        with patch.dict("os.environ", {"AUTO_CODER_CLAUDE_USAGE_CACHE_FILE": str(cache_file)}):
+            # Seed cache
+            with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=valid_data):
+                check_claude_usage(token="test-token", use_cache=True)
+
+            assert cache_file.exists()
+
+            # Clear memory cache ONLY (not disk file)
+            import auto_coder.claude_usage_checker as checker
+
+            with checker._cache_lock:
+                checker._cached_quota = None
+                checker._cached_quotas.clear()
+
+            # Now 429 occurs with memory cache empty
+            with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=mock_429_data):
+                quota = check_claude_usage(token="test-token", use_cache=False)
+                assert quota.is_quota_insufficient is False
+                assert quota.seven_day.remaining_percent == 75.0
+
+    def test_clear_claude_usage_cache_removes_disk_file(self, tmp_path):
+        """Test clear_claude_usage_cache removes the on-disk cache file."""
+        cache_file = tmp_path / "claude_usage_cache.json"
+        valid_data = {
+            "five_hour": {"utilization": 10.0},
+            "seven_day": {"utilization": 20.0},
+        }
+        with patch.dict("os.environ", {"AUTO_CODER_CLAUDE_USAGE_CACHE_FILE": str(cache_file)}):
+            with patch("auto_coder.claude_usage_checker.fetch_claude_usage_data", return_value=valid_data):
+                check_claude_usage(token="test-token", use_cache=True)
+
+            assert cache_file.exists()
+            clear_claude_usage_cache()
+            assert not cache_file.exists()
