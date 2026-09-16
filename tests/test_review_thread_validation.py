@@ -259,6 +259,33 @@ class TestRenderClaimedReviewThreadsSection:
         assert "thread-abc" in rendered
         assert "The counter never resets" in rendered
 
+    def test_forced_revalidation_heading_distinct_from_older_head(self):
+        """Issue #2106 REQ-003: a forced same-head revalidation must never be
+        rendered as evidence that the head changed."""
+        forced_thread = ClaimedReviewThread(
+            thread_id="thread-forced",
+            root_comment_database_id=2,
+            root_author_login=CODEX_LOGIN,
+            original_finding="### Auto-Coder adversarial finding\n\nStill broken",
+            discussion=f"{CODEX_LOGIN}: Still broken",
+            revalidation_forced=True,
+        )
+        older_head_thread = ClaimedReviewThread(
+            thread_id="thread-older-head",
+            root_comment_database_id=3,
+            root_author_login=CODEX_LOGIN,
+            original_finding="### Auto-Coder adversarial finding\n\nAlso still broken",
+            discussion=f"{CODEX_LOGIN}: Also still broken",
+            revalidation_after_head_change=True,
+        )
+
+        rendered = render_claimed_review_threads_section([forced_thread, older_head_thread])
+
+        assert "### Forced adversarial-validation revalidation (explicit --force): thread-forced" in rendered
+        assert "not evidence that the head changed" in rendered
+        assert "### Older-head adversarial finding requiring revalidation: thread-older-head" in rendered
+        assert "no implementation-agent reply is required for this revalidation" in rendered
+
 
 class TestResolveAddressedReviewThreads:
     @pytest.fixture(autouse=True)

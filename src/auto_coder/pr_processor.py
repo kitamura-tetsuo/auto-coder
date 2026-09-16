@@ -494,13 +494,20 @@ def _filter_unresolved_review_threads_for_disabled_validator(
 def _allow_older_head_adversarial_threads(
     state: ClaimedReviewThreadGateState,
     reviewer_login: str,
+    *,
+    forced: bool = False,
 ) -> ClaimedReviewThreadGateState:
-    """Make older-head validator findings eligible for independent rereview.
+    """Make authentic validator findings eligible for independent rereview.
 
     This does not resolve or otherwise acknowledge a finding.  It only moves
     authentic Auto-Coder reviewer threads from the pre-validation merge gate
-    into the validator's disposition input after the caller has established
-    that the current head has no applicable verdict.
+    into the validator's disposition input, either because the caller has
+    established that the current head has no applicable verdict (the default,
+    ``forced=False``), or because an explicit ``--force`` run is admitting a
+    same-head revalidation despite a saved verdict (``forced=True``, issue
+    #2106 REQ-001/REQ-003). The two cases are tagged with distinct
+    ``ClaimedReviewThread`` flags so the validation prompt never misrepresents
+    a forced same-head rereview as evidence that the head changed.
     """
     promoted: List[ClaimedReviewThread] = []
     remaining: List[ReviewThread] = []
@@ -517,7 +524,8 @@ def _allow_older_head_adversarial_threads(
                 root_author_login=root.author_login,
                 original_finding=root.body,
                 discussion="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in comments),
-                revalidation_after_head_change=True,
+                revalidation_after_head_change=not forced,
+                revalidation_forced=forced,
             )
         )
     if not promoted:
@@ -2849,6 +2857,7 @@ def _handle_pr_merge(
             thread_gate_enabled = _is_pr_review_thread_gate_enabled(config, repo_name)
             adv_enabled = _is_pr_adversarial_validation_enabled(config, repo_name)
             revalidating_older_head_threads = False
+            forced_same_head_revalidation = False
             reviewer_login = ""
             claimed_review_threads: Sequence[Any] = ()
 
@@ -2861,25 +2870,34 @@ def _handle_pr_merge(
                         processing_status.outcome = PRProcessingOutcome.FAILED
                     _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.FAILED, {"reason": claimed_thread_state.lookup_error})
                     return actions
+                force_admission_eligible = False
                 if adv_enabled:
                     if claimed_thread_state.has_blocking_unresolved and not _is_dependabot_pr(pr_data):
                         # An authentic validator finding remains a merge blocker, but it
-                        # must not prevent validation of a newer head.  Same-head
-                        # non-PASS results still take the ordinary blocking/dedup path.
+                        # must not prevent validation of a newer head, nor prevent an
+                        # explicit --force run from reaching a fresh current-head
+                        # validation attempt (issue #2106 REQ-001).  Same-head non-PASS
+                        # results otherwise take the ordinary blocking/dedup path.
                         head_sha_for_gate = pr_data.get("head", {}).get("sha", "")
                         gate_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
                         if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                             current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
-                            if not current_status_error and current_status is None:
-                                try:
-                                    reviewer_login = resolve_reviewer_app_identity(repo_name).login
-                                except Exception as exc:
-                                    logger.error(f"Could not authenticate older-head adversarial threads for PR #{pr_number}: {exc}")
-                                else:
-                                    claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login)
-                                    revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
-                                    if revalidating_older_head_threads:
-                                        actions.append(f"Allowing adversarial validation of new head {head_sha_for_gate[:8]} with older-head review findings still unresolved")
+                            if not current_status_error:
+                                if current_status is None or force_adversarial_validation:
+                                    try:
+                                        reviewer_login = resolve_reviewer_app_identity(repo_name).login
+                                    except Exception as exc:
+                                        logger.error(f"Could not authenticate unresolved adversarial threads for PR #{pr_number}: {exc}")
+                                    else:
+                                        forced_same_head_revalidation = current_status is not None and force_adversarial_validation
+                                        claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login, forced=forced_same_head_revalidation)
+                                        revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
+                                        if revalidating_older_head_threads:
+                                            actions.append(f"Allowing adversarial validation of new head {head_sha_for_gate[:8]} with older-head review findings still unresolved")
+                                        if any(thread.revalidation_forced for thread in claimed_thread_state.claimed):
+                                            actions.append(f"Forcing adversarial validation for PR #{pr_number} at head {head_sha_for_gate[:8]} with unresolved review findings via explicit --force")
+                                if force_adversarial_validation:
+                                    force_admission_eligible = True
                 else:
                     claimed_thread_state = _filter_unresolved_review_threads_for_disabled_validator(claimed_thread_state, repo_name)
                 if claimed_thread_state.has_blocking_unresolved:
@@ -2897,7 +2915,7 @@ def _handle_pr_merge(
                             unresolved_threads=repair_threads,
                         )
                         actions.extend(repair_result)
-                        if not repair_result.delivered and processing_status is not None:
+                        if not repair_result.delivered and processing_status is not None and not force_admission_eligible:
                             processing_status.error = repair_result[0] if repair_result else "Unresolved review repair was not delivered"
                             processing_status.outcome = PRProcessingOutcome.FAILED
                         _record_pr_stage(
@@ -2907,7 +2925,13 @@ def _handle_pr_merge(
                             Outcome.ACCEPTED_HANDOFF if repair_result.delivered else Outcome.FAILED,
                             {"effect": "review-thread-repair", "thread_count": len(repair_threads)},
                         )
-                    return actions
+                    if not force_admission_eligible:
+                        return actions
+                    # REQ-001/REQ-009: an explicit --force run still reaches a fresh
+                    # current-head validation attempt; the remaining unresolved
+                    # threads above are not eligible for independent rereview and
+                    # remain a merge blocker (enforced again at the merge boundary).
+                    actions.append(f"Continuing to forced adversarial validation for PR #{pr_number} despite unresolved review threads (explicit --force); merge remains blocked while they are unresolved")
 
                 claimed_review_threads = claimed_thread_state.claimed
                 if claimed_review_threads:
@@ -3050,11 +3074,28 @@ def _handle_pr_merge(
                                 return actions
                             else:
                                 logger.warning(f"Codex review completed for PR #{pr_number}, but review threads could not be rechecked: {post_codex_thread_state.lookup_error}")
-                        elif revalidating_older_head_threads:
-                            post_codex_thread_state = _allow_older_head_adversarial_threads(post_codex_thread_state, reviewer_login)
+                        else:
+                            if revalidating_older_head_threads:
+                                post_codex_thread_state = _allow_older_head_adversarial_threads(post_codex_thread_state, reviewer_login)
+                            # REQ-001/REQ-002: the recheck is a second pre-validation
+                            # gate, so an explicit --force run must not be blocked here
+                            # either, even for a thread that only became visible after
+                            # the Codex review completed.
+                            if thread_gate_enabled and force_adversarial_validation and post_codex_thread_state.has_blocking_unresolved and not _is_dependabot_pr(pr_data):
+                                try:
+                                    post_codex_reviewer_login = reviewer_login or resolve_reviewer_app_identity(repo_name).login
+                                except Exception as exc:
+                                    logger.error(f"Could not authenticate unresolved adversarial threads after Codex review for PR #{pr_number}: {exc}")
+                                else:
+                                    post_codex_thread_state = _allow_older_head_adversarial_threads(post_codex_thread_state, post_codex_reviewer_login, forced=True)
+                                    if any(thread.revalidation_forced for thread in post_codex_thread_state.claimed):
+                                        actions.append(f"Forcing adversarial validation for PR #{pr_number} with unresolved review findings observed after Codex review completion (explicit --force)")
                         if post_codex_thread_state.has_blocking_unresolved and thread_gate_enabled:
-                            actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
-                            return actions
+                            if force_adversarial_validation:
+                                actions.append(f"Continuing to forced adversarial validation for PR #{pr_number} despite unresolved review threads observed after Codex review completion (explicit --force); merge remains blocked while they are unresolved")
+                            else:
+                                actions.append(f"Codex review completed for PR #{pr_number} with unresolved review threads; adversarial validation not started")
+                                return actions
                         # Codex may have just posted its own review threads; use the
                         # freshest claimed-thread set for this validation run.
                         if not post_codex_thread_state.lookup_error:
@@ -3453,6 +3494,35 @@ def _handle_pr_merge(
                         {"phase": "post-adversarial-validation", "reason": reason},
                     )
                     return actions
+
+                # Fresh authoritative thread observations at the merge boundary
+                # decide whether any blocking thread remains (issue #2106
+                # REQ-006). This re-read is independent of whatever thread state
+                # admitted validation above: a thread newly opened during
+                # validation, or one that force bypassed at admission but was
+                # never independently resolved, must still block merge here.
+                if thread_gate_enabled:
+                    final_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
+                    if final_thread_state.lookup_error:
+                        actions.append(f"Skipping merge for PR #{pr_number}: review threads could not be rechecked at the merge boundary: {final_thread_state.lookup_error}")
+                        _record_pr_stage(
+                            pr_number,
+                            "pr.review-thread-gate",
+                            f"pr#{pr_number} final review-thread gate",
+                            Outcome.FAILED,
+                            {"reason": final_thread_state.lookup_error, "phase": "merge-boundary"},
+                        )
+                        return actions
+                    if final_thread_state.has_blocking_unresolved:
+                        actions.append(f"Skipping merge for PR #{pr_number}: unresolved review threads remain at the merge boundary")
+                        _record_pr_stage(
+                            pr_number,
+                            "pr.review-thread-gate",
+                            f"pr#{pr_number} final review-thread gate",
+                            Outcome.BLOCKED,
+                            {"blocking_count": len(final_thread_state.blocking_unresolved), "phase": "merge-boundary"},
+                        )
+                        return actions
 
                 # Verify remote PR head SHA hasn't changed since CI check and validation before merging (fail-closed)
                 head_sha = pr_data.get("head", {}).get("sha", "")
