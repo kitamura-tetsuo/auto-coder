@@ -266,3 +266,95 @@ This presentation correction is observability-neutral: origins, admission, provi
 routing, and event schemas are unchanged.
 `tests/test_process_issues_cloud_only.py::test_process_issues_only_completion_status_uses_target_outcome`
 verifies preserved deferrals, missing diagnostics, and target-number mismatches.
+
+## Authenticated adjudication publishing boundary (Issue #2022)
+
+The read-only Dashboard described above never authenticates a GitHub
+operator: viewing it grants no write authority. A separate, opt-in boundary
+lets exactly one authenticated Dashboard operator publish review
+adjudications (see `review_adjudication.py`, `review_adjudication_github.py`)
+under a configured GitHub account, mounted alongside the Dashboard by
+`dashboard_adjudication.init_dashboard_adjudication` at
+`/dashboard-adjudication/*`. This is a server API boundary only; the
+interactive adjudication page that calls it is Issue #2023.
+
+### Opt-in configuration
+
+Add a repository-scoped `[dashboard_adjudication]` section to `config.toml`:
+
+```toml
+[dashboard_adjudication]
+enabled = true
+operator_secret_file = "~/.auto-coder/dashboard-operator.secret"
+github_token_file = "~/.auto-coder/dashboard-operator.token"
+allowed_origin = "https://dashboard.example.internal"
+```
+
+Authoring stays disabled — with a logged configuration diagnostic — unless
+`enabled = true` **and** all three of `operator_secret_file`,
+`github_token_file`, and `allowed_origin` are valid: both files must exist
+and be readable by the daemon process, the operator secret must contain at
+least 32 bytes, and `allowed_origin` must be exactly one HTTPS origin or a
+direct loopback HTTP origin (`http://127.0.0.1`, `http://localhost`, or
+`http://[::1]`), with no path, query, or fragment. There is no fallback to
+anonymous access, a generated or default secret, the webhook secret, the
+controller's own `GH_TOKEN`, or a reviewer-App credential — a configuration
+defect simply disables this write capability while leaving the existing
+read-only Dashboard unaffected.
+
+### Operator session
+
+Logging in (`POST /dashboard-adjudication/login`) with the exact
+`operator_secret_file` contents (compared in constant time) issues a single
+server-held session, scoped to this daemon's configured repository, valid
+for **at most 30 minutes**. It is invalidated early by logout, by disabling
+authoring, by rotating `operator_secret_file`, or by a daemon restart (the
+session store is in-memory and intentionally not durable). Every context
+read, draft preparation, submission, and publication-status lookup —
+including any future NiceGUI/WebSocket callback the adjudication page adds —
+is re-authorized at this same server boundary on every request; nothing
+about a request from a browser (a hidden field, a client-side boolean, or a
+copied cookie) can grant write access on its own.
+
+State-changing requests must originate from the exact configured
+`allowed_origin` (never inferred from `X-Forwarded-*` headers) and must
+carry the per-session CSRF token issued at login in an `X-CSRF-Token`
+header. The session cookie is `HttpOnly`, `SameSite=Strict`, and `Secure`
+whenever the request arrived over HTTPS. Operator secrets and GitHub
+credentials are never placed in a URL, browser storage, rendered page
+state, a trace, or a log line, and the GitHub token itself is never
+returned to the browser.
+
+### Publishing identity
+
+The publishing GitHub account is resolved from `github_token_file` — a
+credential dedicated to this boundary, independent of the controller's own
+`GH_TOKEN` — by asking GitHub for that credential's own stable numeric ID
+immediately before every publish. That ID must appear in the effective
+`[github].review_adjudicator_allowlist`, and the target thread's root must
+be an automated (`Bot`) comment whose author is in the effective
+`[github].pr_review_allowlist`, on an open pull request of this daemon's
+own configured repository. **The authenticated local operator session and
+the actual GitHub author are recorded separately**: a valid Dashboard login
+proves who may use this boundary, not who GitHub will show as having
+posted the decision, and neither the browser session nor the resulting
+`"source": "dashboard"` field is an attestation that a human personally
+typed the adjudication.
+
+### Publication safety
+
+Draft preparation (`POST /dashboard-adjudication/draft`) never writes to
+GitHub; it returns a server-rendered proposed reply for the operator to
+review. Submission (`POST /dashboard-adjudication/submit`) durably records
+the decision before sending, so a lost network response never causes a
+silent double-post: the outcome is recorded as unknown and is reconciled
+only by reading the exact target thread for the same decision ID, payload,
+and author — never by guessing or retrying blindly. Resubmitting the same
+decision ID with the same payload returns the original result; resubmitting
+it with a different payload is rejected. `GET
+/dashboard-adjudication/status/{decision_id}` exposes this same
+reconciliation as a read-only, authenticated lookup so a reconnecting
+client can recover the true state without triggering another action.
+Publication success itself only ever reports a confirmed GitHub comment
+reference and a "published, awaiting processing" state — never that the
+finding was applied, fixed, or regression-proven.
