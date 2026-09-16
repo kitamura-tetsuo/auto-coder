@@ -3389,21 +3389,6 @@ def run_adversarial_validation(
                 diagnostic_reason="PR head, base/change representation, or Issue Requirement manifest changed or could not be reconfirmed",
             )
 
-    # REQ-001 - REQ-014: Apply adjudications before final result projections
-    applicable_snapshots = [s for s in adjudication_snapshots if s.result.status.value == "APPLICABLE"]
-    for snap in applicable_snapshots:
-        if snap.result.directive == "NO_CHANGE":
-            # Match against TestOracleGaps (by ID, e.g., thread comment ID mapped to gap)
-            for gap in result.test_oracle_gaps:
-                if gap.gap_id == snap.raw_finding:
-                    gap.status = "INVALID"
-
-            # Match against Findings
-            result.findings = [f for f in result.findings if f.finding_identity != snap.raw_finding and f.finding_identity != snap.result.context_id]
-
-            # Override thread dispositions so resolution logic picks it up
-            result.thread_dispositions.append(ReviewThreadDisposition(thread_id=snap.raw_finding, status="ADDRESSED", rationale="OVERRULED by adjudication", evidence=snap.result.reason))
-
     result = _apply_coverage_and_verdict_precedence(result, context)
 
     persisted_session_id = provider_session_id if isinstance(provider_session_id, str) and provider_session_id else stored_session.session_id if stored_session else ""

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union, cast
 
 import httpx
 
@@ -652,6 +652,10 @@ class AutomationEngine:
         self.invalidations = DurableInvalidationQueue(invalidation_path)
         adjudication_path = Path(os.environ.get("AUTO_CODER_REVIEW_ADJUDICATION_DB", "~/.auto-coder/review-adjudications.sqlite3")).expanduser()
         self.review_adjudications = ReviewAdjudicationService(self.github, AdjudicationContextStore(adjudication_path))
+        from .adjudication_effect_journal import AdjudicationEffectJournal
+
+        journal_path = Path(os.environ.get("AUTO_CODER_ADJUDICATION_EFFECTS_DB", "~/.auto-coder/adjudication-effects.sqlite3")).expanduser()
+        self.adjudication_effects = AdjudicationEffectJournal(journal_path)
         routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
         self.issue_stage_routing = IssueStageRoutingStore(routing_path)
         self.issue_admission_cache = IssueAdmissionCache()
@@ -3347,6 +3351,13 @@ class AutomationEngine:
             if self._invalidation_wake_event is not None:
                 self._invalidation_wake_event.set()
         return accepted
+
+    def ensure_adjudication_generation(self, repo_name: str, pr_data: Dict[str, Any], old_snapshots: Sequence[AdjudicationSnapshot]) -> bool:
+        """Verify the effective-authority generation hasn't changed (REQ-014)."""
+        current = self.refresh_review_adjudications(repo_name, pr_data)
+        old_keys = {(s.result.context_id, s.observation_revision) for s in old_snapshots}
+        new_keys = {(s.result.context_id, s.observation_revision) for s in current}
+        return old_keys == new_keys
 
     def refresh_review_adjudications(self, repo_name: str, pr_data: Dict[str, Any]) -> tuple[AdjudicationSnapshot, ...]:
         """Refresh the production adjudication snapshot for a targeted PR."""

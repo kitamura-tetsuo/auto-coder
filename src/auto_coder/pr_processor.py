@@ -660,6 +660,7 @@ def process_pull_request(
     force_adversarial_validation: bool = False,
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
     adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
+    automation_engine: Optional[Any] = None,
 ) -> ProcessedPRResult:
     """Process a single pull request with priority order."""
     try:
@@ -710,6 +711,14 @@ def process_pull_request(
             processed_pr.priority = "close"
             _record_pr_stage(pr_number, "pr.stale-jules-recovery", f"pr#{pr_number} stale-Jules recovery", Outcome.COMPLETED, {"effect": "closed", "issue_numbers": list(stale_jules_result.issue_numbers)})
             return processed_pr
+
+        # REQ-014: Ensure generation hasn't changed if we have snapshots
+        if adjudication_snapshots and automation_engine:
+            if not automation_engine.ensure_adjudication_generation(repo_name, pr_data, adjudication_snapshots):
+                logger.info(f"Skipping PR #{pr_number} - adjudication generation changed")
+                processed_pr.actions_taken = ["Skipped - adjudication effective-authority generation changed"]
+                processed_pr.outcome = PRProcessingOutcome.DEFERRED
+                return processed_pr
 
         # Skip immediately if PR already has @auto-coder label
         with LabelManager(
@@ -1985,6 +1994,7 @@ def _take_pr_actions(
     force_adversarial_validation: bool = False,
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
     adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
+    automation_engine: Optional[Any] = None,
 ) -> PRActionList:
     """Take actions on a PR including merge handling and analysis."""
     actions = PRActionList()
@@ -2003,6 +2013,7 @@ def _take_pr_actions(
             force_adversarial_validation=force_adversarial_validation,
             adversarial_validation_scheduler=adversarial_validation_scheduler,
             adjudication_snapshots=adjudication_snapshots,
+            automation_engine=automation_engine,
         )
         actions.extend(merge_actions)
         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
@@ -2626,6 +2637,7 @@ def _handle_pr_merge(
     force_adversarial_validation: bool = False,
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
     adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
+    automation_engine: Optional[Any] = None,
 ) -> PRActionList:
     """Handle PR merge process following the intended flow."""
     actions = PRActionList()
@@ -2896,15 +2908,61 @@ def _handle_pr_merge(
                     actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
                     _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.BLOCKED, {"blocking_count": len(claimed_thread_state.blocking_unresolved)})
                     pending_provenance = tuple(thread for thread in claimed_thread_state.blocking_unresolved if is_change_provenance_thread(thread))
-                    repair_threads = tuple(thread for thread in claimed_thread_state.blocking_unresolved if not is_change_provenance_thread(thread))
+                    repair_threads = list(thread for thread in claimed_thread_state.blocking_unresolved if not is_change_provenance_thread(thread))
+
+                    # REQ-003, REQ-013: Route UPHOLD adjudications to the repair path safely
+                    # and overrule invalid gaps in local state before validation.
+                    overruled_finding_ids = set()
+                    if adjudication_snapshots:
+                        for snap in adjudication_snapshots:
+                            if snap.result.status.value == "APPLICABLE":
+                                if snap.result.directive == "FIX":
+                                    thread_id = snap.raw_finding
+                                    thread = next((t for t in repair_threads if t.id == thread_id), None)
+                                    if thread:
+                                        if thread.comments:
+                                            # We must not mutate the cached Comment directly. Create a shallow copy.
+                                            import copy
+
+                                            new_thread = copy.copy(thread)
+                                            new_comments = list(new_thread.comments)
+                                            new_comment = copy.copy(new_comments[0])
+                                            new_comment.body += f"\n\n[Operator Adjudication: UPHOLD/FIX] {snap.result.reason}"
+                                            new_comments[0] = new_comment
+                                            new_thread.comments = new_comments
+                                            repair_threads = [new_thread if t.id == thread_id else t for t in repair_threads]
+                                    else:
+                                        # Create a thread wrapper if not in the blocking_unresolved set but still applicable
+                                        from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
+
+                                        new_comment = ReviewThreadComment(
+                                            database_id=int(thread_id) if thread_id.isdigit() else 0,
+                                            body=f"Adjudication UPHOLD/FIX:\n{snap.result.reason}",
+                                            author_login="adjudicator",
+                                        )
+                                        new_thread = ReviewThread(id=thread_id, is_resolved=False, comments=[new_comment])
+                                        repair_threads.append(new_thread)
+                                elif snap.result.directive == "NO_CHANGE":
+                                    overruled_finding_ids.add(snap.raw_finding)
+                                    # REQ-013: Overrule only exact findings, do not mutate test oracle gaps broadly yet.
+                                    # We remove the overruled thread from repair routes
+                                    repair_threads = [t for t in repair_threads if t.id != snap.raw_finding]
+                                    # Write to adjudication_effects journal for REQ-008
+                                    if automation_engine:
+                                        try:
+                                            automation_engine.adjudication_effects.record_effect(repo_name, pr_number, snap.result.context_id, snap.result.decision_id, snap.raw_finding, "resolve", snap.observation_revision, "pending")
+                                        except Exception as e:
+                                            logger.warning(f"Could not record effect: {e}")
+
+                    final_repair_threads = tuple(repair_threads)
                     if pending_provenance:
                         actions.append(f"Awaiting implementer provenance clarification on {len(pending_provenance)} review thread(s); no code change was requested")
-                    if repair_threads:
+                    if final_repair_threads:
                         repair_result = _delegate_cloud_review_thread_repair(
                             repo_name,
                             pr_data,
                             github_client=github_client,
-                            unresolved_threads=repair_threads,
+                            unresolved_threads=final_repair_threads,
                         )
                         actions.extend(repair_result)
                         if not repair_result.delivered and processing_status is not None:
@@ -2915,7 +2973,7 @@ def _handle_pr_merge(
                             "pr.repair-delegation",
                             f"pr#{pr_number} repair delegation",
                             Outcome.ACCEPTED_HANDOFF if repair_result.delivered else Outcome.FAILED,
-                            {"effect": "review-thread-repair", "thread_count": len(repair_threads)},
+                            {"effect": "review-thread-repair", "thread_count": len(final_repair_threads)},
                         )
                     return actions
 
