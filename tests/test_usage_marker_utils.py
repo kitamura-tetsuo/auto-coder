@@ -1,4 +1,4 @@
-from src.auto_coder.usage_marker_utils import has_usage_marker_match
+from src.auto_coder.usage_marker_utils import has_http_429_marker, has_usage_marker_match
 
 
 def test_matches_json_fragment_with_prefix_text():
@@ -27,3 +27,20 @@ def test_returns_false_when_marker_not_present():
     marker = {"error": {"code": 429}}
 
     assert not has_usage_marker_match(output, [marker])
+
+
+def test_has_http_429_marker_detects_unambiguous_status_references():
+    assert has_http_429_marker("429 Too Many Requests")
+    assert has_http_429_marker("HTTP 429 too many requests")
+    assert has_http_429_marker("openai api streaming error: 429 provider returned error")
+    assert has_http_429_marker("Error 429: Too many requests")
+    assert has_http_429_marker("status: 429\nToo Many Requests\n")
+
+
+def test_has_http_429_marker_ignores_unrelated_numbers():
+    assert not has_http_429_marker("")
+    assert not has_http_429_marker("normal error message")
+    assert not has_http_429_marker("error: 400 model access denied.")
+    assert not has_http_429_marker("429 tests passed")
+    assert not has_http_429_marker('Traceback (most recent call last):\n  File "app.py", line 429, in run')
+    assert not has_http_429_marker("connected to port 8429")

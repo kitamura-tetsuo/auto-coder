@@ -18,7 +18,7 @@ from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .usage_marker_utils import has_usage_marker_match
+from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
 from .utils import _COMMAND_EXECUTION_CWD
 
 logger = get_logger(__name__)
@@ -478,7 +478,7 @@ class MuseClient(LLMClientBase):
             mutation_observed = self._trace_contains_git_mutation(trace_path)
             self._assert_invariants(before, effective_noedit, mutation_observed)
             markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded"]
-            if has_usage_marker_match(combined_output, markers):
+            if has_usage_marker_match(combined_output, markers) or has_http_429_marker(combined_output):
                 raise AutoCoderUsageLimitError(combined_output or "Muse Code usage limit reached")
             if result.returncode != 0:
                 from .adversarial_validator import _extract_muse_jsonl_result
