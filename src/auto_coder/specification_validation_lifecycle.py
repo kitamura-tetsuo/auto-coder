@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
+from loguru import logger
+
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
@@ -31,7 +33,7 @@ from .specification_analyzer import (
 from .specification_repair_rounds import RepairRoundApplication, SpecificationRepairRoundStore
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
-VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v4-objective-scope"
+VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v5-routing-independent-policy"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
 
 # Pending-work stage for the two independently-trackable BLOCKED publication
@@ -51,33 +53,52 @@ def validation_publication_identity(repository: str, issue_number: int, decision
 
 
 def configured_provider_identity() -> str:
-    """Return the effective validator route and models (never credentials)."""
+    """Return the effective validator route and models (never credentials).
+
+    This is execution *provenance*, not semantic *policy* identity (Issue
+    #2081, REQ-001/REQ-005): it must never be folded into
+    ``validation_policy_identity()``/``ValidationIdentity.policy_identity``,
+    only captured fresh at the moment a decision is actually produced by a
+    real analyzer call, so a durable READY/BLOCKED decision remains reusable
+    across backend/model/fallback changes.
+    """
     override = os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATOR_IDENTITY")
     if override:
         return override
     from .llm_backend_config import get_llm_config
 
-    config = get_llm_config()
-    if config is None:
-        return "unconfigured"
-    order = config.get_adversarial_validation_backend_order()
-    if not order:
-        default = config.get_adversarial_validation_default_backend()
-        order = [default] if default else []
-    if not order:
-        getter = getattr(config, "get_high_score_backend_order", None)
-        order = getter() if callable(getter) else list(getattr(config, "backend_with_high_score_order", []) or [])
-    route = []
-    for name in order:
-        backend = config.get_backend_config(name)
-        route.append(
-            {
-                "alias": name,
-                "provider": (backend.backend_type or backend.name) if backend is not None else name,
-                "model": config.get_model_for_backend(name),
-            }
-        )
-    return json.dumps(route, sort_keys=True, separators=(",", ":"))
+    # This is purely diagnostic provenance now (Issue #2081, REQ-005): unlike
+    # before, `decide()` calls this on every fresh model-backed decision, not
+    # only once when an `AutomationEngine` binds a repository's lifecycle. A
+    # configuration lookup that is unavailable or shaped unexpectedly (for
+    # example a caller's narrowly-scoped test double for `get_llm_config`)
+    # must never abort or alter the actual review outcome, so any failure
+    # here degrades to an honest "unavailable" marker instead of propagating.
+    try:
+        config = get_llm_config()
+        if config is None:
+            return "unconfigured"
+        order = config.get_adversarial_validation_backend_order()
+        if not order:
+            default = config.get_adversarial_validation_default_backend()
+            order = [default] if default else []
+        if not order:
+            getter = getattr(config, "get_high_score_backend_order", None)
+            order = getter() if callable(getter) else list(getattr(config, "backend_with_high_score_order", []) or [])
+        route = []
+        for name in order:
+            backend = config.get_backend_config(name)
+            route.append(
+                {
+                    "alias": name,
+                    "provider": (backend.backend_type or backend.name) if backend is not None else name,
+                    "model": config.get_model_for_backend(name),
+                }
+            )
+        return json.dumps(route, sort_keys=True, separators=(",", ":"))
+    except Exception as exc:
+        logger.debug(f"configured_provider_identity: route lookup unavailable ({exc}); using 'unavailable' provenance")
+        return "unavailable"
 
 
 @dataclass(frozen=True)
@@ -104,6 +125,20 @@ class ValidationDecision:
     remediation: str = "NONE"
     remediation_reason: Optional[str] = None
     evaluation_source: str = "model"
+    # Execution provenance (REQ-005): the exact `configured_provider_identity()`
+    # route snapshot captured at the moment a real analyzer call actually
+    # produced this decision. ``None`` for local-only decisions (no analyzer
+    # call was made) and for legacy decisions persisted before this field
+    # existed. Reusing a stored decision must preserve this value verbatim;
+    # it must never be recomputed or relabeled with the current configuration.
+    execution_provenance: Optional[str] = None
+    # Diagnostic only (REQ-006/REQ-009): the number of pre-migration on-disk
+    # records that share this decision's non-policy identity fields but carry
+    # a different (opaque, provider-mixed) `policy_identity`. Always 0 for a
+    # stored-decision reuse (no legacy scan is performed on a hit) and for a
+    # decision that never reached the legacy-candidate scan. Never used to
+    # authorize reuse.
+    legacy_candidates_detected: int = 0
 
 
 def _contract_evidence(manifest: NormativeIssueManifest, title: str, body: str) -> str:
@@ -196,8 +231,16 @@ def specification_digest(title: str, body: str) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def validation_policy_identity(provider_identity: str) -> str:
-    """Identify every configured input which can alter the semantic decision."""
+def validation_policy_identity() -> str:
+    """Identify every semantic input that can alter the individual review decision.
+
+    Execution routing (configured/selected backend, alias, model, fallback
+    order/membership, quota-based selection) never participates here
+    (Issue #2081, REQ-001): only the versioned review contract, exact prompt,
+    allowed finding categories, and result-schema/consistency rules do
+    (REQ-002). ``VALIDATION_SCHEMA_VERSION`` is bumped whenever this contract
+    changes in a decision-affecting way, including this migration itself.
+    """
     issue_prompts = load_prompts().get("issue")
     prompt = issue_prompts.get("adversarial_specification_analysis") if isinstance(issue_prompts, dict) else None
     contract = {
@@ -205,7 +248,6 @@ def validation_policy_identity(provider_identity: str) -> str:
         "prompt": prompt,
         "categories": sorted(SPECIFICATION_FINDING_CATEGORIES),
         "result_fields": ["verdict", "remediation", "findings"],
-        "provider": provider_identity,
     }
     return hashlib.sha256(json.dumps(contract, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
@@ -254,6 +296,10 @@ class SpecificationValidationStore:
             return None
         findings = tuple(SpecificationFinding(**item) for item in raw.get("findings", []) if isinstance(item, dict))
         remediation = str(raw.get("remediation", "NONE"))
+        # A reuse preserves the original producing execution's provenance
+        # verbatim (REQ-005): it is never recomputed or relabeled with the
+        # current configuration. Absent for pre-migration/legacy records.
+        provenance = raw.get("execution_provenance")
         return ValidationDecision(
             identity,
             str(raw["verdict"]),
@@ -263,7 +309,35 @@ class SpecificationValidationStore:
             remediation,
             raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None,
             "stored-decision-reuse",
+            provenance if isinstance(provenance, str) else None,
         )
+
+    def legacy_candidates(self, identity: ValidationIdentity) -> tuple[dict[str, object], ...]:
+        """Read-only diagnostic scan for pre-migration terminal records (REQ-006).
+
+        Finds every persisted READY/BLOCKED record whose identity matches
+        ``identity`` on every field except ``policy_identity``. This never
+        authorizes reuse, never causes ``get()`` to return a hit, and never
+        picks a "preferred" verdict among conflicting candidates: it is
+        purely a diagnostic signal that a pre-migration decision existed for
+        this exact semantic subject and could not be proven compatible.
+        """
+        matches: list[dict[str, object]] = []
+        for raw in self._read().values():
+            if not isinstance(raw, dict) or raw.get("verdict") not in {"READY", "BLOCKED"}:
+                continue
+            candidate = raw.get("identity")
+            if not isinstance(candidate, dict):
+                continue
+            if (
+                candidate.get("repository") == identity.repository
+                and candidate.get("issue_number") == identity.issue_number
+                and candidate.get("specification_digest") == identity.specification_digest
+                and candidate.get("relationship_digest") == identity.relationship_digest
+                and candidate.get("policy_identity") != identity.policy_identity
+            ):
+                matches.append(raw)
+        return tuple(matches)
 
     def save(self, decision: ValidationDecision) -> None:
         if decision.verdict not in {"READY", "BLOCKED"}:
@@ -278,6 +352,7 @@ class SpecificationValidationStore:
                 "readiness_removed": decision.readiness_removed,
                 "remediation": decision.remediation,
                 "remediation_reason": decision.remediation_reason,
+                "execution_provenance": decision.execution_provenance,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -293,7 +368,16 @@ class SpecificationValidationLifecycle:
 
     def __init__(self, repository: str, provider_identity: str, path: Optional[Path] = None, analyzer: Optional[Analyzer] = None) -> None:
         self.repository = repository
-        self.policy_identity = validation_policy_identity(provider_identity)
+        # `provider_identity` is retained only for constructor-signature
+        # compatibility with existing callers/tests. Execution routing no
+        # longer participates in policy identity (Issue #2081, REQ-001): it
+        # is intentionally unused here. A freshly computed decision's
+        # execution provenance is captured fresh inside `decide()`, at the
+        # moment its analyzer call actually runs, not cached at construction
+        # time (REQ-004's "execution configuration effective when it
+        # starts").
+        del provider_identity
+        self.policy_identity = validation_policy_identity()
         self.store = SpecificationValidationStore(repository, path)
         terminal_path = path.with_name("reissue_required.json") if path is not None else None
         history_path = path.with_name("individual_review_history.json") if path is not None else None
@@ -349,7 +433,29 @@ class SpecificationValidationLifecycle:
             existing = self.store.get(identity)
             if existing is not None:
                 return existing
+            # Diagnostic only (REQ-006/REQ-009): a current-format miss may
+            # still have a pre-migration terminal record under the old,
+            # opaque provider-mixed hash. Its semantic compatibility cannot
+            # be proven from the hash alone, so normal review proceeds
+            # unchanged; this only makes the distinct "legacy-compatibility
+            # miss" signal greppable and testable, separate from a genuine
+            # cache miss (no legacy candidates) or a real policy change.
+            legacy_matches = self.store.legacy_candidates(identity)
+            if legacy_matches:
+                logger.warning(
+                    "legacy_policy_unproven: repository={} issue_number={} legacy_candidates={}",
+                    self.repository,
+                    manifest.issue_number,
+                    len(legacy_matches),
+                )
+            legacy_candidates_detected = len(legacy_matches)
             if not manifest.explicit_contract_present or not manifest.explicit_contract_valid:
+                # Provenance is captured fresh right before this real analyzer
+                # call runs (REQ-004: "the execution configuration effective
+                # when it starts"; REQ-005): never at construction time, and
+                # never relabeled on later reuse or by a route change that
+                # only happens after this call was already dispatched.
+                provenance = configured_provider_identity()
                 if self.analyzer is not None:
                     analyzed = self.analyzer(manifest, body)
                 elif relationship_context is not None:
@@ -363,11 +469,14 @@ class SpecificationValidationLifecycle:
                     analyzed.findings,
                     remediation=analyzed.remediation,
                     remediation_reason=analyzed.error,
+                    execution_provenance=provenance,
+                    legacy_candidates_detected=legacy_candidates_detected,
                 )
                 if analyzed.verdict in {"READY", "BLOCKED"}:
                     self.store.save(decision)
                 return decision
             assert evidence is not None
+            provenance = configured_provider_identity()
             if self.analyzer is None:
                 analyzed = self._default_analyzer(manifest, body, evidence, relationship_context)
             else:
@@ -378,6 +487,8 @@ class SpecificationValidationLifecycle:
                 analyzed.findings,
                 remediation=analyzed.remediation,
                 remediation_reason=analyzed.error,
+                execution_provenance=provenance,
+                legacy_candidates_detected=legacy_candidates_detected,
             )
             if analyzed.verdict in {"READY", "BLOCKED"}:
                 self.store.save(decision)
@@ -482,7 +593,18 @@ class SpecificationValidationLifecycle:
                     return None
                 if not any(marker in str(comment.get("body") or "") for comment in comments if isinstance(comment, dict)):
                     github.add_comment_to_issue(self.repository, issue_number, self.findings_comment(current_decision))  # type: ignore[attr-defined]
-                current_decision = ValidationDecision(current_decision.identity, current_decision.verdict, current_decision.findings, True, current_decision.readiness_removed, current_decision.remediation, current_decision.remediation_reason)
+                current_decision = ValidationDecision(
+                    current_decision.identity,
+                    current_decision.verdict,
+                    current_decision.findings,
+                    True,
+                    current_decision.readiness_removed,
+                    current_decision.remediation,
+                    current_decision.remediation_reason,
+                    current_decision.evaluation_source,
+                    current_decision.execution_provenance,
+                    current_decision.legacy_candidates_detected,
+                )
                 self.store.save(current_decision)
                 pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
             if blocked_snapshot() is None:
@@ -499,6 +621,9 @@ class SpecificationValidationLifecycle:
                 True,
                 current_decision.remediation,
                 current_decision.remediation_reason,
+                current_decision.evaluation_source,
+                current_decision.execution_provenance,
+                current_decision.legacy_candidates_detected,
             )
             self.store.save(current_decision)
             pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
@@ -570,7 +695,18 @@ class SpecificationValidationLifecycle:
                         except Exception as exc:
                             failures.append(f"findings publication failed: {exc}")
                     if published:
-                        current = ValidationDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed, current.remediation, current.remediation_reason)
+                        current = ValidationDecision(
+                            current.identity,
+                            current.verdict,
+                            current.findings,
+                            True,
+                            current.readiness_removed,
+                            current.remediation,
+                            current.remediation_reason,
+                            current.evaluation_source,
+                            current.execution_provenance,
+                            current.legacy_candidates_detected,
+                        )
                         self.store.save(current)
                         pending_work_store.complete_effect(publication_identity, DIAGNOSTIC_EFFECT)
             if not still_current():
@@ -585,7 +721,20 @@ class SpecificationValidationLifecycle:
                     github.remove_labels(self.repository, issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
                 if not still_current():
                     return "; ".join(failures) or None
-                self.store.save(ValidationDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation, current.remediation_reason))
+                self.store.save(
+                    ValidationDecision(
+                        current.identity,
+                        current.verdict,
+                        current.findings,
+                        current.findings_published,
+                        True,
+                        current.remediation,
+                        current.remediation_reason,
+                        current.evaluation_source,
+                        current.execution_provenance,
+                        current.legacy_candidates_detected,
+                    )
+                )
                 pending_work_store.complete_effect(publication_identity, READINESS_WITHDRAWAL_EFFECT)
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
@@ -612,6 +761,9 @@ class SpecificationValidationLifecycle:
             decision.readiness_removed,
             applied.remediation,
             applied.reason,
+            decision.evaluation_source,
+            decision.execution_provenance,
+            decision.legacy_candidates_detected,
         )
         self.store.save(updated)
         return updated

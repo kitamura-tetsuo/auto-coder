@@ -11,6 +11,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterator, Optional, Sequence
 
+from loguru import logger
+
 from .decomposition_analyzer import (
     DECOMPOSITION_FINDING_CATEGORIES,
     AffectedIssue,
@@ -28,10 +30,10 @@ from .reissue_required_store import ReissueRequiredStore
 from .role_structural_assessment import ROLE_IMPLEMENTATION_CHILD, ROLE_TRACKING_PARENT, assess_role_structure
 from .runtime_locks import ensure_lock_directory, lock_path
 from .specification_repair_rounds import RepairRoundApplication, SpecificationRepairRoundStore
-from .specification_validation_lifecycle import specification_digest
+from .specification_validation_lifecycle import configured_provider_identity, specification_digest
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 
-DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v5-distinct-objectives"
+DECOMPOSITION_SCHEMA_VERSION = "issue-decomposition-validation-v6-routing-independent-policy"
 DECOMPOSITION_FINDINGS_MARKER = "auto-coder-decomposition-validation"
 
 
@@ -64,9 +66,34 @@ class DecompositionDecision:
     readiness_removed: bool = False
     remediation: str = "NONE"
     remediation_reason: Optional[str] = None
+    # Mirrors ``ValidationDecision.evaluation_source`` (Issue #2081, REQ-009):
+    # "model" for a decision freshly produced by a real analyzer call,
+    # "local-only" when only structural assessment/Objective-integrity ran,
+    # and "stored-decision-reuse" for a durable decision returned unchanged.
+    evaluation_source: str = "model"
+    # Execution provenance (REQ-005): the exact `configured_provider_identity()`
+    # route snapshot captured at the moment a real analyzer call actually
+    # produced this decision. ``None`` for local-only decisions (no analyzer
+    # call was made) and for legacy decisions persisted before this field
+    # existed. Reusing a stored decision must preserve this value verbatim;
+    # it must never be recomputed or relabeled with the current configuration.
+    execution_provenance: Optional[str] = None
+    # Diagnostic only (REQ-006/REQ-009): the number of pre-migration on-disk
+    # records that share this decision's non-policy identity fields but carry
+    # a different (opaque, provider-mixed) `policy_identity`. Always 0 for a
+    # stored-decision reuse (no legacy scan is performed on a hit) and for a
+    # decision that never reached the legacy-candidate scan. Never used to
+    # authorize reuse.
+    legacy_candidates_detected: int = 0
 
 
-def decomposition_policy_identity(provider_identity: str) -> str:
+def decomposition_policy_identity() -> str:
+    """Identify every semantic input that can alter the decomposition decision.
+
+    Execution routing never participates here (Issue #2081, REQ-001): only
+    the versioned review contract, exact prompt, allowed finding categories,
+    and result-schema/consistency rules do (REQ-002).
+    """
     issue_prompts = load_prompts().get("issue")
     prompt = issue_prompts.get("adversarial_decomposition_analysis") if isinstance(issue_prompts, dict) else None
     contract = {
@@ -74,7 +101,6 @@ def decomposition_policy_identity(provider_identity: str) -> str:
         "prompt": prompt,
         "categories": sorted(DECOMPOSITION_FINDING_CATEGORIES),
         "result_fields": ["verdict", "remediation", "findings", "category", "affected_issues", "issue_number", "requirement_ids", "explanation", "clarification"],
-        "provider": provider_identity,
     }
     return hashlib.sha256(json.dumps(contract, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
@@ -128,7 +154,42 @@ class DecompositionValidationStore:
             for item in raw.get("findings", [])
             if isinstance(item, dict)
         )
-        return DecompositionDecision(identity, str(raw["verdict"]), findings, bool(raw.get("findings_published")), bool(raw.get("readiness_removed")), str(raw.get("remediation", "NONE")), raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None)
+        # A reuse preserves the original producing execution's provenance
+        # verbatim (REQ-005): it is never recomputed or relabeled with the
+        # current configuration. Absent for pre-migration/legacy records.
+        provenance = raw.get("execution_provenance")
+        return DecompositionDecision(
+            identity,
+            str(raw["verdict"]),
+            findings,
+            bool(raw.get("findings_published")),
+            bool(raw.get("readiness_removed")),
+            str(raw.get("remediation", "NONE")),
+            raw.get("remediation_reason") if isinstance(raw.get("remediation_reason"), str) else None,
+            "stored-decision-reuse",
+            provenance if isinstance(provenance, str) else None,
+        )
+
+    def legacy_candidates(self, identity: DecompositionIdentity) -> tuple[dict[str, object], ...]:
+        """Read-only diagnostic scan for pre-migration terminal records (REQ-006).
+
+        Finds every persisted READY/BLOCKED record whose identity matches
+        ``identity`` on repository/parent/children but differs on
+        ``policy_identity``. Never authorizes reuse, never causes ``get()``
+        to return a hit, and never picks a "preferred" verdict among
+        conflicting candidates.
+        """
+        target = json.loads(json.dumps(asdict(identity)))
+        matches: list[dict[str, object]] = []
+        for raw in self._read().values():
+            if not isinstance(raw, dict) or raw.get("verdict") not in {"READY", "BLOCKED"}:
+                continue
+            candidate = raw.get("identity")
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("repository") == target["repository"] and candidate.get("parent") == target["parent"] and candidate.get("children") == target["children"] and candidate.get("policy_identity") != target["policy_identity"]:
+                matches.append(raw)
+        return tuple(matches)
 
     def save(self, decision: DecompositionDecision) -> None:
         if decision.verdict not in {"READY", "BLOCKED"}:
@@ -143,6 +204,7 @@ class DecompositionValidationStore:
                 "readiness_removed": decision.readiness_removed,
                 "remediation": decision.remediation,
                 "remediation_reason": decision.remediation_reason,
+                "execution_provenance": decision.execution_provenance,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -231,7 +293,14 @@ class DecompositionValidationLifecycle:
 
     def __init__(self, repository: str, provider_identity: str, path: Optional[Path] = None, analyzer: Optional[Analyzer] = None) -> None:
         self.repository = repository
-        self.policy_identity = decomposition_policy_identity(provider_identity)
+        # `provider_identity` is retained only for constructor-signature
+        # compatibility with existing callers/tests. Execution routing no
+        # longer participates in policy identity (Issue #2081, REQ-001): it
+        # is intentionally unused here. A freshly computed decision's
+        # execution provenance is captured fresh inside `decide()`, at the
+        # moment its analyzer call actually runs.
+        del provider_identity
+        self.policy_identity = decomposition_policy_identity()
         self.store = DecompositionValidationStore(repository, path)
         terminal_path = path.with_name("reissue_required.json") if path is not None else None
         self.reissue_store = ReissueRequiredStore(repository, terminal_path)
@@ -271,7 +340,7 @@ class DecompositionValidationLifecycle:
                 elif assessment.status != "VALID":
                     valid = False
             if structural_errors:
-                return DecompositionDecision(identity, "ERROR", remediation_reason="; ".join(structural_errors))
+                return DecompositionDecision(identity, "ERROR", remediation_reason="; ".join(structural_errors), evaluation_source="local-only")
             evidence: Optional[DecompositionReviewEvidence] = None
             if valid:
                 try:
@@ -279,16 +348,36 @@ class DecompositionValidationLifecycle:
                     objectives = tuple(self.objective_store.capture(item.manifest.issue_number, item.body, "complete-direct-child-set-snapshot:v1") for item in members)
                     evidence = DecompositionReviewEvidence(history.baseline, history.prior_applied_outcomes, objectives)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    return DecompositionDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}")
+                    return DecompositionDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}", evaluation_source="local-only")
                 integrity = objective_integrity_result(evidence, members)
                 if integrity is not None:
-                    decision = DecompositionDecision(identity, integrity.verdict, integrity.findings, remediation=integrity.remediation, remediation_reason=integrity.error)
+                    decision = DecompositionDecision(identity, integrity.verdict, integrity.findings, remediation=integrity.remediation, remediation_reason=integrity.error, evaluation_source="local-only")
                     if integrity.verdict == "BLOCKED":
                         self.store.save(decision)
                     return decision
             existing = self.store.get(identity)
             if existing is not None:
                 return existing
+            # Diagnostic only (REQ-006/REQ-009): see the mirrored comment in
+            # ``SpecificationValidationLifecycle.decide``. A current-format
+            # miss may still have a pre-migration terminal record under the
+            # old, opaque provider-mixed hash; that alone never authorizes
+            # reuse, and normal review proceeds unchanged.
+            legacy_matches = self.store.legacy_candidates(identity)
+            if legacy_matches:
+                logger.warning(
+                    "legacy_policy_unproven: repository={} parent_number={} legacy_candidates={}",
+                    self.repository,
+                    identity.parent.issue_number,
+                    len(legacy_matches),
+                )
+            legacy_candidates_detected = len(legacy_matches)
+            # Provenance is captured fresh right before this real analyzer
+            # call runs (REQ-004: "the execution configuration effective when
+            # it starts"; REQ-005): never at construction time, and never
+            # relabeled on later reuse or by a route change that only
+            # happens after this call was already dispatched.
+            provenance = configured_provider_identity()
             if valid:
                 assert evidence is not None
                 with decomposition_review_evidence(evidence):
@@ -301,6 +390,8 @@ class DecompositionValidationLifecycle:
                 analyzed.findings,
                 remediation=analyzed.remediation,
                 remediation_reason=analyzed.error,
+                execution_provenance=provenance,
+                legacy_candidates_detected=legacy_candidates_detected,
             )
             if decision.verdict in {"READY", "BLOCKED"}:
                 self.store.save(decision)
@@ -378,6 +469,9 @@ class DecompositionValidationLifecycle:
                     current.readiness_removed,
                     applied.remediation,
                     applied.reason,
+                    current.evaluation_source,
+                    current.execution_provenance,
+                    current.legacy_candidates_detected,
                 )
                 self.store.save(current)
             self.history_store.record_applied(
@@ -416,13 +510,37 @@ class DecompositionValidationLifecycle:
                         except Exception as exc:
                             failures.append(f"findings publication failed: {exc}")
                     if published:
-                        current = DecompositionDecision(current.identity, current.verdict, current.findings, True, current.readiness_removed, current.remediation, current.remediation_reason)
+                        current = DecompositionDecision(
+                            current.identity,
+                            current.verdict,
+                            current.findings,
+                            True,
+                            current.readiness_removed,
+                            current.remediation,
+                            current.remediation_reason,
+                            current.evaluation_source,
+                            current.execution_provenance,
+                            current.legacy_candidates_detected,
+                        )
                         self.store.save(current)
             if not still_current():
                 return "; ".join(failures) or None
             try:
                 github.remove_labels(self.repository, current.identity.parent.issue_number, [IMPLEMENTATION_READY_LABEL], item_type="issue")  # type: ignore[attr-defined]
-                self.store.save(DecompositionDecision(current.identity, current.verdict, current.findings, current.findings_published, True, current.remediation, current.remediation_reason))
+                self.store.save(
+                    DecompositionDecision(
+                        current.identity,
+                        current.verdict,
+                        current.findings,
+                        current.findings_published,
+                        True,
+                        current.remediation,
+                        current.remediation_reason,
+                        current.evaluation_source,
+                        current.execution_provenance,
+                        current.legacy_candidates_detected,
+                    )
+                )
             except Exception as exc:
                 failures.append(f"readiness withdrawal failed: {exc}")
         return "; ".join(failures) or None
