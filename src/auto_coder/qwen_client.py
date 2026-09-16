@@ -336,6 +336,10 @@ class QwenClient(LLMClientBase):
         usage_limit_detected = has_usage_marker_match(message, usage_markers)
         if returncode == 429:
             return True
+        if str(returncode) == "429":
+            return True
+        if "429" in message:
+            return True
         return usage_limit_detected
 
     # ----- Feature suggestion helpers (copy of GeminiClient behavior) -----
