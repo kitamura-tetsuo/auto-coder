@@ -393,8 +393,6 @@ class GitHubAppReviewer:
                         ((path, diff_anchor) for path in unexplained_paths for diff_anchor in [_first_diff_anchor(changed_files[path])] if diff_anchor is not None),
                         None,
                     )
-                    if anchor is None:
-                        anchor = next(((path, diff_anchor) for path, patch in changed_files.items() for diff_anchor in [_first_diff_anchor(patch)] if diff_anchor is not None), None)
                     if anchor is not None:
                         anchor_path, (anchor_line, anchor_side) = anchor
                         comments.append({"path": anchor_path, "body": clarification_body, "line": anchor_line, "side": anchor_side})

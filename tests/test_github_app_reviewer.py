@@ -293,6 +293,7 @@ def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_pat
             ],
         ),
     )
+    responses.insert(-1, response(201, {"id": 1001}))
     client = ReviewSchemaValidatingClient(responses)
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
     result = AdversarialValidationResult(
@@ -307,13 +308,10 @@ def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_pat
 
     assert publication.success is True
     assert publication.event == "COMMENT"
-    comments = client.calls[-1][2]["json"]["comments"]
-    assert len(comments) == 1
-    assert comments[0]["path"] == "src/host.py"
-    assert comments[0]["line"] == 1
-    assert comments[0]["side"] == "RIGHT"
-    assert "subject_type" not in comments[0]
-    assert "assets/generated.bin" in comments[0]["body"]
+    file_post = client.calls[-2][2]["json"]
+    assert "comments" not in client.calls[-1][2]["json"]
+    file_post = [call[2].get("json") for call in client.calls if "comments" in call[1]][-1]
+    assert file_post["path"] == "assets/generated.bin"
 
 
 def test_binary_only_clarification_uses_app_authenticated_file_comment_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -771,3 +769,52 @@ def test_failure_classification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     assert res.outcome.classification == GitHubApiOutcome.TRANSPORT_FAILURE
     assert "SECRET_TOKEN" in res.outcome.message
     # No fallback token swapping should be apparent (we just check the single client call)
+
+
+def test_req001_mismatch_app_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from auto_coder.github_app_reviewer import load_reviewer_app_config
+
+    # Configure app_id=8888
+    config_dir = tmp_path / ".auto-coder"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text('[github-app-auto-coder-reviewer]\napp_id = "8888"\n', encoding="utf-8")
+    key = config_dir / "auto-coder-reviewer.pem"
+    key.write_text("fake private key", encoding="utf-8")
+    monkeypatch.setattr("auto_coder.github_app_reviewer.jwt.encode", lambda *args, **kwargs: "fake-app-jwt")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Return 9999 from /app
+    responses = [response(200, {"id": 9999, "slug": "other-app"})]
+
+    class MockResponse:
+        def __init__(self, r):
+            self.r = r
+
+        def json(self):
+            return self.r.json()
+
+        @property
+        def status_code(self):
+            return self.r.status_code
+
+        def raise_for_status(self):
+            if self.r.status_code >= 400:
+                raise Exception("Error")
+
+    class AuthRecordingClient(RecordingClient):
+        def request(self, method: str, url: str, **kwargs: object):
+            r = super().request(method, url, **kwargs)
+            return MockResponse(r)
+
+    client = AuthRecordingClient(responses)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.httpx.Client", lambda **kwargs: client)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.instrument_github_client", lambda client, **kwargs: client)
+
+    from auto_coder.github_app_reviewer import publish_issue_review
+    from auto_coder.util.github_request_outcome import DeliveryCertainty
+
+    res = publish_issue_review("owner/repo", 42, "Exact Body", lambda: True)
+
+    assert res.confirmed_comment_id is None
+    assert res.outcome.delivery == DeliveryCertainty.DEFINITELY_NOT_SENT
+    assert len(client.calls) == 1 or len(client.calls) == 2
