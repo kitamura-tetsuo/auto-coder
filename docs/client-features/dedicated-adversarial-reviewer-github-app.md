@@ -34,3 +34,14 @@ than treating a lookup failure as "no prior result". Legacy validation comments
 created before this change remain readable as a same-SHA fallback when no native
 review exists yet for that head, but the comment-publication path itself is
 never used for new results.
+
+
+## Issue Review Boundary and Token Capabilities
+
+The reviewer App also provides a dedicated publication boundary for Issue review comments (`publish_issue_review`).
+To preserve the principle of least privilege, the client explicitly requests separate scoped installation tokens:
+- Pull Request verdicts request tokens restricted to `pull_requests: write`.
+- Issue findings request tokens restricted to `issues: write`.
+
+This strict capability separation ensures that operations crossing contexts do not inadvertently leak permission scopes.
+Like PR publication, Issue comment publication operates securely with zero fallbacks. If the App is unconfigured, or an identity/token lookup fails, the publisher does not fall back to the ordinary user credential or global/environment variables (e.g., `$GITHUB_TOKEN`).

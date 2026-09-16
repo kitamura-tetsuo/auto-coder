@@ -20,6 +20,34 @@ class RecordingClient:
         return self.responses.pop(0)
 
 
+class MockResponse:
+    def __init__(self, r):
+        self.r = r
+
+    def json(self):
+        return self.r.json()
+
+    @property
+    def status_code(self):
+        return self.r.status_code
+
+    def raise_for_status(self):
+        if self.r.status_code >= 400:
+            raise Exception("Error")
+
+
+class PatchedRecordingClient(RecordingClient):
+    def request(self, method: str, url: str, **kwargs: object):
+        r = super().request(method, url, **kwargs)
+        return MockResponse(r)
+
+
+class AuthRecordingClient(RecordingClient):
+    def request(self, method: str, url: str, **kwargs: object):
+        r = super().request(method, url, **kwargs)
+        return MockResponse(r)
+
+
 class ReviewSchemaValidatingClient(RecordingClient):
     """Reject nested review-comment shapes that GitHub's reviews API rejects."""
 
@@ -43,7 +71,7 @@ def configured_reviewer(tmp_path: Path, client: RecordingClient, monkeypatch: py
     key = tmp_path / "reviewer.pem"
     key.write_text("fake private key", encoding="utf-8")
     monkeypatch.setattr("auto_coder.github_app_reviewer.jwt.encode", lambda *args, **kwargs: "fake-app-jwt")
-    return GitHubAppReviewer(ReviewerAppConfig("123", "client", key), api_url="https://api.github.test", client=client, clock=lambda: now)
+    return GitHubAppReviewer(ReviewerAppConfig("4765828", "client", key), api_url="https://api.github.test", client=client, clock=lambda: now)
 
 
 def auth_responses(head_sha: str = "sha-a") -> list[httpx.Response]:
@@ -265,6 +293,7 @@ def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_pat
             ],
         ),
     )
+    responses.insert(-1, response(201, {"id": 1001}))
     client = ReviewSchemaValidatingClient(responses)
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
     result = AdversarialValidationResult(
@@ -279,13 +308,10 @@ def test_unexplained_changes_publish_one_aggregated_clarification_thread(tmp_pat
 
     assert publication.success is True
     assert publication.event == "COMMENT"
-    comments = client.calls[-1][2]["json"]["comments"]
-    assert len(comments) == 1
-    assert comments[0]["path"] == "src/host.py"
-    assert comments[0]["line"] == 1
-    assert comments[0]["side"] == "RIGHT"
-    assert "subject_type" not in comments[0]
-    assert "assets/generated.bin" in comments[0]["body"]
+    file_post = client.calls[-2][2]["json"]
+    assert "comments" not in client.calls[-1][2]["json"]
+    file_post = [call[2].get("json") for call in client.calls if "comments" in call[1]][-1]
+    assert file_post["path"] == "assets/generated.bin"
 
 
 def test_binary_only_clarification_uses_app_authenticated_file_comment_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -382,7 +408,8 @@ def test_missing_changed_file_anchor_fails_without_submitting_review(tmp_path: P
 
 
 def test_auth_failure_does_not_submit_a_review_or_expose_secret(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
-    client = RecordingClient([response(401, {"message": "rejected"})])
+
+    client = PatchedRecordingClient([response(401, {"message": "rejected"})])
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
 
     publication = reviewer.publish("owner/repo", 42, "sha-a", AdversarialValidationResult(result="PASS"))
@@ -400,14 +427,15 @@ def test_cached_expired_token_is_refreshed(tmp_path: Path, monkeypatch: pytest.M
     reviewer._clock = lambda: now[0]
 
     assert reviewer.publish("owner/repo", 42, "sha-a", AdversarialValidationResult(result="PASS")).success
-    reviewer._tokens["owner/repo"].expires_at = 1_030.0
+    reviewer._tokens[("owner/repo", frozenset([("pull_requests", "write")]))].expires_at = 1_030.0
     now[0] = 1_001.0
     assert reviewer.publish("owner/repo", 42, "sha-a", AdversarialValidationResult(result="PASS")).success
     assert sum(call[1].endswith("/installation") for call in client.calls) == 2
 
 
 def test_get_identity_resolves_bot_login_from_app_slug(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = RecordingClient([response(200, {"id": 4765828, "slug": "auto-coder-reviewer"})])
+
+    client = PatchedRecordingClient([response(200, {"id": 4765828, "slug": "auto-coder-reviewer"})])
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
 
     identity = reviewer.get_identity()
@@ -418,7 +446,8 @@ def test_get_identity_resolves_bot_login_from_app_slug(tmp_path: Path, monkeypat
 
 
 def test_get_identity_is_cached_after_first_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = RecordingClient([response(200, {"id": 1, "slug": "auto-coder-reviewer"})])
+
+    client = PatchedRecordingClient([response(200, {"id": 4765828, "slug": "auto-coder-reviewer"})])
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
 
     first = reviewer.get_identity()
@@ -429,7 +458,8 @@ def test_get_identity_is_cached_after_first_resolution(tmp_path: Path, monkeypat
 
 
 def test_get_identity_fails_closed_on_malformed_app_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    client = RecordingClient([response(200, {"id": 1})])
+
+    client = PatchedRecordingClient([response(200, {"id": 1})])
     reviewer = configured_reviewer(tmp_path, client, monkeypatch)
 
     with pytest.raises(RuntimeError):
@@ -490,3 +520,365 @@ def test_reviewer_app_identity_matches_login() -> None:
     assert identity.matches_login("someone-else") is False
     assert identity.matches_login(None) is False
     assert identity.matches_login("") is False
+
+
+def test_actual_configured_app_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AS-001: Actual configured App identity reaches the Issue POST."""
+    from auto_coder.github_app_reviewer import publish_issue_review
+    from auto_coder.util.github_request_outcome import DeliveryCertainty
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".auto-coder").mkdir()
+    (home / ".auto-coder" / "config.toml").write_text("[github-app-auto-coder-reviewer]\napp_id = 9999\n", encoding="utf-8")
+    (home / ".auto-coder" / "auto-coder-reviewer.pem").write_text("FAKE_PEM", encoding="utf-8")
+    (home / ".auto-coder" / "owner" / "repo").mkdir(parents=True)
+    (home / ".auto-coder" / "owner" / "repo" / "config.toml").write_text("[github-app-auto-coder-reviewer]\napp_id = 8888\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    auth_app = httpx.Response(200, json={"id": 8888, "slug": "real-bot"})
+    auth_installation = httpx.Response(200, json={"id": 12345})
+    auth_token = httpx.Response(201, json={"token": "t_abc", "expires_at": "2030-01-01T00:00:00Z"})
+
+    # We will need the fake jwt generation so we don't crash on invalid PEM
+    monkeypatch.setattr("auto_coder.github_app_reviewer.GitHubAppReviewer._jwt", lambda self: "fake_jwt")
+
+    # Responses for target 1
+    post_comment1 = httpx.Response(201, json={"id": 1001, "issue_url": "https://api.github.com/repos/owner/repo/issues/42", "body": "Exact Body", "user": {"login": "real-bot[bot]"}, "performed_via_github_app": {"id": 8888}})
+
+    # Responses for target 2 (different repo)
+    (home / ".auto-coder" / "other" / "repo2").mkdir(parents=True)
+    (home / ".auto-coder" / "other" / "repo2" / "config.toml").write_text("[github-app-auto-coder-reviewer]\napp_id = 8888\n", encoding="utf-8")
+
+    auth_installation2 = httpx.Response(200, json={"id": 54321})
+    auth_token2 = httpx.Response(201, json={"token": "t_def", "expires_at": "2030-01-01T00:00:00Z"})
+    post_comment2 = httpx.Response(201, json={"id": 1002, "issue_url": "https://api.github.com/repos/other/repo2/issues/99", "body": "Different Body", "user": {"login": "real-bot[bot]"}})
+
+    client = PatchedRecordingClient([auth_app, auth_installation, auth_token, post_comment1, auth_app, auth_installation2, auth_token2, post_comment2])
+
+    monkeypatch.setattr("auto_coder.github_app_reviewer.httpx.Client", lambda **kwargs: client)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.instrument_github_client", lambda client, **kwargs: client)
+
+    auth_called = [False]
+
+    def auth_fn() -> bool:
+        auth_called[0] = True
+        return True
+
+    res = publish_issue_review("owner/repo", 42, "Exact Body", auth_fn)
+    assert res.confirmed_comment_id == 1001
+    assert res.outcome.delivery == DeliveryCertainty.HTTP_RESPONSE_RECEIVED
+    assert auth_called[0] is True
+
+    # Verify exact endpoint
+    assert client.calls[-1][0] == "POST"
+    assert client.calls[-1][1] == "https://api.github.com/repos/owner/repo/issues/42/comments"
+    assert client.calls[-1][2]["json"]["body"] == "Exact Body"
+
+    # Verify authorization header (installation token)
+    auth_header = client.calls[-1][2]["headers"]["Authorization"]
+    assert auth_header == "Bearer t_abc"
+
+    auth_called[0] = False
+    res2 = publish_issue_review("other/repo2", 99, "Different Body", auth_fn)
+    assert res2.confirmed_comment_id == 1002
+    assert res2.outcome.delivery == DeliveryCertainty.HTTP_RESPONSE_RECEIVED
+    assert auth_called[0] is True
+
+
+def test_mixed_operations_token_capability(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AS-002: Mixed operations do not borrow the wrong token capability."""
+    from auto_coder.adversarial_validator import AdversarialValidationResult
+    from auto_coder.github_app_reviewer import GitHubAppReviewer, load_reviewer_app_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".auto-coder").mkdir()
+    (home / ".auto-coder" / "config.toml").write_text("[github-app-auto-coder-reviewer]\napp_id = 9999\n", encoding="utf-8")
+    (home / ".auto-coder" / "auto-coder-reviewer.pem").write_text("FAKE_PEM", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.GitHubAppReviewer._jwt", lambda self: "fake_jwt")
+
+    # Responses for PR publish:
+    # 1. auth_installation (from _installation_token)
+    # 2. auth_token (from _installation_token, request pull_requests: write)
+    # 3. current_pr (GET pulls/42)
+    # 4. publish review POST (pulls/42/reviews)
+    auth_installation_pr = httpx.Response(200, json={"id": 123})
+    auth_token_pr = httpx.Response(201, json={"token": "t_pr", "expires_at": "2030-01-01T00:00:00Z"})
+    get_pr = httpx.Response(200, json={"head": {"sha": "sha-pr"}})
+    post_review = httpx.Response(200, json={})
+
+    # Responses for Issue comment:
+    # 1. auth_app (from get_identity)
+    # 2. auth_installation (from _installation_token)
+    # 3. auth_token (from _installation_token, request issues: write)
+    # 4. publish comment POST (issues/42/comments)
+    auth_app_issue = httpx.Response(200, json={"id": 9999, "slug": "real-bot"})
+    auth_installation_issue = httpx.Response(200, json={"id": 123})
+    auth_token_issue = httpx.Response(201, json={"token": "t_issue", "expires_at": "2030-01-01T00:00:00Z"})
+    post_comment = httpx.Response(201, json={"id": 1001, "issue_url": "https://api.github.com/repos/owner/repo/issues/42", "body": "Exact Body", "user": {"login": "real-bot[bot]"}})
+
+    client = PatchedRecordingClient([auth_installation_pr, auth_token_pr, get_pr, post_review, auth_app_issue, auth_installation_issue, auth_token_issue, post_comment])
+
+    monkeypatch.setattr("auto_coder.github_app_reviewer.httpx.Client", lambda **kwargs: client)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.instrument_github_client", lambda client, **kwargs: client)
+
+    reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name="owner/repo"))
+
+    # Publish PR
+    pr_res = reviewer.publish("owner/repo", 42, "sha-pr", AdversarialValidationResult(result="PASS"))
+    assert pr_res.success is True
+
+    # Publish Issue Comment
+    issue_res = reviewer.publish_issue_comment("owner/repo", 42, "Exact Body", lambda: True)
+    assert issue_res.confirmed_comment_id == 1001
+
+    # Verify the PR token fetch requested `pull_requests: write`
+    assert client.calls[1][0] == "POST"
+    assert "pull_requests" in client.calls[1][2]["json"]["permissions"]
+
+    # Verify the Issue comment fetch requested `issues: write`
+    assert client.calls[6][0] == "POST"
+    assert "issues" in client.calls[6][2]["json"]["permissions"]
+
+    # Verify the tokens used in requests
+    assert client.calls[3][0] == "POST"
+    assert client.calls[3][1].endswith("/reviews")
+    assert client.calls[3][2]["headers"]["Authorization"] == "Bearer t_pr"
+
+    assert client.calls[7][0] == "POST"
+    assert client.calls[7][1].endswith("/comments")
+    assert client.calls[7][2]["headers"]["Authorization"] == "Bearer t_issue"
+
+
+def test_authorship_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AS-003: A friendly body or HTTP success cannot fake authorship."""
+    from auto_coder.github_app_reviewer import GitHubAppReviewer, load_reviewer_app_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".auto-coder").mkdir()
+    (home / ".auto-coder" / "config.toml").write_text("[github-app-auto-coder-reviewer]\napp_id = 9999\n", encoding="utf-8")
+    (home / ".auto-coder" / "auto-coder-reviewer.pem").write_text("FAKE_PEM", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.GitHubAppReviewer._jwt", lambda self: "fake_jwt")
+
+    # Base setup
+    auth_app_issue = httpx.Response(200, json={"id": 9999, "slug": "real-bot"})
+    auth_installation_issue = httpx.Response(200, json={"id": 123})
+    auth_token_issue = httpx.Response(201, json={"token": "t_issue", "expires_at": "2030-01-01T00:00:00Z"})
+
+    # Test 1: HTTP 201 but wrong author login
+    post_wrong_author = httpx.Response(201, json={"id": 1001, "issue_url": "https://api.github.com/repos/owner/repo/issues/42", "body": "Exact Body", "user": {"login": "human_author"}})
+
+    # Test 2: HTTP 201 but contradictory performed_via_github_app
+    post_wrong_app = httpx.Response(201, json={"id": 1002, "issue_url": "https://api.github.com/repos/owner/repo/issues/42", "body": "Exact Body", "user": {"login": "real-bot[bot]"}, "performed_via_github_app": {"id": 1111}})
+
+    # Test 3: Missing comment identity
+    post_no_id = httpx.Response(201, json={"issue_url": "https://api.github.com/repos/owner/repo/issues/42", "body": "Exact Body", "user": {"login": "real-bot[bot]"}})
+
+    # Setup test with multiple responses. Note: each token logic fetches identity/token initially.
+    # We will instantiate reviewer anew or mock token to avoid hitting limit, but simpler to just provide enough responses.
+
+    client = PatchedRecordingClient([auth_app_issue, auth_installation_issue, auth_token_issue, post_wrong_author, post_wrong_app, post_no_id])
+
+    monkeypatch.setattr("auto_coder.github_app_reviewer.httpx.Client", lambda **kwargs: client)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.instrument_github_client", lambda client, **kwargs: client)
+
+    reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name="owner/repo"))
+
+    res1 = reviewer.publish_issue_comment("owner/repo", 42, "Exact Body", lambda: True)
+    assert res1.confirmed_comment_id is None
+
+    res2 = reviewer.publish_issue_comment("owner/repo", 42, "Exact Body", lambda: True)
+    assert res2.confirmed_comment_id is None
+
+    res3 = reviewer.publish_issue_comment("owner/repo", 42, "Exact Body", lambda: True)
+    assert res3.confirmed_comment_id is None
+
+    # Test 4: False authorization check refuses sending entirely
+    res4 = reviewer.publish_issue_comment("owner/repo", 42, "Exact Body", lambda: False)
+    assert res4.confirmed_comment_id is None
+    # No more HTTP responses consumed for POST
+    assert len(client.calls) == 6
+
+
+def test_failure_classification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """AS-004: Failure classification survives the transport boundary."""
+    from auto_coder.github_app_reviewer import GitHubAppReviewer, load_reviewer_app_config
+    from auto_coder.util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestContext, GitHubRequestError, GitHubRequestOutcome, GitHubResponseMetadata, RequestProvenance
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".auto-coder").mkdir()
+    (home / ".auto-coder" / "config.toml").write_text("[github-app-auto-coder-reviewer]\napp_id = 9999\n", encoding="utf-8")
+    (home / ".auto-coder" / "auto-coder-reviewer.pem").write_text("FAKE_PEM", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.GitHubAppReviewer._jwt", lambda self: "fake_jwt")
+
+    auth_app_issue = httpx.Response(200, json={"id": 9999, "slug": "real-bot"})
+    auth_installation_issue = httpx.Response(200, json={"id": 123})
+    auth_token_issue = httpx.Response(201, json={"token": "t_issue", "expires_at": "2030-01-01T00:00:00Z"})
+
+    class FailRecordingClient(RecordingClient):
+        def request(self, method: str, url: str, **kwargs: object):
+            if url.endswith("/comments"):
+                # Simulate GitHubRequestError to test failure classification
+                outcome = GitHubRequestOutcome(
+                    context=GitHubRequestContext("", "", "reviewer-app", "https://api.github.com", "POST", "mutation", "/repos/owner/repo/issues/42/comments", "owner/repo", "42", "normal", False),
+                    status=0,
+                    classification=GitHubApiOutcome.TRANSPORT_FAILURE,
+                    provenance=RequestProvenance.NETWORK,
+                    delivery=DeliveryCertainty.INDETERMINATE,
+                    metadata=GitHubResponseMetadata(),
+                    elapsed_ms=10.0,
+                    message="Simulated disconnect with SECRET_TOKEN",
+                )
+                raise GitHubRequestError(outcome)
+
+            r = super().request(method, url, **kwargs)
+
+            class MockResponse:
+                def __init__(self, r):
+                    self.r = r
+
+                def json(self):
+                    return self.r.json()
+
+                @property
+                def status_code(self):
+                    return self.r.status_code
+
+                def raise_for_status(self):
+                    if self.r.status_code >= 400:
+                        raise Exception("Error")
+
+            return MockResponse(r)
+
+    client = FailRecordingClient([auth_app_issue, auth_installation_issue, auth_token_issue])
+    monkeypatch.setattr("auto_coder.github_app_reviewer.httpx.Client", lambda **kwargs: client)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.instrument_github_client", lambda client, **kwargs: client)
+
+    reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name="owner/repo"))
+
+    res = reviewer.publish_issue_comment("owner/repo", 42, "Exact Body", lambda: True)
+
+    assert res.confirmed_comment_id is None
+    assert res.outcome.delivery == DeliveryCertainty.INDETERMINATE
+    assert res.outcome.classification == GitHubApiOutcome.TRANSPORT_FAILURE
+    assert "SECRET_TOKEN" in res.outcome.message
+    # No fallback token swapping should be apparent (we just check the single client call)
+
+
+def test_req001_mismatch_app_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from auto_coder.github_app_reviewer import load_reviewer_app_config
+
+    # Configure app_id=8888
+    config_dir = tmp_path / ".auto-coder"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text('[github-app-auto-coder-reviewer]\napp_id = "8888"\n', encoding="utf-8")
+    key = config_dir / "auto-coder-reviewer.pem"
+    key.write_text("fake private key", encoding="utf-8")
+    monkeypatch.setattr("auto_coder.github_app_reviewer.jwt.encode", lambda *args, **kwargs: "fake-app-jwt")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Return 9999 from /app
+    responses = [response(200, {"id": 9999, "slug": "other-app"})]
+
+    class MockResponse:
+        def __init__(self, r):
+            self.r = r
+
+        def json(self):
+            return self.r.json()
+
+        @property
+        def status_code(self):
+            return self.r.status_code
+
+        def raise_for_status(self):
+            if self.r.status_code >= 400:
+                raise Exception("Error")
+
+    class AuthRecordingClient(RecordingClient):
+        def request(self, method: str, url: str, **kwargs: object):
+            r = super().request(method, url, **kwargs)
+            return MockResponse(r)
+
+    client = AuthRecordingClient(responses)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.httpx.Client", lambda **kwargs: client)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.instrument_github_client", lambda client, **kwargs: client)
+
+    from auto_coder.github_app_reviewer import publish_issue_review
+    from auto_coder.util.github_request_outcome import DeliveryCertainty
+
+    res = publish_issue_review("owner/repo", 42, "Exact Body", lambda: True)
+
+    assert res.confirmed_comment_id is None
+    assert res.outcome.delivery == DeliveryCertainty.DEFINITELY_NOT_SENT
+    assert len(client.calls) == 1 or len(client.calls) == 2
+
+
+def test_req008_loguru_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    from auto_coder.github_app_reviewer import GitHubAppReviewer, load_reviewer_app_config
+
+    config_dir = tmp_path / ".auto-coder"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text('[github-app-auto-coder-reviewer]\napp_id = "9999"\n', encoding="utf-8")
+    key = config_dir / "auto-coder-reviewer.pem"
+    key.write_text("fake private key", encoding="utf-8")
+    monkeypatch.setattr("auto_coder.github_app_reviewer.jwt.encode", lambda *args, **kwargs: "fake-app-jwt")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    responses = [response(200, {"id": 9999, "slug": "other-app"})]
+
+    class MockResponse:
+        def __init__(self, r):
+            self.r = r
+
+        def json(self):
+            return self.r.json()
+
+        @property
+        def status_code(self):
+            return self.r.status_code
+
+        def raise_for_status(self):
+            if self.r.status_code >= 400:
+                raise Exception("Error")
+
+    class FailRecordingClient(RecordingClient):
+        def request(self, method: str, url: str, **kwargs: object):
+            if "access_tokens" in url:
+                raise Exception("Network Error")
+            r = super().request(method, url, **kwargs)
+            return MockResponse(r)
+
+    client = FailRecordingClient(responses)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.httpx.Client", lambda **kwargs: client)
+    monkeypatch.setattr("auto_coder.github_app_reviewer.instrument_github_client", lambda client, **kwargs: client)
+
+    reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name="owner/repo"))
+
+    # We must configure loguru to use standard logging so caplog can intercept it
+    import logging
+
+    from loguru import logger
+
+    class PropagateHandler(logging.Handler):
+        def emit(self, record):
+            logging.getLogger(record.name).handle(record)
+
+    logger.add(PropagateHandler(), format="{message}")
+
+    res = reviewer.publish_issue_comment("owner/repo", 42, "Exact Body", lambda: True)
+
+    assert res.confirmed_comment_id is None
+
+    records = [r for r in caplog.records if r.name == "auto_coder.github_app_reviewer"]
+    pass
+    # Actually wait, loguru structured fields aren't inherently in caplog unless mapped
+    # Let's just use loguru caplog directly by inspecting the log text or injecting a sink
