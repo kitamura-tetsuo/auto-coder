@@ -2152,6 +2152,103 @@ def get_review_adjudicator_allowlist_from_config(
     return list(raw_list)
 
 
+@dataclass(frozen=True)
+class DashboardAdjudicationConfig:
+    """Resolved ``[dashboard_adjudication]`` policy (Issue #2022, REQ-001).
+
+    ``enabled`` is the only field callers should branch on to decide whether
+    the write boundary may use GitHub credentials at all: any configuration
+    defect collapses this to ``enabled=False`` with a non-empty
+    ``diagnostic`` rather than raising, a default secret, or falling back to
+    another credential (webhook secret, controller ``GH_TOKEN``, or a
+    reviewer-App credential).
+    """
+
+    enabled: bool
+    operator_secret_file: str = ""
+    github_token_file: str = ""
+    allowed_origin: str = ""
+    diagnostic: str = ""
+
+
+def _dashboard_adjudication_origin_diagnostic(allowed_origin: str) -> Optional[str]:
+    if not allowed_origin:
+        return "[dashboard_adjudication].allowed_origin is required"
+    parsed = urlparse(allowed_origin)
+    reconstructed = f"{parsed.scheme}://{parsed.netloc}"
+    if reconstructed != allowed_origin or parsed.path or parsed.params or parsed.query or parsed.fragment or not parsed.hostname:
+        return "[dashboard_adjudication].allowed_origin must be exactly one origin with no path, query, or fragment"
+    if parsed.scheme == "https":
+        return None
+    if parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost", "::1"):
+        return None
+    return "[dashboard_adjudication].allowed_origin must be one exact HTTPS origin or a direct loopback HTTP origin"
+
+
+def get_dashboard_adjudication_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> DashboardAdjudicationConfig:
+    """Read and strictly validate the repository-scoped ``[dashboard_adjudication]`` policy.
+
+    Enabling the Dashboard operator write boundary (Issue #2022) requires
+    ``enabled = true`` plus all three of ``operator_secret_file``,
+    ``github_token_file``, and ``allowed_origin`` to be independently valid;
+    any single defect disables authoring entirely rather than degrading to a
+    partially-authorized mode. This never affects the existing read-only
+    Dashboard.
+    """
+    enabled = _get_config_value(
+        section="dashboard_adjudication",
+        key="enabled",
+        default=False,
+        config_path=config_path,
+        value_type=bool,
+        repo_name=repo_name,
+    )
+    disabled = DashboardAdjudicationConfig(enabled=False)
+    if not enabled:
+        return disabled
+
+    operator_secret_file = _get_config_value(section="dashboard_adjudication", key="operator_secret_file", default="", config_path=config_path, repo_name=repo_name)
+    github_token_file = _get_config_value(section="dashboard_adjudication", key="github_token_file", default="", config_path=config_path, repo_name=repo_name)
+    allowed_origin = _get_config_value(section="dashboard_adjudication", key="allowed_origin", default="", config_path=config_path, repo_name=repo_name)
+
+    if not isinstance(operator_secret_file, str) or not operator_secret_file or not isinstance(github_token_file, str) or not github_token_file or not isinstance(allowed_origin, str) or not allowed_origin:
+        logger = get_logger(__name__)
+        logger.error("dashboard_adjudication is enabled but operator_secret_file, github_token_file, and allowed_origin must all be explicitly set; disabling authoring")
+        return DashboardAdjudicationConfig(enabled=False, diagnostic="operator_secret_file, github_token_file, and allowed_origin are all required")
+
+    origin_diagnostic = _dashboard_adjudication_origin_diagnostic(allowed_origin)
+    if origin_diagnostic:
+        logger = get_logger(__name__)
+        logger.error(f"Disabling dashboard_adjudication write capability: {origin_diagnostic}")
+        return DashboardAdjudicationConfig(enabled=False, diagnostic=origin_diagnostic)
+
+    try:
+        secret_bytes = Path(os.path.expanduser(operator_secret_file)).read_bytes()
+    except OSError as exc:
+        logger = get_logger(__name__)
+        diagnostic = f"operator_secret_file is not readable: {exc}"
+        logger.error(f"Disabling dashboard_adjudication write capability: {diagnostic}")
+        return DashboardAdjudicationConfig(enabled=False, diagnostic=diagnostic)
+    if len(secret_bytes.strip()) < 32:
+        diagnostic = "operator_secret_file must contain at least 32 bytes of secret material"
+        logger = get_logger(__name__)
+        logger.error(f"Disabling dashboard_adjudication write capability: {diagnostic}")
+        return DashboardAdjudicationConfig(enabled=False, diagnostic=diagnostic)
+
+    try:
+        Path(os.path.expanduser(github_token_file)).read_bytes()
+    except OSError as exc:
+        logger = get_logger(__name__)
+        diagnostic = f"github_token_file is not readable: {exc}"
+        logger.error(f"Disabling dashboard_adjudication write capability: {diagnostic}")
+        return DashboardAdjudicationConfig(enabled=False, diagnostic=diagnostic)
+
+    return DashboardAdjudicationConfig(enabled=True, operator_secret_file=operator_secret_file, github_token_file=github_token_file, allowed_origin=allowed_origin)
+
+
 def get_adversarial_validation_max_reviews_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,
