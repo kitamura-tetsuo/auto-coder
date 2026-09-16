@@ -1,5 +1,29 @@
 import json
+import re
 from typing import Any, Iterable, List, Tuple
+
+# Matches "429" only when it appears in a context that unambiguously identifies
+# it as the HTTP 429 (Too Many Requests) status code, e.g. "HTTP 429",
+# "Error 429:", "status: 429", "429 Too Many Requests". A bare "429" (e.g. a
+# line number, a port, a test count) must not match, since it is a common
+# regression source for false-positive usage-limit detection.
+_HTTP_429_PATTERN = re.compile(
+    r"http[\s/][\w.]{0,10}\s*429\b" r"|\b(?:error|status(?:\s*code)?|code)\b[^0-9]{0,10}429\b" r"|\b429\b[^a-z0-9]{0,10}too\s+many\s+requests",
+    re.IGNORECASE,
+)
+
+
+def has_http_429_marker(output: str) -> bool:
+    """Check whether output contains an unambiguous HTTP 429 status reference.
+
+    This intentionally requires context (an "http"/"error"/"status"/"code"
+    label preceding 429, or "too many requests" following it) rather than a
+    bare "429" substring, to avoid misdetecting unrelated numbers such as
+    line numbers, ports, or counts as a usage-limit signal.
+    """
+    if not output:
+        return False
+    return bool(_HTTP_429_PATTERN.search(output))
 
 
 def _json_values_match(container: Any, needle: Any) -> bool:
