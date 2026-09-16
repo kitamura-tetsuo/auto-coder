@@ -49,6 +49,7 @@ from .implementation_slots import (
     ImplementationOwnerResolutionError,
     ImplementationSlotObservation,
     ImplementationSlotRepository,
+    ImplementationSlotUnavailable,
 )
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
@@ -5214,6 +5215,15 @@ class AutomationEngine:
                 return result
             except ImplementationHierarchyUnavailable as exc:
                 result.error = f"Cannot establish authoritative hierarchy for implementation admission: {exc}"
+                result.refill_retry_required = True
+                return result
+            except ImplementationSlotUnavailable as exc:
+                # A missing/malformed/inconsistent generation binding (or any
+                # other unreadable durable ownership evidence) must fail
+                # closed for this owner only (REQ-008 of #2061); letting this
+                # propagate would abort every other candidate in the same
+                # batch (e.g. the capacity-refill loop), not just this one.
+                result.error = f"Cannot safely establish implementation ownership evidence for {owner.key}: {exc}"
                 result.refill_retry_required = True
                 return result
         if already_owned:
