@@ -26,7 +26,16 @@ from .adversarial_validator import (
 )
 from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
-from .util.github_request_outcome import instrument_github_client
+from .util.github_request_outcome import (
+    DeliveryCertainty,
+    GitHubApiOutcome,
+    GitHubRequestContext,
+    GitHubRequestError,
+    GitHubRequestOutcome,
+    GitHubResponseMetadata,
+    RequestProvenance,
+    instrument_github_client,
+)
 from .utils import is_same_github_login
 
 logger = get_logger(__name__)
@@ -48,6 +57,15 @@ class ReviewPublicationResult:
     success: bool = False
     event: str = ""
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class IssuePublicationResult:
+    """Observable outcome of publishing a native GitHub Issue review."""
+
+    confirmed_comment_id: Optional[int]
+    identity: Optional[ReviewerAppIdentity]
+    outcome: GitHubRequestOutcome
 
 
 @dataclass(frozen=True)
@@ -133,7 +151,7 @@ class GitHubAppReviewer:
         base_client = client or httpx.Client(timeout=30.0)
         self._client = instrument_github_client(base_client, subsystem="reviewer-app", api_origin=self._api_url)
         self._clock = clock
-        self._tokens: dict[str, _CachedToken] = {}
+        self._tokens: dict[tuple[str, frozenset[tuple[str, str]]], _CachedToken] = {}
         self._identity: Optional[ReviewerAppIdentity] = None
         self._lock = threading.Lock()
 
@@ -156,9 +174,10 @@ class GitHubAppReviewer:
         response.raise_for_status()
         return response
 
-    def _installation_token(self, repo_name: str) -> str:
+    def _installation_token(self, repo_name: str, permissions: frozenset[tuple[str, str]]) -> str:
         with self._lock:
-            cached = self._tokens.get(repo_name)
+            cache_key = (repo_name, permissions)
+            cached = self._tokens.get(cache_key)
             if cached and cached.expires_at - self._clock() > 60:
                 return cached.value
 
@@ -167,19 +186,158 @@ class GitHubAppReviewer:
             installation_id = installation.get("id") if isinstance(installation, dict) else None
             if not isinstance(installation_id, int):
                 raise RuntimeError("Reviewer GitHub App has no installation for the repository")
+
+            perms_dict = {k: v for k, v in permissions}
             token_data = self._request(
                 "POST",
                 f"/app/installations/{installation_id}/access_tokens",
                 app_jwt,
-                json={"permissions": {"pull_requests": "write"}},
+                json={"permissions": perms_dict},
             ).json()
             token = token_data.get("token") if isinstance(token_data, dict) else None
             expires_at = token_data.get("expires_at") if isinstance(token_data, dict) else None
             if not isinstance(token, str) or not token or not isinstance(expires_at, str):
                 raise RuntimeError("GitHub did not return a reviewer installation token")
             expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
-            self._tokens[repo_name] = _CachedToken(token, expiry)
+            self._tokens[cache_key] = _CachedToken(token, expiry)
             return token
+
+    def publish_issue_comment(self, repo_name: str, issue_number: int, body: str, authorize_fn: Callable[[], bool]) -> IssuePublicationResult:
+        """Submit an Issue review comment, verifying exact identity and returning a detailed outcome."""
+        try:
+            identity = self.get_identity()
+        except Exception as exc:
+            # Re-wrap as GitHubRequestError for consistent outcome typing if it's not one,
+            # though get_identity() typically raises RuntimeError.
+            outcome = GitHubRequestOutcome(
+                context=GitHubRequestContext("", "", "reviewer-app", "https://api.github.com", "GET", "read", "/app", repo_name, "", "normal", False),
+                status=0,
+                classification=GitHubApiOutcome.AUTHENTICATION_FAILURE,
+                provenance=RequestProvenance.NETWORK,
+                delivery=DeliveryCertainty.DEFINITELY_NOT_SENT,
+                metadata=GitHubResponseMetadata(),
+                elapsed_ms=0.0,
+                message="Reviewer GitHub App identity could not be resolved",
+            )
+            return IssuePublicationResult(None, None, outcome)
+
+        try:
+            token = self._installation_token(repo_name, frozenset([("issues", "write")]))
+        except GitHubRequestError as exc:
+            return IssuePublicationResult(None, identity, exc.outcome)
+        except Exception as exc:
+            outcome = GitHubRequestOutcome(
+                context=GitHubRequestContext("", "", "reviewer-app", "https://api.github.com", "POST", "mutation", "/app/installations", repo_name, "", "normal", False),
+                status=0,
+                classification=GitHubApiOutcome.AUTHENTICATION_FAILURE,
+                provenance=RequestProvenance.NETWORK,
+                delivery=DeliveryCertainty.DEFINITELY_NOT_SENT,
+                metadata=GitHubResponseMetadata(),
+                elapsed_ms=0.0,
+                message="GitHub did not return a reviewer installation token",
+            )
+            return IssuePublicationResult(None, identity, outcome)
+
+        try:
+            authorized = authorize_fn()
+        except Exception:
+            authorized = False
+
+        if not authorized:
+            outcome = GitHubRequestOutcome(
+                context=GitHubRequestContext("", "", "reviewer-app", "https://api.github.com", "POST", "mutation", f"/repos/{repo_name}/issues/{issue_number}/comments", repo_name, str(issue_number), "normal", False),
+                status=0,
+                classification=GitHubApiOutcome.REFUSED,
+                provenance=RequestProvenance.NETWORK,
+                delivery=DeliveryCertainty.DEFINITELY_NOT_SENT,
+                metadata=GitHubResponseMetadata(),
+                elapsed_ms=0.0,
+                message="Publication check refused authorization before sending",
+            )
+            return IssuePublicationResult(None, identity, outcome)
+
+        try:
+            response = self._request(
+                "POST",
+                f"/repos/{repo_name}/issues/{issue_number}/comments",
+                token,
+                json={"body": body},
+            )
+        except GitHubRequestError as exc:
+            return IssuePublicationResult(None, identity, exc.outcome)
+        except Exception as exc:
+            outcome = GitHubRequestOutcome(
+                context=GitHubRequestContext("", "", "reviewer-app", "https://api.github.com", "POST", "mutation", f"/repos/{repo_name}/issues/{issue_number}/comments", repo_name, str(issue_number), "normal", False),
+                status=0,
+                classification=GitHubApiOutcome.TRANSPORT_FAILURE,
+                provenance=RequestProvenance.NETWORK,
+                delivery=DeliveryCertainty.INDETERMINATE,
+                metadata=GitHubResponseMetadata(),
+                elapsed_ms=0.0,
+                message="Transport failure during Issue comment POST",
+            )
+            return IssuePublicationResult(None, identity, outcome)
+
+        data = response.json()
+        if not isinstance(data, dict):
+            # Treat as unconfirmed
+            outcome = GitHubRequestOutcome(
+                context=GitHubRequestContext("", "", "reviewer-app", "https://api.github.com", "POST", "mutation", f"/repos/{repo_name}/issues/{issue_number}/comments", repo_name, str(issue_number), "normal", False),
+                status=response.status_code,
+                classification=GitHubApiOutcome.REMOTE_ERROR,
+                provenance=RequestProvenance.NETWORK,
+                delivery=DeliveryCertainty.HTTP_RESPONSE_RECEIVED,
+                metadata=GitHubResponseMetadata(),
+                elapsed_ms=0.0,
+                message="Invalid JSON response",
+            )
+            return IssuePublicationResult(None, identity, outcome)
+
+        comment_id = data.get("id")
+        issue_url = str(data.get("issue_url", ""))
+        returned_body = str(data.get("body", ""))
+        user = data.get("user")
+        user_login = user.get("login") if isinstance(user, dict) else None
+
+        via_app = data.get("performed_via_github_app")
+        via_app_id = via_app.get("id") if isinstance(via_app, dict) else None
+
+        if not isinstance(comment_id, int) or comment_id <= 0:
+            confirmed = False
+        elif issue_url != f"{self._api_url}/repos/{repo_name}/issues/{issue_number}":
+            confirmed = False
+        elif returned_body != body:
+            confirmed = False
+        elif not identity.matches_login(user_login):
+            confirmed = False
+        elif via_app is not None and via_app_id != identity.app_id:
+            confirmed = False
+        else:
+            confirmed = True
+
+        if confirmed:
+            outcome = GitHubRequestOutcome(
+                context=GitHubRequestContext("", "", "reviewer-app", "https://api.github.com", "POST", "mutation", f"/repos/{repo_name}/issues/{issue_number}/comments", repo_name, str(issue_number), "normal", False),
+                status=response.status_code,
+                classification=GitHubApiOutcome.SUCCESS,
+                provenance=RequestProvenance.NETWORK,
+                delivery=DeliveryCertainty.HTTP_RESPONSE_RECEIVED,
+                metadata=GitHubResponseMetadata(),
+                elapsed_ms=0.0,
+            )
+            return IssuePublicationResult(comment_id, identity, outcome)
+        else:
+            outcome = GitHubRequestOutcome(
+                context=GitHubRequestContext("", "", "reviewer-app", "https://api.github.com", "POST", "mutation", f"/repos/{repo_name}/issues/{issue_number}/comments", repo_name, str(issue_number), "normal", False),
+                status=response.status_code,
+                classification=GitHubApiOutcome.REMOTE_ERROR,
+                provenance=RequestProvenance.NETWORK,
+                delivery=DeliveryCertainty.HTTP_RESPONSE_RECEIVED,
+                metadata=GitHubResponseMetadata(),
+                elapsed_ms=0.0,
+                message="Comment response identity or target mismatch",
+            )
+            return IssuePublicationResult(None, identity, outcome)
 
     def get_identity(self) -> ReviewerAppIdentity:
         """Resolve the reviewer App's own bot login/id from its own credentials.
@@ -206,7 +364,7 @@ class GitHubAppReviewer:
         """Submit a native review, failing closed on auth, head races, or API errors."""
         event = "APPROVE" if result.allows_auto_merge else "REQUEST_CHANGES" if result.needs_fix or result.needs_tests else "COMMENT"
         try:
-            token = self._installation_token(repo_name)
+            token = self._installation_token(repo_name, frozenset([("pull_requests", "write")]))
             current_pr = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}", token).json()
             current_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else None
             if not validated_head_sha or current_sha != validated_head_sha:
@@ -291,12 +449,12 @@ class GitHubAppReviewer:
                     # The App-authored authoritative review above already carries
                     # the same concrete rationale/evidence. Never fall back to the
                     # ordinary GitHub credential for reviewer output.
-                    logger.error(f"Dedicated reviewer GitHub App could not reply to provenance thread {disposition.thread_id}")
+                    logger.bind(repository=repo_name, target=str(pr_number), phase="publication").error(f"Dedicated reviewer GitHub App could not reply to provenance thread {disposition.thread_id}")
             return ReviewPublicationResult(True, event, "")
         except Exception:
             # Deliberately omit exception text: HTTP errors and auth libraries can
             # include credential-bearing request details.
-            logger.error("Dedicated reviewer GitHub App could not publish the adversarial verdict")
+            logger.bind(repository=repo_name, target=str(pr_number), phase="publication").error("Dedicated reviewer GitHub App could not publish the adversarial verdict")
             return ReviewPublicationResult(False, event, "Dedicated reviewer GitHub App publication failed")
 
     def _published_test_oracle_gap_ids(self, repo_name: str, pr_number: int, token: str) -> set[str]:
@@ -416,12 +574,33 @@ def _first_diff_anchor(patch: object) -> Optional[tuple[int, str]]:
     return None
 
 
+def publish_issue_review(repo_name: str, issue_number: int, body: str, authorize_fn: Callable[[], bool]) -> IssuePublicationResult:
+    """Load dedicated credentials and publish an Issue comment without touching the user client."""
+    try:
+        reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name))
+    except Exception as exc:
+        logger.bind(repository=repo_name, phase="configuration", target=str(issue_number)).error("Dedicated reviewer GitHub App configuration could not be loaded")
+        outcome = GitHubRequestOutcome(
+            context=GitHubRequestContext("", "", "reviewer-app", "https://api.github.com", "POST", "mutation", f"/repos/{repo_name}/issues/{issue_number}/comments", repo_name, str(issue_number), "normal", False),
+            status=0,
+            classification=GitHubApiOutcome.AUTHENTICATION_FAILURE,
+            provenance=RequestProvenance.NETWORK,
+            delivery=DeliveryCertainty.DEFINITELY_NOT_SENT,
+            metadata=GitHubResponseMetadata(),
+            elapsed_ms=0.0,
+            message="Dedicated reviewer GitHub App configuration is unavailable",
+        )
+        return IssuePublicationResult(None, None, outcome)
+
+    return reviewer.publish_issue_comment(repo_name, issue_number, body, authorize_fn)
+
+
 def publish_adversarial_review(repo_name: str, pr_number: int, head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:
     """Load dedicated credentials and publish without touching the user client."""
     try:
         reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name))
     except Exception:
-        logger.error("Dedicated reviewer GitHub App configuration could not be loaded")
+        logger.bind(repository=repo_name, phase="configuration", target=str(pr_number)).error("Dedicated reviewer GitHub App configuration could not be loaded")
         return ReviewPublicationResult(False, "", "Dedicated reviewer GitHub App configuration is unavailable")
     return reviewer.publish(repo_name, pr_number, head_sha, result)
 
