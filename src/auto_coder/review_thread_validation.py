@@ -515,6 +515,7 @@ class ClaimedReviewThread:
     is_change_provenance: bool = False
     claim_evidence: str = ""
     revalidation_after_head_change: bool = False
+    revalidation_forced: bool = False
 
 
 @dataclass(frozen=True)
@@ -608,6 +609,9 @@ def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]
         elif thread.revalidation_after_head_change:
             heading = "Older-head adversarial finding requiring revalidation"
             discussion_label = "Full thread discussion (chronological; no implementation-agent reply is required for this revalidation):"
+        elif thread.revalidation_forced:
+            heading = "Forced adversarial-validation revalidation (explicit --force)"
+            discussion_label = "Full thread discussion (chronological; this is an explicit forced same-head " "revalidation, not evidence that the head changed or that an implementer replied; " "no implementation-agent reply is required):"
         else:
             heading = "Claimed-addressed review thread"
             discussion_label = "Full thread discussion (chronological, includes the implementation-agent addressed claim and rationale):"

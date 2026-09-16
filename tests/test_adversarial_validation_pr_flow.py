@@ -30,6 +30,7 @@ from auto_coder.github_ci_observer import accept_and_fence_ci_delivery, fence_ac
 from auto_coder.pr_processor import (
     AdversarialValidationEligibility,
     ClaimedReviewThreadGateState,
+    CloudReviewRepairResult,
     CodexReviewState,
     PRActionList,
     _adversarial_validation_snapshot_identity,
@@ -3329,6 +3330,42 @@ class TestClaimedReviewThreadValidationFlow:
         assert new_state.unresolved == (thread,)
         assert thread.is_resolved is False
 
+    @pytest.mark.parametrize("forced", [False, True])
+    @pytest.mark.parametrize("heading", ["### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"])
+    def test_allow_older_head_adversarial_threads_matches_heading_after_leading_whitespace(self, heading, forced):
+        """Issue #2106 REQ-003: the recognized root headings match "at the
+        beginning of the root after leading whitespace", exactly like the
+        sibling eligibility checks (``is_authoritative_adversarial_thread``,
+        ``_filter_unresolved_review_threads_for_disabled_validator``)."""
+        from auto_coder.pr_processor import ClaimedReviewThreadGateState, _allow_older_head_adversarial_threads
+
+        reviewer_login = "auto-coder-reviewer"
+        thread = ReviewThread(
+            id="thread-whitespace-prefixed",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=17,
+                    body=f"  \n{heading}\n\n`REQ-001`: still broken",
+                    author_login=reviewer_login,
+                    author_id=1,
+                )
+            ],
+        )
+        initial_state = ClaimedReviewThreadGateState(
+            unresolved=(thread,),
+            blocking_unresolved=(thread,),
+            has_blocking_unresolved=True,
+        )
+
+        new_state = _allow_older_head_adversarial_threads(initial_state, reviewer_login, forced=forced)
+
+        assert new_state.has_blocking_unresolved is False
+        assert len(new_state.claimed) == 1
+        assert new_state.claimed[0].thread_id == "thread-whitespace-prefixed"
+        assert new_state.claimed[0].revalidation_forced is forced
+        assert new_state.claimed[0].revalidation_after_head_change is not forced
+
     @pytest.mark.parametrize(
         ("author_login", "body", "truncated", "has_root"),
         [
@@ -3458,6 +3495,429 @@ class TestClaimedReviewThreadValidationFlow:
         resolve_threads.assert_called_once()
         merge_pr.assert_not_called()
         assert thread.is_resolved is False
+
+    @pytest.mark.parametrize("app_identity_login", ["auto-coder-reviewer", "auto-coder-reviewer[bot]"])
+    def test_forced_revalidation_reaches_validation_despite_same_head_error_and_unresolved_thread(self, app_identity_login):
+        """Issue #2106 AS-001: explicit --force reaches a fresh current-head
+        adversarial-validation attempt even though the current head already
+        published ERROR and an authentic finding thread from that head
+        remains unresolved -- the reported PR #2088 production state."""
+        from auto_coder.adversarial_validator import ReviewThreadDisposition, adversarial_validation_comment_marker
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        head_sha = "d4d1d8c33ac18352673d77477070b9d18628918"
+        reviewer_login = "auto-coder-reviewer"
+        thread = ReviewThread(
+            id="thread-finding-1",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=17,
+                    body="### Auto-Coder adversarial finding\n\n**Violated requirement**\n\n`REQ-001`: fix the RuntimeError",
+                    author_login=reviewer_login,
+                    author_id=1,
+                )
+            ],
+        )
+        client = GitHubClient("test-token")
+        client.get_pr_review_threads_strict = MagicMock(return_value=[thread])
+        client.get_pr_reviews_strict = MagicMock(
+            return_value=[
+                {
+                    "body": f"{adversarial_validation_comment_marker(head_sha)}\n## ❌ Auto-Coder adversarial validation: ERROR",
+                    "user": {"login": reviewer_login},
+                }
+            ]
+        )
+        client.get_pr_comments = MagicMock(return_value=[])
+        client.get_pr_comments_strict = MagicMock(return_value=[])
+        client.get_pull_request = MagicMock(return_value={"head": {"sha": head_sha}})
+
+        with patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[]):
+            initial_state = _get_claimed_review_thread_state(client, "owner/repo", 100)
+        assert initial_state.has_blocking_unresolved is True
+
+        validation = AdversarialValidationResult(
+            result="PASS",
+            summary="Re-verified with a real fresh attempt after force",
+            thread_dispositions=[
+                ReviewThreadDisposition(
+                    thread_id="thread-finding-1",
+                    status="ADDRESSED",
+                    rationale="The RuntimeError is now covered by a regression test",
+                    evidence="tests/test_x.py::test_y exercises the previously failing path",
+                )
+            ],
+        )
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
+        client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
+
+        with (
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch(
+                "auto_coder.pr_processor._get_claimed_review_thread_state",
+                side_effect=[initial_state, ClaimedReviewThreadGateState()],
+            ),
+            patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
+            patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=app_identity_login, app_id=1)),
+            patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
+            patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "COMMENT", "")),
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["thread-finding-1"]) as resolve_threads,
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge_pr,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
+
+        assert not any("already requested" in action for action in actions)
+        assert any("Forcing adversarial validation for PR #100" in action for action in actions)
+        run_validation.assert_called_once()
+        validation_threads = run_validation.call_args.kwargs["claimed_review_threads_section"]
+        assert "### Forced adversarial-validation revalidation (explicit --force): thread-finding-1" in validation_threads
+        assert "explicit forced same-head revalidation, not evidence that the head changed" in validation_threads
+        assert "REQ-001`: fix the RuntimeError" in validation_threads
+        resolve_threads.assert_called_once()
+        merge_pr.assert_called_once()
+        assert thread.is_resolved is False
+
+    def test_forced_revalidation_promotes_authentic_root_with_leading_whitespace(self):
+        """Issue #2106 REQ-003: a real GitHub root comment whose body starts
+        with leading whitespace/newlines before the recognized heading must
+        still be promoted for forced revalidation, not left as a generic
+        merge blocker."""
+        from auto_coder.adversarial_validator import ReviewThreadDisposition, adversarial_validation_comment_marker
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        head_sha = "1111222233334444555566667777888899990000"
+        reviewer_login = "auto-coder-reviewer"
+        thread = ReviewThread(
+            id="thread-leading-whitespace",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=17,
+                    body="  \n### Auto-Coder adversarial finding\n\n**Violated requirement**\n\n`REQ-001`: still broken",
+                    author_login=reviewer_login,
+                    author_id=1,
+                )
+            ],
+        )
+        client = GitHubClient("test-token")
+        client.get_pr_review_threads_strict = MagicMock(return_value=[thread])
+        client.get_pr_reviews_strict = MagicMock(
+            return_value=[
+                {
+                    "body": f"{adversarial_validation_comment_marker(head_sha)}\n## ❌ Auto-Coder adversarial validation: ERROR",
+                    "user": {"login": reviewer_login},
+                }
+            ]
+        )
+        client.get_pr_comments = MagicMock(return_value=[])
+        client.get_pr_comments_strict = MagicMock(return_value=[])
+        client.get_pull_request = MagicMock(return_value={"head": {"sha": head_sha}})
+
+        with patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[]):
+            initial_state = _get_claimed_review_thread_state(client, "owner/repo", 150)
+        assert initial_state.has_blocking_unresolved is True
+
+        validation = AdversarialValidationResult(
+            result="PASS",
+            summary="Re-verified after force",
+            thread_dispositions=[
+                ReviewThreadDisposition(
+                    thread_id="thread-leading-whitespace",
+                    status="ADDRESSED",
+                    rationale="Fixed and covered by a new regression test",
+                    evidence="tests/test_x.py::test_y",
+                )
+            ],
+        )
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 150, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
+        client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
+
+        with (
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch(
+                "auto_coder.pr_processor._get_claimed_review_thread_state",
+                side_effect=[initial_state, ClaimedReviewThreadGateState()],
+            ),
+            patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
+            patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=reviewer_login, app_id=1)),
+            patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
+            patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "COMMENT", "")),
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["thread-leading-whitespace"]) as resolve_threads,
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge_pr,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
+
+        run_validation.assert_called_once()
+        validation_threads = run_validation.call_args.kwargs["claimed_review_threads_section"]
+        assert "### Forced adversarial-validation revalidation (explicit --force): thread-leading-whitespace" in validation_threads
+        resolve_threads.assert_called_once()
+        merge_pr.assert_called_once()
+
+    @pytest.mark.parametrize("app_identity_login", ["auto-coder-reviewer", "auto-coder-reviewer[bot]"])
+    def test_forced_revalidation_with_mixed_threads_only_promotes_authentic_root(self, app_identity_login):
+        """Issue #2106 AS-001/AS-002/REQ-003: a mixed unresolved set (one
+        authentic Auto-Coder root plus one unrelated human thread) still
+        reaches validation under --force, but only the authentic root is
+        promoted; the human thread keeps blocking merge, including at the
+        fresh merge-boundary recheck (REQ-006)."""
+        from auto_coder.adversarial_validator import ReviewThreadDisposition, adversarial_validation_comment_marker
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        head_sha = "cafef00dcafef00dcafef00dcafef00dcafef00"
+        reviewer_login = "auto-coder-reviewer"
+        authentic_thread = ReviewThread(
+            id="thread-authentic",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=17,
+                    body="### Auto-Coder adversarial finding\n\n**Violated requirement**\n\n`REQ-001`: still broken",
+                    author_login=reviewer_login,
+                    author_id=1,
+                )
+            ],
+        )
+        human_thread = ReviewThread(
+            id="thread-human",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=18,
+                    body="Please rename this variable for clarity.",
+                    author_login="a-human-reviewer",
+                    author_id=2,
+                )
+            ],
+        )
+        client = GitHubClient("test-token")
+        client.get_pr_review_threads_strict = MagicMock(return_value=[authentic_thread, human_thread])
+        client.get_pr_reviews_strict = MagicMock(
+            return_value=[
+                {
+                    "body": f"{adversarial_validation_comment_marker(head_sha)}\n## ❌ Auto-Coder adversarial validation: ERROR",
+                    "user": {"login": reviewer_login},
+                }
+            ]
+        )
+        client.get_pr_comments = MagicMock(return_value=[])
+        client.get_pr_comments_strict = MagicMock(return_value=[])
+        client.get_pull_request = MagicMock(return_value={"head": {"sha": head_sha}})
+
+        with patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[]):
+            initial_state = _get_claimed_review_thread_state(client, "owner/repo", 200)
+        assert initial_state.has_blocking_unresolved is True
+        assert sorted(t.id for t in initial_state.blocking_unresolved) == sorted([authentic_thread.id, human_thread.id])
+
+        # Merge-boundary recheck: the human thread is still unresolved on a
+        # fresh authoritative read (the authentic root was independently
+        # closed; the human thread was never eligible for that path).
+        final_state = ClaimedReviewThreadGateState(
+            unresolved=(human_thread,),
+            blocking_unresolved=(human_thread,),
+            has_blocking_unresolved=True,
+        )
+
+        validation = AdversarialValidationResult(
+            result="PASS",
+            summary="The reported finding is fixed",
+            thread_dispositions=[
+                ReviewThreadDisposition(
+                    thread_id="thread-authentic",
+                    status="ADDRESSED",
+                    rationale="Fixed and covered by a new regression test",
+                    evidence="tests/test_x.py::test_y",
+                )
+            ],
+        )
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 200, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
+        client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
+
+        with (
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch(
+                "auto_coder.pr_processor._get_claimed_review_thread_state",
+                side_effect=[initial_state, final_state],
+            ),
+            patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
+            patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=app_identity_login, app_id=1)),
+            patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
+            patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "COMMENT", "")),
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["thread-authentic"]) as resolve_threads,
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge_pr,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
+
+        # Validation still ran despite the mixed unresolved set (REQ-001).
+        run_validation.assert_called_once()
+        validation_threads = run_validation.call_args.kwargs["claimed_review_threads_section"]
+        assert "thread-authentic" in validation_threads
+        assert "thread-human" not in validation_threads
+        assert any("Continuing to forced adversarial validation" in action for action in actions)
+        resolve_threads.assert_called_once()
+        # The human thread still blocks merge, both before validation and at
+        # the fresh merge-boundary recheck.
+        assert any("unresolved review threads remain at the merge boundary" in action for action in actions)
+        merge_pr.assert_not_called()
+        assert human_thread.is_resolved is False
+        assert authentic_thread.is_resolved is False
+
+    @pytest.mark.parametrize("app_identity_login", ["auto-coder-reviewer", "auto-coder-reviewer[bot]"])
+    def test_forced_revalidation_bypasses_post_codex_recheck_blocker(self, app_identity_login):
+        """Issue #2106 AS-002: a blocker first becoming visible only in the
+        refreshed thread read after a confirmed-completed Codex review must
+        also obey --force, not just the initial gate."""
+        from auto_coder.adversarial_validator import ReviewThreadDisposition
+        from auto_coder.github_app_reviewer import ReviewerAppIdentity
+
+        head_sha = "0123456789abcdef0123456789abcdef01234567"
+        reviewer_login = "auto-coder-reviewer"
+        thread = ReviewThread(
+            id="thread-post-codex",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=21,
+                    body="### Auto-Coder adversarial finding\n\n**Violated requirement**\n\n`REQ-002`: newly observed",
+                    author_login=reviewer_login,
+                    author_id=1,
+                )
+            ],
+        )
+        client = GitHubClient("test-token")
+        client.get_pr_review_threads_strict = MagicMock(return_value=[])
+        client.get_pr_reviews_strict = MagicMock(return_value=[])
+        client.get_pr_comments = MagicMock(return_value=[codex_review_summary("Completed", head_sha)])
+        client.get_pr_comments_strict = MagicMock(return_value=[codex_review_summary("Completed", head_sha)])
+        client.get_pull_request = MagicMock(return_value={"head": {"sha": head_sha}})
+
+        initial_state = ClaimedReviewThreadGateState()
+        post_codex_state = ClaimedReviewThreadGateState(
+            unresolved=(thread,),
+            blocking_unresolved=(thread,),
+            has_blocking_unresolved=True,
+        )
+        final_state = ClaimedReviewThreadGateState()
+
+        validation = AdversarialValidationResult(
+            result="PASS",
+            summary="Re-verified after force, including the post-Codex finding",
+            thread_dispositions=[
+                ReviewThreadDisposition(
+                    thread_id="thread-post-codex",
+                    status="ADDRESSED",
+                    rationale="Fixed and covered by a new regression test",
+                    evidence="tests/test_x.py::test_y",
+                )
+            ],
+        )
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 300, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
+        client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
+
+        with (
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch(
+                "auto_coder.pr_processor._get_claimed_review_thread_state",
+                side_effect=[initial_state, post_codex_state, final_state],
+            ),
+            patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
+            patch("auto_coder.pr_processor.resolve_reviewer_app_identity", return_value=ReviewerAppIdentity(login=app_identity_login, app_id=1)),
+            patch("auto_coder.pr_processor.run_adversarial_validation", return_value=validation) as run_validation,
+            patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "COMMENT", "")),
+            patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=["thread-post-codex"]) as resolve_threads,
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor._merge_pr", return_value=True) as merge_pr,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
+
+        assert any("observed after Codex review completion" in action for action in actions)
+        run_validation.assert_called_once()
+        validation_threads = run_validation.call_args.kwargs["claimed_review_threads_section"]
+        assert "thread-post-codex" in validation_threads
+        resolve_threads.assert_called_once()
+        merge_pr.assert_called_once()
+
+    def test_non_forced_run_with_same_head_error_and_unresolved_thread_does_not_start_validation(self):
+        """Issue #2106 AS-008: the ordinary (non-forced) path is unchanged --
+        a saved same-head ERROR and an unresolved authentic thread continue
+        to defer to repair delegation without starting a new validation
+        attempt."""
+        from auto_coder.adversarial_validator import adversarial_validation_comment_marker
+
+        head_sha = "fedcba9876543210fedcba9876543210fedcba9"
+        reviewer_login = "auto-coder-reviewer"
+        thread = ReviewThread(
+            id="thread-finding-unforced",
+            is_resolved=False,
+            comments=[
+                ReviewThreadComment(
+                    database_id=31,
+                    body="### Auto-Coder adversarial finding\n\n**Violated requirement**\n\n`REQ-001`: still broken",
+                    author_login=reviewer_login,
+                    author_id=1,
+                )
+            ],
+        )
+        client = GitHubClient("test-token")
+        client.get_pr_review_threads_strict = MagicMock(return_value=[thread])
+        client.get_pr_reviews_strict = MagicMock(
+            return_value=[
+                {
+                    "body": f"{adversarial_validation_comment_marker(head_sha)}\n## ❌ Auto-Coder adversarial validation: ERROR",
+                    "user": {"login": reviewer_login},
+                }
+            ]
+        )
+        client.get_pr_comments = MagicMock(return_value=[])
+        client.get_pr_comments_strict = MagicMock(return_value=[])
+        client.get_pull_request = MagicMock(return_value={"head": {"sha": head_sha}})
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        pr_data = {"number": 400, "body": "Fixes #99", "labels": [], "head": {"ref": "feature", "sha": head_sha}}
+        client.get_pull_request_metadata_strict = MagicMock(return_value={**pr_data, "user": {"login": "developer"}, "state": "open"})
+
+        with (
+            patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[]),
+            patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
+            patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
+            patch("auto_coder.pr_processor._check_github_actions_status", return_value=GitHubActionsStatusResult(success=True, ids=[1])),
+            patch("auto_coder.pr_processor._get_adversarial_validation_eligibility", return_value=AdversarialValidationEligibility(issue_numbers=(99,))),
+            patch("auto_coder.pr_processor.run_adversarial_validation") as run_validation,
+            patch("auto_coder.pr_processor._delegate_cloud_review_thread_repair", return_value=CloudReviewRepairResult(["Review repair was already requested"], delivered=True)) as repair,
+            patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
+            patch("auto_coder.pr_processor._merge_pr") as merge_pr,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        run_validation.assert_not_called()
+        repair.assert_called_once()
+        merge_pr.assert_not_called()
+        assert any("Skipping merge for PR #400 due to unresolved review threads" in action for action in actions)
 
     @pytest.mark.parametrize(
         ("rationale", "evidence"),
