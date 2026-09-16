@@ -99,14 +99,24 @@ def evaluate_implementation_start(
     (after it durably succeeds).
     """
     existing_generation = slots.implementation_generation(owner)
+    owned = routing.is_implementation_owned(repository, owner.number, generation)
     if existing_generation == generation:
-        # Same captured attempt: a live execution finishing/being reclaimed,
-        # a provider session ending, or a restart resuming it are all
-        # continuations (REQ-007), never a new routing start. Recompute the
-        # tombstone unconditionally in case a prior crash acquired this
+        if owned and not slots.has_qualifying_implementation_activity(owner):
+            # Already durably started *and* the tombstone is already
+            # durable, with nothing left retained: this owner is idle, not
+            # mid-attempt. A duplicate wake for the exact same generation
+            # must not create another fresh execution (REQ-006) -- unlike
+            # the branch below, retained evidence would make this a genuine
+            # continuation instead.
+            return OwnershipStartGate(OwnershipStartDecision.ALREADY_OWNED, generation)
+        # Same captured attempt with either retained evidence or a not-yet-
+        # durable tombstone: a live execution finishing/being reclaimed, a
+        # provider session ending, or a restart resuming it are all
+        # continuations (REQ-007), never a new routing start. Recomputing
+        # the tombstone here also recovers a prior crash that acquired this
         # generation durably but did not yet persist it (REQ-004).
         return OwnershipStartGate(OwnershipStartDecision.CONTINUE, generation)
-    if routing.is_implementation_owned(repository, owner.number, generation):
+    if owned:
         # Tombstoned, and the local owner record does not itself corroborate
         # an in-progress attempt for this exact generation: a genuine
         # duplicate (restart, duplicate wake, or exact semantic reversion

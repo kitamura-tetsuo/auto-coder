@@ -100,6 +100,37 @@ def test_finishing_execution_does_not_erase_binding_before_tombstone(tmp_path):
     assert routing.is_implementation_owned(REPO, 1, "g1")
 
 
+def test_idle_bound_and_tombstoned_owner_refuses_duplicate_start(tmp_path):
+    """REQ-006: once G is both durably tombstoned and fully idle (no retained
+    execution/session/PR), a duplicate wake must not start G again.
+
+    This is the case ``test_finishing_execution_does_not_erase_binding_before_tombstone``
+    does not cover: there, the tombstone is not yet durable, so CONTINUE
+    correctly re-establishes it. Once the tombstone *is* durable and nothing
+    is left retained, the owner is idle rather than mid-attempt, and the
+    same ``existing_generation == generation`` match must resolve to
+    ALREADY_OWNED instead of CONTINUE.
+    """
+    slots, routing = _stores(tmp_path)
+    execution_id = slots.start_execution(ISSUE, generation="g1")
+    assert execution_id is not None
+    confirm_implementation_ownership(routing, REPO, ISSUE, "g1")
+    slots.finish_execution(ISSUE, execution_id)
+    assert not slots.has_qualifying_implementation_activity(ISSUE)
+    assert slots.implementation_generation(ISSUE) == "g1"
+    assert routing.is_implementation_owned(REPO, 1, "g1")
+
+    gate = evaluate_implementation_start(routing, slots, REPO, ISSUE, "g1")
+    assert gate.decision is OwnershipStartDecision.ALREADY_OWNED
+    assert not gate.may_start
+
+    # Retained evidence for the same generation (e.g. a provider session
+    # still in flight) makes it a genuine continuation once again.
+    assert slots.record_provider_session(ISSUE, "still-running")
+    resumed_gate = evaluate_implementation_start(routing, slots, REPO, ISSUE, "g1")
+    assert resumed_gate.decision is OwnershipStartDecision.CONTINUE
+
+
 def test_busy_with_different_generation_defers_without_owning_new_one(tmp_path):
     """REQ-006: retained evidence under an older generation defers a distinct new one."""
     slots, routing = _stores(tmp_path)
@@ -256,6 +287,53 @@ async def test_duplicate_wake_never_dispatches_twice_for_the_same_generation(tmp
     await asyncio.gather(worker, return_exceptions=True)
 
 
+def test_duplicate_start_after_completed_execution_stays_suppressed_at_production_boundary(tmp_path, monkeypatch):
+    """REQ-006 at the real admission boundary: once G's execution has
+    finished normally (idle, bound, tombstoned -- not yet released), a
+    duplicate admission for the exact same unchanged generation must not
+    start a second execution.
+
+    ``test_duplicate_wake_never_dispatches_twice_for_the_same_generation``
+    above drives this through ordinary (non-retry) admission, where an
+    earlier, unrelated "implementation ownership already exists" gate
+    (matching ``validation_identity``) already refuses the second wake
+    before ``evaluate_implementation_start`` is ever consulted -- so it does
+    not, by itself, prove this Issue's own adapter decision is correct. This
+    test isolates that decision by using the manual-retry origin (as the
+    REQ-008 test above does) to bypass that earlier gate and reach the
+    adapter directly with the idle-but-bound-and-tombstoned state.
+    """
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = _standalone_snapshot(1, created_at)
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    engine._process_single_candidate_reserved = MagicMock(return_value=CandidateProcessingResult(type="issue", number=1, success=True, actions=["dispatched"]))
+    github.get_issue_comments_strict.return_value = []
+    owner = ImplementationOwner("issue", 1)
+
+    # Admit G to owned (execution + tombstone), then finish the execution
+    # without releasing the owner: retained binding, no qualifying activity,
+    # tombstone durable.
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    execution_id = engine.implementation_slots.start_execution(owner, generation=generation)
+    assert execution_id is not None
+    engine.issue_stage_routing.record_implementation_owned(REPO, 1, generation)
+    engine.implementation_slots.finish_execution(owner, execution_id)
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
+    assert not engine.implementation_slots.has_qualifying_implementation_activity(owner)
+
+    candidate = Candidate(type="issue", data=dict(snapshot), priority=0)
+    result = engine._process_single_candidate_unified(REPO, candidate, engine.config, explicit_only=True, force=True, retry=True, origin="explicit-single-target")
+
+    engine._process_single_candidate_reserved.assert_not_called()
+    assert result.actions == ["Skipped - Implementation generation already has a durable production start"]
+    assert engine.implementation_slots.active_execution_ids(owner) == ()
+    assert engine.implementation_slots.implementation_generation(owner) == generation
+    assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+
+
 def test_malformed_generation_binding_fails_closed_at_production_boundary_target_scoped(tmp_path, monkeypatch):
     """REQ-008/AS-007 at the real admission boundary: retained implementation
     evidence with a malformed (non-string) generation binding blocks a new
@@ -345,17 +423,27 @@ def test_ambiguous_provider_outcome_resolves_three_ways_at_production_boundary(t
     reserved_a = MagicMock(return_value=CandidateProcessingResult(type="issue", number=1, success=True, actions=["dispatched"]))
     engine_a._process_single_candidate_reserved = reserved_a
     github_a.get_issue_comments_strict.return_value = []
-    generation = engine_a._compute_implementation_generation(REPO, snapshot, None)
-    first_execution = engine_a.implementation_slots.start_execution(owner, generation=generation)
-    assert first_execution is not None
-    engine_a.issue_stage_routing.record_implementation_owned(REPO, 1, generation)
+
+    # Cross the real production acquisition boundary first (ordinary
+    # admission) rather than directly constructing the owned routing record.
+    initial_candidate = Candidate(type="issue", data=dict(snapshot), priority=0)
+    initial_result = engine_a._process_single_candidate_unified(REPO, initial_candidate, engine_a.config, origin="worker")
+    assert initial_result.success
+    generation = engine_a.implementation_slots.implementation_generation(owner)
+    assert generation is not None
+    assert engine_a.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+
+    # Simulate the provider now retaining this attempt after the local
+    # execution that originally acquired it has finished.
     assert engine_a.implementation_slots.record_provider_session(owner, "ambiguous-session")
-    engine_a.implementation_slots.finish_execution(owner, first_execution)
+    for execution_id in engine_a.implementation_slots.active_execution_ids(owner):
+        engine_a.implementation_slots.finish_execution(owner, execution_id)
+    assert engine_a.implementation_slots.active_execution_ids(owner) == ()
 
     candidate_a = Candidate(type="issue", data=dict(snapshot), priority=0)
     result_a = engine_a._process_single_candidate_unified(REPO, candidate_a, engine_a.config, explicit_only=True, force=True, retry=True, origin="explicit-single-target")
     assert result_a.success
-    assert reserved_a.call_count == 1
+    assert reserved_a.call_count == 2  # the initial dispatch, plus this legitimate continuation
     # G's binding and tombstone are unchanged -- recognized as the same
     # already-owned attempt, never rebound or duplicated as a new G2.
     assert engine_a.implementation_slots.implementation_generation(owner) == generation
