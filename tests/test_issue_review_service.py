@@ -300,7 +300,8 @@ def test_disabled_category_creates_no_work_and_reenable_reuses(tmp_path, monkeyp
     assert calls.call_count == 1
 
 
-def test_policy_change_requires_new_review_and_reversion_reuses(tmp_path, monkeypatch):
+def test_provider_only_change_reuses_decision_without_new_backend_call(tmp_path, monkeypatch):
+    """Issue #2081, REQ-001/REQ-004: an execution-routing-only change never triggers a new review."""
     github = FakeGitHub([])
     github.issues[1] = github.snapshot(1)
     calls = Mock(return_value=SpecificationAnalysisResult("READY"))
@@ -309,14 +310,17 @@ def test_policy_change_requires_new_review_and_reversion_reuses(tmp_path, monkey
     assert engine._get_review_service(REPO).pump_target(1, "test-origin") is not None
     assert calls.call_count == 1
 
+    # A lifecycle constructed against a different execution route over the
+    # same durable store must reuse the existing READY decision.
     engine._specification_validators[REPO] = spec_lifecycle(tmp_path, calls, policy="provider/model-b")
-    assert engine._get_review_service(REPO).pump_target(1, "test-origin") is not None
-    assert calls.call_count == 2
+    outcome = engine._get_review_service(REPO).pump_target(1, "test-origin")
+    assert outcome is not None and outcome.status == "completed"
+    assert calls.call_count == 1
 
     engine._specification_validators[REPO] = spec_lifecycle(tmp_path, calls, policy="provider/model")
     outcome = engine._get_review_service(REPO).pump_target(1, "test-origin")
     assert outcome is not None and outcome.status == "completed"
-    assert calls.call_count == 2
+    assert calls.call_count == 1
 
 
 def test_anchored_objective_edit_becomes_objective_conflict(tmp_path, monkeypatch):
