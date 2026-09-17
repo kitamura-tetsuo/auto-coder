@@ -3355,6 +3355,12 @@ def _handle_pr_merge(
                                 except Exception as e:
                                     actions.append(f"Rejected adversarial-validation result for PR #{pr_number}: authoritative head could not be confirmed ({e})")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "gap-state-acceptance", "reason": "head observation unavailable"})
+                                    # REQ-006: the authoritative head check itself
+                                    # failed, so acceptance/refusal could not be
+                                    # observed; record that failure as its own
+                                    # effect rather than leaving the retained
+                                    # review with no observation at all.
+                                    record_effect(review_target, active_review_id, "failed", {"phase": "gap-state-acceptance", "reason": "head observation unavailable"})
                                     return actions
                                 if observed_head != head_sha:
                                     actions.append(f"Ignored adversarial-validation attempt {attempt.attempt_id}: current head changed before durable acceptance")

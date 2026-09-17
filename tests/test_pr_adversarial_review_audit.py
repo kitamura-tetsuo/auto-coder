@@ -932,6 +932,52 @@ class TestStaleHeadPublicationAndRestart:
         assert record.effects[0].details.get("phase") == "gap-state-acceptance"
         assert record.effects[0].details.get("observed_head") == "0" * 40
 
+    def test_head_observation_failure_before_durable_acceptance_appends_failed_effect(self, tmp_path, monkeypatch, audit_store):
+        """REQ-006: the authoritative head check itself raises at the
+        gap-state-acceptance boundary (a transient GitHub failure). The
+        review's own retained PASS result for the original head stays
+        intact, publication is never attempted, and the raised check is its
+        own appended 'failed' effect rather than leaving zero observations."""
+        repo, head_sha = _build_pr_repo(tmp_path)
+        client = _build_github_client(head_sha)
+        pr_data = _build_pr_data(head_sha)
+        config = _build_config()
+        # An explicit provider session makes run_adversarial_validation build
+        # a reviewer_session_checkpoint, which is what reaches the
+        # gap-state-acceptance boundary below.
+        reviewer = MockReviewerClient("reviewer", responses=[PASS_PAYLOAD], session_id="fresh-session")
+        manager = _build_backend_manager(monkeypatch, {"reviewer": reviewer}, "reviewer")
+
+        # The authoritative head check itself fails transiently.
+        client.get_pull_request_head_sha_strict.side_effect = RuntimeError("GitHub API unavailable")
+
+        _apply_standard_merge_gates(monkeypatch, mergeable=True, merge_result=True)
+        _wire_backend(monkeypatch, manager)
+        monkeypatch.setattr("auto_coder.pr_processor.isolated_pr_head_worktree", lambda *a, **k: _static_worktree(repo))
+        publish_calls: List[str] = []
+        monkeypatch.setattr(
+            "auto_coder.pr_processor.publish_adversarial_review",
+            lambda *a, **k: (publish_calls.append("called"), ReviewPublicationResult(True, "APPROVE", ""))[1],
+        )
+
+        actions = _handle_pr_merge(client, REPO_NAME, pr_data, config, {})
+
+        assert reviewer.calls == ["fresh"]
+        assert not publish_calls, "a result rejected for an unconfirmable head must not publish"
+        assert any("authoritative head could not be confirmed" in action for action in actions)
+
+        records = _get_only_evaluation(audit_store, REPO_NAME)
+        assert len(records) == 1
+        record = records[0]
+        # The review's own retained result for the original head is untouched.
+        assert record.native_verdict == "PASS"
+        assert record.reviewed_generation == head_sha
+        effect_dispositions = [effect.disposition for effect in record.effects]
+        assert effect_dispositions == ["failed"]
+        assert record.effects[0].details is not None
+        assert record.effects[0].details.get("phase") == "gap-state-acceptance"
+        assert record.effects[0].details.get("reason") == "head observation unavailable"
+
     def test_changed_validation_snapshot_before_acceptance_is_superseded(self, tmp_path, monkeypatch, audit_store):
         """REQ-006: recovered file evidence exists from a prior session, but
         the validation snapshot can no longer be confirmed current at the
