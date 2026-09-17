@@ -57,6 +57,7 @@ from .git_commit import commit_and_push_changes, git_push, save_commit_failure_h
 from .git_info import get_commit_log
 from .github_app_reviewer import ReviewerAppIdentity, publish_adversarial_review, resolve_reviewer_app_identity
 from .github_pending_work import WorkIdentity, get_pending_work_store
+from .invocation_admission import bind_invocation_target
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
@@ -7284,7 +7285,8 @@ def _apply_github_actions_fix(
             actions.append(f"Deferred GitHub Actions repair for PR #{pr_number}: graceful shutdown is draining")
             return actions
         logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
-        response = run_llm_prompt(fix_prompt, backend_manager=backend_manager)
+        with bind_invocation_target(repo_name, f"pr#{pr_number}", "github_actions_repair"):
+            response = run_llm_prompt(fix_prompt, backend_manager=backend_manager)
 
         if response:
             response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"

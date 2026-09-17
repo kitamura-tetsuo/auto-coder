@@ -25,6 +25,7 @@ from .decomposition_analyzer import (
     objective_integrity_result,
 )
 from .github_pending_work import WorkIdentity, get_pending_work_store
+from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_review_publication import find_confirmed_publication
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
@@ -410,12 +411,13 @@ class DecompositionValidationLifecycle:
             # relabeled on later reuse or by a route change that only
             # happens after this call was already dispatched.
             provenance = configured_provider_identity()
-            if valid:
-                assert evidence is not None
-                with decomposition_review_evidence(evidence):
+            with bind_invocation_target(self.repository, f"issue#{identity.parent.issue_number}", "decomposition_validation", defer_checkpoint=True):
+                if valid:
+                    assert evidence is not None
+                    with decomposition_review_evidence(evidence):
+                        analyzed = self.analyzer(parent, children)
+                else:
                     analyzed = self.analyzer(parent, children)
-            else:
-                analyzed = self.analyzer(parent, children)
             decision = DecompositionDecision(
                 identity,
                 analyzed.verdict,
@@ -425,9 +427,27 @@ class DecompositionValidationLifecycle:
                 execution_provenance=provenance,
                 legacy_candidates_detected=legacy_candidates_detected,
             )
-            if decision.verdict in {"READY", "BLOCKED"}:
+            return self._settle_decision_checkpoint(decision)
+
+    def _settle_decision_checkpoint(self, decision: "DecompositionDecision") -> "DecompositionDecision":
+        """Persist a fresh decision (if reusable) and confirm its invocation checkpoint.
+
+        Mirrors ``SpecificationValidationLifecycle._settle_decision_checkpoint``
+        (Issue #2009, REQ-003/REQ-009): a failed save leaves the admitted
+        invocation CHECKPOINTING and retriable rather than settling it.
+        """
+        if decision.verdict in {"READY", "BLOCKED"}:
+            try:
                 self.store.save(decision)
-            return decision
+            except Exception as exc:
+                handle = take_pending_invocation_handle()
+                if handle is not None:
+                    handle.record_checkpoint_attempt_failed(str(exc))
+                raise
+        handle = take_pending_invocation_handle()
+        if handle is not None:
+            handle.confirm_settled()
+        return decision
 
     def is_reissue_required(self, parent_number: int) -> bool:
         return self.reissue_store.contains(parent_number)

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import yaml
 from dateutil import parser
 
+from .invocation_admission import InvocationHandle, InvocationStateError, current_invocation_gate
 from .jules_client import JulesClient, JulesSessionRejectedError
 from .llm_backend_config import get_jules_session_expiration_days_from_config
 from .logger_config import get_logger
@@ -526,6 +527,23 @@ def _session_pull_request_number(pull_request: object) -> Optional[int]:
     return None
 
 
+def _settle_unresolved_jules_invocation(handle: Optional[InvocationHandle]) -> None:
+    """Settle a Jules submission invocation that failed before its receipt was durably confirmed.
+
+    A rejection or transport failure leaves nothing reusable to protect: the
+    invocation is moved to CHECKPOINTING (if it had not already reached that
+    state) and settled immediately, mirroring how backend_manager settles a
+    terminal provider failure (Issue #2009, REQ-004/REQ-006).
+    """
+    if handle is None:
+        return
+    try:
+        handle.begin_checkpointing("terminal_failure")
+    except InvocationStateError:
+        pass
+    handle.confirm_settled()
+
+
 def check_and_start_recurrent_jules_tasks(
     repo_name: str,
     implementation_slots: Optional["ImplementationSlotRepository"] = None,
@@ -699,6 +717,17 @@ def check_and_start_recurrent_jules_tasks(
                         if not implementation_slots.record_implementation_pr(owner, pr_number):
                             raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
                 submission_attempted = False
+                # Local submission of this asynchronous remote task is itself a
+                # qualifying invocation (Issue #2009, REQ-006): protect it from
+                # invocation start through the durable receipt write in
+                # `record_provider_session`, not through Jules' own completion.
+                gate = current_invocation_gate()
+                invocation_handle = gate.try_admit(repository=repo_name, target=owner.key, stage="jules_remote_dispatch") if gate is not None else None
+                if gate is not None and invocation_handle is None:
+                    if implementation_slots is not None:
+                        implementation_slots.release(owner)
+                    logger.info(f"Deferring recurrent Jules submission for {owner.key}: graceful shutdown is draining")
+                    continue
                 try:
                     from .automation_config import AutomationConfig
 
@@ -708,6 +737,9 @@ def check_and_start_recurrent_jules_tasks(
                     session_title = names[0]
                     if implementation_slots is None:
                         new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+                        if invocation_handle is not None:
+                            invocation_handle.begin_checkpointing("remote_handoff")
+                            invocation_handle.confirm_settled(confirmation_id=str(new_session_id))
                     else:
                         with implementation_slots.serialize(owner):
                             # Once the provider request begins, an exception can
@@ -716,12 +748,21 @@ def check_and_start_recurrent_jules_tasks(
                             # authoritative provider scan recovers the session.
                             submission_attempted = True
                             new_session_id = jules_client.start_session(prompt=full_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
+                        # The local submission returned; its receipt still needs a
+                        # durable write before this invocation may settle.
+                        if invocation_handle is not None:
+                            invocation_handle.begin_checkpointing("remote_handoff")
                         if not implementation_slots.record_provider_session(owner, str(new_session_id)):
+                            if invocation_handle is not None:
+                                invocation_handle.record_checkpoint_attempt_failed("lost recurrent implementation ownership before receipt was recorded")
                             raise RuntimeError(f"Lost recurrent implementation ownership for {owner.key}")
+                        if invocation_handle is not None:
+                            invocation_handle.confirm_settled(confirmation_id=str(new_session_id))
                     logger.info(f"Successfully started new recurrent Jules session '{new_session_id}' for {names}")
                 except JulesSessionRejectedError as e:
                     if implementation_slots is not None:
                         implementation_slots.release(owner)
+                    _settle_unresolved_jules_invocation(invocation_handle)
                     logger.error(f"Jules rejected recurrent session creation for {names}: {e}")
                 except Exception as e:
                     # Submission failure means no external implementation was
@@ -729,6 +770,7 @@ def check_and_start_recurrent_jules_tasks(
                     # metadata persistence must fail closed and retain capacity.
                     if implementation_slots is not None and not submission_attempted:
                         implementation_slots.release(owner)
+                    _settle_unresolved_jules_invocation(invocation_handle)
                     logger.error(f"Failed to start new recurrent Jules session for {names}: {e}")
 
     except Exception as e:

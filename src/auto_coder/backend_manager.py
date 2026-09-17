@@ -18,6 +18,12 @@ from .backend_provider_manager import BackendProviderManager
 from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
 from .backend_state_manager import BackendStateManager
 from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .invocation_admission import (
+    InvocationHandle,
+    current_invocation_gate,
+    current_invocation_target,
+    set_pending_invocation_handle,
+)
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
@@ -645,6 +651,48 @@ class BackendManager(LLMBackendManagerBase):
         """
         return self._run_llm_cli(prompt)
 
+    def _admit_invocation(self, *, is_noedit: bool, has_session: bool) -> Optional[InvocationHandle]:
+        """Admit one qualifying invocation at the final boundary, or refuse.
+
+        Returns None when no daemon lifetime has installed a gate (e.g. a
+        standalone command), leaving behavior unchanged. When a gate is
+        installed and refuses admission (DRAINING/STOPPED/FORCED), this
+        raises before the controlled provider action runs so the caller's
+        existing retry/rotation handling applies uniformly.
+        """
+        gate = current_invocation_gate()
+        if gate is None:
+            return None
+        target_ctx = current_invocation_target()
+        if target_ctx is not None:
+            repository, target, stage = target_ctx.repository, target_ctx.target, target_ctx.stage
+        else:
+            repository, target = "unknown", "unknown"
+            stage = "noedit" if is_noedit else ("continuation" if has_session else "implementation")
+        handle = gate.try_admit(repository=repository, target=target, stage=stage)
+        if handle is None:
+            raise AutoCoderRetryableBackendError("LLM invocation refused because graceful shutdown is draining")
+        return handle
+
+    def _settle_admitted_invocation(self, handle: Optional[InvocationHandle], *, success: bool) -> None:
+        """Move an admitted invocation from IN_FLIGHT into its post-response state.
+
+        A failed invocation carries no reusable result, so it settles
+        immediately. A successful one settles immediately too unless the
+        caller bound ``defer_checkpoint=True`` (see
+        ``invocation_admission.InvocationTarget``), in which case the handle
+        is handed to the caller via ``take_pending_invocation_handle`` so it
+        can confirm settlement only after its own durable write commits.
+        """
+        if handle is None:
+            return
+        handle.begin_checkpointing("result" if success else "terminal_failure")
+        target_ctx = current_invocation_target()
+        if success and target_ctx is not None and target_ctx.defer_checkpoint:
+            set_pending_invocation_handle(handle)
+            return
+        handle.confirm_settled()
+
     def _execute_backend_with_providers(
         self,
         backend_name: str,
@@ -711,9 +759,13 @@ class BackendManager(LLMBackendManagerBase):
                     except Exception as e:
                         logger.warning(f"Failed to record review interaction start: {e}")
 
+                # Determine if this is a no-edit operation
+                is_noedit = getattr(self, "_is_noedit", False)
+                # Atomically register this controlled provider action before it
+                # runs, at the final invocation boundary shared by every
+                # backend/provider rotation attempt (Issue #2009, REQ-001/002).
+                invocation_handle = self._admit_invocation(is_noedit=is_noedit, has_session=session_id is not None)
                 try:
-                    # Determine if this is a no-edit operation
-                    is_noedit = getattr(self, "_is_noedit", False)
                     config_backend = getattr(cli, "config_backend", None)
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
@@ -724,6 +776,7 @@ class BackendManager(LLMBackendManagerBase):
                                 out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
                             else:
                                 out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                    self._settle_admitted_invocation(invocation_handle, success=True)
 
                     end_dt = datetime.now(timezone.utc)
                     end_time_iso = end_dt.isoformat()
@@ -758,6 +811,7 @@ class BackendManager(LLMBackendManagerBase):
                     self._save_session_state(backend_name, self._last_session_id)
                     return out
                 except Exception as exc:
+                    self._settle_admitted_invocation(invocation_handle, success=False)
                     end_dt = datetime.now(timezone.utc)
                     end_time_iso = end_dt.isoformat()
                     duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000

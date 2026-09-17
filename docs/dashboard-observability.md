@@ -736,6 +736,54 @@ adjudication envelope reply is excluded from the generic cloud
 review-feedback path it would otherwise be forwarded through verbatim. Run
 `bash scripts/test.sh tests/test_review_adjudication_orchestrator.py tests/test_pr_processor_adjudication_effects.py`.
 
+# Per-invocation shutdown-protection wiring
+
+Issue #2009 wires the standalone `InvocationAdmissionGate`/`InvocationHandle`
+model (Issue #2008, `invocation_admission.py`) into real production LLM
+invocation boundaries: the shared `BackendManager._execute_backend_with_providers`
+call (covering `run_llm_prompt`/`run_llm_noedit_prompt`/`run_prompt`, explicit
+and automatic session continuation, and every backend/provider rotation
+retry), the `SpecificationValidationLifecycle`/`DecompositionValidationLifecycle`
+decision checkpoints, the Jules recurrent-task remote-handoff receipt, and the
+`AutomationEngine` daemon lifetime (one gate per lifetime, installed alongside
+the existing `install_admission_check` in `_run_local_critical`, closed on
+`request_graceful_shutdown`, forced on `request_force_stop`).
+
+This is an admission-gate and durable-resumption change, not a new processing
+origin, outcome, provider route, or structured event. During ordinary RUNNING
+operation the gate always admits, so every existing `_record_dispatch_stage`/
+`TraceCollector` stage, origin, outcome, and provider-routing decision is
+produced exactly as before (Issue #2009's REQ-010). The gate only ever refuses
+admission while the daemon is already DRAINING/STOPPED/FORCED — the same
+graceful-shutdown window `docs/client-features/graceful-daemon-shutdown.md`
+already documents — and that refusal surfaces through the same pre-existing
+`new_work_allowed()`-guarded "Deferred ... graceful shutdown is draining"
+action text and `AutoCoderRetryableBackendError` paths those call sites already
+had; it does not add a new dashboard-visible outcome value or event kind.
+`SpecificationDecision`/`DecompositionDecision.evaluation_source` and their
+existing persisted-decision schema are unchanged: this only adds a checkpoint
+around the already-existing `store.save()` write, deferring invocation
+settlement until that write is confirmed (or leaving it visibly unsettled and
+retriable on a write failure), never altering what gets persisted or how a
+dashboard/reuse consumer reads it. `gate.snapshot()`/`AutomationEngine.
+invocation_admission_snapshot()` is new, purely diagnostic, process-internal
+state (unsettled invocation identity/stage/lifecycle-state/checkpoint-failure
+count) with no prompt/response/credential content; it is not wired into any
+dashboard panel or `TraceCollector` event.
+
+`tests/test_invocation_admission_wiring.py` drives the real production
+boundaries end to end with a fake CLI client at the outermost provider-
+transport seam: per-attempt admission across backend rotation, a deferred
+checkpoint that stays protected until the caller's own durable write confirms
+it, a checkpoint write failure that leaves the invocation unsettled and
+retriable without a second paid call, admission refusal while draining (no
+provider call at all), the Jules remote-handoff receipt settling the
+invocation without waiting on the remote task, and the `AutomationEngine`
+gate's installation/close/force lifecycle. Run
+`bash scripts/test.sh tests/test_invocation_admission_wiring.py tests/test_invocation_admission.py tests/test_specification_validation_lifecycle.py tests/test_decomposition_validation_lifecycle.py tests/test_jules_engine.py`.
+
+# Repository-scoped internal job trace interface
+
 Issue #2000 (child A of the #1999 dependency-rescan observability tracking
 parent) adds `src/auto_coder/repo_job_trace.py`, a new
 producer/snapshot-consumer diagnostic interface for repository-scoped
