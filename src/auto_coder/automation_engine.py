@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union, cast
 
 import httpx
 
@@ -29,7 +29,16 @@ from .decomposition_validation_lifecycle import (
 )
 from .dependency_observation_cache import DEPENDENCY_OBSERVATION_TTL, DependencyObservationCache
 from .deployment_channel import repository_dispatch_authority
-from .entity_invalidation import ClaimedInvalidation, DurableInvalidationQueue, EntityIdentity, issue_stabilization_deadline
+from .entity_invalidation import (
+    ClaimedInvalidation,
+    CompletionOutcome,
+    CompletionTransition,
+    DurableInvalidationQueue,
+    EntityIdentity,
+    InvalidationDisposition,
+    InvalidationTransition,
+    issue_stabilization_deadline,
+)
 from .exceptions import AutoCoderRetryableBackendError, CloudSubmissionNotStartedError
 from .execution_trace import EventKind, Outcome, current_scope, get_trace_collector
 from .fix_to_pass_tests_runner import fix_to_pass_tests
@@ -55,6 +64,7 @@ from .implementation_slots import (
     ImplementationSlotRepository,
     ImplementationSlotUnavailable,
 )
+from .invocation_admission import GateSnapshot, InvocationAdmissionGate, install_invocation_gate, reset_invocation_gate
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
 from .issue_processor import create_feature_issues
@@ -92,8 +102,21 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .reissue_required_store import ReissueRequiredStore
+from .repo_job_trace import (
+    RepoJobExecutionHandle,
+    RepoJobExecutionScope,
+    RepoJobFacts,
+    RepoJobKind,
+    RepoJobTarget,
+    RepoJobTraceCollector,
+    current_repo_job_scope,
+    get_repo_job_trace_collector,
+    observations_for_execution,
+    resolve_repo_job_target,
+    unassociated_observations_for_target,
+)
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
-from .review_adjudication_github import AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService
+from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService
 from .shutdown_context import install_admission_check, reset_admission_check
 from .sibling_dependencies import (
     BlockedByDeclarationStatus,
@@ -752,7 +775,7 @@ class AutomationEngine:
         self.queue = CandidateQueue()
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
-        adjudication_path = Path(os.environ.get("AUTO_CODER_REVIEW_ADJUDICATION_DB", "~/.auto-coder/review-adjudications.sqlite3")).expanduser()
+        adjudication_path = Path(os.environ.get(ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH)).expanduser()
         self.review_adjudications = ReviewAdjudicationService(self.github, AdjudicationContextStore(adjudication_path))
         routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
         self.issue_stage_routing = IssueStageRoutingStore(routing_path)
@@ -800,6 +823,13 @@ class AutomationEngine:
         self._shutdown_event: Optional[asyncio.Event] = None
         self._force_stop_event: Optional[asyncio.Event] = None
         self._critical_operations: Dict[asyncio.Task[Any], str] = {}
+        # One invocation-admission gate per daemon lifetime (Issue #2009):
+        # finer-grained, per-LLM-call shutdown protection that runs alongside
+        # the coarser worker/maintenance-level `_run_local_critical` wait
+        # this class already owns. Retiring that broader wait in favor of
+        # this gate is a separate follow-up (#2010); today this gate only
+        # tracks invocations and never gates the daemon's own exit.
+        self.invocation_gate = InvocationAdmissionGate()
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -818,12 +848,17 @@ class AutomationEngine:
     def is_draining(self) -> bool:
         return self.lifecycle is not EngineLifecycle.RUNNING
 
+    def invocation_admission_snapshot(self) -> GateSnapshot:
+        """Expose this daemon lifetime's per-invocation admission state for diagnostics."""
+        return self.invocation_gate.snapshot()
+
     def request_graceful_shutdown(self, reason: str) -> bool:
         """Stop admission and request a drain. Return true for the first request."""
         with self._lifecycle_lock:
             if self._lifecycle is not EngineLifecycle.RUNNING:
                 return False
             self._lifecycle = EngineLifecycle.DRAINING
+        self.invocation_gate.close_admission(reason)
         logger.warning(f"Graceful shutdown requested by {reason}; entering draining state")
         operations = list(self._critical_operations.values())
         logger.warning(f"Waiting for {len(operations)} local critical operation(s): {operations or ['none']}")
@@ -837,6 +872,7 @@ class AutomationEngine:
         """Abandon the graceful wait after an explicit second interrupt."""
         with self._lifecycle_lock:
             self._lifecycle = EngineLifecycle.FORCED
+        self.invocation_gate.force_stop(reason)
         logger.error(f"Forced shutdown requested by {reason}; local work may require restart recovery")
         if self._loop is not None and self._force_stop_event is not None:
             self._loop.call_soon_threadsafe(self._force_stop_event.set)
@@ -850,12 +886,14 @@ class AutomationEngine:
             # treat it as a loop-level termination before the caller can observe
             # and handle the exception.
             token = install_admission_check(lambda: not self.is_draining)
+            gate_token = install_invocation_gate(self.invocation_gate)
             try:
                 try:
                     return True, await asyncio.to_thread(function, *args)
                 except BaseException as exc:
                     return False, exc
             finally:
+                reset_invocation_gate(gate_token)
                 reset_admission_check(token)
 
         task = asyncio.create_task(run_in_thread(), name=f"local-critical:{description}")
@@ -1985,8 +2023,8 @@ class AutomationEngine:
                 return False
             if self._is_issue_decomposition_validation_enabled(repo_name):
                 validator = self._get_decomposition_validator(repo_name)
-                # Delegate to the Review lane instead of submitting inline
-                decision = validator.store.get(validator.identity(*authoritative_set))
+                decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+                decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                 if decision is not None and decision.verdict == "BLOCKED":
                     self._authorize_and_apply_decomposition_blocked(
                         validator,
@@ -2050,36 +2088,20 @@ class AutomationEngine:
             return
         if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
             return
+        if target_only:
+            decomposition_job, child_jobs = self._schedule_parent_validations(
+                repo_name,
+                authoritative_set,
+                selected_child_number=issue_number,
+                scheduler=self.review_scheduler,
+            )
+        else:
+            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, scheduler=self.review_scheduler)
+        # Do not acknowledge the durable invalidation until every missing
+        # identity has either persisted reusable evidence or returned ERROR.
         failures: list[str] = []
         try:
-            decomposition_decision = None
-            if self._is_issue_decomposition_validation_enabled(repo_name):
-                decomposition_validator = self._get_decomposition_validator(repo_name)
-                decomposition_decision = decomposition_validator.store.get(decomposition_validator.identity(*authoritative_set))
-
-            child_decisions = {}
-            if self._is_issue_specification_validation_enabled(repo_name):
-                individual_validator = self._get_specification_validator(repo_name)
-                for child in authoritative_set[1]:
-                    num = int(child["number"])
-                    if target_only and num != issue_number:
-                        continue
-                    child_title = str(child.get("title") or "")
-                    child_body = str(child.get("body") or "")
-                    relationship = self._child_review_context(*authoritative_set, num)
-                    child_decision, _ = self._review_individual_via_lane(repo_name, num, child_title, child_body, relationship, "invalidation-processing", child)
-                    if child_decision is not None:
-                        child_decisions[num] = child_decision
-
-            has_all_decisions = True
-            if target_only:
-                if issue_number not in child_decisions:
-                    has_all_decisions = False
-            elif len(child_decisions) != len(authoritative_set[1]):
-                has_all_decisions = False
-
-            if (self._is_issue_decomposition_validation_enabled(repo_name) and decomposition_decision is None) or (self._is_issue_specification_validation_enabled(repo_name) and not has_all_decisions):
-                raise ValidationAdmissionDeferred("validation is pending")
+            decomposition_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
             if decomposition_decision is not None and decomposition_decision.verdict == "ERROR":
                 reason = f": {decomposition_decision.remediation_reason}" if decomposition_decision.remediation_reason else ""
                 failures.append(f"decomposition validation failed{reason}")
@@ -2096,8 +2118,7 @@ class AutomationEngine:
             logger.exception("Parent validations join failed: %s", exc)
             failures.append(f"validation raised {type(exc).__name__}")
         if failures:
-            from .exceptions import ParentSpecificationError
-            raise ParentSpecificationError(f"validation batch incomplete while processing child invalidation: {', '.join(failures)}")
+            raise RuntimeError(f"validation batch incomplete while processing child invalidation: {', '.join(failures)}")
 
     def _authorize_stale_jules_dispatch(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Apply set, ordering, and Issue authorization to daemon replacement work."""
@@ -2127,8 +2148,8 @@ class AutomationEngine:
                     return None
                 if self._is_issue_decomposition_validation_enabled(repo_name):
                     parent_validator = self._get_decomposition_validator(repo_name)
-                    # Delegate to the Review lane instead of submitting inline
-                    parent_decision = parent_validator.store.get(parent_validator.identity(*authoritative_set))
+                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
+                    parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
                     if parent_decision is not None and parent_decision.verdict == "BLOCKED":
                         self._authorize_and_apply_decomposition_blocked(
                             parent_validator,
@@ -2158,22 +2179,8 @@ class AutomationEngine:
                 return None
             # The Review lane owns semantic execution for the submitted
             # family; this intake path observes durable decisions (REQ-010).
-            decomposition_decision = decomposition_validator.store.get(decomposition_validator.identity(*authoritative_set)) if decomposition_validator else None
-            if decomposition_validator and decomposition_decision is None:
-                from .entity_invalidation import EntityIdentity
-                self.invalidations.invalidate(EntityIdentity(repo_name, "issue", int(authoritative_set[0]["number"])))
-
-            joined_child_decisions = {}
-            if self._is_issue_specification_validation_enabled(repo_name):
-                individual_validator = self._get_specification_validator(repo_name)
-                for child in authoritative_set[1]:
-                    num = int(child["number"])
-                    child_title = str(child.get("title") or "")
-                    child_body = str(child.get("body") or "")
-                    relationship = self._child_review_context(*authoritative_set, num)
-                    child_decision, _ = self._review_individual_via_lane(repo_name, num, child_title, child_body, relationship, "stale-jules-intake", child)
-                    if child_decision is not None:
-                        joined_child_decisions[num] = child_decision
+            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, scheduler=self.review_scheduler)
+            decomposition_decision, joined_child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
             if decomposition_enabled and decomposition_decision is not None:
                 if decomposition_decision.verdict == "BLOCKED":
                     self._authorize_and_apply_decomposition_blocked(
@@ -2292,7 +2299,8 @@ class AutomationEngine:
 
         logger.info(f"Starting automation for repository: {repo_name} with {concurrency} Issue workers and {concurrency} PR workers")
         self.issue_stage_routing.recover(repo_name)
-        self.invalidations.recover(repo_name)
+        recovered_identities = self.invalidations.recover(repo_name)
+        self._record_recovered_dependency_work(repo_name, recovered_identities)
         await self._enqueue_pending_invalidations(repo_name)
 
         # Record resource usage and unhandled asyncio errors for the whole run
@@ -3104,30 +3112,12 @@ class AutomationEngine:
         """
         validator = self._get_specification_validator(repo_name)
         identity = validator.identity(issue_number, title, body, relationship_context)
-
-        # Implementation lane must never execute review inline (REQ-001)
-        # However, for tests that mock pump_target or don't set up the store correctly, we retain the old observation flow conditionally.
-        decision = validator.store.get(identity)
-        if decision is None:
-            from .entity_invalidation import EntityIdentity
-            self.invalidations.invalidate(EntityIdentity(repo_name, "issue", issue_number))
-
-            # Legacy fallback for tests
-            import os
-            if os.environ.get("PYTEST_CURRENT_TEST") and "test_dashboard_observability" not in os.environ.get("PYTEST_CURRENT_TEST"):
-                outcome = self._get_review_service(repo_name).pump_target(issue_number, origin, snapshot)
-                if outcome is not None:
-                    decision = outcome.decisions.get(identity.key)
-                    if isinstance(decision, ValidationDecision):
-                        return decision, identity.key in outcome.applied_identity_keys
-
-        if decision is not None:
-            applied = False
-            if decision.verdict == "BLOCKED":
-                applied = decision.findings_published and decision.readiness_removed
-            return decision, applied
-
-        return None, False
+        outcome = self._get_review_service(repo_name).pump_target(issue_number, origin, snapshot)
+        if outcome is not None:
+            decision = outcome.decisions.get(identity.key)
+            if isinstance(decision, ValidationDecision):
+                return decision, identity.key in outcome.applied_identity_keys
+        return self._verify_stored_individual_decision(validator, issue_number, title, body, relationship_context, identity), False
 
     @staticmethod
     def _verify_stored_individual_decision(
@@ -3285,6 +3275,7 @@ class AutomationEngine:
                 deferral_committed = False
                 stop_after_persistence_failure = False
                 invalidation_claim: Optional[ClaimedInvalidation] = None
+                repo_job_scope: Optional[RepoJobExecutionScope] = None
 
                 # Ownership starts at dequeue, including authoritative refresh
                 # and submitted-parent validation before ordinary dispatch.
@@ -3300,7 +3291,7 @@ class AutomationEngine:
                         if not await asyncio.to_thread(self.invalidations.begin_processing, invalidation_claim):
                             continue
                         if candidate.type == "dependency":
-                            await self._expand_dependency_obligation(repo_name)
+                            repo_job_scope = await self._expand_dependency_obligation(repo_name)
                             decision_completed = True
                             continue
                         if candidate.type == "issue":
@@ -3464,9 +3455,13 @@ class AutomationEngine:
                     logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
                     get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
                 finally:
+                    completion_transition = None
                     if invalidation_claim is not None:
                         if decision_completed:
-                            self.invalidations.complete(invalidation_claim)
+                            if candidate.type == "dependency":
+                                completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
+                            else:
+                                self.invalidations.complete(invalidation_claim)
                         elif not deferral_committed and not stop_after_persistence_failure:
                             self.invalidations.release(invalidation_claim)
                             # Retry transient authoritative-fetch/processing
@@ -3474,6 +3469,8 @@ class AutomationEngine:
                             # but retain the former backoff against hot loops.
                             if self._invalidation_wake_event is not None:
                                 asyncio.get_running_loop().call_later(60, self._invalidation_wake_event.set)
+                    if repo_job_scope is not None:
+                        self._record_dependency_claim_acknowledgement(repo_name, repo_job_scope, invalidation_claim, decision_completed, completion_transition)
                     self.active_workers[worker_id] = None
                     self.queue.task_done()
                     if decision_completed:
@@ -3485,23 +3482,207 @@ class AutomationEngine:
                     logger.error(f"Worker {worker_id} stopped after deferral persistence failure")
                     return
 
-    async def _expand_dependency_obligation(self, repo_name: str) -> None:
+    def _record_recovered_dependency_work(self, repo_name: str, recovered_identities: list[EntityIdentity]) -> None:
+        """Record startup-recovered dependency-rescan work (REQ-001, REQ-004).
+
+        Documents "known pending work exists as of now" only -- it never
+        reconstructs a lost original trigger, delivery, or execution.
+        Diagnostic-recorder failures are caught and never affect startup.
+        """
+        target = resolve_repo_job_target(repo_name, RepoJobKind.DEPENDENCY_RESCAN.value)
+        if target is None:
+            return
+        for identity in recovered_identities:
+            if identity.entity_type != "dependency":
+                continue
+            try:
+                get_repo_job_trace_collector().record_recovered(
+                    target,
+                    origin="startup-recovery",
+                    label=f"{repo_name} dependency-rescan work recovered at startup",
+                    facts=RepoJobFacts(queue_phase="dirty"),
+                )
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed for recovered dependency-rescan work; continuing")
+
+    def _record_dependency_claim_acknowledgement(
+        self,
+        repo_name: str,
+        scope: RepoJobExecutionScope,
+        invalidation_claim: Optional[ClaimedInvalidation],
+        decision_completed: bool,
+        completion_transition: Optional[CompletionTransition],
+    ) -> None:
+        """Record the dependency-rescan job's own claim-acknowledgement outcome (REQ-007, REQ-008).
+
+        Recorded against the execution `scope` captured while the scan ran,
+        even though that execution's own `execution-finished` observation
+        was already emitted before the outer worker loop reaches its claim
+        completion/release -- this call attaches a late stage-reached fact to
+        the same execution id rather than reopening or duplicating it.
+        Never raises: a diagnostic failure here must never mask, or be
+        confused with, the real claim outcome it describes.
+        """
+        try:
+            collector = get_repo_job_trace_collector()
+            if completion_transition is not None:
+                if completion_transition.outcome is CompletionOutcome.CLEARED:
+                    outcome, disposition = Outcome.COMPLETED, completion_transition.outcome.value
+                elif completion_transition.outcome is CompletionOutcome.FOLLOWUP_PENDING:
+                    outcome, disposition = Outcome.DEFERRED, completion_transition.outcome.value
+                else:
+                    outcome, disposition = Outcome.FAILED, completion_transition.outcome.value
+                facts = RepoJobFacts(handoff_disposition=disposition, observed_invalidation_generation=completion_transition.latest_generation)
+            elif invalidation_claim is not None and not decision_completed:
+                outcome = Outcome.FAILED
+                facts = RepoJobFacts(failure_reason="dependency_claim_released_without_completion")
+            else:
+                outcome = Outcome.UNKNOWN
+                facts = None
+            collector.record_stage_reached(
+                "dependency-rescan.claim-acknowledged",
+                origin="durable-invalidation-worker",
+                label=f"{repo_name} dependency-rescan claim acknowledgement",
+                outcome=outcome,
+                facts=facts,
+                scope=scope,
+            )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed for dependency-rescan claim acknowledgement; continuing")
+
+    async def _expand_dependency_obligation(self, repo_name: str) -> Optional[RepoJobExecutionScope]:
         """Discover affected Issues from a complete, current open-Issue scan.
 
         Discovery deliberately precedes candidate filtering and does not rely
         on native reverse edges.  Each discovered identity becomes its own
         durable generation before the scoped obligation is acknowledged.
+
+        Opens its own `RepoJobExecutionScope` (Issue #2001) covering
+        enumeration and every handoff; returns that scope (or None when
+        diagnostics are unavailable) so the caller can attach the later
+        claim-acknowledgement observation to the same execution id. A
+        diagnostic failure here never blocks or changes the real scan.
         """
-        entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
+        target = resolve_repo_job_target(repo_name, RepoJobKind.DEPENDENCY_RESCAN.value)
+        collector = get_repo_job_trace_collector()
+        handle = None
+        if target is not None:
+            try:
+                prior_refs = tuple(observation.observation_id for observation in unassociated_observations_for_target(collector.get_snapshot(target), target))
+                handle = collector.start_execution(
+                    target,
+                    origin="durable-invalidation-worker",
+                    stage_id="dependency-rescan.execution",
+                    label=f"{repo_name} dependency-rescan execution",
+                    facts=RepoJobFacts(source_observation_refs=prior_refs),
+                )
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed opening dependency-rescan execution scope; continuing untraced")
+                handle = None
+        if handle is None:
+            await self._expand_dependency_obligation_impl(repo_name, collector, None)
+            return None
+        with handle:
+            await self._expand_dependency_obligation_impl(repo_name, collector, handle)
+            return handle.scope
+
+    async def _expand_dependency_obligation_impl(self, repo_name: str, collector: RepoJobTraceCollector, handle: Optional[RepoJobExecutionHandle]) -> None:
+        def record_stage(stage_id: str, label: str, outcome: Optional[Outcome] = None, facts: Optional[RepoJobFacts] = None) -> None:
+            if handle is None:
+                return
+            try:
+                collector.record_stage_reached(stage_id, origin="durable-invalidation-worker", label=label, outcome=outcome, facts=facts)
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed for dependency-rescan stage {}; continuing", stage_id)
+
+        record_stage("dependency-rescan.enumeration-started", f"{repo_name} dependency-rescan enumeration started")
+        try:
+            entities = await asyncio.to_thread(self.github.get_open_entities_strict, repo_name)
+        except Exception:
+            record_stage("dependency-rescan.enumeration-failed", f"{repo_name} dependency-rescan enumeration failed", outcome=Outcome.FAILED, facts=RepoJobFacts(scan_available=False))
+            raise
         issues = getattr(entities, "issues", None)
         if not isinstance(issues, list):
+            record_stage("dependency-rescan.enumeration-failed", f"{repo_name} dependency-rescan enumeration malformed", outcome=Outcome.FAILED, facts=RepoJobFacts(scan_available=False))
             raise RuntimeError("authoritative dependency discovery returned malformed Issues")
+        record_stage(
+            "dependency-rescan.enumeration-completed",
+            f"{repo_name} dependency-rescan enumeration completed",
+            outcome=Outcome.COMPLETED,
+            facts=RepoJobFacts(scan_available=True, discovered_issue_count=len(issues)),
+        )
+
         for issue in issues:
             number = getattr(issue, "number", None)
             if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+                record_stage(
+                    "dependency-rescan.enumeration-failed",
+                    f"{repo_name} dependency-rescan enumeration returned an invalid Issue",
+                    outcome=Outcome.FAILED,
+                    facts=RepoJobFacts(scan_available=False, discovered_issue_count=len(issues)),
+                )
                 raise RuntimeError("authoritative dependency discovery returned an invalid Issue")
             deadline = issue_stabilization_deadline(issue.created_at) if issue.created_at is not None else None
-            await self.invalidate_entity(repo_name, "issue", number, not_before=deadline)
+            try:
+                await self.invalidate_entity(repo_name, "issue", number, not_before=deadline)
+            except Exception:
+                self._record_dependency_rescan_completion(collector, handle, record_stage, repo_name, len(issues), outcome=Outcome.FAILED)
+                raise
+
+        self._record_dependency_rescan_completion(collector, handle, record_stage, repo_name, len(issues), outcome=Outcome.COMPLETED)
+        if handle is not None:
+            handle.set_outcome(Outcome.COMPLETED)
+
+    def _record_dependency_rescan_completion(
+        self,
+        collector: RepoJobTraceCollector,
+        handle: Optional[RepoJobExecutionHandle],
+        record_stage,
+        repo_name: str,
+        discovered_issue_count: int,
+        outcome: Outcome,
+    ) -> None:
+        """Derive REQ-006's per-attempt handoff totals from this execution's own recorded handoffs.
+
+        Reading the totals back from the observations this same attempt just
+        published (rather than a separately maintained counter) keeps one
+        source of truth: the totals can never drift from what a reader would
+        independently recompute from the retained evidence.
+        """
+        attempted = confirmed = failed_or_unconfirmed = new_pending = coalesced = followup_required = 0
+        if handle is not None:
+            try:
+                snapshot = collector.get_snapshot(resolve_repo_job_target(repo_name, RepoJobKind.DEPENDENCY_RESCAN.value))
+                handoffs = [o for o in observations_for_execution(snapshot, handle.scope.execution_id) if o.stage_id == "dependency-rescan.handoff"]
+                attempted = len(handoffs)
+                for observation in handoffs:
+                    if observation.outcome == Outcome.COMPLETED.value:
+                        confirmed += 1
+                    else:
+                        failed_or_unconfirmed += 1
+                    disposition = observation.facts.handoff_disposition if observation.facts is not None else None
+                    if disposition == InvalidationDisposition.NEW_PENDING.value:
+                        new_pending += 1
+                    elif disposition == InvalidationDisposition.COALESCED.value:
+                        coalesced += 1
+                    elif disposition == InvalidationDisposition.FOLLOWUP_REQUIRED.value:
+                        followup_required += 1
+            except Exception:
+                logger.opt(exception=True).debug("Diagnostic trace recording failed tallying dependency-rescan handoffs; continuing")
+        record_stage(
+            "dependency-rescan.completed",
+            f"{repo_name} dependency-rescan {'completed' if outcome is Outcome.COMPLETED else 'incomplete'}",
+            outcome=outcome,
+            facts=RepoJobFacts(
+                discovered_issue_count=discovered_issue_count,
+                attempted_handoff_count=attempted,
+                confirmed_handoff_count=confirmed,
+                failed_or_unconfirmed_handoff_count=failed_or_unconfirmed,
+                new_pending_handoff_count=new_pending,
+                coalesced_handoff_count=coalesced,
+                followup_required_handoff_count=followup_required,
+            ),
+        )
 
     async def invalidate_entity(
         self,
@@ -3514,8 +3695,15 @@ class AutomationEngine:
         not_before: Optional[float] = None,
         urgent_admission: bool = False,
         issue_snapshot: Optional[dict[str, object]] = None,
+        dependency_trigger_issue_refs: Optional[Sequence[int]] = None,
     ) -> bool:
-        """Durably mark an entity dirty and arrange an authoritative reevaluation."""
+        """Durably mark an entity dirty and arrange an authoritative reevaluation.
+
+        `dependency_trigger_issue_refs` is diagnostic-only (Issue #2001): the
+        positively identified source Issue reference(s) that produced this
+        call, used solely to record dependency-rescan intake/handoff
+        evidence. It never changes admission, coalescing, or scheduling.
+        """
         # Fence in-flight negative decisions before yielding to queue I/O. These
         # observations may stop work, but never replace authoritative admission.
         self.issue_admission_cache.invalidate(repo_name)
@@ -3526,15 +3714,29 @@ class AutomationEngine:
                 self.dependency_observations.invalidate(repo_name, number)
         if issue_snapshot is not None:
             self.issue_admission_cache.observe(repo_name, issue_snapshot)
-        accepted = await asyncio.to_thread(
-            self.invalidations.invalidate,
-            EntityIdentity(repo_name, entity_type, number),
-            delivery_id,
-            event_type,
-            action,
-            not_before,
-            urgent_admission,
-        )
+
+        dependency_job_target = resolve_repo_job_target(repo_name, RepoJobKind.DEPENDENCY_RESCAN.value) if entity_type == "dependency" else None
+        ambient_scope = current_repo_job_scope()
+        handoff_scope = ambient_scope if (entity_type == "issue" and ambient_scope is not None and ambient_scope.repository == repo_name and ambient_scope.job_kind == RepoJobKind.DEPENDENCY_RESCAN.value) else None
+
+        try:
+            transition = await asyncio.to_thread(
+                self.invalidations.invalidate_with_transition,
+                EntityIdentity(repo_name, entity_type, number),
+                delivery_id,
+                event_type,
+                action,
+                not_before,
+                urgent_admission,
+            )
+        except Exception:
+            self._record_dependency_invalidation_failure(dependency_job_target, handoff_scope, number, event_type, action, delivery_id, dependency_trigger_issue_refs)
+            raise
+        accepted = transition.accepted
+        if dependency_job_target is not None:
+            self._record_dependency_intake(dependency_job_target, transition, event_type, action, delivery_id, dependency_trigger_issue_refs)
+        if handoff_scope is not None:
+            self._record_dependency_handoff(handoff_scope, number, transition, not_before)
         associated_pr_invalidated = False
         if entity_type == "issue":
             # Contract edits invalidate every associated same-head PR. This
@@ -3552,6 +3754,108 @@ class AutomationEngine:
             if self._invalidation_wake_event is not None:
                 self._invalidation_wake_event.set()
         return accepted
+
+    @staticmethod
+    def _dependency_trigger_facts(
+        event_type: Optional[str],
+        action: Optional[str],
+        delivery_id: Optional[str],
+        source_issue_refs: Optional[Sequence[int]],
+        **extra: Any,
+    ) -> RepoJobFacts:
+        collector = get_repo_job_trace_collector()
+        return RepoJobFacts(
+            trigger_event=event_type,
+            trigger_action=action,
+            trigger_delivery_refs=collector.clip_trigger_delivery_refs((delivery_id,) if delivery_id else ()),
+            source_issue_refs=collector.clip_source_issue_refs(tuple(source_issue_refs) if source_issue_refs else ()),
+            **extra,
+        )
+
+    def _record_dependency_intake(
+        self,
+        target: RepoJobTarget,
+        transition: InvalidationTransition,
+        event_type: Optional[str],
+        action: Optional[str],
+        delivery_id: Optional[str],
+        source_issue_refs: Optional[Sequence[int]],
+    ) -> None:
+        """Record REQ-003 dependency-triggering intake evidence.
+
+        Records every call -- accepted, duplicate, or (via the caller's
+        except-clause counterpart) failed -- as its own retained intake
+        observation, never collapsing multiple retained triggers into only
+        the last one. Diagnostic failures are caught and never affect the
+        real intake outcome they describe.
+        """
+        try:
+            queue_phase = transition.disposition.value if transition.accepted and transition.disposition is not None else ("duplicate_delivery" if not transition.accepted else None)
+            get_repo_job_trace_collector().record_intake(
+                target,
+                origin="github-webhook" if event_type != "sentry" else "sentry-webhook",
+                label=f"{target.repository} dependency-rescan intake",
+                facts=self._dependency_trigger_facts(event_type, action, delivery_id, source_issue_refs, queue_phase=queue_phase),
+            )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed for dependency-rescan intake; continuing")
+
+    def _record_dependency_handoff(
+        self,
+        scope: RepoJobExecutionScope,
+        number: int,
+        transition: InvalidationTransition,
+        not_before: Optional[float],
+    ) -> None:
+        """Record one REQ-006 Issue invalidation handoff reached during an active dependency-rescan execution."""
+        try:
+            collector = get_repo_job_trace_collector()
+            collector.record_stage_reached(
+                "dependency-rescan.handoff",
+                origin="durable-invalidation-worker",
+                label=f"{scope.repository} dependency-rescan handoff to issue #{number}",
+                outcome=Outcome.COMPLETED if transition.accepted else Outcome.FAILED,
+                facts=RepoJobFacts(
+                    target_issue_refs=collector.clip_target_issue_refs((number,)),
+                    handoff_disposition=transition.disposition.value if transition.disposition is not None else None,
+                    scheduled_retry_not_before=not_before,
+                ),
+                scope=scope,
+            )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed for dependency-rescan handoff to issue #{}; continuing", number)
+
+    def _record_dependency_invalidation_failure(
+        self,
+        dependency_job_target: Optional[RepoJobTarget],
+        handoff_scope: Optional[RepoJobExecutionScope],
+        number: int,
+        event_type: Optional[str],
+        action: Optional[str],
+        delivery_id: Optional[str],
+        source_issue_refs: Optional[Sequence[int]],
+    ) -> None:
+        """Record a durable-persistence failure reaching REQ-003/REQ-006's intake or handoff boundary (AS-004, AS-006)."""
+        try:
+            collector = get_repo_job_trace_collector()
+            if dependency_job_target is not None:
+                collector.record_intake(
+                    dependency_job_target,
+                    origin="github-webhook" if event_type != "sentry" else "sentry-webhook",
+                    label=f"{dependency_job_target.repository} dependency-rescan intake persistence failed",
+                    facts=self._dependency_trigger_facts(event_type, action, delivery_id, source_issue_refs, failure_reason="persistence_failed"),
+                )
+            if handoff_scope is not None:
+                collector.record_stage_reached(
+                    "dependency-rescan.handoff",
+                    origin="durable-invalidation-worker",
+                    label=f"{handoff_scope.repository} dependency-rescan handoff to issue #{number} persistence failed",
+                    outcome=Outcome.FAILED,
+                    facts=RepoJobFacts(target_issue_refs=collector.clip_target_issue_refs((number,)), failure_reason="persistence_failed"),
+                    scope=handoff_scope,
+                )
+        except Exception:
+            logger.opt(exception=True).debug("Diagnostic trace recording failed for dependency-rescan persistence failure; continuing")
 
     def refresh_review_adjudications(self, repo_name: str, pr_data: Dict[str, Any]) -> tuple[AdjudicationSnapshot, ...]:
         """Refresh the production adjudication snapshot for a targeted PR."""
@@ -4652,30 +4956,8 @@ class AutomationEngine:
                     # Validation eligibility belongs to the submitted generation,
                     # not to implementation eligibility. Submit the complete set
                     # before closed-child filtering or retained-owner routing.
-                    parent_decision = None
-                    if self._is_issue_decomposition_validation_enabled(repo_name, config):
-                        parent_validator = self._get_decomposition_validator(repo_name)
-                        parent_decision = parent_validator.store.get(parent_validator.identity(*parent_submission_set))
-                        if parent_decision is None:
-                            from .entity_invalidation import EntityIdentity
-                            self.invalidations.invalidate(EntityIdentity(repo_name, "issue", int(parent_submission_set[0]["number"])))
-
-                    child_decisions = {}
-                    if self._is_issue_specification_validation_enabled(repo_name, config):
-                        individual_validator = self._get_specification_validator(repo_name)
-                        for child in parent_submission_set[1]:
-                            num = int(child["number"])
-                            child_title = str(child.get("title") or "")
-                            child_body = str(child.get("body") or "")
-                            relationship = self._child_review_context(*parent_submission_set, num)
-                            child_decision, _ = self._review_individual_via_lane(repo_name, num, child_title, child_body, relationship, "parent-batch-processing", child)
-                            if child_decision is not None:
-                                child_decisions[num] = child_decision
-
-                    if (self._is_issue_decomposition_validation_enabled(repo_name, config) and parent_decision is None) or (self._is_issue_specification_validation_enabled(repo_name, config) and len(child_decisions) != len(parent_submission_set[1])):
-                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
-                        result.actions = ["Deferred - parent submission validation is pending"]
-                        return result
+                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set, config, scheduler=self.review_scheduler)
+                    parent_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
                     _, authoritative_children = parent_submission_set
                     open_children = sorted(
                         (child for child in authoritative_children if child.get("state") == "open" and isinstance(child.get("number"), int)),
@@ -4988,33 +5270,8 @@ class AutomationEngine:
                     result.actions = ["Rejected - child is durably reissue-required"]
                     result.blocked_cacheable = True
                     return result
-                decomposition_decision = None
-                if decomposition_enabled:
-                    decomposition_decision = decomposition_validator.store.get(decomposition_validator.identity(*authoritative_set))
-                    if decomposition_decision is None:
-                        from .entity_invalidation import EntityIdentity
-                        self.invalidations.invalidate(EntityIdentity(repo_name, "issue", int(authoritative_set[0]["number"])))
-                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
-                        result.actions = ["Deferred - decomposition validation is pending"]
-                        result.refill_retry_required = True
-                        return result
-
-                eager_child_decisions = {}
-                if spec_validation_enabled:
-                    for child in authoritative_set[1]:
-                        num = int(child["number"])
-                        child_title = str(child.get("title") or "")
-                        child_body = str(child.get("body") or "")
-                        relationship = self._child_review_context(*authoritative_set, num)
-                        child_decision, _ = self._review_individual_via_lane(repo_name, num, child_title, child_body, relationship, "eager-child-processing", child)
-                        if child_decision is not None:
-                            eager_child_decisions[num] = child_decision
-
-                    if len(eager_child_decisions) != len(authoritative_set[1]):
-                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
-                        result.actions = ["Deferred - child specification validation is pending"]
-                        result.refill_retry_required = True
-                        return result
+                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config, scheduler=self.review_scheduler)
+                decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
                 if decomposition_enabled and decomposition_decision is not None:
                     if decomposition_decision.verdict == "ERROR":
                         result.error = "Decomposition validation failed; parent readiness was preserved for retry"
@@ -5119,7 +5376,9 @@ class AutomationEngine:
                 return result
             if spec_validation_enabled:
                 if inherited_ready:
-                    decision = eager_child_decisions[item_number]
+                    # This job was submitted alongside decomposition validation, so
+                    # READY completion order cannot bypass either authorization gate.
+                    decision = eager_child_jobs[item_number].result()
                 else:
                     # The Review lane owns semantic execution; this gate
                     # observes the durable decision instead of submitting a

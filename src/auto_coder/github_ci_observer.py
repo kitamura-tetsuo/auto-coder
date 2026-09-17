@@ -154,6 +154,8 @@ def _credential_identity(token: str) -> str:
 
 def observe_ci(api: Any, token: str, repository: str, pr_number: int, head_sha: str, api_origin: str = "https://api.github.com") -> CIObservationSnapshot:
     """Read every targeted checks/runs page and return fail-closed facts."""
+    if hasattr(api, "headers") and isinstance(api.headers, dict):
+        api.headers.setdefault("Cache-Control", "no-cache")
     phase = getattr(_local, "phase", None) or _Phase()
     owner, repo = repository.split("/", 1)
     credential = _credential_identity(token)

@@ -36,7 +36,7 @@ class MockEngine:
         self.github = MockGitHubClient()
         self.queue = MockQueue()
 
-    async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None, event_type=None, action=None):
+    async def invalidate_entity(self, repo_name, entity_type, number, delivery_id=None, event_type=None, action=None, **kwargs):
         return True
 
 

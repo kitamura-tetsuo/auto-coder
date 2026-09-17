@@ -5,13 +5,70 @@ model that protects individual LLM invocations from a graceful shutdown,
 distinct from the coarser thread-ownership wrapper described in
 [Graceful daemon shutdown](graceful-daemon-shutdown.md)
 (`AutomationEngine._run_local_critical`, which currently treats a whole
-worker or maintenance task as critical). This module is standalone: nothing
-in the codebase constructs it from a production call site yet, and the
-broader shutdown wait `_wait_for_local_critical_operations` still owns the
-current worker/maintenance-level protection. Wiring real production callers
-and durable result/remote-handoff checkpoints into this model, and retiring
-the broader wait once that wiring lands, are separate follow-up changes
-(Issue #2009 and #2010).
+worker or maintenance task as critical). `AutomationEngine` owns one
+`InvocationAdmissionGate` per daemon lifetime (`self.invocation_gate`),
+installs it ambiently alongside the existing `install_admission_check` inside
+`_run_local_critical` (so it reaches every worker/validation-executor/
+capacity-refill/maintenance/durable-resumption call that already runs through
+that boundary's `asyncio.to_thread`), closes its admission in
+`request_graceful_shutdown`, and forces it in `request_force_stop`. Retiring
+the broader `_wait_for_local_critical_operations` wait in favor of this gate
+is a separate follow-up (#2010): today this gate only tracks invocations and
+never gates the daemon's own exit, so the coarser wrapper remains the
+production wait set.
+
+## Wired production boundaries (Issue #2009)
+
+`BackendManager._admit_invocation`/`_settle_admitted_invocation` wrap the
+single shared final invocation boundary inside
+`_execute_backend_with_providers` (the actual `cli._run_llm_cli(...)` /
+`cli.continue_session(...)` call), so every one of `run_llm_prompt`,
+`run_llm_noedit_prompt`, `run_prompt`, explicit `continue_session`, automatic
+session-resume fallback, and every backend/provider rotation retry admits and
+settles its own invocation without any call-site change. When no gate is
+installed (a standalone command), `_admit_invocation` returns `None` and
+behavior is exactly as before.
+
+A caller classifies the invocation(s) it is about to make with
+`bind_invocation_target(repository, target, stage, defer_checkpoint=False)`
+(an ambient `ContextVar`, mirroring `install_invocation_gate`). By default
+(`defer_checkpoint=False`) a successful invocation settles immediately after
+the provider call returns, because the response flows synchronously to a
+caller with no separate durable write to protect. A caller that owns its own
+durable checkpoint — a persisted validation decision, a recorded remote
+handoff receipt — binds `defer_checkpoint=True`; `_settle_admitted_invocation`
+then stashes the handle via `set_pending_invocation_handle` instead of
+settling it, and the caller retrieves it with `take_pending_invocation_handle`
+once its own write commits, calling `confirm_settled()` on success or
+`record_checkpoint_attempt_failed(...)` (leaving it unsettled and retriable)
+on a write failure. A failed invocation (any exception from the provider
+call) always settles immediately regardless of `defer_checkpoint`, since a
+failure has no reusable result to protect.
+
+Wired callers:
+
+- `SpecificationValidationLifecycle.decide()` / `DecompositionValidationLifecycle.decide()`
+  bind `defer_checkpoint=True` around their analyzer call and settle only
+  after `store.save()` of a READY/BLOCKED decision confirms (or immediately,
+  for an ERROR decision that is never cached).
+- `jules_engine.check_and_start_recurrent_jules_tasks` admits before
+  `jules_client.start_session(...)` (a local submission of asynchronous
+  remote work) and settles only after `implementation_slots
+  .record_provider_session(...)` durably records the receipt — never waiting
+  on the remote Jules task's own completion. A rejection or transport failure
+  before that receipt settles immediately (nothing reusable survives); the
+  slot-reservation itself is released the same way an ordinary "no capacity"
+  refusal already is when admission is refused during draining.
+- `issue_processor.py`'s local-implementation call and `pr_processor.py`'s
+  GitHub-Actions-log repair call bind an accurate repository/target/stage for
+  diagnostics; both use the default (non-deferred) settlement, since their
+  produced workspace edits are already durable on disk once the call returns
+  and commit/push/PR-creation are unfinished post-processing outside this
+  checkpoint, not something this gate needs to wait on.
+
+See `tests/test_invocation_admission_wiring.py` for production-boundary
+regressions of this wiring, and `tests/test_invocation_admission.py` for the
+standalone gate/handle model itself.
 
 ## What counts as a qualifying invocation
 

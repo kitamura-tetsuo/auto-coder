@@ -1,5 +1,18 @@
 # Dashboard observability verification
 
+GitHub webhook-driven cache eviction and expedited CI watch recheck (PR #2119)
+improve the turnaround time from CI completion to validation launch. Upon webhook intake,
+matching HTTP cache entries in Hishel SQLite storage are evicted, CI observation requests
+pass `Cache-Control: no-cache` to prevent reading stale checks, and when PR Actions checks
+are in progress the PR is marked DEFERRED with a 30-second recheck scheduled on its active
+CI watch. This is an admission-timing and cache-invalidation optimization; it introduces
+no new production trace stage, origin, provider route, structured event schema, or dashboard
+projection. The existing PR processing trace reports `PRProcessingOutcome.DEFERRED` with the
+action message "GitHub Actions checks are still in progress for PR #<number>, skipping to next PR".
+Production-boundary tests in `tests/test_gh_cache_eviction.py`, `tests/test_entity_invalidation.py`,
+and `tests/test_pr_processor.py` cover cache eviction, CI watch recheck scheduling, and
+`_handle_pr_merge` behavior; run `bash scripts/test.sh tests/test_gh_cache_eviction.py tests/test_entity_invalidation.py tests/test_pr_processor.py`.
+
 The generation-aware Issue routing store is a pre-worker durability boundary:
 it classifies and orders Review and Implementation lane records but does not yet
 execute either lane or emit a processing result. Consequently it introduces no
@@ -531,6 +544,7 @@ also mount and refresh the detail view from that snapshot.
 | PR adversarial-validation backend exhaustion (`EXHAUSTED`) | `tests/test_adversarial_validation_config.py::TestResolveAdversarialValidationAvailabilityExhaustion` (candidate-route classification: whole-set exhaustion, disabled/incapable exclusion, non-quota unavailability, quota-unknown/runnable fallback, missing-reset-time cooldown); `tests/test_adversarial_validator.py::TestRunAdversarialValidation::test_run_adversarial_validation_reports_exhaustion_instead_of_blocked` (fresh selection surfaces `EXHAUSTED` instead of the generic `BLOCKED`); `tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationPRFlow::test_fresh_exhaustion_publishes_exhausted_and_does_not_merge`, `test_exhausted_same_sha_not_due_skips_revalidation`, `test_exhausted_same_sha_due_triggers_automatic_retry_without_force`, and `test_exhausted_retry_superseded_by_newer_attempt_performs_no_publication` (drive `_handle_pr_merge` end to end: publication, fail-closed non-merge, same-HEAD dedup while not due, the automatic due retry without `--force`, and supersession of a pending retry by a newer same-HEAD attempt). `EXHAUSTED` reuses the existing `pr.adversarial-validation` event schema; the new distinguishing signal is `Outcome.DEFERRED` (instead of `Outcome.BLOCKED`) plus a `retry_not_before_epoch` metadata field, and the retry-not-before time itself is carried durably in the published comment/review body rather than in a new local store, so it survives restart without a bespoke schema addition. |
 | Forced same-head admission past the unresolved-thread gate (issue #2106) | `tests/test_adversarial_validation_pr_flow.py::TestClaimedReviewThreadValidationFlow::test_forced_revalidation_reaches_validation_despite_same_head_error_and_unresolved_thread`, `test_forced_revalidation_with_mixed_threads_only_promotes_authentic_root`, `test_forced_revalidation_bypasses_post_codex_recheck_blocker`, and `test_non_forced_run_with_same_head_error_and_unresolved_thread_does_not_start_validation` (drive `_handle_pr_merge` end to end through the initial unresolved-thread gate and the post-Codex-review recheck). Both existing `pr.review-thread-gate` and `pr.repair-delegation` events keep their schema; the new admission path is distinguished by a `Continuing to forced adversarial validation` / `Forcing adversarial validation ... via explicit --force` action rather than a new field. The forced attempt still reuses the unchanged `pr.adversarial-validation` event for its own result. |
 | Fresh review-thread read at the merge boundary (issue #2106) | Same tests as above, plus `test_forced_revalidation_with_mixed_threads_only_promotes_authentic_root` (asserts `merge_pr` is not called and the human thread remains unresolved). This adds one more `pr.review-thread-gate` emission (`phase: "merge-boundary"` in its metadata) immediately before merge, reusing the existing event name/schema; it fires for every merge attempt (forced or not) whenever the review-thread gate is enabled, not only the forced path. |
+| PR adversarial-review durable audit (issue #1985) | `tests/test_pr_adversarial_review_audit.py` (drives `_handle_pr_merge` and the real `BackendManager`/`run_adversarial_validation` boundary for one-call PASS/ERROR execution, post-feature and legacy reuse, local-only-blocked and disabled-bypassed non-executions, backend-fallback and dynamic-follow-up multi-call reviews, and a paired instrumented/instrumentation-disabled comparison including an injected audit-write failure). This is observability-neutral for the existing `pr.adversarial-validation` execution-trace event and `TraceCollector`/dashboard-detail schema covered above: it adds a separate, independently-queryable `ReviewAuditStore` (`review_kind="pr_adversarial"`) recording the same boundaries this table already covers (admission/reuse/bypass, execution, publication/reconciliation), but introduces no new processing origin, admission gate, outcome value, provider-routing branch, or structured `_record_pr_stage`/`TraceCollector` field, and its own recording never runs in a path that decides eligibility, merge safety, or review/publication policy. |
 
 The broader outcome matrix is kept by the production suites above plus
 `TestDispatchRouteRecorded`, `TestDispatchOutcomesAreHonest`,
@@ -687,3 +701,168 @@ through the engine's read-only adjudication snapshot accessor; publication does
 not emit PASS, repair, or review-resolution events. Issue-originated reverse
 invalidation and startup recovery use the existing durable invalidation worker
 origin and therefore preserve the production-to-view routing contract.
+
+# Review adjudication effect orchestration
+
+Applying an authorized adjudication decision's owned effect (Issue #2019) is a
+new production origin distinct from the read-only snapshot boundary above: it
+introduces a new `pr.review-adjudication-effect` stage, recorded once per
+applied or attempted `UPHOLD`/`OVERRULE`/`REOPEN` effect via the existing
+`_record_pr_stage` scoped-event helper, alongside the existing merge-gate
+stages for the same PR-processing pass. Its outcome mapping reuses the
+existing `Outcome` enum rather than inventing new terminal states: `delivered`
+/`retired`/`reconciled` map to `COMPLETED`, `pending` to `DEFERRED`, `unknown`
+to `UNKNOWN`, and a failed overrule reversal (`reconciliation-required`) to
+`BLOCKED`. Facts carry the context/decision identity, effect status, and gap
+identity when applicable, so a dashboard consumer can distinguish a confirmed
+repair delivery from a still-pending one without conflating it with PR
+approval or implementation verification (REQ-010).
+
+This is new provider routing reuse, not a new provider: `UPHOLD` delivery
+resolves the PR's existing durable cloud-task association exactly the way
+ordinary unresolved-review-thread repair delegation already does
+(`_resolve_cloud_task_origin`), so the existing provider-admission and
+follow-up-support diagnostics remain the sole source of truth for whether a
+repair route exists; this stage only reports what was attempted with it.
+`OVERRULE`/`REOPEN` reuse the existing GitHub reply/resolve/unresolve
+mutations already instrumented via `PRActionList` and (for resolve) the
+existing thread gate, adding a distinct auditable marker
+(`auto-coder-review-adjudication-overruled:v1`) rather than a new mutation
+kind.
+
+An adjudication-forced revalidation bypasses the ordinary same-head
+adversarial-validation suppression the same way an explicit `--force` run
+already does (`forced_same_head_revalidation`); it does not add a new
+suppression-bypass event, since the existing forced-revalidation action
+messages already cover both origins.
+
+`tests/test_review_adjudication_orchestrator.py` covers the effect-planning
+decision logic (idempotent same-generation suppression, shared test-oracle-gap
+ownership, reopen-on-supersession) against real ledger state built the same
+way the #2018 GitHub boundary itself builds it.
+`tests/test_pr_processor_adjudication_effects.py` drives the full
+read -> plan -> deliver/retire -> journal path against a fake GitHub client
+and the real cloud-task-origin resolution path (mocking only the external
+`CloudManager`/`CodexCloudClient` boundary, the same seam
+`tests/test_codex_cloud_pr_review_flow.py` already uses), and confirms a raw
+adjudication envelope reply is excluded from the generic cloud
+review-feedback path it would otherwise be forwarded through verbatim. Run
+`bash scripts/test.sh tests/test_review_adjudication_orchestrator.py tests/test_pr_processor_adjudication_effects.py`.
+
+# Per-invocation shutdown-protection wiring
+
+Issue #2009 wires the standalone `InvocationAdmissionGate`/`InvocationHandle`
+model (Issue #2008, `invocation_admission.py`) into real production LLM
+invocation boundaries: the shared `BackendManager._execute_backend_with_providers`
+call (covering `run_llm_prompt`/`run_llm_noedit_prompt`/`run_prompt`, explicit
+and automatic session continuation, and every backend/provider rotation
+retry), the `SpecificationValidationLifecycle`/`DecompositionValidationLifecycle`
+decision checkpoints, the Jules recurrent-task remote-handoff receipt, and the
+`AutomationEngine` daemon lifetime (one gate per lifetime, installed alongside
+the existing `install_admission_check` in `_run_local_critical`, closed on
+`request_graceful_shutdown`, forced on `request_force_stop`).
+
+This is an admission-gate and durable-resumption change, not a new processing
+origin, outcome, provider route, or structured event. During ordinary RUNNING
+operation the gate always admits, so every existing `_record_dispatch_stage`/
+`TraceCollector` stage, origin, outcome, and provider-routing decision is
+produced exactly as before (Issue #2009's REQ-010). The gate only ever refuses
+admission while the daemon is already DRAINING/STOPPED/FORCED — the same
+graceful-shutdown window `docs/client-features/graceful-daemon-shutdown.md`
+already documents — and that refusal surfaces through the same pre-existing
+`new_work_allowed()`-guarded "Deferred ... graceful shutdown is draining"
+action text and `AutoCoderRetryableBackendError` paths those call sites already
+had; it does not add a new dashboard-visible outcome value or event kind.
+`SpecificationDecision`/`DecompositionDecision.evaluation_source` and their
+existing persisted-decision schema are unchanged: this only adds a checkpoint
+around the already-existing `store.save()` write, deferring invocation
+settlement until that write is confirmed (or leaving it visibly unsettled and
+retriable on a write failure), never altering what gets persisted or how a
+dashboard/reuse consumer reads it. `gate.snapshot()`/`AutomationEngine.
+invocation_admission_snapshot()` is new, purely diagnostic, process-internal
+state (unsettled invocation identity/stage/lifecycle-state/checkpoint-failure
+count) with no prompt/response/credential content; it is not wired into any
+dashboard panel or `TraceCollector` event.
+
+`tests/test_invocation_admission_wiring.py` drives the real production
+boundaries end to end with a fake CLI client at the outermost provider-
+transport seam: per-attempt admission across backend rotation, a deferred
+checkpoint that stays protected until the caller's own durable write confirms
+it, a checkpoint write failure that leaves the invocation unsettled and
+retriable without a second paid call, admission refusal while draining (no
+provider call at all), the Jules remote-handoff receipt settling the
+invocation without waiting on the remote task, and the `AutomationEngine`
+gate's installation/close/force lifecycle. Run
+`bash scripts/test.sh tests/test_invocation_admission_wiring.py tests/test_invocation_admission.py tests/test_specification_validation_lifecycle.py tests/test_decomposition_validation_lifecycle.py tests/test_jules_engine.py`.
+
+# Repository-scoped internal job trace interface
+
+Issue #2000 (child A of the #1999 dependency-rescan observability tracking
+parent) adds `src/auto_coder/repo_job_trace.py`, a new
+producer/snapshot-consumer diagnostic interface for repository-scoped
+internal jobs (currently `dependency-rescan`), identified by
+`RepoJobTarget(repository, job_kind)` rather than an Issue/PR number. This
+is observability-neutral for every existing processing origin, admission
+gate, outcome, provider route, durable resumption path, and structured
+event schema: `execution_trace.py`'s schema-version-1 `StructuredEvent`/
+`TraceCollector`, `dashboard_detail.py`, and `entity_invalidation.py`'s
+`dependency:1` durable token/generation/lifecycle are untouched, and no
+production code path calls the new module yet -- it has no producer wired
+into `entity_invalidation.py`'s dependency fan-out (child B, #2001) and no
+dashboard route (child C, #2002). `tests/test_repo_job_trace.py` is a
+model-level regression suite for this new interface's own contract
+(target isolation from the Issue/PR namespace including the "Dependency #1"
+sentinel-collision case, fresh execution identity per retry/recovered
+attempt, explicit-reference-only correlation, bounded/truthful snapshot
+retention and clipping, restart-safe absence of fabricated history, and
+diagnostic-failure/business-outcome independence); it intentionally does
+not claim a production-to-view regression, which is owned by #2001/#2002
+once a real producer and dashboard route exist. Run
+`bash scripts/test.sh tests/test_repo_job_trace.py tests/test_execution_trace.py tests/test_dashboard_detail_logic.py`
+for this boundary.
+
+Issue #2001 (child B of the #1999 dependency-rescan observability tracking
+parent) wires a real producer into `repo_job_trace.py`'s
+`(repository, "dependency-rescan")` target: `AutomationEngine.
+_expand_dependency_obligation` now opens its own `RepoJobExecutionScope`
+around authoritative enumeration (`GitHubClient.get_open_entities_strict`)
+and every per-Issue handoff, `AutomationEngine.invalidate_entity` records
+dependency-triggering webhook intake (event/action/delivery/source-Issue
+evidence) and, when called from inside that scan's scope, each Issue
+handoff's actual committed disposition, and `AutomationEngine._worker_loop`
+records the dependency job's own durable-claim acknowledgement as a late
+stage-reached fact against the same execution id once the outer claim
+completion/release actually happens. `DurableInvalidationQueue.invalidate`/
+`complete`/`recover` gained `invalidate_with_transition`/
+`complete_with_outcome`/an enriched `recover` return value that observe the
+real committed transition (`new_pending`/`coalesced`/`followup_required`,
+`cleared`/`followup_pending`/`stale_no_op`, and the actual recovered
+identities) at the same locked state-owning boundary that performs it; the
+existing `invalidate()`/`complete()` Boolean return and every other
+durable-queue behavior (webhook acceptance/rejection, coalescing,
+stabilization deadlines, retry/claim transitions, CI/PR paths) are
+unchanged -- these are thin wrappers over the richer calls, and no existing
+caller consumed `recover()`'s previous `None` return. This still adds no new
+processing origin, admission gate, outcome, or provider route for Issue/PR
+processing itself (`execution_trace.py`'s schema-version-1 interface,
+`dashboard.py`'s `active_workers`/queue status projection, and every
+downstream Issue/PR execution scope are untouched and continue exactly as
+before); it is purely additive diagnostic evidence for the repository-scoped
+scan that surrounds them, and a diagnostic-recorder failure at any of these
+boundaries is caught and logged without changing the real webhook response,
+durable transition, or scan/handoff outcome it describes (REQ-009). A
+dashboard route for this evidence remains child C (#2002)'s scope.
+`tests/test_entity_invalidation.py` adds direct `DurableInvalidationQueue`
+coverage for the three richer transition/outcome/recovery APIs, and
+`tests/test_dependency_rescan_repo_job_trace.py` is the production-path
+regression suite: it drives real `/hooks/github` deliveries through
+`create_app`, the real durable queue, and the real worker loop, then reads
+back `RepoJobTraceCollector`'s snapshot to verify intake evidence (accepted,
+duplicate, and persistence-failure), a running scan visible mid-enumeration/
+mid-handoff, discovered-Issue-count and per-disposition handoff totals
+derived from the recorded transitions (not a legacy Boolean or queue
+length), an incomplete scan on enumeration/handoff failure, recovered
+pending work after a restart, and that diagnostic-recorder failure changes
+none of the real business outcome. Run
+`bash scripts/test.sh tests/test_repo_job_trace.py tests/test_entity_invalidation.py tests/test_dependency_rescan_repo_job_trace.py`
+for this boundary.

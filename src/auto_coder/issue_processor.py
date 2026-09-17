@@ -25,6 +25,7 @@ from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
 from .implementation_ownership import confirm_implementation_ownership
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_context import get_linked_issues_context, validate_issue_references
 from .issue_stage_routing import IssueStageRoutingStore
 from .jules_client import JulesClient
@@ -1443,7 +1444,17 @@ def _apply_issue_actions_directly(
                     return actions
 
                 _record_dispatch_stage(issue_number, "issue.local-implementation", f"issue#{issue_number} local implementation", Outcome.UNKNOWN, kind=EventKind.STAGE_STARTED)
-                response = (backend_manager or get_llm_backend_manager())._run_llm_cli(action_prompt)
+                # This local-editing invocation's produced workspace edits are
+                # already durable on disk (the working tree) once the call
+                # returns; commit/push/PR-creation below are unfinished
+                # post-processing that a restart may re-discover from that
+                # same working tree, not part of this invocation's own
+                # checkpoint (Issue #2009, REQ-005).
+                with bind_invocation_target(repo_name, f"issue#{issue_number}", "local_implementation", defer_checkpoint=True):
+                    response = (backend_manager or get_llm_backend_manager())._run_llm_cli(action_prompt)
+                completed_invocation = take_pending_invocation_handle()
+                if completed_invocation is not None:
+                    completed_invocation.confirm_settled()
 
                 # Parse the response
                 if response and len(response.strip()) > 0:

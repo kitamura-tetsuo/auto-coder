@@ -27,3 +27,14 @@ continue to retire only obsolete heads and activate the current-head watch, so
 periodic recovery resumes only after a fresh authoritative open observation.
 These terminal/open lifecycle transitions precede author-admission filtering;
 changing an allowlist cannot strand or revive watches contrary to strict state.
+
+Upon receiving GitHub webhooks for CI (`workflow_run`, `check_run`, `check_suite`)
+or repository entities (`pull_request`, `issues`), the webhook receiver immediately
+evicts matching cached HTTP responses from the Hishel SQLite cache by head SHA and
+entity path (`/pulls/{n}` and `/issues/{n}`). All CI observation reads send
+`Cache-Control: no-cache` to ensure stale cached check-run or workflow-run status
+is never consumed. When background correlation resolves PR numbers from a commit
+SHA, it advances the active `ci_watches.next_reconcile_at` directly to `eligible_at`
+and evicts the PR's HTTP cache. When a PR evaluation discovers GitHub Actions
+checks are still in progress, it schedules an expedited recheck of the active watch
+in 30 seconds rather than waiting for the 300-second missed-event fallback deadline.

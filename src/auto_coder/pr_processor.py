@@ -57,14 +57,35 @@ from .git_commit import commit_and_push_changes, git_push, save_commit_failure_h
 from .git_info import get_commit_log
 from .github_app_reviewer import ReviewerAppIdentity, publish_adversarial_review, resolve_reviewer_app_identity
 from .github_pending_work import WorkIdentity, get_pending_work_store
+from .invocation_admission import bind_invocation_target
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
-from .llm_backend_config import get_pr_review_allowlist_from_config
+from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
+from .review_adjudication import AdjudicationStatus, is_adjudication_envelope
+from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService, reconcile_thread
+from .review_adjudication_orchestrator import (
+    ADJUDICATION_EFFECTS_DB_ENV,
+    DEFAULT_ADJUDICATION_EFFECTS_DB_PATH,
+    AdjudicationEffectStore,
+    format_overrule_explanation,
+    plan_adjudication_effects,
+)
+from .review_capture.pr_adversarial_audit import (
+    PrAdversarialReviewTarget,
+    begin_executed_review,
+    compute_policy_identity,
+    find_reusable_source_review_id,
+    finish_executed_review,
+    linked_issue_membership,
+    record_bypassed,
+    record_effect,
+    record_reused,
+)
 from .review_thread_validation import (
     ClaimedReviewThread,
     StaleReviewThreadRegistryError,
@@ -392,6 +413,52 @@ def _is_pr_adversarial_validation_enabled(
     if config is not None:
         return bool(getattr(config, "pr_adversarial_validation", True)) and bool(getattr(config, "ENABLE_ADVERSARIAL_VALIDATION", True))
     return True
+
+
+def _pr_adversarial_review_target(repo_name: str, pr_data: Dict[str, Any]) -> PrAdversarialReviewTarget:
+    """Build the exact repository/PR/head identity for durable review audit (REQ-002)."""
+    head_sha = str((pr_data.get("head") or {}).get("sha") or pr_data.get("head_sha") or "")
+    return PrAdversarialReviewTarget(repository=repo_name, pr_number=int(pr_data.get("number", 0)), head_sha=head_sha)
+
+
+def _pr_adversarial_policy_identity(config: AutomationConfig, thread_gate_enabled: bool) -> str:
+    """Return the same policy/cache identity used consistently at every PR
+    adversarial-review audit boundary (BYPASSED, REUSED, EXECUTED), so a REUSED
+    consumption can be correlated to its producing EXECUTED review (REQ-011)."""
+    max_adv_reviews = config.MAX_ADVERSARIAL_VALIDATIONS if config.MAX_ADVERSARIAL_VALIDATIONS is not None else config.MAX_ADVERSARIAL_REVIEWS
+    return compute_policy_identity(max_adversarial_reviews=max_adv_reviews, thread_gate_enabled=thread_gate_enabled)
+
+
+def _pr_adversarial_linked_issue_membership(repo_name: str, pr_data: Dict[str, Any], verified_issue_numbers: Optional[Sequence[int]] = None) -> Optional[str]:
+    """Issue-oracle reference for the durable review record (REQ-002).
+
+    Prefers the exact verified Issue numbers the validation context actually
+    used (``adversarial_eligibility.issue_numbers``) when available; falls
+    back to a best-effort PR-body parse only when the caller has not already
+    resolved eligibility (for example the BYPASSED site, reached before
+    eligibility is ever checked). Returns None (explicitly unknown) rather
+    than guessing when no linked Issue reference can be resolved.
+    """
+    if verified_issue_numbers is not None:
+        return linked_issue_membership(tuple(verified_issue_numbers))
+    try:
+        linked_issue_numbers = extract_linked_issues_from_pr_body(pr_data.get("body") or "")
+    except Exception:
+        return None
+    return linked_issue_membership(tuple(linked_issue_numbers))
+
+
+def _record_pr_adversarial_review_bypassed(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    thread_gate_enabled: bool,
+) -> None:
+    """Record a reached BYPASSED audit observation for explicit disablement (REQ-005)."""
+    target = _pr_adversarial_review_target(repo_name, pr_data)
+    policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
+    related_issue_membership = _pr_adversarial_linked_issue_membership(repo_name, pr_data)
+    record_bypassed(target, policy_identity=policy_identity, related_issue_membership=related_issue_membership)
 
 
 def _is_pr_review_thread_gate_enabled(
@@ -2688,6 +2755,18 @@ def _handle_pr_merge(
                 _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.BLOCKED, {"phase": "stale-rollback-pending", "thread_ids": list(pending_stale_threads)})
                 return actions
 
+        # Apply every authorized review adjudication's owned effect (bounded
+        # repair delivery for UPHOLD, scoped finding retirement for OVERRULE,
+        # reconciliation of a superseded/revoked decision) unconditionally,
+        # like the stale-thread rollback above, regardless of what CI or
+        # adversarial validation would otherwise decide this run (Issue #2019).
+        try:
+            adjudication_actions, adjudication_forces_revalidation = _apply_review_adjudication_effects(repo_name, pr_number, pr_data, github_client)
+        except Exception as exc:
+            logger.warning(f"Could not apply review adjudication effects for PR #{pr_number}: {exc}")
+            adjudication_actions, adjudication_forces_revalidation = PRActionList(), False
+        actions.extend(adjudication_actions)
+
         # Step 1: Check GitHub Actions status using utility function
         # Use switch_branch_on_in_progress=False to just skip instead of exit
         should_continue = check_github_actions_and_exit_if_in_progress(  # type: ignore[arg-type]
@@ -2717,6 +2796,14 @@ def _handle_pr_merge(
         # Step 2: If checks are in progress, skip this PR
         if not should_continue:
             actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR")
+            if processing_status is not None:
+                processing_status.outcome = PRProcessingOutcome.DEFERRED
+            if watched_head:
+                try:
+                    ci_watch_store = DurableInvalidationQueue(Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser())
+                    ci_watch_store.schedule_ci_watch_recheck(repo_name, pr_number, watched_head, delay_seconds=30.0)
+                except Exception as exc:
+                    logger.debug(f"Could not schedule CI watch recheck for PR #{pr_number}: {exc}")
             return actions
 
         # Step 3: Get detailed status for merge decision
@@ -2883,13 +2970,13 @@ def _handle_pr_merge(
                         if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                             current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
                             if not current_status_error:
-                                if current_status is None or force_adversarial_validation:
+                                if current_status is None or force_adversarial_validation or adjudication_forces_revalidation:
                                     try:
                                         reviewer_login = resolve_reviewer_app_identity(repo_name).login
                                     except Exception as exc:
                                         logger.error(f"Could not authenticate unresolved adversarial threads for PR #{pr_number}: {exc}")
                                     else:
-                                        forced_same_head_revalidation = current_status is not None and force_adversarial_validation
+                                        forced_same_head_revalidation = current_status is not None and (force_adversarial_validation or adjudication_forces_revalidation)
                                         claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login, forced=forced_same_head_revalidation)
                                         revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
                                         if revalidating_older_head_threads:
@@ -2951,6 +3038,10 @@ def _handle_pr_merge(
                     Outcome.SKIPPED,
                     {"reason": "disabled" if not adv_enabled else "dependabot PR is not subject to adversarial validation"},
                 )
+                if not adv_enabled:
+                    # REQ-005/REQ-011: explicit disablement is a reached BYPASSED
+                    # observation, never a new review or verdict.
+                    _record_pr_adversarial_review_bypassed(repo_name, pr_data, config, thread_gate_enabled)
             if adversarial_validation_enabled:
                 adversarial_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
                 if adversarial_eligibility.lookup_error:
@@ -3153,6 +3244,20 @@ def _handle_pr_merge(
                         return actions
 
                     if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and not force_adversarial_validation:
+                        # REQ-005/REQ-011: an authoritative same-head result is
+                        # consumed without a new reviewer-backend invocation.
+                        # Provenance for the producing review may be genuinely
+                        # unavailable (legacy pre-instrumentation result).
+                        reuse_target = PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha)
+                        reuse_policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
+                        reuse_source_review_id = find_reusable_source_review_id(reuse_target, policy_identity=reuse_policy_identity)
+                        record_reused(
+                            reuse_target,
+                            policy_identity=reuse_policy_identity,
+                            source_review_id=reuse_source_review_id,
+                            native_verdict=published_status,
+                            related_issue_membership=_pr_adversarial_linked_issue_membership(repo_name, pr_data, adversarial_eligibility.issue_numbers),
+                        )
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                         if published_status == "ERROR":
                             saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
@@ -3210,21 +3315,33 @@ def _handle_pr_merge(
                         decision_attempt_repository = attempt_repository
                         decision_attempt_sequence = attempt.sequence
                         codex_remediation_snapshot = _observe_codex_cloud_remediation_activity(repo_name, pr_data, github_client)
+                        # REQ-001/REQ-002/REQ-004: one review_id covers every backend
+                        # invocation (initial round, dynamic-check follow-up, session
+                        # continuation) belonging to this one logical validation job.
+                        review_target = PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha)
+                        review_policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
+                        review_related_issue_membership = _pr_adversarial_linked_issue_membership(repo_name, pr_data, adversarial_eligibility.issue_numbers)
+                        active_review_id: Optional[str] = None
                         try:
-                            with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
-                                actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
-                                val_result = run_adversarial_validation(
-                                    repo_name,
-                                    pr_data,
-                                    config,
-                                    github_client=github_client,
-                                    claimed_review_threads_section=claimed_review_threads_section,
-                                    claimed_review_threads=claimed_review_threads,
-                                    execution_cwd=validation_worktree,
-                                    defer_session_persistence=True,
-                                    ci_status=github_checks,
-                                    refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
-                                )
+                            with begin_executed_review(
+                                review_target,
+                                policy_identity=review_policy_identity,
+                                related_issue_membership=review_related_issue_membership,
+                            ) as active_review_id:
+                                with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
+                                    actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
+                                    val_result = run_adversarial_validation(
+                                        repo_name,
+                                        pr_data,
+                                        config,
+                                        github_client=github_client,
+                                        claimed_review_threads_section=claimed_review_threads_section,
+                                        claimed_review_threads=claimed_review_threads,
+                                        execution_cwd=validation_worktree,
+                                        defer_session_persistence=True,
+                                        ci_status=github_checks,
+                                        refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
+                                    )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]
                             logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
@@ -3240,6 +3357,8 @@ def _handle_pr_merge(
 
                         val_result.attempt_id = attempt.attempt_id
                         val_result.attempt_sequence = attempt.sequence
+                        if active_review_id:
+                            finish_executed_review(active_review_id, review_target, val_result)
                         active_attempt_status = val_result.result.strip().upper() or "ERROR"
 
                         val_result.clarification_reply_fingerprint = provenance_fingerprint
@@ -3256,6 +3375,9 @@ def _handle_pr_merge(
                             if attempt_is_superseded:
                                 actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
                                 _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "pre-publication"})
+                                # REQ-006: this review's own result stays historical
+                                # evidence for its head; it is superseded, not erased.
+                                record_effect(review_target, active_review_id, "superseded", {"phase": "pre-publication", "attempt_id": attempt.attempt_id})
                                 return actions
                             if val_result.reviewer_session_checkpoint is not None:
                                 try:
@@ -3263,10 +3385,17 @@ def _handle_pr_merge(
                                 except Exception as e:
                                     actions.append(f"Rejected adversarial-validation result for PR #{pr_number}: authoritative head could not be confirmed ({e})")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "gap-state-acceptance", "reason": "head observation unavailable"})
+                                    # REQ-006: the authoritative head check itself
+                                    # failed, so acceptance/refusal could not be
+                                    # observed; record that failure as its own
+                                    # effect rather than leaving the retained
+                                    # review with no observation at all.
+                                    record_effect(review_target, active_review_id, "failed", {"phase": "gap-state-acceptance", "reason": "head observation unavailable"})
                                     return actions
                                 if observed_head != head_sha:
                                     actions.append(f"Ignored adversarial-validation attempt {attempt.attempt_id}: current head changed before durable acceptance")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "observed_head": observed_head, "phase": "gap-state-acceptance"})
+                                    record_effect(review_target, active_review_id, "superseded", {"phase": "gap-state-acceptance", "observed_head": observed_head})
                                     return actions
                                 checkpoint = val_result.reviewer_session_checkpoint
                                 if checkpoint.recovered_file_evidence and not validation_snapshot_is_current(
@@ -3289,6 +3418,7 @@ def _handle_pr_merge(
                                             "reason": "validation snapshot changed or could not be confirmed",
                                         },
                                     )
+                                    record_effect(review_target, active_review_id, "superseded", {"phase": "gap-state-acceptance", "reason": "validation snapshot changed or could not be confirmed"})
                                     return actions
                                 try:
                                     registry = val_result.reviewer_session_registry or ReviewerSessionRegistry()
@@ -3344,6 +3474,12 @@ def _handle_pr_merge(
                                     return actions
                             publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
                             if not publication.success:
+                                # REQ-006: publication returning unsuccessful covers both a
+                                # genuine failure and an accepted write whose response was
+                                # lost; record it as pending until reconciliation (below)
+                                # observes the actual durable outcome, rather than
+                                # asserting a confirmed publication that may not exist.
+                                record_effect(review_target, active_review_id, "pending", {"phase": "publication", "reason": publication.reason})
                                 publication_confirmed, reconciliation_error = _reconcile_failed_adversarial_publication(
                                     github_client,
                                     repo_name,
@@ -3354,6 +3490,7 @@ def _handle_pr_merge(
                                 if publication_confirmed:
                                     published_status = _parse_adversarial_validation_status(format_adversarial_validation_comment(val_result, head_sha))
                                     actions.append(f"Reconciled adversarial review publication for PR #{pr_number}: the expected verdict was already durable")
+                                    record_effect(review_target, active_review_id, "confirmed", {"phase": "reconciliation"})
                                 elif resolved_thread_ids:
                                     reopened_thread_ids = reopen_review_threads_after_publication_failure(
                                         github_client,
@@ -3371,17 +3508,27 @@ def _handle_pr_merge(
                                     actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
                                     logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "reason": publication.reason, "phase": "publication"})
+                                    # An ordinary publication failure must not erase the
+                                    # already-retained semantic review report (REQ-006).
+                                    record_effect(
+                                        review_target,
+                                        active_review_id,
+                                        "unknown" if reconciliation_error else "failed",
+                                        {"phase": "reconciliation", "reason": publication.reason, "reconciliation_error": reconciliation_error},
+                                    )
                                     return actions
                             else:
                                 if val_result.result.strip().upper() == "ERROR":
                                     actions.append(f"Published {publication.event} adversarial validation error diagnostic for PR #{pr_number} at SHA {head_sha[:8]}")
                                 else:
                                     actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
+                                record_effect(review_target, active_review_id, "confirmed", {"phase": "publication", "event": publication.event})
 
                             attempt_repository.mark_published(attempt.attempt_id)
                             if attempt_repository.latest_published_sequence(pr_number, head_sha) > attempt.sequence:
                                 actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
                                 _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "post-publication"})
+                                record_effect(review_target, active_review_id, "superseded", {"phase": "post-publication"})
                                 return actions
                     if published_status == "PASS":
                         pass
@@ -5502,7 +5649,11 @@ def _delegate_cloud_review_thread_repair(
         for index, comment in enumerate(thread.comments)
         # A root is reviewer feedback by definition. Later comments create new
         # work only when they come from someone other than the PR implementer.
-        if index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login)
+        # A structural adjudication envelope (REQ-009) is a machine-readable
+        # decision, not free-form reviewer prose; review_adjudication_orchestrator
+        # owns routing its effect, so it must never be forwarded here verbatim,
+        # authorized or not.
+        if (index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login)) and not is_adjudication_envelope(comment.body)
     ]
     with _cloud_review_delivery_lock:
         try:
@@ -5617,6 +5768,283 @@ def _delegate_cloud_review_thread_repair(
     if blocked:
         actions.insert(0, f"Suppressed duplicate delivery of {len(blocked)} finding(s) with unconfirmed durable receipt status for PR #{pr_number}")
     return CloudReviewRepairResult(actions, delivered=True)
+
+
+def _adjudication_context_store_path() -> Path:
+    return Path(os.environ.get(ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH)).expanduser()
+
+
+def _adjudication_effects_store_path() -> Path:
+    return Path(os.environ.get(ADJUDICATION_EFFECTS_DB_ENV, DEFAULT_ADJUDICATION_EFFECTS_DB_PATH)).expanduser()
+
+
+_adjudication_effect_store_cache: Dict[str, AdjudicationEffectStore] = {}
+_adjudication_effect_store_cache_lock = threading.Lock()
+
+
+def _get_adjudication_effect_store() -> AdjudicationEffectStore:
+    path = str(_adjudication_effects_store_path())
+    with _adjudication_effect_store_cache_lock:
+        store = _adjudication_effect_store_cache.get(path)
+        if store is None:
+            store = AdjudicationEffectStore(Path(path))
+            _adjudication_effect_store_cache[path] = store
+        return store
+
+
+def _current_adjudication_ledger_snapshots(repo_name: str, pr_number: int, github_client: Any) -> Tuple[AdjudicationSnapshot, ...]:
+    """Re-prove applicability against current authority before any effect.
+
+    A merely-persisted tip is not evidence: a revoked allowlist, an edited or
+    deleted accepted source, a new conflicting reply, or a moved head/base
+    since the last observation must all be caught here, immediately before
+    the caller trusts the result, not only during an earlier same-pass
+    ``AutomationEngine.refresh_review_adjudications`` (REQ-001, REQ-002,
+    REQ-011, REQ-014). This performs the identical authorization-policy,
+    revision-binding, and thread-reconciliation steps that production
+    refresh already performs, reusing that same code rather than a lighter
+    read-only shortcut.
+    """
+    store = AdjudicationContextStore(_adjudication_context_store_path())
+    if not store.ledgers_for_pr(repo_name, pr_number):
+        return ()
+    try:
+        authoritative = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
+        threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+    except Exception as exc:
+        logger.warning(f"Could not re-read authoritative PR state to apply adjudication effects for PR #{pr_number}: {exc}")
+        return ()
+    reviewer_ids = get_pr_review_allowlist_from_config(repo_name=repo_name) or ()
+    adjudicator_ids = get_review_adjudicator_allowlist_from_config(repo_name=repo_name) or ()
+    service = ReviewAdjudicationService(github_client, store)
+    service.apply_authorization_policy(repo_name, pr_number, reviewer_ids, adjudicator_ids)
+    try:
+        binding = ReviewAdjudicationService._binding(repo_name, pr_number, authoritative)
+    except ValueError as exc:
+        logger.warning(f"Could not verify authoritative PR revision binding to apply adjudication effects for PR #{pr_number}: {exc}")
+        return ()
+    service.apply_revision_binding(binding)
+
+    threads_by_root = {thread.comments[0].database_id: thread for thread in threads if thread.comments}
+    snapshots = []
+    for ledger in store.ledgers_for_pr(repo_name, pr_number):
+        thread = threads_by_root.get(ledger.context.root_comment_id)
+        if ledger.context.retired_reason is None:
+            if thread is None:
+                ledger.retire("registered review root was confirmed absent")
+                store.save(ledger, "orchestrator-root-check")
+            else:
+                reconcile_thread(ledger, thread, adjudicator_ids, reviewer_ids)
+                observation = hashlib.sha256("\0".join(f"{item.database_id}:{item.updated_at}" for item in thread.comments).encode("utf-8")).hexdigest()
+                store.save(ledger, observation)
+        raw_finding = thread.comments[0].body if thread is not None else ""
+        result = ledger.current(None, None, "orchestrator read")
+        snapshots.append(
+            AdjudicationSnapshot(
+                context=ledger.context,
+                raw_finding=raw_finding,
+                contributing_issues=tuple(item.issue_number for item in ledger.context.contracts),
+                root_author_id=ledger.context.root_author_id,
+                source_comment_id=result.source_comment_id,
+                result=result,
+                observation_revision="orchestrator-read",
+            )
+        )
+    return tuple(snapshots)
+
+
+def _mark_test_oracle_gap_invalid(repo_name: str, pr_number: int, gap_id: str, decision_id: str, rationale: str, head_sha: str) -> bool:
+    """Retire a persisted material test-oracle gap as adjudicated-invalid.
+
+    Never downgrades an independently established ``RESOLVED`` gap; only an
+    ``OPEN`` gap is retired, so a gap already proven fixed by a real
+    regression test is left alone (REQ-004).
+    """
+    registry = ReviewerSessionRegistry()
+    updated = False
+    for session in registry.sessions_for_pr(repo_name, pr_number):
+        changed = False
+        for gap in session.test_oracle_gaps:
+            if gap.gap_id == gap_id and gap.status == "OPEN":
+                gap.status = "INVALID"
+                gap.resolution_evidence = f"Overruled by authorized adjudication decision `{decision_id}`: {rationale}"
+                gap.resolution_head_sha = head_sha
+                changed = True
+                updated = True
+        if changed:
+            registry.save(session)
+    return updated
+
+
+def _reopen_test_oracle_gap(repo_name: str, pr_number: int, gap_id: str) -> bool:
+    """Reverse a gap this adjudication effect previously retired as invalid."""
+    registry = ReviewerSessionRegistry()
+    reopened = False
+    for session in registry.sessions_for_pr(repo_name, pr_number):
+        changed = False
+        for gap in session.test_oracle_gaps:
+            if gap.gap_id == gap_id and gap.status == "INVALID":
+                gap.status = "OPEN"
+                gap.resolution_evidence = ""
+                gap.resolution_head_sha = ""
+                changed = True
+                reopened = True
+        if changed:
+            registry.save(session)
+    return reopened
+
+
+_ADJUDICATION_EFFECT_OUTCOMES = {
+    "delivered": Outcome.COMPLETED,
+    "retired": Outcome.COMPLETED,
+    "reconciled": Outcome.COMPLETED,
+    "pending": Outcome.DEFERRED,
+    "unknown": Outcome.UNKNOWN,
+    "reconciliation-required": Outcome.BLOCKED,
+}
+
+
+def _record_adjudication_effect_stage(pr_number: int, effect_kind: str, context_id: str, decision_id: str, status: str, gap_id: str = "") -> None:
+    """Record one applied (or attempted) adjudication effect for the dashboard.
+
+    A distinct outcome per REQ-010's processing-status distinctions: repair
+    delivery pending/confirmed/unknown, scoped retirement pending/applied,
+    and reconciliation-required for a reversed overrule that could not be
+    confirmed reversed on GitHub.
+    """
+    facts: Dict[str, Any] = {"effect_kind": effect_kind, "context_id": context_id, "decision_id": decision_id, "status": status}
+    if gap_id:
+        facts["gap_id"] = gap_id
+    _record_pr_stage(pr_number, "pr.review-adjudication-effect", f"pr#{pr_number} review adjudication effect ({effect_kind})", _ADJUDICATION_EFFECT_OUTCOMES.get(status, Outcome.UNKNOWN), facts)
+
+
+def _apply_review_adjudication_effects(repo_name: str, pr_number: int, pr_data: Dict[str, Any], github_client: Any) -> Tuple[PRActionList, bool]:
+    """Apply every authorized adjudication decision's owned effect for this PR.
+
+    Returns the actions taken plus whether ordinary same-head validation
+    suppression must be bypassed this pass because a real adjudication
+    effect is newly effective or still unconfirmed (REQ-002, REQ-003,
+    REQ-004, REQ-007).
+    """
+    actions = PRActionList()
+    try:
+        snapshots = _current_adjudication_ledger_snapshots(repo_name, pr_number, github_client)
+    except Exception as exc:
+        logger.warning(f"Could not evaluate review adjudication effects for PR #{pr_number}: {exc}")
+        return actions, False
+    if not snapshots:
+        return actions, False
+    effect_store = _get_adjudication_effect_store()
+    plan = plan_adjudication_effects(snapshots, effect_store)
+    if not plan:
+        return actions, effect_store.force_revalidation_needed(repo_name, pr_number)
+
+    # Reconcile a reversed OVERRULE before applying whatever the new current
+    # disposition is: both can target the same context_id journal row in this
+    # same pass (e.g. a fresh UPHOLD superseding a retired OVERRULE), and the
+    # row must end this pass reflecting the current disposition's own
+    # delivery/retirement status, not the stale reconciliation outcome.
+    for reopen in plan.reopens:
+        try:
+            effect_store.begin(reopen.context_id, repo_name, pr_number, reopen.decision_id, reopen.head_sha, reopen.contract_digest, reopen.verdict, gap_id=reopen.gap_id)
+        except Exception as exc:
+            logger.error(f"Could not durably record adjudication reconciliation for PR #{pr_number}: {exc}")
+            continue
+        reopened_gap = bool(reopen.gap_id) and _reopen_test_oracle_gap(repo_name, pr_number, reopen.gap_id)
+        try:
+            github_client.unresolve_review_thread(reopen.thread_id)
+            note = f" and reopened material test-oracle gap `{reopen.gap_id}`" if reopened_gap else ""
+            actions.append(f"Reversed a superseded or revoked adjudication overrule on PR #{pr_number}{note}")
+            effect_store.finish(reopen.context_id, "reconciled", gap_id=reopen.gap_id)
+            _record_adjudication_effect_stage(pr_number, "REOPEN", reopen.context_id, reopen.decision_id, "reconciled", gap_id=reopen.gap_id)
+        except Exception as exc:
+            logger.warning(f"Could not reverse a superseded adjudication overrule for PR #{pr_number}: {exc}")
+            actions.append(f"A superseded adjudication overrule on PR #{pr_number} could not be reversed on GitHub and remains a merge blocker until it is: {exc}")
+            effect_store.finish(reopen.context_id, "reconciliation-required", gap_id=reopen.gap_id)
+            _record_adjudication_effect_stage(pr_number, "REOPEN", reopen.context_id, reopen.decision_id, "reconciliation-required", gap_id=reopen.gap_id)
+
+    for upheld in plan.upholds:
+        try:
+            effect_store.begin(upheld.context_id, repo_name, pr_number, upheld.decision_id, upheld.head_sha, upheld.contract_digest, "UPHOLD")
+        except Exception as exc:
+            logger.error(f"Could not durably record adjudication effect for PR #{pr_number}: {exc}")
+            continue
+        status = "unknown"
+        try:
+            resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
+            if resolution.origin is None:
+                actions.append(f"Adjudicated repair for PR #{pr_number} was not delivered: {resolution.reason}")
+                status = "pending"
+            else:
+                provider, task_id, client = resolution.origin.provider, resolution.origin.task_id, resolution.origin.client
+                from .cloud_task_client_base import CloudTaskClientBase
+
+                if getattr(type(client), "send_followup", None) is CloudTaskClientBase.send_followup:
+                    actions.append(f"Adjudicated repair for PR #{pr_number} was not delivered: cloud provider '{provider}' does not support follow-up delivery")
+                    status = "pending"
+                else:
+                    live_metadata = github_client.get_pull_request_repair_metadata_strict(repo_name, pr_number)
+                    live_pr_data = dict(pr_data)
+                    live_pr_data["head"] = {"ref": live_metadata.head_ref, "sha": live_metadata.head_sha}
+                    live_pr_data["base"] = {"ref": live_metadata.base_ref}
+                    target = resolve_existing_pr_repair_target(repo_name, live_pr_data)
+                    if not target:
+                        actions.append(f"Adjudicated repair for PR #{pr_number} was not delivered: current PR head/base branch metadata is unavailable")
+                        status = "pending"
+                    else:
+                        details = Template(get_prompt_template("codex_cloud.adjudication_upheld_repair_details")).safe_substitute(rationale=upheld.rationale, raw_finding=upheld.raw_finding)
+                        prompt = build_existing_pr_repair_prompt(target, details)
+                        accepted = client.send_followup(task_id, prompt, (upheld.decision_id,)) if provider == "codex-cloud" else client.send_followup(task_id, prompt)
+                        if accepted:
+                            actions.append(f"Requested {provider} task '{task_id}' to apply an authorized bounded correction for PR #{pr_number}")
+                            status = "delivered"
+                        else:
+                            actions.append(f"Adjudicated repair for PR #{pr_number} was not delivered: {provider} task '{task_id}' rejected follow-up delivery")
+                            status = "pending"
+        except Exception as exc:
+            logger.warning(f"Adjudicated repair delivery failed for PR #{pr_number}: {exc}")
+            actions.append(f"Adjudicated repair for PR #{pr_number} was not confirmed delivered: {exc}")
+            status = "unknown"
+        effect_store.finish(upheld.context_id, status)
+        _record_adjudication_effect_stage(pr_number, "UPHOLD", upheld.context_id, upheld.decision_id, status)
+
+    for overrule in plan.overrules:
+        try:
+            effect_store.begin(overrule.context_id, repo_name, pr_number, overrule.decision_id, overrule.head_sha, overrule.contract_digest, "OVERRULE", gap_id=overrule.gap_id or "")
+        except Exception as exc:
+            logger.error(f"Could not durably record adjudication effect for PR #{pr_number}: {exc}")
+            continue
+        gap_note = ""
+        if overrule.gap_id and not overrule.gap_still_contributed_elsewhere:
+            if _mark_test_oracle_gap_invalid(repo_name, pr_number, overrule.gap_id, overrule.decision_id, overrule.rationale, overrule.head_sha):
+                gap_note = f" and retired material test-oracle gap `{overrule.gap_id}`"
+        elif overrule.gap_id:
+            gap_note = f" (material test-oracle gap `{overrule.gap_id}` remains open: another live finding still contributes to it)"
+
+        status = "unknown"
+        try:
+            explanation = format_overrule_explanation(overrule.decision_id, overrule.rationale)
+            github_client.reply_to_review_thread(repo_name, pr_number, overrule.root_comment_id, explanation)
+            # Re-check immediately before the resolve mutation: a concurrent
+            # writer (e.g. the Dashboard write boundary) may have superseded
+            # or revoked this exact decision since the plan was computed.
+            fresh = _current_adjudication_ledger_snapshots(repo_name, pr_number, github_client)
+            fresh_result = next((snap.result for snap in fresh if snap.context is not None and snap.context.context_id == overrule.context_id), None)
+            if fresh_result is None or fresh_result.status != AdjudicationStatus.APPLICABLE or fresh_result.verdict != "OVERRULE" or fresh_result.decision_id != overrule.decision_id:
+                actions.append(f"Overruled finding on PR #{pr_number} was not resolved on GitHub: the decision is no longer current")
+                status = "pending"
+            else:
+                github_client.resolve_review_thread(overrule.thread_id)
+                actions.append(f"Retired an overruled finding on PR #{pr_number}{gap_note}")
+                status = "retired"
+        except Exception as exc:
+            logger.warning(f"Could not resolve overruled review thread for PR #{pr_number}: {exc}")
+            actions.append(f"Overruled finding on PR #{pr_number} was not confirmed resolved on GitHub: {exc}")
+            status = "unknown"
+        effect_store.finish(overrule.context_id, status, gap_id=overrule.gap_id or "")
+        _record_adjudication_effect_stage(pr_number, "OVERRULE", overrule.context_id, overrule.decision_id, status, gap_id=overrule.gap_id or "")
+
+    return actions, effect_store.force_revalidation_needed(repo_name, pr_number)
 
 
 def _delegate_cloud_merge_conflict_repair_result(
@@ -6865,7 +7293,8 @@ def _apply_github_actions_fix(
             actions.append(f"Deferred GitHub Actions repair for PR #{pr_number}: graceful shutdown is draining")
             return actions
         logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
-        response = run_llm_prompt(fix_prompt, backend_manager=backend_manager)
+        with bind_invocation_target(repo_name, f"pr#{pr_number}", "github_actions_repair"):
+            response = run_llm_prompt(fix_prompt, backend_manager=backend_manager)
 
         if response:
             response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"

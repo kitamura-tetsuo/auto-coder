@@ -641,17 +641,6 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         github = MagicMock()
         github.get_issue_dispatch_snapshot_strict.side_effect = lambda *_args: dict(snapshot)
         engine = AutomationEngine(github, config=AutomationConfig())
-
-        mock_validator = MagicMock()
-        mock_identity = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.verdict = "READY"
-        mock_decision.identity = mock_identity
-        mock_identity.key = "fake_identity_key"
-        mock_validator.identity.return_value = mock_identity
-        mock_validator.store.get.return_value = mock_decision
-        engine._get_specification_validator = MagicMock(return_value=mock_validator)
-        engine._is_issue_specification_validation_enabled = MagicMock(return_value=True)
         engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         dispatched = CandidateProcessingResult(type="issue", number=1699, title="Ready gate", success=True, actions=["dispatched"])
         engine._process_single_candidate_reserved = Mock(return_value=dispatched)
@@ -855,17 +844,6 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         github.get_issue_comments_strict = Mock(return_value=[])
         github.add_comment_to_issue = Mock()
         engine = AutomationEngine(github, config=AutomationConfig())
-
-        mock_validator = MagicMock()
-        mock_identity = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.verdict = "READY"
-        mock_decision.identity = mock_identity
-        mock_identity.key = "fake_identity_key"
-        mock_validator.identity.return_value = mock_identity
-        mock_validator.store.get.return_value = mock_decision
-        engine._get_specification_validator = MagicMock(return_value=mock_validator)
-        engine._is_issue_specification_validation_enabled = MagicMock(return_value=True)
         engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1684, title="Editable contract", success=True, actions=["dispatched"]))
         label_context = MagicMock()
@@ -879,9 +857,6 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             first_candidates = engine._get_candidates("owner/repo")
             first = engine._process_single_candidate_unified("owner/repo", first_candidates[0], engine.config)
             authoritative["body"] = current_body
-            engine.implementation_slots.release_unbound_idle_owner(ImplementationOwner("issue", 1684))
-            for exec_id in engine.implementation_slots.active_execution_ids(ImplementationOwner("issue", 1684)):
-                engine.implementation_slots.finish_execution(ImplementationOwner("issue", 1684), exec_id)
             second_candidates = engine._get_candidates("owner/repo")
             second = engine._process_single_candidate_unified("owner/repo", second_candidates[0], engine.config)
 
@@ -911,17 +886,6 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         github = GitHubStub()
         engine = AutomationEngine(github, config=AutomationConfig())
-
-        mock_validator = MagicMock()
-        mock_identity = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.verdict = "READY"
-        mock_decision.identity = mock_identity
-        mock_identity.key = "fake_identity_key"
-        mock_validator.identity.return_value = mock_identity
-        mock_validator.store.get.return_value = mock_decision
-        engine._get_specification_validator = MagicMock(return_value=mock_validator)
-        engine._is_issue_specification_validation_enabled = MagicMock(return_value=True)
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         engine.implementation_slots = slots
         candidate = Candidate(type="issue", data={"number": 1684, "title": "Repairable", "body": "## Requirements\n### 1. Invalid", "labels": []}, priority=0)
@@ -942,17 +906,6 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         github.get_item_type_strict.return_value = "issue"
         github.get_issue_dispatch_snapshot_strict.return_value = {"number": 1685, "body": "Implement observable behavior.", "labels": [{"name": "implementation-ready"}]}
         engine = AutomationEngine(github, config=AutomationConfig())
-
-        mock_validator = MagicMock()
-        mock_identity = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.verdict = "READY"
-        mock_decision.identity = mock_identity
-        mock_identity.key = "fake_identity_key"
-        mock_validator.identity.return_value = mock_identity
-        mock_validator.store.get.return_value = mock_decision
-        engine._get_specification_validator = MagicMock(return_value=mock_validator)
-        engine._is_issue_specification_validation_enabled = MagicMock(return_value=True)
         engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1685, title="Legacy", success=True, actions=["dispatched"]))
         candidate = Candidate(type="issue", data={"number": 1685, "title": "Legacy", "body": "Implement observable behavior.", "labels": []}, priority=0)
@@ -977,17 +930,6 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 return issue
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
-
-        mock_validator = MagicMock()
-        mock_identity = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.verdict = "READY"
-        mock_decision.identity = mock_identity
-        mock_identity.key = "fake_identity_key"
-        mock_validator.identity.return_value = mock_identity
-        mock_validator.store.get.return_value = mock_decision
-        engine._get_specification_validator = MagicMock(return_value=mock_validator)
-        engine._is_issue_specification_validation_enabled = MagicMock(return_value=True)
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         assert slots.start_execution(ImplementationOwner("issue", 1)) is not None
         engine.implementation_slots = slots
@@ -1014,7 +956,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 # refresh (reads 1-3) but before ownership admission (read 4):
                 # the stale emergency must be denied. The Review lane's
                 # handoff reevaluation is read 2.
-                if self.reads >= 3:
+                if self.reads >= 4:
                     labels.pop()
                 return {"number": number, "body": "", "labels": labels}
 
@@ -1026,21 +968,10 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         github = GitHubStub()
         engine = AutomationEngine(github, config=AutomationConfig())
-
-        mock_validator = MagicMock()
-        mock_identity = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.verdict = "READY"
-        mock_decision.identity = mock_identity
-        mock_identity.key = "fake_identity_key"
-        mock_validator.identity.return_value = mock_identity
-        mock_validator.store.get.return_value = mock_decision
-        engine._get_specification_validator = MagicMock(return_value=mock_validator)
-        engine._is_issue_specification_validation_enabled = MagicMock(return_value=True)
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         assert slots.start_execution(ImplementationOwner("issue", 1)) is not None
         engine.implementation_slots = slots
-        engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=2, title="Stale urgent", success=True, actions=["dispatched"]))
+        engine._process_single_candidate_reserved = Mock()
 
         result = engine._process_single_candidate_unified(
             "owner/repo",
@@ -1060,17 +991,6 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 return {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
-
-        mock_validator = MagicMock()
-        mock_identity = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.verdict = "READY"
-        mock_decision.identity = mock_identity
-        mock_identity.key = "fake_identity_key"
-        mock_validator.identity.return_value = mock_identity
-        mock_validator.store.get.return_value = mock_decision
-        engine._get_specification_validator = MagicMock(return_value=mock_validator)
-        engine._is_issue_specification_validation_enabled = MagicMock(return_value=True)
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         owner = ImplementationOwner("issue", 1680)
         execution_id = slots.start_execution(owner, allow_urgent_emergency=True)
@@ -1363,17 +1283,6 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 return []
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
-
-        mock_validator = MagicMock()
-        mock_identity = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.verdict = "READY"
-        mock_decision.identity = mock_identity
-        mock_identity.key = "fake_identity_key"
-        mock_validator.identity.return_value = mock_identity
-        mock_validator.store.get.return_value = mock_decision
-        engine._get_specification_validator = MagicMock(return_value=mock_validator)
-        engine._is_issue_specification_validation_enabled = MagicMock(return_value=True)
         candidate = Candidate(
             type="issue",
             data={"number": 300, "title": "Genuine issue", "labels": []},

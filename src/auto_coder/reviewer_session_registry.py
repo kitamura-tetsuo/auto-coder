@@ -138,6 +138,22 @@ class ReviewerSessionRegistry:
             except (KeyError, TypeError, ValueError):
                 return None
 
+    def sessions_for_pr(self, repository: str, pr_number: int) -> List[ReviewerSession]:
+        """Return every persisted reviewer session for a PR, across backends."""
+        with self._lock:
+            sessions: List[ReviewerSession] = []
+            for key in self._load():
+                try:
+                    stored_repository, stored_pr_number, backend_name, backend_type, model_name = json.loads(key)
+                except (ValueError, json.JSONDecodeError):
+                    continue
+                if stored_repository != repository or stored_pr_number != pr_number:
+                    continue
+                session = self.get(repository, pr_number, backend_name, backend_type, model_name)
+                if session is not None:
+                    sessions.append(session)
+            return sessions
+
     def save(self, session: ReviewerSession) -> None:
         if not session.session_id:
             return
