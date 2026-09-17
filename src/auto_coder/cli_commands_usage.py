@@ -8,12 +8,14 @@ import json
 import os
 import sys
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import click
 
 from .claude_usage_checker import acquire_claude_usage_credential, check_claude_usage
 from .codex_usage_checker import get_codex_weekly_usage
+from .llm_backend_config import get_llm_config
 from .logger_config import setup_logger
 
 
@@ -41,6 +43,9 @@ class ClaudeUsageReport:
     status: str = "unknown"
     message: str = ""
     is_quota_insufficient: bool = False
+    strategy: str = "burst"
+    can_start_task: bool = True
+    days_until_reset: Optional[int] = None
     windows: List[UsageWindowSummary] = field(default_factory=list)
     extra_usage: ExtraUsageSummary = field(default_factory=ExtraUsageSummary)
 
@@ -51,6 +56,11 @@ class CodexUsageReport:
     status: str = "unknown"
     message: str = ""
     can_start_task: bool = False
+    strategy: str = "surplus"
+    other_strategy: str = "burst"
+    other_strategy_allowed: bool = False
+    surplus_allowed: bool = False
+    burst_allowed: bool = False
     remaining_percent: Optional[float] = None
     used_percent: Optional[float] = None
     reset_at: Optional[str] = None
@@ -64,6 +74,21 @@ class CodexUsageReport:
 class CombinedUsageReport:
     claude: Optional[ClaudeUsageReport] = None
     codex: Optional[CodexUsageReport] = None
+
+
+def _parse_days_until_reset(resets_at_str: Optional[str], now: Optional[datetime] = None) -> Optional[int]:
+    """Parse an ISO timestamp string into whole days remaining until reset."""
+    if not resets_at_str:
+        return None
+    try:
+        clean_str = resets_at_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_str)
+        current_time = now or datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, int((dt - current_time).total_seconds() // 86400))
+    except (ValueError, TypeError):
+        return None
 
 
 def _get_claude_usage_report(
@@ -157,34 +182,80 @@ def _get_claude_usage_report(
     status_str = "quota_insufficient" if quota.is_quota_insufficient else "ok"
     msg = quota.reason if quota.is_quota_insufficient else "Quota is sufficient."
 
+    try:
+        config = get_llm_config()
+        strategy = getattr(config, "quota_selection_strategy", "burst") or "burst"
+    except Exception:
+        strategy = "burst"
+    if strategy not in ("surplus", "burst"):
+        strategy = "burst"
+
+    target_resets_at = quota.seven_day.resets_at or quota.five_hour.resets_at
+    days_until_reset = _parse_days_until_reset(target_resets_at)
+
     return ClaudeUsageReport(
         available=True,
         status=status_str,
         message=msg,
         is_quota_insufficient=quota.is_quota_insufficient,
+        strategy=strategy,
+        can_start_task=not quota.is_quota_insufficient,
+        days_until_reset=days_until_reset,
         windows=windows,
         extra_usage=extra,
     )
 
 
-def _get_codex_usage_report() -> CodexUsageReport:
+def _get_codex_usage_report(strategy: Optional[str] = None) -> CodexUsageReport:
     """Fetch and construct Codex usage report."""
+    if strategy is None:
+        try:
+            config = get_llm_config()
+            strategy = getattr(config, "quota_selection_strategy", "surplus") or "surplus"
+        except Exception:
+            strategy = "surplus"
+
+    if strategy not in ("surplus", "burst"):
+        strategy = "surplus"
+
+    other_strategy = "burst" if strategy == "surplus" else "surplus"
+
     usage = get_codex_weekly_usage()
     if usage is None:
         return CodexUsageReport(
             available=False,
             status="fetch_failed",
             message="Codex weekly quota is unavailable. Check Codex CLI installation and ChatGPT login.",
+            strategy=strategy,
+            other_strategy=other_strategy,
         )
 
-    status_str = "ok" if usage.can_start_task else "quota_insufficient"
-    msg = "Quota is sufficient to start tasks." if usage.can_start_task else f"Remaining quota ({usage.remaining_percent:.1f}%) is below minimum required threshold ({usage.minimum_remaining_percent:.1f}%)."
+    surplus_allowed = usage.allows_task("surplus")
+    burst_allowed = usage.allows_task("burst")
+    current_allowed = burst_allowed if strategy == "burst" else surplus_allowed
+    other_allowed = surplus_allowed if strategy == "burst" else burst_allowed
+
+    status_str = "ok" if current_allowed else "quota_insufficient"
+    if current_allowed:
+        msg = "Quota is sufficient to start tasks."
+        msg = "Quota is sufficient."
+    else:
+        if strategy == "burst":
+            msg = f"Remaining quota ({usage.remaining_percent:.1f}%) is exhausted."
+        else:
+            msg = f"Remaining quota ({usage.remaining_percent:.1f}%) is below minimum required threshold ({usage.minimum_remaining_percent:.1f}%)."
+            msg = "Remaining quota is below the surplus threshold."
 
     return CodexUsageReport(
         available=True,
         status=status_str,
         message=msg,
-        can_start_task=usage.can_start_task,
+        can_start_task=current_allowed,
+        strategy=strategy,
+        other_strategy=other_strategy,
+        other_strategy_allowed=other_allowed,
+        surplus_allowed=surplus_allowed,
+        burst_allowed=burst_allowed,
         remaining_percent=usage.remaining_percent,
         used_percent=100.0 - usage.remaining_percent,
         reset_at=usage.reset_at.isoformat(),
@@ -212,16 +283,17 @@ def _print_claude_report(report: ClaudeUsageReport, no_color: bool) -> None:
         return
 
     # Quota status banner
+    status_label = "Insufficient" if report.is_quota_insufficient else "OK"
     if report.is_quota_insufficient:
         icon = "[WARN]" if no_color else "⚠️ "
-        status_line = f"  {icon} Quota Status: Insufficient ({report.message})"
+        status_line = f"  {icon} Quota Status: {status_label} ({report.message})"
         if no_color:
             click.echo(status_line)
         else:
             click.secho(status_line, fg="yellow")
     else:
         icon = "[OK]" if no_color else "✅"
-        status_line = f"  {icon} Quota Status: OK ({report.message})"
+        status_line = f"  {icon} Quota Status: {status_label} ({report.message})"
         if no_color:
             click.echo(status_line)
         else:
@@ -231,25 +303,37 @@ def _print_claude_report(report: ClaudeUsageReport, no_color: bool) -> None:
     for win in report.windows:
         util_str = f"{win.utilization_percent:.1f}%" if win.utilization_percent is not None else "N/A"
         rem_str = f"{win.remaining_percent:.1f}%" if win.remaining_percent is not None else "N/A"
-        resets_str = f" (resets at {win.resets_at})" if win.resets_at else ""
-        click.echo(f"    • {win.name}: {util_str} used, {rem_str} remaining{resets_str}")
+        click.echo(f"    • {win.name}: {util_str} used, {rem_str} remaining")
+        if win.resets_at:
+            click.echo(f"      (resets at {win.resets_at})")
+
+    # Reset Countdown
+    days_str = f"{report.days_until_reset} day(s) until reset" if report.days_until_reset is not None else "N/A"
+    click.echo(f"    • Reset Countdown: {days_str}")
+
+    # Strategy
+    click.echo(f"    • Strategy: {report.strategy}")
+
+    # Task Start Allowed
+    allow_str = "Yes" if report.can_start_task else "No"
+    click.echo(f"    • Task Start Allowed: {allow_str}")
 
     # Extra usage
     if report.extra_usage.is_enabled is not None:
-        enabled_str = "Enabled" if report.extra_usage.is_enabled else "Disabled"
-        details: List[str] = [f"Status: {enabled_str}"]
-        if report.extra_usage.monthly_limit is not None:
-            currency = report.extra_usage.currency or "$"
-            details.append(f"Limit: {currency}{report.extra_usage.monthly_limit:.2f}")
-        if report.extra_usage.used_credits is not None:
-            currency = report.extra_usage.currency or "$"
-            details.append(f"Used: {currency}{report.extra_usage.used_credits:.2f}")
-        if report.extra_usage.utilization_percent is not None:
-            details.append(f"Utilization: {report.extra_usage.utilization_percent:.1f}%")
-        if report.extra_usage.disabled_reason:
-            details.append(f"Disabled reason: {report.extra_usage.disabled_reason}")
-
-        click.echo(f"    • Extra Usage: {', '.join(details)}")
+        if not report.extra_usage.is_enabled:
+            status_val = "Disabled"
+        else:
+            details: List[str] = []
+            if report.extra_usage.monthly_limit is not None:
+                currency = report.extra_usage.currency or "$"
+                details.append(f"Limit: {currency}{report.extra_usage.monthly_limit:.2f}")
+            if report.extra_usage.used_credits is not None:
+                currency = report.extra_usage.currency or "$"
+                details.append(f"Used: {currency}{report.extra_usage.used_credits:.2f}")
+            if report.extra_usage.utilization_percent is not None:
+                details.append(f"Utilization: {report.extra_usage.utilization_percent:.1f}%")
+            status_val = f"Enabled ({', '.join(details)})" if details else "Enabled"
+        click.echo(f"    • Extra Usage: {status_val}")
 
 
 def _print_codex_report(report: CodexUsageReport, no_color: bool) -> None:
@@ -269,34 +353,54 @@ def _print_codex_report(report: CodexUsageReport, no_color: bool) -> None:
         return
 
     # Quota status banner
+    status_label = "OK" if report.can_start_task else "Insufficient"
     if not report.can_start_task:
         icon = "[WARN]" if no_color else "⚠️ "
-        status_line = f"  {icon} Quota Status: Insufficient ({report.message})"
+        status_line = f"  {icon} Quota Status: {status_label} ({report.message})"
         if no_color:
             click.echo(status_line)
         else:
             click.secho(status_line, fg="yellow")
     else:
         icon = "[OK]" if no_color else "✅"
-        status_line = f"  {icon} Quota Status: OK ({report.message})"
+        status_line = f"  {icon} Quota Status: {status_label} ({report.message})"
         if no_color:
             click.echo(status_line)
         else:
             click.secho(status_line, fg="green")
 
-    # Weekly quota details
+    # Weekly Window
     rem_str = f"{report.remaining_percent:.1f}%" if report.remaining_percent is not None else "N/A"
     used_str = f"{report.used_percent:.1f}%" if report.used_percent is not None else "N/A"
-    resets_str = f" (resets at {report.reset_at})" if report.reset_at else ""
-    click.echo(f"    • Weekly Window: {used_str} used, {rem_str} remaining{resets_str}")
+    click.echo(f"    • Weekly Window: {used_str} used, {rem_str} remaining")
+    if report.reset_at:
+        click.echo(f"      (resets at {report.reset_at})")
 
-    days_str = f"{report.days_until_reset} day(s)" if report.days_until_reset is not None else "N/A"
-    min_req_str = f"{report.minimum_remaining_percent:.1f}%" if report.minimum_remaining_percent is not None else "N/A"
-    allow_str = "Yes" if report.can_start_task else "No"
-    click.echo(f"    • Reset Countdown: {days_str} until reset (required minimum: {min_req_str})")
+    # Reset Countdown
+    days_str = f"{report.days_until_reset} day(s) until reset" if report.days_until_reset is not None else "N/A"
+    click.echo(f"    • Reset Countdown: {days_str}")
+
+    # Strategy
+    click.echo(f"    • Strategy: {report.strategy}")
+
+    # Reset Credits
     credits_str = str(report.reset_credit_count) if report.reset_credit_count is not None else f"Unavailable ({report.reset_credit_status})"
     click.echo(f"    • Reset Credits: {credits_str}")
+
+    # Task Start Allowed
+    allow_str = "Yes" if report.can_start_task else "No"
     click.echo(f"    • Task Start Allowed: {allow_str}")
+
+    # Surplus (Only when Strategy == "surplus")
+    if report.strategy == "surplus" and report.minimum_remaining_percent is not None:
+        click.echo("")
+        surplus_avail_str = "Yes" if report.surplus_allowed else "No"
+        req_min_str = f"{report.minimum_remaining_percent:.1f}%"
+        cur_rem_str = f"{report.remaining_percent:.1f}%" if report.remaining_percent is not None else "N/A"
+        click.echo("    • Surplus:")
+        click.echo(f"        • Available: {surplus_avail_str}")
+        click.echo(f"        • Required Minimum: {req_min_str}")
+        click.echo(f"        • Current Remaining: {cur_rem_str}")
 
 
 @click.command(name="usage-amount")

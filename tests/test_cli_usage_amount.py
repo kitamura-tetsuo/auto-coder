@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -36,12 +37,18 @@ def _mock_claude_quota(insufficient: bool = False, reason: str = "") -> ClaudeUs
 def _mock_codex_usage(
     can_start: bool = True,
     reset_credits: CodexResetCredits = CodexResetCredits(available_count=2, status="available"),
+    remaining_percent: Optional[float] = None,
+    minimum_remaining_percent: float = 5.0,
 ) -> CodexWeeklyUsage:
+    if remaining_percent is None:
+        remaining = 75.0 if can_start else 3.0
+    else:
+        remaining = remaining_percent
     return CodexWeeklyUsage(
-        remaining_percent=75.0 if can_start else 3.0,
+        remaining_percent=remaining,
         reset_at=datetime(2026, 8, 30, 0, 0, tzinfo=timezone.utc),
         days_until_reset=6,
-        minimum_remaining_percent=5.0,
+        minimum_remaining_percent=minimum_remaining_percent,
         reset_credits=reset_credits,
     )
 
@@ -71,13 +78,20 @@ class TestUsageAmountCLI:
             result = runner.invoke(main, ["usage-amount"])
             assert result.exit_code == 0
             assert "Claude Usage (Anthropic OAuth)" in result.output
-            assert "5-hour Window: 40.0% used, 60.0% remaining" in result.output
-            assert "7-day Window: 30.0% used, 70.0% remaining" in result.output
-            assert "Extra Usage: Status: Enabled" in result.output
+            assert "• 5-hour Window: 40.0% used, 60.0% remaining" in result.output
+            assert "• 7-day Window: 30.0% used, 70.0% remaining" in result.output
+            assert "(resets at 2026-08-30T00:00:00Z)" in result.output
+            assert "Extra Usage: Enabled" in result.output
             assert "Codex Usage (ChatGPT OAuth)" in result.output
-            assert "Weekly Window: 25.0% used, 75.0% remaining" in result.output
-            assert "Task Start Allowed: Yes" in result.output
+            assert "• Weekly Window: 25.0% used, 75.0% remaining" in result.output
+            assert "(resets at 2026-08-30T00:00:00+00:00)" in result.output
+            assert "Strategy: surplus" in result.output
             assert "Reset Credits: 2" in result.output
+            assert "Task Start Allowed: Yes" in result.output
+            assert "• Surplus:" in result.output
+            assert "• Available: Yes" in result.output
+            assert "• Required Minimum: 5.0%" in result.output
+            assert "• Current Remaining: 75.0%" in result.output
 
     def test_usage_amount_claude_only_target_arg(self):
         """Test usage-amount claude only outputs Claude usage."""
@@ -138,6 +152,11 @@ class TestUsageAmountCLI:
             assert parsed["claude"]["status"] == "ok"
             assert parsed["codex"]["available"] is True
             assert parsed["codex"]["can_start_task"] is True
+            assert parsed["codex"]["strategy"] == "surplus"
+            assert parsed["codex"]["other_strategy"] == "burst"
+            assert parsed["codex"]["surplus_allowed"] is True
+            assert parsed["codex"]["burst_allowed"] is True
+            assert parsed["codex"]["other_strategy_allowed"] is True
             assert parsed["codex"]["remaining_percent"] == 75.0
             assert parsed["codex"]["reset_credit_count"] == 2
 
@@ -245,3 +264,57 @@ class TestUsageAmountCLI:
             assert "Quota Status: Insufficient" in result.output
             assert "5-hour limit reached" in result.output
             assert "Task Start Allowed: No" in result.output
+            assert "• Surplus:" in result.output
+            assert "• Available: No" in result.output
+            assert "• Required Minimum: 5.0%" in result.output
+            assert "• Current Remaining: 3.0%" in result.output
+
+    def test_usage_amount_codex_burst_strategy(self):
+        """Test usage-amount displays active burst strategy."""
+        runner = CliRunner()
+        mock_config = MagicMock(quota_selection_strategy="burst")
+        # Remaining 3% is below surplus 5% threshold, but > 0 so burst allows it
+        with (
+            patch("auto_coder.cli_commands_usage.get_llm_config", return_value=mock_config),
+            patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(can_start=False)),
+        ):
+            result = runner.invoke(main, ["usage-amount", "codex"])
+            assert result.exit_code == 0
+            assert "Quota Status: OK (Quota is sufficient.)" in result.output
+            assert "Strategy: burst" in result.output
+            assert "Task Start Allowed: Yes" in result.output
+            assert "• Surplus:" not in result.output
+
+    def test_usage_amount_codex_zero_quota_exhausted(self):
+        """Test usage-amount displays burst strategy when quota is 0%."""
+        runner = CliRunner()
+        mock_config = MagicMock(quota_selection_strategy="burst")
+        # Remaining 0.0% is exhausted for burst
+        with (
+            patch("auto_coder.cli_commands_usage.get_llm_config", return_value=mock_config),
+            patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(can_start=False, remaining_percent=0.0)),
+        ):
+            result = runner.invoke(main, ["usage-amount", "codex"])
+            assert result.exit_code == 0
+            assert "Quota Status: Insufficient (Remaining quota (0.0%) is exhausted.)" in result.output
+            assert "Strategy: burst" in result.output
+            assert "Task Start Allowed: No" in result.output
+            assert "• Surplus:" not in result.output
+
+    def test_usage_amount_codex_surplus_insufficient(self):
+        """Test usage-amount displays surplus section when quota is below threshold."""
+        runner = CliRunner()
+        mock_config = MagicMock(quota_selection_strategy="surplus")
+        with (
+            patch("auto_coder.cli_commands_usage.get_llm_config", return_value=mock_config),
+            patch("auto_coder.cli_commands_usage.get_codex_weekly_usage", return_value=_mock_codex_usage(can_start=False, remaining_percent=10.0, minimum_remaining_percent=15.0)),
+        ):
+            result = runner.invoke(main, ["usage-amount", "codex"])
+            assert result.exit_code == 0
+            assert "Quota Status: Insufficient (Remaining quota is below the surplus threshold.)" in result.output
+            assert "Strategy: surplus" in result.output
+            assert "Task Start Allowed: No" in result.output
+            assert "• Surplus:" in result.output
+            assert "• Available: No" in result.output
+            assert "• Required Minimum: 15.0%" in result.output
+            assert "• Current Remaining: 10.0%" in result.output
