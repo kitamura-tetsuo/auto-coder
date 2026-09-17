@@ -29,7 +29,16 @@ operations. While OpenCode runs, its `git` and `gh` executables are replaced
 (via a `PATH`-prepended, per-invocation directory) with wrappers that deny
 every subcommand except a small read-only allowlist (status, diff, log,
 show, and similar) before the real executable ever runs; `gh` is denied
-outright. Auto-Coder additionally snapshots the branch, HEAD, refs, and
+outright. This denial is scoped to the invocation's own repository/worktree
+metadata: an invocation whose resolved `--git-dir` (explicit, or discovered
+from its effective directory) is neither that Git metadata nor its shared
+`--git-common-dir` is let through unrestricted, because it cannot affect the
+protected repository regardless of subcommand — this is what lets OpenCode's
+own internal checkpoint/tracking feature (which runs `init`/`config`/`add`/
+`write-tree` against a private, detached Git store under its own data
+directory on every step) function at all.
+
+Auto-Coder additionally snapshots the branch, HEAD, refs, and
 staged index before the run and re-asserts them afterward (and on timeout),
 restoring and failing the invocation if anything still changed. A denied or
 detected lifecycle mutation makes the invocation unusable for publication;
