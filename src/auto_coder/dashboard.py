@@ -557,7 +557,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         def poll_status(decision_id):
                             ui.run_javascript(
                                 f"""
-                                fetch("/dashboard-adjudication/status/{pr_number}/{finding['context_id']}/{decision_id}")
+                                fetch("/dashboard-adjudication/status/" + decision_id)
                                 .then(r => r.json())
                                 .then(st => {{
                                     const evt = new CustomEvent("adjudication_status_update", {{detail: st}});

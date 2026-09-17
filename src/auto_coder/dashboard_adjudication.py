@@ -342,13 +342,31 @@ class AdjudicationWriteService:
 
         @router.get("/context/{pr_number}")
         async def read_context(request: Request, pr_number: int):
-            self._authorize_read(request)
+            _, record = self._authorize_read(request)
             snapshots = self.engine.get_review_adjudication_snapshots(self.repo_name, pr_number)
             findings = []
             for snapshot in snapshots:
                 if snapshot.context is None:
+                    findings.append(
+                        {
+                            "context_id": snapshot.result.context_id or "unknown",
+                            "status": snapshot.result.status.value if hasattr(snapshot.result, "status") else "UNKNOWN",
+                            "reason": getattr(snapshot.result, "reason", "unavailable"),
+                            "freshness": getattr(snapshot, "observation_revision", "unknown"),
+                            "unavailable_reason": "Source unavailable or incomplete data",
+                            "tips": list(snapshot.result.tips) if hasattr(snapshot.result, "tips") else [],
+                            "history": [],
+                            "publisher_account": "Unknown",
+                            "raw_finding": getattr(snapshot, "raw_finding", ""),
+                        }
+                    )
                     continue
+
                 context = snapshot.context
+                history = []
+                for d in getattr(context, "decisions", {}).values():
+                    history.append({"time": str(getattr(d, "observed_at", "unknown")), "action": getattr(d, "verdict", "unknown") or "unknown", "actor": str(getattr(d, "actor_id", "unknown")), "actor_url": f"https://github.com/u/{getattr(d, 'actor_id', '')}"})
+
                 findings.append(
                     {
                         "context_id": context.context_id,
@@ -357,13 +375,19 @@ class AdjudicationWriteService:
                         "base_sha": context.base_sha,
                         "base_ref": context.base_ref,
                         "contract_digest": context.contract_digest,
-                        "contributing_issues": [item.issue_number for item in context.contracts],
-                        "status": snapshot.result.status.value,
-                        "tips": list(snapshot.result.tips),
-                        "retired_reason": context.retired_reason,
+                        "contributing_issues": [item.issue_number for item in context.contracts] if hasattr(context, "contracts") else [],
+                        "status": snapshot.result.status.value if hasattr(snapshot.result, "status") else "UNKNOWN",
+                        "tips": list(snapshot.result.tips) if hasattr(snapshot.result, "tips") else [],
+                        "retired_reason": getattr(context, "retired_reason", None),
+                        "reason": getattr(snapshot.result, "reason", "unknown"),
+                        "freshness": getattr(snapshot, "observation_revision", "unknown"),
+                        "history": history,
+                        "publisher_account": getattr(snapshot.result, "actual_actor_id", "Unknown"),
+                        "unavailable_reason": None,
+                        "raw_finding": getattr(snapshot, "raw_finding", ""),
                     }
                 )
-            return {"pr_number": pr_number, "findings": findings}
+            return {"pr_number": pr_number, "findings": findings, "csrf_token": record.csrf_token}
 
         @router.post("/draft")
         async def draft(request: Request, payload: _DraftRequest):
