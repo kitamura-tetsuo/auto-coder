@@ -1985,8 +1985,8 @@ class AutomationEngine:
                 return False
             if self._is_issue_decomposition_validation_enabled(repo_name):
                 validator = self._get_decomposition_validator(repo_name)
-                decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
-                decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
+                # Delegate to the Review lane instead of submitting inline
+                decision = validator.store.get(validator.identity(*authoritative_set))
                 if decision is not None and decision.verdict == "BLOCKED":
                     self._authorize_and_apply_decomposition_blocked(
                         validator,
@@ -2050,20 +2050,36 @@ class AutomationEngine:
             return
         if self._defer_initial_issue_stabilization(repo_name, authoritative_set[0]):
             return
-        if target_only:
-            decomposition_job, child_jobs = self._schedule_parent_validations(
-                repo_name,
-                authoritative_set,
-                selected_child_number=issue_number,
-                scheduler=self.review_scheduler,
-            )
-        else:
-            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, scheduler=self.review_scheduler)
-        # Do not acknowledge the durable invalidation until every missing
-        # identity has either persisted reusable evidence or returned ERROR.
         failures: list[str] = []
         try:
-            decomposition_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
+            decomposition_decision = None
+            if self._is_issue_decomposition_validation_enabled(repo_name):
+                decomposition_validator = self._get_decomposition_validator(repo_name)
+                decomposition_decision = decomposition_validator.store.get(decomposition_validator.identity(*authoritative_set))
+
+            child_decisions = {}
+            if self._is_issue_specification_validation_enabled(repo_name):
+                individual_validator = self._get_specification_validator(repo_name)
+                for child in authoritative_set[1]:
+                    num = int(child["number"])
+                    if target_only and num != issue_number:
+                        continue
+                    child_title = str(child.get("title") or "")
+                    child_body = str(child.get("body") or "")
+                    relationship = self._child_review_context(*authoritative_set, num)
+                    child_decision, _ = self._review_individual_via_lane(repo_name, num, child_title, child_body, relationship, "invalidation-processing", child)
+                    if child_decision is not None:
+                        child_decisions[num] = child_decision
+
+            has_all_decisions = True
+            if target_only:
+                if issue_number not in child_decisions:
+                    has_all_decisions = False
+            elif len(child_decisions) != len(authoritative_set[1]):
+                has_all_decisions = False
+
+            if (self._is_issue_decomposition_validation_enabled(repo_name) and decomposition_decision is None) or (self._is_issue_specification_validation_enabled(repo_name) and not has_all_decisions):
+                raise ValidationAdmissionDeferred("validation is pending")
             if decomposition_decision is not None and decomposition_decision.verdict == "ERROR":
                 reason = f": {decomposition_decision.remediation_reason}" if decomposition_decision.remediation_reason else ""
                 failures.append(f"decomposition validation failed{reason}")
@@ -2110,8 +2126,8 @@ class AutomationEngine:
                     return None
                 if self._is_issue_decomposition_validation_enabled(repo_name):
                     parent_validator = self._get_decomposition_validator(repo_name)
-                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set)
-                    parent_decision, _ = self._join_parent_validations(decomposition_job, child_jobs)
+                    # Delegate to the Review lane instead of submitting inline
+                    parent_decision = parent_validator.store.get(parent_validator.identity(*authoritative_set))
                     if parent_decision is not None and parent_decision.verdict == "BLOCKED":
                         self._authorize_and_apply_decomposition_blocked(
                             parent_validator,
@@ -2141,8 +2157,19 @@ class AutomationEngine:
                 return None
             # The Review lane owns semantic execution for the submitted
             # family; this intake path observes durable decisions (REQ-010).
-            decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, scheduler=self.review_scheduler)
-            decomposition_decision, joined_child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
+            decomposition_decision = decomposition_validator.store.get(decomposition_validator.identity(*authoritative_set)) if decomposition_validator else None
+
+            joined_child_decisions = {}
+            if self._is_issue_specification_validation_enabled(repo_name):
+                individual_validator = self._get_specification_validator(repo_name)
+                for child in authoritative_set[1]:
+                    num = int(child["number"])
+                    child_title = str(child.get("title") or "")
+                    child_body = str(child.get("body") or "")
+                    relationship = self._child_review_context(*authoritative_set, num)
+                    child_decision, _ = self._review_individual_via_lane(repo_name, num, child_title, child_body, relationship, "stale-jules-intake", child)
+                    if child_decision is not None:
+                        joined_child_decisions[num] = child_decision
             if decomposition_enabled and decomposition_decision is not None:
                 if decomposition_decision.verdict == "BLOCKED":
                     self._authorize_and_apply_decomposition_blocked(
@@ -3073,12 +3100,16 @@ class AutomationEngine:
         """
         validator = self._get_specification_validator(repo_name)
         identity = validator.identity(issue_number, title, body, relationship_context)
-        outcome = self._get_review_service(repo_name).pump_target(issue_number, origin, snapshot)
-        if outcome is not None:
-            decision = outcome.decisions.get(identity.key)
-            if isinstance(decision, ValidationDecision):
-                return decision, identity.key in outcome.applied_identity_keys
-        return self._verify_stored_individual_decision(validator, issue_number, title, body, relationship_context, identity), False
+
+        # We must observe durable decisions instead of invoking reviewer backend inline
+        decision = validator.store.get(identity)
+        if decision is not None:
+            applied = False
+            if decision.verdict == "BLOCKED":
+                applied = decision.findings_published and decision.readiness_removed
+            return decision, applied
+
+        return None, False
 
     @staticmethod
     def _verify_stored_individual_decision(
@@ -4603,8 +4634,27 @@ class AutomationEngine:
                     # Validation eligibility belongs to the submitted generation,
                     # not to implementation eligibility. Submit the complete set
                     # before closed-child filtering or retained-owner routing.
-                    decomposition_job, child_jobs = self._schedule_parent_validations(repo_name, parent_submission_set, config, scheduler=self.review_scheduler)
-                    parent_decision, child_decisions = self._join_parent_validations(decomposition_job, child_jobs)
+                    parent_decision = None
+                    if self._is_issue_decomposition_validation_enabled(repo_name, config):
+                        parent_validator = self._get_decomposition_validator(repo_name)
+                        parent_decision = parent_validator.store.get(parent_validator.identity(*parent_submission_set))
+
+                    child_decisions = {}
+                    if self._is_issue_specification_validation_enabled(repo_name, config):
+                        individual_validator = self._get_specification_validator(repo_name)
+                        for child in parent_submission_set[1]:
+                            num = int(child["number"])
+                            child_title = str(child.get("title") or "")
+                            child_body = str(child.get("body") or "")
+                            relationship = self._child_review_context(*parent_submission_set, num)
+                            child_decision, _ = self._review_individual_via_lane(repo_name, num, child_title, child_body, relationship, "parent-batch-processing", child)
+                            if child_decision is not None:
+                                child_decisions[num] = child_decision
+
+                    if (self._is_issue_decomposition_validation_enabled(repo_name, config) and parent_decision is None) or (self._is_issue_specification_validation_enabled(repo_name, config) and len(child_decisions) != len(parent_submission_set[1])):
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.actions = ["Deferred - parent submission validation is pending"]
+                        return result
                     _, authoritative_children = parent_submission_set
                     open_children = sorted(
                         (child for child in authoritative_children if child.get("state") == "open" and isinstance(child.get("number"), int)),
@@ -4917,8 +4967,31 @@ class AutomationEngine:
                     result.actions = ["Rejected - child is durably reissue-required"]
                     result.blocked_cacheable = True
                     return result
-                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config, scheduler=self.review_scheduler)
-                decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
+                decomposition_decision = None
+                if decomposition_enabled:
+                    decomposition_decision = decomposition_validator.store.get(decomposition_validator.identity(*authoritative_set))
+                    if decomposition_decision is None:
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.actions = ["Deferred - decomposition validation is pending"]
+                        result.refill_retry_required = True
+                        return result
+
+                eager_child_decisions = {}
+                if spec_validation_enabled:
+                    for child in authoritative_set[1]:
+                        num = int(child["number"])
+                        child_title = str(child.get("title") or "")
+                        child_body = str(child.get("body") or "")
+                        relationship = self._child_review_context(*authoritative_set, num)
+                        child_decision, _ = self._review_individual_via_lane(repo_name, num, child_title, child_body, relationship, "eager-child-processing", child)
+                        if child_decision is not None:
+                            eager_child_decisions[num] = child_decision
+
+                    if len(eager_child_decisions) != len(authoritative_set[1]):
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.actions = ["Deferred - child specification validation is pending"]
+                        result.refill_retry_required = True
+                        return result
                 if decomposition_enabled and decomposition_decision is not None:
                     if decomposition_decision.verdict == "ERROR":
                         result.error = "Decomposition validation failed; parent readiness was preserved for retry"
@@ -5023,9 +5096,7 @@ class AutomationEngine:
                 return result
             if spec_validation_enabled:
                 if inherited_ready:
-                    # This job was submitted alongside decomposition validation, so
-                    # READY completion order cannot bypass either authorization gate.
-                    decision = eager_child_jobs[item_number].result()
+                    decision = eager_child_decisions[item_number]
                 else:
                     # The Review lane owns semantic execution; this gate
                     # observes the durable decision instead of submitting a

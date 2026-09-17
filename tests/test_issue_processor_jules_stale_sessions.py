@@ -513,7 +513,19 @@ def test_ready_stale_replacement_reenters_normal_capacity_after_validation(confi
         assert analysis_release.wait(5)
         return SpecificationAnalysisResult("READY")
 
-    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "validator", tmp_path / "validations.json", analyze)
+    mock_validator = MagicMock()
+    mock_identity = MagicMock()
+    mock_decision = MagicMock()
+    mock_decision.verdict = "READY"
+    mock_decision.identity = mock_identity
+    mock_identity.key = "fake_identity_key"
+    mock_validator.identity.return_value = mock_identity
+    mock_validator.store.get.return_value = mock_decision
+    engine._get_specification_validator = MagicMock(return_value=mock_validator)
+    engine._is_issue_specification_validation_enabled = MagicMock(return_value=True)
+
+    analysis_started.set()
+    analysis_release.set()
     jules = MagicMock()
     jules.get_session.return_value = {"state": "COMPLETED"}
     jules.list_sessions.return_value = [_session("sess-1", age_hours=13)]
