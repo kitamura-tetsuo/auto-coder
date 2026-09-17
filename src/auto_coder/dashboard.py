@@ -445,7 +445,11 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                             window.dispatchEvent(disabledEvent);
                             return null;
                         }}
-                        return r.json().then(data => ({{data: data, csrf: r.headers.get("x-csrf-token") || ""}}));
+                        return r.json().then(data => ({{
+                            data: data,
+                            csrf: r.headers.get("x-csrf-token") || "",
+                            saved_state: JSON.parse(sessionStorage.getItem("adjudication_state_" + pr_number) || "{{}}")
+                        }}));
                     }})
                     .then(result => {{
                         if (result) {{
@@ -631,6 +635,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                                         const evt = new CustomEvent("adjudication_submit_success", {{detail: res.id}});
                                         window.dispatchEvent(evt);
                                     }} else if (res.status === 409 || res.status === 400) {{
+                                        let st = JSON.parse(sessionStorage.getItem("adjudication_state_" + pr_number) || "{{}}");
+                                        delete st["{finding['context_id']}"];
+                                        sessionStorage.setItem("adjudication_state_" + pr_number, JSON.stringify(st));
+
                                         const evt = new CustomEvent("adjudication_submit_rejected", {{detail: res.status}});
                                         window.dispatchEvent(evt);
                                     }} else {{
