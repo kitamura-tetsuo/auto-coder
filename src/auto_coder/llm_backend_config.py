@@ -29,6 +29,7 @@ REQUIRED_OPTIONS_BY_BACKEND = {
     "jules": [],  # Session-based, no required flags
     "codex-mcp": [],  # MCP-based, options flexible
     "aider": [],  # Aider-based, options flexible
+    "opencode": [],  # Local CLI; the required "provider/model" value is validated by OpenCodeClient
 }
 
 
