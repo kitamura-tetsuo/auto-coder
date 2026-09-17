@@ -177,6 +177,15 @@ class LLMOutputLogger:
             interaction_id = get_active_interaction_id()
             if interaction_id:
                 data["interaction_id"] = interaction_id
+        else:
+            # If no context is active, do not allow arbitrary metadata to invent these correlation fields
+            data.pop("review_id", None)
+            data.pop("interaction_id", None)
+            data.pop("repository", None)
+            data.pop("target_type", None)
+            data.pop("target_number", None)
+            data.pop("review_kind", None)
+            data.pop("generation", None)
 
         # Add timestamp if not present
         if "timestamp" not in data:

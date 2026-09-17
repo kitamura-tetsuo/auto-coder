@@ -347,3 +347,106 @@ def test_as_006_instrumentation_cannot_manufacture_retries(backend_manager, temp
 
     assert res == "Response from backend-A"
     assert backend_manager._current_backend_name() == "backend-A"
+
+
+def test_tog_b015caabe875_provider_rotation_distinct_interactions(backend_manager, temp_audit_db, mock_llm_config):
+    # Setup ProviderManager to report 2 providers for backend-A
+    backend_manager._provider_manager = MagicMock()
+    backend_manager._provider_manager.has_providers.return_value = True
+    backend_manager._provider_manager.get_provider_count.return_value = 2
+
+    # First rotation gives A1, second gives A2
+    backend_manager._get_current_provider_name = MagicMock(side_effect=["A1", "A2", "A3"])
+    backend_manager._provider_manager.advance_to_next_provider.return_value = True
+
+    # Needs to allow rotation natively
+    mock_llm_config.get_backend_config.side_effect = lambda name: MagicMock(backend_type=f"{name}-type", usage_limit_retry_count=0, always_switch_after_execution=False)
+
+    # We need a client that fails first time, succeeds second time
+    call_count = [0]
+
+    class RotatingClient:
+        def __init__(self, name):
+            self.name = name
+            self.model = "test-model"
+            self.model_name = "test-model"
+            self.session_id = None
+            self.config_backend = MagicMock()
+            self.config_backend.backend_type = f"{name}-type"
+
+        def get_last_session_id(self):
+            return None
+
+        def _run_llm_cli(self, prompt, is_noedit=False):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise AutoCoderUsageLimitError("Limit")
+            return "Response A2"
+
+    backend_manager._clients["backend-A"] = RotatingClient("backend-A")
+
+    with bind_review_context("rev-tog-1", "org/repo", "Issue", "123", "spec", "gen-tog"):
+        res = backend_manager.run_prompt("hello")
+
+    assert res == "Response A2"
+    assert call_count[0] == 2
+
+    conn = sqlite3.connect(temp_audit_db._get_db_path("org/repo"))
+    conn.row_factory = sqlite3.Row
+    interactions = conn.execute("SELECT * FROM interaction WHERE review_id = 'rev-tog-1' ORDER BY seq ASC").fetchall()
+
+    assert len(interactions) == 2
+    assert interactions[0]["provider_alias"] == "A1"
+    assert interactions[0]["completion_status"] == "RAISED"
+
+    assert interactions[1]["provider_alias"] == "A2"
+    assert interactions[1]["completion_status"] == "RETURNED"
+
+    assert interactions[0]["interaction_id"] != interactions[1]["interaction_id"]
+
+
+def test_tog_44b9aca18413_logger_protects_correlation_fields_from_metadata(tmp_path):
+    import json
+
+    from src.auto_coder.llm_output_logger import LLMOutputLogger
+    from src.auto_coder.review_capture.context import bind_interaction_id
+
+    log_path = tmp_path / "llm_output.jsonl"
+    logger = LLMOutputLogger(enabled=True, log_path=str(log_path))
+
+    with bind_review_context("rev-real", "org/repo", "Issue", "42", "spec", "gen"):
+        with bind_interaction_id("interaction-real"):
+            with logger:
+                # Malicious metadata and response
+                metadata = {"review_id": "rev-evil", "interaction_id": "evil"}
+                logger.log_request("backend-A", prompt="hello", metadata=metadata)
+                logger.log_response("backend-A", response="rev-evil", metadata=metadata)
+
+    # Now outside any review context
+    with logger:
+        metadata = {"review_id": "rev-evil-out", "interaction_id": "evil-out"}
+        logger.log_request("backend-A", prompt="out", metadata=metadata)
+
+    with open(log_path, "r") as f:
+        lines = f.readlines()
+
+    assert len(lines) == 3
+    req_json = json.loads(lines[0])
+    res_json = json.loads(lines[1])
+    out_json = json.loads(lines[2])
+
+    # Inside context, trusted fields override metadata
+    assert req_json["review_id"] == "rev-real"
+    assert req_json["interaction_id"] == "interaction-real"
+
+    assert res_json["review_id"] == "rev-real"
+    assert res_json["interaction_id"] == "interaction-real"
+    assert res_json["response"] == "rev-evil"  # payload survives
+
+    # Outside context, metadata keys are either cleaned or logged without correlation elevation
+    # Since logger `_write_json_line` adds correlation fields IF active, they won't be added here.
+    # The requirement: "assert no evil interaction_id is persisted as correlated"
+    # Wait, if logger.log_request takes **metadata and dumps it, maybe 'interaction_id' stays?
+    # Requirement: "interaction_id from metadata must not persist when no interaction is bound"
+    assert out_json.get("review_id") != "rev-evil-out"
+    assert out_json.get("interaction_id") != "evil-out"
