@@ -252,13 +252,24 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                         session_details = jules_client.get_session(session_id)
                         session_prompt = session_details.get("prompt")
                         if session_prompt:
+                            from .managed_prompts import get_managed_prompt, recover_original_task
+
+                            effective_repo = repo_name or "unknown"
+                            try:
+                                original_task = recover_original_task(session_prompt, effective_repo, session_id)
+                            except RuntimeError as e:
+                                logger.error(f"Failed to recover original task for {session_id}: {e}")
+                                continue
+                            managed = get_managed_prompt(effective_repo, session_id)
+                            is_noedit = managed.no_edit if managed else False
+
                             source_ctx = session_details.get("sourceContext", {})
                             base_branch = source_ctx.get("githubRepoContext", {}).get("startingBranch", "main")
                             if target_num:
                                 title = session_details.get("title", f"Restarted session for issue/PR #{target_num}")
                             else:
                                 title = session_details.get("title", f"Restarted session from {session_id}")
-                            new_session_id = jules_client.start_session(prompt=session_prompt, repo_name=repo_name or "unknown", base_branch=base_branch, title=title)
+                            new_session_id = jules_client.start_session(prompt=original_task, repo_name=effective_repo, base_branch=base_branch, is_noedit=is_noedit, title=title)
                             logger.info(f"Started new session {new_session_id}")
                             if target_num:
                                 if error_cloud_manager:
@@ -613,7 +624,15 @@ def check_and_start_recurrent_jules_tasks(
                 if not session_prompt:
                     continue
 
-                session_metadata, _ = _parse_prompt_file_content(session_prompt)
+                from .managed_prompts import recover_original_task
+
+                try:
+                    original_task = recover_original_task(session_prompt, repo_name, session_id)
+                except RuntimeError as e:
+                    logger.error(f"Failed to recover original task for {session_id}: {e}")
+                    continue
+
+                session_metadata, _ = _parse_prompt_file_content(original_task)
                 session_names_val = session_metadata.get("name", [])
                 if isinstance(session_names_val, str):
                     session_names = [session_names_val.strip()]
@@ -794,7 +813,15 @@ def check_and_restart_recurrent_jules_task_for_pr(repo_name: str, pr_number: int
             logger.info(f"No startup prompt found in session {session_id}")
             return
 
-        session_metadata, _ = _parse_prompt_file_content(session_prompt)
+        from .managed_prompts import recover_original_task
+
+        try:
+            original_task = recover_original_task(session_prompt, repo_name, session_id)
+        except RuntimeError as e:
+            logger.error(f"Failed to recover original task for {session_id}: {e}")
+            return
+
+        session_metadata, _ = _parse_prompt_file_content(original_task)
         session_names_val = session_metadata.get("name", [])
         if isinstance(session_names_val, str):
             session_names = [session_names_val.strip()]

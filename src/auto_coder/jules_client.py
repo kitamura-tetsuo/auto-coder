@@ -121,10 +121,14 @@ class JulesClient(CloudTaskClientBase):
         Returns:
             Session ID for the started session
         """
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+        from .managed_prompts import save_managed_prompt
+
         try:
+            prepared = prepare_cloud_task(task=prompt, recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=is_noedit)
             # Prepare the request
             url = f"{self.base_url}/sessions"
-            payload = {"prompt": prompt, "automationMode": "AUTO_CREATE_PR", "sourceContext": {"source": f"sources/github/{repo_name}", "githubRepoContext": {"startingBranch": base_branch}}}
+            payload = {"prompt": prepared.prepared_task, "automationMode": "AUTO_CREATE_PR", "sourceContext": {"source": f"sources/github/{repo_name}", "githubRepoContext": {"startingBranch": base_branch}}}
 
             if title:
                 payload["title"] = title
@@ -163,6 +167,8 @@ class JulesClient(CloudTaskClientBase):
 
             # Track the session
             self.active_sessions[session_id] = prompt
+
+            save_managed_prompt(repo_name, session_id, prepared)
 
             logger.info(f"Started Jules session: {session_id}")
             return session_id
@@ -771,6 +777,12 @@ class JulesClient(CloudTaskClientBase):
         """Assign follow-up work to an existing Jules implementation session."""
         if not task_id or not message:
             return False
+
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+
+        prepared = prepare_cloud_task(task=message, recipient="jules", operation=CloudTaskOperation.CONTINUATION, no_edit=False)
+        message = prepared.prepared_task
+
         try:
             self.send_message(task_id, message)
             return True

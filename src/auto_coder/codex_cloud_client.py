@@ -172,6 +172,7 @@ class CodexCloudClient(CloudTaskClientBase):
         repo_name: str = "",
         base_branch: str = "",
         title: Optional[str] = None,
+        is_noedit: bool = False,
     ) -> str:
         """Start a new asynchronous cloud task on Codex Cloud.
 
@@ -183,11 +184,12 @@ class CodexCloudClient(CloudTaskClientBase):
             repo_name: Repository name (optional).
             base_branch: Base branch name (optional).
             title: Optional task title (for logging).
+            is_noedit: Whether this is a noedit run.
 
         Returns:
             The created Task ID.
         """
-        result = self.submit_task(prompt, repo_name, base_branch, title)
+        result = self.submit_task(prompt, repo_name, base_branch, title, is_noedit)
         if result.outcome is not CodexSubmissionOutcome.ACCEPTED:
             if result.outcome is CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED:
                 raise ValueError(result.diagnostic)
@@ -200,8 +202,14 @@ class CodexCloudClient(CloudTaskClientBase):
         repo_name: str = "",
         base_branch: str = "",
         title: Optional[str] = None,
+        is_noedit: bool = False,
     ) -> CodexSubmissionResult:
         """Submit once and retain evidence from both output streams."""
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+
+        prepared = prepare_cloud_task(task=prompt, recipient="codex-cloud", operation=CloudTaskOperation.NEW_TASK, no_edit=is_noedit)
+
+        prompt = prepared.prepared_task
         logger.info(f"Starting Codex Cloud task (title={title or 'N/A'}, branch={base_branch or 'N/A'})")
 
         effective_repo = repo_name or self.repo_name
@@ -268,6 +276,11 @@ class CodexCloudClient(CloudTaskClientBase):
             if task_url:
                 self.task_urls[task_id] = task_url
             self.active_tasks[task_id] = prompt
+
+            from .managed_prompts import save_managed_prompt
+
+            save_managed_prompt(effective_repo or "", task_id, prepared)
+
             logger.info(f"Codex Cloud returned task: {task_id} (url={task_url or 'N/A'})")
             return CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, task_id, task_url or "", output)
 
@@ -635,6 +648,11 @@ class CodexCloudClient(CloudTaskClientBase):
         if not is_valid_codex_cloud_task_id(task_id) or not message:
             logger.warning("Codex Cloud follow-up requires a task ID and message")
             return False
+
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+
+        prepared = prepare_cloud_task(task=message, recipient="codex-cloud", operation=CloudTaskOperation.CONTINUATION, no_edit=False)
+        message = prepared.prepared_task
 
         wham = self.wham_client or CodexWhamClient()
         message_fingerprint = hashlib.sha256(message.encode("utf-8")).hexdigest()

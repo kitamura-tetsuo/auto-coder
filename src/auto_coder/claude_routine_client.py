@@ -113,6 +113,7 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         repo_name: str = "",
         base_branch: str = "",
         title: Optional[str] = None,
+        is_noedit: bool = False,
     ) -> Tuple[str, Optional[str]]:
         """Fire a Claude routine via HTTP POST to its trigger endpoint.
 
@@ -121,6 +122,7 @@ class ClaudeRoutineClient(CloudTaskClientBase):
             repo_name: Repository name (optional)
             base_branch: Base branch name (optional)
             title: Optional title/description for logging
+            is_noedit: Whether this is a noedit run
 
         Returns:
             Tuple of (session_id, session_url)
@@ -130,7 +132,12 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         if not self.url:
             raise ValueError(f"No URL configured for Claude Routine backend '{self.backend_name}'. " "Please configure 'url' in llm_config.toml.")
 
-        payload: Dict[str, Any] = {"text": prompt}
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+        from .managed_prompts import save_managed_prompt
+
+        prepared = prepare_cloud_task(task=prompt, recipient="claude-routine", operation=CloudTaskOperation.NEW_TASK, no_edit=is_noedit)
+
+        payload: Dict[str, Any] = {"text": prepared.prepared_task}
 
         logger.info(f"Firing Claude Routine on {self.url} (title={title or 'N/A'})")
         logger.info(f"🤖 POST {self.url}")
@@ -169,6 +176,8 @@ class ClaudeRoutineClient(CloudTaskClientBase):
             }
             _save_claude_routine_state(state)
 
+            save_managed_prompt(repo_name, session_id, prepared)
+
             logger.info(f"Successfully fired Claude Routine: session_id={session_id}, session_url={session_url}")
             return session_id, session_url
 
@@ -198,7 +207,7 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         Returns:
             Session ID of the routine session
         """
-        session_id, _ = self.fire_routine(prompt, repo_name=repo_name, base_branch=base_branch, title=title)
+        session_id, _ = self.fire_routine(prompt, repo_name=repo_name, base_branch=base_branch, title=title, is_noedit=is_noedit)
         return session_id
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
@@ -206,7 +215,7 @@ class ClaudeRoutineClient(CloudTaskClientBase):
 
         Implements LLMClientBase interface.
         """
-        session_id, session_url = self.fire_routine(prompt)
+        session_id, session_url = self.fire_routine(prompt, is_noedit=is_noedit)
         return f"Claude Routine fired successfully. Session ID: {session_id}, URL: {session_url}"
 
     def close(self) -> None:
@@ -401,6 +410,12 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         """Assign work to an existing Claude cloud session, including post-PR work."""
         if not task_id or not message:
             return False
+
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+
+        prepared = prepare_cloud_task(task=message, recipient="claude-routine", operation=CloudTaskOperation.CONTINUATION, no_edit=False)
+        message = prepared.prepared_task
+
         cmd = ["claude", "-p", f"--cloud={task_id}", message]
         env = os.environ.copy()
         if self.token:
