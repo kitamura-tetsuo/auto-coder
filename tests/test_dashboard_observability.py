@@ -1037,6 +1037,8 @@ class TestDependencyRescanDashboardIntegration:
             init_dashboard(mock_ui, engine, "owner/repo")
 
     def test_as_002_successful_rescan_is_not_successful_dependent(self, rescan_harness, mock_ui):
+        pass
+
         engine, target = rescan_harness
         pass
 

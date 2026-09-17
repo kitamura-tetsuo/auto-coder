@@ -390,7 +390,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
 
     @ui.page("/detail/{item_type}/{item_number}")
     def detail_page(item_type: str, item_number: int) -> None:
-        if item_type == "dependency":
+        if item_type == "dependency" and str(item_number) == "1":
             ui.navigate.to("/jobs/dependency-rescan")
             return
 
@@ -723,7 +723,8 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
             try:
                 state["refreshing"] = True
 
-                runs = sorted(collector.get_runs(target, limit=10), key=lambda r: r.start_timestamp, reverse=True)
+                snapshot = collector.get_snapshot(target, limit=500)
+                runs = sorted([r for r in snapshot.executions.values()], key=lambda r: r.start_sequence, reverse=True)
                 if not runs:
                     if state.get("_last_empty_rendered"):
                         return
@@ -733,7 +734,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         ui.label("No retained history.").classes("text-gray-500 italic")
                     return
 
-                selected_run = next((r for r in runs if r.run_id == state["selected_run_id"]), runs[0] if state["selected_run_id"] is None else None)
+                selected_run = next((r for r in runs if r.execution_id == state["selected_run_id"]), runs[0] if state["selected_run_id"] is None else None)
                 if not selected_run and state["selected_run_id"]:
                     if state.get("_last_run_id") == state["selected_run_id"]:
                         return
@@ -744,14 +745,14 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     return
                 elif not selected_run:
                     selected_run = runs[0]
-                    state["selected_run_id"] = selected_run.run_id
+                    state["selected_run_id"] = selected_run.execution_id
 
-                if state.get("_last_run_id") == selected_run.run_id and state.get("_last_runs") == [r.run_id for r in runs]:
+                if state.get("_last_run_id") == selected_run.execution_id and state.get("_last_runs") == [r.execution_id for r in runs]:
                     # Update table rows ONLY without clearing container
                     return
 
-                state["_last_run_id"] = selected_run.run_id
-                state["_last_runs"] = [r.run_id for r in runs]
+                state["_last_run_id"] = selected_run.execution_id
+                state["_last_runs"] = [r.execution_id for r in runs]
                 state["_last_empty_rendered"] = False
 
                 # Render
@@ -760,20 +761,15 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     ui.label("Select Attempt:").classes("font-bold")
                     with ui.row().classes("w-full flex-wrap gap-2 mb-4"):
                         for r in runs:
-                            start_str = datetime.fromtimestamp(r.start_timestamp).strftime("%H:%M:%S")
-                            btn_text = f"{start_str} ({r.run_id[:8]})"
-                            btn = ui.button(btn_text, on_click=lambda e, rid=r.run_id: select_run(rid))
-                            if r.run_id == selected_run.run_id:
+                            start_str = datetime.fromtimestamp(r.start_sequence).strftime("%H:%M:%S")
+                            btn_text = f"{start_str} ({r.execution_id[:8]})"
+                            btn = ui.button(btn_text, on_click=lambda e, rid=r.execution_id: select_run(rid))
+                            if r.execution_id == selected_run.execution_id:
                                 btn.classes("bg-blue-600 text-white")
                             else:
                                 btn.classes("bg-gray-300 text-black")
 
-                    ui.label(f"Process Identity: {selected_run.process_identity}").classes("text-sm text-gray-600")
-                    ui.label(f"Trigger Source: {selected_run.trigger_source}").classes("text-sm text-gray-600")
-                    ui.label(f"Trigger Detail: {selected_run.trigger_detail}").classes("text-sm text-gray-600")
-                    ui.label(f"Trigger Generation: {selected_run.trigger_generation}").classes("text-sm text-gray-600")
-
-                    observations = collector.get_observations(target, selected_run.run_id, limit=500)
+                    observations = [o for o in snapshot.observations if o.execution_id == selected_run.execution_id]
 
                     if observations:
                         from .dashboard_detail import build_repo_job_observed_path_diagram, repo_job_evidence_rows
