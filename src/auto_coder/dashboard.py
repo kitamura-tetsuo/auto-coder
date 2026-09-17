@@ -611,6 +611,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                                     const evt_id = new CustomEvent("adjudication_decision_id", {{detail: draft.decision_id}});
                                     window.dispatchEvent(evt_id);
 
+                                    let st = JSON.parse(sessionStorage.getItem("adjudication_state_" + pr_number) || "{{}}");
+                                    st["{finding['context_id']}"] = draft.decision_id;
+                                    sessionStorage.setItem("adjudication_state_" + pr_number, JSON.stringify(st));
+
                                     return fetch("/dashboard-adjudication/submit", {{
                                         method: "POST",
                                         headers: {{
@@ -655,13 +659,6 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
 
                         def on_decision_id(e):
                             local_state["decision_id"] = e.args
-                            ui.run_javascript(
-                                f"""
-                                let st = JSON.parse(sessionStorage.getItem("adjudication_state_{pr_number}") || "{{}}");
-                                st["{finding['context_id']}"] = "{e.args}";
-                                sessionStorage.setItem("adjudication_state_{pr_number}", JSON.stringify(st));
-                            """
-                            )
 
                         def on_submit_success(e):
                             local_state["submitting"] = False
