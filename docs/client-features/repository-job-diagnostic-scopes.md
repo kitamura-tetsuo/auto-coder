@@ -50,20 +50,44 @@ Trace-sink failures are caught and logged via loguru and never change a
 business return value/exception, and this module makes no GitHub/provider
 or queue call itself.
 
-This module is intentionally scope-limited: it does not instrument the
-production webhook/worker paths (see the child issue that wires
-`entity_invalidation.py`'s dependency fan-out into it) and it adds no
-dashboard route (see the child issue that exposes it as a read-only detail
-view). It also does not change the durable queue's `dependency:1` token,
-invalidation generation, or lifecycle in `entity_invalidation.py`,
-consistent with `docs/dashboard-observability.md`'s existing distinction
-between the durable queue's coalescing generation and a diagnostic
-execution identity. `tests/test_repo_job_trace.py` covers target
-resolution/isolation (including the Issue/PR-#1 sentinel-collision case),
-generation-reuse across retries and interleaved asyncio/thread attempts,
-snapshot immutability and truthful clipping/eviction, restart-safe absence
-of fabricated history, diagnostic-failure/business-outcome independence,
-and non-interference with the existing Issue/PR recorder and its legacy/
-unsupported-record handling. Run `bash scripts/test.sh
-tests/test_repo_job_trace.py tests/test_execution_trace.py
-tests/test_dashboard_detail_logic.py` for this boundary.
+`tests/test_repo_job_trace.py` covers target resolution/isolation (including
+the Issue/PR-#1 sentinel-collision case), generation-reuse across retries and
+interleaved asyncio/thread attempts, snapshot immutability and truthful
+clipping/eviction, restart-safe absence of fabricated history,
+diagnostic-failure/business-outcome independence, and non-interference with
+the existing Issue/PR recorder and its legacy/unsupported-record handling.
+Run `bash scripts/test.sh tests/test_repo_job_trace.py
+tests/test_execution_trace.py tests/test_dashboard_detail_logic.py` for this
+boundary.
+
+Issue #2001 wires a real producer into this interface. `AutomationEngine.
+_expand_dependency_obligation` opens one `RepoJobExecutionScope` per actual
+scan attempt (never one merely for durable intake/queueing) covering
+authoritative Issue enumeration and every per-Issue handoff;
+`AutomationEngine.invalidate_entity` records the webhook-triggered intake
+evidence for the `dependency` durable identity (event/action/delivery/
+source-Issue references and the actual accepted/duplicate/failed outcome)
+and, only when called from inside that scan's own scope, each Issue
+handoff's actually committed disposition; and `AutomationEngine._worker_loop`
+attaches the scan's own durable-claim acknowledgement as a late
+stage-reached fact on the same execution id once the outer claim
+completion/release genuinely happens. `DurableInvalidationQueue` gained
+`invalidate_with_transition`/`complete_with_outcome`, plus an enriched
+`recover` return value, that observe the real committed transition at the
+same locked boundary that performs it, instead of guessing from the legacy
+Boolean; `invalidate()`/`complete()` keep their exact prior Boolean
+semantics as thin wrappers, and every durable-queue business behavior
+(webhook acceptance/rejection, coalescing, stabilization, retry/claim
+transitions, CI/PR handling) is unchanged. It still does not add a dashboard
+route (see the child issue, #2002, that exposes this evidence as a read-only
+detail view), and it does not change the durable queue's `dependency:1`
+token, invalidation generation, or lifecycle, consistent with
+`docs/dashboard-observability.md`'s existing distinction between the durable
+queue's coalescing generation and a diagnostic execution identity.
+`tests/test_dependency_rescan_repo_job_trace.py` is the production-path
+regression suite for this wiring: real `/hooks/github` deliveries through
+`create_app`, the real durable queue, and the real worker loop, reading the
+resulting evidence back from `RepoJobTraceCollector`'s snapshot. Run
+`bash scripts/test.sh tests/test_repo_job_trace.py
+tests/test_entity_invalidation.py
+tests/test_dependency_rescan_repo_job_trace.py` for this boundary.

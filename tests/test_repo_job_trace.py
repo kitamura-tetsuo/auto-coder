@@ -85,6 +85,21 @@ class TestSchemaFields:
         assert finished.kind == RepoJobObservationKind.EXECUTION_FINISHED.value
         assert finished.outcome == Outcome.COMPLETED.value
 
+    def test_handoff_aggregate_fields_default_absent_not_zero(self):
+        """Issue #2001: per-attempt discovery/handoff totals stay unknown, not a guessed 0, until a producer sets them."""
+        facts = RepoJobFacts()
+        assert facts.discovered_issue_count is None
+        assert facts.attempted_handoff_count is None
+        assert facts.confirmed_handoff_count is None
+        assert facts.failed_or_unconfirmed_handoff_count is None
+        assert facts.new_pending_handoff_count is None
+        assert facts.coalesced_handoff_count is None
+        assert facts.followup_required_handoff_count is None
+
+        populated = RepoJobFacts(discovered_issue_count=3, attempted_handoff_count=3, confirmed_handoff_count=2, failed_or_unconfirmed_handoff_count=1, new_pending_handoff_count=1, coalesced_handoff_count=1, followup_required_handoff_count=0)
+        assert populated.discovered_issue_count == 3
+        assert populated.confirmed_handoff_count == 2
+
 
 class TestAS001SeparateTargetsAndSentinelCollision:
     """AS-001: repo rescan, Issue #1, PR #1, and another repo's rescan stay isolated."""
@@ -154,6 +169,23 @@ class TestAS002GenerationReuseAndInterleavedAttempts:
 
         assert handle_a.scope.execution_id != handle_b.scope.execution_id
         assert handle_a.scope.start_sequence < handle_b.scope.start_sequence
+
+    def test_cancellation_reports_cancelled_not_failed(self):
+        """Issue #2001: a cancelled attempt is distinguishable from a genuine failure."""
+        collector = get_repo_job_trace_collector()
+        target = RepoJobTarget("o/r", DEPENDENCY)
+
+        async def scenario():
+            with pytest.raises(asyncio.CancelledError):
+                with collector.start_execution(target, origin="worker") as handle:
+                    raise asyncio.CancelledError()
+            return handle
+
+        handle = asyncio.run(scenario())
+        snapshot = collector.get_snapshot(target)
+        finished = [o for o in snapshot.observations if o.execution_id == handle.scope.execution_id and o.kind == "execution-finished"]
+        assert len(finished) == 1
+        assert finished[0].outcome == Outcome.CANCELLED.value
 
     def test_interleaved_async_thread_attempts_stay_isolated_and_ordered(self):
         collector = get_repo_job_trace_collector()

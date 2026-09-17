@@ -266,6 +266,13 @@ async def process_github_payload(
         # so removed edges and downtime cannot erase reverse discovery.
         identities.add(("dependency", 1))
 
+    # Positively identified source Issue references for this delivery's
+    # dependency-triggering evidence (Issue #2001, REQ-003): every "issue"
+    # identity discovered above, whether from an Issue-lifecycle event or a
+    # native issue_dependencies/sub_issues endpoint. Diagnostic-only -- it
+    # never changes which entities are actually invalidated.
+    dependency_trigger_issue_refs = tuple(sorted(n for entity_type, n in identities if entity_type == "issue"))
+
     # Queue the scope token first. Its scan then coalesces with endpoint rows
     # from this delivery instead of redispatching an endpoint already handled.
     for entity_type, number in sorted(identities, key=lambda identity: (identity[0] != "dependency", identity)):
@@ -298,11 +305,12 @@ async def process_github_payload(
                 *invalidation_args,
                 not_before=not_before,
                 urgent_admission=True,
+                dependency_trigger_issue_refs=dependency_trigger_issue_refs,
             )
         elif not_before is not None:
-            accepted = await engine.invalidate_entity(*invalidation_args, not_before=not_before)
+            accepted = await engine.invalidate_entity(*invalidation_args, not_before=not_before, dependency_trigger_issue_refs=dependency_trigger_issue_refs)
         else:
-            accepted = await engine.invalidate_entity(*invalidation_args)
+            accepted = await engine.invalidate_entity(*invalidation_args, dependency_trigger_issue_refs=dependency_trigger_issue_refs)
         logger.info(f"{'Accepted' if accepted else 'Ignored duplicate'} invalidation for {entity_type} #{number}")
 
 

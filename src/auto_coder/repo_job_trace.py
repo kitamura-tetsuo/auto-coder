@@ -55,6 +55,7 @@ Design notes
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import contextlib
 import contextvars
@@ -199,6 +200,17 @@ class RepoJobFacts:
     target_issue_refs: ClippedNumberRefs = field(default_factory=ClippedNumberRefs)
     failure_reason: Optional[str] = None
     scheduled_retry_not_before: Optional[float] = None
+    # Per-attempt discovery/handoff aggregate counts (Issue #2001). Each is
+    # independently optional/absent-vs-known, exactly like every other field
+    # here: a producer that never reached that phase leaves it None rather
+    # than reporting a guessed zero.
+    discovered_issue_count: Optional[int] = None
+    attempted_handoff_count: Optional[int] = None
+    confirmed_handoff_count: Optional[int] = None
+    failed_or_unconfirmed_handoff_count: Optional[int] = None
+    new_pending_handoff_count: Optional[int] = None
+    coalesced_handoff_count: Optional[int] = None
+    followup_required_handoff_count: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -320,7 +332,13 @@ class RepoJobExecutionHandle:
             if not self._finished:
                 outcome = self._pending_outcome
                 if outcome is None:
-                    outcome = Outcome.FAILED if exc_type is not None else Outcome.UNKNOWN
+                    if exc_type is not None:
+                        if isinstance(exc_type, type) and issubclass(exc_type, asyncio.CancelledError):
+                            outcome = Outcome.CANCELLED
+                        else:
+                            outcome = Outcome.FAILED
+                    else:
+                        outcome = Outcome.UNKNOWN
                 self._collector._finish_execution(self.scope, self._origin, outcome, None)
                 self._finished = True
         finally:

@@ -807,3 +807,49 @@ not claim a production-to-view regression, which is owned by #2001/#2002
 once a real producer and dashboard route exist. Run
 `bash scripts/test.sh tests/test_repo_job_trace.py tests/test_execution_trace.py tests/test_dashboard_detail_logic.py`
 for this boundary.
+
+Issue #2001 (child B of the #1999 dependency-rescan observability tracking
+parent) wires a real producer into `repo_job_trace.py`'s
+`(repository, "dependency-rescan")` target: `AutomationEngine.
+_expand_dependency_obligation` now opens its own `RepoJobExecutionScope`
+around authoritative enumeration (`GitHubClient.get_open_entities_strict`)
+and every per-Issue handoff, `AutomationEngine.invalidate_entity` records
+dependency-triggering webhook intake (event/action/delivery/source-Issue
+evidence) and, when called from inside that scan's scope, each Issue
+handoff's actual committed disposition, and `AutomationEngine._worker_loop`
+records the dependency job's own durable-claim acknowledgement as a late
+stage-reached fact against the same execution id once the outer claim
+completion/release actually happens. `DurableInvalidationQueue.invalidate`/
+`complete`/`recover` gained `invalidate_with_transition`/
+`complete_with_outcome`/an enriched `recover` return value that observe the
+real committed transition (`new_pending`/`coalesced`/`followup_required`,
+`cleared`/`followup_pending`/`stale_no_op`, and the actual recovered
+identities) at the same locked state-owning boundary that performs it; the
+existing `invalidate()`/`complete()` Boolean return and every other
+durable-queue behavior (webhook acceptance/rejection, coalescing,
+stabilization deadlines, retry/claim transitions, CI/PR paths) are
+unchanged -- these are thin wrappers over the richer calls, and no existing
+caller consumed `recover()`'s previous `None` return. This still adds no new
+processing origin, admission gate, outcome, or provider route for Issue/PR
+processing itself (`execution_trace.py`'s schema-version-1 interface,
+`dashboard.py`'s `active_workers`/queue status projection, and every
+downstream Issue/PR execution scope are untouched and continue exactly as
+before); it is purely additive diagnostic evidence for the repository-scoped
+scan that surrounds them, and a diagnostic-recorder failure at any of these
+boundaries is caught and logged without changing the real webhook response,
+durable transition, or scan/handoff outcome it describes (REQ-009). A
+dashboard route for this evidence remains child C (#2002)'s scope.
+`tests/test_entity_invalidation.py` adds direct `DurableInvalidationQueue`
+coverage for the three richer transition/outcome/recovery APIs, and
+`tests/test_dependency_rescan_repo_job_trace.py` is the production-path
+regression suite: it drives real `/hooks/github` deliveries through
+`create_app`, the real durable queue, and the real worker loop, then reads
+back `RepoJobTraceCollector`'s snapshot to verify intake evidence (accepted,
+duplicate, and persistence-failure), a running scan visible mid-enumeration/
+mid-handoff, discovered-Issue-count and per-disposition handoff totals
+derived from the recorded transitions (not a legacy Boolean or queue
+length), an incomplete scan on enumeration/handoff failure, recovered
+pending work after a restart, and that diagnostic-recorder failure changes
+none of the real business outcome. Run
+`bash scripts/test.sh tests/test_repo_job_trace.py tests/test_entity_invalidation.py tests/test_dependency_rescan_repo_job_trace.py`
+for this boundary.
