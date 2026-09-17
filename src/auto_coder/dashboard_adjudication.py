@@ -347,7 +347,7 @@ class AdjudicationWriteService:
             config = get_dashboard_adjudication_config(repo_name=self.repo_name)
             if config and config.github_token_file:
                 try:
-                    resolved_publisher = str(await _resolve_publisher_identity(config.github_token_file))
+                    resolved_publisher = str(_resolve_publisher_identity(config.github_token_file))
                 except Exception:
                     pass
 

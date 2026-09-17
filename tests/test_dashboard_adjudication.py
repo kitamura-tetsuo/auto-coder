@@ -431,7 +431,7 @@ def test_adjudication_ui_displays_publisher_identity(tmp_path, monkeypatch):
 
     with (
         patch("auto_coder.dashboard_adjudication.get_dashboard_adjudication_config", return_value=valid_cfg),
-        patch("auto_coder.dashboard_adjudication._resolve_publisher_identity", new_callable=__import__("unittest").mock.AsyncMock, return_value="12345"),
+        patch("auto_coder.dashboard_adjudication._resolve_publisher_identity", return_value="12345"),
         patch("auto_coder.dashboard_adjudication.AdjudicationWriteService._authorize_read", return_value=(True, MagicMock(csrf_token="abc"))),
     ):
 
