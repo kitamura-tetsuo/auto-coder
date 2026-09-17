@@ -516,8 +516,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 preview_container = ui.column().classes("w-full mt-4 p-4 border rounded bg-gray-50 hidden")
                 status_container = ui.column().classes("w-full mt-2 p-2 hidden")
 
-                # REQ-007: Retain original decision ID
-                local_state = {"decision_id": None, "submitting": False}
+                # REQ-007: Retain original decision ID from session storage for reload recovery
+                saved_id = state.get("saved_state", {}).get(finding["context_id"])
+                local_state = {"decision_id": saved_id, "submitting": False}
 
                 def on_preview_click():
                     if finding.get("retired_reason"):
@@ -646,6 +647,13 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
 
                         def on_decision_id(e):
                             local_state["decision_id"] = e.args
+                            ui.run_javascript(
+                                f"""
+                                let st = JSON.parse(sessionStorage.getItem("adjudication_state_{pr_number}") || "{{}}");
+                                st["{finding['context_id']}"] = "{e.args}";
+                                sessionStorage.setItem("adjudication_state_{pr_number}", JSON.stringify(st));
+                            """
+                            )
 
                         def on_submit_success(e):
                             local_state["submitting"] = False
@@ -657,6 +665,13 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                             # REQ-005: preserve rationale text on rejection, explain fresh context needed
                             ui.notify(f"Submission rejected ({e.args}). Recovery requires a fresh context.", type="negative")
                             local_state["decision_id"] = None  # Force fresh draft ID on retry
+                            ui.run_javascript(
+                                f"""
+                                let st = JSON.parse(sessionStorage.getItem("adjudication_state_{pr_number}") || "{{}}");
+                                delete st["{finding['context_id']}"];
+                                sessionStorage.setItem("adjudication_state_{pr_number}", JSON.stringify(st));
+                            """
+                            )
 
                         def on_submit_error(e):
                             local_state["submitting"] = False
@@ -675,6 +690,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         def on_data_loaded(e):
             data = e.args["data"]
             state["csrf_token"] = e.args["csrf"]
+            state["saved_state"] = e.args["saved_state"]
 
             container.clear()
             status_banner.set_text("Loaded adjudication context.")
