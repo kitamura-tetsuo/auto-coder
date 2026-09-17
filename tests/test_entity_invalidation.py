@@ -18,7 +18,7 @@ from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from src.auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
 from src.auto_coder.dispatch_claim_store import DispatchClaimStore, DispatchOutcome
-from src.auto_coder.entity_invalidation import CIWebhookDelivery, DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata
+from src.auto_coder.entity_invalidation import CIWebhookDelivery, ClaimedInvalidation, CompletionOutcome, DurableInvalidationQueue, EntityIdentity, GitHubDeliveryMetadata, InvalidationDisposition
 from src.auto_coder.github_pending_work import PendingWorkScheduler, PendingWorkStore
 from src.auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
@@ -299,6 +299,87 @@ def test_duplicate_delivery_does_not_advance_generation(tmp_path: Path):
     assert not queue.invalidate(identity, "delivery-1")
     claim = queue.claim("owner/repo")
     assert claim is not None and claim.generation == 1
+
+
+def test_invalidate_with_transition_reports_the_actual_committed_disposition(tmp_path: Path):
+    """Issue #2001 REQ-006: new_pending/coalesced/followup_required come from the real prior state, not a guess."""
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    identity = EntityIdentity("owner/repo", "issue", 42)
+
+    new_pending = queue.invalidate_with_transition(identity)
+    assert new_pending.accepted is True
+    assert new_pending.disposition is InvalidationDisposition.NEW_PENDING
+
+    coalesced = queue.invalidate_with_transition(identity)
+    assert coalesced.accepted is True
+    assert coalesced.disposition is InvalidationDisposition.COALESCED
+
+    claim = queue.claim("owner/repo")
+    assert claim is not None
+    assert queue.begin_processing(claim)
+    followup = queue.invalidate_with_transition(identity)
+    assert followup.accepted is True
+    assert followup.disposition is InvalidationDisposition.FOLLOWUP_REQUIRED
+
+    duplicate = queue.invalidate_with_transition(identity, delivery_id="dup")
+    queue.invalidate_with_transition(EntityIdentity("owner/repo", "issue", 43), delivery_id="dup2")
+    same_delivery_again = queue.invalidate_with_transition(EntityIdentity("owner/repo", "issue", 43), delivery_id="dup2")
+    assert same_delivery_again.accepted is False
+    assert same_delivery_again.disposition is None
+    assert duplicate.accepted is True  # first use of "dup" for identity 42
+
+
+def test_complete_with_outcome_distinguishes_cleared_followup_and_stale(tmp_path: Path):
+    """Issue #2001 REQ-007/REQ-008: a stale/no-op acknowledgement must never read as a successful completion."""
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    identity = EntityIdentity("owner/repo", "pr", 7)
+
+    queue.invalidate(identity)
+    claim = queue.claim("owner/repo")
+    assert claim is not None
+    assert queue.begin_processing(claim)
+
+    stale = queue.complete_with_outcome(ClaimedInvalidation(identity, claim.generation + 5))
+    assert stale.outcome is CompletionOutcome.STALE_NO_OP
+    assert stale.has_followup is False
+
+    cleared = queue.complete_with_outcome(claim)
+    assert cleared.outcome is CompletionOutcome.CLEARED
+    assert cleared.has_followup is False
+    assert queue.pending_count("owner/repo") == 0
+
+    queue.invalidate(identity)
+    claim2 = queue.claim("owner/repo")
+    assert claim2 is not None
+    assert queue.begin_processing(claim2)
+    queue.invalidate(identity)  # advances generation while processing
+    followup = queue.complete_with_outcome(claim2)
+    assert followup.outcome is CompletionOutcome.FOLLOWUP_PENDING
+    assert followup.has_followup is True
+    assert followup.latest_generation == claim2.generation + 1
+
+    # complete() keeps its legacy Boolean semantics exactly.
+    assert queue.complete(claim2) is False  # already resolved above; claim2 no longer matches
+
+
+def test_recover_returns_the_actual_recovered_identities(tmp_path: Path):
+    """Issue #2001 REQ-001/REQ-004: recovery evidence must name what was actually recovered, nothing invented."""
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    dependency = EntityIdentity("owner/repo", "dependency", 1)
+    issue = EntityIdentity("owner/repo", "issue", 9)
+
+    queue.invalidate(dependency)
+    queue.invalidate(issue)
+    dep_claim = queue.claim("owner/repo")
+    issue_claim = queue.claim("owner/repo")
+    assert dep_claim is not None and issue_claim is not None
+
+    restarted = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    recovered = restarted.recover("owner/repo")
+    assert sorted((identity.entity_type, identity.number) for identity in recovered) == [("dependency", 1), ("issue", 9)]
+
+    # A repository with nothing queued/processing recovers nothing.
+    assert restarted.recover("owner/repo") == []
 
 
 def test_new_issue_webhooks_preserve_creation_anchored_stabilization(tmp_path: Path, monkeypatch):

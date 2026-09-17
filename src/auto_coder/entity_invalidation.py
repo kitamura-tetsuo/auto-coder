@@ -6,6 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +43,68 @@ class ClaimedInvalidation:
     identity: EntityIdentity
     generation: int
     urgent_admission: bool = False
+
+
+class InvalidationDisposition(str, Enum):
+    """The actual committed-transition classification of one `invalidate()` call.
+
+    Observed at the same state-owning boundary that performs the durable
+    transition (never guessed from the legacy Boolean, timestamps, or queue
+    length): `NEW_PENDING` means no row existed for this identity before this
+    transition; `COALESCED` means an existing dirty/queued row absorbed this
+    invalidation without requiring a processing follow-up; `FOLLOWUP_REQUIRED`
+    means the identity was already `processing` and this call advanced its
+    generation so the in-flight worker's `complete()` will re-queue it.
+    """
+
+    NEW_PENDING = "new_pending"
+    COALESCED = "coalesced"
+    FOLLOWUP_REQUIRED = "followup_required"
+
+
+@dataclass(frozen=True)
+class InvalidationTransition:
+    """The richer result of one `invalidate()` attempt.
+
+    `accepted` is exactly the legacy Boolean (`False` only for a duplicate
+    delivery). `disposition` is `None` when `accepted` is `False`; otherwise
+    it is the actual observed transition, never inferred after the fact.
+    """
+
+    accepted: bool
+    disposition: Optional[InvalidationDisposition] = None
+
+
+class CompletionOutcome(str, Enum):
+    """The actual committed-transition classification of one `complete()` call.
+
+    `CLEARED` means the claimed generation was the latest and the identity's
+    row was removed: no further work is pending. `FOLLOWUP_PENDING` means a
+    newer generation had already been recorded while this claim was
+    processing, so the identity was returned to `dirty` for a follow-up
+    attempt (the legacy `True` case). `STALE_NO_OP` means the claim no longer
+    matched the current row (already completed, released, or claimed by a
+    different generation) -- this call committed nothing and must never be
+    reported as a successful completion.
+    """
+
+    CLEARED = "cleared"
+    FOLLOWUP_PENDING = "followup_pending"
+    STALE_NO_OP = "stale_no_op"
+
+
+@dataclass(frozen=True)
+class CompletionTransition:
+    """The richer result of one `complete()` attempt.
+
+    `has_followup` is exactly the legacy Boolean. `latest_generation` is the
+    generation observed to remain pending when `outcome` is
+    `FOLLOWUP_PENDING`; it is `None` otherwise.
+    """
+
+    outcome: CompletionOutcome
+    has_followup: bool
+    latest_generation: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -522,18 +585,26 @@ class DurableInvalidationQueue:
             return raw_delivery_id
         return delivery_id
 
-    def recover(self, repository: str) -> None:
-        """Make work interrupted by process termination claimable again."""
+    def recover(self, repository: str) -> list[EntityIdentity]:
+        """Make work interrupted by process termination claimable again.
+
+        Returns every identity that was actually `queued`/`processing` and
+        got reset to `dirty` by this call, for diagnostic recovery evidence
+        (Issue #2001). No existing caller consumed the previous `None`
+        return, so this is purely additive.
+        """
         with self._lock, self._connection:
-            self._connection.execute(
+            rows = self._connection.execute(
                 """UPDATE entity_invalidations SET state = 'dirty', claimed_generation = NULL
-                   WHERE repository = ? AND state IN ('queued', 'processing')""",
+                   WHERE repository = ? AND state IN ('queued', 'processing')
+                   RETURNING entity_type, entity_number""",
                 (repository,),
-            )
+            ).fetchall()
             self._connection.execute(
                 "UPDATE ci_correlations SET state = 'pending' WHERE repository = ? AND state = 'processing'",
                 (repository,),
             )
+        return [EntityIdentity(repository, entity_type, number) for entity_type, number in rows]
 
     def invalidate(
         self,
@@ -545,6 +616,24 @@ class DurableInvalidationQueue:
         urgent_admission: bool = False,
     ) -> bool:
         """Persist an invalidation; return False only for a duplicate delivery."""
+        return self.invalidate_with_transition(identity, delivery_id, event_type, action, not_before, urgent_admission).accepted
+
+    def invalidate_with_transition(
+        self,
+        identity: EntityIdentity,
+        delivery_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        action: Optional[str] = None,
+        not_before: Optional[float] = None,
+        urgent_admission: bool = False,
+    ) -> InvalidationTransition:
+        """`invalidate()`, additionally reporting the actual committed transition.
+
+        The prior row's state is observed under the same lock/transaction
+        that performs the upsert, so the returned disposition describes the
+        real transition this call committed, never a guess from a later
+        unlocked read.
+        """
         with self._lock, self._connection:
             if delivery_id:
                 legacy = self._connection.execute(
@@ -552,7 +641,7 @@ class DurableInvalidationQueue:
                     (identity.repository, delivery_id),
                 ).fetchone()
                 if legacy is not None:
-                    return False
+                    return InvalidationTransition(False, None)
                 cursor = self._connection.execute(
                     """INSERT OR IGNORE INTO github_deliveries
                        (repository, delivery_id, entity_type, entity_number, event_type, action)
@@ -560,7 +649,11 @@ class DurableInvalidationQueue:
                     (identity.repository, delivery_id, identity.entity_type, identity.number, event_type, action),
                 )
                 if cursor.rowcount == 0:
-                    return False
+                    return InvalidationTransition(False, None)
+            existing = self._connection.execute(
+                "SELECT state FROM entity_invalidations WHERE repository = ? AND entity_type = ? AND entity_number = ?",
+                (identity.repository, identity.entity_type, identity.number),
+            ).fetchone()
             self._connection.execute(
                 """
                 INSERT INTO entity_invalidations(repository, entity_type, entity_number, generation, state, not_before, urgent_admission)
@@ -579,7 +672,13 @@ class DurableInvalidationQueue:
                 """,
                 (identity.repository, identity.entity_type, identity.number, not_before, int(urgent_admission)),
             )
-            return True
+            if existing is None:
+                disposition = InvalidationDisposition.NEW_PENDING
+            elif existing[0] == "processing":
+                disposition = InvalidationDisposition.FOLLOWUP_REQUIRED
+            else:
+                disposition = InvalidationDisposition.COALESCED
+            return InvalidationTransition(True, disposition)
 
     def claim(self, repository: str) -> Optional[ClaimedInvalidation]:
         """Atomically reserve one dirty identity for the in-memory queue."""
@@ -629,6 +728,16 @@ class DurableInvalidationQueue:
 
     def complete(self, claim: ClaimedInvalidation) -> bool:
         """Complete evaluated generation; return True when a later generation remains."""
+        return self.complete_with_outcome(claim).has_followup
+
+    def complete_with_outcome(self, claim: ClaimedInvalidation) -> CompletionTransition:
+        """`complete()`, additionally reporting the actual committed transition.
+
+        `STALE_NO_OP` distinguishes a claim that no longer matched the
+        current row (already completed/released/reclaimed) from a genuine
+        `CLEARED` completion; the legacy Boolean alone conflates both as
+        `False`.
+        """
         identity = claim.identity
         with self._lock, self._connection:
             row = self._connection.execute(
@@ -637,7 +746,7 @@ class DurableInvalidationQueue:
                 (identity.repository, identity.entity_type, identity.number),
             ).fetchone()
             if row is None or row[1] != claim.generation or row[2] != "processing":
-                return False
+                return CompletionTransition(CompletionOutcome.STALE_NO_OP, False, None)
             if row[0] > claim.generation:
                 self._connection.execute(
                     """UPDATE entity_invalidations SET state = 'dirty', claimed_generation = NULL,
@@ -645,12 +754,12 @@ class DurableInvalidationQueue:
                        WHERE repository = ? AND entity_type = ? AND entity_number = ?""",
                     (identity.repository, identity.entity_type, identity.number),
                 )
-                return True
+                return CompletionTransition(CompletionOutcome.FOLLOWUP_PENDING, True, int(row[0]))
             self._connection.execute(
                 "DELETE FROM entity_invalidations WHERE repository = ? AND entity_type = ? AND entity_number = ?",
                 (identity.repository, identity.entity_type, identity.number),
             )
-            return False
+            return CompletionTransition(CompletionOutcome.CLEARED, False, None)
 
     def release(self, claim: ClaimedInvalidation) -> None:
         """Return an interrupted or failed reevaluation to the dirty set."""
