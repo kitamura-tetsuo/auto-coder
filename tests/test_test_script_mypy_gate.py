@@ -495,7 +495,7 @@ def test_target_container_mypy_failure_reaches_outer_caller(tmp_path: Path, fixt
     # The documented shard argument vector (scripts/run_pr_test_shard.py's own
     # `command`), so a regression that drops the forwarded "$@" is caught
     # here rather than only by tests that never pass arguments at all.
-    argv = ["--splits", "4", "--group", "3", "-m", "not browser", "-vv", "-o", "faulthandler_timeout=30"]
+    argv = ["--splits", "4", "--group", "3", "-m", "not browser and not opencode_live", "-vv", "-o", "faulthandler_timeout=30"]
 
     result = _run_outer_forwarding_script(tmp_path / "outer", fixture_repo, fake_docker, args=argv)
 
