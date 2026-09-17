@@ -180,7 +180,8 @@ def _write_home_config(home: Path, *, provider_name: str, model_name: str, base_
 
 
 def _client(cwd: Path, home: Path, cli: str, monkeypatch: pytest.MonkeyPatch, *, backend_name: str = "opencode", model: str = "fakeprov/fake-model") -> OpenCodeClient:
-    config = LLMBackendConfiguration(backends={backend_name: BackendConfig(name=backend_name, backend_type="opencode", model=model, timeout=60)})
+    debug_options = ["--print-logs", "--log-level=DEBUG"] if os.environ.get("AUTOCODER_OPENCODE_VERBOSE_DEBUG") else []
+    config = LLMBackendConfiguration(backends={backend_name: BackendConfig(name=backend_name, backend_type="opencode", model=model, timeout=60, options_for_noedit=debug_options)})
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", cli)
     monkeypatch.chdir(cwd)

@@ -37,14 +37,15 @@ jobs:
       - name: Run opencode_live-marked tests
         env:
           AUTOCODER_OPENCODE_GIT_DEBUG_LOG: ${{ github.workspace }}/opencode-git-debug.log
+          AUTOCODER_OPENCODE_VERBOSE_DEBUG: "1"
         run: |
           uv run pytest -m opencode_live -vv
 
-      - name: Print git-wrapper debug log
+      - name: Print git-wrapper debug log (non-read-only decisions only)
         if: always()
         run: |
-          echo "::group::opencode-git-debug.log"
-          cat opencode-git-debug.log 2>/dev/null || echo "(no debug log produced)"
+          echo "::group::opencode-git-debug.log (deny / allow-unprotected-target only)"
+          grep -v '"decision": "allow-read-only"' opencode-git-debug.log 2>/dev/null || echo "(no non-read-only decisions logged)"
           echo "::endgroup::"
 
       - name: Upload OpenCode live test diagnostics
