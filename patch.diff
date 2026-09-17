@@ -1,0 +1,485 @@
+diff --git a/docs/client-features.yaml b/docs/client-features.yaml
+index 7dc0ae7..8ace740 100644
+--- a/docs/client-features.yaml
++++ b/docs/client-features.yaml
+@@ -1513,7 +1513,7 @@ Auto-Coder supports repository-scoped partial overrides for both `llm_config.tom
+
+     [backends.auggie]
+     model = "GPT-5"
+-    usage_markers = ["rate limit", "quota"]
++    usage_markers = ["rate limit", "quota", "429"]
+
+     [backends.qwen]
+     model = "qwen3-coder-plus"
+diff --git a/src/auto_coder/adjudication_effect_journal.py b/src/auto_coder/adjudication_effect_journal.py
+new file mode 100644
+index 0000000..e944b12
+--- /dev/null
++++ b/src/auto_coder/adjudication_effect_journal.py
+@@ -0,0 +1,84 @@
++import sqlite3
++import threading
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Optional, Sequence
++
++@dataclass(frozen=True)
++class AdjudicationEffectRecord:
++    repository: str
++    pr_number: int
++    context_id: str
++    decision_id: str
++    finding_identity: str
++    effect_kind: str # 'resolve', 'unresolve', 'codex_task', 'cached_verdict', 'test_oracle_gap'
++    generation: str
++    status: str # 'pending', 'confirmed', 'unknown', 'definitely-not-sent'
++
++class AdjudicationEffectJournal:
++    """Durably tracks the delivery and state of side-effects caused by adjudications (REQ-008)."""
++
++    def __init__(self, path: Path) -> None:
++        path.parent.mkdir(parents=True, exist_ok=True)
++        self.path = path
++        self._lock = threading.RLock()
++        self._db = sqlite3.connect(path, check_same_thread=False)
++        self._db.execute("PRAGMA journal_mode=WAL")
++        self._db.execute("PRAGMA synchronous=FULL")
++        self._db.execute(
++            """CREATE TABLE IF NOT EXISTS adjudication_effects (
++                repository TEXT NOT NULL,
++                pr_number INTEGER NOT NULL,
++                context_id TEXT NOT NULL,
++                decision_id TEXT NOT NULL,
++                finding_identity TEXT NOT NULL,
++                effect_kind TEXT NOT NULL,
++                generation TEXT NOT NULL,
++                status TEXT NOT NULL,
++                PRIMARY KEY(repository, pr_number, context_id, decision_id, finding_identity, effect_kind)
++            )"""
++        )
++        self._db.commit()
++
++    def record_effect(
++        self,
++        repository: str,
++        pr_number: int,
++        context_id: str,
++        decision_id: str,
++        finding_identity: str,
++        effect_kind: str,
++        generation: str,
++        status: str
++    ) -> None:
++        if status not in {"pending", "confirmed", "unknown", "definitely-not-sent"}:
++            raise ValueError(f"invalid effect status: {status}")
++
++        with self._lock:
++            self._db.execute(
++                """INSERT OR REPLACE INTO adjudication_effects
++                   (repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status)
++                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
++                (repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status)
++            )
++            self._db.commit()
++
++    def get_effects_for_pr(self, repository: str, pr_number: int) -> list[AdjudicationEffectRecord]:
++        with self._lock:
++            rows = self._db.execute(
++                "SELECT repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status "
++                "FROM adjudication_effects WHERE repository = ? AND pr_number = ?",
++                (repository, pr_number)
++            ).fetchall()
++            return [AdjudicationEffectRecord(*row) for row in rows]
++
++    def get_effect(self, repository: str, pr_number: int, context_id: str, decision_id: str, finding_identity: str, effect_kind: str) -> Optional[AdjudicationEffectRecord]:
++        with self._lock:
++            row = self._db.execute(
++                "SELECT repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status "
++                "FROM adjudication_effects WHERE repository = ? AND pr_number = ? AND context_id = ? AND decision_id = ? AND finding_identity = ? AND effect_kind = ?",
++                (repository, pr_number, context_id, decision_id, finding_identity, effect_kind)
++            ).fetchone()
++            if row:
++                return AdjudicationEffectRecord(*row)
++            return None
+diff --git a/src/auto_coder/adversarial_validator.py b/src/auto_coder/adversarial_validator.py
+index 00ef7ce..bfe3c84 100644
+--- a/src/auto_coder/adversarial_validator.py
++++ b/src/auto_coder/adversarial_validator.py
+@@ -23,6 +23,8 @@ from .logger_config import get_logger
+ from .progress_footer import ProgressStage
+ from .prompt_loader import render_prompt
+ from .requirement_contract import build_normative_issue_manifest
++from .review_adjudication import AdjudicationStatus
++from .review_adjudication_github import AdjudicationSnapshot
+ from .reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
+ from .security_utils import redact_string
+ from .trace_logger import get_trace_logger
+@@ -514,6 +516,7 @@ class AdversarialValidationContext:
+     unresolvable_file_count: int = 0
+     file_change_identities: dict[str, str] = field(default_factory=dict)
+     requirement_manifest_identity: str = ""
++    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = field(default_factory=tuple)
+
+     @property
+     def has_complete_file_coverage(self) -> bool:
+@@ -1168,6 +1171,7 @@ def build_adversarial_validation_context(
+     config: AutomationConfig,
+     github_client: Optional[Any] = None,
+     bypass_cache: bool = False,
++    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
+ ) -> AdversarialValidationContext:
+     """Compile issue specification, PR diff, and changed tests for validation.
+
+@@ -1312,6 +1316,7 @@ def build_adversarial_validation_context(
+         unresolvable_file_count=unresolvable_file_count,
+         file_change_identities={str(record.get("filename", "")): identity for record in changed_file_records if str(record.get("filename", "")) and (identity := _complete_file_change_identity(record))},
+         requirement_manifest_identity=_requirement_manifest_identity(manifest.requirements),
++        adjudication_snapshots=adjudication_snapshots,
+     )
+
+
+@@ -2933,6 +2938,7 @@ def run_adversarial_validation(
+     defer_session_persistence: bool = False,
+     ci_status: Optional["GitHubActionsStatusResult"] = None,
+     refresh_ci_status: Optional[Callable[[], "GitHubActionsStatusResult"]] = None,
++    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
+ ) -> AdversarialValidationResult:
+     """Run strong-model adversarial validation on a green PR.
+
+@@ -2973,7 +2979,7 @@ def run_adversarial_validation(
+     get_trace_logger().log("Adversarial Validation", f"Validating PR #{pr_number} against specification", item_type="pr", item_number=pr_number)
+
+     # 1. Build validation context
+-    context = build_adversarial_validation_context(repo_name, pr_data, config, github_client)
++    context = build_adversarial_validation_context(repo_name, pr_data, config, github_client, adjudication_snapshots=adjudication_snapshots)
+
+     # Oracle acquisition check: If no specification context exists, fail closed
+     if not context.issue_context or not context.issue_context.strip():
+@@ -3369,7 +3375,7 @@ def run_adversarial_validation(
+     if recovery_ledger_active:
+         if github_client is None:
+             try:
+-                refreshed = build_adversarial_validation_context(repo_name, pr_data, config, github_client, bypass_cache=True)
++                refreshed = build_adversarial_validation_context(repo_name, pr_data, config, github_client, bypass_cache=True, adjudication_snapshots=adjudication_snapshots)
+                 snapshot_current = bool(context.validation_snapshot) and refreshed.validation_snapshot == context.validation_snapshot
+             except Exception:
+                 snapshot_current = False
+diff --git a/src/auto_coder/auggie_client.py b/src/auto_coder/auggie_client.py
+index 47f1f5b..0702312 100644
+--- a/src/auto_coder/auggie_client.py
++++ b/src/auto_coder/auggie_client.py
+@@ -291,7 +291,7 @@ class AuggieClient(LLMClientBase):
+                 usage_markers = self.usage_markers
+             else:
+                 # Default hardcoded usage markers
+-                usage_markers = ["rate limit", "quota"]
++                usage_markers = ["rate limit", "quota", "429"]
+
+             usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+
+diff --git a/src/auto_coder/automation_engine.py b/src/auto_coder/automation_engine.py
+index f4515aa..38ee513 100644
+--- a/src/auto_coder/automation_engine.py
++++ b/src/auto_coder/automation_engine.py
+@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
+ from enum import Enum
+ from functools import partial
+ from pathlib import Path
+-from typing import Any, Callable, Dict, List, Optional, Union, cast
++from typing import Any, Callable, Dict, List, Optional, Sequence, Union, cast
+
+ import httpx
+
+@@ -652,6 +652,9 @@ class AutomationEngine:
+         self.invalidations = DurableInvalidationQueue(invalidation_path)
+         adjudication_path = Path(os.environ.get("AUTO_CODER_REVIEW_ADJUDICATION_DB", "~/.auto-coder/review-adjudications.sqlite3")).expanduser()
+         self.review_adjudications = ReviewAdjudicationService(self.github, AdjudicationContextStore(adjudication_path))
++        from .adjudication_effect_journal import AdjudicationEffectJournal
++        journal_path = Path(os.environ.get("AUTO_CODER_ADJUDICATION_EFFECTS_DB", "~/.auto-coder/adjudication-effects.sqlite3")).expanduser()
++        self.adjudication_effects = AdjudicationEffectJournal(journal_path)
+         routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
+         self.issue_stage_routing = IssueStageRoutingStore(routing_path)
+         self.issue_admission_cache = IssueAdmissionCache()
+@@ -3348,6 +3351,13 @@ class AutomationEngine:
+                 self._invalidation_wake_event.set()
+         return accepted
+
++    def ensure_adjudication_generation(self, repo_name: str, pr_data: Dict[str, Any], old_snapshots: Sequence[AdjudicationSnapshot]) -> bool:
++        """Verify the effective-authority generation hasn't changed (REQ-014)."""
++        current = self.refresh_review_adjudications(repo_name, pr_data)
++        old_keys = {(s.result.context_id, s.observation_revision) for s in old_snapshots}
++        new_keys = {(s.result.context_id, s.observation_revision) for s in current}
++        return old_keys == new_keys
++
+     def refresh_review_adjudications(self, repo_name: str, pr_data: Dict[str, Any]) -> tuple[AdjudicationSnapshot, ...]:
+         """Refresh the production adjudication snapshot for a targeted PR."""
+         number = pr_data.get("number")
+@@ -5402,6 +5412,7 @@ class AutomationEngine:
+                         candidate.data,
+                         force_adversarial_validation=force_adversarial_validation,
+                         adversarial_validation_scheduler=self.adversarial_validation_scheduler,
++                        adjudication_snapshots=self.get_review_adjudication_snapshots(repo_name, item_number),
+                     )
+                     result.actions = pr_result.actions_taken
+                     # Check if there was an error during processing
+diff --git a/src/auto_coder/muse_client.py b/src/auto_coder/muse_client.py
+index ec13e27..9913dd3 100644
+--- a/src/auto_coder/muse_client.py
++++ b/src/auto_coder/muse_client.py
+@@ -477,7 +477,7 @@ class MuseClient(LLMClientBase):
+             combined_output = "\n".join(part for part in (stdout, stderr) if part).strip()
+             mutation_observed = self._trace_contains_git_mutation(trace_path)
+             self._assert_invariants(before, effective_noedit, mutation_observed)
+-            markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded"]
++            markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded", "429"]
+             if has_usage_marker_match(combined_output, markers):
+                 raise AutoCoderUsageLimitError(combined_output or "Muse Code usage limit reached")
+             if result.returncode != 0:
+diff --git a/src/auto_coder/pr_processor.py b/src/auto_coder/pr_processor.py
+index 4829767..06e0c23 100644
+--- a/src/auto_coder/pr_processor.py
++++ b/src/auto_coder/pr_processor.py
+@@ -65,6 +65,8 @@ from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repa
+ from .progress_decorators import progress_stage
+ from .progress_footer import ProgressStage, newline_progress
+ from .prompt_loader import get_prompt_template, render_prompt
++from .review_adjudication import AdjudicationStatus
++from .review_adjudication_github import AdjudicationSnapshot
+ from .review_thread_validation import (
+     ClaimedReviewThread,
+     StaleReviewThreadRegistryError,
+@@ -657,6 +659,8 @@ def process_pull_request(
+     *,
+     force_adversarial_validation: bool = False,
+     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
++    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
++    automation_engine: Optional[Any] = None,
+ ) -> ProcessedPRResult:
+     """Process a single pull request with priority order."""
+     try:
+@@ -708,6 +712,14 @@ def process_pull_request(
+             _record_pr_stage(pr_number, "pr.stale-jules-recovery", f"pr#{pr_number} stale-Jules recovery", Outcome.COMPLETED, {"effect": "closed", "issue_numbers": list(stale_jules_result.issue_numbers)})
+             return processed_pr
+
++        # REQ-014: Ensure generation hasn't changed if we have snapshots
++        if adjudication_snapshots and automation_engine:
++            if not automation_engine.ensure_adjudication_generation(repo_name, pr_data, adjudication_snapshots):
++                logger.info(f"Skipping PR #{pr_number} - adjudication generation changed")
++                processed_pr.actions_taken = ["Skipped - adjudication effective-authority generation changed"]
++                processed_pr.outcome = PRProcessingOutcome.DEFERRED
++                return processed_pr
++
+         # Skip immediately if PR already has @auto-coder label
+         with LabelManager(
+             github_client,
+@@ -797,6 +809,7 @@ def process_pull_request(
+                     config,
+                     force_adversarial_validation=force_adversarial_validation,
+                     adversarial_validation_scheduler=adversarial_validation_scheduler,
++                    adjudication_snapshots=adjudication_snapshots,
+                 )
+                 processed_pr.actions_taken = processed_pr_result.actions_taken
+                 processed_pr.priority = processed_pr_result.priority
+@@ -1854,6 +1867,7 @@ def _process_pr_for_merge(
+     repo_name: str,
+     pr_data: Dict[str, Any],
+     config: AutomationConfig,
++    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
+ ) -> ProcessedPRResult:
+     """Process a passing PR through the shared merge transition workflow.
+
+@@ -1895,7 +1909,7 @@ def _process_pr_for_merge(
+             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
+             return processed_pr
+
+-        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)
++        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr, adjudication_snapshots=adjudication_snapshots)
+         if any("Successfully merged" in action for action in processed_pr.actions_taken):
+             should_process.keep_label()
+         return processed_pr
+@@ -1909,6 +1923,7 @@ def _process_pr_for_fixes(
+     *,
+     force_adversarial_validation: bool = False,
+     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
++    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
+ ) -> ProcessedPRResult:
+     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
+     processed_pr = ProcessedPRResult(
+@@ -1948,6 +1963,7 @@ def _process_pr_for_fixes(
+                     processing_status,
+                     force_adversarial_validation=force_adversarial_validation,
+                     adversarial_validation_scheduler=adversarial_validation_scheduler,
++                    adjudication_snapshots=adjudication_snapshots,
+                 )
+                 processed_pr.actions_taken = actions
+                 processed_pr.error = processing_status.error
+@@ -1977,6 +1993,7 @@ def _take_pr_actions(
+     *,
+     force_adversarial_validation: bool = False,
+     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
++    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
+ ) -> PRActionList:
+     """Take actions on a PR including merge handling and analysis."""
+     actions = PRActionList()
+@@ -1994,6 +2011,7 @@ def _take_pr_actions(
+             processing_status,
+             force_adversarial_validation=force_adversarial_validation,
+             adversarial_validation_scheduler=adversarial_validation_scheduler,
++            adjudication_snapshots=adjudication_snapshots,
+         )
+         actions.extend(merge_actions)
+         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
+@@ -2616,6 +2634,7 @@ def _handle_pr_merge(
+     *,
+     force_adversarial_validation: bool = False,
+     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
++    adjudication_snapshots: Sequence["AdjudicationSnapshot"] = (),
+ ) -> PRActionList:
+     """Handle PR merge process following the intended flow."""
+     actions = PRActionList()
+@@ -2886,7 +2905,58 @@ def _handle_pr_merge(
+                     actions.append(f"Skipping merge for PR #{pr_number} due to unresolved review threads")
+                     _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.BLOCKED, {"blocking_count": len(claimed_thread_state.blocking_unresolved)})
+                     pending_provenance = tuple(thread for thread in claimed_thread_state.blocking_unresolved if is_change_provenance_thread(thread))
+-                    repair_threads = tuple(thread for thread in claimed_thread_state.blocking_unresolved if not is_change_provenance_thread(thread))
++                    repair_threads = list(thread for thread in claimed_thread_state.blocking_unresolved if not is_change_provenance_thread(thread))
++
++                    # REQ-003, REQ-013: Route UPHOLD adjudications to the repair path safely
++                    # and overrule invalid gaps in local state before validation.
++                    overruled_finding_ids = set()
++                    if adjudication_snapshots:
++                        for snap in adjudication_snapshots:
++                            if snap.result.status.value == "APPLICABLE":
++                                if snap.result.directive == "FIX":
++                                    thread_id = snap.raw_finding
++                                    thread = next((t for t in repair_threads if t.id == thread_id), None)
++                                    if thread:
++                                        if thread.comments:
++                                            # We must not mutate the cached Comment directly. Create a shallow copy.
++                                            import copy
++                                            new_thread = copy.copy(thread)
++                                            new_comments = list(new_thread.comments)
++                                            new_comment = copy.copy(new_comments[0])
++                                            new_comment.body += f"\n\n[Operator Adjudication: UPHOLD/FIX] {snap.result.reason}"
++                                            new_comments[0] = new_comment
++                                            new_thread.comments = new_comments
++                                            repair_threads = [new_thread if t.id == thread_id else t for t in repair_threads]
++                                    else:
++                                        # Create a thread wrapper if not in the blocking_unresolved set but still applicable
++                                        from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
++                                        new_comment = ReviewThreadComment(
++                                            database_id=int(thread_id) if thread_id.isdigit() else 0,
++                                            body=f"Adjudication UPHOLD/FIX:\n{snap.result.reason}",
++                                            author_login="adjudicator",
++                                        )
++                                        new_thread = ReviewThread(
++                                            id=thread_id,
++                                            is_resolved=False,
++                                            comments=[new_comment]
++                                        )
++                                        repair_threads.append(new_thread)
++                                elif snap.result.directive == "NO_CHANGE":
++                                    overruled_finding_ids.add(snap.raw_finding)
++                                    # REQ-013: Overrule only exact findings, do not mutate test oracle gaps broadly yet.
++                                    # We remove the overruled thread from repair routes
++                                    repair_threads = [t for t in repair_threads if t.id != snap.raw_finding]
++                                    # Write to adjudication_effects journal for REQ-008
++                                    try:
++                                        automation_engine.adjudication_effects.record_effect(
++                                            repo_name, pr_number, snap.result.context_id,
++                                            snap.result.decision_id, snap.raw_finding, "resolve",
++                                            snap.observation_revision, "pending"
++                                        )
++                                    except Exception as e:
++                                        logger.warning(f"Could not record effect: {e}")
++
++                    repair_threads = tuple(repair_threads)
+                     if pending_provenance:
+                         actions.append(f"Awaiting implementer provenance clarification on {len(pending_provenance)} review thread(s); no code change was requested")
+                     if repair_threads:
+@@ -2995,7 +3065,10 @@ def _handle_pr_merge(
+                             processing_status.error = exhaustion_retry_error
+                             processing_status.outcome = PRProcessingOutcome.FAILED
+                         return actions
+-                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not exhaustion_retry_due:
++
++                    has_new_adjudication = any(snap.result.status in {AdjudicationStatus.APPLICABLE, AdjudicationStatus.UNDECIDED, AdjudicationStatus.CONFLICT, AdjudicationStatus.STALE, AdjudicationStatus.REVOKED} for snap in adjudication_snapshots)
++
++                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not exhaustion_retry_due and not has_new_adjudication:
+                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
+                         logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
+                         if saved_status == "PASS_WITH_SPECIFICATION_GAPS":
+@@ -3021,6 +3094,8 @@ def _handle_pr_merge(
+                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because unresolved findings have not been adjudicated on the current head")
+                         elif adv_review_count >= max_adv_reviews and exhaustion_retry_due:
+                             actions.append(f"Retrying adversarial validation for PR #{pr_number} beyond the review limit: prior backend quota/usage exhaustion is due for automatic retry")
++                        elif adv_review_count >= max_adv_reviews and has_new_adjudication:
++                            actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new adjudication decisions are present")
+                         elif adv_review_count >= max_adv_reviews:
+                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
+                         should_run_validation = True
+@@ -3183,6 +3258,7 @@ def _handle_pr_merge(
+                                     defer_session_persistence=True,
+                                     ci_status=github_checks,
+                                     refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
++                                    adjudication_snapshots=adjudication_snapshots,
+                                 )
+                         except Exception as e:
+                             exception_preview = redact_string(str(e))[:2000]
+diff --git a/src/auto_coder/qwen_client.py b/src/auto_coder/qwen_client.py
+index 3bce286..64ea827 100644
+--- a/src/auto_coder/qwen_client.py
++++ b/src/auto_coder/qwen_client.py
+@@ -330,6 +330,7 @@ class QwenClient(LLMClientBase):
+             usage_markers = [
+                 "rate limit",
+                 "quota",
++                "429",
+             ]
+
+         usage_limit_detected = has_usage_marker_match(message, usage_markers)
+diff --git a/tests/test_adversarial_validation_pr_flow.py b/tests/test_adversarial_validation_pr_flow.py
+index eab15c8..f599338 100644
+--- a/tests/test_adversarial_validation_pr_flow.py
++++ b/tests/test_adversarial_validation_pr_flow.py
+@@ -2776,6 +2776,7 @@ class TestAdversarialValidationPRFlow:
+             defer_session_persistence=True,
+             ci_status=mock_checks.return_value,
+             refresh_ci_status=ANY,
++            adjudication_snapshots=(),
+         )
+         mock_merge_pr.assert_called_once()
+
+diff --git a/tests/test_automation_engine.py b/tests/test_automation_engine.py
+index 3ff9ab3..29bf6de 100644
+--- a/tests/test_automation_engine.py
++++ b/tests/test_automation_engine.py
+@@ -455,7 +455,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
+         first_attempt = attempts.start(100, "head-a")
+         started_attempts = []
+
+-        def process_pr(_github, _config, _repo, _data, *, force_adversarial_validation=False, adversarial_validation_scheduler=None):
++        def process_pr(_github, _config, _repo, _data, *, force_adversarial_validation=False, adversarial_validation_scheduler=None, adjudication_snapshots=()):
+             assert force_adversarial_validation is True
+             assert adversarial_validation_scheduler is engine.adversarial_validation_scheduler
+             started_attempts.append(attempts.start(100, "head-a"))
+diff --git a/tests/test_pr_review_threads.py b/tests/test_pr_review_threads.py
+index 133cd28..bc13fe5 100644
+--- a/tests/test_pr_review_threads.py
++++ b/tests/test_pr_review_threads.py
+@@ -245,7 +245,7 @@ def test_process_pr_for_merge_blocks_on_unresolved_threads(mock_gh_instance, moc
+     result = _process_pr_for_merge("owner/repo", pr_data, config)
+
+     assert any("Skipping merge for PR #123 due to unresolved review threads" in a for a in result.actions_taken)
+-    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {}, result)
++    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {}, result, adjudication_snapshots=())
+
+
+ @patch("auto_coder.pr_processor._handle_pr_merge")
+@@ -266,7 +266,7 @@ def test_process_pr_for_merge_proceeds_when_resolved(mock_gh_instance, mock_labe
+     result = _process_pr_for_merge("owner/repo", pr_data, config)
+
+     assert any("Successfully merged PR #123" in a for a in result.actions_taken)
+-    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {}, result)
++    mock_handle_merge.assert_called_once_with(mock_gh_instance.return_value, "owner/repo", pr_data, config, {}, result, adjudication_snapshots=())
+     lm_instance.keep_label.assert_called_once()

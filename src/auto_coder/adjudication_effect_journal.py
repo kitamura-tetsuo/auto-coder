@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
-
 @dataclass(frozen=True)
 class AdjudicationEffectRecord:
     repository: str
@@ -12,10 +11,9 @@ class AdjudicationEffectRecord:
     context_id: str
     decision_id: str
     finding_identity: str
-    effect_kind: str  # 'resolve', 'unresolve', 'codex_task', 'cached_verdict', 'test_oracle_gap'
+    effect_kind: str # 'resolve', 'unresolve', 'codex_task', 'cached_verdict', 'test_oracle_gap'
     generation: str
-    status: str  # 'pending', 'confirmed', 'unknown', 'definitely-not-sent'
-
+    status: str # 'pending', 'confirmed', 'unknown', 'definitely-not-sent'
 
 class AdjudicationEffectJournal:
     """Durably tracks the delivery and state of side-effects caused by adjudications (REQ-008)."""
@@ -42,7 +40,17 @@ class AdjudicationEffectJournal:
         )
         self._db.commit()
 
-    def record_effect(self, repository: str, pr_number: int, context_id: str, decision_id: str, finding_identity: str, effect_kind: str, generation: str, status: str) -> None:
+    def record_effect(
+        self,
+        repository: str,
+        pr_number: int,
+        context_id: str,
+        decision_id: str,
+        finding_identity: str,
+        effect_kind: str,
+        generation: str,
+        status: str
+    ) -> None:
         if status not in {"pending", "confirmed", "unknown", "definitely-not-sent"}:
             raise ValueError(f"invalid effect status: {status}")
 
@@ -51,20 +59,25 @@ class AdjudicationEffectJournal:
                 """INSERT OR REPLACE INTO adjudication_effects
                    (repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status),
+                (repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status)
             )
             self._db.commit()
 
     def get_effects_for_pr(self, repository: str, pr_number: int) -> list[AdjudicationEffectRecord]:
         with self._lock:
-            rows = self._db.execute("SELECT repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status " "FROM adjudication_effects WHERE repository = ? AND pr_number = ?", (repository, pr_number)).fetchall()
+            rows = self._db.execute(
+                "SELECT repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status "
+                "FROM adjudication_effects WHERE repository = ? AND pr_number = ?",
+                (repository, pr_number)
+            ).fetchall()
             return [AdjudicationEffectRecord(*row) for row in rows]
 
     def get_effect(self, repository: str, pr_number: int, context_id: str, decision_id: str, finding_identity: str, effect_kind: str) -> Optional[AdjudicationEffectRecord]:
         with self._lock:
             row = self._db.execute(
-                "SELECT repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status " "FROM adjudication_effects WHERE repository = ? AND pr_number = ? AND context_id = ? AND decision_id = ? AND finding_identity = ? AND effect_kind = ?",
-                (repository, pr_number, context_id, decision_id, finding_identity, effect_kind),
+                "SELECT repository, pr_number, context_id, decision_id, finding_identity, effect_kind, generation, status "
+                "FROM adjudication_effects WHERE repository = ? AND pr_number = ? AND context_id = ? AND decision_id = ? AND finding_identity = ? AND effect_kind = ?",
+                (repository, pr_number, context_id, decision_id, finding_identity, effect_kind)
             ).fetchone()
             if row:
                 return AdjudicationEffectRecord(*row)
