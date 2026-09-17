@@ -2169,6 +2169,21 @@ codex_cloud:
 
     Do not resolve, close, or otherwise mark any review thread as resolved yourself; leave that decision to Auto-Coder's independent validation. For each thread you believe you have successfully addressed, reply directly in that same thread with a concise explanation of the implementation change and the validation or regression-test evidence supporting the claim, ending the reply with the exact marker `<!-- auto-coder-review-addressed:v1 -->` on its own line. Only add this marker when you are confident the finding is corrected in the current code. If you cannot fix or verify a finding, disagree with it, or consider it already satisfied or invalid, leave the thread unresolved and do not add the marker; explain your reasoning in the thread instead. Treat every thread independently.
 
+  adjudication_upheld_repair_details: |-
+    A human reviewer authorized to adjudicate Auto-Coder's automated review findings has upheld exactly one existing finding on this pull request and requested a bounded correction. This is not a new finding and not a claim that anything else is wrong; do not expand scope beyond the exact correction requested below, and do not touch any other unresolved finding merely because it remains visible.
+
+    Original finding:
+
+    $raw_finding
+
+    Authorized reviewer's bounded requested correction:
+
+    $rationale
+
+    Add or update regression tests as needed, run the required test suite, and push the corrective commit to the existing pull request branch.
+
+    Do not resolve, close, or otherwise mark any review thread as resolved yourself; leave that decision to Auto-Coder's independent validation. If you believe you have genuinely addressed this exact finding, reply directly in its thread with a concise explanation of the implementation change and the validation or regression-test evidence supporting the claim, ending the reply with the exact marker `<!-- auto-coder-review-addressed:v1 -->` on its own line. Only add this marker when you are confident the finding is corrected in the current code.
+
   continuation: |-
     Review the current pull request status and continue working on it. If CI checks are failing, review the latest failure logs, fix the issues, push the fixes to the existing pull request, and continue until all CI checks pass. Also address any valid unresolved review comments.
 

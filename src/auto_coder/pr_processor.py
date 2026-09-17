@@ -59,12 +59,21 @@ from .github_app_reviewer import ReviewerAppIdentity, publish_adversarial_review
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
-from .llm_backend_config import get_pr_review_allowlist_from_config
+from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
+from .review_adjudication import AdjudicationStatus, is_adjudication_envelope
+from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService, reconcile_thread
+from .review_adjudication_orchestrator import (
+    ADJUDICATION_EFFECTS_DB_ENV,
+    DEFAULT_ADJUDICATION_EFFECTS_DB_PATH,
+    AdjudicationEffectStore,
+    format_overrule_explanation,
+    plan_adjudication_effects,
+)
 from .review_capture.pr_adversarial_audit import (
     PrAdversarialReviewTarget,
     begin_executed_review,
@@ -2745,6 +2754,18 @@ def _handle_pr_merge(
                 _record_pr_stage(pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.BLOCKED, {"phase": "stale-rollback-pending", "thread_ids": list(pending_stale_threads)})
                 return actions
 
+        # Apply every authorized review adjudication's owned effect (bounded
+        # repair delivery for UPHOLD, scoped finding retirement for OVERRULE,
+        # reconciliation of a superseded/revoked decision) unconditionally,
+        # like the stale-thread rollback above, regardless of what CI or
+        # adversarial validation would otherwise decide this run (Issue #2019).
+        try:
+            adjudication_actions, adjudication_forces_revalidation = _apply_review_adjudication_effects(repo_name, pr_number, pr_data, github_client)
+        except Exception as exc:
+            logger.warning(f"Could not apply review adjudication effects for PR #{pr_number}: {exc}")
+            adjudication_actions, adjudication_forces_revalidation = PRActionList(), False
+        actions.extend(adjudication_actions)
+
         # Step 1: Check GitHub Actions status using utility function
         # Use switch_branch_on_in_progress=False to just skip instead of exit
         should_continue = check_github_actions_and_exit_if_in_progress(  # type: ignore[arg-type]
@@ -2940,13 +2961,13 @@ def _handle_pr_merge(
                         if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                             current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
                             if not current_status_error:
-                                if current_status is None or force_adversarial_validation:
+                                if current_status is None or force_adversarial_validation or adjudication_forces_revalidation:
                                     try:
                                         reviewer_login = resolve_reviewer_app_identity(repo_name).login
                                     except Exception as exc:
                                         logger.error(f"Could not authenticate unresolved adversarial threads for PR #{pr_number}: {exc}")
                                     else:
-                                        forced_same_head_revalidation = current_status is not None and force_adversarial_validation
+                                        forced_same_head_revalidation = current_status is not None and (force_adversarial_validation or adjudication_forces_revalidation)
                                         claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login, forced=forced_same_head_revalidation)
                                         revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
                                         if revalidating_older_head_threads:
@@ -5619,7 +5640,11 @@ def _delegate_cloud_review_thread_repair(
         for index, comment in enumerate(thread.comments)
         # A root is reviewer feedback by definition. Later comments create new
         # work only when they come from someone other than the PR implementer.
-        if index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login)
+        # A structural adjudication envelope (REQ-009) is a machine-readable
+        # decision, not free-form reviewer prose; review_adjudication_orchestrator
+        # owns routing its effect, so it must never be forwarded here verbatim,
+        # authorized or not.
+        if (index == 0 or not implementer_login or not is_same_github_login(comment.author_login, implementer_login)) and not is_adjudication_envelope(comment.body)
     ]
     with _cloud_review_delivery_lock:
         try:
@@ -5734,6 +5759,283 @@ def _delegate_cloud_review_thread_repair(
     if blocked:
         actions.insert(0, f"Suppressed duplicate delivery of {len(blocked)} finding(s) with unconfirmed durable receipt status for PR #{pr_number}")
     return CloudReviewRepairResult(actions, delivered=True)
+
+
+def _adjudication_context_store_path() -> Path:
+    return Path(os.environ.get(ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH)).expanduser()
+
+
+def _adjudication_effects_store_path() -> Path:
+    return Path(os.environ.get(ADJUDICATION_EFFECTS_DB_ENV, DEFAULT_ADJUDICATION_EFFECTS_DB_PATH)).expanduser()
+
+
+_adjudication_effect_store_cache: Dict[str, AdjudicationEffectStore] = {}
+_adjudication_effect_store_cache_lock = threading.Lock()
+
+
+def _get_adjudication_effect_store() -> AdjudicationEffectStore:
+    path = str(_adjudication_effects_store_path())
+    with _adjudication_effect_store_cache_lock:
+        store = _adjudication_effect_store_cache.get(path)
+        if store is None:
+            store = AdjudicationEffectStore(Path(path))
+            _adjudication_effect_store_cache[path] = store
+        return store
+
+
+def _current_adjudication_ledger_snapshots(repo_name: str, pr_number: int, github_client: Any) -> Tuple[AdjudicationSnapshot, ...]:
+    """Re-prove applicability against current authority before any effect.
+
+    A merely-persisted tip is not evidence: a revoked allowlist, an edited or
+    deleted accepted source, a new conflicting reply, or a moved head/base
+    since the last observation must all be caught here, immediately before
+    the caller trusts the result, not only during an earlier same-pass
+    ``AutomationEngine.refresh_review_adjudications`` (REQ-001, REQ-002,
+    REQ-011, REQ-014). This performs the identical authorization-policy,
+    revision-binding, and thread-reconciliation steps that production
+    refresh already performs, reusing that same code rather than a lighter
+    read-only shortcut.
+    """
+    store = AdjudicationContextStore(_adjudication_context_store_path())
+    if not store.ledgers_for_pr(repo_name, pr_number):
+        return ()
+    try:
+        authoritative = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
+        threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+    except Exception as exc:
+        logger.warning(f"Could not re-read authoritative PR state to apply adjudication effects for PR #{pr_number}: {exc}")
+        return ()
+    reviewer_ids = get_pr_review_allowlist_from_config(repo_name=repo_name) or ()
+    adjudicator_ids = get_review_adjudicator_allowlist_from_config(repo_name=repo_name) or ()
+    service = ReviewAdjudicationService(github_client, store)
+    service.apply_authorization_policy(repo_name, pr_number, reviewer_ids, adjudicator_ids)
+    try:
+        binding = ReviewAdjudicationService._binding(repo_name, pr_number, authoritative)
+    except ValueError as exc:
+        logger.warning(f"Could not verify authoritative PR revision binding to apply adjudication effects for PR #{pr_number}: {exc}")
+        return ()
+    service.apply_revision_binding(binding)
+
+    threads_by_root = {thread.comments[0].database_id: thread for thread in threads if thread.comments}
+    snapshots = []
+    for ledger in store.ledgers_for_pr(repo_name, pr_number):
+        thread = threads_by_root.get(ledger.context.root_comment_id)
+        if ledger.context.retired_reason is None:
+            if thread is None:
+                ledger.retire("registered review root was confirmed absent")
+                store.save(ledger, "orchestrator-root-check")
+            else:
+                reconcile_thread(ledger, thread, adjudicator_ids, reviewer_ids)
+                observation = hashlib.sha256("\0".join(f"{item.database_id}:{item.updated_at}" for item in thread.comments).encode("utf-8")).hexdigest()
+                store.save(ledger, observation)
+        raw_finding = thread.comments[0].body if thread is not None else ""
+        result = ledger.current(None, None, "orchestrator read")
+        snapshots.append(
+            AdjudicationSnapshot(
+                context=ledger.context,
+                raw_finding=raw_finding,
+                contributing_issues=tuple(item.issue_number for item in ledger.context.contracts),
+                root_author_id=ledger.context.root_author_id,
+                source_comment_id=result.source_comment_id,
+                result=result,
+                observation_revision="orchestrator-read",
+            )
+        )
+    return tuple(snapshots)
+
+
+def _mark_test_oracle_gap_invalid(repo_name: str, pr_number: int, gap_id: str, decision_id: str, rationale: str, head_sha: str) -> bool:
+    """Retire a persisted material test-oracle gap as adjudicated-invalid.
+
+    Never downgrades an independently established ``RESOLVED`` gap; only an
+    ``OPEN`` gap is retired, so a gap already proven fixed by a real
+    regression test is left alone (REQ-004).
+    """
+    registry = ReviewerSessionRegistry()
+    updated = False
+    for session in registry.sessions_for_pr(repo_name, pr_number):
+        changed = False
+        for gap in session.test_oracle_gaps:
+            if gap.gap_id == gap_id and gap.status == "OPEN":
+                gap.status = "INVALID"
+                gap.resolution_evidence = f"Overruled by authorized adjudication decision `{decision_id}`: {rationale}"
+                gap.resolution_head_sha = head_sha
+                changed = True
+                updated = True
+        if changed:
+            registry.save(session)
+    return updated
+
+
+def _reopen_test_oracle_gap(repo_name: str, pr_number: int, gap_id: str) -> bool:
+    """Reverse a gap this adjudication effect previously retired as invalid."""
+    registry = ReviewerSessionRegistry()
+    reopened = False
+    for session in registry.sessions_for_pr(repo_name, pr_number):
+        changed = False
+        for gap in session.test_oracle_gaps:
+            if gap.gap_id == gap_id and gap.status == "INVALID":
+                gap.status = "OPEN"
+                gap.resolution_evidence = ""
+                gap.resolution_head_sha = ""
+                changed = True
+                reopened = True
+        if changed:
+            registry.save(session)
+    return reopened
+
+
+_ADJUDICATION_EFFECT_OUTCOMES = {
+    "delivered": Outcome.COMPLETED,
+    "retired": Outcome.COMPLETED,
+    "reconciled": Outcome.COMPLETED,
+    "pending": Outcome.DEFERRED,
+    "unknown": Outcome.UNKNOWN,
+    "reconciliation-required": Outcome.BLOCKED,
+}
+
+
+def _record_adjudication_effect_stage(pr_number: int, effect_kind: str, context_id: str, decision_id: str, status: str, gap_id: str = "") -> None:
+    """Record one applied (or attempted) adjudication effect for the dashboard.
+
+    A distinct outcome per REQ-010's processing-status distinctions: repair
+    delivery pending/confirmed/unknown, scoped retirement pending/applied,
+    and reconciliation-required for a reversed overrule that could not be
+    confirmed reversed on GitHub.
+    """
+    facts: Dict[str, Any] = {"effect_kind": effect_kind, "context_id": context_id, "decision_id": decision_id, "status": status}
+    if gap_id:
+        facts["gap_id"] = gap_id
+    _record_pr_stage(pr_number, "pr.review-adjudication-effect", f"pr#{pr_number} review adjudication effect ({effect_kind})", _ADJUDICATION_EFFECT_OUTCOMES.get(status, Outcome.UNKNOWN), facts)
+
+
+def _apply_review_adjudication_effects(repo_name: str, pr_number: int, pr_data: Dict[str, Any], github_client: Any) -> Tuple[PRActionList, bool]:
+    """Apply every authorized adjudication decision's owned effect for this PR.
+
+    Returns the actions taken plus whether ordinary same-head validation
+    suppression must be bypassed this pass because a real adjudication
+    effect is newly effective or still unconfirmed (REQ-002, REQ-003,
+    REQ-004, REQ-007).
+    """
+    actions = PRActionList()
+    try:
+        snapshots = _current_adjudication_ledger_snapshots(repo_name, pr_number, github_client)
+    except Exception as exc:
+        logger.warning(f"Could not evaluate review adjudication effects for PR #{pr_number}: {exc}")
+        return actions, False
+    if not snapshots:
+        return actions, False
+    effect_store = _get_adjudication_effect_store()
+    plan = plan_adjudication_effects(snapshots, effect_store)
+    if not plan:
+        return actions, effect_store.force_revalidation_needed(repo_name, pr_number)
+
+    # Reconcile a reversed OVERRULE before applying whatever the new current
+    # disposition is: both can target the same context_id journal row in this
+    # same pass (e.g. a fresh UPHOLD superseding a retired OVERRULE), and the
+    # row must end this pass reflecting the current disposition's own
+    # delivery/retirement status, not the stale reconciliation outcome.
+    for reopen in plan.reopens:
+        try:
+            effect_store.begin(reopen.context_id, repo_name, pr_number, reopen.decision_id, reopen.head_sha, reopen.contract_digest, reopen.verdict, gap_id=reopen.gap_id)
+        except Exception as exc:
+            logger.error(f"Could not durably record adjudication reconciliation for PR #{pr_number}: {exc}")
+            continue
+        reopened_gap = bool(reopen.gap_id) and _reopen_test_oracle_gap(repo_name, pr_number, reopen.gap_id)
+        try:
+            github_client.unresolve_review_thread(reopen.thread_id)
+            note = f" and reopened material test-oracle gap `{reopen.gap_id}`" if reopened_gap else ""
+            actions.append(f"Reversed a superseded or revoked adjudication overrule on PR #{pr_number}{note}")
+            effect_store.finish(reopen.context_id, "reconciled", gap_id=reopen.gap_id)
+            _record_adjudication_effect_stage(pr_number, "REOPEN", reopen.context_id, reopen.decision_id, "reconciled", gap_id=reopen.gap_id)
+        except Exception as exc:
+            logger.warning(f"Could not reverse a superseded adjudication overrule for PR #{pr_number}: {exc}")
+            actions.append(f"A superseded adjudication overrule on PR #{pr_number} could not be reversed on GitHub and remains a merge blocker until it is: {exc}")
+            effect_store.finish(reopen.context_id, "reconciliation-required", gap_id=reopen.gap_id)
+            _record_adjudication_effect_stage(pr_number, "REOPEN", reopen.context_id, reopen.decision_id, "reconciliation-required", gap_id=reopen.gap_id)
+
+    for upheld in plan.upholds:
+        try:
+            effect_store.begin(upheld.context_id, repo_name, pr_number, upheld.decision_id, upheld.head_sha, upheld.contract_digest, "UPHOLD")
+        except Exception as exc:
+            logger.error(f"Could not durably record adjudication effect for PR #{pr_number}: {exc}")
+            continue
+        status = "unknown"
+        try:
+            resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
+            if resolution.origin is None:
+                actions.append(f"Adjudicated repair for PR #{pr_number} was not delivered: {resolution.reason}")
+                status = "pending"
+            else:
+                provider, task_id, client = resolution.origin.provider, resolution.origin.task_id, resolution.origin.client
+                from .cloud_task_client_base import CloudTaskClientBase
+
+                if getattr(type(client), "send_followup", None) is CloudTaskClientBase.send_followup:
+                    actions.append(f"Adjudicated repair for PR #{pr_number} was not delivered: cloud provider '{provider}' does not support follow-up delivery")
+                    status = "pending"
+                else:
+                    live_metadata = github_client.get_pull_request_repair_metadata_strict(repo_name, pr_number)
+                    live_pr_data = dict(pr_data)
+                    live_pr_data["head"] = {"ref": live_metadata.head_ref, "sha": live_metadata.head_sha}
+                    live_pr_data["base"] = {"ref": live_metadata.base_ref}
+                    target = resolve_existing_pr_repair_target(repo_name, live_pr_data)
+                    if not target:
+                        actions.append(f"Adjudicated repair for PR #{pr_number} was not delivered: current PR head/base branch metadata is unavailable")
+                        status = "pending"
+                    else:
+                        details = Template(get_prompt_template("codex_cloud.adjudication_upheld_repair_details")).safe_substitute(rationale=upheld.rationale, raw_finding=upheld.raw_finding)
+                        prompt = build_existing_pr_repair_prompt(target, details)
+                        accepted = client.send_followup(task_id, prompt, (upheld.decision_id,)) if provider == "codex-cloud" else client.send_followup(task_id, prompt)
+                        if accepted:
+                            actions.append(f"Requested {provider} task '{task_id}' to apply an authorized bounded correction for PR #{pr_number}")
+                            status = "delivered"
+                        else:
+                            actions.append(f"Adjudicated repair for PR #{pr_number} was not delivered: {provider} task '{task_id}' rejected follow-up delivery")
+                            status = "pending"
+        except Exception as exc:
+            logger.warning(f"Adjudicated repair delivery failed for PR #{pr_number}: {exc}")
+            actions.append(f"Adjudicated repair for PR #{pr_number} was not confirmed delivered: {exc}")
+            status = "unknown"
+        effect_store.finish(upheld.context_id, status)
+        _record_adjudication_effect_stage(pr_number, "UPHOLD", upheld.context_id, upheld.decision_id, status)
+
+    for overrule in plan.overrules:
+        try:
+            effect_store.begin(overrule.context_id, repo_name, pr_number, overrule.decision_id, overrule.head_sha, overrule.contract_digest, "OVERRULE", gap_id=overrule.gap_id or "")
+        except Exception as exc:
+            logger.error(f"Could not durably record adjudication effect for PR #{pr_number}: {exc}")
+            continue
+        gap_note = ""
+        if overrule.gap_id and not overrule.gap_still_contributed_elsewhere:
+            if _mark_test_oracle_gap_invalid(repo_name, pr_number, overrule.gap_id, overrule.decision_id, overrule.rationale, overrule.head_sha):
+                gap_note = f" and retired material test-oracle gap `{overrule.gap_id}`"
+        elif overrule.gap_id:
+            gap_note = f" (material test-oracle gap `{overrule.gap_id}` remains open: another live finding still contributes to it)"
+
+        status = "unknown"
+        try:
+            explanation = format_overrule_explanation(overrule.decision_id, overrule.rationale)
+            github_client.reply_to_review_thread(repo_name, pr_number, overrule.root_comment_id, explanation)
+            # Re-check immediately before the resolve mutation: a concurrent
+            # writer (e.g. the Dashboard write boundary) may have superseded
+            # or revoked this exact decision since the plan was computed.
+            fresh = _current_adjudication_ledger_snapshots(repo_name, pr_number, github_client)
+            fresh_result = next((snap.result for snap in fresh if snap.context is not None and snap.context.context_id == overrule.context_id), None)
+            if fresh_result is None or fresh_result.status != AdjudicationStatus.APPLICABLE or fresh_result.verdict != "OVERRULE" or fresh_result.decision_id != overrule.decision_id:
+                actions.append(f"Overruled finding on PR #{pr_number} was not resolved on GitHub: the decision is no longer current")
+                status = "pending"
+            else:
+                github_client.resolve_review_thread(overrule.thread_id)
+                actions.append(f"Retired an overruled finding on PR #{pr_number}{gap_note}")
+                status = "retired"
+        except Exception as exc:
+            logger.warning(f"Could not resolve overruled review thread for PR #{pr_number}: {exc}")
+            actions.append(f"Overruled finding on PR #{pr_number} was not confirmed resolved on GitHub: {exc}")
+            status = "unknown"
+        effect_store.finish(overrule.context_id, status, gap_id=overrule.gap_id or "")
+        _record_adjudication_effect_stage(pr_number, "OVERRULE", overrule.context_id, overrule.decision_id, status, gap_id=overrule.gap_id or "")
+
+    return actions, effect_store.force_revalidation_needed(repo_name, pr_number)
 
 
 def _delegate_cloud_merge_conflict_repair_result(

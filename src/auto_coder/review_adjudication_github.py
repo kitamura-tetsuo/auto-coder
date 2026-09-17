@@ -35,6 +35,9 @@ from .util.gh_cache import ReviewThread
 
 CONTEXT_MARKER = "<!-- auto-coder-review-adjudication-context:v1 -->"
 
+ADJUDICATION_DB_ENV = "AUTO_CODER_REVIEW_ADJUDICATION_DB"
+DEFAULT_ADJUDICATION_DB_PATH = "~/.auto-coder/review-adjudications.sqlite3"
+
 
 @dataclass(frozen=True)
 class PullRequestBinding:

@@ -688,3 +688,50 @@ through the engine's read-only adjudication snapshot accessor; publication does
 not emit PASS, repair, or review-resolution events. Issue-originated reverse
 invalidation and startup recovery use the existing durable invalidation worker
 origin and therefore preserve the production-to-view routing contract.
+
+# Review adjudication effect orchestration
+
+Applying an authorized adjudication decision's owned effect (Issue #2019) is a
+new production origin distinct from the read-only snapshot boundary above: it
+introduces a new `pr.review-adjudication-effect` stage, recorded once per
+applied or attempted `UPHOLD`/`OVERRULE`/`REOPEN` effect via the existing
+`_record_pr_stage` scoped-event helper, alongside the existing merge-gate
+stages for the same PR-processing pass. Its outcome mapping reuses the
+existing `Outcome` enum rather than inventing new terminal states: `delivered`
+/`retired`/`reconciled` map to `COMPLETED`, `pending` to `DEFERRED`, `unknown`
+to `UNKNOWN`, and a failed overrule reversal (`reconciliation-required`) to
+`BLOCKED`. Facts carry the context/decision identity, effect status, and gap
+identity when applicable, so a dashboard consumer can distinguish a confirmed
+repair delivery from a still-pending one without conflating it with PR
+approval or implementation verification (REQ-010).
+
+This is new provider routing reuse, not a new provider: `UPHOLD` delivery
+resolves the PR's existing durable cloud-task association exactly the way
+ordinary unresolved-review-thread repair delegation already does
+(`_resolve_cloud_task_origin`), so the existing provider-admission and
+follow-up-support diagnostics remain the sole source of truth for whether a
+repair route exists; this stage only reports what was attempted with it.
+`OVERRULE`/`REOPEN` reuse the existing GitHub reply/resolve/unresolve
+mutations already instrumented via `PRActionList` and (for resolve) the
+existing thread gate, adding a distinct auditable marker
+(`auto-coder-review-adjudication-overruled:v1`) rather than a new mutation
+kind.
+
+An adjudication-forced revalidation bypasses the ordinary same-head
+adversarial-validation suppression the same way an explicit `--force` run
+already does (`forced_same_head_revalidation`); it does not add a new
+suppression-bypass event, since the existing forced-revalidation action
+messages already cover both origins.
+
+`tests/test_review_adjudication_orchestrator.py` covers the effect-planning
+decision logic (idempotent same-generation suppression, shared test-oracle-gap
+ownership, reopen-on-supersession) against real ledger state built the same
+way the #2018 GitHub boundary itself builds it.
+`tests/test_pr_processor_adjudication_effects.py` drives the full
+read -> plan -> deliver/retire -> journal path against a fake GitHub client
+and the real cloud-task-origin resolution path (mocking only the external
+`CloudManager`/`CodexCloudClient` boundary, the same seam
+`tests/test_codex_cloud_pr_review_flow.py` already uses), and confirms a raw
+adjudication envelope reply is excluded from the generic cloud
+review-feedback path it would otherwise be forwarded through verbatim. Run
+`bash scripts/test.sh tests/test_review_adjudication_orchestrator.py tests/test_pr_processor_adjudication_effects.py`.
