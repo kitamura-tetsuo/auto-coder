@@ -387,8 +387,159 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         # Auto-refresh every 1 second
         ui.timer(1.0, refresh_status)
 
+
+    @ui.page("/adjudication/{pr_number}")
+    def adjudication_page(pr_number: int) -> None:
+        ui.label(f"Review Adjudication: PR #{pr_number}").classes("text-2xl font-bold mb-4")
+        ui.link("Back to PR Detail", f"/detail/pr/{pr_number}").classes("text-blue-500 mb-4 inline-block")
+
+        status_banner = ui.label("Loading...").classes("text-sm text-gray-500 mb-4")
+        container = ui.column().classes("w-full max-w-4xl gap-4")
+
+        # In-browser state for the current PR
+        state = {
+            "csrf_token": None,
+            "findings": [],
+            "drafts": {},
+            "statuses": {},
+            "loading": True,
+            "error": None
+        }
+
+        # Javascript bridge functions
+        # For simplicity, we just inject JS to handle the login and fetching,
+        # then display results using NiceGUI elements.
+
+        def render_login():
+            container.clear()
+            with container:
+                ui.label("Authentication Required").classes("text-xl font-bold text-red-600 mb-2")
+                ui.label("Adjudication authoring requires an active operator session.").classes("mb-4")
+
+                with ui.row().classes("gap-2 items-center"):
+                    secret_input = ui.input("Operator Secret", password=True).classes("w-64")
+
+                    def on_login_click():
+                        ui.run_javascript(f"""
+                            fetch("/dashboard-adjudication/login", {{
+                                method: "POST",
+                                headers: {{"Content-Type": "application/json"}},
+                                body: JSON.stringify({{secret: "{secret_input.value}"}})
+                            }})
+                            .then(r => r.ok ? window.location.reload() : Promise.reject("Login failed: " + r.status))
+                            .catch(err => alert(err));
+                        """)
+
+                    ui.button("Login", on_click=on_login_click)
+
+        def check_auth_and_load():
+            ui.run_javascript(f"""
+                fetch("/dashboard-adjudication/context/{pr_number}")
+                    .then(r => {{
+                        if (r.status === 401 || r.status === 403) {{
+                            // Needs auth
+                            const loginEvent = new CustomEvent("adjudication_needs_auth");
+                            window.dispatchEvent(loginEvent);
+                            return null;
+                        }}
+                        return r.json();
+                    }})
+                    .then(data => {{
+                        if (data) {{
+                            const loadEvent = new CustomEvent("adjudication_data_loaded", {{detail: data}});
+                            window.dispatchEvent(loadEvent);
+                        }}
+                    }})
+                    .catch(err => console.error(err));
+            """)
+
+        def on_needs_auth(e):
+            render_login()
+            status_banner.set_text("Authentication required.")
+            status_banner.classes(replace="text-sm text-red-600 font-bold mb-4")
+
+        def render_finding(finding):
+            with ui.card().classes("w-full mb-4"):
+                ui.label(f"Finding Context ID: {finding['context_id']}").classes("font-mono font-bold")
+                ui.label(f"Root Comment ID: {finding['root_comment_id']}")
+                ui.label(f"Head SHA: {finding['head_sha']}")
+                ui.label(f"Base Ref: {finding['base_ref']}").classes("mb-2")
+
+                ui.label(f"Status: {finding['status']}").classes("font-bold text-blue-600 mb-2")
+
+                if finding.get('retired_reason'):
+                    ui.label(f"Retired: {finding['retired_reason']}").classes("text-red-500 font-bold mb-2")
+
+                ui.label("Tips (Conflicting / Active):").classes("font-bold")
+                for tip in finding.get('tips', []):
+                    ui.label(f"- {tip}")
+
+                with ui.row().classes("mt-4 gap-2 items-center"):
+                    verdict_select = ui.select(["UPHOLD", "OVERRULE", "UNDECIDED"], value="UNDECIDED", label="Verdict").classes("w-40")
+                    directive_select = ui.select(["FIX", "NO_CHANGE", "NONE"], value="NONE", label="Directive").classes("w-40")
+
+                rationale_input = ui.textarea(label="Rationale").classes("w-full mt-2")
+
+                def on_submit_click():
+                    import json
+                    supersedes_json = json.dumps(finding.get('tips', []))
+                    ui.run_javascript(f'''
+                        fetch("/dashboard-adjudication/draft", {{
+                            method: "POST",
+                            headers: {{"Content-Type": "application/json"}},
+                            body: JSON.stringify({{pr_number: {pr_number}, context_id: "{finding['context_id']}"}})
+                        }})
+                        .then(r => r.json())
+                        .then(draft => {{
+                            return fetch("/dashboard-adjudication/submit", {{
+                                method: "POST",
+                                headers: {{
+                                    "Content-Type": "application/json",
+                                    "x-csrf-token": "{state.get('csrf_token', '')}"
+                                }},
+                                body: JSON.stringify({{
+                                    pr_number: {pr_number},
+                                    context_id: "{finding['context_id']}",
+                                    decision_id: draft.decision_id,
+                                    head_sha: "{finding['head_sha']}",
+                                    contract_digest: "{finding['contract_digest']}",
+                                    verdict: "{verdict_select.value}",
+                                    directive: "{directive_select.value}",
+                                    rationale: {json.dumps(rationale_input.value)},
+                                    supersedes: {supersedes_json}
+                                }})
+                            }});
+                        }})
+                        .then(r => r.ok ? alert("Decision submitted!") : Promise.reject("Submit failed: " + r.status))
+                        .then(() => window.location.reload())
+                        .catch(err => alert(err));
+                    ''')
+
+                ui.button("Submit Decision", on_click=on_submit_click).classes("mt-4")
+
+
+        def on_data_loaded(e):
+            data = e.args
+            container.clear()
+            status_banner.set_text("Loaded adjudication context.")
+
+            with container:
+                findings = data.get('findings', [])
+                if not findings:
+                    ui.label("No adjudication findings for this PR.").classes("text-gray-500")
+                else:
+                    for finding in findings:
+                        render_finding(finding)
+
+        ui.on("adjudication_needs_auth", on_needs_auth)
+        ui.on("adjudication_data_loaded", on_data_loaded)
+
+        # We need to trigger the initial load
+        ui.timer(0.5, check_auth_and_load, once=True)
+
     @ui.page("/detail/{item_type}/{item_number}")
     def detail_page(item_type: str, item_number: int) -> None:
+
         ui.label(f"Detail View: {item_type.capitalize()} #{item_number}").classes("text-2xl font-bold mb-4")
 
         # Back button
@@ -397,6 +548,12 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         if not is_supported_item_type(item_type) or not is_resolvable_item_number(item_number):
             ui.label(f"Invalid or unresolved target: {item_type!r} #{item_number}. " "This repository's diagnostic evidence cannot be selected for it.").classes("text-red-600 font-bold")
             return
+
+
+        if item_type == "pr":
+            with ui.row().classes("w-full mb-4 gap-2 items-center"):
+                ui.link("Review Adjudication", f"/adjudication/{item_number}").classes("text-blue-500 font-bold")
+                ui.label(" (GitHub review/adjudication surface)").classes("text-sm text-gray-500")
 
         ui.label(f"Repository: {repo_name}").classes("text-sm text-gray-500 mb-2")
 
