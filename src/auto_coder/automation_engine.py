@@ -93,7 +93,7 @@ from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .reissue_required_store import ReissueRequiredStore
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
-from .review_adjudication_github import AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService
+from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService
 from .shutdown_context import install_admission_check, reset_admission_check
 from .sibling_dependencies import (
     BlockedByDeclarationStatus,
@@ -752,7 +752,7 @@ class AutomationEngine:
         self.queue = CandidateQueue()
         invalidation_path = Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser()
         self.invalidations = DurableInvalidationQueue(invalidation_path)
-        adjudication_path = Path(os.environ.get("AUTO_CODER_REVIEW_ADJUDICATION_DB", "~/.auto-coder/review-adjudications.sqlite3")).expanduser()
+        adjudication_path = Path(os.environ.get(ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH)).expanduser()
         self.review_adjudications = ReviewAdjudicationService(self.github, AdjudicationContextStore(adjudication_path))
         routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
         self.issue_stage_routing = IssueStageRoutingStore(routing_path)

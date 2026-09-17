@@ -178,6 +178,16 @@ def render_decision(decision: Decision) -> str:
     return f"{MARKER}\n```json\n{json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}\n```"
 
 
+def is_adjudication_envelope(body: str) -> bool:
+    """Return whether ``body`` is structurally a v1 adjudication envelope.
+
+    Used by ordinary review-comment consumers (e.g. generic cloud repair
+    delivery) to recognize and exclude an adjudication reply, authorized or
+    not, from being forwarded as free-form reviewer prose (REQ-009).
+    """
+    return bool(_ENVELOPE.fullmatch(body))
+
+
 def contract_identity(contracts: Sequence[IssueContract], parser_version: str) -> tuple[str, str, tuple[str, ...]]:
     """Return canonical JSON, its digest, and byte-exact Objective fingerprints."""
     if not parser_version or not contracts:
