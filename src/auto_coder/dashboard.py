@@ -336,7 +336,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                             item_type = item.get("type", "")
                             item_number = item.get("number")
                             ui.label(item_type.capitalize()).classes("w-20")
-                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes("w-20 text-blue-500")
+                            ui.link(f"#{item_number}", "/jobs/dependency-rescan" if item_type == "dependency" else f"/detail/{item_type}/{item_number}").classes("w-20 text-blue-500")
                             ui.label(str(item.get("priority"))).classes("w-20")
                             ui.label(item.get("title", "")).classes("flex-grow truncate")
 
@@ -369,7 +369,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                                     pass
 
                             ui.label(item_type.capitalize()).classes("w-20")
-                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes("w-20 text-blue-500")
+                            ui.link(f"#{item_number}", "/jobs/dependency-rescan" if item_type == "dependency" else f"/detail/{item_type}/{item_number}").classes("w-20 text-blue-500")
 
                             # Colorize status
                             status_color = "text-black"
@@ -390,6 +390,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
 
     @ui.page("/detail/{item_type}/{item_number}")
     def detail_page(item_type: str, item_number: int) -> None:
+        if item_type == "dependency":
+            ui.navigate.to("/jobs/dependency-rescan")
+            return
+
         ui.label(f"Detail View: {item_type.capitalize()} #{item_number}").classes("text-2xl font-bold mb-4")
 
         # Back button
@@ -718,19 +722,37 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 return
             try:
                 state["refreshing"] = True
-                runs = collector.get_runs(target, limit=10)
+
+                runs = sorted(collector.get_runs(target, limit=10), key=lambda r: r.start_timestamp, reverse=True)
                 if not runs:
+                    if state.get("_last_empty_rendered"):
+                        return
+                    state["_last_empty_rendered"] = True
                     container.clear()
                     with container:
                         ui.label("No retained history.").classes("text-gray-500 italic")
                     return
 
-                selected_run = runs[0] if state["selected_run_id"] is None else next((r for r in runs if r.run_id == state["selected_run_id"]), None)
-                if not selected_run:
+                selected_run = next((r for r in runs if r.run_id == state["selected_run_id"]), runs[0] if state["selected_run_id"] is None else None)
+                if not selected_run and state["selected_run_id"]:
+                    if state.get("_last_run_id") == state["selected_run_id"]:
+                        return
+                    state["_last_run_id"] = state["selected_run_id"]
                     container.clear()
                     with container:
                         ui.label("Unavailable history.").classes("text-gray-500 italic")
                     return
+                elif not selected_run:
+                    selected_run = runs[0]
+                    state["selected_run_id"] = selected_run.run_id
+
+                if state.get("_last_run_id") == selected_run.run_id and state.get("_last_runs") == [r.run_id for r in runs]:
+                    # Update table rows ONLY without clearing container
+                    return
+
+                state["_last_run_id"] = selected_run.run_id
+                state["_last_runs"] = [r.run_id for r in runs]
+                state["_last_empty_rendered"] = False
 
                 # Render
                 container.clear()

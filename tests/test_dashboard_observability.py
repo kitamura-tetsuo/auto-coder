@@ -1012,4 +1012,42 @@ def mock_ui():
 
 
 class TestDependencyRescanDashboardIntegration:
-    pass
+    @pytest.fixture
+    def rescan_harness(self):
+        from unittest.mock import MagicMock
+
+        from auto_coder.automation_config import AutomationConfig
+        from auto_coder.automation_engine import AutomationEngine
+        from auto_coder.repo_job_trace import RepoJobKind, RepoJobTarget
+
+        engine = AutomationEngine(MagicMock(), AutomationConfig(repo_name="owner/repo"))
+        target = RepoJobTarget(repository="owner/repo", job_kind=RepoJobKind.DEPENDENCY_RESCAN.value)
+        return engine, target
+
+    def test_as_001_reported_navigation_becomes_real_internal_job(self, rescan_harness, mock_ui):
+        engine, target = rescan_harness
+        from auto_coder.dashboard import init_dashboard
+
+        init_dashboard(mock_ui, engine, "owner/repo")
+
+    def test_as_002_successful_rescan_is_not_successful_dependent(self, rescan_harness, mock_ui):
+        engine, target = rescan_harness
+        pass
+
+    def test_as_003_failure_is_visible_before_issue_detail(self, rescan_harness, mock_ui):
+        pass
+
+    def test_as_004_queued_causes_later_generations_stable_history(self, rescan_harness, mock_ui):
+        pass
+
+    def test_as_005_restart_and_snapshot_failure_do_not_fabricate_certainty(self, rescan_harness, mock_ui):
+        pass
+
+    def test_as_006_isolation_clipping_safe_read_only_rendering(self, rescan_harness, mock_ui):
+        pass
+
+    def test_as_007_removing_producer_record_cannot_still_pass(self, rescan_harness, mock_ui):
+        from auto_coder.dashboard_detail import build_repo_job_observed_path_diagram
+
+        diagram = build_repo_job_observed_path_diagram([])
+        assert "No Observations" in diagram

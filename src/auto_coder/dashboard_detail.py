@@ -278,31 +278,36 @@ def repo_job_evidence_rows(observations: Sequence["RepoJobObservation"]) -> List
                             return "(not recorded)"
                         if isinstance(value, bool):
                             return "true" if value else "false"
+
+                        import html
+
                         if hasattr(value, "total_count"):
                             total = value.total_count
                             items = getattr(value, "items", getattr(value, "numbers", []))
                             if items is None:
                                 items = []
-                            if key in ("source_issue_refs", "target_issue_refs") and hasattr(value, "numbers"):
+                            if key == "target_issue_refs" and hasattr(value, "numbers"):
                                 links = []
                                 for n in items:
                                     links.append(f'<a href="/detail/issue/{n}" class="text-blue-500">#{n}</a>')
                                 items_str = ", ".join(links)
                             else:
-                                items_str = ", ".join(str(i) for i in items)
+                                items_str = html.escape(", ".join(str(i) for i in items))
 
                             if total is not None and total > len(items):
                                 items_str += f" ... ({total} total - explicit partial-list marker)"
                             elif total is not None:
                                 items_str += f" ({total} total)"
                             return items_str
+
                         if isinstance(value, (dict, list, tuple)):
                             import json
 
                             try:
-                                return json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
+                                return html.escape(json.dumps(value, sort_keys=True, default=str, ensure_ascii=False))
                             except TypeError:
-                                return str(value)
+                                return html.escape(str(value))
+                        return html.escape(str(value))
                         return str(value)
 
                     fact_lines.append(f"{key}: {format_job_fact_value(key, value)}")
