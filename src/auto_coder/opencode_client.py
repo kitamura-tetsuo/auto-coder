@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -90,16 +92,40 @@ def _read_only_special(name, args):
     if name == "tag":
         return not any(not a.startswith("-") for a in args)
     if name == "config":
-        return any(a in {"--get", "--get-all", "--get-regexp", "-l", "--list"} for a in args)
+        mutating = {"--add", "--replace-all", "--unset", "--unset-all", "--rename-section",
+                     "--remove-section", "--edit", "-e"}
+        if any(a in mutating for a in args):
+            return False
+        if any(a in {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list"} for a in args):
+            return True
+        return len([a for a in args if not a.startswith("-")]) <= 1
     if name == "remote":
         return not args or args[0] in {"-v", "show", "get-url"}
     return False
 
 
+_GLOBAL_OPTIONS_WITH_SEPARATE_VALUE = {
+    "-c", "-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+    "--exec-path", "--config-env", "--attr-source",
+}
+
+
+def _split_global_options(argv):
+    """Skip global `git` options (and their values) to find the real subcommand."""
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if not token.startswith("-"):
+            return token, argv[index + 1:]
+        if token in _GLOBAL_OPTIONS_WITH_SEPARATE_VALUE:
+            index += 2
+            continue
+        index += 1
+    return None, []
+
+
 def main(argv):
-    positional = [a for a in argv if not a.startswith("-")]
-    name = positional[0] if positional else None
-    rest = [a for a in argv if a != name] if name is not None else argv
+    name, rest = _split_global_options(argv)
     if name in _READ_ONLY_COMMANDS or (name is not None and _read_only_special(name, rest)):
         os.execv(REAL_GIT, [REAL_GIT] + argv)
     sys.stderr.write(
@@ -177,6 +203,39 @@ _AUTOCODER_OWNED_WITH_VALUE = frozenset({"--format", "--dir"})
 _MODEL_FLAGS = frozenset({"--model", "-m"})
 _VALUE_TAKING_ALLOWED = frozenset({"--variant", "--agent", "--title", "--replay-limit"})
 
+# Tool names OpenCode's non-interactive `run` exposes to the model that count as
+# pure repository/evidence inspection (Issue #2125 REQ-003). Every other built-in
+# tool name (bash, edit, write, task, webfetch, skill, todowrite) and any
+# custom/MCP tool must resolve to denied for a no-edit invocation.
+_NOEDIT_INSPECTION_TOOLS = frozenset({"read", "glob", "grep"})
+_NOEDIT_FORBIDDEN_TOOL_STATE: Dict[str, bool] = {
+    "bash": False,
+    "edit": False,
+    "write": False,
+    "task": False,
+    "webfetch": False,
+    "skill": False,
+    "todowrite": False,
+}
+_NOEDIT_REQUIRED_TOOL_STATE: Dict[str, bool] = {"read": True, "glob": True, "grep": True}
+
+# Directories excluded from the no-edit working-tree comparison because they are
+# disposable caches/metadata rather than repository content Auto-Coder publishes.
+_NOEDIT_DISPOSABLE_DIRECTORY_NAMES = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        ".agent-tmp",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".cache",
+        "__pycache__",
+        "node_modules",
+    }
+)
+_NOEDIT_DISPOSABLE_DIRECTORY_PREFIXES = tuple(f"{name}/" for name in _NOEDIT_DISPOSABLE_DIRECTORY_NAMES)
+
 
 @dataclass(frozen=True)
 class _GitGuardState:
@@ -184,6 +243,32 @@ class _GitGuardState:
     head: str
     staged_patch: bytes
     refs: Tuple[Tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class _NoEditWorkspaceFile:
+    path: str
+    contents: bytes
+    is_symlink: bool
+    mode: int
+
+
+@dataclass(frozen=True)
+class _NoEditWorkspaceMode:
+    path: str
+    mode: int
+
+
+@dataclass(frozen=True)
+class _NoEditWorkspaceState:
+    """Everything REQ-002 protects beyond the branch/HEAD/refs/index `_GitGuardState` covers."""
+
+    status: bytes
+    unstaged_patch: bytes
+    untracked_files: Tuple[_NoEditWorkspaceFile, ...]
+    ignored_files: Tuple[_NoEditWorkspaceFile, ...]
+    tracked_modes: Tuple[_NoEditWorkspaceMode, ...]
+    directory_modes: Tuple[_NoEditWorkspaceMode, ...]
 
 
 class OpenCodeClient(LLMClientBase):
@@ -199,6 +284,7 @@ class OpenCodeClient(LLMClientBase):
         self._validate_model(model_name)
         self.model_name: str = model_name
         self.options = (self.config_backend and self.config_backend.options) or []
+        self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
         self.timeout = (self.config_backend and self.config_backend.timeout) or 7200
 
@@ -299,6 +385,177 @@ class OpenCodeClient(LLMClientBase):
         logger.error(message)
         raise RuntimeError(message)
 
+    # -- No-edit working-tree preservation (Issue #2125 REQ-002) ---------------
+
+    @classmethod
+    def _noedit_scan_files(cls, raw_paths: bytes, cwd: Path) -> Tuple[_NoEditWorkspaceFile, ...]:
+        files = []
+        for raw_path in filter(None, raw_paths.split(b"\0")):
+            relative_path = os.fsdecode(raw_path)
+            normalized = relative_path.replace(os.sep, "/")
+            if any(normalized.startswith(prefix) or f"/{prefix}" in f"/{normalized}" for prefix in _NOEDIT_DISPOSABLE_DIRECTORY_PREFIXES):
+                continue
+            path = cwd / relative_path
+            if path.is_symlink():
+                files.append(_NoEditWorkspaceFile(relative_path, os.fsencode(os.readlink(path)), True, stat.S_IMODE(path.lstat().st_mode)))
+            elif path.is_file():
+                files.append(_NoEditWorkspaceFile(relative_path, path.read_bytes(), False, stat.S_IMODE(path.stat().st_mode)))
+        return tuple(files)
+
+    @classmethod
+    def _noedit_scan_modes(cls, raw_paths: bytes, cwd: Path) -> Tuple[_NoEditWorkspaceMode, ...]:
+        modes = []
+        for raw_path in filter(None, raw_paths.split(b"\0")):
+            relative_path = os.fsdecode(raw_path)
+            normalized = relative_path.replace(os.sep, "/")
+            if any(normalized.startswith(prefix) or f"/{prefix}" in f"/{normalized}" for prefix in _NOEDIT_DISPOSABLE_DIRECTORY_PREFIXES):
+                continue
+            path = cwd / relative_path
+            if path.exists() and not path.is_symlink():
+                modes.append(_NoEditWorkspaceMode(relative_path, stat.S_IMODE(path.stat().st_mode)))
+        return tuple(modes)
+
+    @classmethod
+    def _noedit_scan_directory_modes(cls, cwd: Path) -> Tuple[_NoEditWorkspaceMode, ...]:
+        modes = [_NoEditWorkspaceMode(".", stat.S_IMODE(cwd.stat().st_mode))]
+        for current_root, directories, _files in os.walk(cwd, followlinks=False):
+            directories[:] = sorted(directory for directory in directories if not (Path(current_root) == cwd and directory in _NOEDIT_DISPOSABLE_DIRECTORY_NAMES))
+            for directory in directories:
+                path = Path(current_root) / directory
+                if not path.is_symlink():
+                    modes.append(_NoEditWorkspaceMode(str(path.relative_to(cwd)), stat.S_IMODE(path.stat().st_mode)))
+        return tuple(modes)
+
+    @classmethod
+    def _snapshot_noedit_workspace(cls, cwd: Path) -> _NoEditWorkspaceState:
+        status = cls._git("status", "--porcelain=v2", "--untracked-files=all", "--ignored=matching", cwd=cwd)
+        if status.returncode != 0:
+            raise RuntimeError("Unable to snapshot the working tree before an OpenCode no-edit execution")
+        untracked = cls._noedit_scan_files(cls._git("ls-files", "--others", "--exclude-standard", "-z", cwd=cwd).stdout, cwd)
+        ignored = cls._noedit_scan_files(cls._git("ls-files", "--others", "--ignored", "--exclude-standard", "-z", cwd=cwd).stdout, cwd)
+        tracked_modes = cls._noedit_scan_modes(cls._git("ls-files", "-z", cwd=cwd).stdout, cwd)
+        return _NoEditWorkspaceState(
+            status=status.stdout,
+            unstaged_patch=cls._git("diff", "--binary", cwd=cwd).stdout,
+            untracked_files=untracked,
+            ignored_files=ignored,
+            tracked_modes=tracked_modes,
+            directory_modes=cls._noedit_scan_directory_modes(cwd),
+        )
+
+    def _restore_noedit_workspace(self, before: _NoEditWorkspaceState, cwd: Path) -> None:
+        clean_args = ["clean", "-fdx"]
+        for name in sorted(_NOEDIT_DISPOSABLE_DIRECTORY_NAMES):
+            clean_args.extend(["-e", f"{name}/", "-e", name])
+        if self._git("checkout", "--", ".", cwd=cwd).returncode != 0 or self._git(*clean_args, cwd=cwd).returncode != 0:
+            raise RuntimeError("Auto-Coder could not restore the pre-OpenCode working tree")
+        if before.unstaged_patch:
+            apply_result = subprocess.run(["git", "apply", "--binary"], cwd=cwd, input=before.unstaged_patch, capture_output=True)
+            if apply_result.returncode != 0:
+                raise RuntimeError("Auto-Coder could not restore the pre-OpenCode unstaged patch")
+        for workspace_file in before.untracked_files + before.ignored_files:
+            path = cwd / workspace_file.path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if workspace_file.is_symlink:
+                if path.exists() or path.is_symlink():
+                    path.unlink()
+                path.symlink_to(os.fsdecode(workspace_file.contents))
+            else:
+                path.write_bytes(workspace_file.contents)
+                path.chmod(workspace_file.mode)
+        for workspace_mode in before.tracked_modes:
+            path = cwd / workspace_mode.path
+            if path.exists() and not path.is_symlink():
+                path.chmod(workspace_mode.mode)
+        for directory_mode in before.directory_modes:
+            path = cwd / directory_mode.path
+            if not path.exists():
+                path.mkdir(parents=True)
+        for directory_mode in reversed(before.directory_modes):
+            path = cwd / directory_mode.path
+            if not path.is_symlink():
+                path.chmod(directory_mode.mode)
+
+    def _assert_noedit_workspace_preserved(self, before: _NoEditWorkspaceState, cwd: Path) -> None:
+        """Fail closed if the no-edit working tree changed despite the permission boundary."""
+        after = self._snapshot_noedit_workspace(cwd)
+        changed = after.status != before.status or after.unstaged_patch != before.unstaged_patch or after.untracked_files != before.untracked_files or after.ignored_files != before.ignored_files or after.tracked_modes != before.tracked_modes or after.directory_modes != before.directory_modes
+        if not changed:
+            return
+        restore_error: Optional[str] = None
+        try:
+            self._restore_noedit_workspace(before, cwd)
+        except RuntimeError as exc:
+            restore_error = str(exc)
+        message = "OpenCode modified the working tree during a no-edit invocation despite the enforced permission boundary; the invocation is rejected"
+        if restore_error:
+            message += f" ({restore_error})"
+        logger.error(message)
+        raise RuntimeError(message)
+
+    # -- No-edit permission enforcement (Issue #2125 REQ-003/REQ-004) ----------
+
+    @staticmethod
+    def _noedit_agent_name() -> str:
+        return f"autocoder-noedit-{secrets.token_hex(16)}"
+
+    @staticmethod
+    def _noedit_config_content(agent_name: str) -> str:
+        """A self-contained OpenCode config granting exactly read/glob/grep.
+
+        Passed via `OPENCODE_CONFIG_CONTENT`, which merges after global config,
+        project config, and `.opencode/` directory config (Issue #2125 Context),
+        and the agent name is generated fresh per invocation so no pre-existing
+        global/project/agent configuration can already define (and thus weaken)
+        an agent with this exact name.
+        """
+        return json.dumps(
+            {
+                "agent": {
+                    agent_name: {
+                        "mode": "primary",
+                        "permission": {
+                            "*": "deny",
+                            "read": "allow",
+                            "glob": "allow",
+                            "grep": "allow",
+                        },
+                    }
+                }
+            }
+        )
+
+    def _preflight_noedit_policy(self, *, agent_name: str, cwd: Path, env: Dict[str, str]) -> None:
+        """Verify the enforcing no-edit policy is actually in force before task launch.
+
+        Issue #2125 REQ-004: if this cannot be established for the installed
+        CLI/environment, the call must fail here rather than fall back to an
+        editable execution.
+        """
+        command = [*self.command, "debug", "agent", agent_name]
+        try:
+            result = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True, timeout=60, env=env)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"OpenCode no-edit enforcement could not be verified before task launch: {exc}") from exc
+        if result.returncode != 0:
+            diagnostics = (result.stderr or result.stdout or "").strip()[:400]
+            raise RuntimeError(f"OpenCode no-edit enforcement could not be verified before task launch (exit code {result.returncode}): {diagnostics or 'no diagnostic output'}")
+        try:
+            resolved = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"OpenCode no-edit enforcement could not be verified before task launch: the resolved agent configuration was not valid JSON ({exc}); the enforcing agent may not have been recognized by this OpenCode CLI") from exc
+        if not isinstance(resolved, dict) or resolved.get("name") != agent_name:
+            raise RuntimeError("OpenCode no-edit enforcement could not be verified before task launch: the enforcing agent was not recognized by the installed OpenCode CLI")
+        tools = resolved.get("tools")
+        if not isinstance(tools, dict):
+            raise RuntimeError("OpenCode no-edit enforcement could not be verified before task launch: no tool policy was resolved for the enforcing agent")
+        for tool_name in _NOEDIT_FORBIDDEN_TOOL_STATE:
+            if tools.get(tool_name) is not False:
+                raise RuntimeError(f"OpenCode no-edit enforcement is not authoritative for this CLI/environment: tool {tool_name!r} resolved to {tools.get(tool_name)!r} instead of denied; refusing to submit the task")
+        for tool_name in _NOEDIT_REQUIRED_TOOL_STATE:
+            if tools.get(tool_name) is not True:
+                raise RuntimeError(f"OpenCode no-edit enforcement could not permit repository inspection for this CLI/environment: tool {tool_name!r} resolved to {tools.get(tool_name)!r} instead of allowed; refusing to submit the task")
+
     @staticmethod
     def _build_restricted_bin_dir(base_path: Optional[str]) -> str:
         """Create a directory whose git/gh deny reserved Git/GitHub lifecycle operations."""
@@ -350,12 +607,16 @@ class OpenCodeClient(LLMClientBase):
             env["OPENROUTER_BASE_URL"] = backend.openrouter_base_url
 
     @classmethod
-    def _partition_options(cls, tokens: List[str], *, allow_model_override: bool) -> Tuple[List[str], Optional[str]]:
+    def _partition_options(cls, tokens: List[str], *, allow_model_override: bool, allow_agent_override: bool = True) -> Tuple[List[str], Optional[str]]:
         """Validate options/extra args, rejecting anything that would weaken retained authority.
 
         Returns the sanitized argv tokens to forward to `opencode run`, plus an
         optional one-time model override extracted from `tokens` (only permitted
         when `allow_model_override` is True, i.e. for per-call extra args).
+
+        `allow_agent_override` is False for a no-edit call: Auto-Coder owns
+        `--agent` there to guarantee its generated enforcing agent is what
+        actually runs (Issue #2125 REQ-004).
         """
         sanitized: List[str] = []
         model_override: Optional[str] = None
@@ -369,6 +630,8 @@ class OpenCodeClient(LLMClientBase):
                 raise RuntimeError(f"OpenCode option '{name}' is not permitted; Auto-Coder retains authority over this setting")
             if name in _AUTOCODER_OWNED_WITH_VALUE:
                 raise RuntimeError(f"OpenCode option '{name}' is not permitted; Auto-Coder owns this setting")
+            if name == "--agent" and not allow_agent_override:
+                raise RuntimeError("OpenCode option '--agent' is not permitted for a no-edit call; Auto-Coder owns agent selection to enforce the no-edit boundary")
             if name in _MODEL_FLAGS:
                 if not allow_model_override:
                     raise RuntimeError("The OpenCode model must be set via the backend's 'model' configuration value, not via 'options'")
@@ -399,7 +662,7 @@ class OpenCodeClient(LLMClientBase):
         lowered = (text or "").lower()
         return any(marker in lowered for marker in _RETRYABLE_TRANSPORT_MARKERS)
 
-    def _extract_final_answer(self, *, stdout: str, stderr: str, returncode: int) -> str:
+    def _extract_final_answer(self, *, stdout: str, stderr: str, returncode: int, is_noedit: bool = False) -> str:
         events: List[Dict[str, Any]] = []
         for line_number, raw_line in enumerate(stdout.splitlines(), start=1):
             line = raw_line.strip()
@@ -437,6 +700,8 @@ class OpenCodeClient(LLMClientBase):
                 part = event.get("part")
                 if not isinstance(part, dict) or "id" not in part:
                     raise RuntimeError(f"OpenCode emitted a malformed '{event_type}' event without a valid part")
+                if event_type == "tool_use" and is_noedit and part.get("tool") not in _NOEDIT_INSPECTION_TOOLS:
+                    raise RuntimeError(f"OpenCode attempted the forbidden tool {part.get('tool')!r} during a no-edit invocation; the result is rejected regardless of whether the attempt itself succeeded or was denied (Issue #2125 REQ-003/REQ-006)")
                 if event_type == "step_finish":
                     reason = part.get("reason") or part.get("finishReason")
                     message_id = part.get("messageID") or part.get("messageId")
@@ -489,34 +754,41 @@ class OpenCodeClient(LLMClientBase):
         return "\n\n".join(text.strip() for text in final_texts if text.strip())
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
-        if is_noedit:
-            raise RuntimeError("OpenCode backend does not implement an enforcing no-edit execution path; refusing the request instead of silently running it as an edit")
-
         cwd = self._execution_cwd()
         if not self._is_git_repository(cwd):
             raise RuntimeError("OpenCode backend requires an execution directory inside a Git repository")
 
         raw_extra_args = self.consume_extra_args()
-        sanitized_options, _unused_override = self._partition_options(self.options, allow_model_override=False)
-        sanitized_extra, model_override = self._partition_options(raw_extra_args, allow_model_override=True)
+        effective_options = self.options_for_noedit if (is_noedit and self.options_for_noedit) else self.options
+        sanitized_options, _unused_override = self._partition_options(effective_options, allow_model_override=False, allow_agent_override=not is_noedit)
+        sanitized_extra, model_override = self._partition_options(raw_extra_args, allow_model_override=True, allow_agent_override=not is_noedit)
         effective_model = self.model_name
         if model_override:
             self._validate_model(model_override)
             effective_model = model_override
-
-        before = self._snapshot_guard(cwd)
-        rendered_prompt = render_prompt("opencode.execution", task_prompt=prompt)
 
         env = os.environ.copy()
         self._inject_provider_credentials(env)
         bin_dir = self._build_restricted_bin_dir(env.get("PATH"))
         env["PATH"] = bin_dir + os.pathsep + (env.get("PATH") or "")
 
+        noedit_agent_name: Optional[str] = None
+        if is_noedit:
+            noedit_agent_name = self._noedit_agent_name()
+            env["OPENCODE_CONFIG_CONTENT"] = self._noedit_config_content(noedit_agent_name)
+            self._preflight_noedit_policy(agent_name=noedit_agent_name, cwd=cwd, env=env)
+
+        before = self._snapshot_guard(cwd)
+        workspace_before = self._snapshot_noedit_workspace(cwd) if is_noedit else None
+        rendered_prompt = render_prompt("opencode.noedit_execution" if is_noedit else "opencode.execution", task_prompt=prompt)
+
         command = [*self.command, "run", "--format", "json", "--dir", str(cwd), "--model", effective_model, *sanitized_options, *sanitized_extra]
+        if noedit_agent_name is not None:
+            command += ["--agent", noedit_agent_name]
 
         try:
             logger.warning("LLM invocation: OpenCode CLI is being called. Keep LLM calls minimized.")
-            logger.info(f"Running OpenCode CLI with model {effective_model} in {cwd}")
+            logger.info(f"Running OpenCode CLI with model {effective_model} in {cwd} (no-edit={is_noedit})")
 
             process: Optional["subprocess.Popen[bytes]"] = None
             try:
@@ -529,13 +801,17 @@ class OpenCodeClient(LLMClientBase):
             except subprocess.TimeoutExpired as exc:
                 self._kill_process_group(process)
                 self._assert_git_lifecycle_preserved(before, cwd)
+                if workspace_before is not None:
+                    self._assert_noedit_workspace_preserved(workspace_before, cwd)
                 raise AutoCoderTimeoutError(f"OpenCode CLI timed out after {self.timeout} seconds") from exc
 
             self._assert_git_lifecycle_preserved(before, cwd)
+            if workspace_before is not None:
+                self._assert_noedit_workspace_preserved(workspace_before, cwd)
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
-            return self._extract_final_answer(stdout=stdout, stderr=stderr, returncode=process.returncode)
+            return self._extract_final_answer(stdout=stdout, stderr=stderr, returncode=process.returncode, is_noedit=is_noedit)
         finally:
             shutil.rmtree(bin_dir, ignore_errors=True)
 
