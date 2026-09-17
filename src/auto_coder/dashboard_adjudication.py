@@ -343,6 +343,14 @@ class AdjudicationWriteService:
         @router.get("/context/{pr_number}")
         async def read_context(request: Request, pr_number: int):
             _, record = self._authorize_read(request)
+            resolved_publisher = "Unknown"
+            config = get_dashboard_adjudication_config(repo_name=self.repo_name)
+            if config and config.github_token_file:
+                try:
+                    resolved_publisher = str(await _resolve_publisher_identity(config.github_token_file))
+                except Exception:
+                    pass
+
             snapshots = self.engine.get_review_adjudication_snapshots(self.repo_name, pr_number)
             findings = []
             for snapshot in snapshots:
@@ -356,7 +364,7 @@ class AdjudicationWriteService:
                             "unavailable_reason": "Source unavailable or incomplete data",
                             "tips": list(snapshot.result.tips) if hasattr(snapshot.result, "tips") else [],
                             "history": [],
-                            "publisher_account": "Unknown",
+                            "publisher_account": resolved_publisher,
                             "raw_finding": getattr(snapshot, "raw_finding", ""),
                         }
                     )
@@ -382,7 +390,7 @@ class AdjudicationWriteService:
                         "reason": getattr(snapshot.result, "reason", "unknown"),
                         "freshness": getattr(snapshot, "observation_revision", "unknown"),
                         "history": history,
-                        "publisher_account": getattr(snapshot.result, "actual_actor_id", "Unknown"),
+                        "publisher_account": resolved_publisher,
                         "unavailable_reason": None,
                         "raw_finding": getattr(snapshot, "raw_finding", ""),
                     }

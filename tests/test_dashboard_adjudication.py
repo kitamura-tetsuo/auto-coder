@@ -409,3 +409,41 @@ def test_adjudication_ui_publication_and_processing_labels(tmp_path, monkeypatch
         dashboard_code = f.read()
     assert 'ui.label(f"Publication Status: {pub_state}").classes("font-bold mb-1")' in dashboard_code
     assert 'ui.label(f"Processing Status: {proc_state}").classes("text-sm text-gray-700")' in dashboard_code
+
+
+def test_adjudication_ui_displays_publisher_identity(tmp_path, monkeypatch):
+    # TOG-782facb4378f (simulated id mapping test)
+    # Configure a valid authoring boundary whose credential resolves to publisher ID P
+    # mount context and preview and assert the displayed/previewed publishing account equals P
+    from unittest.mock import MagicMock, patch
+
+    from fastapi.testclient import TestClient
+
+    from auto_coder.webhook_server import create_app
+
+    engine = MagicMock()
+    app = create_app(engine, "dummy/repo")
+    client = TestClient(app)
+
+    from auto_coder.llm_backend_config import DashboardAdjudicationConfig
+
+    valid_cfg = DashboardAdjudicationConfig(enabled=True, operator_secret_file="dummy", github_token_file="dummy", allowed_origin="http://localhost:8000")
+
+    with (
+        patch("auto_coder.dashboard_adjudication.get_dashboard_adjudication_config", return_value=valid_cfg),
+        patch("auto_coder.dashboard_adjudication._resolve_publisher_identity", new_callable=__import__("unittest").mock.AsyncMock, return_value="12345"),
+        patch("auto_coder.dashboard_adjudication.AdjudicationWriteService._authorize_read", return_value=(True, MagicMock(csrf_token="abc"))),
+    ):
+
+        # Mock get_review_adjudication_snapshots directly
+        import json
+
+        engine.get_review_adjudication_snapshots.return_value = [MagicMock(context=MagicMock(context_id="ctx_123", root_comment_id=1, head_sha="a", base_sha="b", base_ref="c", contract_digest="d"), result=MagicMock(status=MagicMock(value="NONE"), tips=[], actual_actor_id=None, reason="None"))]
+        response = client.get("/dashboard-adjudication/context/123")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["findings"][0]["publisher_account"] == "12345"
+
+        with open("src/auto_coder/dashboard.py", "r") as f:
+            dashboard_code = f.read()
+        assert "Actual Publishing Account: {finding.get('publisher_account', 'Unknown')}" in dashboard_code
