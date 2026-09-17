@@ -735,3 +735,27 @@ and the real cloud-task-origin resolution path (mocking only the external
 adjudication envelope reply is excluded from the generic cloud
 review-feedback path it would otherwise be forwarded through verbatim. Run
 `bash scripts/test.sh tests/test_review_adjudication_orchestrator.py tests/test_pr_processor_adjudication_effects.py`.
+
+Issue #2000 (child A of the #1999 dependency-rescan observability tracking
+parent) adds `src/auto_coder/repo_job_trace.py`, a new
+producer/snapshot-consumer diagnostic interface for repository-scoped
+internal jobs (currently `dependency-rescan`), identified by
+`RepoJobTarget(repository, job_kind)` rather than an Issue/PR number. This
+is observability-neutral for every existing processing origin, admission
+gate, outcome, provider route, durable resumption path, and structured
+event schema: `execution_trace.py`'s schema-version-1 `StructuredEvent`/
+`TraceCollector`, `dashboard_detail.py`, and `entity_invalidation.py`'s
+`dependency:1` durable token/generation/lifecycle are untouched, and no
+production code path calls the new module yet -- it has no producer wired
+into `entity_invalidation.py`'s dependency fan-out (child B, #2001) and no
+dashboard route (child C, #2002). `tests/test_repo_job_trace.py` is a
+model-level regression suite for this new interface's own contract
+(target isolation from the Issue/PR namespace including the "Dependency #1"
+sentinel-collision case, fresh execution identity per retry/recovered
+attempt, explicit-reference-only correlation, bounded/truthful snapshot
+retention and clipping, restart-safe absence of fabricated history, and
+diagnostic-failure/business-outcome independence); it intentionally does
+not claim a production-to-view regression, which is owned by #2001/#2002
+once a real producer and dashboard route exist. Run
+`bash scripts/test.sh tests/test_repo_job_trace.py tests/test_execution_trace.py tests/test_dashboard_detail_logic.py`
+for this boundary.
