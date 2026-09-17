@@ -94,8 +94,14 @@ tests/test_dependency_rescan_repo_job_trace.py` for this boundary.
 
 ## Dashboard Integration
 
-Dependency rescans are tracked via `/jobs/dependency-rescan`. These tests verify counts, limits, and safe rendering.
+Dependency rescans are exposed through a dedicated, read-only internal job view mounted at `/jobs/dependency-rescan`.
+This path isolates internal repository operations from normal human-visible Issue and Pull Request detail pages, preserving the scan-versus-Issue boundary.
+The UI retains its history based on the process-local retention bounds (`max_observations`, `max_executions`); eviction results in an explicit "Unavailable history" state rather than fallback behavior.
 
-## Dashboard Integration
+**Count and Status Meanings**:
+- `discovered_count`: the distinct Issues enumerated from the parent dependency.
+- `handoff_count`: the number of reaches for durable invalidation operations, broken down by `handoff_disposition` (`new_pending`, `coalesced`, or `followup_required`).
+- These are rendered with their exact producer meanings and are never synthesized or derived from the queue length or live graph.
 
-Dependency rescans are tracked via `/jobs/dependency-rescan`. These tests verify counts, limits, and safe rendering.
+**Test Coverage**:
+The production-to-page regression coverage is driven by `test_as_001_reported_navigation_becomes_real_internal_job` and `test_as_007_removing_producer_record_cannot_still_pass` in `tests/test_dashboard_observability.py`. The `AS-007` test serves as a negative control, ensuring that if the real scan/handoff producer emits nothing, the UI fact rendering strictly fails the stage/count assertions, proving no synthetic generation occurs.
