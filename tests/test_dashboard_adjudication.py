@@ -1,3 +1,11 @@
+
+import pytest
+
+@pytest.fixture(autouse=True)
+def mock_init_dashboard(monkeypatch):
+    from auto_coder import webhook_server
+    monkeypatch.setattr(webhook_server, "init_dashboard", lambda *args, **kwargs: None)
+
 """Production-path regression tests for Issue #2022.
 
 These tests mount the real FastAPI router (`init_dashboard_adjudication`)
