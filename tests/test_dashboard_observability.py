@@ -1026,9 +1026,15 @@ class TestDependencyRescanDashboardIntegration:
 
     def test_as_001_reported_navigation_becomes_real_internal_job(self, rescan_harness, mock_ui):
         engine, target = rescan_harness
+        # Patch run_with to prevent double-middleware execution errors
+        from unittest.mock import patch
+
+        import nicegui.ui as ui
+
         from auto_coder.dashboard import init_dashboard
 
-        init_dashboard(mock_ui, engine, "owner/repo")
+        with patch.object(ui, "run_with"):
+            init_dashboard(mock_ui, engine, "owner/repo")
 
     def test_as_002_successful_rescan_is_not_successful_dependent(self, rescan_harness, mock_ui):
         engine, target = rescan_harness
