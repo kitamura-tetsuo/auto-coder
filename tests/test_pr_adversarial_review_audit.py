@@ -345,6 +345,99 @@ class TestReq010OneCallExecution:
         # automatic merge (production policy, not this adapter's decision).
         assert not any("Successfully merged" in action for action in actions)
 
+    def test_needs_fix_report_is_retained_faithfully(self, tmp_path, monkeypatch, audit_store):
+        """AS-002/REQ-003: a valid NEEDS_FIX report (a demonstrated finding)
+        is retained in full through real parsing/normalization; merge
+        approval is never synthesized for a non-PASS verdict."""
+        repo, head_sha = _build_pr_repo(tmp_path)
+        client = _build_github_client(head_sha)
+        pr_data = _build_pr_data(head_sha)
+        config = _build_config()
+        payload = (
+            '{"result":"NEEDS_FIX","summary":"Found 1 specification violation in greet() output.",'
+            '"findings":[{'
+            '"finding_identity":"greet-return-value",'
+            '"correction_identity":"greet-return-value-fix",'
+            '"violated_requirement":"greet() returns the string hello",'
+            '"requirement_id":"REQ-001",'
+            '"evidence_classification":"DEMONSTRATED",'
+            '"reachability":"The public greet() function is called directly and its return value is observable",'
+            '"required_behavior":"greet() must return the exact string \'hello\'",'
+            '"actual_behavior":"greet() returns a different string on this head",'
+            '"evidence":"sample.py shows greet() returning a value other than \'hello\'",'
+            "\"counterexample\":\"Calling greet() returns 'hell0' instead of 'hello'\","
+            '"test_gap":"No existing test asserts the exact return value of greet()",'
+            '"suggested_regression_scenario":"Assert greet() == \'hello\' exactly",'
+            '"anchor_path":"sample.py"'
+            "}],"
+            '"specification_gaps":[],"test_oracle_gaps":[],"thread_dispositions":[],"dynamic_check_requested":null}'
+        )
+        reviewer = MockReviewerClient("reviewer", responses=[payload])
+        manager = _build_backend_manager(monkeypatch, {"reviewer": reviewer}, "reviewer")
+
+        _apply_standard_merge_gates(monkeypatch, mergeable=True, merge_result=True)
+        _wire_backend(monkeypatch, manager)
+        monkeypatch.setattr("auto_coder.pr_processor.isolated_pr_head_worktree", lambda *a, **k: _static_worktree(repo))
+        monkeypatch.setattr("auto_coder.pr_processor.publish_adversarial_review", lambda *a, **k: ReviewPublicationResult(True, "COMMENT", ""))
+
+        actions = _handle_pr_merge(client, REPO_NAME, pr_data, config, {})
+
+        assert reviewer.calls == ["fresh"]
+        records = _get_only_evaluation(audit_store, REPO_NAME)
+        assert len(records) == 1
+        record = records[0]
+        assert record.execution_mode == ExecutionMode.EXECUTED
+        assert record.native_verdict == "NEEDS_FIX"
+        assert record.native_report is not None
+        assert len(record.native_report["findings"]) == 1
+        finding = record.native_report["findings"][0]
+        assert finding["violated_requirement"] == "greet() returns the string hello"
+        assert finding["counterexample"] == "Calling greet() returns 'hell0' instead of 'hello'"
+        assert finding["evidence_classification"] == "DEMONSTRATED"
+        assert not any("Successfully merged" in action for action in actions)
+
+    def test_inconclusive_report_is_retained_faithfully(self, tmp_path, monkeypatch, audit_store):
+        """AS-002/REQ-003: a valid INCONCLUSIVE report (bounded evidence
+        recovery plus a scoped decision-critical evidence gap) is retained in
+        full; INCONCLUSIVE never becomes an approved/merged PR."""
+        repo, head_sha = _build_pr_repo(tmp_path)
+        client = _build_github_client(head_sha)
+        pr_data = _build_pr_data(head_sha)
+        config = _build_config()
+        payload = (
+            '{"result":"INCONCLUSIVE","summary":"greet() behavior could not be fully confirmed on the reviewed head.",'
+            '"findings":[],'
+            '"requirement_coverage":[{"requirement_id":"REQ-001","status":"UNVERIFIED","evidence":"sample.py could not be fully inspected."}],'
+            '"specification_gaps":[],"test_oracle_gaps":[],"thread_dispositions":[],"dynamic_check_requested":null,'
+            '"evidence_recovery":[{"path":"sample.py","source":"repository inspection","status":"UNAVAILABLE",'
+            '"evidence":"Attempted inspection did not resolve REQ-001.","requirement_ids":["REQ-001"]}],'
+            '"decision_critical_evidence_gaps":[{"requirement_id":"REQ-001",'
+            '"evidence_needed":"Confirmed runtime behavior of greet()",'
+            '"recovery_attempts":["Inspected sample.py source"]}]}'
+        )
+        reviewer = MockReviewerClient("reviewer", responses=[payload])
+        manager = _build_backend_manager(monkeypatch, {"reviewer": reviewer}, "reviewer")
+
+        _apply_standard_merge_gates(monkeypatch, mergeable=True, merge_result=True)
+        _wire_backend(monkeypatch, manager)
+        monkeypatch.setattr("auto_coder.pr_processor.isolated_pr_head_worktree", lambda *a, **k: _static_worktree(repo))
+        monkeypatch.setattr("auto_coder.pr_processor.publish_adversarial_review", lambda *a, **k: ReviewPublicationResult(True, "COMMENT", ""))
+
+        actions = _handle_pr_merge(client, REPO_NAME, pr_data, config, {})
+
+        assert reviewer.calls == ["fresh"]
+        records = _get_only_evaluation(audit_store, REPO_NAME)
+        assert len(records) == 1
+        record = records[0]
+        assert record.execution_mode == ExecutionMode.EXECUTED
+        assert record.native_verdict == "INCONCLUSIVE"
+        assert record.native_report is not None
+        assert record.native_report["result"] == "INCONCLUSIVE"
+        assert len(record.native_report["decision_critical_evidence_gaps"]) == 1
+        assert record.native_report["decision_critical_evidence_gaps"][0]["requirement_id"] == "REQ-001"
+        assert len(record.native_report["evidence_recovery"]) == 1
+        assert not any("Successfully merged" in action for action in actions)
+
 
 # ---------------------------------------------------------------------------
 # REQ-011 / AS-003: reuse, legacy reuse, LOCAL_ONLY, BYPASSED
