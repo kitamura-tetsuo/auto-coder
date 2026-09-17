@@ -798,7 +798,6 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 import traceback
 
                 traceback.print_exc()
-                container.clear()
                 with container:
                     ui.label(f"Stale or Failed Read: {e}").classes("text-red-500 font-bold")
             finally:

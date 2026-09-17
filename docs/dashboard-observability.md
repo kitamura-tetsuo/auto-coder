@@ -853,3 +853,8 @@ pending work after a restart, and that diagnostic-recorder failure changes
 none of the real business outcome. Run
 `bash scripts/test.sh tests/test_repo_job_trace.py tests/test_entity_invalidation.py tests/test_dependency_rescan_repo_job_trace.py`
 for this boundary.
+
+
+## Repository Dependency Reconciliation
+
+The internal job `/jobs/dependency-rescan` provides insights into local dependency reevaluations. Its observations are retained in process memory with process-local retention/recovery limits, and all tests for this route run via `TestDependencyRescanDashboardIntegration` to ensure no false success inference.

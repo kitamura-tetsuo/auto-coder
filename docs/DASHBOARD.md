@@ -358,3 +358,8 @@ client can recover the true state without triggering another action.
 Publication success itself only ever reports a confirmed GitHub comment
 reference and a "published, awaiting processing" state — never that the
 finding was applied, fixed, or regression-proven.
+
+
+## Repository Dependency Reconciliation
+
+The dashboard exposes internal dependency-rescan executions at `/jobs/dependency-rescan`. This view displays process identity, triggers, handoffs, and limits without inferring missing details. It isolates internal operations from human-visible GitHub Issue/PR models.

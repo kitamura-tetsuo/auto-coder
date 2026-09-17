@@ -1053,7 +1053,10 @@ class TestDependencyRescanDashboardIntegration:
         pass
 
     def test_as_007_removing_producer_record_cannot_still_pass(self, rescan_harness, mock_ui):
-        from auto_coder.dashboard_detail import build_repo_job_observed_path_diagram
+        engine, target = rescan_harness
+        from auto_coder.dashboard_detail import repo_job_evidence_rows
 
-        diagram = build_repo_job_observed_path_diagram([])
-        assert "No Observations" in diagram
+        # No producer records
+        rows = repo_job_evidence_rows([])
+        # Expecting a failure/empty if no handoffs
+        assert not rows, "Without producer emissions, renderer should not synthesize stages/counts"
