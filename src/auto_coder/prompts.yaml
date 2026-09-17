@@ -42,6 +42,21 @@ muse:
     merge, rebase, create or update pull requests, or perform any other Git or
     GitHub lifecycle mutation. Auto-Coder owns that lifecycle after you return.
 
+opencode:
+  execution: |-
+    Complete this task in one execution:
+    $task_prompt
+
+    You may inspect the repository, edit the working tree, and run tests or
+    other implementation/build commands as needed. Do not run `git` or `gh`
+    yourself for anything beyond read-only inspection (status, diff, log,
+    show, and similar): never stage files, commit, change branches or HEAD,
+    merge, rebase, reset, push, or create/update/comment on a pull request or
+    issue. Auto-Coder owns the Git and GitHub lifecycle and will stage,
+    commit, and publish your working-tree changes after you return. Any
+    attempt to perform one of these reserved operations will be blocked and
+    will make this execution unusable for publication.
+
 
 pr:
   action: |-
