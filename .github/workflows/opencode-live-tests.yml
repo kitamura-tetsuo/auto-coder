@@ -34,6 +34,10 @@ jobs:
         run: |
           npm install -g opencode-ai@1.18.31
 
+      - name: Block the models.dev catalog fetch for deterministic config-only providers
+        run: |
+          echo "0.0.0.0 models.opencode.ai" | sudo tee -a /etc/hosts
+
       - name: Run opencode_live-marked tests
         env:
           AUTOCODER_OPENCODE_GIT_DEBUG_LOG: ${{ github.workspace }}/opencode-git-debug.log

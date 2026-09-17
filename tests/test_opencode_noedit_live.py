@@ -166,7 +166,14 @@ def _write_home_config(home: Path, *, provider_name: str, model_name: str, base_
             provider_name: {
                 "npm": "@ai-sdk/openai-compatible",
                 "options": {"baseURL": base_url},
-                "models": {model_name: {"name": model_name}},
+                "models": {
+                    model_name: {
+                        "name": model_name,
+                        "tool_call": True,
+                        "cost": {"input": 0, "output": 0},
+                        "limit": {"context": 128000, "output": 8192},
+                    }
+                },
             }
         },
     }
