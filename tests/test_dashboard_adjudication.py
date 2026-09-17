@@ -333,8 +333,9 @@ def test_docs_describe_opt_in_operator_boundary():
 
 def test_adjudication_ui_missing_auth_configuration_shows_setup_guidance(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    from auto_coder.webhook_server import create_app
+
     from auto_coder.automation_engine import AutomationEngine
+    from auto_coder.webhook_server import create_app
 
     app = create_app(engine=None, repo_name="test/repo")
     client = TestClient(app)
@@ -346,8 +347,9 @@ def test_adjudication_ui_missing_auth_configuration_shows_setup_guidance(tmp_pat
 
 def test_adjudication_ui_retains_rationale_on_retired_context(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    from auto_coder.webhook_server import create_app
+
     from auto_coder.automation_engine import AutomationEngine
+    from auto_coder.webhook_server import create_app
 
     app = create_app(engine=None, repo_name="test/repo")
     client = TestClient(app)
@@ -357,8 +359,9 @@ def test_adjudication_ui_retains_rationale_on_retired_context(tmp_path, monkeypa
 
 def test_adjudication_ui_duplicate_submit_uses_status_lookup(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    from auto_coder.webhook_server import create_app
+
     from auto_coder.automation_engine import AutomationEngine
+    from auto_coder.webhook_server import create_app
 
     app = create_app(engine=None, repo_name="test/repo")
     client = TestClient(app)
@@ -372,8 +375,9 @@ def test_adjudication_ui_displays_history_and_reasons(tmp_path, monkeypatch):
 
 def test_adjudication_ui_verdict_directive_pairing(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    from auto_coder.webhook_server import create_app
+
     from auto_coder.automation_engine import AutomationEngine
+    from auto_coder.webhook_server import create_app
 
     app = create_app(engine=None, repo_name="test/repo")
     client = TestClient(app)
