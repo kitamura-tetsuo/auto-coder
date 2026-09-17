@@ -630,7 +630,7 @@ def check_and_start_recurrent_jules_tasks(
                     original_task = recover_original_task(session_prompt, repo_name, session_id)
                 except RuntimeError as e:
                     logger.error(f"Failed to recover original task for {session_id}: {e}")
-                    continue
+                    original_task = session_prompt
 
                 session_metadata, _ = _parse_prompt_file_content(original_task)
                 session_names_val = session_metadata.get("name", [])
@@ -819,7 +819,7 @@ def check_and_restart_recurrent_jules_task_for_pr(repo_name: str, pr_number: int
             original_task = recover_original_task(session_prompt, repo_name, session_id)
         except RuntimeError as e:
             logger.error(f"Failed to recover original task for {session_id}: {e}")
-            return
+            original_task = session_prompt
 
         session_metadata, _ = _parse_prompt_file_content(original_task)
         session_names_val = session_metadata.get("name", [])
