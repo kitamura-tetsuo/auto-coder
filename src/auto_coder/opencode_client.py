@@ -214,13 +214,28 @@ def _resolves_to_protected_repo(argv, env):
     return probe.stdout.strip() in PROTECTED_GIT_DIRS
 
 
+def _debug_log(argv, decision):
+    path = os.environ.get("AUTOCODER_OPENCODE_GIT_DEBUG_LOG")
+    if not path:
+        return
+    import json as _json
+    try:
+        with open(path, "a") as fh:
+            fh.write(_json.dumps({"argv": argv, "decision": decision, "cwd": os.getcwd()}) + "\\n")
+    except OSError:
+        pass
+
+
 def main(argv):
     env = os.environ.copy()
     if not _resolves_to_protected_repo(argv, env):
+        _debug_log(argv, "allow-unprotected-target")
         os.execv(REAL_GIT, [REAL_GIT] + argv)
     name, rest = _split_global_options(argv)
     if name in _READ_ONLY_COMMANDS or (name is not None and _read_only_special(name, rest)):
+        _debug_log(argv, "allow-read-only")
         os.execv(REAL_GIT, [REAL_GIT] + argv)
+    _debug_log(argv, "deny")
     sys.stderr.write(
         "auto-coder: 'git " + " ".join(argv) + "' is reserved to Auto-Coder and was denied "
         "before execution; Auto-Coder owns Git lifecycle mutations (Issue #2124 REQ-007).\\n"

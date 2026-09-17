@@ -35,6 +35,8 @@ jobs:
           npm install -g opencode-ai@1.18.31
 
       - name: Run opencode_live-marked tests
+        env:
+          AUTOCODER_OPENCODE_GIT_DEBUG_LOG: ${{ github.workspace }}/opencode-git-debug.log
         run: |
           uv run pytest -m opencode_live -vv
 
@@ -46,4 +48,5 @@ jobs:
           path: |
             htmlcov/
             .pytest_cache/
+            opencode-git-debug.log
           if-no-files-found: ignore
