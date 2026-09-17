@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from .review_capture.context import get_active_interaction_id, get_active_review_context
 from .security_utils import redact_data, redact_string
 
 
@@ -162,6 +163,29 @@ class LLMOutputLogger:
         """
         if not self._is_enabled():
             return
+
+        # Check active review context
+        ctx = get_active_review_context()
+        if ctx is not None:
+            data["review_id"] = ctx.review_id
+            data["repository"] = ctx.repository
+            data["target_type"] = ctx.target_type
+            data["target_number"] = ctx.target_number
+            data["review_kind"] = ctx.review_kind
+            data["generation"] = ctx.generation_identity
+
+            interaction_id = get_active_interaction_id()
+            if interaction_id:
+                data["interaction_id"] = interaction_id
+        else:
+            # If no context is active, do not allow arbitrary metadata to invent these correlation fields
+            data.pop("review_id", None)
+            data.pop("interaction_id", None)
+            data.pop("repository", None)
+            data.pop("target_type", None)
+            data.pop("target_number", None)
+            data.pop("review_kind", None)
+            data.pop("generation", None)
 
         # Add timestamp if not present
         if "timestamp" not in data:

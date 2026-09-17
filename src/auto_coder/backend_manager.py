@@ -10,6 +10,8 @@ import json
 import re
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .backend_provider_manager import BackendProviderManager
@@ -20,6 +22,9 @@ from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
+from .review_audit import ReviewInteractionRecord
+from .review_capture.context import bind_interaction_id, get_active_review_context
+from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .worktree_utils import isolated_local_llm_worktree
 
@@ -605,17 +610,26 @@ class BackendManager(LLMBackendManagerBase):
         client = self._get_or_create_client(backend_name)
         self._is_noedit = is_noedit
         try:
-            output = client.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
-            self._last_backend = backend_name
-            self._last_model = getattr(client, "model_name", None)
-            self._last_session_id = client.get_last_session_id() or session_id
+            # Re-use _execute_backend_with_providers to capture interaction
+            output = self._execute_backend_with_providers(
+                backend_name=backend_name,
+                cli=client,
+                prompt=prompt,
+                backend_attempt_number=1,
+                temp_env_cls=contextlib.nullcontext,
+                session_id=session_id,
+            )
             self._last_continue_session_resumed = True
             return str(output)
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
             self._last_continue_session_resumed = False
             self.switch_to_next_backend()
             return self._run_llm_cli(prompt)
-        except (ValueError, RuntimeError, NotImplementedError) as exc:
+        except Exception as exc:
+            # We must catch any fallback errors that are expected from client
+            if not isinstance(exc, (ValueError, RuntimeError, NotImplementedError)):
+                raise
+            # Re-execute as a fresh session
             logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
             self._last_continue_session_resumed = False
             self._last_session_id = None
@@ -665,6 +679,38 @@ class BackendManager(LLMBackendManagerBase):
             env_context = temp_env_cls(env_vars) if env_vars else contextlib.nullcontext()
 
             with ProgressStage(message), env_context:
+                review_ctx = get_active_review_context()
+                interaction_id = uuid.uuid4().hex
+                start_dt = datetime.now(timezone.utc)
+                start_time_iso = start_dt.isoformat()
+                start_ns = time.perf_counter_ns()
+
+                interaction_rec = None
+                if review_ctx:
+                    config_backend = getattr(cli, "config_backend", None)
+                    backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
+                    requested_model = getattr(cli, "model_name", None) or getattr(cli, "model", None)
+
+                    interaction_rec = ReviewInteractionRecord(
+                        interaction_id=interaction_id,
+                        review_id=review_ctx.review_id,
+                        start_time=start_time_iso,
+                        end_time=None,
+                        duration_ms=None,
+                        backend_alias=backend_name,
+                        backend_type=backend_type,
+                        provider_alias=provider_name,
+                        requested_model=requested_model,
+                        reported_model=None,
+                        invocation_mode="fresh" if session_id is None else "continuation",
+                        session_identity=session_id,
+                        completion_status="unrecorded",
+                    )
+                    try:
+                        get_review_audit_store().record_interaction(repository=review_ctx.repository, interaction=interaction_rec)
+                    except Exception as e:
+                        logger.warning(f"Failed to record review interaction start: {e}")
+
                 try:
                     # Determine if this is a no-edit operation
                     is_noedit = getattr(self, "_is_noedit", False)
@@ -673,10 +719,36 @@ class BackendManager(LLMBackendManagerBase):
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
                     worktree_ctx = isolated_local_llm_worktree(is_noedit=is_noedit) if is_local else contextlib.nullcontext()
                     with worktree_ctx:
-                        if session_id:
-                            out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
-                        else:
-                            out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                        with bind_interaction_id(interaction_id):
+                            if session_id:
+                                out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
+                            else:
+                                out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+
+                    end_dt = datetime.now(timezone.utc)
+                    end_time_iso = end_dt.isoformat()
+                    duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
+
+                    if review_ctx and interaction_rec:
+                        interaction_rec.end_time = end_time_iso
+                        interaction_rec.duration_ms = duration_ms
+                        interaction_rec.completion_status = "RETURNED"
+
+                        # Try to find reported model
+                        reported_model = getattr(cli, "model_name", None)
+                        if reported_model and reported_model != interaction_rec.requested_model:
+                            interaction_rec.reported_model = reported_model
+
+                        # If a new session was created
+                        new_session = getattr(cli, "get_last_session_id", lambda: None)()
+                        if new_session:
+                            interaction_rec.session_identity = new_session
+
+                        try:
+                            get_review_audit_store().record_interaction(repository=review_ctx.repository, interaction=interaction_rec)
+                        except Exception as e:
+                            logger.warning(f"Failed to record review interaction success: {e}")
+
                     self._last_backend = backend_name
                     self._last_model = getattr(cli, "model_name", None)
                     self._provider_manager.mark_provider_used(backend_name, provider_name)
@@ -685,14 +757,30 @@ class BackendManager(LLMBackendManagerBase):
                     # Persist session state to allow resume on subsequent executions
                     self._save_session_state(backend_name, self._last_session_id)
                     return out
-                except AutoCoderUsageLimitError as exc:
-                    if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:
-                        if not new_work_allowed():
-                            raise
-                        rotated = self._provider_manager.advance_to_next_provider(backend_name)
-                        if rotated:
-                            provider_attempts += 1
-                            continue
+                except Exception as exc:
+                    end_dt = datetime.now(timezone.utc)
+                    end_time_iso = end_dt.isoformat()
+                    duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
+
+                    if review_ctx and interaction_rec:
+                        interaction_rec.end_time = end_time_iso
+                        interaction_rec.duration_ms = duration_ms
+                        interaction_rec.completion_status = "RAISED"
+                        try:
+                            get_review_audit_store().record_interaction(repository=review_ctx.repository, interaction=interaction_rec)
+                        except Exception as e:
+                            logger.warning(f"Failed to record review interaction failure: {e}")
+
+                    if isinstance(exc, AutoCoderUsageLimitError):
+                        if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:
+                            if not new_work_allowed():
+                                raise
+                            rotated = self._provider_manager.advance_to_next_provider(backend_name)
+                            if rotated:
+                                provider_attempts += 1
+                                continue
+
+                    # Reraise exception if we don't handle it here.
                     raise
 
     # ---------- For apply_workspace_test_fix ----------
