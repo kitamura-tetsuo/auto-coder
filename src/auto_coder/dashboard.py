@@ -398,6 +398,13 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         # In-browser state for the current PR
         state: Dict[str, Any] = {"csrf_token": None, "findings": [], "drafts": {}, "statuses": {}, "loading": True, "error": None}
 
+        def render_disabled():
+            container.clear()
+            with container:
+                ui.label("Adjudication Unavailable").classes("text-xl font-bold text-red-600 mb-2")
+                ui.label("Dashboard adjudication authoring is disabled or misconfigured.").classes("mb-4")
+                ui.label("Ensure [dashboard_adjudication] is enabled and all required configuration (operator_secret_file, github_token_file, allowed_origin) is present and valid.").classes("text-sm text-gray-500")
+
         def render_login():
             container.clear()
             with container:
@@ -419,7 +426,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                             .catch(err => alert(err));
                             """
                         )
-                        secret_input.value = ""  # Clear transient login-secret input after an attempt (REQ-002)
+                        secret_input.value = ""
 
                     ui.button("Login", on_click=on_login_click)
 
@@ -433,11 +440,16 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                             window.dispatchEvent(loginEvent);
                             return null;
                         }}
-                        return r.json();
+                        if (r.status === 503 || r.status === 501) {{
+                            const disabledEvent = new CustomEvent("adjudication_disabled");
+                            window.dispatchEvent(disabledEvent);
+                            return null;
+                        }}
+                        return r.json().then(data => ({{data: data, csrf: r.headers.get("x-csrf-token") || ""}}));
                     }})
-                    .then(data => {{
-                        if (data) {{
-                            const loadEvent = new CustomEvent("adjudication_data_loaded", {{detail: data}});
+                    .then(result => {{
+                        if (result) {{
+                            const loadEvent = new CustomEvent("adjudication_data_loaded", {{detail: result}});
                             window.dispatchEvent(loadEvent);
                         }}
                     }})
@@ -450,42 +462,78 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
             status_banner.set_text("Authentication required.")
             status_banner.classes(replace="text-sm text-red-600 font-bold mb-4")
 
+        def on_disabled(e):
+            render_disabled()
+            status_banner.set_text("Authoring disabled.")
+            status_banner.classes(replace="text-sm text-red-600 font-bold mb-4")
+
         def render_finding(finding):
             with ui.card().classes("w-full mb-4") as card:
                 ui.label(f"Finding Context ID: {finding['context_id']}").classes("font-mono font-bold")
-                ui.label(f"Root Comment ID: {finding['root_comment_id']}")
+
+                # REQ-003: Render full references and history
+                if finding.get("root_comment_id"):
+                    ui.link(f"Root Comment ID: {finding['root_comment_id']}", f"https://github.com/{repo_name}/pull/{pr_number}#discussion_r{finding['root_comment_id']}").classes("text-blue-500 mb-1 inline-block")
                 ui.label(f"Head SHA: {finding['head_sha']}")
                 ui.label(f"Base Ref: {finding['base_ref']}").classes("mb-2")
 
-                # Render raw finding text inertly (REQ-003)
                 if finding.get("contract_digest"):
                     ui.label(f"Contracts Digest: {finding['contract_digest']}").classes("text-xs font-mono text-gray-500 mb-2")
 
                 ui.label(f"Status: {finding.get('status', 'NONE')}").classes("font-bold text-blue-600 mb-2")
 
+                # REQ-003: Display reasons and freshness explicitly
+                if finding.get("reason"):
+                    ui.label(f"Reason: {finding['reason']}").classes("text-sm text-gray-600 mb-2")
+                if finding.get("freshness"):
+                    ui.label(f"Freshness: {finding['freshness']}").classes("text-xs font-bold text-gray-500 uppercase mb-2")
+
                 if finding.get("retired_reason"):
                     ui.label(f"Retired: {finding['retired_reason']}").classes("text-red-500 font-bold mb-2")
+                elif finding.get("unavailable_reason"):
+                    ui.label(f"Unavailable: {finding['unavailable_reason']}").classes("text-orange-500 font-bold mb-2")
 
-                ui.label("Tips (Conflicting / Active):").classes("font-bold")
+                if finding.get("history"):
+                    ui.label("History:").classes("font-bold mt-2")
+                    for h in finding["history"]:
+                        with ui.row().classes("gap-1 items-center"):
+                            ui.label(f"[{h.get('time', 'unknown')}]").classes("text-xs text-gray-500")
+                            ui.label(f"{h.get('action', 'action')}:").classes("text-xs")
+                            actor_url = h.get("actor_url", "#")
+                            ui.link(h.get("actor", "unknown"), actor_url).classes("text-xs text-blue-500")
+
+                ui.label("Tips (Conflicting / Active):").classes("font-bold mt-2")
                 for tip in finding.get("tips", []):
                     ui.label(f"- {tip}")
 
-                # Maintain rationale within the page even if context is invalidated
+                # REQ-004: Validate verdict+directive pairing
+                valid_pairs = ["UPHOLD+FIX", "OVERRULE+NO_CHANGE", "UNDECIDED+NONE"]
+                with ui.row().classes("mt-4 gap-2 items-center"):
+                    pair_select = ui.select(valid_pairs, value="UNDECIDED+NONE", label="Verdict + Directive").classes("w-64")
+
                 rationale_input = ui.textarea(label="Rationale").classes("w-full mt-2")
 
-                with ui.row().classes("mt-4 gap-2 items-center"):
-                    verdict_select = ui.select(["UPHOLD", "OVERRULE", "UNDECIDED"], value="UNDECIDED", label="Verdict").classes("w-40")
-                    directive_select = ui.select(["FIX", "NO_CHANGE", "NONE"], value="NONE", label="Directive").classes("w-40")
-
                 preview_container = ui.column().classes("w-full mt-4 p-4 border rounded bg-gray-50 hidden")
+                status_container = ui.column().classes("w-full mt-2 p-2 hidden")
+
+                # REQ-007: Retain original decision ID
+                local_state = {"decision_id": None, "submitting": False}
 
                 def on_preview_click():
                     if finding.get("retired_reason"):
                         ui.notify("Recovery requires a fresh reader-issued non-retired context.", type="warning")
                         return
 
+                    # REQ-004: Reject empty rationale
+                    if not rationale_input.value or not rationale_input.value.strip():
+                        ui.notify("Rationale is required.", type="negative")
+                        return
+
                     preview_container.clear()
                     preview_container.classes(remove="hidden")
+
+                    verdict, directive = pair_select.value.split("+")
+
                     with preview_container:
                         ui.label("Explicit Confirmation Preview").classes("font-bold text-lg mb-2")
                         ui.label(f"Target Context: {finding['context_id']}")
@@ -493,14 +541,59 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         ui.label(f"Bound Head: {finding['head_sha']}")
                         ui.label(f"Contract: {finding.get('contract_digest', 'None')}")
                         ui.label("Predecessor Tips: " + ", ".join(finding.get("tips", [])))
-                        ui.label(f"Verdict: {verdict_select.value} | Directive: {directive_select.value}")
+                        ui.label(f"Verdict: {verdict} | Directive: {directive}")
                         ui.label("Rationale:")
-                        ui.label(rationale_input.value).classes("whitespace-pre-wrap font-mono text-sm bg-white p-2 border")
+                        # REQ-003: Render raw rationale/marker text as inert escaped content
+                        import html
+
+                        escaped_rationale = html.escape(rationale_input.value)
+                        ui.html(f"<pre class='whitespace-pre-wrap font-mono text-sm bg-white p-2 border'>{escaped_rationale}</pre>")
+
+                        def poll_status(decision_id):
+                            ui.run_javascript(
+                                f"""
+                                fetch("/dashboard-adjudication/status/{pr_number}/{finding['context_id']}/{decision_id}")
+                                .then(r => r.json())
+                                .then(st => {{
+                                    const evt = new CustomEvent("adjudication_status_update", {{detail: st}});
+                                    window.dispatchEvent(evt);
+                                }})
+                                .catch(err => console.error(err));
+                                """
+                            )
+
+                        def on_status_update(e):
+                            st = e.args
+                            status_container.clear()
+                            status_container.classes(remove="hidden")
+                            with status_container:
+                                pub_state = st.get("publication_status", "unknown")
+                                proc_state = st.get("processing_status", "unknown")
+
+                                # REQ-006: Distinct states without optimistic relabeling
+                                ui.label(f"Publication Status: {pub_state}").classes("font-bold mb-1")
+                                if st.get("comment_url"):
+                                    ui.link("Comment Reference", st["comment_url"]).classes("text-blue-500 mb-2 block")
+
+                                ui.label(f"Processing Status: {proc_state}").classes("text-sm text-gray-700")
+
+                        ui.on("adjudication_status_update", on_status_update)
 
                         def on_confirm_submit():
+                            if local_state["submitting"]:
+                                return
+
+                            local_state["submitting"] = True
                             import json
 
                             supersedes_json = json.dumps(finding.get("tips", []))
+
+                            # REQ-007: Lookup status if we already have a decision_id, don't POST again
+                            if local_state["decision_id"]:
+                                poll_status(local_state["decision_id"])
+                                local_state["submitting"] = False
+                                return
+
                             ui.run_javascript(
                                 f"""
                                 fetch("/dashboard-adjudication/draft", {{
@@ -510,6 +603,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                                 }})
                                 .then(r => r.json())
                                 .then(draft => {{
+                                    const evt_id = new CustomEvent("adjudication_decision_id", {{detail: draft.decision_id}});
+                                    window.dispatchEvent(evt_id);
+
                                     return fetch("/dashboard-adjudication/submit", {{
                                         method: "POST",
                                         headers: {{
@@ -522,25 +618,64 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                                             decision_id: draft.decision_id,
                                             head_sha: "{finding['head_sha']}",
                                             contract_digest: "{finding['contract_digest']}",
-                                            verdict: "{verdict_select.value}",
-                                            directive: "{directive_select.value}",
+                                            verdict: "{verdict}",
+                                            directive: "{directive}",
                                             rationale: {json.dumps(rationale_input.value)},
                                             supersedes: {supersedes_json}
                                         }})
-                                    }});
+                                    }}).then(r => ({{status: r.status, id: draft.decision_id}}));
                                 }})
-                                .then(r => r.ok ? alert("Decision submitted!") : Promise.reject("Submit failed: " + r.status))
-                                .then(() => window.location.reload())
-                                .catch(err => alert(err));
+                                .then(res => {{
+                                    if (res.status === 200 || res.status === 202) {{
+                                        const evt = new CustomEvent("adjudication_submit_success", {{detail: res.id}});
+                                        window.dispatchEvent(evt);
+                                    }} else if (res.status === 409 || res.status === 400) {{
+                                        const evt = new CustomEvent("adjudication_submit_rejected", {{detail: res.status}});
+                                        window.dispatchEvent(evt);
+                                    }} else {{
+                                        return Promise.reject("Submit failed: " + res.status);
+                                    }}
+                                }})
+                                .catch(err => {{
+                                    console.error(err);
+                                    const evt = new CustomEvent("adjudication_submit_error", {{detail: err}});
+                                    window.dispatchEvent(evt);
+                                }});
                                 """
                             )
+
+                        def on_decision_id(e):
+                            local_state["decision_id"] = e.args
+
+                        def on_submit_success(e):
+                            local_state["submitting"] = False
+                            ui.notify("Decision submitted (awaiting processing).")
+                            poll_status(local_state["decision_id"])
+
+                        def on_submit_rejected(e):
+                            local_state["submitting"] = False
+                            # REQ-005: preserve rationale text on rejection, explain fresh context needed
+                            ui.notify(f"Submission rejected ({e.args}). Recovery requires a fresh context.", type="negative")
+                            local_state["decision_id"] = None  # Force fresh draft ID on retry
+
+                        def on_submit_error(e):
+                            local_state["submitting"] = False
+                            ui.notify(f"Uncertain submission response ({e.args}). Retrying will lookup status.", type="warning")
+                            # Keep decision_id to prevent double post
+
+                        ui.on("adjudication_decision_id", on_decision_id)
+                        ui.on("adjudication_submit_success", on_submit_success)
+                        ui.on("adjudication_submit_rejected", on_submit_rejected)
+                        ui.on("adjudication_submit_error", on_submit_error)
 
                         ui.button("Confirm & Submit", on_click=on_confirm_submit).classes("mt-4 bg-green-600 text-white")
 
                 ui.button("Preview Decision", on_click=on_preview_click).classes("mt-4")
 
         def on_data_loaded(e):
-            data = e.args
+            data = e.args["data"]
+            state["csrf_token"] = e.args["csrf"]
+
             container.clear()
             status_banner.set_text("Loaded adjudication context.")
 
@@ -553,6 +688,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         render_finding(finding)
 
         ui.on("adjudication_needs_auth", on_needs_auth)
+        ui.on("adjudication_disabled", on_disabled)
         ui.on("adjudication_data_loaded", on_data_loaded)
 
         ui.timer(0.5, check_auth_and_load, once=True)
