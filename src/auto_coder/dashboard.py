@@ -447,7 +447,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         }}
                         return r.json().then(data => ({{
                             data: data,
-                            csrf: r.headers.get("x-csrf-token") || "",
+                            csrf: data.csrf_token || "",
                             saved_state: JSON.parse(sessionStorage.getItem("adjudication_state_" + pr_number) || "{{}}")
                         }}));
                     }})
@@ -480,6 +480,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     ui.link(f"Root Comment ID: {finding['root_comment_id']}", f"https://github.com/{repo_name}/pull/{pr_number}#discussion_r{finding['root_comment_id']}").classes("text-blue-500 mb-1 inline-block")
                 ui.label(f"Head SHA: {finding['head_sha']}")
                 ui.label(f"Base Ref: {finding['base_ref']}").classes("mb-2")
+
+                if finding.get("contributing_issues"):
+                    issues_str = ", ".join(f"#{issue}" for issue in finding["contributing_issues"])
+                    ui.label(f"Contributing Issues: {issues_str}").classes("text-xs text-gray-700 mb-1")
 
                 if finding.get("contract_digest"):
                     ui.label(f"Contracts Digest: {finding['contract_digest']}").classes("text-xs font-mono text-gray-500 mb-2")
