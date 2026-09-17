@@ -33,7 +33,7 @@ from tests.test_opencode_backend import _git, _repository
 
 _PINNED_OPENCODE_VERSION = "1.18.31"
 
-pytestmark = pytest.mark.timeout(120)
+pytestmark = [pytest.mark.opencode_live, pytest.mark.timeout(120)]
 
 
 def _find_or_install_opencode() -> Optional[str]:
