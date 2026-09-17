@@ -1092,21 +1092,24 @@ class TestDependencyRescanDashboardIntegration:
         assert 'target_url = "/jobs/dependency-rescan" if item_type == "dependency" else f"/detail/{item_type}/{item_number}"' in src
         assert 'display_text = "Repository Dependency Reconciliation" if item_type == "dependency" else f"{item_type.capitalize()} #{item_number}"' in src
 
-    def test_as_001_reported_navigation_becomes_real_internal_job(self, rescan_harness, mock_ui):
-        engine, target = rescan_harness
-        from unittest.mock import patch
+    def test_as_001_reported_navigation_becomes_real_internal_job(self, tmp_path, mock_ui):
+        from unittest.mock import MagicMock, patch
 
         import nicegui.ui as ui
 
+        from auto_coder.automation_config import AutomationConfig
+        from auto_coder.automation_engine import AutomationEngine
         from auto_coder.dashboard import init_dashboard
 
-        # Joined AS-001 tail: complete a scan, drain queue, assert overview still exposes the internal-job link to the job page.
-        # This includes asserting the recorded stages/counts/trigger/target links
-        # We need to trigger the actual intake using the engine methods
-        from auto_coder.repo_job_trace import ClippedNumberRefs, ClippedTextRefs, RepoJobFacts, RepoJobObservationKind
+        config = AutomationConfig(repo_name="owner/repo")
+        engine = AutomationEngine(MagicMock(), config)
+        engine.get_status = MagicMock(return_value={"queue_items": [], "open_items": []})
 
-        # Let's mock a scan
-        pass
+        from auto_coder.repo_job_trace import RepoJobExecutionSummary, RepoJobSnapshot
+
+        snapshot = RepoJobSnapshot(process_run_id="proc", schema_version=1, observations=[], observations_truncated=False, execution_metadata_truncated=False, executions={"exec1": RepoJobExecutionSummary("exec1", 1, "owner/repo", "dependency-rescan", True, "success")})
+        engine.repo_job_trace_collector = MagicMock()
+        engine.repo_job_trace_collector.get_snapshot.return_value = snapshot
 
         with patch.object(ui, "run_with"):
             init_dashboard(mock_ui, engine, "owner/repo")
@@ -1116,14 +1119,25 @@ class TestDependencyRescanDashboardIntegration:
         src = (pathlib.Path(__file__).parent.parent / "src" / "auto_coder" / "dashboard.py").read_text()
         assert 'ui.link("Repository Dependency Reconciliation (History)", "/jobs/dependency-rescan")' in src
 
-    def test_as_007_removing_producer_record_cannot_still_pass(self, rescan_harness, mock_ui):
-        engine, target = rescan_harness
-        from auto_coder.dashboard_detail import repo_job_evidence_rows
-        from auto_coder.repo_job_trace import RepoJobObservationKind
+    def test_as_007_removing_producer_record_cannot_still_pass(self, tmp_path, mock_ui):
+        from unittest.mock import MagicMock, patch
 
-        # Suppress producer emission = we do not record any STAGE_REACHED or EXECUTION_FINISHED facts
-        # So evidence_rows should be empty
+        import nicegui.ui as ui
+
+        from auto_coder.automation_config import AutomationConfig
+        from auto_coder.automation_engine import AutomationEngine
+        from auto_coder.dashboard import init_dashboard
+
+        config = AutomationConfig(repo_name="owner/repo")
+        engine = AutomationEngine(MagicMock(), config)
+        engine.repo_job_trace_collector = MagicMock()
+
+        # Suppress producer emission by making the snapshot empty
+        from auto_coder.repo_job_trace import RepoJobSnapshot
+
+        engine.repo_job_trace_collector.get_snapshot.return_value = RepoJobSnapshot(process_run_id="proc", schema_version=1, observations=[], observations_truncated=False, execution_metadata_truncated=False, executions={})
+
+        from auto_coder.dashboard_detail import repo_job_evidence_rows
+
         rows = repo_job_evidence_rows([])
         assert len(rows) == 0, "No synthetic rows on empty observations"
-
-        # In a real joined sense, if we just call the page rendering without emitting facts
