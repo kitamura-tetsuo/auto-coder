@@ -387,7 +387,6 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         # Auto-refresh every 1 second
         ui.timer(1.0, refresh_status)
 
-
     @ui.page("/adjudication/{pr_number}")
     def adjudication_page(pr_number: int) -> None:
         ui.label(f"Review Adjudication: PR #{pr_number}").classes("text-2xl font-bold mb-4")
@@ -397,18 +396,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         container = ui.column().classes("w-full max-w-4xl gap-4")
 
         # In-browser state for the current PR
-        state = {
-            "csrf_token": None,
-            "findings": [],
-            "drafts": {},
-            "statuses": {},
-            "loading": True,
-            "error": None
-        }
-
-        # Javascript bridge functions
-        # For simplicity, we just inject JS to handle the login and fetching,
-        # then display results using NiceGUI elements.
+        state: Dict[str, Any] = {"csrf_token": None, "findings": [], "drafts": {}, "statuses": {}, "loading": True, "error": None}
 
         def render_login():
             container.clear()
@@ -420,7 +408,8 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     secret_input = ui.input("Operator Secret", password=True).classes("w-64")
 
                     def on_login_click():
-                        ui.run_javascript(f"""
+                        ui.run_javascript(
+                            f"""
                             fetch("/dashboard-adjudication/login", {{
                                 method: "POST",
                                 headers: {{"Content-Type": "application/json"}},
@@ -428,12 +417,14 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                             }})
                             .then(r => r.ok ? window.location.reload() : Promise.reject("Login failed: " + r.status))
                             .catch(err => alert(err));
-                        """)
+                        """
+                        )
 
                     ui.button("Login", on_click=on_login_click)
 
         def check_auth_and_load():
-            ui.run_javascript(f"""
+            ui.run_javascript(
+                f"""
                 fetch("/dashboard-adjudication/context/{pr_number}")
                     .then(r => {{
                         if (r.status === 401 || r.status === 403) {{
@@ -451,7 +442,8 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         }}
                     }})
                     .catch(err => console.error(err));
-            """)
+            """
+            )
 
         def on_needs_auth(e):
             render_login()
@@ -467,11 +459,11 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
 
                 ui.label(f"Status: {finding['status']}").classes("font-bold text-blue-600 mb-2")
 
-                if finding.get('retired_reason'):
+                if finding.get("retired_reason"):
                     ui.label(f"Retired: {finding['retired_reason']}").classes("text-red-500 font-bold mb-2")
 
                 ui.label("Tips (Conflicting / Active):").classes("font-bold")
-                for tip in finding.get('tips', []):
+                for tip in finding.get("tips", []):
                     ui.label(f"- {tip}")
 
                 with ui.row().classes("mt-4 gap-2 items-center"):
@@ -482,8 +474,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
 
                 def on_submit_click():
                     import json
-                    supersedes_json = json.dumps(finding.get('tips', []))
-                    ui.run_javascript(f'''
+
+                    supersedes_json = json.dumps(finding.get("tips", []))
+                    ui.run_javascript(
+                        f"""
                         fetch("/dashboard-adjudication/draft", {{
                             method: "POST",
                             headers: {{"Content-Type": "application/json"}},
@@ -513,10 +507,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         .then(r => r.ok ? alert("Decision submitted!") : Promise.reject("Submit failed: " + r.status))
                         .then(() => window.location.reload())
                         .catch(err => alert(err));
-                    ''')
+                    """
+                    )
 
                 ui.button("Submit Decision", on_click=on_submit_click).classes("mt-4")
-
 
         def on_data_loaded(e):
             data = e.args
@@ -524,7 +518,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
             status_banner.set_text("Loaded adjudication context.")
 
             with container:
-                findings = data.get('findings', [])
+                findings = data.get("findings", [])
                 if not findings:
                     ui.label("No adjudication findings for this PR.").classes("text-gray-500")
                 else:
@@ -548,7 +542,6 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         if not is_supported_item_type(item_type) or not is_resolvable_item_number(item_number):
             ui.label(f"Invalid or unresolved target: {item_type!r} #{item_number}. " "This repository's diagnostic evidence cannot be selected for it.").classes("text-red-600 font-bold")
             return
-
 
         if item_type == "pr":
             with ui.row().classes("w-full mb-4 gap-2 items-center"):
