@@ -417,8 +417,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                             }})
                             .then(r => r.ok ? window.location.reload() : Promise.reject("Login failed: " + r.status))
                             .catch(err => alert(err));
-                        """
+                            """
                         )
+                        secret_input.value = ""  # Clear transient login-secret input after an attempt (REQ-002)
 
                     ui.button("Login", on_click=on_login_click)
 
@@ -428,7 +429,6 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 fetch("/dashboard-adjudication/context/{pr_number}")
                     .then(r => {{
                         if (r.status === 401 || r.status === 403) {{
-                            // Needs auth
                             const loginEvent = new CustomEvent("adjudication_needs_auth");
                             window.dispatchEvent(loginEvent);
                             return null;
@@ -442,7 +442,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         }}
                     }})
                     .catch(err => console.error(err));
-            """
+                """
             )
 
         def on_needs_auth(e):
@@ -451,13 +451,17 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
             status_banner.classes(replace="text-sm text-red-600 font-bold mb-4")
 
         def render_finding(finding):
-            with ui.card().classes("w-full mb-4"):
+            with ui.card().classes("w-full mb-4") as card:
                 ui.label(f"Finding Context ID: {finding['context_id']}").classes("font-mono font-bold")
                 ui.label(f"Root Comment ID: {finding['root_comment_id']}")
                 ui.label(f"Head SHA: {finding['head_sha']}")
                 ui.label(f"Base Ref: {finding['base_ref']}").classes("mb-2")
 
-                ui.label(f"Status: {finding['status']}").classes("font-bold text-blue-600 mb-2")
+                # Render raw finding text inertly (REQ-003)
+                if finding.get("contract_digest"):
+                    ui.label(f"Contracts Digest: {finding['contract_digest']}").classes("text-xs font-mono text-gray-500 mb-2")
+
+                ui.label(f"Status: {finding.get('status', 'NONE')}").classes("font-bold text-blue-600 mb-2")
 
                 if finding.get("retired_reason"):
                     ui.label(f"Retired: {finding['retired_reason']}").classes("text-red-500 font-bold mb-2")
@@ -466,51 +470,74 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 for tip in finding.get("tips", []):
                     ui.label(f"- {tip}")
 
+                # Maintain rationale within the page even if context is invalidated
+                rationale_input = ui.textarea(label="Rationale").classes("w-full mt-2")
+
                 with ui.row().classes("mt-4 gap-2 items-center"):
                     verdict_select = ui.select(["UPHOLD", "OVERRULE", "UNDECIDED"], value="UNDECIDED", label="Verdict").classes("w-40")
                     directive_select = ui.select(["FIX", "NO_CHANGE", "NONE"], value="NONE", label="Directive").classes("w-40")
 
-                rationale_input = ui.textarea(label="Rationale").classes("w-full mt-2")
+                preview_container = ui.column().classes("w-full mt-4 p-4 border rounded bg-gray-50 hidden")
 
-                def on_submit_click():
-                    import json
+                def on_preview_click():
+                    if finding.get("retired_reason"):
+                        ui.notify("Recovery requires a fresh reader-issued non-retired context.", type="warning")
+                        return
 
-                    supersedes_json = json.dumps(finding.get("tips", []))
-                    ui.run_javascript(
-                        f"""
-                        fetch("/dashboard-adjudication/draft", {{
-                            method: "POST",
-                            headers: {{"Content-Type": "application/json"}},
-                            body: JSON.stringify({{pr_number: {pr_number}, context_id: "{finding['context_id']}"}})
-                        }})
-                        .then(r => r.json())
-                        .then(draft => {{
-                            return fetch("/dashboard-adjudication/submit", {{
-                                method: "POST",
-                                headers: {{
-                                    "Content-Type": "application/json",
-                                    "x-csrf-token": "{state.get('csrf_token', '')}"
-                                }},
-                                body: JSON.stringify({{
-                                    pr_number: {pr_number},
-                                    context_id: "{finding['context_id']}",
-                                    decision_id: draft.decision_id,
-                                    head_sha: "{finding['head_sha']}",
-                                    contract_digest: "{finding['contract_digest']}",
-                                    verdict: "{verdict_select.value}",
-                                    directive: "{directive_select.value}",
-                                    rationale: {json.dumps(rationale_input.value)},
-                                    supersedes: {supersedes_json}
+                    preview_container.clear()
+                    preview_container.classes(remove="hidden")
+                    with preview_container:
+                        ui.label("Explicit Confirmation Preview").classes("font-bold text-lg mb-2")
+                        ui.label(f"Target Context: {finding['context_id']}")
+                        ui.label(f"Actual Publishing Account: {finding.get('publisher_account', 'Unknown')}")
+                        ui.label(f"Bound Head: {finding['head_sha']}")
+                        ui.label(f"Contract: {finding.get('contract_digest', 'None')}")
+                        ui.label("Predecessor Tips: " + ", ".join(finding.get("tips", [])))
+                        ui.label(f"Verdict: {verdict_select.value} | Directive: {directive_select.value}")
+                        ui.label("Rationale:")
+                        ui.label(rationale_input.value).classes("whitespace-pre-wrap font-mono text-sm bg-white p-2 border")
+
+                        def on_confirm_submit():
+                            import json
+
+                            supersedes_json = json.dumps(finding.get("tips", []))
+                            ui.run_javascript(
+                                f"""
+                                fetch("/dashboard-adjudication/draft", {{
+                                    method: "POST",
+                                    headers: {{"Content-Type": "application/json"}},
+                                    body: JSON.stringify({{pr_number: {pr_number}, context_id: "{finding['context_id']}"}})
                                 }})
-                            }});
-                        }})
-                        .then(r => r.ok ? alert("Decision submitted!") : Promise.reject("Submit failed: " + r.status))
-                        .then(() => window.location.reload())
-                        .catch(err => alert(err));
-                    """
-                    )
+                                .then(r => r.json())
+                                .then(draft => {{
+                                    return fetch("/dashboard-adjudication/submit", {{
+                                        method: "POST",
+                                        headers: {{
+                                            "Content-Type": "application/json",
+                                            "x-csrf-token": "{state.get('csrf_token', '')}"
+                                        }},
+                                        body: JSON.stringify({{
+                                            pr_number: {pr_number},
+                                            context_id: "{finding['context_id']}",
+                                            decision_id: draft.decision_id,
+                                            head_sha: "{finding['head_sha']}",
+                                            contract_digest: "{finding['contract_digest']}",
+                                            verdict: "{verdict_select.value}",
+                                            directive: "{directive_select.value}",
+                                            rationale: {json.dumps(rationale_input.value)},
+                                            supersedes: {supersedes_json}
+                                        }})
+                                    }});
+                                }})
+                                .then(r => r.ok ? alert("Decision submitted!") : Promise.reject("Submit failed: " + r.status))
+                                .then(() => window.location.reload())
+                                .catch(err => alert(err));
+                                """
+                            )
 
-                ui.button("Submit Decision", on_click=on_submit_click).classes("mt-4")
+                        ui.button("Confirm & Submit", on_click=on_confirm_submit).classes("mt-4 bg-green-600 text-white")
+
+                ui.button("Preview Decision", on_click=on_preview_click).classes("mt-4")
 
         def on_data_loaded(e):
             data = e.args
@@ -528,7 +555,6 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         ui.on("adjudication_needs_auth", on_needs_auth)
         ui.on("adjudication_data_loaded", on_data_loaded)
 
-        # We need to trigger the initial load
         ui.timer(0.5, check_auth_and_load, once=True)
 
     @ui.page("/detail/{item_type}/{item_number}")
