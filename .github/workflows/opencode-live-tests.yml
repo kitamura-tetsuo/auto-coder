@@ -40,6 +40,13 @@ jobs:
         run: |
           uv run pytest -m opencode_live -vv
 
+      - name: Print git-wrapper debug log
+        if: always()
+        run: |
+          echo "::group::opencode-git-debug.log"
+          cat opencode-git-debug.log 2>/dev/null || echo "(no debug log produced)"
+          echo "::endgroup::"
+
       - name: Upload OpenCode live test diagnostics
         uses: actions/upload-artifact@v7
         if: always()
