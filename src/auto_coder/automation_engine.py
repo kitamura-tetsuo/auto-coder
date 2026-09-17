@@ -653,6 +653,7 @@ class AutomationEngine:
         adjudication_path = Path(os.environ.get("AUTO_CODER_REVIEW_ADJUDICATION_DB", "~/.auto-coder/review-adjudications.sqlite3")).expanduser()
         self.review_adjudications = ReviewAdjudicationService(self.github, AdjudicationContextStore(adjudication_path))
         from .adjudication_effect_journal import AdjudicationEffectJournal
+
         journal_path = Path(os.environ.get("AUTO_CODER_ADJUDICATION_EFFECTS_DB", "~/.auto-coder/adjudication-effects.sqlite3")).expanduser()
         self.adjudication_effects = AdjudicationEffectJournal(journal_path)
         routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()

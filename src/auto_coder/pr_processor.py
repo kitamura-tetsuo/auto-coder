@@ -2920,6 +2920,7 @@ def _handle_pr_merge(
                                         if thread.comments:
                                             # We must not mutate the cached Comment directly. Create a shallow copy.
                                             import copy
+
                                             new_thread = copy.copy(thread)
                                             new_comments = list(new_thread.comments)
                                             new_comment = copy.copy(new_comments[0])
@@ -2930,16 +2931,13 @@ def _handle_pr_merge(
                                     else:
                                         # Create a thread wrapper if not in the blocking_unresolved set but still applicable
                                         from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
+
                                         new_comment = ReviewThreadComment(
                                             database_id=int(thread_id) if thread_id.isdigit() else 0,
                                             body=f"Adjudication UPHOLD/FIX:\n{snap.result.reason}",
                                             author_login="adjudicator",
                                         )
-                                        new_thread = ReviewThread(
-                                            id=thread_id,
-                                            is_resolved=False,
-                                            comments=[new_comment]
-                                        )
+                                        new_thread = ReviewThread(id=thread_id, is_resolved=False, comments=[new_comment])
                                         repair_threads.append(new_thread)
                                 elif snap.result.directive == "NO_CHANGE":
                                     overruled_finding_ids.add(snap.raw_finding)
@@ -2948,11 +2946,7 @@ def _handle_pr_merge(
                                     repair_threads = [t for t in repair_threads if t.id != snap.raw_finding]
                                     # Write to adjudication_effects journal for REQ-008
                                     try:
-                                        automation_engine.adjudication_effects.record_effect(
-                                            repo_name, pr_number, snap.result.context_id,
-                                            snap.result.decision_id, snap.raw_finding, "resolve",
-                                            snap.observation_revision, "pending"
-                                        )
+                                        automation_engine.adjudication_effects.record_effect(repo_name, pr_number, snap.result.context_id, snap.result.decision_id, snap.raw_finding, "resolve", snap.observation_revision, "pending")
                                     except Exception as e:
                                         logger.warning(f"Could not record effect: {e}")
 
