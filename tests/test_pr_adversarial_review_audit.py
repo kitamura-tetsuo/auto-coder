@@ -885,3 +885,127 @@ class TestStaleHeadPublicationAndRestart:
         effect_dispositions = [effect.disposition for effect in record.effects]
         assert effect_dispositions == ["superseded"]
         assert record.effects[0].details is not None and record.effects[0].details.get("phase") == "pre-publication"
+
+    def test_head_changed_before_durable_acceptance_is_superseded(self, tmp_path, monkeypatch, audit_store):
+        """REQ-006: the current PR head moved before the gap-state checkpoint
+        could be durably accepted; the review's own retained result stays
+        intact, publication is never attempted, and the observation is a
+        separate 'superseded' effect rather than an overwrite."""
+        repo, head_sha = _build_pr_repo(tmp_path)
+        client = _build_github_client(head_sha)
+        pr_data = _build_pr_data(head_sha)
+        config = _build_config()
+        # An explicit provider session makes run_adversarial_validation build
+        # a reviewer_session_checkpoint, which is what reaches the
+        # gap-state-acceptance boundary below.
+        reviewer = MockReviewerClient("reviewer", responses=[PASS_PAYLOAD], session_id="fresh-session")
+        manager = _build_backend_manager(monkeypatch, {"reviewer": reviewer}, "reviewer")
+
+        # The authoritative current head has moved on by the time the result
+        # is checked, even though this validation examined head_sha.
+        client.get_pull_request_head_sha_strict.return_value = "0" * 40
+
+        _apply_standard_merge_gates(monkeypatch, mergeable=True, merge_result=True)
+        _wire_backend(monkeypatch, manager)
+        monkeypatch.setattr("auto_coder.pr_processor.isolated_pr_head_worktree", lambda *a, **k: _static_worktree(repo))
+        publish_calls: List[str] = []
+        monkeypatch.setattr(
+            "auto_coder.pr_processor.publish_adversarial_review",
+            lambda *a, **k: (publish_calls.append("called"), ReviewPublicationResult(True, "APPROVE", ""))[1],
+        )
+
+        actions = _handle_pr_merge(client, REPO_NAME, pr_data, config, {})
+
+        assert reviewer.calls == ["fresh"]
+        assert not publish_calls, "a result rejected for a moved head must not publish"
+        assert any("current head changed before durable acceptance" in action for action in actions)
+
+        records = _get_only_evaluation(audit_store, REPO_NAME)
+        assert len(records) == 1
+        record = records[0]
+        # The review's own retained result is untouched by the rejection.
+        assert record.native_verdict == "PASS"
+        assert record.reviewed_generation == head_sha
+        effect_dispositions = [effect.disposition for effect in record.effects]
+        assert effect_dispositions == ["superseded"]
+        assert record.effects[0].details is not None
+        assert record.effects[0].details.get("phase") == "gap-state-acceptance"
+        assert record.effects[0].details.get("observed_head") == "0" * 40
+
+    def test_changed_validation_snapshot_before_acceptance_is_superseded(self, tmp_path, monkeypatch, audit_store):
+        """REQ-006: recovered file evidence exists from a prior session, but
+        the validation snapshot can no longer be confirmed current at the
+        gap-state-acceptance boundary; the retained review result stays
+        intact and this is recorded as a separate 'superseded' effect."""
+        from auto_coder.reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry
+
+        repo, head_sha = _build_pr_repo(tmp_path)
+        client = _build_github_client(head_sha)
+        pr_data = _build_pr_data(head_sha)
+        config = _build_config()
+        reviewer = MockReviewerClient("reviewer", responses=[PASS_PAYLOAD], session_id="fresh-session")
+        manager = _build_backend_manager(monkeypatch, {"reviewer": reviewer}, "reviewer")
+
+        # A prior session recorded recovered evidence for a file this run's
+        # response does not re-confirm; real recovery-ledger construction
+        # invalidates it, giving the checkpoint non-empty recovered_file_evidence.
+        registry = ReviewerSessionRegistry()
+        registry.save(
+            ReviewerSession(
+                repository=REPO_NAME,
+                pr_number=PR_NUMBER,
+                backend_name="reviewer",
+                backend_type="codex-cloud",
+                model_name="reviewer-model",
+                session_id="stale-session",
+                last_head_sha=head_sha,
+                recovered_file_evidence=[
+                    RecoveredFileEvidence(path="docs/prior_evidence.md", source="past run", status="RECOVERED", evidence="Previously inspected."),
+                ],
+                evidence_validation_snapshot="stale-snapshot",
+            )
+        )
+
+        _apply_standard_merge_gates(monkeypatch, mergeable=True, merge_result=True)
+        _wire_backend(monkeypatch, manager)
+        monkeypatch.setattr("auto_coder.pr_processor.isolated_pr_head_worktree", lambda *a, **k: _static_worktree(repo))
+        # validation_snapshot_is_current is the real GitHub-freshness boundary
+        # check itself (not the validator/parser), called at two real
+        # boundaries: once inside run_adversarial_validation's own recovery-
+        # ledger check (which must see the snapshot as still current so the
+        # review actually executes and a checkpoint is built), and again at
+        # pr_processor's later gap-state-acceptance boundary (simulating a
+        # real TOCTOU: the PR state changed in between the two checks).
+        snapshot_check_calls = {"count": 0}
+
+        def _snapshot_current_then_stale(*args, **kwargs):
+            snapshot_check_calls["count"] += 1
+            return snapshot_check_calls["count"] == 1
+
+        monkeypatch.setattr("auto_coder.adversarial_validator.validation_snapshot_is_current", _snapshot_current_then_stale)
+        monkeypatch.setattr("auto_coder.pr_processor.validation_snapshot_is_current", _snapshot_current_then_stale)
+        publish_calls: List[str] = []
+        monkeypatch.setattr(
+            "auto_coder.pr_processor.publish_adversarial_review",
+            lambda *a, **k: (publish_calls.append("called"), ReviewPublicationResult(True, "APPROVE", ""))[1],
+        )
+
+        actions = _handle_pr_merge(client, REPO_NAME, pr_data, config, {})
+
+        # A non-empty stored session_id makes this a continuation, not a
+        # fresh call; the checkpoint's invalidated recovered evidence is what
+        # this fixture is really about.
+        assert reviewer.calls == ["continue"]
+        assert not publish_calls, "a result rejected for a stale snapshot must not publish"
+        assert any("validation snapshot changed before durable acceptance" in action for action in actions)
+
+        records = _get_only_evaluation(audit_store, REPO_NAME)
+        assert len(records) == 1
+        record = records[0]
+        assert record.native_verdict == "PASS"
+        assert record.reviewed_generation == head_sha
+        effect_dispositions = [effect.disposition for effect in record.effects]
+        assert effect_dispositions == ["superseded"]
+        assert record.effects[0].details is not None
+        assert record.effects[0].details.get("phase") == "gap-state-acceptance"
+        assert record.effects[0].details.get("reason") == "validation snapshot changed or could not be confirmed"
