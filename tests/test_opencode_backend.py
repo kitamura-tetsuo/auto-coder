@@ -45,6 +45,11 @@ def _repository(tmp_path: Path) -> Path:
 #   OPENCODE_TEST_SENTINEL_FILE -> touched once the CLI actually launches (proves task-launch happened)
 #   OPENCODE_TEST_BODY_FILE    -> extra python source exec'd with argv/prompt/os/sys/json in scope
 #   OPENCODE_TEST_EXIT_CODE    -> process exit code (default 0)
+#   OPENCODE_TEST_DEBUG_AGENT_RESPONSE_FILE -> `debug agent <name>` stdout, with
+#       every "__AGENT_NAME__" substituted for the actual (randomly generated)
+#       agent name so tests don't need to predict it. Missing -> exit 1 (an
+#       unavailable no-edit enforcement prerequisite).
+#   OPENCODE_TEST_DEBUG_AGENT_EXIT_CODE -> `debug agent` exit code override
 _DRIVER_SOURCE = textwrap.dedent(
     """
     #!/usr/bin/env python3
@@ -57,6 +62,15 @@ _DRIVER_SOURCE = textwrap.dedent(
     if argv[:1] == ["--version"]:
         print("opencode 1.18.31")
         raise SystemExit(0)
+
+    if argv[:2] == ["debug", "agent"]:
+        agent_name = argv[2] if len(argv) > 2 else ""
+        response_path = os.environ.get("OPENCODE_TEST_DEBUG_AGENT_RESPONSE_FILE")
+        if response_path:
+            sys.stdout.write(open(response_path).read().replace("__AGENT_NAME__", agent_name))
+            raise SystemExit(int(os.environ.get("OPENCODE_TEST_DEBUG_AGENT_EXIT_CODE", "0")))
+        sys.stderr.write("unknown command: debug agent\\n")
+        raise SystemExit(int(os.environ.get("OPENCODE_TEST_DEBUG_AGENT_EXIT_CODE", "1")))
 
     prompt = sys.stdin.buffer.read()
 
@@ -74,6 +88,8 @@ _DRIVER_SOURCE = textwrap.dedent(
             "prompt_in_env": any(decoded and decoded in v for v in os.environ.values()),
             "prompt_digest": hashlib.sha256(prompt).hexdigest(),
             "prompt_len": len(prompt),
+            "prompt_text": decoded,
+            "opencode_config_content": os.environ.get("OPENCODE_CONFIG_CONTENT"),
         }
         with open(report_path, "w") as fh:
             json.dump(report, fh)
@@ -673,7 +689,13 @@ def test_client_never_exposes_a_resumable_session_id(tmp_path: Path, monkeypatch
         client.continue_session(session_id="anything", prompt="implement")
 
 
-def test_noedit_request_fails_before_task_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_noedit_request_without_enforcement_fails_before_task_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    """Issue #2125 REQ-004: an unavailable enforcement prerequisite fails before task launch.
+
+    The fake driver's `debug agent` branch exits 1 (unsupported) unless
+    OPENCODE_TEST_DEBUG_AGENT_RESPONSE_FILE is set, modeling a CLI/environment
+    where the enforcing no-edit policy cannot be established.
+    """
     repo = _repository(tmp_path)
     script = _driver(tmp_path)
     sentinel = tmp_path / "launched.marker"
@@ -686,7 +708,7 @@ def test_noedit_request_fails_before_task_launch(tmp_path: Path, monkeypatch: py
     manager = _manager(config)
     manager._is_noedit = True
 
-    with pytest.raises(RuntimeError, match="no-edit"):
+    with pytest.raises(RuntimeError, match="no-edit enforcement could not be verified"):
         manager._run_llm_cli("review")
 
     assert not sentinel.exists()

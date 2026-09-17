@@ -57,6 +57,20 @@ opencode:
     attempt to perform one of these reserved operations will be blocked and
     will make this execution unusable for publication.
 
+  noedit_execution: |-
+    Complete this task in one execution using only read-only inspection:
+    $task_prompt
+
+    You may read, list, and search files in the repository and any
+    caller-supplied evidence, but you cannot edit files, run shell commands,
+    delegate to another task/agent, fetch external URLs, or use any tool
+    other than reading, listing, and searching. Do not attempt to change
+    repository state or perform a Git or GitHub lifecycle operation; any
+    such attempt will be blocked before it can take effect and will make
+    this execution unusable. Base your answer only on what you can observe
+    by reading, listing, and searching, and return your final answer as
+    plain text.
+
 
 pr:
   action: |-

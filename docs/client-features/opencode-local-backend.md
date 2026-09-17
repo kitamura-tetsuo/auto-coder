@@ -19,9 +19,8 @@ and fresh: `--attach`, `--command`, positional/`--file` prompt sources,
 such as `--auto`/`--yolo`/`--dangerously-skip-permissions` are rejected
 before the task launches, whether they come from the backend's configured
 `options` or from a one-time CLI override. A configured `--variant` (or a
-similar model-specific option) is still honored. No-edit execution is not
-implemented for this backend: a no-edit request fails before task launch
-instead of silently running as an edit.
+similar model-specific option) is still honored. No-edit (read-only)
+execution is described separately below.
 
 OpenCode may inspect files, edit the working tree, and run tests or other
 implementation/build commands, but Auto-Coder exclusively owns staging,
@@ -30,12 +29,55 @@ operations. While OpenCode runs, its `git` and `gh` executables are replaced
 (via a `PATH`-prepended, per-invocation directory) with wrappers that deny
 every subcommand except a small read-only allowlist (status, diff, log,
 show, and similar) before the real executable ever runs; `gh` is denied
-outright. Auto-Coder additionally snapshots the branch, HEAD, refs, and
+outright. This denial is scoped to the invocation's own repository/worktree
+metadata: an invocation whose resolved `--git-dir` (explicit, or discovered
+from its effective directory) is neither that Git metadata nor its shared
+`--git-common-dir` is let through unrestricted, because it cannot affect the
+protected repository regardless of subcommand — this is what lets OpenCode's
+own internal checkpoint/tracking feature (which runs `init`/`config`/`add`/
+`write-tree` against a private, detached Git store under its own data
+directory on every step) function at all.
+
+Auto-Coder additionally snapshots the branch, HEAD, refs, and
 staged index before the run and re-asserts them afterward (and on timeout),
 restoring and failing the invocation if anything still changed. A denied or
 detected lifecycle mutation makes the invocation unusable for publication;
 Auto-Coder only stages, commits, and pushes the working-tree result after
 the run succeeds and this boundary is confirmed intact.
+
+### No-edit (read-only) execution
+
+A no-edit call (`_run_llm_cli(prompt, is_noedit=True)`) runs OpenCode through
+a freshly generated, randomly named agent (`autocoder-noedit-<random>`)
+defined entirely through the `OPENCODE_CONFIG_CONTENT` environment variable
+for that one invocation only — nothing is written into the repository or any
+persistent OpenCode configuration/authentication store. That agent's
+permission map denies every tool by default (`"*": "deny"`) and allows only
+`read`, `glob`, and `grep`; because the agent name is generated fresh per
+call, no pre-existing global, project, `.opencode/`, or agent-level
+configuration can already define (and thereby weaken) it, and this holds
+regardless of how permissive those other layers are. Before the task is
+submitted, Auto-Coder runs `opencode debug agent <name>` and requires the
+resolved tool policy to show every non-inspection tool (`bash`, `edit`,
+`write`, `task`, `webfetch`, `skill`, `todowrite`) denied and `read`/`glob`/
+`grep` allowed; if that cannot be established — a missing/incompatible CLI,
+an unparseable response, or a policy that doesn't match — the call fails
+before the task launches rather than falling back to an editable run.
+`--agent` is reserved to Auto-Coder for a no-edit call (a configured or
+one-time `--agent` override is rejected before launch), and `options_for_noedit`
+is honored the same way `options` is for an edit call.
+
+During the run, any `tool_use` event naming a tool outside `read`/`glob`/
+`grep` — whether OpenCode reports it denied or, contrary to that policy,
+lets it through — rejects the whole result, even if a later step still
+produces a plausible final answer. Beyond the branch/HEAD/refs/index guard
+shared with edit mode, a no-edit call additionally snapshots the complete
+working tree (tracked file contents and modes, the staged and unstaged
+diff, untracked and ignored file contents, and directory modes, excluding
+`.git` and conventional disposable caches) before running and compares it
+afterward; any difference restores the pre-run state and fails the
+invocation. A no-edit result is never promoted or published; it is returned
+directly to the caller (e.g. adversarial review) as read-only output.
 
 A successful result requires exit status zero, a single consistent
 root-session event stream with no session-level error event, and a
