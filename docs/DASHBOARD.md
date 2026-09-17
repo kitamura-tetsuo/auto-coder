@@ -362,4 +362,14 @@ finding was applied, fixed, or regression-proven.
 
 ## Repository Dependency Reconciliation
 
-The dashboard exposes internal dependency-rescan executions at `/jobs/dependency-rescan`. This view displays process identity, triggers, handoffs, and limits without inferring missing details. It isolates internal operations from human-visible GitHub Issue/PR models.
+The dashboard exposes internal dependency-rescan executions at `/dashboard/jobs/dependency-rescan`.
+This view isolates internal repository operations from normal human-visible Issue and Pull Request detail pages, preserving the scan-versus-Issue boundary.
+The UI retains its history based on the process-local retention bounds (`max_observations`, `max_executions`); eviction results in an explicit "Unavailable history" state rather than fallback behavior.
+
+**Count and Status Meanings**:
+- `discovered_count`: the distinct Issues enumerated from the parent dependency.
+- `handoff_count`: the number of reaches for durable invalidation operations, broken down by `handoff_disposition` (`new_pending`, `coalesced`, or `followup_required`).
+- These are rendered with their exact producer meanings and are never synthesized or derived from the queue length or live graph.
+
+**Test Coverage**:
+The production-to-page regression coverage is driven by the AS-001 and AS-007 joined integration tests, simulating end-to-end webhook intakes, verifying safe and isolated internal-job routing.
