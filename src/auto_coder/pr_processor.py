@@ -74,6 +74,17 @@ from .review_adjudication_orchestrator import (
     format_overrule_explanation,
     plan_adjudication_effects,
 )
+from .review_capture.pr_adversarial_audit import (
+    PrAdversarialReviewTarget,
+    begin_executed_review,
+    compute_policy_identity,
+    find_reusable_source_review_id,
+    finish_executed_review,
+    linked_issue_membership,
+    record_bypassed,
+    record_effect,
+    record_reused,
+)
 from .review_thread_validation import (
     ClaimedReviewThread,
     StaleReviewThreadRegistryError,
@@ -401,6 +412,52 @@ def _is_pr_adversarial_validation_enabled(
     if config is not None:
         return bool(getattr(config, "pr_adversarial_validation", True)) and bool(getattr(config, "ENABLE_ADVERSARIAL_VALIDATION", True))
     return True
+
+
+def _pr_adversarial_review_target(repo_name: str, pr_data: Dict[str, Any]) -> PrAdversarialReviewTarget:
+    """Build the exact repository/PR/head identity for durable review audit (REQ-002)."""
+    head_sha = str((pr_data.get("head") or {}).get("sha") or pr_data.get("head_sha") or "")
+    return PrAdversarialReviewTarget(repository=repo_name, pr_number=int(pr_data.get("number", 0)), head_sha=head_sha)
+
+
+def _pr_adversarial_policy_identity(config: AutomationConfig, thread_gate_enabled: bool) -> str:
+    """Return the same policy/cache identity used consistently at every PR
+    adversarial-review audit boundary (BYPASSED, REUSED, EXECUTED), so a REUSED
+    consumption can be correlated to its producing EXECUTED review (REQ-011)."""
+    max_adv_reviews = config.MAX_ADVERSARIAL_VALIDATIONS if config.MAX_ADVERSARIAL_VALIDATIONS is not None else config.MAX_ADVERSARIAL_REVIEWS
+    return compute_policy_identity(max_adversarial_reviews=max_adv_reviews, thread_gate_enabled=thread_gate_enabled)
+
+
+def _pr_adversarial_linked_issue_membership(repo_name: str, pr_data: Dict[str, Any], verified_issue_numbers: Optional[Sequence[int]] = None) -> Optional[str]:
+    """Issue-oracle reference for the durable review record (REQ-002).
+
+    Prefers the exact verified Issue numbers the validation context actually
+    used (``adversarial_eligibility.issue_numbers``) when available; falls
+    back to a best-effort PR-body parse only when the caller has not already
+    resolved eligibility (for example the BYPASSED site, reached before
+    eligibility is ever checked). Returns None (explicitly unknown) rather
+    than guessing when no linked Issue reference can be resolved.
+    """
+    if verified_issue_numbers is not None:
+        return linked_issue_membership(tuple(verified_issue_numbers))
+    try:
+        linked_issue_numbers = extract_linked_issues_from_pr_body(pr_data.get("body") or "")
+    except Exception:
+        return None
+    return linked_issue_membership(tuple(linked_issue_numbers))
+
+
+def _record_pr_adversarial_review_bypassed(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    thread_gate_enabled: bool,
+) -> None:
+    """Record a reached BYPASSED audit observation for explicit disablement (REQ-005)."""
+    target = _pr_adversarial_review_target(repo_name, pr_data)
+    policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
+    related_issue_membership = _pr_adversarial_linked_issue_membership(repo_name, pr_data)
+    record_bypassed(target, policy_identity=policy_identity, related_issue_membership=related_issue_membership)
 
 
 def _is_pr_review_thread_gate_enabled(
@@ -2972,6 +3029,10 @@ def _handle_pr_merge(
                     Outcome.SKIPPED,
                     {"reason": "disabled" if not adv_enabled else "dependabot PR is not subject to adversarial validation"},
                 )
+                if not adv_enabled:
+                    # REQ-005/REQ-011: explicit disablement is a reached BYPASSED
+                    # observation, never a new review or verdict.
+                    _record_pr_adversarial_review_bypassed(repo_name, pr_data, config, thread_gate_enabled)
             if adversarial_validation_enabled:
                 adversarial_eligibility = _get_adversarial_validation_eligibility(github_client, repo_name, pr_data)
                 if adversarial_eligibility.lookup_error:
@@ -3174,6 +3235,20 @@ def _handle_pr_merge(
                         return actions
 
                     if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and not force_adversarial_validation:
+                        # REQ-005/REQ-011: an authoritative same-head result is
+                        # consumed without a new reviewer-backend invocation.
+                        # Provenance for the producing review may be genuinely
+                        # unavailable (legacy pre-instrumentation result).
+                        reuse_target = PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha)
+                        reuse_policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
+                        reuse_source_review_id = find_reusable_source_review_id(reuse_target, policy_identity=reuse_policy_identity)
+                        record_reused(
+                            reuse_target,
+                            policy_identity=reuse_policy_identity,
+                            source_review_id=reuse_source_review_id,
+                            native_verdict=published_status,
+                            related_issue_membership=_pr_adversarial_linked_issue_membership(repo_name, pr_data, adversarial_eligibility.issue_numbers),
+                        )
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: commit {head_sha[:8]} was already validated as {published_status}")
                         if published_status == "ERROR":
                             saved_validation_error = f"Adversarial validation previously failed for PR #{pr_number} at SHA {head_sha[:8]}"
@@ -3231,21 +3306,33 @@ def _handle_pr_merge(
                         decision_attempt_repository = attempt_repository
                         decision_attempt_sequence = attempt.sequence
                         codex_remediation_snapshot = _observe_codex_cloud_remediation_activity(repo_name, pr_data, github_client)
+                        # REQ-001/REQ-002/REQ-004: one review_id covers every backend
+                        # invocation (initial round, dynamic-check follow-up, session
+                        # continuation) belonging to this one logical validation job.
+                        review_target = PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha)
+                        review_policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
+                        review_related_issue_membership = _pr_adversarial_linked_issue_membership(repo_name, pr_data, adversarial_eligibility.issue_numbers)
+                        active_review_id: Optional[str] = None
                         try:
-                            with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
-                                actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
-                                val_result = run_adversarial_validation(
-                                    repo_name,
-                                    pr_data,
-                                    config,
-                                    github_client=github_client,
-                                    claimed_review_threads_section=claimed_review_threads_section,
-                                    claimed_review_threads=claimed_review_threads,
-                                    execution_cwd=validation_worktree,
-                                    defer_session_persistence=True,
-                                    ci_status=github_checks,
-                                    refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
-                                )
+                            with begin_executed_review(
+                                review_target,
+                                policy_identity=review_policy_identity,
+                                related_issue_membership=review_related_issue_membership,
+                            ) as active_review_id:
+                                with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
+                                    actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
+                                    val_result = run_adversarial_validation(
+                                        repo_name,
+                                        pr_data,
+                                        config,
+                                        github_client=github_client,
+                                        claimed_review_threads_section=claimed_review_threads_section,
+                                        claimed_review_threads=claimed_review_threads,
+                                        execution_cwd=validation_worktree,
+                                        defer_session_persistence=True,
+                                        ci_status=github_checks,
+                                        refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
+                                    )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]
                             logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
@@ -3261,6 +3348,8 @@ def _handle_pr_merge(
 
                         val_result.attempt_id = attempt.attempt_id
                         val_result.attempt_sequence = attempt.sequence
+                        if active_review_id:
+                            finish_executed_review(active_review_id, review_target, val_result)
                         active_attempt_status = val_result.result.strip().upper() or "ERROR"
 
                         val_result.clarification_reply_fingerprint = provenance_fingerprint
@@ -3277,6 +3366,9 @@ def _handle_pr_merge(
                             if attempt_is_superseded:
                                 actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
                                 _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "pre-publication"})
+                                # REQ-006: this review's own result stays historical
+                                # evidence for its head; it is superseded, not erased.
+                                record_effect(review_target, active_review_id, "superseded", {"phase": "pre-publication", "attempt_id": attempt.attempt_id})
                                 return actions
                             if val_result.reviewer_session_checkpoint is not None:
                                 try:
@@ -3284,10 +3376,17 @@ def _handle_pr_merge(
                                 except Exception as e:
                                     actions.append(f"Rejected adversarial-validation result for PR #{pr_number}: authoritative head could not be confirmed ({e})")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "gap-state-acceptance", "reason": "head observation unavailable"})
+                                    # REQ-006: the authoritative head check itself
+                                    # failed, so acceptance/refusal could not be
+                                    # observed; record that failure as its own
+                                    # effect rather than leaving the retained
+                                    # review with no observation at all.
+                                    record_effect(review_target, active_review_id, "failed", {"phase": "gap-state-acceptance", "reason": "head observation unavailable"})
                                     return actions
                                 if observed_head != head_sha:
                                     actions.append(f"Ignored adversarial-validation attempt {attempt.attempt_id}: current head changed before durable acceptance")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "observed_head": observed_head, "phase": "gap-state-acceptance"})
+                                    record_effect(review_target, active_review_id, "superseded", {"phase": "gap-state-acceptance", "observed_head": observed_head})
                                     return actions
                                 checkpoint = val_result.reviewer_session_checkpoint
                                 if checkpoint.recovered_file_evidence and not validation_snapshot_is_current(
@@ -3310,6 +3409,7 @@ def _handle_pr_merge(
                                             "reason": "validation snapshot changed or could not be confirmed",
                                         },
                                     )
+                                    record_effect(review_target, active_review_id, "superseded", {"phase": "gap-state-acceptance", "reason": "validation snapshot changed or could not be confirmed"})
                                     return actions
                                 try:
                                     registry = val_result.reviewer_session_registry or ReviewerSessionRegistry()
@@ -3365,6 +3465,12 @@ def _handle_pr_merge(
                                     return actions
                             publication = publish_adversarial_review(repo_name, pr_number, head_sha, val_result)
                             if not publication.success:
+                                # REQ-006: publication returning unsuccessful covers both a
+                                # genuine failure and an accepted write whose response was
+                                # lost; record it as pending until reconciliation (below)
+                                # observes the actual durable outcome, rather than
+                                # asserting a confirmed publication that may not exist.
+                                record_effect(review_target, active_review_id, "pending", {"phase": "publication", "reason": publication.reason})
                                 publication_confirmed, reconciliation_error = _reconcile_failed_adversarial_publication(
                                     github_client,
                                     repo_name,
@@ -3375,6 +3481,7 @@ def _handle_pr_merge(
                                 if publication_confirmed:
                                     published_status = _parse_adversarial_validation_status(format_adversarial_validation_comment(val_result, head_sha))
                                     actions.append(f"Reconciled adversarial review publication for PR #{pr_number}: the expected verdict was already durable")
+                                    record_effect(review_target, active_review_id, "confirmed", {"phase": "reconciliation"})
                                 elif resolved_thread_ids:
                                     reopened_thread_ids = reopen_review_threads_after_publication_failure(
                                         github_client,
@@ -3392,17 +3499,27 @@ def _handle_pr_merge(
                                     actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
                                     logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "reason": publication.reason, "phase": "publication"})
+                                    # An ordinary publication failure must not erase the
+                                    # already-retained semantic review report (REQ-006).
+                                    record_effect(
+                                        review_target,
+                                        active_review_id,
+                                        "unknown" if reconciliation_error else "failed",
+                                        {"phase": "reconciliation", "reason": publication.reason, "reconciliation_error": reconciliation_error},
+                                    )
                                     return actions
                             else:
                                 if val_result.result.strip().upper() == "ERROR":
                                     actions.append(f"Published {publication.event} adversarial validation error diagnostic for PR #{pr_number} at SHA {head_sha[:8]}")
                                 else:
                                     actions.append(f"Published {publication.event} adversarial review for PR #{pr_number} at SHA {head_sha[:8]}")
+                                record_effect(review_target, active_review_id, "confirmed", {"phase": "publication", "event": publication.event})
 
                             attempt_repository.mark_published(attempt.attempt_id)
                             if attempt_repository.latest_published_sequence(pr_number, head_sha) > attempt.sequence:
                                 actions.append(f"Ignored late adversarial-validation attempt {attempt.attempt_id}: a newer attempt is already applicable")
                                 _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "post-publication"})
+                                record_effect(review_target, active_review_id, "superseded", {"phase": "post-publication"})
                                 return actions
                     if published_status == "PASS":
                         pass
