@@ -27,10 +27,11 @@ import asyncio
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 
 class GateState(str, Enum):
@@ -353,3 +354,70 @@ def current_invocation_gate() -> Optional[InvocationAdmissionGate]:
     one even when the thread running it is reused.
     """
     return _current_gate.get()
+
+
+@dataclass(frozen=True)
+class InvocationTarget:
+    """Caller-supplied classification for the next admitted invocation.
+
+    ``defer_checkpoint`` tells the production boundary in
+    ``backend_manager.py`` that this caller owns a durable checkpoint step of
+    its own (e.g. persisting a validation decision, or recording a remote
+    handoff receipt) and will retrieve the admitted handle via
+    :func:`take_pending_invocation_handle` to confirm settlement itself once
+    that write commits. When false (the default), a successful invocation is
+    settled immediately after the provider call returns, because the
+    response flows synchronously to a caller that has no separate durable
+    write to wait for.
+    """
+
+    repository: str
+    target: str
+    stage: str
+    defer_checkpoint: bool = False
+
+
+_current_target: ContextVar[Optional[InvocationTarget]] = ContextVar("auto_coder_invocation_target", default=None)
+
+
+@contextmanager
+def bind_invocation_target(repository: str, target: str, stage: str, defer_checkpoint: bool = False) -> Iterator[None]:
+    """Classify the invocation(s) made by the production boundary in this block."""
+    token = _current_target.set(InvocationTarget(repository=repository, target=target, stage=stage, defer_checkpoint=defer_checkpoint))
+    try:
+        yield
+    finally:
+        _current_target.reset(token)
+
+
+def current_invocation_target() -> Optional[InvocationTarget]:
+    """Return the ambient invocation classification, or None if unbound."""
+    return _current_target.get()
+
+
+_pending_handle: ContextVar[Optional[InvocationHandle]] = ContextVar("auto_coder_pending_invocation_handle", default=None)
+
+
+def set_pending_invocation_handle(handle: Optional[InvocationHandle]) -> None:
+    """Stash a checkpointing handle for its owning caller to confirm later.
+
+    Only meaningful for a caller that bound ``defer_checkpoint=True``; the
+    production boundary calls this instead of settling the invocation
+    itself, and the caller retrieves it with
+    :func:`take_pending_invocation_handle` once its own durable write
+    commits.
+    """
+    _pending_handle.set(handle)
+
+
+def take_pending_invocation_handle() -> Optional[InvocationHandle]:
+    """Retrieve and clear the pending handle left by the last deferred call.
+
+    Returns None if no invocation is currently awaiting this caller's own
+    checkpoint confirmation (e.g. no gate is installed, or the last call did
+    not defer its checkpoint).
+    """
+    handle = _pending_handle.get()
+    if handle is not None:
+        _pending_handle.set(None)
+    return handle

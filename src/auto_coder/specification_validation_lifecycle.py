@@ -14,6 +14,7 @@ from typing import Callable, Iterator, Optional
 from loguru import logger
 
 from .github_pending_work import WorkIdentity, get_pending_work_store
+from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_review_publication import find_confirmed_publication
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
@@ -489,13 +490,14 @@ class SpecificationValidationLifecycle:
                 # never relabeled on later reuse or by a route change that
                 # only happens after this call was already dispatched.
                 provenance = configured_provider_identity()
-                if self.analyzer is not None:
-                    analyzed = self.analyzer(manifest, body)
-                elif relationship_context is not None:
-                    with individual_relationship_context(relationship_context):
+                with bind_invocation_target(self.repository, f"issue#{manifest.issue_number}", "specification_validation", defer_checkpoint=True):
+                    if self.analyzer is not None:
+                        analyzed = self.analyzer(manifest, body)
+                    elif relationship_context is not None:
+                        with individual_relationship_context(relationship_context):
+                            analyzed = analyze_issue_specification(manifest, body)
+                    else:
                         analyzed = analyze_issue_specification(manifest, body)
-                else:
-                    analyzed = analyze_issue_specification(manifest, body)
                 decision = ValidationDecision(
                     identity,
                     analyzed.verdict,
@@ -505,15 +507,14 @@ class SpecificationValidationLifecycle:
                     execution_provenance=provenance,
                     legacy_candidates_detected=legacy_candidates_detected,
                 )
-                if analyzed.verdict in {"READY", "BLOCKED"}:
-                    self.store.save(decision)
-                return decision
+                return self._settle_decision_checkpoint(decision)
             assert evidence is not None
             provenance = configured_provider_identity()
-            if self.analyzer is None:
-                analyzed = self._default_analyzer(manifest, body, evidence, relationship_context)
-            else:
-                analyzed = self.analyzer(manifest, body)
+            with bind_invocation_target(self.repository, f"issue#{manifest.issue_number}", "specification_validation", defer_checkpoint=True):
+                if self.analyzer is None:
+                    analyzed = self._default_analyzer(manifest, body, evidence, relationship_context)
+                else:
+                    analyzed = self.analyzer(manifest, body)
             decision = ValidationDecision(
                 identity,
                 analyzed.verdict,
@@ -523,9 +524,30 @@ class SpecificationValidationLifecycle:
                 execution_provenance=provenance,
                 legacy_candidates_detected=legacy_candidates_detected,
             )
-            if analyzed.verdict in {"READY", "BLOCKED"}:
+            return self._settle_decision_checkpoint(decision)
+
+    def _settle_decision_checkpoint(self, decision: "ValidationDecision") -> "ValidationDecision":
+        """Persist a fresh decision (if reusable) and confirm its invocation checkpoint.
+
+        A READY/BLOCKED decision must be durably saved before the admitted
+        invocation that produced it is allowed to settle: a failed save
+        leaves the invocation CHECKPOINTING (protected, retriable) and
+        re-raises so the caller sees the persistence problem (Issue #2009,
+        REQ-003/REQ-009). An ERROR decision is never cached, so there is
+        nothing further to protect once decide() returns it.
+        """
+        if decision.verdict in {"READY", "BLOCKED"}:
+            try:
                 self.store.save(decision)
-            return decision
+            except Exception as exc:
+                handle = take_pending_invocation_handle()
+                if handle is not None:
+                    handle.record_checkpoint_attempt_failed(str(exc))
+                raise
+        handle = take_pending_invocation_handle()
+        if handle is not None:
+            handle.confirm_settled()
+        return decision
 
     def _default_analyzer(self, manifest: NormativeIssueManifest, body: str, evidence: IndividualReviewEvidence, relationship_context: Optional[IndividualRelationshipContext]) -> SpecificationAnalysisResult:
         with individual_review_evidence(evidence):

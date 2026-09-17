@@ -55,6 +55,7 @@ from .implementation_slots import (
     ImplementationSlotRepository,
     ImplementationSlotUnavailable,
 )
+from .invocation_admission import GateSnapshot, InvocationAdmissionGate, install_invocation_gate, reset_invocation_gate
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
 from .issue_processor import create_feature_issues
@@ -800,6 +801,13 @@ class AutomationEngine:
         self._shutdown_event: Optional[asyncio.Event] = None
         self._force_stop_event: Optional[asyncio.Event] = None
         self._critical_operations: Dict[asyncio.Task[Any], str] = {}
+        # One invocation-admission gate per daemon lifetime (Issue #2009):
+        # finer-grained, per-LLM-call shutdown protection that runs alongside
+        # the coarser worker/maintenance-level `_run_local_critical` wait
+        # this class already owns. Retiring that broader wait in favor of
+        # this gate is a separate follow-up (#2010); today this gate only
+        # tracks invocations and never gates the daemon's own exit.
+        self.invocation_gate = InvocationAdmissionGate()
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -818,12 +826,17 @@ class AutomationEngine:
     def is_draining(self) -> bool:
         return self.lifecycle is not EngineLifecycle.RUNNING
 
+    def invocation_admission_snapshot(self) -> GateSnapshot:
+        """Expose this daemon lifetime's per-invocation admission state for diagnostics."""
+        return self.invocation_gate.snapshot()
+
     def request_graceful_shutdown(self, reason: str) -> bool:
         """Stop admission and request a drain. Return true for the first request."""
         with self._lifecycle_lock:
             if self._lifecycle is not EngineLifecycle.RUNNING:
                 return False
             self._lifecycle = EngineLifecycle.DRAINING
+        self.invocation_gate.close_admission(reason)
         logger.warning(f"Graceful shutdown requested by {reason}; entering draining state")
         operations = list(self._critical_operations.values())
         logger.warning(f"Waiting for {len(operations)} local critical operation(s): {operations or ['none']}")
@@ -837,6 +850,7 @@ class AutomationEngine:
         """Abandon the graceful wait after an explicit second interrupt."""
         with self._lifecycle_lock:
             self._lifecycle = EngineLifecycle.FORCED
+        self.invocation_gate.force_stop(reason)
         logger.error(f"Forced shutdown requested by {reason}; local work may require restart recovery")
         if self._loop is not None and self._force_stop_event is not None:
             self._loop.call_soon_threadsafe(self._force_stop_event.set)
@@ -850,12 +864,14 @@ class AutomationEngine:
             # treat it as a loop-level termination before the caller can observe
             # and handle the exception.
             token = install_admission_check(lambda: not self.is_draining)
+            gate_token = install_invocation_gate(self.invocation_gate)
             try:
                 try:
                     return True, await asyncio.to_thread(function, *args)
                 except BaseException as exc:
                     return False, exc
             finally:
+                reset_invocation_gate(gate_token)
                 reset_admission_check(token)
 
         task = asyncio.create_task(run_in_thread(), name=f"local-critical:{description}")
