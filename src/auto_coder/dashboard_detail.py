@@ -278,15 +278,15 @@ def repo_job_evidence_rows(observations: Sequence["RepoJobObservation"]) -> List
                             return "(not recorded)"
                         if isinstance(value, bool):
                             return "true" if value else "false"
-
                         import html
 
-                        if hasattr(value, "total_count"):
-                            total = value.total_count
-                            items = getattr(value, "items", getattr(value, "numbers", []))
+                        # `value` is a dict because of `asdict(obs.facts)`. It looks like `{"numbers": [1,2,3], "total_count": 5, ...}`
+                        if isinstance(value, dict) and "total_count" in value:
+                            total = value.get("total_count")
+                            items = value.get("values", value.get("numbers", []))
                             if items is None:
                                 items = []
-                            if key == "target_issue_refs" and hasattr(value, "numbers"):
+                            if key == "target_issue_refs" and "numbers" in value:
                                 links = []
                                 for n in items:
                                     links.append(f'<a href="/detail/issue/{n}" class="text-blue-500">#{n}</a>')
@@ -307,6 +307,7 @@ def repo_job_evidence_rows(observations: Sequence["RepoJobObservation"]) -> List
                                 return html.escape(json.dumps(value, sort_keys=True, default=str, ensure_ascii=False))
                             except TypeError:
                                 return html.escape(str(value))
+                        return html.escape(str(value))
                         return html.escape(str(value))
                         return str(value)
 

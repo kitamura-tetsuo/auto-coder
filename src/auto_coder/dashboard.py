@@ -66,6 +66,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
     @ui.page("/")
     def main_page() -> None:
         ui.label("Auto-Coder Dashboard").classes("text-2xl font-bold mb-4")
+        ui.link("Repository Dependency Reconciliation (History)", "/jobs/dependency-rescan").classes("text-blue-500 underline mb-4")
 
         # Search Section
         ui.label("Search").classes("text-xl font-bold mt-4")
