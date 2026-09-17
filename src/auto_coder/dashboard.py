@@ -748,9 +748,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     selected_run = runs[0]
                     state["selected_run_id"] = selected_run.execution_id
 
-                if state.get("_last_run_id") == selected_run.execution_id and state.get("_last_runs") == [r.execution_id for r in runs]:
-                    # Update table rows ONLY without clearing container
+                current_obs_count = len([o for o in snapshot.observations if o.execution_id == selected_run.execution_id])
+                if state.get("_last_run_id") == selected_run.execution_id and state.get("_last_runs") == [r.execution_id for r in runs] and state.get("_last_obs_count") == current_obs_count:
                     return
+                state["_last_obs_count"] = current_obs_count
 
                 state["_last_run_id"] = selected_run.execution_id
                 state["_last_runs"] = [r.execution_id for r in runs]
@@ -762,7 +763,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     ui.label("Select Attempt:").classes("font-bold")
                     with ui.row().classes("w-full flex-wrap gap-2 mb-4"):
                         for r in runs:
-                            start_str = datetime.fromtimestamp(r.start_sequence).strftime("%H:%M:%S")
+                            start_str = f"Seq {r.start_sequence}"
                             btn_text = f"{start_str} ({r.execution_id[:8]})"
                             btn = ui.button(btn_text, on_click=lambda e, rid=r.execution_id: select_run(rid))
                             if r.execution_id == selected_run.execution_id:
