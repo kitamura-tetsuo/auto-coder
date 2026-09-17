@@ -310,10 +310,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                             if worker_data:
                                 item_type = worker_data.get("type", "")
                                 item_number = worker_data.get("number")
-                                ui.link(
-                                    f"{item_type.capitalize()} #{item_number}",
-                                    f"/detail/{item_type}/{item_number}",
-                                ).classes("text-blue-500 font-bold")
+                                target_url = "/jobs/dependency-rescan" if item_type == "dependency" else f"/detail/{item_type}/{item_number}"
+                                display_text = "Repository Dependency Reconciliation" if item_type == "dependency" else f"{item_type.capitalize()} #{item_number}"
+                                ui.link(display_text, target_url).classes("text-blue-500 font-bold")
                                 ui.label(worker_data.get("title", "No Title")).classes("text-sm text-gray-500 truncate")
                             else:
                                 ui.label("Idle").classes("text-gray-400")

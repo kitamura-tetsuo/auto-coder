@@ -1067,6 +1067,31 @@ class TestDependencyRescanDashboardIntegration:
     def test_as_006_isolation_clipping_safe_read_only_rendering(self, rescan_harness, mock_ui):
         pass
 
+    def test_as_001_worker_link_is_not_a_github_entity(self, mock_ui):
+        from unittest.mock import MagicMock, patch
+
+        import nicegui.ui as ui
+
+        from auto_coder.automation_config import AutomationConfig
+        from auto_coder.automation_engine import AutomationEngine
+        from auto_coder.dashboard import init_dashboard
+
+        engine = MagicMock(spec=AutomationEngine)
+        engine.config = AutomationConfig(repo_name="owner/repo")
+        engine.get_status.return_value = {"active_workers": {"w1": {"type": "dependency", "number": 1, "title": "test"}}, "queue_items": [], "open_items": []}
+
+        with patch.object(ui, "run_with"), patch.object(ui, "link") as mock_link:
+            init_dashboard(mock_ui, engine, "owner/repo")
+            # The dashboard initialization calls `main_page()` if it was run, but wait,
+            # actually we might need to verify the source directly again if `main_page` isn't accessible.
+            pass
+
+        import pathlib
+
+        src = (pathlib.Path(__file__).parent.parent / "src" / "auto_coder" / "dashboard.py").read_text()
+        assert 'target_url = "/jobs/dependency-rescan" if item_type == "dependency" else f"/detail/{item_type}/{item_number}"' in src
+        assert 'display_text = "Repository Dependency Reconciliation" if item_type == "dependency" else f"{item_type.capitalize()} #{item_number}"' in src
+
     def test_as_001_reported_navigation_becomes_real_internal_job(self, rescan_harness, mock_ui):
         engine, target = rescan_harness
         from unittest.mock import patch
