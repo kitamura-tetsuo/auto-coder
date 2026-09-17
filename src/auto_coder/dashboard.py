@@ -31,6 +31,7 @@ from .dashboard_detail import (
 from .execution_trace import get_trace_collector
 from .implementation_slots import ImplementationSlotSnapshot, ImplementationSlotSnapshotUnavailable
 from .logger_config import get_logger
+from .repo_job_trace import RepoJobKind, RepoJobTarget
 from .trace_logger import get_trace_logger
 
 logger = get_logger(__name__)
@@ -696,6 +697,98 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         # explicit hook makes that stop deterministic (REQ-008).
         detail_timer = ui.timer(1.0, refresh_details)
         ui.context.client.on_disconnect(detail_timer.deactivate)
+
+    @ui.page("/jobs/dependency-rescan")
+    def dependency_rescan_job_page() -> None:
+        ui.label("Repository Dependency Reconciliation").classes("text-2xl font-bold mb-4")
+        ui.link("Back to Dashboard", "/").classes("text-blue-500 mb-4 inline-block")
+
+        target = RepoJobTarget(repository=repo_name, job_kind=RepoJobKind.DEPENDENCY_RESCAN.value)
+
+        collector = getattr(engine, "repo_job_trace_collector", None)
+        if not collector:
+            ui.label("Repo job trace collector not configured.").classes("text-red-500")
+            return
+
+        state = {"selected_run_id": None, "refreshing": False}
+        container = ui.column().classes("w-full")
+
+        def refresh_details():
+            if state["refreshing"]:
+                return
+            try:
+                state["refreshing"] = True
+                runs = collector.get_runs(target, limit=10)
+                if not runs:
+                    container.clear()
+                    with container:
+                        ui.label("No retained history.").classes("text-gray-500 italic")
+                    return
+
+                selected_run = runs[0] if state["selected_run_id"] is None else next((r for r in runs if r.run_id == state["selected_run_id"]), None)
+                if not selected_run:
+                    container.clear()
+                    with container:
+                        ui.label("Unavailable history.").classes("text-gray-500 italic")
+                    return
+
+                # Render
+                container.clear()
+                with container:
+                    ui.label("Select Attempt:").classes("font-bold")
+                    with ui.row().classes("w-full flex-wrap gap-2 mb-4"):
+                        for r in runs:
+                            start_str = datetime.fromtimestamp(r.start_timestamp).strftime("%H:%M:%S")
+                            btn_text = f"{start_str} ({r.run_id[:8]})"
+                            btn = ui.button(btn_text, on_click=lambda e, rid=r.run_id: select_run(rid))
+                            if r.run_id == selected_run.run_id:
+                                btn.classes("bg-blue-600 text-white")
+                            else:
+                                btn.classes("bg-gray-300 text-black")
+
+                    ui.label(f"Process Identity: {selected_run.process_identity}").classes("text-sm text-gray-600")
+                    ui.label(f"Trigger Source: {selected_run.trigger_source}").classes("text-sm text-gray-600")
+                    ui.label(f"Trigger Detail: {selected_run.trigger_detail}").classes("text-sm text-gray-600")
+                    ui.label(f"Trigger Generation: {selected_run.trigger_generation}").classes("text-sm text-gray-600")
+
+                    observations = collector.get_observations(target, selected_run.run_id, limit=500)
+
+                    if observations:
+                        from .dashboard_detail import build_repo_job_observed_path_diagram, repo_job_evidence_rows
+
+                        diagram = build_repo_job_observed_path_diagram(observations)
+                        ui.mermaid(diagram).classes("w-full mb-4")
+
+                        rows = repo_job_evidence_rows(observations)
+                        if rows:
+                            ui.table(
+                                columns=[
+                                    {"name": "time", "label": "Time", "field": "time", "align": "left"},
+                                    {"name": "stage", "label": "Stage", "field": "stage", "align": "left"},
+                                    {"name": "kind", "label": "Kind", "field": "kind", "align": "left"},
+                                    {"name": "outcome", "label": "Outcome", "field": "outcome", "align": "left"},
+                                    {"name": "facts", "label": "Facts", "field": "facts", "align": "left"},
+                                ],
+                                rows=rows,
+                                row_key="sequence",
+                            ).classes("w-full").props("wrap-cells")
+            except Exception as e:
+                import traceback
+
+                traceback.print_exc()
+                container.clear()
+                with container:
+                    ui.label(f"Stale or Failed Read: {e}").classes("text-red-500 font-bold")
+            finally:
+                state["refreshing"] = False
+
+        def select_run(run_id: str):
+            state["selected_run_id"] = str(run_id)  # type: ignore
+            refresh_details()
+
+        refresh_details()
+        rescan_timer = ui.timer(1.0, refresh_details)
+        ui.context.client.on_disconnect(rescan_timer.deactivate)
 
     # Mount NiceGUI at /dashboard
     # Note: When using mount_path, pages defined with '/' will be available at mount_path + '/'

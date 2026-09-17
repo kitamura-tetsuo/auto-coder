@@ -230,3 +230,91 @@ def evidence_rows(events: Sequence[StructuredEvent]) -> List[Dict[str, str]]:
             }
         )
     return rows
+
+
+from .repo_job_trace import RepoJobObservation, RepoJobObservationKind
+
+
+def build_repo_job_observed_path_diagram(observations: Sequence["RepoJobObservation"]) -> str:
+    if not observations:
+        return "graph TD\n  A[No Observations]"
+
+    lines = ["graph TD"]
+    node_ids: List[str] = []
+    for idx, obs in enumerate(observations):
+        node_id = f"n{idx}"
+        node_ids.append(node_id)
+        label_parts = [
+            escape_for_mermaid_label(obs.label or obs.stage_id),
+            escape_for_mermaid_label(f"kind: {obs.kind}"),
+            escape_for_mermaid_label(f"outcome: {obs.outcome or 'unknown'}"),
+        ]
+        label = "<br/>".join(label_parts)
+        lines.append(f'    {node_id}["{label}"]')
+
+    for a, b in zip(node_ids, node_ids[1:]):
+        lines.append(f"    {a} -->|observed order| {b}")
+
+    return "\n".join(lines)
+
+
+def repo_job_evidence_rows(observations: Sequence["RepoJobObservation"]) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for obs in observations:
+        if obs.kind not in (RepoJobObservationKind.STAGE_REACHED.value, RepoJobObservationKind.EXECUTION_FINISHED.value):
+            continue
+        if not obs.facts and obs.outcome is None:
+            continue
+        fact_lines = []
+        if obs.facts:
+            from dataclasses import asdict
+
+            fact_dict = asdict(obs.facts)
+            for key, value in sorted(fact_dict.items()):
+                if value is not None or key in ("source_issue_refs", "target_issue_refs", "trigger_delivery_refs"):
+
+                    def format_job_fact_value(key, value):
+                        if value is None:
+                            return "(not recorded)"
+                        if isinstance(value, bool):
+                            return "true" if value else "false"
+                        if hasattr(value, "total_count"):
+                            total = value.total_count
+                            items = getattr(value, "items", getattr(value, "numbers", []))
+                            if items is None:
+                                items = []
+                            if key in ("source_issue_refs", "target_issue_refs") and hasattr(value, "numbers"):
+                                links = []
+                                for n in items:
+                                    links.append(f'<a href="/detail/issue/{n}" class="text-blue-500">#{n}</a>')
+                                items_str = ", ".join(links)
+                            else:
+                                items_str = ", ".join(str(i) for i in items)
+
+                            if total is not None and total > len(items):
+                                items_str += f" ... ({total} total - explicit partial-list marker)"
+                            elif total is not None:
+                                items_str += f" ({total} total)"
+                            return items_str
+                        if isinstance(value, (dict, list, tuple)):
+                            import json
+
+                            try:
+                                return json.dumps(value, sort_keys=True, default=str, ensure_ascii=False)
+                            except TypeError:
+                                return str(value)
+                        return str(value)
+
+                    fact_lines.append(f"{key}: {format_job_fact_value(key, value)}")
+
+        rows.append(
+            {
+                "time": datetime.fromtimestamp(obs.timestamp).strftime("%H:%M:%S"),
+                "stage": obs.label or obs.stage_id,
+                "kind": obs.kind,
+                "outcome": obs.outcome or "unknown",
+                "facts": "<br/>".join(fact_lines) if fact_lines else "(no facts recorded)",
+                "sequence": str(obs.sequence),
+            }
+        )
+    return rows

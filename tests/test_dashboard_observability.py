@@ -1002,3 +1002,14 @@ def test_explicit_cached_discovery_reaches_mounted_detail(mock_ui):
     assert len(events) == 1
     assert events[0].facts == {"discovery_source": "cache-aware-open-issue-list", "discovery_payload": "issue-bodies", "relationship_reads": "http-cache-freshness", "live_scope": "target-and-related-family", "authorizes_execution": False}
     _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 100), "explicit relationship discovery")
+
+
+@pytest.fixture
+def mock_ui():
+    from unittest.mock import MagicMock
+
+    return MagicMock()
+
+
+class TestDependencyRescanDashboardIntegration:
+    pass
