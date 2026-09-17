@@ -263,7 +263,7 @@ def test_as006_audit_failure_and_redaction(tmp_path):
 
     # Test recording failure (unwritable root)
     unwritable = tmp_path / "unwritable"
-    unwritable.mkdir(mode=0o444)
+    unwritable.write_text("unwritable")
 
     store = ReviewAuditStore(unwritable)
     record = ReviewAuditRecord(

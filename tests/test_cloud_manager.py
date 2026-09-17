@@ -345,3 +345,18 @@ class TestCloudManager:
             assert manager.add_session(123, "session-abc") is False
             assert manager.get_session_id(123) is None
             assert manager.is_managed(123) is False
+
+    def test_claude_routine_session_prefix_equivalence(self):
+        """Test that session_ and cse_ prefixes with identical IDs match."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cloud_file = Path(tmpdir) / "cloud.csv"
+            manager = CloudManager("owner/repo", cloud_file_path=cloud_file)
+
+            manager.add_session(2124, "cse_013LQWaEue387YHUzLAM6G85", provider="claude-routine", backend_name="claude-sonnet-routine")
+
+            # Lookup by session_ variant should find issue 2124
+            assert manager.get_issue_by_session("session_013LQWaEue387YHUzLAM6G85") == 2124
+            # Lookup by cse_ variant should also find issue 2124
+            assert manager.get_issue_by_session("cse_013LQWaEue387YHUzLAM6G85") == 2124
+            # Unrelated session ID should return None
+            assert manager.get_issue_by_session("session_other999") is None

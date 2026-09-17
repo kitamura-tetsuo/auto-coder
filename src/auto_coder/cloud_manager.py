@@ -29,6 +29,20 @@ class CloudTaskBinding:
     backend_name: str = ""
 
 
+def _session_ids_match(id1: str, id2: str) -> bool:
+    """Check if two session IDs match, including Claude Routine session_ <-> cse_ equivalence."""
+    if id1 == id2:
+        return True
+    if not id1 or not id2:
+        return False
+    # Claude routine session ID equivalence: session_<id> <-> cse_<id>
+    if id1.startswith("session_") and id2.startswith("cse_"):
+        return id1[8:] == id2[4:]
+    if id1.startswith("cse_") and id2.startswith("session_"):
+        return id1[4:] == id2[8:]
+    return False
+
+
 class CloudManager:
     """
     Manages session tracking for issues using cloud.csv files.
@@ -233,7 +247,7 @@ class CloudManager:
         lookup also supports provider session URLs. Callers can distinguish an
         unpersisted task from conflicting ownership instead of guessing.
         """
-        matches = {binding for binding in self._read_bindings().values() if binding.provider == provider and binding.task_id == task_id}
+        matches = {binding for binding in self._read_bindings().values() if binding.provider == provider and _session_ids_match(binding.task_id, task_id)}
         return tuple(sorted(matches, key=lambda binding: binding.backend_name))
 
     def get_session_id(self, issue_number: int) -> Optional[str]:
@@ -311,4 +325,4 @@ class CloudManager:
     def get_issues_by_session(self, session_id: str) -> Tuple[int, ...]:
         """Return every issue durably associated with a session identifier."""
         sessions = self._read_sessions()
-        return tuple(sorted(int(issue_number) for issue_number, stored_session_id in sessions.items() if stored_session_id == session_id))
+        return tuple(sorted(int(issue_number) for issue_number, stored_session_id in sessions.items() if _session_ids_match(stored_session_id, session_id)))
