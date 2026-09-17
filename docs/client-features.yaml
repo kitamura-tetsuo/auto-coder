@@ -6,12 +6,3 @@
     handoff_count: number of reaches for durable invalidation operations
   limits: Retained in process memory using process-local bounds
   regression_coverage: Driven by AS-001 and AS-007 joined integration tests.
-
-- feature: Repository Dependency Reconciliation
-  route: /jobs/dependency-rescan
-  description: Diagnostic job view isolating internal dependency rescans from human Issue/PR detail pages.
-  status_meanings:
-    discovered_count: distinct Issues enumerated
-    handoff_count: number of reaches for durable invalidation operations
-  limits: Retained in process memory using process-local bounds
-  regression_coverage: Driven by AS-001 and AS-007 joined integration tests.
