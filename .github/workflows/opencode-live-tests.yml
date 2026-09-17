@@ -38,6 +38,34 @@ jobs:
         run: |
           echo "0.0.0.0 models.opencode.ai" | sudo tee -a /etc/hosts
 
+      - name: Diagnose config-only provider resolution directly
+        run: |
+          set -x
+          mkdir -p /tmp/diag-home/.config/opencode /tmp/diag-repo
+          cd /tmp/diag-repo && git init -q && git config user.email t@t.com && git config user.name t && git commit -q --allow-empty -m init
+          cat > /tmp/diag-home/.config/opencode/opencode.json <<'EOF'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+              "fakeprov": {
+                "npm": "@ai-sdk/openai-compatible",
+                "options": {"baseURL": "http://127.0.0.1:9999/v1"},
+                "models": {"fake-model": {"name": "fake-model", "tool_call": true, "cost": {"input": 0, "output": 0}, "limit": {"context": 128000, "output": 8192}}}
+              }
+            }
+          }
+          EOF
+          echo "::group::opencode debug config"
+          HOME=/tmp/diag-home opencode debug config --print-logs --log-level DEBUG 2>&1 || true
+          echo "::endgroup::"
+          echo "::group::whoami/env"
+          whoami
+          echo "HOME=$HOME"
+          echo "npm_config_prefix=$(npm config get prefix 2>&1)"
+          node -e "console.log(process.version)"
+          echo "::endgroup::"
+        continue-on-error: true
+
       - name: Run opencode_live-marked tests
         env:
           AUTOCODER_OPENCODE_GIT_DEBUG_LOG: ${{ github.workspace }}/opencode-git-debug.log

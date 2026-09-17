@@ -138,6 +138,12 @@ class ScriptedProvider:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self._server.server_address[1]}/v1"
 
+    def reset(self) -> None:
+        """Rewind to the first scripted turn, for a clean retry of a fresh session."""
+        with self._lock:
+            self._index = 0
+            self.requests.clear()
+
     def stop(self) -> None:
         self._server.shutdown()
         self._server.server_close()
@@ -162,6 +168,7 @@ def _write_home_config(home: Path, *, provider_name: str, model_name: str, base_
     config_dir.mkdir(parents=True, exist_ok=True)
     config: Dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
+        "share": "disabled",
         "provider": {
             provider_name: {
                 "npm": "@ai-sdk/openai-compatible",
@@ -194,6 +201,30 @@ def _client(cwd: Path, home: Path, cli: str, monkeypatch: pytest.MonkeyPatch, *,
     monkeypatch.chdir(cwd)
     with patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
         return OpenCodeClient(backend_name=backend_name)
+
+
+# Observed on GitHub-hosted CI runners only (never reproduced against the same
+# CLI/config locally): the very first real completion request occasionally
+# fails provider/model resolution inside the OpenCode CLI itself before our
+# scripted provider is even asked to answer, i.e. a transient hiccup in the
+# CLI's own startup/model-resolution plumbing rather than anything this suite
+# exists to catch. Retry that narrow, named signature only; every other
+# failure (including any no-edit enforcement rejection under test) propagates
+# on the first attempt.
+_TRANSIENT_CLI_ERROR_MARKERS = ("ProviderModelNotFoundError", "Unexpected server error")
+
+
+def _run_with_retry(client: OpenCodeClient, prompt: str, provider: "ScriptedProvider", *, retries: int = 2) -> str:
+    for attempt in range(retries + 1):
+        if attempt:
+            provider.reset()
+        try:
+            return client._run_llm_cli(prompt, is_noedit=True)
+        except RuntimeError as exc:
+            if attempt < retries and any(marker in str(exc) for marker in _TRANSIENT_CLI_ERROR_MARKERS):
+                continue
+            raise
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _snapshot_tree(repo: Path) -> Dict[str, Any]:
@@ -273,7 +304,7 @@ def test_ac001_real_readonly_execution_uses_evidence_and_preserves_workspace(tmp
 
     before = _snapshot_tree(repo)
     client = _client(repo, home, opencode_cli, monkeypatch)
-    answer = client._run_llm_cli("what does unstaged.txt say?", is_noedit=True)
+    answer = _run_with_retry(client, "what does unstaged.txt say?", provider)
     after = _snapshot_tree(repo)
 
     assert "SENTINEL_EVIDENCE_98765" in answer
@@ -295,7 +326,7 @@ def test_ac001_linked_worktree_preserves_primary_checkout_and_shared_refs(tmp_pa
     primary_before = _git(repo, "rev-parse", "HEAD")
     worktree_before = _snapshot_tree(worktree_dir)
     client = _client(worktree_dir, home, opencode_cli, monkeypatch)
-    answer = client._run_llm_cli("what does unstaged.txt say?", is_noedit=True)
+    answer = _run_with_retry(client, "what does unstaged.txt say?", provider)
     worktree_after = _snapshot_tree(worktree_dir)
 
     assert "SENTINEL_EVIDENCE_98765" in answer
@@ -382,7 +413,7 @@ def test_ac002_forbidden_tool_calls_denied_before_effect(tmp_path: Path, monkeyp
 
     client = _client(repo, home, opencode_cli, monkeypatch)
     with pytest.raises(RuntimeError, match="forbidden tool"):
-        client._run_llm_cli("please edit, run shell, delegate, and call the mcp tool", is_noedit=True)
+        _run_with_retry(client, "please edit, run shell, delegate, and call the mcp tool", provider)
 
     assert not target_file.exists()
     assert not mcp_called_marker.exists()
@@ -424,7 +455,7 @@ def test_ac003_hostile_merged_config_cannot_reactivate_editing(tmp_path: Path, m
 
     client = _client(repo, home, opencode_cli, monkeypatch)
     with pytest.raises(RuntimeError, match="forbidden tool 'write'"):
-        client._run_llm_cli("please write the file", is_noedit=True)
+        _run_with_retry(client, "please write the file", provider)
 
     assert not target_file.exists()
 
@@ -444,7 +475,7 @@ def test_ac006_named_alias_gets_the_same_noedit_capability(tmp_path: Path, monke
     _write_home_config(home, provider_name="fakeprov", model_name="fake-model", base_url=provider.base_url)
 
     client = _client(repo, home, opencode_cli, monkeypatch, backend_name="opencode-review-alias")
-    assert client._run_llm_cli("inspect only", is_noedit=True) == "alias inspection ok"
+    assert _run_with_retry(client, "inspect only", provider) == "alias inspection ok"
 
 
 def test_ac006_enforcement_prerequisite_unavailable_refused_before_task_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_cli: str, _use_real_commands) -> None:
