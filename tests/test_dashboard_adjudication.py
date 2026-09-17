@@ -330,25 +330,31 @@ def test_docs_describe_opt_in_operator_boundary():
     assert "30 minutes" in docs
     assert "human" in docs.lower()
 
+
 def test_adjudication_ui_missing_auth_configuration_shows_setup_guidance():
     # Test for REQ-002: disabled/missing config shows setup guidance.
     pass
+
 
 def test_adjudication_ui_retains_rationale_on_retired_context():
     # Test for REQ-005
     pass
 
+
 def test_adjudication_ui_duplicate_submit_uses_status_lookup():
     # Test for REQ-007
     pass
+
 
 def test_adjudication_ui_displays_history_and_reasons():
     # Test for REQ-003
     pass
 
+
 def test_adjudication_ui_verdict_directive_pairing():
     # Test for REQ-004
     pass
+
 
 def test_adjudication_ui_publication_and_processing_labels():
     # Test for REQ-006
