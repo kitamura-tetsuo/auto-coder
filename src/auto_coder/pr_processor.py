@@ -2796,6 +2796,14 @@ def _handle_pr_merge(
         # Step 2: If checks are in progress, skip this PR
         if not should_continue:
             actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR")
+            if processing_status is not None:
+                processing_status.outcome = PRProcessingOutcome.DEFERRED
+            if watched_head:
+                try:
+                    ci_watch_store = DurableInvalidationQueue(Path(os.environ.get("AUTO_CODER_INVALIDATION_DB", "~/.auto-coder/entity-invalidations.sqlite3")).expanduser())
+                    ci_watch_store.schedule_ci_watch_recheck(repo_name, pr_number, watched_head, delay_seconds=30.0)
+                except Exception as exc:
+                    logger.debug(f"Could not schedule CI watch recheck for PR #{pr_number}: {exc}")
             return actions
 
         # Step 3: Get detailed status for merge decision

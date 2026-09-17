@@ -17,6 +17,7 @@ from .github_ci_observer import accept_and_fence_ci_delivery
 from .label_manager import LEGACY_AUTO_CODER_LABEL
 from .logger_config import get_logger
 from .specification_validation_lifecycle import FINDINGS_MARKER_PREFIX
+from .util.gh_cache import evict_github_ci_cache, evict_github_entity_cache
 
 logger = get_logger(__name__)
 
@@ -208,6 +209,10 @@ async def process_github_payload(
             logger.error(f"Failed CI intake repository={repo_name} delivery={delivery_id}: {type(exc).__name__}")
             raise HTTPException(status_code=503, detail="CI delivery persistence failed") from exc
         if accepted:
+            if head_sha:
+                await asyncio.to_thread(evict_github_ci_cache, head_sha, repo_name)
+            for number in numbers:
+                await asyncio.to_thread(evict_github_entity_cache, repo_name, "pr", number)
             wake_event = getattr(engine, "_invalidation_wake_event", None)
             if wake_event is not None:
                 wake_event.set()
@@ -311,6 +316,8 @@ async def process_github_payload(
             accepted = await engine.invalidate_entity(*invalidation_args, not_before=not_before, dependency_trigger_issue_refs=dependency_trigger_issue_refs)
         else:
             accepted = await engine.invalidate_entity(*invalidation_args, dependency_trigger_issue_refs=dependency_trigger_issue_refs)
+        if accepted and entity_type in ("issue", "pr"):
+            await asyncio.to_thread(evict_github_entity_cache, repo_name, entity_type, number)
         logger.info(f"{'Accepted' if accepted else 'Ignored duplicate'} invalidation for {entity_type} #{number}")
 
 

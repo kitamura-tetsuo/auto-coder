@@ -10,6 +10,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from .logger_config import get_logger
+
+logger = get_logger(__name__)
+
 ISSUE_STABILIZATION_SECONDS = 60
 CI_RECONCILIATION_SECONDS = 300
 
@@ -454,6 +458,19 @@ class DurableInvalidationQueue:
                 )
         return True
 
+    def schedule_ci_watch_recheck(self, repository: str, pr_number: int, head_sha: str, delay_seconds: float = 30.0) -> bool:
+        """Advance next_reconcile_at for an active watch when checks remain in progress."""
+        if not repository or pr_number <= 0 or not head_sha:
+            return False
+        target = time.time() + delay_seconds
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """UPDATE ci_watches SET next_reconcile_at = MIN(next_reconcile_at, ?)
+                   WHERE repository = ? AND pr_number = ? AND head_sha = ? AND active = 1""",
+                (target, repository, pr_number, head_sha),
+            )
+            return cursor.rowcount > 0
+
     def _advance_ci_pr(self, repository: str, number: int, received: float) -> None:
         self._connection.execute(
             """INSERT INTO ci_pending_prs(repository, pr_number, observation_epoch,
@@ -518,7 +535,20 @@ class DurableInvalidationQueue:
                            eligible_at = MIN(first_seen + 10, MAX(eligible_at, excluded.eligible_at))""",
                     (repository, number, epoch, first_seen, latest_seen, eligible_at),
                 )
+                self._connection.execute(
+                    """UPDATE ci_watches SET observation_epoch = observation_epoch + ?,
+                           next_reconcile_at = MIN(next_reconcile_at, ?)
+                       WHERE repository = ? AND pr_number = ? AND active = 1""",
+                    (epoch, eligible_at, repository, number),
+                )
             self._connection.execute("DELETE FROM ci_correlations WHERE repository = ? AND head_sha = ?", (repository, sha))
+            try:
+                from .util.gh_cache import evict_github_entity_cache
+
+                for number in sorted(set(numbers)):
+                    evict_github_entity_cache(repository, "pr", number)
+            except Exception as exc:
+                logger.debug(f"Failed to evict PR cache in finish_ci_correlation: {exc}")
             return True
 
     def release_ci_correlation(self, repository: str, sha: str, retry_after: float = 60) -> None:

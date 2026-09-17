@@ -802,3 +802,41 @@ class TestResolvePRMergeConflictsDependabot:
             assert _resolve_pr_merge_conflicts("owner/repo", 4242, AutomationConfig()) is False
 
         mock_checkout.assert_not_called()
+
+
+class TestPRMergeChecksInProgress:
+    """When GitHub Actions checks are in progress, PR merge is deferred and CI watch recheck is scheduled."""
+
+    @patch("src.auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=False)
+    @patch("src.auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "CLEAN"})
+    @patch("src.auto_coder.pr_processor._reject_unsafe_codex_cloud_pr")
+    def test_checks_in_progress_defers_and_schedules_ci_watch(self, mock_unsafe, mock_merge_status, mock_should_continue, tmp_path):
+        import os
+
+        from src.auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
+        from src.auto_coder.entity_invalidation import DurableInvalidationQueue
+        from src.auto_coder.pr_processor import _handle_pr_merge
+
+        mock_unsafe.return_value = MagicMock(metadata_error=None, closed=False, authoritative_pr_data=None, actions=[])
+        mock_gh = MagicMock()
+
+        db_path = tmp_path / "invalidation.sqlite3"
+        queue = DurableInvalidationQueue(db_path)
+        head_sha = "c" * 40
+        queue.ensure_ci_watch("owner/repo", 55, head_sha, "", now=100)
+        assert queue.promote_due_ci_watches("owner/repo", now=100) == 1
+
+        config = AutomationConfig()
+        pr_data = {"number": 55, "head": {"sha": head_sha}}
+        status = ProcessedPRResult(pr_data=pr_data)
+
+        with patch.dict(os.environ, {"AUTO_CODER_INVALIDATION_DB": str(db_path)}):
+            with patch("src.auto_coder.entity_invalidation.time.time", return_value=120):
+                actions = _handle_pr_merge(mock_gh, "owner/repo", pr_data, config, {}, processing_status=status)
+
+        assert any("GitHub Actions checks are still in progress for PR #55" in a for a in actions)
+        assert status.outcome == PRProcessingOutcome.DEFERRED
+
+        # Watch should now be scheduled at 120 + 30 = 150 (not waiting until 400)
+        assert queue.promote_due_ci_watches("owner/repo", now=149.9) == 0
+        assert queue.promote_due_ci_watches("owner/repo", now=150.0) == 1

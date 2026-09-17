@@ -1,5 +1,18 @@
 # Dashboard observability verification
 
+GitHub webhook-driven cache eviction and expedited CI watch recheck (PR #2119)
+improve the turnaround time from CI completion to validation launch. Upon webhook intake,
+matching HTTP cache entries in Hishel SQLite storage are evicted, CI observation requests
+pass `Cache-Control: no-cache` to prevent reading stale checks, and when PR Actions checks
+are in progress the PR is marked DEFERRED with a 30-second recheck scheduled on its active
+CI watch. This is an admission-timing and cache-invalidation optimization; it introduces
+no new production trace stage, origin, provider route, structured event schema, or dashboard
+projection. The existing PR processing trace reports `PRProcessingOutcome.DEFERRED` with the
+action message "GitHub Actions checks are still in progress for PR #<number>, skipping to next PR".
+Production-boundary tests in `tests/test_gh_cache_eviction.py`, `tests/test_entity_invalidation.py`,
+and `tests/test_pr_processor.py` cover cache eviction, CI watch recheck scheduling, and
+`_handle_pr_merge` behavior; run `bash scripts/test.sh tests/test_gh_cache_eviction.py tests/test_entity_invalidation.py tests/test_pr_processor.py`.
+
 The generation-aware Issue routing store is a pre-worker durability boundary:
 it classifies and orders Review and Implementation lane records but does not yet
 execute either lane or emit a processing result. Consequently it introduces no

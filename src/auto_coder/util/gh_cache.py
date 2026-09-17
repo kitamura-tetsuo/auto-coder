@@ -2,7 +2,9 @@ import functools
 import hashlib
 import json
 import logging
+import os
 import re
+import sqlite3
 import subprocess
 import threading
 import time
@@ -234,7 +236,7 @@ class _GitHubCacheTransport(SyncCacheTransport):
     """Keep wire timeouts/identity and credential variants across Hishel conversion."""
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        if request.extensions.get("auto_coder_invalidate_issue_read"):
+        if request.extensions.get("auto_coder_invalidate_issue_read") or request.headers.get("cache-control") == "no-cache":
             # Hishel keys ordinary GET entries by the SHA-256 of the full URL.
             # Remove known pre-mutation versions, including cached 404s, rather
             # than retaining them alongside a replacement with the same Date.
@@ -562,6 +564,7 @@ def get_ghapi_client(
     admission_hook: AdmissionHook | None = None,
     observation_hook: ObservationHook | None = None,
     subsystem: str = "ghapi",
+    extra_headers: Mapping[str, str] | None = None,
 ) -> GhApi:
     """
     Returns a GhApi instance configured with hishel caching for GET requests.
@@ -677,7 +680,61 @@ def get_ghapi_client(
     # SafeGhApiProxy dynamically forwards attribute access/calls to the wrapped
     # GhApi instance rather than subclassing it, so it isn't a real GhApi for
     # mypy; cast to preserve the GhApi-shaped return type for callers.
-    return cast(GhApi, SafeGhApiProxy(CachedGhApi(token=token)))
+    api = CachedGhApi(token=token)
+    if extra_headers:
+        api.headers.update(dict(extra_headers))
+    return cast(GhApi, SafeGhApiProxy(api))
+
+
+def evict_github_cache_by_pattern(pattern: str, db_path: str = ".cache/gh_cache.db") -> int:
+    """Evict entries from Hishel HTTP cache whose request URL contains pattern.
+
+    Returns the number of entries removed.
+    """
+    if not pattern:
+        return 0
+    if not os.path.exists(db_path):
+        return 0
+    try:
+        storage = SyncSqliteStorage(database_path=db_path)
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM entries WHERE instr(data, ?) > 0 AND deleted_at IS NULL",
+                (pattern.encode("utf-8"),),
+            )
+            ids = [uuid.UUID(bytes=row[0]) for row in cursor.fetchall()]
+        for entry_id in ids:
+            try:
+                storage.remove_entry(entry_id)
+            except Exception:
+                with sqlite3.connect(db_path) as conn:
+                    conn.execute("UPDATE entries SET deleted_at = ? WHERE id = ?", (time.time(), entry_id.bytes))
+        if ids:
+            logger.debug(f"Evicted {len(ids)} HTTP cache entries matching pattern='{pattern}'")
+        return len(ids)
+    except Exception as exc:
+        logger.warning(f"Failed to evict HTTP cache for pattern '{pattern}': {exc}")
+        return 0
+
+
+def evict_github_ci_cache(head_sha: str, repo_name: str | None = None, db_path: str = ".cache/gh_cache.db") -> int:
+    """Evict cached GitHub CI check-runs and workflow-runs responses for a head SHA upon webhook receipt."""
+    if not head_sha:
+        return 0
+    return evict_github_cache_by_pattern(head_sha, db_path=db_path)
+
+
+def evict_github_entity_cache(repo_name: str, entity_type: str, number: int, db_path: str = ".cache/gh_cache.db") -> int:
+    """Evict cached HTTP responses for an issue or pull request upon webhook receipt."""
+    if not repo_name or number <= 0:
+        return 0
+    subpath = "pulls" if entity_type == "pr" else "issues"
+    pattern = f"{repo_name}/{subpath}/{number}"
+    count = evict_github_cache_by_pattern(pattern, db_path=db_path)
+    if entity_type == "pr":
+        count += evict_github_cache_by_pattern(f"{repo_name}/issues/{number}", db_path=db_path)
+    return count
 
 
 def resolve_authoritative_item_type(github_client: Any, repo_name: str, item_number: int) -> str:

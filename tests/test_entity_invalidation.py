@@ -1708,3 +1708,46 @@ def test_ci_webhook_advances_watch_without_consuming_periodic_deadline(tmp_path:
     assert queue.accept_ci_delivery(delivery, now=110)
     assert queue.promote_due_ci_watches("owner/repo", now=111.9) == 0
     assert queue.promote_due_ci_watches("owner/repo", now=112) == 1
+
+
+def test_schedule_ci_watch_recheck_advances_reconciliation(tmp_path: Path) -> None:
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    assert queue.ensure_ci_watch("owner/repo", 42, "head", "ci.yml", now=100)
+    # The initial watch is due immediately at now=100
+    assert queue.promote_due_ci_watches("owner/repo", now=100) == 1
+    # After initial promotion, next periodic recheck is at 100 + 300 = 400
+    assert queue.promote_due_ci_watches("owner/repo", now=150) == 0
+
+    # Non-matching or invalid arguments return False
+    assert queue.schedule_ci_watch_recheck("", 42, "head") is False
+    assert queue.schedule_ci_watch_recheck("owner/repo", 0, "head") is False
+    assert queue.schedule_ci_watch_recheck("owner/repo", 42, "") is False
+    assert queue.schedule_ci_watch_recheck("owner/repo", 999, "head") is False
+
+    # Schedule recheck with delay_seconds=30 from now=110
+    with patch("src.auto_coder.entity_invalidation.time.time", return_value=110):
+        assert queue.schedule_ci_watch_recheck("owner/repo", 42, "head", delay_seconds=30.0) is True
+
+    # At now=139.9, not due yet
+    assert queue.promote_due_ci_watches("owner/repo", now=139.9) == 0
+    # At now=140.0, due and promoted
+    assert queue.promote_due_ci_watches("owner/repo", now=140.0) == 1
+
+
+def test_finish_ci_correlation_advances_active_ci_watch(tmp_path: Path) -> None:
+    queue = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    queue.ensure_ci_watch("owner/repo", 42, "head", "ci.yml", now=100)
+    assert queue.promote_due_ci_watches("owner/repo", now=100) == 1
+    # Next periodic reconcile is at 400
+    delivery = CIWebhookDelivery("owner/repo", "delivery-1", "workflow_run", "completed", (), "head")
+    assert queue.accept_ci_delivery(delivery, now=105)
+
+    with patch("src.auto_coder.entity_invalidation.time.time", return_value=107):
+        assert queue.claim_ci_correlation("owner/repo") == "head"
+        with patch("src.auto_coder.util.gh_cache.evict_github_entity_cache") as mock_evict:
+            assert queue.finish_ci_correlation("owner/repo", "head", [42]) is True
+            mock_evict.assert_called_with("owner/repo", "pr", 42)
+
+    # Watch should now be due at eligible_at = 105 + 2 = 107 (instead of waiting till 400)
+    assert queue.promote_due_ci_watches("owner/repo", now=106.9) == 0
+    assert queue.promote_due_ci_watches("owner/repo", now=107.0) == 1

@@ -478,7 +478,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
     token = getattr(client, "token", None)
     if not isinstance(token, str) or not token:
         return GitHubActionsStatusResult(success=False, error="GitHub credential is unavailable")
-    api = get_ghapi_client(token)
+    api = get_ghapi_client(token, extra_headers={"Cache-Control": "no-cache"}, subsystem="github-ci-observer")
     snapshot = observe_ci(api, token, repo_name, pr_number, head_sha)
     observation_facts = {
         "examined_head": head_sha,
@@ -2058,7 +2058,7 @@ def check_github_actions_and_exit_if_in_progress(
             end_ci_read_phase("deployment-approval")
             client = github_client or GitHubClient.get_instance()
             token = client.token
-            api = get_ghapi_client(token)
+            api = get_ghapi_client(token, extra_headers={"Cache-Control": "no-cache"}, subsystem="github-ci-observer")
             for run_id, attempt, head_sha in github_checks.waiting_runs:
                 approve_waiting_deployment(api, token, repo_name, run_id, attempt, head_sha)
 
