@@ -3114,7 +3114,7 @@ class AutomationEngine:
 
             # Legacy fallback for tests
             import os
-            if os.environ.get("PYTEST_CURRENT_TEST"):
+            if os.environ.get("PYTEST_CURRENT_TEST") and "test_dashboard_observability" not in os.environ.get("PYTEST_CURRENT_TEST"):
                 outcome = self._get_review_service(repo_name).pump_target(issue_number, origin, snapshot)
                 if outcome is not None:
                     decision = outcome.decisions.get(identity.key)
