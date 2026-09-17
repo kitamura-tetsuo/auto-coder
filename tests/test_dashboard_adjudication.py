@@ -1,6 +1,7 @@
 
 import pytest
 
+
 @pytest.fixture(autouse=True)
 def mock_init_dashboard(monkeypatch):
     from auto_coder import webhook_server
