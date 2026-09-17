@@ -13,6 +13,8 @@ read -> plan -> deliver/retire -> journal path is exercised end to end.
 import uuid
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from auto_coder.adversarial_validator import format_test_oracle_gap_comment
 from auto_coder.cloud_manager import CloudTaskBinding
 from auto_coder.pr_processor import (
@@ -52,10 +54,26 @@ def _pr_data() -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def _authorized_allowlists():
+    """Re-proving current authority now reads the effective config allowlists.
+
+    Production resolves these from ``[github].pr_review_allowlist`` /
+    ``[github].review_adjudicator_allowlist``; tests supply the same
+    root/adjudicator IDs the fixtures below build ledgers with.
+    """
+    with (
+        patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[ROOT_AUTHOR_ID]),
+        patch("auto_coder.pr_processor.get_review_adjudicator_allowlist_from_config", return_value=[ADJUDICATOR_ID]),
+    ):
+        yield
+
+
 def _github_client(thread: ReviewThread) -> MagicMock:
     client = MagicMock()
     client.get_pr_review_threads_strict.return_value = [thread]
     client.get_pull_request_repair_metadata_strict.return_value = PullRequestRepairMetadata(head_ref="work-branch", head_sha=HEAD_SHA, base_ref="main")
+    client.get_pull_request_metadata_strict.return_value = {"head": {"sha": HEAD_SHA}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
     return client
 
 
@@ -151,6 +169,72 @@ def test_overruled_adjudication_retires_gap_and_resolves_thread() -> None:
     reloaded_gap = next(item for item in reloaded.test_oracle_gaps if item.gap_id == "TOG-integ001")
     assert reloaded_gap.status == "INVALID"
     assert force_revalidation is False
+
+
+def test_revoked_adjudicator_authorization_blocks_a_previously_applicable_overrule() -> None:
+    """A persisted APPLICABLE tip is not evidence once its authority is gone.
+
+    Reproduces the exact counterexample from PR #2114 review: authority is
+    revoked (the adjudicator allowlist is emptied) after the decision was
+    accepted, and normal processing runs again at the unchanged head. No
+    reply, resolve, or gap mutation may occur (REQ-001, REQ-002, REQ-011,
+    REQ-014).
+    """
+    gap = TestOracleGap(
+        gap_id="TOG-revoked01",
+        requirement_id="REQ-001",
+        requirement_text="Preserve the raw value.",
+        authoritative_boundary="boundary",
+        invariant="invariant",
+        plausible_incorrect_implementation="impl",
+        why_tests_still_pass="reason",
+        material_consequence="consequence",
+        focused_regression_scenario="scenario",
+        anchor_path="src/a.py",
+        status="OPEN",
+    )
+    from auto_coder.reviewer_session_registry import ReviewerSession
+
+    registry = ReviewerSessionRegistry()
+    registry.save(ReviewerSession(repository=REPO, pr_number=PR_NUMBER, backend_name="codex", backend_type="codex", model_name="strong", session_id="s1", last_head_sha=HEAD_SHA, test_oracle_gaps=[gap]))
+
+    root_body = format_test_oracle_gap_comment(gap)
+    thread = _register_decision(root_body, "OVERRULE", "NO_CHANGE")
+    github_client = _github_client(thread)
+
+    with patch("auto_coder.pr_processor.get_review_adjudicator_allowlist_from_config", return_value=[]):
+        actions, force_revalidation = _apply_review_adjudication_effects(REPO, PR_NUMBER, _pr_data(), github_client)
+
+    assert not any("Retired an overruled finding" in action for action in actions)
+    github_client.reply_to_review_thread.assert_not_called()
+    github_client.resolve_review_thread.assert_not_called()
+    reloaded = registry.get(REPO, PR_NUMBER, "codex", "codex", "strong")
+    assert reloaded is not None
+    reloaded_gap = next(item for item in reloaded.test_oracle_gaps if item.gap_id == "TOG-revoked01")
+    assert reloaded_gap.status == "OPEN"
+
+    # The revocation is durable: a later pass with authority restored cannot
+    # revive the old context (REQ-011, REQ-014 "H1 -> observed H2 -> H1").
+    actions_again, _ = _apply_review_adjudication_effects(REPO, PR_NUMBER, _pr_data(), github_client)
+    assert not any("Retired an overruled finding" in action for action in actions_again)
+    github_client.resolve_review_thread.assert_not_called()
+
+
+def test_edited_accepted_source_blocks_reliance_on_the_stale_decision() -> None:
+    """An accepted decision reply edited after acceptance retires the context."""
+    thread = _register_decision("This misses the empty-input case", "UPHOLD", "FIX")
+    # Simulate the accepted reply being edited: same comment ID, different body/revision.
+    thread.comments[1] = ReviewThreadComment(thread.comments[1].database_id, "edited to say something else entirely", "human", ADJUDICATOR_ID, "User", thread.comments[1].created_at, "2026-01-03T00:00:00Z", thread.comments[1].in_reply_to_id)
+    github_client = _github_client(thread)
+
+    with (
+        patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=CloudTaskBinding(provider="codex-cloud", task_id="task_e_adj1")),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send_followup,
+    ):
+        actions, _ = _apply_review_adjudication_effects(REPO, PR_NUMBER, _pr_data(), github_client)
+
+    assert send_followup.call_count == 0
+    assert not any("task_e_adj1" in action for action in actions)
 
 
 def test_adjudication_envelope_reply_is_excluded_from_generic_cloud_feedback() -> None:

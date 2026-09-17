@@ -59,14 +59,14 @@ from .github_app_reviewer import ReviewerAppIdentity, publish_adversarial_review
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
-from .llm_backend_config import get_pr_review_allowlist_from_config
+from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
 from .review_adjudication import AdjudicationStatus, is_adjudication_envelope
-from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot
+from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService, reconcile_thread
 from .review_adjudication_orchestrator import (
     ADJUDICATION_EFFECTS_DB_ENV,
     DEFAULT_ADJUDICATION_EFFECTS_DB_PATH,
@@ -5667,28 +5667,50 @@ def _get_adjudication_effect_store() -> AdjudicationEffectStore:
 
 
 def _current_adjudication_ledger_snapshots(repo_name: str, pr_number: int, github_client: Any) -> Tuple[AdjudicationSnapshot, ...]:
-    """Read-only recomputation of the last durably persisted adjudication state.
+    """Re-prove applicability against current authority before any effect.
 
-    Performs no write: durable registration/reconciliation of the ledger
-    itself is owned by ``AutomationEngine.refresh_review_adjudications``,
-    which always runs earlier in the same PR-processing pass. This only
-    re-derives the resulting applicability from that already-persisted
-    state plus a fresh read of the root findings' text, so effect
-    application never depends on any one process's in-memory cache.
+    A merely-persisted tip is not evidence: a revoked allowlist, an edited or
+    deleted accepted source, a new conflicting reply, or a moved head/base
+    since the last observation must all be caught here, immediately before
+    the caller trusts the result, not only during an earlier same-pass
+    ``AutomationEngine.refresh_review_adjudications`` (REQ-001, REQ-002,
+    REQ-011, REQ-014). This performs the identical authorization-policy,
+    revision-binding, and thread-reconciliation steps that production
+    refresh already performs, reusing that same code rather than a lighter
+    read-only shortcut.
     """
     store = AdjudicationContextStore(_adjudication_context_store_path())
-    ledgers = store.ledgers_for_pr(repo_name, pr_number)
-    if not ledgers:
+    if not store.ledgers_for_pr(repo_name, pr_number):
         return ()
     try:
+        authoritative = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
         threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
     except Exception as exc:
-        logger.warning(f"Could not re-read review threads to apply adjudication effects for PR #{pr_number}: {exc}")
+        logger.warning(f"Could not re-read authoritative PR state to apply adjudication effects for PR #{pr_number}: {exc}")
         return ()
+    reviewer_ids = get_pr_review_allowlist_from_config(repo_name=repo_name) or ()
+    adjudicator_ids = get_review_adjudicator_allowlist_from_config(repo_name=repo_name) or ()
+    service = ReviewAdjudicationService(github_client, store)
+    service.apply_authorization_policy(repo_name, pr_number, reviewer_ids, adjudicator_ids)
+    try:
+        binding = ReviewAdjudicationService._binding(repo_name, pr_number, authoritative)
+    except ValueError as exc:
+        logger.warning(f"Could not verify authoritative PR revision binding to apply adjudication effects for PR #{pr_number}: {exc}")
+        return ()
+    service.apply_revision_binding(binding)
+
     threads_by_root = {thread.comments[0].database_id: thread for thread in threads if thread.comments}
     snapshots = []
-    for ledger in ledgers:
+    for ledger in store.ledgers_for_pr(repo_name, pr_number):
         thread = threads_by_root.get(ledger.context.root_comment_id)
+        if ledger.context.retired_reason is None:
+            if thread is None:
+                ledger.retire("registered review root was confirmed absent")
+                store.save(ledger, "orchestrator-root-check")
+            else:
+                reconcile_thread(ledger, thread, adjudicator_ids, reviewer_ids)
+                observation = hashlib.sha256("\0".join(f"{item.database_id}:{item.updated_at}" for item in thread.comments).encode("utf-8")).hexdigest()
+                store.save(ledger, observation)
         raw_finding = thread.comments[0].body if thread is not None else ""
         result = ledger.current(None, None, "orchestrator read")
         snapshots.append(
