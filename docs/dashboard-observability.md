@@ -781,3 +781,29 @@ provider call at all), the Jules remote-handoff receipt settling the
 invocation without waiting on the remote task, and the `AutomationEngine`
 gate's installation/close/force lifecycle. Run
 `bash scripts/test.sh tests/test_invocation_admission_wiring.py tests/test_invocation_admission.py tests/test_specification_validation_lifecycle.py tests/test_decomposition_validation_lifecycle.py tests/test_jules_engine.py`.
+
+# Repository-scoped internal job trace interface
+
+Issue #2000 (child A of the #1999 dependency-rescan observability tracking
+parent) adds `src/auto_coder/repo_job_trace.py`, a new
+producer/snapshot-consumer diagnostic interface for repository-scoped
+internal jobs (currently `dependency-rescan`), identified by
+`RepoJobTarget(repository, job_kind)` rather than an Issue/PR number. This
+is observability-neutral for every existing processing origin, admission
+gate, outcome, provider route, durable resumption path, and structured
+event schema: `execution_trace.py`'s schema-version-1 `StructuredEvent`/
+`TraceCollector`, `dashboard_detail.py`, and `entity_invalidation.py`'s
+`dependency:1` durable token/generation/lifecycle are untouched, and no
+production code path calls the new module yet -- it has no producer wired
+into `entity_invalidation.py`'s dependency fan-out (child B, #2001) and no
+dashboard route (child C, #2002). `tests/test_repo_job_trace.py` is a
+model-level regression suite for this new interface's own contract
+(target isolation from the Issue/PR namespace including the "Dependency #1"
+sentinel-collision case, fresh execution identity per retry/recovered
+attempt, explicit-reference-only correlation, bounded/truthful snapshot
+retention and clipping, restart-safe absence of fabricated history, and
+diagnostic-failure/business-outcome independence); it intentionally does
+not claim a production-to-view regression, which is owned by #2001/#2002
+once a real producer and dashboard route exist. Run
+`bash scripts/test.sh tests/test_repo_job_trace.py tests/test_execution_trace.py tests/test_dashboard_detail_logic.py`
+for this boundary.
