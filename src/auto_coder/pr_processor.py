@@ -45,6 +45,7 @@ from .adversarial_validator import (
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ExplicitTargetOutcome, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
 from .branch_manager import BranchManager
+from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
@@ -3438,6 +3439,8 @@ def _handle_pr_merge(
                             # dispositions, regardless of the PR-level verdict.
                             if claimed_review_threads and val_result.thread_dispositions:
                                 try:
+                                    blocker_ledger = CanonicalPRBlockerLedger()
+                                    base_sha_for_closure = str((pr_data.get("base") or {}).get("sha") or "")
                                     resolved_thread_ids = resolve_addressed_review_threads(
                                         github_client,
                                         repo_name,
@@ -3445,6 +3448,9 @@ def _handle_pr_merge(
                                         head_sha,
                                         claimed_review_threads,
                                         val_result.thread_dispositions,
+                                        ledger=blocker_ledger,
+                                        base_sha=base_sha_for_closure,
+                                        review_attempt_id=active_attempt_id or "",
                                     )
                                     if resolved_thread_ids:
                                         actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
