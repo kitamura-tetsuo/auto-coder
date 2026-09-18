@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,7 +21,9 @@ def _run_step(tmp_path, group, test_script, timeout="0.25", grace="0.1"):
     shutil.copy(ROOT / "scripts/run_pr_test_shard.py", scripts)
     (scripts / "test.sh").write_text(test_script, encoding="utf-8")
     run = next(step["run"] for step in _workflow()["jobs"]["tests-shard"]["steps"] if step["name"].startswith("Run tests with coverage"))
-    run = run.replace("${{ matrix.group }}", str(group)).replace("--attempt-timeout 180", f"--attempt-timeout {timeout}").replace("--termination-grace 10", f"--termination-grace {grace}").replace("uv run python", f"{shutil.which('python')} ")
+    run = re.sub(r"--attempt-timeout\s+\S+", f"--attempt-timeout {timeout}", run)
+    run = re.sub(r"--termination-grace\s+\S+", f"--termination-grace {grace}", run)
+    run = run.replace("${{ matrix.group }}", str(group)).replace("uv run python", f"{shutil.which('python')} ")
     return subprocess.run(
         ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
         cwd=tmp_path,
@@ -147,8 +150,8 @@ def test_workflow_contract_and_aggregate_shell():
     shard = workflow["jobs"]["tests-shard"]
     assert shard["strategy"] == {"fail-fast": False, "matrix": {"group": [1, 2, 3, 4]}}
     test_step = next(step for step in shard["steps"] if step["name"].startswith("Run tests"))
-    assert test_step["timeout-minutes"] == 8
-    assert "--attempt-timeout 180" in test_step["run"]
+    assert test_step["timeout-minutes"] == 12
+    assert "--attempt-timeout 360" in test_step["run"]
     assert "--termination-grace 10" in test_step["run"]
     assert "--max-attempts 2" in test_step["run"]
     assert "scripts/run_pr_test_shard.py" in test_step["run"]
