@@ -121,10 +121,18 @@ class JulesClient(CloudTaskClientBase):
         Returns:
             Session ID for the started session
         """
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+        from .managed_prompts import save_managed_prompt
+
+        # Composition happens before any network call: a configuration error
+        # here (REQ-002) must fail closed with zero HTTP sends, not surface
+        # as an ambiguous transport outcome.
+        prepared = prepare_cloud_task(prompt, recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=is_noedit)
+
         try:
             # Prepare the request
             url = f"{self.base_url}/sessions"
-            payload = {"prompt": prompt, "automationMode": "AUTO_CREATE_PR", "sourceContext": {"source": f"sources/github/{repo_name}", "githubRepoContext": {"startingBranch": base_branch}}}
+            payload = {"prompt": prepared.prepared_task, "automationMode": "AUTO_CREATE_PR", "sourceContext": {"source": f"sources/github/{repo_name}", "githubRepoContext": {"startingBranch": base_branch}}}
 
             if title:
                 payload["title"] = title
@@ -163,6 +171,7 @@ class JulesClient(CloudTaskClientBase):
 
             # Track the session
             self.active_sessions[session_id] = prompt
+            save_managed_prompt(repo_name, session_id, prepared)
 
             logger.info(f"Started Jules session: {session_id}")
             return session_id
@@ -578,6 +587,7 @@ class JulesClient(CloudTaskClientBase):
         repo_name: str = "",
         base_branch: str = "",
         title: Optional[str] = None,
+        is_noedit: bool = False,
     ) -> str:
         """Start a new Jules task.
 
@@ -586,6 +596,7 @@ class JulesClient(CloudTaskClientBase):
             repo_name: Repository name
             base_branch: Base branch name
             title: Optional title
+            is_noedit: Whether this is a no-edit operation
 
         Returns:
             Session ID for the started task
@@ -594,6 +605,7 @@ class JulesClient(CloudTaskClientBase):
             prompt=prompt,
             repo_name=repo_name or "unknown/repo",
             base_branch=base_branch or "main",
+            is_noedit=is_noedit,
             title=title,
         )
 
@@ -771,6 +783,14 @@ class JulesClient(CloudTaskClientBase):
         """Assign follow-up work to an existing Jules implementation session."""
         if not task_id or not message:
             return False
+
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+
+        # An existing-session continuation is never eligible for the initial
+        # component (REQ-007); routed through the same boundary for parity
+        # with new-task dispatch rather than skipping it implicitly.
+        message = prepare_cloud_task(message, recipient="jules", operation=CloudTaskOperation.CONTINUATION, no_edit=False).prepared_task
+
         try:
             self.send_message(task_id, message)
             return True
