@@ -162,3 +162,28 @@ Packaging OpenCode does not change:
   make zero OpenCode network requests, require no OpenCode credentials, and start no
   background OpenCode services.
 
+## Testing and CI verification
+
+Testing for the OpenCode container runtime is divided into two distinct tiers:
+
+### 1. Ordinary static and contract tests
+
+Static assertions that verify Dockerfile pinning, Compose channel mount isolation, path resolution helpers, and documentation contracts are ordinary pytest tests. They execute as part of standard PR test shards (`PR Tests` workflow) and do not require a Docker daemon or OpenCode CLI installation.
+
+Run ordinary static tests locally:
+```bash
+pytest -m "not browser and not opencode_live"
+```
+
+### 2. Dedicated live container runtime scenarios
+
+The assertion-bearing container execution scenarios (`AC-001` through `AC-005`) launch real Docker containers and execute tasks against controlled local providers. To prevent expensive container builds and multi-minute test execution from causing timeouts or requiring retry-based cache warming in ordinary PR test shards, these scenarios are classified with `@pytest.mark.opencode_live`.
+
+In CI, the dedicated `OpenCode Live Tests` workflow (`.github/workflows/opencode-live-tests.yml`) executes these scenarios. It preflights Docker, builds the production runtime image for the exact checked-out commit via `scripts/prepare_opencode_image.py` (with a 10-minute step limit), and runs the live suite (with a 20-minute step limit and a 40-minute job limit). All five container scenarios must execute to passing results; skipping, xfailing, or missing container scenarios fails the run closed.
+
+To execute the live container suite locally:
+```bash
+python scripts/prepare_opencode_image.py
+pytest -m opencode_live -vv
+```
+

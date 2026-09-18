@@ -100,13 +100,16 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
   whose correctness oracle requires launching and driving a real browser with
   `@pytest.mark.browser` (or module-level `pytestmark = pytest.mark.browser`) so it
   is picked up automatically by `Browser Tests` and excluded from `PR Tests`.
-  `OpenCode Live Tests` similarly installs the pinned `opencode` CLI and runs exactly
-  the tests marked `@pytest.mark.opencode_live` (real-CLI-driven regressions such as
-  `tests/test_opencode_noedit_live.py`, each invocation costing several real seconds
-  of CLI startup); classify a new pytest test the same way when its correctness
-  oracle requires driving the real OpenCode CLI (e.g. against a controlled local
-  provider double) rather than a fake executable, so PR Tests' per-shard time budget
-  isn't spent on real CLI startup latency.
+  `OpenCode Live Tests` installs the pinned `opencode` CLI, explicitly prepares the
+  production runtime image for the checked-out commit (`scripts/prepare_opencode_image.py`),
+  and runs all tests marked `@pytest.mark.opencode_live` (both real-CLI host regressions such
+  as `tests/test_opencode_noedit_live.py` and container runtime verification scenarios in
+  `tests/test_opencode_container_runtime.py`). Ordinary static tests (e.g., Dockerfile/Compose
+  syntax and documentation tests) remain unmarked and execute within ordinary `PR Tests` shards
+  without building Docker images or starting live containers. To run ordinary tests locally
+  without Docker or OpenCode CLI installed, use `pytest -m "not browser and not opencode_live"`.
+  To execute the live suite locally, run `python scripts/prepare_opencode_image.py` and
+  `pytest -m opencode_live`.
 * Branch protection should include the following required status checks:
   * `PR Tests / Lint & Type Check`
   * `PR Tests / Tests with Coverage`
