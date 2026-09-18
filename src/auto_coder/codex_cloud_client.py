@@ -172,6 +172,7 @@ class CodexCloudClient(CloudTaskClientBase):
         repo_name: str = "",
         base_branch: str = "",
         title: Optional[str] = None,
+        is_noedit: bool = False,
     ) -> str:
         """Start a new asynchronous cloud task on Codex Cloud.
 
@@ -183,11 +184,12 @@ class CodexCloudClient(CloudTaskClientBase):
             repo_name: Repository name (optional).
             base_branch: Base branch name (optional).
             title: Optional task title (for logging).
+            is_noedit: Whether this is a no-edit run.
 
         Returns:
             The created Task ID.
         """
-        result = self.submit_task(prompt, repo_name, base_branch, title)
+        result = self.submit_task(prompt, repo_name, base_branch, title, is_noedit)
         if result.outcome is not CodexSubmissionOutcome.ACCEPTED:
             if result.outcome is CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED:
                 raise ValueError(result.diagnostic)
@@ -200,8 +202,15 @@ class CodexCloudClient(CloudTaskClientBase):
         repo_name: str = "",
         base_branch: str = "",
         title: Optional[str] = None,
+        is_noedit: bool = False,
     ) -> CodexSubmissionResult:
         """Submit once and retain evidence from both output streams."""
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+
+        # Composition happens before any CLI invocation: a configuration
+        # error here (REQ-002) must fail closed with zero external sends.
+        prepared = prepare_cloud_task(prompt, recipient="codex-cloud", operation=CloudTaskOperation.NEW_TASK, no_edit=is_noedit)
+
         logger.info(f"Starting Codex Cloud task (title={title or 'N/A'}, branch={base_branch or 'N/A'})")
 
         effective_repo = repo_name or self.repo_name
@@ -244,7 +253,7 @@ class CodexCloudClient(CloudTaskClientBase):
         if self.options:
             cmd.extend(self.options)
 
-        cmd.append(prompt)
+        cmd.append(prepared.prepared_task)
 
         env = os.environ.copy()
         if self.api_key:
@@ -268,6 +277,11 @@ class CodexCloudClient(CloudTaskClientBase):
             if task_url:
                 self.task_urls[task_id] = task_url
             self.active_tasks[task_id] = prompt
+
+            from .managed_prompts import save_managed_prompt
+
+            save_managed_prompt(effective_repo or self.repo_name, task_id, prepared)
+
             logger.info(f"Codex Cloud returned task: {task_id} (url={task_url or 'N/A'})")
             return CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, task_id, task_url or "", output)
 
@@ -636,6 +650,13 @@ class CodexCloudClient(CloudTaskClientBase):
             logger.warning("Codex Cloud follow-up requires a task ID and message")
             return False
 
+        from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
+
+        # An existing-session continuation is never eligible for the initial
+        # component (REQ-007); routed through the same boundary for parity
+        # with new-task dispatch rather than skipping it implicitly.
+        message = prepare_cloud_task(message, recipient="codex-cloud", operation=CloudTaskOperation.CONTINUATION, no_edit=False).prepared_task
+
         wham = self.wham_client or CodexWhamClient()
         message_fingerprint = hashlib.sha256(message.encode("utf-8")).hexdigest()
         identities = logical_identities or (message_fingerprint,)
@@ -705,7 +726,7 @@ class CodexCloudClient(CloudTaskClientBase):
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Execute LLM with prompt via Codex Cloud."""
-        task_id = self.start_task(prompt)
+        task_id = self.start_task(prompt, is_noedit=is_noedit)
         return f"Codex Cloud task started successfully. Task ID: {task_id}"
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
