@@ -129,12 +129,14 @@ def test_legacy_schema_without_status_column_defaults_to_waiting(tmp_path):
     """A preflight-schema database predates the status column; rows must stay resumable."""
     path = tmp_path / "pending.db"
     with sqlite3.connect(path) as connection:
-        connection.execute("""CREATE TABLE github_pending_work (
+        connection.execute(
+            """CREATE TABLE github_pending_work (
             work_key TEXT PRIMARY KEY, repository TEXT NOT NULL, entity TEXT NOT NULL,
             stage TEXT NOT NULL, revision TEXT NOT NULL, reason TEXT NOT NULL,
             not_before REAL NOT NULL, unfinished_effects TEXT NOT NULL,
             throttle_attempts INTEGER NOT NULL, last_error TEXT NOT NULL,
-            updated_at REAL NOT NULL)""")
+            updated_at REAL NOT NULL)"""
+        )
         identity = WorkIdentity("a/b", "issue:1", "validation", "rev-1")
         connection.execute(
             "INSERT INTO github_pending_work VALUES (?,?,?,?,?,?,?,?,?,?,?)",

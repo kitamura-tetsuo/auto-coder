@@ -25,13 +25,15 @@ def test_pr_prompt_uses_yaml_template(mock_get_commit_log, tmp_path, sample_pr):
     """Customizing the YAML template should affect generated prompts end-to-end."""
     custom_yaml = tmp_path / "prompts.yaml"
     custom_yaml.write_text(
-        dedent("""
+        dedent(
+            """
             pr:
               action: |
                 CUSTOM DIRECTIVE
                 Repository: $repo_name
                 Number: $pr_number
-            """),
+            """
+        ),
         encoding="utf-8",
     )
 

@@ -5,11 +5,13 @@ from src.auto_coder.test_log_utils import extract_first_failed_test
 
 
 def test_extract_from_pytest_failed_summary_hyphen(monkeypatch):
-    stdout = textwrap.dedent("""
+    stdout = textwrap.dedent(
+        """
         =========================== short test summary info ============================
         FAILED tests/test_foo.py::test_bar - AssertionError: boom
         1 failed in 0.12s
-        """)
+        """
+    )
     stderr = ""
 
     expected_path = "tests/test_foo.py"
@@ -21,13 +23,15 @@ def test_extract_from_pytest_failed_summary_hyphen(monkeypatch):
 
 
 def test_extract_from_pytest_traceback_line(monkeypatch):
-    stdout = textwrap.dedent("""
+    stdout = textwrap.dedent(
+        """
         _________________________________ test_spam __________________________________
 
         tests/test_bar.py:12: in test_spam
             assert 1 == 2
         E   AssertionError: boom
-        """)
+        """
+    )
     stderr = ""
 
     expected_path = "tests/test_bar.py"
@@ -38,10 +42,12 @@ def test_extract_from_pytest_traceback_line(monkeypatch):
 
 
 def test_extract_from_playwright_spec(monkeypatch):
-    stdout = textwrap.dedent("""
+    stdout = textwrap.dedent(
+        """
         1) [suite] › e2e/basic/foo.spec.ts:16:5 › does something
            Error: expect(received).toBeTruthy()
-        """)
+        """
+    )
     stderr = ""
 
     expected_path = "e2e/basic/foo.spec.ts"
@@ -100,7 +106,8 @@ def test_stderr_is_prioritized_over_stdout(monkeypatch):
 
 def test_vitest_fail_line_extracts_test_ts(monkeypatch):
     stdout = "  ✓ 22 tests passed"
-    stderr = textwrap.dedent("""
+    stderr = textwrap.dedent(
+        """
         2025-09-26 17:55:46.482 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
         2025-09-26 17:55:46.483 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -
         2025-09-26 17:55:46.483 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -  FAIL  |unit| src/tests/attachmentService.test.ts > attachmentService > listAttachments requires auth
@@ -109,7 +116,8 @@ def test_vitest_fail_line_extracts_test_ts(monkeypatch):
         2025-09-26 17:55:46.495 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -  ❯ src/tests/attachmentService.test.ts:10:58
         2025-09-26 17:55:46.499 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -
         2025-09-26 17:55:46.501 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
-        """)
+        """
+    )
 
     target = "src/tests/attachmentService.test.ts"
 
@@ -121,7 +129,8 @@ def test_vitest_fail_line_extracts_test_ts(monkeypatch):
 
 def test_vitest_success_playwright_fail_should_detect_playwright(monkeypatch):
     """When vitest succeeds and playwright fails, detect playwright's failure"""
-    stdout = textwrap.dedent("""
+    stdout = textwrap.dedent(
+        """
         ✓ src/tests/unit/foo.test.ts (5 tests) 125ms
         ✓ src/tests/unit/bar.test.ts (3 tests) 89ms
 
@@ -140,7 +149,8 @@ def test_vitest_success_playwright_fail_should_detect_playwright(monkeypatch):
 
              Expected substring: "Welcome"
              Received string: "Error: Invalid credentials"
-        """)
+        """
+    )
     stderr = ""
 
     expected_path = "e2e/basic/login.spec.ts"
@@ -152,7 +162,8 @@ def test_vitest_success_playwright_fail_should_detect_playwright(monkeypatch):
 
 def test_playwright_success_vitest_fail_should_detect_vitest(monkeypatch):
     """When playwright succeeds and vitest fails, detect vitest's failure"""
-    stdout = textwrap.dedent("""
+    stdout = textwrap.dedent(
+        """
         Running Playwright tests...
 
           ✓ [basic] › e2e/basic/login.spec.ts:20:5 › should login successfully
@@ -169,7 +180,8 @@ def test_playwright_success_vitest_fail_should_detect_vitest(monkeypatch):
 
         Test Files  1 failed (1)
              Tests  1 failed (1)
-        """)
+        """
+    )
     stderr = ""
 
     expected_path = "src/tests/unit/auth.test.ts"
@@ -181,7 +193,8 @@ def test_playwright_success_vitest_fail_should_detect_vitest(monkeypatch):
 
 def test_pytest_success_playwright_fail_should_detect_playwright(monkeypatch):
     """When pytest succeeds and playwright fails, detect playwright's failure"""
-    stdout = textwrap.dedent("""
+    stdout = textwrap.dedent(
+        """
         ============================= test session starts ==============================
         collected 15 items
 
@@ -196,7 +209,8 @@ def test_pytest_success_playwright_fail_should_detect_playwright(monkeypatch):
           1) [core] › e2e/core/api-integration.spec.ts:30:5 › API integration test
 
              Error: Timeout 5000ms exceeded
-        """)
+        """
+    )
     stderr = ""
 
     expected_path = "e2e/core/api-integration.spec.ts"
@@ -211,7 +225,8 @@ def test_playwright_prioritize_failed_over_flaky(monkeypatch):
     Ensure that when both 'failed' and 'flaky' tests are present in the summary,
     the 'failed' test is prioritized.
     """
-    stdout = textwrap.dedent("""
+    stdout = textwrap.dedent(
+        """
           1 failed
             [project] › e2e/project/prj-delete-project-1129.spec.ts:7:5 › Project Deletion › should be able to delete a project 
           2 flaky
@@ -221,7 +236,8 @@ def test_playwright_prioritize_failed_over_flaky(monkeypatch):
           2 did not run
           357 passed (18.9m)
           1 error was not a part of any test, see above for details
-        """)
+        """
+    )
     stderr = ""
 
     failed_test = "e2e/project/prj-delete-project-1129.spec.ts"

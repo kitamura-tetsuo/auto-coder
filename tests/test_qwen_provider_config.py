@@ -16,7 +16,8 @@ def test_load_qwen_provider_configs_defaults(tmp_path) -> None:
         name = "openrouter"
         api_key = "openrouter-123"
         model = "custom-model"
-        """.strip() + "\n",
+        """.strip()
+        + "\n",
         encoding="utf-8",
     )
 
@@ -44,7 +45,8 @@ def test_load_qwen_provider_configs_skips_missing_key(tmp_path) -> None:
         [[qwen.providers]]
         name = "openrouter"
         api_key = "valid"
-        """.strip() + "\n",
+        """.strip()
+        + "\n",
         encoding="utf-8",
     )
 

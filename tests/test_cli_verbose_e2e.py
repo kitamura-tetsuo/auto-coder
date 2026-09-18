@@ -5,7 +5,8 @@ import textwrap
 
 
 def _build_python_snippet() -> str:
-    return textwrap.dedent("""
+    return textwrap.dedent(
+        """
         import os
         import sys
         from src.auto_coder.logger_config import setup_logger
@@ -24,7 +25,8 @@ def _build_python_snippet() -> str:
 
         if __name__ == "__main__":
             raise SystemExit(main())
-        """)
+        """
+    )
 
 
 def test_verbose_logging_emits_command_trace():

@@ -292,10 +292,14 @@ def test_bypassed_working_tree_mutation_detected_restored_and_fails_invocation(t
     debug_response = tmp_path / "debug_agent.json"
     debug_response.write_text(_locked_down_debug_agent_response())
     body = tmp_path / "bypass_body.py"
-    body.write_text(textwrap.dedent("""
+    body.write_text(
+        textwrap.dedent(
+            """
             with open("tracked.txt", "w") as fh:
                 fh.write("mutated by bypass\\n")
-            """))
+            """
+        )
+    )
     stdout_file = tmp_path / "stdout.jsonl"
     stdout_file.write_text(_event("step_finish", part={"id": "sf1", "messageID": "m1", "reason": "stop"}) + "\n" + _event("text", part={"id": "t1", "messageID": "m1", "text": "done"}) + "\n")
 
@@ -324,11 +328,15 @@ def test_noedit_timeout_preserves_workspace_before_cleanup(tmp_path: Path, monke
     debug_response.write_text(_locked_down_debug_agent_response())
     ready_file = tmp_path / "ready"
     body = tmp_path / "timeout_body.py"
-    body.write_text(textwrap.dedent(f"""
+    body.write_text(
+        textwrap.dedent(
+            f"""
             import time
             open({str(ready_file)!r}, "w").close()
             time.sleep(5)
-            """))
+            """
+        )
+    )
 
     config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5", timeout=1)})
     monkeypatch.chdir(repo)

@@ -92,7 +92,8 @@ class DispatchClaimStore:
 
     @staticmethod
     def _ensure_schema(conn: sqlite3.Connection) -> None:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS dispatch_claims (
                 claim_key TEXT PRIMARY KEY,
                 repo_name TEXT NOT NULL,
@@ -104,7 +105,8 @@ class DispatchClaimStore:
                 updated_at REAL NOT NULL
                 , holder_id TEXT NOT NULL DEFAULT ''
             )
-            """)
+            """
+        )
         columns = {row[1] for row in conn.execute("PRAGMA table_info(dispatch_claims)")}
         if "holder_id" not in columns:
             conn.execute("ALTER TABLE dispatch_claims ADD COLUMN holder_id TEXT NOT NULL DEFAULT ''")

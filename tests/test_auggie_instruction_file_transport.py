@@ -13,7 +13,9 @@ from src.auto_coder.auggie_client import AuggieClient
 
 def _harness(tmp_path: Path) -> Path:
     script = tmp_path / "auggie-harness"
-    script.write_text(textwrap.dedent("""\
+    script.write_text(
+        textwrap.dedent(
+            """\
             #!/usr/bin/env python3
             import hashlib, json, os, stat, sys, time
             if sys.argv[1:] == ["--version"]:
@@ -34,7 +36,9 @@ def _harness(tmp_path: Path) -> Path:
             }
             open(marker, "w").write(json.dumps(result))
             print("STREAMED-RESULT")
-            """))
+            """
+        )
+    )
     script.chmod(0o755)
     return script
 

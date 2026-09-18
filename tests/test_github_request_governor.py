@@ -98,7 +98,8 @@ def _hold_process_reservation(path: str, ready: Connection) -> None:
 
 def _create_legacy_store(path: Path, timestamp: float) -> None:
     with sqlite3.connect(path) as connection:
-        connection.executescript("""
+        connection.executescript(
+            """
             CREATE TABLE governor_metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL, last_logical_utc REAL NOT NULL);
             CREATE TABLE origin_state(
                 origin TEXT PRIMARY KEY,
@@ -119,7 +120,8 @@ def _create_legacy_store(path: Path, timestamp: float) -> None:
                 PRIMARY KEY(origin, attempt_id)
             );
             CREATE INDEX reservations_budget ON reservations(origin, admitted_utc);
-            """)
+            """
+        )
         origin = "https://api.github.com"
         connection.execute("INSERT INTO governor_metadata VALUES (1, 1, ?)", (timestamp,))
         connection.execute("INSERT INTO origin_state(origin) VALUES (?)", (origin,))

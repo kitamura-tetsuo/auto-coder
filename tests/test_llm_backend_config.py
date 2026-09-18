@@ -1933,14 +1933,16 @@ class TestConfigurationPriorityLogic:
         """Test that enabled defaults to true when not specified in configuration."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "llm_config.toml"
-            config_file.write_text("""
+            config_file.write_text(
+                """
 [backend]
 default = "test-backend"
 
 [backends.test-backend]
 model = "test-model"
 backend_type = "codex"
-""")
+"""
+            )
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
             backend_config = config.get_backend_config("test-backend")
@@ -1952,7 +1954,8 @@ backend_type = "codex"
         """Test that explicit enabled = false is respected."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "llm_config.toml"
-            config_file.write_text("""
+            config_file.write_text(
+                """
 [backend]
 default = "test-backend"
 
@@ -1960,7 +1963,8 @@ default = "test-backend"
 model = "test-model"
 backend_type = "codex"
 enabled = false
-""")
+"""
+            )
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
             backend_config = config.get_backend_config("test-backend")
@@ -1976,7 +1980,8 @@ enabled = false
         """Test that explicit enabled = true is respected."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "llm_config.toml"
-            config_file.write_text("""
+            config_file.write_text(
+                """
 [backend]
 default = "test-backend"
 
@@ -1984,7 +1989,8 @@ default = "test-backend"
 model = "test-model"
 backend_type = "codex"
 enabled = true
-""")
+"""
+            )
 
             config = LLMBackendConfiguration.load_from_file(str(config_file))
             backend_config = config.get_backend_config("test-backend")

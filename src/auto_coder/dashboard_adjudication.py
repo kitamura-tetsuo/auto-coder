@@ -116,7 +116,8 @@ class AdjudicationPublicationJournal:
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
-        self._db.execute("""CREATE TABLE IF NOT EXISTS dashboard_adjudication_publications (
+        self._db.execute(
+            """CREATE TABLE IF NOT EXISTS dashboard_adjudication_publications (
                 decision_id TEXT PRIMARY KEY,
                 repository TEXT NOT NULL,
                 pr_number INTEGER NOT NULL,
@@ -127,7 +128,8 @@ class AdjudicationPublicationJournal:
                 payload_body TEXT NOT NULL,
                 state TEXT NOT NULL,
                 github_comment_id INTEGER
-            )""")
+            )"""
+        )
         self._db.commit()
 
     def claim(self, decision_id: str, repository: str, pr_number: int, context_id: str, root_comment_id: int, publisher_id: int, payload_digest: str, payload_body: str) -> tuple[str, Optional[int]]:

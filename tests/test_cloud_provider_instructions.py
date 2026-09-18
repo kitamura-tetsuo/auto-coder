@@ -83,7 +83,8 @@ def test_editing_one_provider_entry_does_not_change_others(prompts_file):
     jules_before = prepare_cloud_task(raw, recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path)
     codex_before = prepare_cloud_task(raw, recipient="codex-cloud", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path)
 
-    changed_path = prompts_file("""
+    changed_path = prompts_file(
+        """
         cloud_provider_instructions:
           jules:
             initial: |-
@@ -94,7 +95,8 @@ def test_editing_one_provider_entry_does_not_change_others(prompts_file):
           codex-cloud:
             initial: |-
               CODEX_SENTINEL
-        """)
+        """
+    )
     jules_after = prepare_cloud_task(raw, recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=changed_path)
     codex_after = prepare_cloud_task(raw, recipient="codex-cloud", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=changed_path)
 
@@ -103,12 +105,14 @@ def test_editing_one_provider_entry_does_not_change_others(prompts_file):
 
 
 def test_missing_and_whitespace_only_entries_yield_exact_input_equality(prompts_file):
-    path = prompts_file("""
+    path = prompts_file(
+        """
         cloud_provider_instructions:
           jules:
             initial: "   \n  "
           claude-routine: {}
-        """)
+        """
+    )
     raw = "Task body."
     jules = prepare_cloud_task(raw, recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path)
     claude = prepare_cloud_task(raw, recipient="claude-routine", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path)
@@ -120,62 +124,72 @@ def test_missing_and_whitespace_only_entries_yield_exact_input_equality(prompts_
 
 
 def test_non_string_selected_entry_fails_explicitly(prompts_file):
-    path = prompts_file("""
+    path = prompts_file(
+        """
         cloud_provider_instructions:
           jules:
             initial: 42
-        """)
+        """
+    )
     with pytest.raises(CloudProviderInstructionError):
         prepare_cloud_task("Task body.", recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path)
 
 
 def test_invalid_unused_entry_does_not_affect_valid_provider(prompts_file):
-    path = prompts_file("""
+    path = prompts_file(
+        """
         cloud_provider_instructions:
           jules:
             initial: |-
               JULES_SENTINEL
           codex-cloud:
             initial: 42
-        """)
+        """
+    )
     result = prepare_cloud_task("Task body.", recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path)
     assert "JULES_SENTINEL" in result.prepared_task
 
 
 def test_flat_key_precedence_over_nested(prompts_file):
-    path = prompts_file("""
+    path = prompts_file(
+        """
         cloud_provider_instructions:
           jules:
             initial: |-
               NESTED_VALUE
         cloud_provider_instructions.jules.initial: FLAT_VALUE
-        """)
+        """
+    )
     result = prepare_cloud_task("Task body.", recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path)
     assert "FLAT_VALUE" in result.prepared_task
     assert "NESTED_VALUE" not in result.prepared_task
 
 
 def test_empty_flat_value_suppresses_nested_without_fallback(prompts_file):
-    path = prompts_file("""
+    path = prompts_file(
+        """
         cloud_provider_instructions:
           jules:
             initial: |-
               NESTED_VALUE
         cloud_provider_instructions.jules.initial: "   "
-        """)
+        """
+    )
     result = prepare_cloud_task("Task body.", recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path)
     assert result.prepared_task == "Task body."
     assert result.instruction_text is None
 
 
 def test_invalid_flat_value_errors_instead_of_falling_back_to_nested(prompts_file):
-    path = prompts_file("""
+    path = prompts_file(
+        """
         cloud_provider_instructions:
           jules:
             initial: |-
               NESTED_VALUE
         cloud_provider_instructions.jules.initial: 7
-        """)
+        """
+    )
     with pytest.raises(CloudProviderInstructionError):
         prepare_cloud_task("Task body.", recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path)
 
@@ -284,22 +298,26 @@ def test_serialization_round_trip_preserves_captured_bytes(prompts_file):
 
 
 def test_explicit_new_preparation_from_restored_original_uses_new_configuration(prompts_file):
-    path_a = prompts_file("""
+    path_a = prompts_file(
+        """
         cloud_provider_instructions:
           jules:
             initial: |-
               JULES_REVISION_A
-        """)
+        """
+    )
     raw = "Task body."
     prepared_a = prepare_cloud_task(raw, recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path_a)
     restored = restore_prepared_cloud_task(prepared_a.to_json())
 
-    path_b = prompts_file("""
+    path_b = prompts_file(
+        """
         cloud_provider_instructions:
           jules:
             initial: |-
               JULES_REVISION_B
-        """)
+        """
+    )
     prepared_b = prepare_cloud_task(restored, recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False, prompts_path=path_b)
     assert "JULES_REVISION_B" in prepared_b.prepared_task
     assert "JULES_REVISION_A" not in prepared_b.prepared_task

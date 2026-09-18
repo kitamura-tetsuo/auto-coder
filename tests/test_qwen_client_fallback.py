@@ -25,7 +25,8 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, 
         [[qwen.providers]]
         name = "openrouter"
         api_key = "openrouter-123"
-        """.strip() + "\n",
+        """.strip()
+        + "\n",
         encoding="utf-8",
     )
 
@@ -72,7 +73,8 @@ def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path
         name = "openrouter"
         api_key = "openrouter-123"
         model = "qwen/qwen3-coder:free"
-        """.strip() + "\n",
+        """.strip()
+        + "\n",
         encoding="utf-8",
     )
 
@@ -122,7 +124,8 @@ def test_qwen_client_fallbacks_to_oauth_after_api_keys(mock_run_command, mock_ru
         [[qwen.providers]]
         name = "openrouter"
         api_key = "openrouter-123"
-        """.strip() + "\n",
+        """.strip()
+        + "\n",
         encoding="utf-8",
     )
 
@@ -175,7 +178,8 @@ def test_qwen_client_all_limits_raise(mock_run_command, mock_run, tmp_path) -> N
         [[qwen.providers]]
         name = "openrouter"
         api_key = "openrouter-123"
-        """.strip() + "\n",
+        """.strip()
+        + "\n",
         encoding="utf-8",
     )
 

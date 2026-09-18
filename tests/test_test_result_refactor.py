@@ -32,14 +32,16 @@ def test_testresult_dataclass_structure():
 
 def test_enhanced_error_extraction_playwright_block():
     """Test that error extraction maintains accuracy with TestResult for Playwright-like logs."""
-    fake_playwright_output = textwrap.dedent("""
+    fake_playwright_output = textwrap.dedent(
+        """
         1) [core] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links › converts plain URL to clickable link
 
           Error: expect(received).toContain(expected) // indexOf
 
           Expected substring: "<a href=\"https://example.com\"\n            target=\"_blank\"\n            class=\"internal\">Example</a>"
           Received string:    "<div>Example</div>"
-        """)
+        """
+    )
     tr = TestResult(
         success=False,
         output=fake_playwright_output,
@@ -55,12 +57,14 @@ def test_enhanced_error_extraction_playwright_block():
 
 def test_enhanced_error_extraction_pytest_keywords():
     """Pytest-style traceback and error keywords should be captured from TestResult."""
-    stdout = textwrap.dedent("""
+    stdout = textwrap.dedent(
+        """
         _________________________________ test_spam __________________________________
         tests/test_bar.py:12: in test_spam
             assert 1 == 2
         E   AssertionError: boom
-        """)
+        """
+    )
     tr = TestResult(success=False, output=stdout, errors="", return_code=1, framework_type="pytest")
     errors = extract_important_errors(tr)
     assert "AssertionError" in errors

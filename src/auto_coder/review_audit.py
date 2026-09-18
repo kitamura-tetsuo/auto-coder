@@ -220,7 +220,8 @@ class ReviewAuditStore:
             conn.execute("PRAGMA synchronous=NORMAL")
 
             with conn:
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS evaluation (
                         review_id TEXT PRIMARY KEY,
                         repository TEXT,
@@ -241,8 +242,10 @@ class ReviewAuditStore:
                         native_report TEXT, -- JSON object
                         source_review_id TEXT
                     )
-                """)
-                conn.execute("""
+                """
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS interaction (
                         seq INTEGER PRIMARY KEY AUTOINCREMENT,
                         interaction_id TEXT UNIQUE,
@@ -259,11 +262,13 @@ class ReviewAuditStore:
                         session_identity TEXT,
                         completion_status TEXT
                     )
-                """)
+                """
+                )
                 # Fix: drop autoincrement primary key and use composite or separate id
                 # actually sqlite does not allow multiple primary keys if one is autoincrement
                 # wait, let me fix this in a separate command.
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS effect (
                         seq INTEGER PRIMARY KEY AUTOINCREMENT,
                         effect_id TEXT UNIQUE,
@@ -272,7 +277,8 @@ class ReviewAuditStore:
                         disposition TEXT,
                         details TEXT -- JSON object
                     )
-                """)
+                """
+                )
             return conn
         except Exception as e:
             logger.error(f"Failed to ensure audit db for {repository}: {e}")
