@@ -207,7 +207,7 @@ def _run_attempt(group: int, attempt: int, timeout: float, grace: float, log_dir
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--group", type=int, choices=range(1, 5), required=True)
-    parser.add_argument("--attempt-timeout", type=float, default=180)
+    parser.add_argument("--attempt-timeout", type=float, default=360)
     parser.add_argument("--termination-grace", type=float, default=10)
     parser.add_argument("--max-attempts", type=int, default=2, choices=(2,))
     parser.add_argument("--log-dir", type=Path, required=True)
