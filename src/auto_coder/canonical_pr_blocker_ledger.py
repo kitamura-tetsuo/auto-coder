@@ -181,6 +181,35 @@ class BlockerSnapshot:
     created_at_revision: int = 0
     last_updated_revision: int = 0
 
+    def get_canonical_root_comment_id(self) -> Optional[int]:
+        """Return the earliest authenticated numeric root comment ID if published."""
+        root_ids = [int(a.alias_value) for a in self.aliases if a.alias_type in ("github_root_comment", "root_comment_id", "historical_root_comment_id") and a.alias_value.isdigit()]
+        return min(root_ids) if root_ids else None
+
+    def get_root_comment_ids(self) -> tuple[int, ...]:
+        """Return all authenticated root comment IDs associated with this blocker."""
+        return tuple(sorted(int(a.alias_value) for a in self.aliases if a.alias_type in ("github_root_comment", "root_comment_id", "historical_root_comment_id") and a.alias_value.isdigit()))
+
+
+@dataclass(frozen=True)
+class PublicationIntentSnapshot:
+    """Durably recorded publication intent and authority assignment."""
+
+    intent_id: str = ""
+    namespace_key: str = ""
+    destination_repo: str = ""
+    destination_pr: int = 0
+    reviewed_head_sha: str = ""
+    reviewed_base_sha: str = ""
+    review_attempt_id: str = ""
+    payload_hash: str = ""
+    blocker_ids: tuple[str, ...] = ()
+    status: str = "PENDING"  # PENDING, CONFIRMED, REJECTED
+    confirmed_roots: tuple[tuple[str, int], ...] = ()
+    failure_reason: Optional[str] = None
+    created_at: str = ""
+    updated_at: str = ""
+
 
 @dataclass(frozen=True)
 class BlockerLedgerSnapshot:
@@ -260,6 +289,14 @@ class AssociationAmbiguityError(BlockerLedgerError):
 
 class BlockerPersistenceError(BlockerLedgerError):
     """A required durable write operation failed."""
+
+
+class PublicationContentionError(BlockerLedgerError):
+    """Another worker or intent currently holds exclusive publication authority for a blocker."""
+
+
+class PublicationIntentMismatchError(BlockerLedgerError):
+    """Publication intent already exists with a different payload or invalid parameters."""
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +476,26 @@ class CanonicalPRBlockerLedger:
                     committed_revision INTEGER NOT NULL,
                     result_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS publication_intents (
+                    intent_id TEXT PRIMARY KEY,
+                    namespace_key TEXT NOT NULL,
+                    destination_repo TEXT NOT NULL,
+                    destination_pr INTEGER NOT NULL,
+                    reviewed_head_sha TEXT NOT NULL,
+                    reviewed_base_sha TEXT NOT NULL,
+                    review_attempt_id TEXT NOT NULL,
+                    payload_hash TEXT NOT NULL,
+                    blocker_ids_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    confirmed_roots_json TEXT NOT NULL DEFAULT '[]',
+                    failure_reason TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -1018,6 +1075,8 @@ class CanonicalPRBlockerLedger:
         associated_blocker_id: Optional[str] = None,
         evidence: str = "",
         review_observation_identity: str = "",
+        justified_category_transition: bool = False,
+        category_transition_reason: str = "",
     ) -> tuple[str, BlockerLedgerSnapshot]:
         """Reconcile an observed finding against existing blockers.
 
@@ -1042,6 +1101,8 @@ class CanonicalPRBlockerLedger:
             "associated": associated_blocker_id,
             "evidence": evidence,
             "observation_id": review_observation_identity or candidate_payload.observation_identity,
+            "justified_cat_trans": justified_category_transition or bool(category_transition_reason),
+            "cat_trans_reason": category_transition_reason,
         }
         payload_hash = self._hash_payload(payload_dict)
         now = _now_iso()
@@ -1094,7 +1155,12 @@ class CanonicalPRBlockerLedger:
                         raise UnknownBlockerReferenceError(f"Associated blocker ID {associated_blocker_id!r} not found in namespace")
                     existing_cat, existing_boundary = row
                     if candidate_payload.category and existing_cat != candidate_payload.category:
-                        raise InconsistentScopeAssociationError(f"Category mismatch: candidate has {candidate_payload.category!r}, " f"existing blocker has {existing_cat!r}")
+                        if not (justified_category_transition or category_transition_reason):
+                            raise InconsistentScopeAssociationError(f"Category mismatch: candidate has {candidate_payload.category!r}, " f"existing blocker has {existing_cat!r}")
+                        conn.execute(
+                            "UPDATE blockers SET category = ?, last_updated_at = ?, last_updated_revision = ? WHERE blocker_id = ?",
+                            (candidate_payload.category, now, new_rev, associated_blocker_id),
+                        )
                     if candidate_payload.authoritative_boundary and existing_boundary != candidate_payload.authoritative_boundary:
                         raise InconsistentScopeAssociationError(f"Authoritative boundary mismatch: candidate has {candidate_payload.authoritative_boundary!r}, " f"existing blocker has {existing_boundary!r}")
 
@@ -1895,3 +1961,384 @@ class CanonicalPRBlockerLedger:
                 conn.close()
 
         return self.get_snapshot(norm_origin, repository, pr_number, require_retained_state=True)
+
+    def record_publication_intent(
+        self,
+        api_origin: str,
+        repository: str,
+        pr_number: int,
+        intent_id: str,
+        expected_ledger_revision: int,
+        blocker_ids: Sequence[str],
+        destination_repo: str,
+        destination_pr: int,
+        reviewed_head_sha: str,
+        reviewed_base_sha: str = "",
+        review_attempt_id: str = "",
+        intended_payload_hash: str = "",
+    ) -> PublicationIntentSnapshot:
+        """Durably record a publication intent and acquire exclusive publication authority.
+
+        Binds intent_id, destination repo/PR, reviewed head/base, and target blocker IDs.
+        Enforces CAS ledger revision fence and rejects conflicting/concurrent intents (REQ-007).
+        """
+        self._check_db_integrity()
+        norm_origin = normalize_api_origin(api_origin)
+        key = _make_namespace_key(norm_origin, repository, pr_number)
+
+        payload_dict = {
+            "intent_id": intent_id,
+            "blocker_ids": sorted(blocker_ids),
+            "dest_repo": destination_repo,
+            "dest_pr": destination_pr,
+            "head": reviewed_head_sha,
+            "base": reviewed_base_sha,
+            "attempt": review_attempt_id,
+        }
+        computed_hash = intended_payload_hash or self._hash_payload(payload_dict)
+        now = _now_iso()
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+
+                cursor = conn.execute(
+                    """
+                    SELECT intent_id, namespace_key, destination_repo, destination_pr,
+                           reviewed_head_sha, reviewed_base_sha, review_attempt_id,
+                           payload_hash, blocker_ids_json, status, confirmed_roots_json,
+                           failure_reason, created_at, updated_at
+                    FROM publication_intents
+                    WHERE intent_id = ? AND namespace_key = ?
+                    """,
+                    (intent_id, key),
+                )
+                row = cursor.fetchone()
+                if row is not None:
+                    existing_hash = row[7]
+                    if existing_hash != computed_hash:
+                        raise IdempotencyConflictError(f"Conflicting reuse of intent ID {intent_id!r} with different payload hash")
+                    bids = tuple(json.loads(row[8]))
+                    confirmed_roots_raw = json.loads(row[10])
+                    confirmed_roots = tuple((str(b), int(c)) for b, c in confirmed_roots_raw)
+                    conn.execute("COMMIT")
+                    return PublicationIntentSnapshot(
+                        intent_id=row[0],
+                        namespace_key=row[1],
+                        destination_repo=row[2],
+                        destination_pr=row[3],
+                        reviewed_head_sha=row[4],
+                        reviewed_base_sha=row[5],
+                        review_attempt_id=row[6],
+                        payload_hash=row[7],
+                        blocker_ids=bids,
+                        status=row[9],
+                        confirmed_roots=confirmed_roots,
+                        failure_reason=row[11],
+                        created_at=row[12],
+                        updated_at=row[13],
+                    )
+
+                self._check_cas(conn, key, expected_ledger_revision)
+
+                for bid in blocker_ids:
+                    c = conn.execute(
+                        "SELECT 1 FROM blockers WHERE blocker_id = ? AND namespace_key = ?",
+                        (bid, key),
+                    )
+                    if c.fetchone() is None:
+                        raise UnknownBlockerReferenceError(f"Blocker ID {bid!r} does not exist in namespace {key}")
+
+                cursor = conn.execute(
+                    "SELECT intent_id, blocker_ids_json FROM publication_intents WHERE namespace_key = ? AND status = 'PENDING'",
+                    (key,),
+                )
+                for existing_id, bids_json in cursor.fetchall():
+                    existing_bids = set(json.loads(bids_json))
+                    overlap = existing_bids.intersection(set(blocker_ids))
+                    if overlap and existing_id != intent_id:
+                        raise PublicationContentionError(f"Exclusive publication authority for blocker(s) {sorted(overlap)} " f"is already held by intent {existing_id!r}")
+
+                conn.execute(
+                    """
+                    INSERT INTO publication_intents (
+                        intent_id, namespace_key, destination_repo, destination_pr,
+                        reviewed_head_sha, reviewed_base_sha, review_attempt_id,
+                        payload_hash, blocker_ids_json, status, confirmed_roots_json,
+                        failure_reason, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '[]', NULL, ?, ?)
+                    """,
+                    (
+                        intent_id,
+                        key,
+                        destination_repo,
+                        destination_pr,
+                        reviewed_head_sha,
+                        reviewed_base_sha,
+                        review_attempt_id,
+                        computed_hash,
+                        json.dumps(list(blocker_ids)),
+                        now,
+                        now,
+                    ),
+                )
+
+                conn.execute("COMMIT")
+                return PublicationIntentSnapshot(
+                    intent_id=intent_id,
+                    namespace_key=key,
+                    destination_repo=destination_repo,
+                    destination_pr=destination_pr,
+                    reviewed_head_sha=reviewed_head_sha,
+                    reviewed_base_sha=reviewed_base_sha,
+                    review_attempt_id=review_attempt_id,
+                    payload_hash=computed_hash,
+                    blocker_ids=tuple(blocker_ids),
+                    status="PENDING",
+                    confirmed_roots=(),
+                    failure_reason=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn.close()
+
+    def confirm_publication_intent(
+        self,
+        api_origin: str,
+        repository: str,
+        pr_number: int,
+        intent_id: str,
+        confirmed_root_aliases: Sequence[tuple[str, int]],
+        evidence: str = "",
+    ) -> BlockerLedgerSnapshot:
+        """Confirm a publication intent, recording verified root comment aliases (REQ-007, REQ-008)."""
+        self._check_db_integrity()
+        norm_origin = normalize_api_origin(api_origin)
+        key = _make_namespace_key(norm_origin, repository, pr_number)
+        now = _now_iso()
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+
+                cursor = conn.execute(
+                    """
+                    SELECT status, blocker_ids_json, reviewed_head_sha, reviewed_base_sha, review_attempt_id
+                    FROM publication_intents WHERE intent_id = ? AND namespace_key = ?
+                    """,
+                    (intent_id, key),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    raise BlockerPersistenceError(f"Publication intent {intent_id!r} not found in namespace {key}")
+
+                cursor = conn.execute("SELECT ledger_revision FROM namespaces WHERE namespace_key = ?", (key,))
+                rev_row = cursor.fetchone()
+                current_rev = rev_row[0] if rev_row else 1
+                new_rev = current_rev + 1
+
+                confirmed_pairs: list[tuple[str, int]] = []
+                for item in confirmed_root_aliases:
+                    if isinstance(item, BlockerAlias):
+                        bid = item.blocker_id
+                        cid = int(item.alias_value)
+                    else:
+                        bid, cid = item
+                    confirmed_pairs.append((bid, cid))
+                    c = conn.execute(
+                        """
+                        SELECT 1 FROM blocker_aliases
+                        WHERE namespace_key = ? AND blocker_id = ? AND alias_type = 'github_root_comment' AND alias_value = ?
+                        """,
+                        (key, bid, str(cid)),
+                    )
+                    if c.fetchone() is None:
+                        aid = f"alias_{uuid.uuid4().hex[:12]}"
+                        conn.execute(
+                            """
+                            INSERT INTO blocker_aliases (
+                                alias_id, namespace_key, blocker_id, alias_type,
+                                alias_value, concern_id, created_at
+                            ) VALUES (?, ?, ?, 'github_root_comment', ?, NULL, ?)
+                            """,
+                            (aid, key, bid, str(cid), now),
+                        )
+                    conn.execute(
+                        "UPDATE blockers SET last_updated_at = ?, last_updated_revision = ? WHERE blocker_id = ?",
+                        (now, new_rev, bid),
+                    )
+
+                conn.execute(
+                    """
+                    UPDATE publication_intents
+                    SET status = 'CONFIRMED', confirmed_roots_json = ?, updated_at = ?
+                    WHERE intent_id = ? AND namespace_key = ?
+                    """,
+                    (json.dumps([[b, c] for b, c in confirmed_pairs]), now, intent_id, key),
+                )
+
+                conn.execute(
+                    "UPDATE namespaces SET ledger_revision = ?, updated_at = ? WHERE namespace_key = ?",
+                    (new_rev, now, key),
+                )
+
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn.close()
+
+        return self.get_snapshot(norm_origin, repository, pr_number, require_retained_state=True)
+
+    def reject_publication_intent(
+        self,
+        api_origin: str,
+        repository: str,
+        pr_number: int,
+        intent_id: str,
+        reason: str,
+    ) -> None:
+        """Mark a publication intent as definitively rejected (REQ-008)."""
+        self._check_db_integrity()
+        norm_origin = normalize_api_origin(api_origin)
+        key = _make_namespace_key(norm_origin, repository, pr_number)
+        now = _now_iso()
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """
+                    UPDATE publication_intents
+                    SET status = 'REJECTED', failure_reason = ?, updated_at = ?
+                    WHERE intent_id = ? AND namespace_key = ?
+                    """,
+                    (reason, now, intent_id, key),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn.close()
+
+    def get_publication_intent(
+        self,
+        api_origin: str,
+        repository: str,
+        pr_number: int,
+        intent_id: str,
+    ) -> Optional[PublicationIntentSnapshot]:
+        """Fetch publication intent snapshot if present."""
+        self._check_db_integrity()
+        norm_origin = normalize_api_origin(api_origin)
+        key = _make_namespace_key(norm_origin, repository, pr_number)
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT intent_id, namespace_key, destination_repo, destination_pr,
+                           reviewed_head_sha, reviewed_base_sha, review_attempt_id,
+                           payload_hash, blocker_ids_json, status, confirmed_roots_json,
+                           failure_reason, created_at, updated_at
+                    FROM publication_intents
+                    WHERE intent_id = ? AND namespace_key = ?
+                    """,
+                    (intent_id, key),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                bids = tuple(json.loads(row[8]))
+                confirmed_roots_raw = json.loads(row[10])
+                confirmed_roots = tuple((str(b), int(c)) for b, c in confirmed_roots_raw)
+                return PublicationIntentSnapshot(
+                    intent_id=row[0],
+                    namespace_key=row[1],
+                    destination_repo=row[2],
+                    destination_pr=row[3],
+                    reviewed_head_sha=row[4],
+                    reviewed_base_sha=row[5],
+                    review_attempt_id=row[6],
+                    payload_hash=row[7],
+                    blocker_ids=bids,
+                    status=row[9],
+                    confirmed_roots=confirmed_roots,
+                    failure_reason=row[11],
+                    created_at=row[12],
+                    updated_at=row[13],
+                )
+            finally:
+                conn.close()
+
+    def get_pending_publication_intents(
+        self,
+        api_origin: str,
+        repository: str,
+        pr_number: int,
+    ) -> tuple[PublicationIntentSnapshot, ...]:
+        """Return all PENDING publication intents for a PR namespace."""
+        self._check_db_integrity()
+        norm_origin = normalize_api_origin(api_origin)
+        key = _make_namespace_key(norm_origin, repository, pr_number)
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT intent_id, namespace_key, destination_repo, destination_pr,
+                           reviewed_head_sha, reviewed_base_sha, review_attempt_id,
+                           payload_hash, blocker_ids_json, status, confirmed_roots_json,
+                           failure_reason, created_at, updated_at
+                    FROM publication_intents
+                    WHERE namespace_key = ? AND status = 'PENDING'
+                    ORDER BY created_at ASC
+                    """,
+                    (key,),
+                )
+                results: list[PublicationIntentSnapshot] = []
+                for row in cursor.fetchall():
+                    bids = tuple(json.loads(row[8]))
+                    confirmed_roots_raw = json.loads(row[10])
+                    confirmed_roots = tuple((str(b), int(c)) for b, c in confirmed_roots_raw)
+                    results.append(
+                        PublicationIntentSnapshot(
+                            intent_id=row[0],
+                            namespace_key=row[1],
+                            destination_repo=row[2],
+                            destination_pr=row[3],
+                            reviewed_head_sha=row[4],
+                            reviewed_base_sha=row[5],
+                            review_attempt_id=row[6],
+                            payload_hash=row[7],
+                            blocker_ids=bids,
+                            status=row[9],
+                            confirmed_roots=confirmed_roots,
+                            failure_reason=row[11],
+                            created_at=row[12],
+                            updated_at=row[13],
+                        )
+                    )
+                return tuple(results)
+            finally:
+                conn.close()

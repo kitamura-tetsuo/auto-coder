@@ -6,6 +6,7 @@ import re
 import threading
 import time
 import tomllib
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,8 +25,18 @@ from .adversarial_validator import (
     format_change_provenance_disposition,
     format_test_oracle_gap_comment,
 )
+from .canonical_pr_blocker_ledger import (
+    BlockerLedgerSnapshot,
+    CanonicalPRBlockerLedger,
+    PublicationContentionError,
+    StaleLedgerRevisionError,
+)
 from .llm_backend_config import deep_merge_config_dict, get_active_repo_name, resolve_repo_override_path
 from .logger_config import get_logger
+from .pr_finding_reconciliation import (
+    parse_historical_pr_review_roots,
+    reconcile_pr_findings_before_publication,
+)
 from .util.github_request_outcome import (
     DeliveryCertainty,
     GitHubApiOutcome,
@@ -145,12 +156,14 @@ class GitHubAppReviewer:
         api_url: str = "https://api.github.com",
         client: Optional[httpx.Client] = None,
         clock: Callable[[], float] = time.time,
+        ledger: Optional[CanonicalPRBlockerLedger] = None,
     ) -> None:
         self._config = config
         self._api_url = api_url.rstrip("/")
         base_client = client or httpx.Client(timeout=30.0)
         self._client = instrument_github_client(base_client, subsystem="reviewer-app", api_origin=self._api_url)
         self._clock = clock
+        self._ledger = ledger
         self._tokens: dict[tuple[str, frozenset[tuple[str, str]]], _CachedToken] = {}
         self._identity: Optional[ReviewerAppIdentity] = None
         self._lock = threading.Lock()
@@ -370,7 +383,17 @@ class GitHubAppReviewer:
             self._identity = identity
             return identity
 
-    def publish(self, repo_name: str, pr_number: int, validated_head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:
+    def publish(
+        self,
+        repo_name: str,
+        pr_number: int,
+        validated_head_sha: str,
+        result: AdversarialValidationResult,
+        *,
+        ledger: Optional[CanonicalPRBlockerLedger] = None,
+        operation_id: Optional[str] = None,
+        expected_ledger_revision: Optional[int] = None,
+    ) -> ReviewPublicationResult:
         """Submit a native review, failing closed on auth, head races, or API errors."""
         event = "APPROVE" if result.allows_auto_merge else "REQUEST_CHANGES" if result.needs_fix or result.needs_tests else "COMMENT"
         try:
@@ -379,11 +402,80 @@ class GitHubAppReviewer:
             current_sha = current_pr.get("head", {}).get("sha") if isinstance(current_pr, dict) else None
             if not validated_head_sha or current_sha != validated_head_sha:
                 return ReviewPublicationResult(False, event, "Pull request head changed after adversarial validation")
+
+            effective_ledger = ledger if ledger is not None else self._ledger
             comments: list[dict[str, object]] = []
             file_level_clarification: Optional[dict[str, object]] = None
-            published_gap_ids = self._published_test_oracle_gap_ids(repo_name, pr_number, token) if result.open_test_oracle_gaps else set()
-            gaps_to_publish = [gap for gap in result.open_test_oracle_gaps if gap.gap_id not in published_gap_ids]
-            if result.needs_fix or result.needs_tests or (result.unexplained_changes and result.publish_clarification_thread):
+            unrooted_findings: list[AdversarialValidationFinding] = list(result.findings)
+            unrooted_finding_blockers: list[str] = []
+            unrooted_gaps: list[TestOracleGap] = list(result.open_test_oracle_gaps)
+            unrooted_blocker_ids: list[str] = []
+            finding_blockers: dict[int, str] = {}
+            gap_blockers: dict[str, str] = {}
+            reconciled_snapshot: Optional[BlockerLedgerSnapshot] = None
+
+            if effective_ledger is not None:
+                comments_raw: list[dict[str, object]] = []
+                page = 1
+                try:
+                    while True:
+                        page_resp = self._request(
+                            "GET",
+                            f"/repos/{repo_name}/pulls/{pr_number}/comments?per_page=100&page={page}",
+                            token,
+                        ).json()
+                        if not isinstance(page_resp, list):
+                            raise RuntimeError("GitHub did not return pull-request review comments")
+                        comments_raw.extend(item for item in page_resp if isinstance(item, dict))
+                        if len(page_resp) < 100:
+                            break
+                        page += 1
+                except Exception as exc:
+                    try:
+                        snap = effective_ledger.get_snapshot(self._api_url, repo_name, pr_number, require_retained_state=True)
+                        if snap.get_open_blockers():
+                            return ReviewPublicationResult(False, event, f"Previous root comments unavailable; reconciliation pending ({exc})")
+                    except Exception:
+                        pass
+                    raise
+
+                identity = self.get_identity()
+                hist_parse = parse_historical_pr_review_roots(
+                    comments_raw,
+                    reviewer_identity=identity,
+                    repo_name=repo_name,
+                    pr_number=pr_number,
+                )
+
+                reconciliation = reconcile_pr_findings_before_publication(
+                    effective_ledger,
+                    self._api_url,
+                    repo_name,
+                    pr_number,
+                    issue_number=0,
+                    head_sha=validated_head_sha,
+                    base_sha="",
+                    val_result=result,
+                    historical_parse=hist_parse,
+                    attempt_id=result.attempt_id,
+                    expected_ledger_revision=expected_ledger_revision,
+                )
+                if reconciliation.is_ambiguous:
+                    return ReviewPublicationResult(False, event, f"Unresolved association ambiguity: {reconciliation.ambiguity_reason}")
+
+                reconciled_snapshot = reconciliation.snapshot
+                unrooted_findings = list(reconciliation.unrooted_findings)
+                unrooted_finding_blockers = list(reconciliation.unrooted_finding_blockers)
+                unrooted_gaps = list(reconciliation.unrooted_gaps)
+                unrooted_blocker_ids = list(reconciliation.unrooted_blocker_ids)
+                gap_blockers = dict(reconciliation.blocker_for_gap)
+            elif result.open_test_oracle_gaps:
+                published_gap_ids = self._published_test_oracle_gap_ids(repo_name, pr_number, token)
+                unrooted_gaps = [gap for gap in result.open_test_oracle_gaps if gap.gap_id not in published_gap_ids]
+
+            gaps_to_publish = unrooted_gaps
+
+            if unrooted_findings or unrooted_gaps or (result.unexplained_changes and result.publish_clarification_thread):
                 changed_files: dict[str, object] = {}
                 page = 1
                 while True:
@@ -394,8 +486,12 @@ class GitHubAppReviewer:
                     if len(files_response) < 100:
                         break
                     page += 1
-                comments = [self._finding_comment(finding, changed_files) for finding in result.findings]
-                comments.extend(self._test_oracle_gap_comment(gap, changed_files) for gap in gaps_to_publish)
+                for idx, finding in enumerate(unrooted_findings):
+                    bid = unrooted_finding_blockers[idx] if idx < len(unrooted_finding_blockers) else None
+                    comments.append(self._finding_comment(finding, changed_files, blocker_id=bid))
+                for gap in gaps_to_publish:
+                    bid = gap_blockers.get(gap.gap_id)
+                    comments.append(self._test_oracle_gap_comment(gap, changed_files, blocker_id=bid))
                 if result.unexplained_changes and result.publish_clarification_thread:
                     clarification_body = format_change_provenance_clarification(result.unexplained_changes)
                     unexplained_paths = [path for item in result.unexplained_changes for path in item.paths if path in changed_files]
@@ -416,6 +512,25 @@ class GitHubAppReviewer:
                     else:
                         raise ValueError("Change-provenance clarification must reference a changed file")
 
+            intent_id = operation_id or f"pub_{repo_name.replace('/', '_')}_{pr_number}_{validated_head_sha[:10]}_{uuid.uuid4().hex[:6]}"
+            if effective_ledger is not None and unrooted_blocker_ids and reconciled_snapshot:
+                try:
+                    effective_ledger.record_publication_intent(
+                        api_origin=self._api_url,
+                        repository=repo_name,
+                        pr_number=pr_number,
+                        intent_id=intent_id,
+                        expected_ledger_revision=reconciled_snapshot.ledger_revision,
+                        blocker_ids=unrooted_blocker_ids,
+                        destination_repo=repo_name,
+                        destination_pr=pr_number,
+                        reviewed_head_sha=validated_head_sha,
+                        reviewed_base_sha="",
+                        review_attempt_id=result.attempt_id,
+                    )
+                except (PublicationContentionError, StaleLedgerRevisionError) as exc:
+                    return ReviewPublicationResult(False, event, f"Publication authority refused: {exc}")
+
             # A standalone file-level review comment is the only supported REST
             # shape when no changed file exposes a represented diff line. Create
             # it before the durable verdict so a failed comment request cannot
@@ -427,21 +542,43 @@ class GitHubAppReviewer:
                     token,
                     json=file_level_clarification,
                 )
-            self._request(
-                "POST",
-                f"/repos/{repo_name}/pulls/{pr_number}/reviews",
-                token,
-                json={
-                    "body": format_adversarial_review_summary(
-                        result,
-                        validated_head_sha,
-                        attached_test_oracle_gap_count=len(gaps_to_publish),
-                    ),
-                    "event": event,
-                    "commit_id": validated_head_sha,
-                    **({"comments": comments} if comments else {}),
-                },
-            )
+            try:
+                self._request(
+                    "POST",
+                    f"/repos/{repo_name}/pulls/{pr_number}/reviews",
+                    token,
+                    json={
+                        "body": format_adversarial_review_summary(
+                            result,
+                            validated_head_sha,
+                            attached_test_oracle_gap_count=len(gaps_to_publish),
+                        ),
+                        "event": event,
+                        "commit_id": validated_head_sha,
+                        **({"comments": comments} if comments else {}),
+                    },
+                )
+            except GitHubRequestError as exc:
+                if effective_ledger is not None and unrooted_blocker_ids:
+                    if exc.outcome.status in {400, 422, 401, 403}:
+                        effective_ledger.reject_publication_intent(
+                            self._api_url,
+                            repo_name,
+                            pr_number,
+                            intent_id,
+                            reason=exc.outcome.message or "Request failed",
+                        )
+                raise
+
+            if effective_ledger is not None and unrooted_blocker_ids:
+                effective_ledger.confirm_publication_intent(
+                    self._api_url,
+                    repo_name,
+                    pr_number,
+                    intent_id=intent_id,
+                    confirmed_root_aliases=(),
+                )
+
             for disposition in result.thread_dispositions:
                 root_comment_id = result.provenance_thread_comment_ids.get(disposition.thread_id)
                 if disposition.status == "ADDRESSED" or root_comment_id is None:
@@ -489,26 +626,40 @@ class GitHubAppReviewer:
             page += 1
 
     @staticmethod
-    def _finding_comment(finding: AdversarialValidationFinding, changed_files: dict[str, object]) -> dict[str, object]:
+    def _finding_comment(
+        finding: AdversarialValidationFinding,
+        changed_files: dict[str, object],
+        blocker_id: Optional[str] = None,
+    ) -> dict[str, object]:
         """Build one review comment anchored to a line accepted by nested reviews."""
+        body = format_adversarial_finding_comment(finding)
+        if blocker_id and f"Blocker identity: `{blocker_id}`" not in body:
+            body += f"\n\nBlocker identity: `{blocker_id}`"
         return GitHubAppReviewer._anchored_comment(
             finding.anchor_path,
             finding.anchor_line,
             finding.anchor_side,
             finding.anchor_start_line,
-            format_adversarial_finding_comment(finding),
+            body,
             changed_files,
         )
 
     @staticmethod
-    def _test_oracle_gap_comment(gap: TestOracleGap, changed_files: dict[str, object]) -> dict[str, object]:
+    def _test_oracle_gap_comment(
+        gap: TestOracleGap,
+        changed_files: dict[str, object],
+        blocker_id: Optional[str] = None,
+    ) -> dict[str, object]:
         """Build one review thread that requests focused regression protection."""
+        body = format_test_oracle_gap_comment(gap)
+        if blocker_id and f"Blocker identity: `{blocker_id}`" not in body:
+            body += f"\n\nBlocker identity: `{blocker_id}`"
         return GitHubAppReviewer._anchored_comment(
             gap.anchor_path,
             gap.anchor_line,
             gap.anchor_side,
             gap.anchor_start_line,
-            format_test_oracle_gap_comment(gap),
+            body,
             changed_files,
         )
 
@@ -604,14 +755,32 @@ def publish_issue_review(repo_name: str, issue_number: int, body: str, authorize
     return reviewer.publish_issue_comment(repo_name, issue_number, body, authorize_fn)
 
 
-def publish_adversarial_review(repo_name: str, pr_number: int, head_sha: str, result: AdversarialValidationResult) -> ReviewPublicationResult:
+def publish_adversarial_review(
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    result: AdversarialValidationResult,
+    *,
+    ledger: Optional[CanonicalPRBlockerLedger] = None,
+    operation_id: Optional[str] = None,
+    expected_ledger_revision: Optional[int] = None,
+) -> ReviewPublicationResult:
     """Load dedicated credentials and publish without touching the user client."""
     try:
-        reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name))
+        effective_ledger = ledger if ledger is not None else CanonicalPRBlockerLedger()
+        reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name), ledger=effective_ledger)
     except Exception:
         logger.bind(repository=repo_name, phase="configuration", target=str(pr_number)).error("Dedicated reviewer GitHub App configuration could not be loaded")
         return ReviewPublicationResult(False, "", "Dedicated reviewer GitHub App configuration is unavailable")
-    return reviewer.publish(repo_name, pr_number, head_sha, result)
+    return reviewer.publish(
+        repo_name,
+        pr_number,
+        head_sha,
+        result,
+        ledger=effective_ledger,
+        operation_id=operation_id,
+        expected_ledger_revision=expected_ledger_revision,
+    )
 
 
 def resolve_reviewer_app_identity(repo_name: Optional[str] = None) -> ReviewerAppIdentity:
