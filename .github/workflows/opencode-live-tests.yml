@@ -11,6 +11,7 @@ jobs:
   opencode-live-tests:
     name: OpenCode Live Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -34,10 +35,17 @@ jobs:
         run: |
           npm install -g opencode-ai@1.18.31
 
+      - name: Prepare OpenCode runtime image
+        timeout-minutes: 10
+        run: |
+          uv run python scripts/prepare_opencode_image.py
+
       - name: Run opencode_live-marked tests
+        timeout-minutes: 20
         env:
           AUTOCODER_OPENCODE_GIT_DEBUG_LOG: ${{ github.workspace }}/opencode-git-debug.log
           AUTOCODER_OPENCODE_VERBOSE_DEBUG: "1"
+          AUTO_CODER_REQUIRE_OPENCODE_LIVE: "1"
         run: |
           uv run pytest -m opencode_live -vv
 
@@ -57,4 +65,5 @@ jobs:
             htmlcov/
             .pytest_cache/
             opencode-git-debug.log
+            opencode-live-logs/
           if-no-files-found: ignore
