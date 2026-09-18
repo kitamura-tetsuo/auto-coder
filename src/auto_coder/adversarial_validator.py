@@ -391,6 +391,8 @@ class ReviewThreadDisposition:
     status: str = ""  # "ADDRESSED", "STILL_VALID", "INCONCLUSIVE"
     rationale: str = ""
     evidence: str = ""
+    blocker_id: Optional[str] = None
+    concern_ids: tuple[str, ...] = ()
 
 
 VALID_REVIEW_THREAD_DISPOSITION_STATUSES = {"ADDRESSED", "STILL_VALID", "INCONCLUSIVE"}
@@ -1402,7 +1404,24 @@ def _extract_thread_dispositions(raw_value: Any) -> List[ReviewThreadDisposition
         if not thread_id or status not in VALID_REVIEW_THREAD_DISPOSITION_STATUSES or not rationale or not evidence:
             logger.warning(f"Dropping malformed thread_dispositions entry for thread_id={thread_id!r}: incomplete or invalid fields")
             continue
-        dispositions.append(ReviewThreadDisposition(thread_id=thread_id, status=status, rationale=rationale, evidence=evidence))
+        raw_blocker_id = item.get("blocker_id")
+        blocker_id = str(raw_blocker_id).strip() if raw_blocker_id is not None and str(raw_blocker_id).strip() else None
+        raw_concern_ids = item.get("concern_ids")
+        concern_ids: tuple[str, ...] = ()
+        if isinstance(raw_concern_ids, list):
+            concern_ids = tuple(str(c).strip() for c in raw_concern_ids if str(c).strip())
+        elif isinstance(raw_concern_ids, str) and raw_concern_ids.strip():
+            concern_ids = (raw_concern_ids.strip(),)
+        dispositions.append(
+            ReviewThreadDisposition(
+                thread_id=thread_id,
+                status=status,
+                rationale=rationale,
+                evidence=evidence,
+                blocker_id=blocker_id,
+                concern_ids=concern_ids,
+            )
+        )
     return dispositions
 
 
