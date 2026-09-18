@@ -45,6 +45,7 @@ class TestClaudeRoutineCloudTask:
                     repo_name="owner/repo",
                     base_branch="main",
                     title="Refactor Title",
+                    is_noedit=False,
                 )
 
     def test_get_task_without_pr_is_paused(self, mock_backend_config, tmp_path):
