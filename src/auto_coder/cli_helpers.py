@@ -1037,6 +1037,17 @@ def _resolve_adversarial_validation_candidate_route(validation_kind: Optional[st
     configuration never falls further even when it later turns out to contain no
     otherwise-valid candidate.
     """
+    # Strong PR adversarial validation is a separate dedicated section
+    # (REQ-007: distinct from ordinary PR review, leaves ordinary routing unchanged)
+    if validation_kind == "pr":
+        strong_order = config.get_strong_pr_adversarial_validation_backend_order()
+        strong_config = config.get_backend_strong_pr_adversarial_validation()
+        if strong_order or strong_config is not None:
+            dedicated_candidates: List[str] = list(strong_order)
+            if not dedicated_candidates and strong_config is not None:
+                dedicated_candidates = [strong_config.name]
+            return dedicated_candidates
+
     dedicated_order: List[str] = []
     dedicated_config = None
     if validation_kind == "issue":

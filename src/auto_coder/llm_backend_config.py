@@ -212,6 +212,7 @@ def _normalize_config_dict(data: Dict[str, Any]) -> Dict[str, Any]:
         "backend_adversarial_validation",
         "backend_issue_adversarial_validation",
         "backend_pr_adversarial_validation",
+        "backend_strong_pr_adversarial_validation",
     }
 
     for key, value in data.items():
@@ -442,6 +443,11 @@ class LLMBackendConfiguration:
     backend_pr_adversarial_validation: Optional[BackendConfig] = None
     backend_pr_adversarial_validation_order: List[str] = field(default_factory=list)
     backend_pr_adversarial_validation_default: Optional[str] = None
+    # Dedicated backend configuration for strong PR adversarial validation.
+    # Distinct from ordinary PR review.
+    backend_strong_pr_adversarial_validation: Optional[BackendConfig] = None
+    backend_strong_pr_adversarial_validation_order: List[str] = field(default_factory=list)
+    backend_strong_pr_adversarial_validation_default: Optional[str] = None
     # Environment variable overrides
     env_prefix: str = "AUTO_CODER_"
     # Configuration file path - relative to user's home directory
@@ -857,6 +863,18 @@ class LLMBackendConfiguration:
             fallback_name = backend_pr_adversarial_validation_data.get("name", "backend_pr_adversarial_validation")
             backend_pr_adversarial_validation = parse_backend_config(fallback_name, backend_pr_adversarial_validation_data)
 
+        # Parse backend_strong_pr_adversarial_validation section
+        backend_strong_pr_adversarial_validation_data = data.get("backend_strong_pr_adversarial_validation", {})
+        backend_strong_pr_adversarial_validation = None
+        backend_strong_pr_adversarial_validation_order = []
+        backend_strong_pr_adversarial_validation_default = None
+
+        if backend_strong_pr_adversarial_validation_data:
+            backend_strong_pr_adversarial_validation_order = backend_strong_pr_adversarial_validation_data.get("order", [])
+            backend_strong_pr_adversarial_validation_default = backend_strong_pr_adversarial_validation_data.get("default")
+            fallback_name = backend_strong_pr_adversarial_validation_data.get("name", "backend_strong_pr_adversarial_validation")
+            backend_strong_pr_adversarial_validation = parse_backend_config(fallback_name, backend_strong_pr_adversarial_validation_data)
+
         config = cls(
             backend_order=backend_order,
             default_backend=default_backend,
@@ -880,6 +898,9 @@ class LLMBackendConfiguration:
             backend_pr_adversarial_validation=backend_pr_adversarial_validation,
             backend_pr_adversarial_validation_order=backend_pr_adversarial_validation_order,
             backend_pr_adversarial_validation_default=backend_pr_adversarial_validation_default,
+            backend_strong_pr_adversarial_validation=backend_strong_pr_adversarial_validation,
+            backend_strong_pr_adversarial_validation_order=backend_strong_pr_adversarial_validation_order,
+            backend_strong_pr_adversarial_validation_default=backend_strong_pr_adversarial_validation_default,
             config_file_path=config_path or "~/.auto-coder/llm_config.toml",
         )
 
@@ -1201,6 +1222,100 @@ class LLMBackendConfiguration:
             if self.backend_pr_adversarial_validation_default:
                 backend_pr_adversarial_validation_data["default"] = self.backend_pr_adversarial_validation_default
 
+        # Prepare backend_pr_adversarial_validation data
+        backend_pr_adversarial_validation_data = {}
+        if self.backend_pr_adversarial_validation:
+            config = self.backend_pr_adversarial_validation
+            raw_config = {
+                "name": config.name,
+                "enabled": config.enabled,
+                "model": config.model,
+                "api_key": config.api_key,
+                "base_url": config.base_url,
+                "temperature": config.temperature,
+                "timeout": config.timeout,
+                "max_retries": config.max_retries,
+                "openai_api_key": config.openai_api_key,
+                "openai_base_url": config.openai_base_url,
+                "openrouter_api_key": config.openrouter_api_key,
+                "openrouter_base_url": config.openrouter_base_url,
+                "claude_code_oauth_token": config.claude_code_oauth_token,
+                "claude_code_routine_token": config.claude_code_routine_token,
+                "url": config.url,
+                "environment_id": config.environment_id,
+                "attempts": config.attempts,
+                "extra_args": config.extra_args,
+                "providers": config.providers,
+                "usage_limit_retry_count": config.usage_limit_retry_count,
+                "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
+                "options": config.options,
+                "options_for_noedit": config.options_for_noedit,
+                "options_for_resume": config.options_for_resume,
+                "backend_type": config.backend_type,
+                "model_provider": config.model_provider,
+                "always_switch_after_execution": config.always_switch_after_execution,
+                "settings": config.settings,
+                "usage_markers": config.usage_markers,
+                "options_explicitly_set": config.options_explicitly_set,
+                "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
+            }
+            backend_pr_adversarial_validation_data = {k: v for k, v in raw_config.items() if v is not None}
+            if self.backend_pr_adversarial_validation_order:
+                backend_pr_adversarial_validation_data["order"] = self.backend_pr_adversarial_validation_order
+            if self.backend_pr_adversarial_validation_default:
+                backend_pr_adversarial_validation_data["default"] = self.backend_pr_adversarial_validation_default
+        elif self.backend_pr_adversarial_validation_order:
+            backend_pr_adversarial_validation_data = {"order": self.backend_pr_adversarial_validation_order}
+            if self.backend_pr_adversarial_validation_default:
+                backend_pr_adversarial_validation_data["default"] = self.backend_pr_adversarial_validation_default
+
+        # Prepare backend_strong_pr_adversarial_validation data
+        backend_strong_pr_adversarial_validation_data = {}
+        if self.backend_strong_pr_adversarial_validation:
+            config = self.backend_strong_pr_adversarial_validation
+            raw_config = {
+                "name": config.name,
+                "enabled": config.enabled,
+                "model": config.model,
+                "api_key": config.api_key,
+                "base_url": config.base_url,
+                "temperature": config.temperature,
+                "timeout": config.timeout,
+                "max_retries": config.max_retries,
+                "openai_api_key": config.openai_api_key,
+                "openai_base_url": config.openai_base_url,
+                "openrouter_api_key": config.openrouter_api_key,
+                "openrouter_base_url": config.openrouter_base_url,
+                "claude_code_oauth_token": config.claude_code_oauth_token,
+                "claude_code_routine_token": config.claude_code_routine_token,
+                "url": config.url,
+                "environment_id": config.environment_id,
+                "attempts": config.attempts,
+                "extra_args": config.extra_args,
+                "providers": config.providers,
+                "usage_limit_retry_count": config.usage_limit_retry_count,
+                "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
+                "options": config.options,
+                "options_for_noedit": config.options_for_noedit,
+                "options_for_resume": config.options_for_resume,
+                "backend_type": config.backend_type,
+                "model_provider": config.model_provider,
+                "always_switch_after_execution": config.always_switch_after_execution,
+                "settings": config.settings,
+                "usage_markers": config.usage_markers,
+                "options_explicitly_set": config.options_explicitly_set,
+                "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
+            }
+            backend_strong_pr_adversarial_validation_data = {k: v for k, v in raw_config.items() if v is not None}
+            if self.backend_strong_pr_adversarial_validation_order:
+                backend_strong_pr_adversarial_validation_data["order"] = self.backend_strong_pr_adversarial_validation_order
+            if self.backend_strong_pr_adversarial_validation_default:
+                backend_strong_pr_adversarial_validation_data["default"] = self.backend_strong_pr_adversarial_validation_default
+        elif self.backend_strong_pr_adversarial_validation_order:
+            backend_strong_pr_adversarial_validation_data = {"order": self.backend_strong_pr_adversarial_validation_order}
+            if self.backend_strong_pr_adversarial_validation_default:
+                backend_strong_pr_adversarial_validation_data["default"] = self.backend_strong_pr_adversarial_validation_default
+
         data = {
             "backend": {"order": self.backend_order, "default": self.default_backend},
             "quota_selection": {"strategy": self.quota_selection_strategy},
@@ -1231,6 +1346,10 @@ class LLMBackendConfiguration:
         # Add backend_pr_adversarial_validation section if configured
         if backend_pr_adversarial_validation_data:
             data["backend_pr_adversarial_validation"] = backend_pr_adversarial_validation_data
+
+        # Add backend_strong_pr_adversarial_validation section if configured
+        if backend_strong_pr_adversarial_validation_data:
+            data["backend_strong_pr_adversarial_validation"] = backend_strong_pr_adversarial_validation_data
         # Use os.open to ensure file is created with 600 permissions
         try:
             fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1276,6 +1395,8 @@ class LLMBackendConfiguration:
             return self.backend_issue_adversarial_validation
         if self.backend_pr_adversarial_validation and self.backend_pr_adversarial_validation.name == backend_name:
             return self.backend_pr_adversarial_validation
+        if self.backend_strong_pr_adversarial_validation and self.backend_strong_pr_adversarial_validation.name == backend_name:
+            return self.backend_strong_pr_adversarial_validation
         return None
 
     def get_active_backends(self) -> List[str]:
@@ -1448,6 +1569,30 @@ class LLMBackendConfiguration:
         """Get the model for the dedicated PR adversarial-validation backend."""
         if self.backend_pr_adversarial_validation and self.backend_pr_adversarial_validation.model:
             return self.backend_pr_adversarial_validation.model
+        return None
+
+    def get_backend_strong_pr_adversarial_validation(self) -> Optional[BackendConfig]:
+        """Get the dedicated strong PR adversarial-validation backend configuration, if present."""
+        return self.backend_strong_pr_adversarial_validation
+
+    def get_strong_pr_adversarial_validation_backend_order(self) -> List[str]:
+        """Get the dedicated strong PR adversarial-validation backend order."""
+        return list(self.backend_strong_pr_adversarial_validation_order)
+
+    def get_strong_pr_adversarial_validation_default_backend(self) -> Optional[str]:
+        """Get the default backend for the dedicated strong PR adversarial-validation configuration."""
+        if self.backend_strong_pr_adversarial_validation_default:
+            return self.backend_strong_pr_adversarial_validation_default
+        if self.backend_strong_pr_adversarial_validation_order:
+            return self.backend_strong_pr_adversarial_validation_order[0]
+        if self.backend_strong_pr_adversarial_validation:
+            return self.backend_strong_pr_adversarial_validation.name
+        return None
+
+    def get_model_for_backend_strong_pr_adversarial_validation(self) -> Optional[str]:
+        """Get the model for the dedicated strong PR adversarial-validation backend."""
+        if self.backend_strong_pr_adversarial_validation and self.backend_strong_pr_adversarial_validation.model:
+            return self.backend_strong_pr_adversarial_validation.model
         return None
 
     def get_model_for_backend(self, backend_name: str) -> Optional[str]:
