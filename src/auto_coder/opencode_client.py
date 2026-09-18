@@ -382,8 +382,9 @@ class _NoEditWorkspaceState:
 class OpenCodeClient(LLMClientBase):
     """Run a configured OpenCode provider/model while Auto-Coder keeps Git/GitHub ownership."""
 
-    def __init__(self, backend_name: Optional[str] = None) -> None:
+    def __init__(self, backend_name: Optional[str] = None, use_noedit_options: bool = False) -> None:
         super().__init__()
+        self.use_noedit_options = use_noedit_options
         self._resume_session_id: Optional[str] = None
         config = get_llm_config()
         self.config_backend = config.get_backend_config(backend_name or "opencode")
@@ -930,6 +931,7 @@ class OpenCodeClient(LLMClientBase):
         return "\n\n".join(text.strip() for text in final_texts if text.strip())
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+        is_noedit = is_noedit or self.use_noedit_options
         cwd = self._execution_cwd()
         if not self._is_git_repository(cwd):
             raise RuntimeError("OpenCode backend requires an execution directory inside a Git repository")

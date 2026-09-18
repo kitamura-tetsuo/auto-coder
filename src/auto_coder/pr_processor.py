@@ -3398,7 +3398,7 @@ def _handle_pr_merge(
                                     record_effect(review_target, active_review_id, "superseded", {"phase": "gap-state-acceptance", "observed_head": observed_head})
                                     return actions
                                 checkpoint = val_result.reviewer_session_checkpoint
-                                if checkpoint.recovered_file_evidence and not validation_snapshot_is_current(
+                                if checkpoint.evidence_validation_snapshot and not validation_snapshot_is_current(
                                     repo_name,
                                     pr_data,
                                     config,
@@ -3425,6 +3425,7 @@ def _handle_pr_merge(
                                     registry.save(val_result.reviewer_session_checkpoint)
                                 except Exception as e:
                                     logger.error(f"Failed to commit reviewer-gap state for PR #{pr_number}: {e}")
+                                    val_result.reviewer_session_checkpoint = None
                                     val_result.result = "ERROR"
                                     val_result.summary = "Reviewer-gap state could not be committed; independent closure effects were suppressed"
                                     val_result.diagnostic_category = "reviewer_gap_persistence_failure"

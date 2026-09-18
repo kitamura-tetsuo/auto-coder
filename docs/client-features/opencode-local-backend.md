@@ -161,3 +161,74 @@ invocation on the same client instance, whether that invocation succeeds or
 fails, so it can never resume an unrelated later call; an ordinary (fresh)
 invocation never carries a `--session` flag even if stale session state was
 seeded elsewhere (e.g. a prior/unrelated backend rotation).
+
+### Adversarial review and PR-scoped reviewer sessions
+
+OpenCode (`opencode` and named aliases with `backend_type = "opencode"`) is
+fully recognized as read-only review-capable
+(`is_read_only_review_capable_backend("opencode") is True`) and selectable for
+adversarial validation and specification analysis via:
+- `[backend_pr_adversarial_validation]` (dedicated PR adversarial validation order)
+- `[backend_issue_adversarial_validation]` (dedicated Issue specification and decomposition order)
+- `[backend_adversarial_validation]` (generic fallback order)
+- Dynamic high-score adversarial review routing
+
+Kind-specific sections take strict precedence over generic routes. When a
+kind-specific section is configured in `~/.auto-coder/llm_config.toml`, it is
+authoritative: an order that resolves to no candidate or an incapable backend
+blocks validation rather than silently falling back to generic
+`[backend_adversarial_validation]`.
+
+**Strict no-edit enforcement.** Adversarial review invocations always run with
+`is_noedit=True` (`use_noedit_options=True`), enforcing the generated
+`autocoder-noedit-*` agent policy that denies all execution, bash, edit, and write
+tools while permitting only `read`, `glob`, and `grep`. Preflight verification
+(`opencode debug agent <name>`) runs before task launch and must verify this exact
+tool denial policy; any preflight failure, missing command, or policy discrepancy
+fails closed before the prompt is submitted, with no fallback to editable execution.
+Invocation-level `git` and `gh` wrappers block modifying repository subcommands and
+deny `gh` completely.
+
+**Normalized assistant delivery.** The adversarial review parser receives only
+the normalized final assistant message text from a single consistent root session
+where `step_finish` reason is `stop`. Tool calls, reasoning blocks, intermediate
+assistant steps, and event stream envelopes are stripped before parsing. Malformed
+JSON, missing final text, non-`stop` termination, or contradictory results fail
+closed as structured review errors.
+
+**PR-scoped reviewer session persistence.** PR adversarial review maintains
+durable reviewer session checkpoints in `ReviewerSessionRegistry` (stored at
+`~/.auto-coder/reviewer_sessions.json`), keyed by
+`(repository, pr_number, backend_name, backend_type, model_name)`. Reviewer
+session state is completely decoupled from implementation task session state:
+review managers do not read, write, or alter `backend_session_state.json`.
+
+**Continuation lifecycle and workspace association.**
+- **Initial review:** When no session is associated with the PR for the selected
+  backend and model identity, Auto-Coder launches a fresh review invocation.
+- **Incremental rereview:** When an existing session is associated, Auto-Coder
+  attempts an exact continuation (`--session <session_id>`) in the current
+  execution directory. Because OpenCode associates sessions with the directory
+  where they were created, Auto-Coder preflights continuation using
+  `opencode session list --format json` in the current workspace. If the session
+  is not present in that workspace list or if continuation fails to resume
+  continuously (`_last_continue_session_resumed is False`), Auto-Coder starts a
+  fresh review in the current workspace and records a new session checkpoint
+  under the PR key (never relabeling or reusing stale history).
+- **Multi-step evidence completion:** During multi-step evidence completion
+  within an active review pass, continuation must match the exact session ID and
+  backend/model identity, with `_last_continue_session_resumed is True`. Any
+  session discontinuity or identity mismatch immediately terminates the review
+  as an ERROR.
+- **Snapshot binding and invalidation:** Review outcomes and session checkpoints
+  are bound to an immutable `evidence_validation_snapshot` (PR HEAD SHA and
+  normative Issue contract hash). Changes to the PR HEAD or Issue contract
+  invalidate applying older cached results, requiring a fresh validation pass.
+- **Persistence resilience and cleanup:** If writing to `ReviewerSessionRegistry`
+  fails, the unpersisted checkpoint is cleared from the validation result so
+  non-durable state is not assumed. When a PR is closed or merged, Auto-Coder
+  automatically removes its associated reviewer session entries.
+- **Failover:** If an OpenCode review backend fails, failover proceeds strictly
+  through configured eligible read-only review backends in priority order. If all
+  candidates fail or are exhausted, review fails closed, blocking PR merge.
+

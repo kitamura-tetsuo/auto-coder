@@ -455,11 +455,11 @@ def build_backend_manager(
             use_noedit_options=use_noedit_options,
         )
 
-    def _create_opencode_client(backend_name: str):
+    def _create_opencode_client(backend_name: str, use_noedit_options: bool = use_noedit_options):
         """Create an OpenCodeClient lazily."""
         from .opencode_client import OpenCodeClient
 
-        return OpenCodeClient(backend_name=backend_name)
+        return OpenCodeClient(backend_name=backend_name, use_noedit_options=use_noedit_options)
 
     def _create_claude_routine_client(backend_name: str, use_noedit_options: bool = False) -> Any:
         """Create a ClaudeRoutineClient."""
@@ -949,7 +949,7 @@ def create_cloud_backend_manager() -> Optional[BackendManager]:
         return None
 
 
-READ_ONLY_REVIEW_CAPABLE_TYPES = {"claude", "codex", "muse"}
+READ_ONLY_REVIEW_CAPABLE_TYPES = {"claude", "codex", "muse", "opencode"}
 
 
 def get_effective_backend_type(backend_name: Optional[str], config: Optional[Any] = None) -> Optional[str]:
@@ -969,7 +969,7 @@ def get_effective_backend_type(backend_name: Optional[str], config: Optional[Any
 def is_read_only_review_capable_backend(backend_name: Optional[str], config: Optional[Any] = None) -> bool:
     """Check if a backend provides synchronous read-only review execution based on resolved backend_type.
 
-    Only local clients with proven client-level read-only sandboxing (Claude, Codex, Muse)
+    Only local clients with proven client-level read-only sandboxing (Claude, Codex, Muse, OpenCode)
     are permitted for adversarial validation. Cloud agents (CodexCloud, ClaudeRoutine, Jules),
     MCP variants without sandbox sanitization (CodexMCP), and non-enforcing clients are rejected.
     """
