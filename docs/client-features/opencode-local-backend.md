@@ -98,3 +98,66 @@ exhausted transient provider transport failure raises
 `AutoCoderRetryableBackendError`; other terminal failures (execution,
 protocol, authentication, configuration) raise a backend failure with an
 actionable message.
+
+### Explicit session continuation
+
+After a successful fresh invocation, `get_last_session_id()` returns the
+opaque root provider session ID established by that run's own structured
+events (never inferred from text, a session listing, a timestamp, or another
+invocation); it is left unchanged by a failed or identity-inconsistent
+invocation rather than exposing a stale or wrong ID as that invocation's own
+result. `continue_session(session_id, prompt, is_noedit=...)` performs one
+finite, non-interactive, local continuation of exactly that caller-supplied
+session via `opencode run ... --session <id>`, transporting the new rendered
+prompt once through stdin followed by EOF; it never uses implicit
+`--continue`, `--fork`, or a replacement session, and a caller/configuration
+option that would conflict with the exact session, mode, model, directory,
+output format, or finite local execution (including a one-time model
+override attempted during a continuation) is rejected before the task is
+submitted. The requested `is_noedit` is authoritative on every continuation
+regardless of the session's own prior mode or permissions: a no-edit
+continuation goes through the same freshly generated, randomly named
+enforcing agent and preflight described above, independent of whatever mode
+originally created the session.
+
+A continuation is reported as resumed only once exit status is zero, no
+root-session error occurred, the final assistant message's `step_finish`
+reason is `stop`, and the observed root-session identity equals the
+requested ID; a missing/changed/absent session ID, an incomplete stream, or
+an error anywhere in the stream (even one following an otherwise-plausible
+final answer) fails the call instead of promoting a same-looking but
+non-continuous result. At the `BackendManager` boundary,
+`_last_continue_session_resumed` reflects this per attempt and is reset to
+`False` on any failure or on a fallback to a fresh session, another alias,
+or another backend/provider — even when that fallback itself returns a
+plausible answer under a different session.
+
+**Workspace association.** The real OpenCode CLI ties a continued session's
+actual tool execution to the directory it was originally *created* in, not
+to the `--dir` given for the continuation call itself (verified directly
+against the released CLI, not assumed from its documented flags): it either
+continues operating against that original directory if it still exists, or
+fails internally once it no longer does. Passing a different `--dir` on
+`--session` does not redirect it. Consequently, before submitting a
+continuation task, Auto-Coder runs the read-only `opencode session list
+--format json` in the current execution directory (itself scoped to the
+directory it runs in) and refuses the continuation — before any task is
+launched — unless the requested session ID appears in that directory's own
+list. This keeps a continuation from ever silently operating against, or
+crashing on, a workspace other than the caller's current one: if the
+provider session was created in a different temporary worktree that has
+since been replaced or removed (for example when `BackendManager` is not
+already running inside a dedicated per-task linked worktree, so its
+isolated-local-LLM-worktree wrapper creates and destroys its own fresh temp
+worktree per call), the continuation fails closed and `BackendManager`
+transparently falls back to a fresh session on the same backend, reporting
+non-continuity, rather than recreate the old worktree or return content from
+it. A continuation between calls that keep the same real execution directory
+(the normal case for Auto-Coder's own per-task worktree) is unaffected and
+succeeds, reading current file content.
+
+One-shot resume state is always consumed at the start of the next
+invocation on the same client instance, whether that invocation succeeds or
+fails, so it can never resume an unrelated later call; an ordinary (fresh)
+invocation never carries a `--session` flag even if stale session state was
+seeded elsewhere (e.g. a prior/unrelated backend rotation).

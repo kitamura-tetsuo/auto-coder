@@ -22,7 +22,7 @@ import pytest
 from src.auto_coder.exceptions import AutoCoderTimeoutError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from src.auto_coder.opencode_client import OpenCodeClient
-from tests.test_opencode_backend import _driver, _event, _git, _manager, _repository
+from tests.test_opencode_backend import _driver, _event, _git, _manager, _repository, _set_known_sessions
 
 
 def _locked_down_debug_agent_response() -> str:
@@ -351,4 +351,53 @@ def test_noedit_timeout_preserves_workspace_before_cleanup(tmp_path: Path, monke
             client._run_llm_cli("inspect", is_noedit=True)
 
     assert _git(repo, "rev-parse", "HEAD") == head_before
+
+
+# ---------------------------------------------------------------------------
+# Issue #2126 REQ-005: the requested invocation mode is authoritative on
+# continuation, regardless of the session's own history.
+# ---------------------------------------------------------------------------
+
+
+def test_continuation_reapplies_noedit_enforcement_regardless_of_session_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    script = _driver(tmp_path)
+    debug_response = tmp_path / "debug_agent.json"
+    debug_response.write_text(_locked_down_debug_agent_response())
+    report = tmp_path / "report.json"
+    stdout_edit = tmp_path / "stdout_edit.jsonl"
+    stdout_edit.write_text(_event("step_finish", session_id="ses_edit1", part={"id": "sf1", "messageID": "m1", "reason": "stop"}) + "\n" + _event("text", session_id="ses_edit1", part={"id": "t1", "messageID": "m1", "text": "edited"}) + "\n")
+    stdout_continue = tmp_path / "stdout_continue.jsonl"
+    stdout_continue.write_text(_event("step_finish", session_id="ses_edit1", part={"id": "sf2", "messageID": "m2", "reason": "stop"}) + "\n" + _event("text", session_id="ses_edit1", part={"id": "t2", "messageID": "m2", "text": "inspected only"}) + "\n")
+
+    config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(script))
+    monkeypatch.setenv("OPENCODE_TEST_DEBUG_AGENT_RESPONSE_FILE", str(debug_response))
+
+    with patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
+        client = OpenCodeClient(backend_name="opencode")
+
+        # The session is first created as an ordinary, editable execution.
+        monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(stdout_edit))
+        assert client._run_llm_cli("edit task", is_noedit=False) == "edited"
+        session_id = client.get_last_session_id()
+        assert session_id == "ses_edit1"
+
+        # Explicitly continuing it as no-edit must still enforce the no-edit
+        # agent/policy: the session's own (editable) history/permissions are
+        # not authoritative.
+        _set_known_sessions(tmp_path, monkeypatch, session_id)
+        monkeypatch.setenv("OPENCODE_TEST_REPORT_FILE", str(report))
+        monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(stdout_continue))
+        result = client.continue_session(session_id=session_id, prompt="continue read-only", is_noedit=True)
+
+    assert result == "inspected only"
+    observed = json.loads(report.read_text())
+    argv = observed["argv"]
+    assert argv[argv.index("--session") + 1] == session_id
+    agent_name = argv[argv.index("--agent") + 1]
+    assert agent_name.startswith("autocoder-noedit-")
+    config_content = json.loads(observed["opencode_config_content"])
+    assert config_content["agent"][agent_name]["permission"]["*"] == "deny"
     assert (repo / "tracked.txt").read_text() == "before\n"
