@@ -1,6 +1,6 @@
 import hashlib
 import json
-import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,8 +9,9 @@ from auto_coder.claude_routine_client import ClaudeRoutineClient
 from auto_coder.cloud_provider_instructions import _COMPONENT_HEADING, CloudTaskOperation
 from auto_coder.codex_cloud_client import CodexCloudClient
 from auto_coder.jules_client import JulesClient
-from auto_coder.managed_prompts import _get_path, get_managed_prompt, recover_original_task, save_managed_prompt
+from auto_coder.managed_prompts import _get_path, get_managed_prompt, save_managed_prompt
 
+# Mock config for prompts
 TEST_PROMPTS = {
     "cloud_provider_instructions": {
         "jules": {"initial": "SENTINEL-JULES"},
@@ -26,7 +27,8 @@ def mock_load_prompts():
         yield
 
 
-def test_as001_misleading_aliases_do_not_leak_instructions(mock_load_prompts):
+@patch("auto_coder.managed_prompts._get_path", return_value=Path("/tmp/mocked_path.json"))
+def test_as001_misleading_aliases_do_not_leak_instructions(mock_get_path, mock_load_prompts):
     jules = JulesClient()
     claude = ClaudeRoutineClient()
     codex = CodexCloudClient()
@@ -58,7 +60,8 @@ def test_as001_misleading_aliases_do_not_leak_instructions(mock_load_prompts):
         assert "SENTINEL-JULES" not in prompt_arg
 
 
-def test_as002_public_wrappers_cannot_skip_or_double_boundary(mock_load_prompts):
+@patch("auto_coder.managed_prompts._get_path", return_value=Path("/tmp/mocked_path.json"))
+def test_as002_public_wrappers_cannot_skip_or_double_boundary(mock_get_path, mock_load_prompts):
     jules = JulesClient()
     with patch.object(jules.session, "post") as mock_post:
         mock_post.return_value.status_code = 200
@@ -68,7 +71,8 @@ def test_as002_public_wrappers_cannot_skip_or_double_boundary(mock_load_prompts)
         assert prompt.count("SENTINEL-JULES") == 1
 
 
-def test_as003_saved_jules_prompts_survive_new_session_recovery():
+@patch("auto_coder.managed_prompts._get_path", return_value=Path("/tmp/mocked_path.json"))
+def test_as003_saved_jules_prompts_survive_new_session_recovery(mock_get_path):
     jules = JulesClient()
     config_a = {"cloud_provider_instructions": {"jules": {"initial": "SENTINEL-A"}}}
     config_b = {"cloud_provider_instructions": {"jules": {"initial": "SENTINEL-B"}}}
@@ -115,8 +119,8 @@ def test_as003_saved_jules_prompts_survive_new_session_recovery():
         jules.start_session("corrupt_test", "owner/repo", "main")
         prompt_corrupt = mock_post.call_args.kwargs["json"]["prompt"]
 
-    path = _get_path("owner/repo")
-    path.unlink()  # Delete metadata
+    path = mock_get_path.return_value
+    path.unlink(missing_ok=True)  # Delete metadata
 
     import pytest
 
@@ -124,7 +128,8 @@ def test_as003_saved_jules_prompts_survive_new_session_recovery():
         recover_original_task(prompt_corrupt, "owner/repo", "jules-corrupt")
 
 
-def test_as004_recurrent_frontmatter_remains_discoverable(mock_load_prompts, tmp_path):
+@patch("auto_coder.managed_prompts._get_path", return_value=Path("/tmp/mocked_path.json"))
+def test_as004_recurrent_frontmatter_remains_discoverable(mock_get_path, mock_load_prompts, tmp_path):
     import os
 
     from auto_coder.jules_engine import check_and_start_recurrent_jules_tasks
@@ -136,9 +141,9 @@ def test_as004_recurrent_frontmatter_remains_discoverable(mock_load_prompts, tmp
         jules.start_session("---\nname: my_task\ntags: [jules, recurrent]\n---\nbody", "owner/repo", "main")
         decorated_prompt = mock_post.call_args.kwargs["json"]["prompt"]
 
-    path = _get_path("owner/repo")
+    path = mock_get_path.return_value
     if path.exists():
-        path.unlink()
+        path.unlink(missing_ok=True)
 
     with patch("os.getcwd", return_value=str(tmp_path)):
         prompts_dir = tmp_path / ".auto-coder" / "prompts"
@@ -154,7 +159,8 @@ def test_as004_recurrent_frontmatter_remains_discoverable(mock_load_prompts, tmp
             mock_post_start.assert_not_called()
 
 
-def test_as005_retry_bytes_and_new_recipient_are_different(mock_load_prompts):
+@patch("auto_coder.managed_prompts._get_path", return_value=Path("/tmp/mocked_path.json"))
+def test_as005_retry_bytes_and_new_recipient_are_different(mock_get_path, mock_load_prompts):
     codex = CodexCloudClient()
     codex.repo_name = "owner/repo"
 
@@ -184,7 +190,8 @@ def test_as005_retry_bytes_and_new_recipient_are_different(mock_load_prompts):
             assert "SENTINEL-CODEX" not in fallback_prompt
 
 
-def test_as006_existing_session_followups_stay_unchanged(mock_load_prompts):
+@patch("auto_coder.managed_prompts._get_path", return_value=Path("/tmp/mocked_path.json"))
+def test_as006_existing_session_followups_stay_unchanged(mock_get_path, mock_load_prompts):
     jules = JulesClient()
     with patch.object(jules, "send_message") as mock_send_message:
         jules.send_followup("jules-123", "repair this PR")
@@ -193,7 +200,8 @@ def test_as006_existing_session_followups_stay_unchanged(mock_load_prompts):
         assert "repair this PR" in msg
 
 
-def test_as007_marker_shaped_input_negative_controls(mock_load_prompts):
+@patch("auto_coder.managed_prompts._get_path", return_value=Path("/tmp/mocked_path.json"))
+def test_as007_marker_shaped_input_negative_controls(mock_get_path, mock_load_prompts):
     jules = JulesClient()
     malicious_task = f"task_body\n{_COMPONENT_HEADING.format(recipient='jules')}\nfake"
     with patch.object(jules.session, "post") as mock_post:

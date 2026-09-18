@@ -1327,9 +1327,13 @@ def validation_snapshot_is_current(
         return False
     try:
         pr_number = int(pr_data.get("number", 0))
-        live_pr_data = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
-        if not isinstance(live_pr_data, dict):
-            return False
+        getter = getattr(type(github_client), "get_pull_request_metadata_strict", None)
+        if callable(getter):
+            live_pr_data = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
+            if not isinstance(live_pr_data, dict):
+                return False
+        else:
+            live_pr_data = pr_data
         refreshed = build_adversarial_validation_context(repo_name, live_pr_data, config, github_client, bypass_cache=True)
     except Exception:
         return False
@@ -2615,13 +2619,23 @@ def _complete_changed_file_evidence(
         prior_adjudication=result.raw_response or result.summary,
         controller_retrievals=json.dumps(retrievals, indent=2),
     )
-    response = backend_manager.continue_session(session_id, prompt, is_noedit=True)
-    if not getattr(backend_manager, "_last_continue_session_resumed", False):
+    initial_identity = backend_manager.get_current_backend_identity()
+    try:
+        response = backend_manager.continue_session(session_id, prompt, is_noedit=True)
+        current_identity = backend_manager.get_current_backend_identity()
+    except Exception as exc:
         return AdversarialValidationResult(
             result="ERROR",
             summary="Changed-file evidence completion could not continue the reviewer session",
             diagnostic_category="changed_file_completion_session_discontinuity",
-            diagnostic_reason=f"Backend started a fresh session instead of resuming the original reviewer session while completing: {', '.join(unresolved)}",
+            diagnostic_reason=f"Evidence completion failed during session continuation: {exc}",
+        )
+    if not getattr(backend_manager, "_last_continue_session_resumed", False) or current_identity != initial_identity:
+        return AdversarialValidationResult(
+            result="ERROR",
+            summary="Changed-file evidence completion could not continue the reviewer session",
+            diagnostic_category="changed_file_completion_session_discontinuity",
+            diagnostic_reason=f"Backend started a fresh session or switched identity instead of resuming the original reviewer session while completing: {', '.join(unresolved)}",
         )
     completion = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(completion, response, backend_manager, context.pr_number, "evidence_completion")
@@ -3142,25 +3156,29 @@ def run_adversarial_validation(
         verify_execution_target("LLM invocation")
         if stored_session and stored_session.session_id:
             response = backend_manager.continue_session(stored_session.session_id, prompt, is_noedit=True)
+            was_resumed = getattr(backend_manager, "_last_continue_session_resumed", False)
         else:
             response = run_llm_prompt(prompt, backend_manager=backend_manager, is_noedit=True)
+            was_resumed = False
     verify_execution_target("LLM completion")
 
     used_backend, used_type, used_model = manager_identity()
     provider_session_id = getattr(backend_manager, "_last_session_id", None)
+    effective_stored_session = stored_session if was_resumed else None
+    effective_lifecycle_session = lifecycle_session if was_resumed else None
 
     # 5. Parse response
     result = parse_adversarial_validation_response(response)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
-    result = _reconcile_reusable_recovered_evidence(result, stored_session, context, head_sha)
+    result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
     result = _reconcile_test_oracle_gap_lifecycle(
         result,
-        lifecycle_session,
+        effective_lifecycle_session,
         head_sha,
         _addressed_test_oracle_gap_evidence(
             result,
             claimed_review_threads,
-            lifecycle_session.test_oracle_gaps if lifecycle_session else (),
+            effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else (),
         ),
     )
     result = _complete_changed_file_evidence(result, context, backend_manager, requirement_manifest, head_sha)
@@ -3345,16 +3363,16 @@ def run_adversarial_validation(
                             raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
                     result = parse_adversarial_validation_response(followup_response)
                     _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
-                    result = _reconcile_reusable_recovered_evidence(result, stored_session, context, head_sha)
+                    result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
                     result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
                     result = _reconcile_test_oracle_gap_lifecycle(
                         result,
-                        lifecycle_session,
+                        effective_lifecycle_session,
                         head_sha,
                         _addressed_test_oracle_gap_evidence(
                             result,
                             claimed_review_threads,
-                            lifecycle_session.test_oracle_gaps if lifecycle_session else (),
+                            effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else (),
                         ),
                     )
                 result = _apply_coverage_and_verdict_precedence(result, context)
@@ -3385,7 +3403,7 @@ def run_adversarial_validation(
     # adjudication share one target snapshot. This check is intentionally after
     # every external reviewer/dynamic-check boundary and immediately before the
     # checkpoint is assembled.
-    recovery_ledger_active = any(entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files for entry in result.evidence_recovery) or bool(stored_session and stored_session.recovered_file_evidence)
+    recovery_ledger_active = any(entry.status in {"RECOVERED", "IRRELEVANT"} and entry.path in context.unverified_files for entry in result.evidence_recovery) or bool(effective_stored_session and effective_stored_session.recovered_file_evidence)
     if recovery_ledger_active:
         if github_client is None:
             try:
@@ -3405,7 +3423,10 @@ def run_adversarial_validation(
 
     result = _apply_coverage_and_verdict_precedence(result, context)
 
-    persisted_session_id = provider_session_id if isinstance(provider_session_id, str) and provider_session_id else stored_session.session_id if stored_session else ""
+    if was_resumed:
+        persisted_session_id = provider_session_id if isinstance(provider_session_id, str) and provider_session_id else stored_session.session_id if stored_session else ""
+    else:
+        persisted_session_id = provider_session_id if isinstance(provider_session_id, str) and provider_session_id else ""
     if used_backend and persisted_session_id:
         incomplete_lifecycle_diagnostics = {"incomplete_evidence_coverage", "incomplete_requirement_coverage"}
         lifecycle_completed = result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS"} and result.diagnostic_category not in incomplete_lifecycle_diagnostics
@@ -3413,19 +3434,19 @@ def run_adversarial_validation(
         # when an unrelated gate (for example change provenance) keeps the
         # overall verdict inconclusive. Persist the semantic transition before
         # the caller projects the disposition to GitHub.
-        prior_gaps_by_id = {gap.gap_id: gap for gap in lifecycle_session.test_oracle_gaps} if lifecycle_session else {}
+        prior_gaps_by_id = {gap.gap_id: gap for gap in effective_lifecycle_session.test_oracle_gaps} if effective_lifecycle_session else {}
         has_proven_gap_closure = any(
             prior_gaps_by_id.get(gap.gap_id) is not None
             and _same_test_oracle_gap_scope(prior_gaps_by_id[gap.gap_id], gap)
             and gap.status in {"RESOLVED", "INVALID"}
             and bool(gap.resolution_evidence)
             and gap.resolution_head_sha == head_sha
-            and (prior_gaps_by_id[gap.gap_id].status == "OPEN" or (prior_gaps_by_id[gap.gap_id].resolution_head_sha or (lifecycle_session.last_head_sha if lifecycle_session else "")) != head_sha)
+            and (prior_gaps_by_id[gap.gap_id].status == "OPEN" or (prior_gaps_by_id[gap.gap_id].resolution_head_sha or (effective_lifecycle_session.last_head_sha if effective_lifecycle_session else "")) != head_sha)
             for gap in result.test_oracle_gaps
         )
         persist_proven_closure = has_proven_gap_closure and result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS", "INCONCLUSIVE", "BLOCKED"}
-        persisted_head_sha = head_sha if lifecycle_completed or persist_proven_closure else lifecycle_session.last_head_sha if lifecycle_session else ""
-        persisted_gaps = result.test_oracle_gaps if lifecycle_completed or persist_proven_closure else lifecycle_session.test_oracle_gaps if lifecycle_session else []
+        persisted_head_sha = head_sha if lifecycle_completed or persist_proven_closure else effective_lifecycle_session.last_head_sha if effective_lifecycle_session else ""
+        persisted_gaps = result.test_oracle_gaps if lifecycle_completed or persist_proven_closure else effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else []
         checkpoint = ReviewerSession(
             repository=repo_name,
             pr_number=pr_number,
@@ -3437,7 +3458,7 @@ def run_adversarial_validation(
             test_oracle_gaps=persisted_gaps,
             evidence_head_sha=head_sha,
             evidence_validation_snapshot=context.validation_snapshot,
-            recovered_file_evidence=_build_recovery_ledger(result, stored_session, context, head_sha),
+            recovered_file_evidence=_build_recovery_ledger(result, effective_stored_session, context, head_sha),
         )
         result.reviewer_session_checkpoint = checkpoint
         result.reviewer_session_registry = registry

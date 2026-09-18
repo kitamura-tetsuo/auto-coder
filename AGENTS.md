@@ -68,6 +68,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * Workflow files:
   * `.github/workflows/pr-tests.yml` (name: `PR Tests`)
   * `.github/workflows/browser-tests.yml` (name: `Browser Tests`)
+  * `.github/workflows/opencode-live-tests.yml` (name: `OpenCode Live Tests`)
   * `.github/workflows/update-version.yml` (name: `Update Version`)
 * Required jobs in `PR Tests`:
   * **Lint & Type Check** (black / isort / flake8 / mypy)
@@ -90,14 +91,22 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
   submodules), not just files changed in a PR or files already imported elsewhere.
   A detected type error fails the gate even when the offending line is unrelated to
   the PR's diff; there is no baseline/error-count allowance.
-* `PR Tests` excludes pytest tests marked `browser` (`-m "not browser"`) and does not
-  install Playwright browser binaries. `Browser Tests` is a separate, independently
+* `PR Tests` excludes pytest tests marked `browser` or `opencode_live`
+  (`-m "not browser and not opencode_live"`) and does not install Playwright browser
+  binaries or the OpenCode CLI. `Browser Tests` is a separate, independently
   triggered workflow that installs Playwright Chromium and runs exactly the tests
   marked `@pytest.mark.browser` (real headless-browser regressions such as
   `tests/test_dashboard_detail_scroll_stability.py`). Classify any new pytest test
   whose correctness oracle requires launching and driving a real browser with
   `@pytest.mark.browser` (or module-level `pytestmark = pytest.mark.browser`) so it
   is picked up automatically by `Browser Tests` and excluded from `PR Tests`.
+  `OpenCode Live Tests` similarly installs the pinned `opencode` CLI and runs exactly
+  the tests marked `@pytest.mark.opencode_live` (real-CLI-driven regressions such as
+  `tests/test_opencode_noedit_live.py`, each invocation costing several real seconds
+  of CLI startup); classify a new pytest test the same way when its correctness
+  oracle requires driving the real OpenCode CLI (e.g. against a controlled local
+  provider double) rather than a fake executable, so PR Tests' per-shard time budget
+  isn't spent on real CLI startup latency.
 * Branch protection should include the following required status checks:
   * `PR Tests / Lint & Type Check`
   * `PR Tests / Tests with Coverage`

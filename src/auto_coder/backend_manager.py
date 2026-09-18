@@ -253,7 +253,8 @@ class BackendManager(LLMBackendManagerBase):
         self._state_manager = BackendStateManager()
         # Session state manager for resuming sessions across executions
         self._session_state_manager = BackendSessionManager()
-        self._restore_session_state()
+        if self._automatic_session_resume:
+            self._restore_session_state()
 
     @property
     def provider_manager(self) -> BackendProviderManager:
@@ -297,6 +298,8 @@ class BackendManager(LLMBackendManagerBase):
             backend_name: Backend whose session should be saved
             session_id: Session identifier or None to clear
         """
+        if not self._automatic_session_resume:
+            return
         try:
             state: BackendSessionState = create_session_state(backend_name, session_id)
             self._session_state_manager.save_state(state)
@@ -602,7 +605,12 @@ class BackendManager(LLMBackendManagerBase):
         """Return the current alias, resolved type, and model for registry keys."""
         backend_name = self._current_backend_name()
         client = self._get_or_create_client(backend_name)
-        config = get_llm_config().get_backend_config(backend_name)
+        config = getattr(client, "config_backend", None)
+        if config is None:
+            try:
+                config = get_llm_config().get_backend_config(backend_name)
+            except Exception:
+                config = None
         backend_type = str(getattr(config, "backend_type", "") or backend_name)
         return backend_name, backend_type, str(getattr(client, "model_name", "") or "")
 

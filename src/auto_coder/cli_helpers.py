@@ -89,6 +89,11 @@ def check_aider_cli_or_fail() -> None:
     check_cli_tool(tool_name="aider", install_url="pip install aider-chat", version_flag="--version")
 
 
+def check_opencode_cli_or_fail() -> None:
+    """Check if the OpenCode CLI is available and working."""
+    check_cli_tool(tool_name="opencode", install_url="https://opencode.ai/docs/cli/", version_flag="--version", cmd_override_env="AUTOCODER_OPENCODE_CLI")
+
+
 def check_cli_tool(
     tool_name: str,
     install_url: str,
@@ -285,6 +290,8 @@ def check_backend_prerequisites(backends: list[str]) -> None:
             check_claude_cli_or_fail()
         elif backend_name == "aider":
             check_aider_cli_or_fail()
+        elif backend_name == "opencode":
+            check_opencode_cli_or_fail()
         elif backend_name == "codex-cloud":
             check_codex_cli_or_fail()
         elif backend_name in ("jules", "claude-routine"):
@@ -296,7 +303,7 @@ def check_backend_prerequisites(backends: list[str]) -> None:
                 # Recursively check the backend_type
                 check_backend_prerequisites([backend_config.backend_type])
             else:
-                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, antigravity, qwen, auggie, claude, claude-routine, codex-cloud) " f"or configure backend_type in llm_config.toml")
+                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, antigravity, qwen, auggie, claude, claude-routine, codex-cloud, muse, aider, opencode) " f"or configure backend_type in llm_config.toml")
 
 
 def build_backend_manager(
@@ -448,6 +455,12 @@ def build_backend_manager(
             use_noedit_options=use_noedit_options,
         )
 
+    def _create_opencode_client(backend_name: str, use_noedit_options: bool = use_noedit_options):
+        """Create an OpenCodeClient lazily."""
+        from .opencode_client import OpenCodeClient
+
+        return OpenCodeClient(backend_name=backend_name, use_noedit_options=use_noedit_options)
+
     def _create_claude_routine_client(backend_name: str, use_noedit_options: bool = False) -> Any:
         """Create a ClaudeRoutineClient."""
         from .claude_routine_client import ClaudeRoutineClient
@@ -472,13 +485,14 @@ def build_backend_manager(
         "aider": _create_aider_client,
         "claude-routine": _create_claude_routine_client,
         "codex-cloud": _create_codex_cloud_client,
+        "opencode": _create_opencode_client,
     }
 
     # Build factory dictionary with support for aliases
     selected_factories: Dict[str, Callable[[], Any]] = {}
     for backend_name in selected_backends:
         # Check if it's a direct match first
-        if backend_name in ["codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider", "claude-routine", "codex-cloud"]:
+        if backend_name in ["codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider", "claude-routine", "codex-cloud", "opencode"]:
             # Use the appropriate factory based on backend name
             if backend_name == "codex":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_client, backend_name))
@@ -500,6 +514,8 @@ def build_backend_manager(
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_claude_routine_client, backend_name))
             elif backend_name == "codex-cloud":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_cloud_client, backend_name))
+            elif backend_name == "opencode":
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_opencode_client, backend_name))
         else:
             backend_config = config.get_backend_config(backend_name)
             if backend_config:
@@ -933,7 +949,7 @@ def create_cloud_backend_manager() -> Optional[BackendManager]:
         return None
 
 
-READ_ONLY_REVIEW_CAPABLE_TYPES = {"claude", "codex", "muse"}
+READ_ONLY_REVIEW_CAPABLE_TYPES = {"claude", "codex", "muse", "opencode"}
 
 
 def get_effective_backend_type(backend_name: Optional[str], config: Optional[Any] = None) -> Optional[str]:
@@ -953,7 +969,7 @@ def get_effective_backend_type(backend_name: Optional[str], config: Optional[Any
 def is_read_only_review_capable_backend(backend_name: Optional[str], config: Optional[Any] = None) -> bool:
     """Check if a backend provides synchronous read-only review execution based on resolved backend_type.
 
-    Only local clients with proven client-level read-only sandboxing (Claude, Codex, Muse)
+    Only local clients with proven client-level read-only sandboxing (Claude, Codex, Muse, OpenCode)
     are permitted for adversarial validation. Cloud agents (CodexCloud, ClaudeRoutine, Jules),
     MCP variants without sandbox sanitization (CodexMCP), and non-enforcing clients are rejected.
     """
