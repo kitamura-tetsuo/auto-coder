@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from .logger_config import get_logger
 from .util.github_request_outcome import normalize_api_origin
@@ -496,6 +496,26 @@ class CanonicalPRBlockerLedger:
                     failure_reason TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS repair_bundles (
+                    bundle_id TEXT PRIMARY KEY,
+                    namespace_key TEXT NOT NULL,
+                    target_repo TEXT NOT NULL,
+                    target_pr INTEGER NOT NULL,
+                    head_branch TEXT NOT NULL,
+                    base_branch TEXT NOT NULL,
+                    reviewed_head_sha TEXT NOT NULL,
+                    requirement_manifest_revision TEXT NOT NULL,
+                    original_objective TEXT,
+                    blockers_json TEXT NOT NULL,
+                    is_failed_correction INTEGER NOT NULL,
+                    supersedes_bundle_id TEXT,
+                    created_at TEXT NOT NULL,
+                    rendered_payload TEXT NOT NULL
                 )
                 """
             )
@@ -2339,6 +2359,226 @@ class CanonicalPRBlockerLedger:
                             updated_at=row[13],
                         )
                     )
+                return tuple(results)
+            finally:
+                conn.close()
+
+    def record_repair_bundle(
+        self,
+        bundle: Any,
+        rendered_payload: str = "",
+    ) -> None:
+        """Durable persistence for a repair handoff bundle (REQ-003)."""
+        self._check_db_integrity()
+        norm_origin = normalize_api_origin(bundle.api_origin)
+        key = _make_namespace_key(norm_origin, bundle.repo_name, bundle.pr_number)
+
+        blockers_data = []
+        for b in bundle.blockers:
+            blockers_data.append(
+                {
+                    "blocker_id": b.blocker_id,
+                    "category": b.category,
+                    "authoritative_boundary": b.authoritative_boundary,
+                    "qualified_requirements": [{"issue_number": qr.issue_number, "requirement_id": qr.requirement_id} for qr in b.qualified_requirements],
+                    "requirement_texts": list(b.requirement_texts),
+                    "original_correction_scope": b.original_correction_scope,
+                    "owned_concern_ids": list(b.owned_concern_ids),
+                    "required_corrective_outcome": b.required_corrective_outcome,
+                    "production_boundary_oracle": b.production_boundary_oracle,
+                    "reviewed_head_sha": b.reviewed_head_sha,
+                    "requirement_manifest_revision": b.requirement_manifest_revision,
+                    "current_evidence": b.current_evidence,
+                    "evidence_availability": b.evidence_availability,
+                    "is_unmet_prior_correction": b.is_unmet_prior_correction,
+                    "unmet_reasons": list(b.unmet_reasons),
+                    "unmet_concern_ids": list(b.unmet_concern_ids),
+                    "non_authoritative_context": list(b.non_authoritative_context),
+                }
+            )
+        blockers_json = json.dumps(blockers_data, sort_keys=True)
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO repair_bundles (
+                        bundle_id, namespace_key, target_repo, target_pr,
+                        head_branch, base_branch, reviewed_head_sha,
+                        requirement_manifest_revision, original_objective,
+                        blockers_json, is_failed_correction, supersedes_bundle_id,
+                        created_at, rendered_payload
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        bundle.bundle_id,
+                        key,
+                        bundle.repo_name,
+                        bundle.pr_number,
+                        bundle.head_branch,
+                        bundle.base_branch,
+                        bundle.reviewed_head_sha,
+                        bundle.requirement_manifest_revision,
+                        bundle.original_objective,
+                        blockers_json,
+                        1 if bundle.is_failed_correction else 0,
+                        bundle.supersedes_bundle_id,
+                        bundle.created_at,
+                        rendered_payload,
+                    ),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                conn.close()
+
+    def _row_to_repair_bundle(self, row: Any, api_origin: str = "https://api.github.com") -> Any:
+        from .bounded_repair_bundle import BoundedBlockerHandoff, RepairHandoffBundle
+
+        blockers_raw = json.loads(row[9])
+        blockers = []
+        for bd in blockers_raw:
+            qrs = tuple(QualifiedRequirement(issue_number=item["issue_number"], requirement_id=item["requirement_id"]) for item in bd.get("qualified_requirements", []))
+            blockers.append(
+                BoundedBlockerHandoff(
+                    blocker_id=bd["blocker_id"],
+                    category=bd.get("category", "IMPLEMENTATION"),
+                    authoritative_boundary=bd.get("authoritative_boundary", ""),
+                    qualified_requirements=qrs,
+                    requirement_texts=tuple(bd.get("requirement_texts", ())),
+                    original_correction_scope=bd.get("original_correction_scope", ""),
+                    owned_concern_ids=tuple(bd.get("owned_concern_ids", ())),
+                    required_corrective_outcome=bd.get("required_corrective_outcome", ""),
+                    production_boundary_oracle=bd.get("production_boundary_oracle", ""),
+                    reviewed_head_sha=bd.get("reviewed_head_sha", ""),
+                    requirement_manifest_revision=bd.get("requirement_manifest_revision", ""),
+                    current_evidence=bd.get("current_evidence", ""),
+                    evidence_availability=bd.get("evidence_availability", "KNOWN"),
+                    is_unmet_prior_correction=bd.get("is_unmet_prior_correction", False),
+                    unmet_reasons=tuple(bd.get("unmet_reasons", ())),
+                    unmet_concern_ids=tuple(bd.get("unmet_concern_ids", ())),
+                    non_authoritative_context=tuple(bd.get("non_authoritative_context", ())),
+                )
+            )
+        return RepairHandoffBundle(
+            bundle_id=row[0],
+            api_origin=api_origin,
+            repo_name=row[2],
+            pr_number=row[3],
+            head_branch=row[4],
+            base_branch=row[5],
+            reviewed_head_sha=row[6],
+            requirement_manifest_revision=row[7],
+            original_objective=row[8],
+            blockers=tuple(blockers),
+            is_failed_correction=bool(row[10]),
+            supersedes_bundle_id=row[11],
+            created_at=row[12],
+        )
+
+    def get_repair_bundle(
+        self,
+        bundle_id: str,
+        api_origin: str = "https://api.github.com",
+    ) -> Optional[Any]:
+        """Fetch repair handoff bundle by ID if present."""
+        self._check_db_integrity()
+        norm_origin = normalize_api_origin(api_origin)
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT bundle_id, namespace_key, target_repo, target_pr,
+                           head_branch, base_branch, reviewed_head_sha,
+                           requirement_manifest_revision, original_objective,
+                           blockers_json, is_failed_correction, supersedes_bundle_id,
+                           created_at, rendered_payload
+                    FROM repair_bundles
+                    WHERE bundle_id = ?
+                    """,
+                    (bundle_id,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                return self._row_to_repair_bundle(row, api_origin=norm_origin)
+            finally:
+                conn.close()
+
+    def get_latest_repair_bundle(
+        self,
+        api_origin: str,
+        repository: str,
+        pr_number: int,
+    ) -> Optional[Any]:
+        """Fetch the most recent repair handoff bundle for a PR namespace."""
+        self._check_db_integrity()
+        norm_origin = normalize_api_origin(api_origin)
+        key = _make_namespace_key(norm_origin, repository, pr_number)
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT bundle_id, namespace_key, target_repo, target_pr,
+                           head_branch, base_branch, reviewed_head_sha,
+                           requirement_manifest_revision, original_objective,
+                           blockers_json, is_failed_correction, supersedes_bundle_id,
+                           created_at, rendered_payload
+                    FROM repair_bundles
+                    WHERE namespace_key = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (key,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                return self._row_to_repair_bundle(row, api_origin=norm_origin)
+            finally:
+                conn.close()
+
+    def get_repair_bundles_for_pr(
+        self,
+        api_origin: str,
+        repository: str,
+        pr_number: int,
+    ) -> tuple[Any, ...]:
+        """Return all historical repair handoff bundles for a PR namespace."""
+        self._check_db_integrity()
+        norm_origin = normalize_api_origin(api_origin)
+        key = _make_namespace_key(norm_origin, repository, pr_number)
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    """
+                    SELECT bundle_id, namespace_key, target_repo, target_pr,
+                           head_branch, base_branch, reviewed_head_sha,
+                           requirement_manifest_revision, original_objective,
+                           blockers_json, is_failed_correction, supersedes_bundle_id,
+                           created_at, rendered_payload
+                    FROM repair_bundles
+                    WHERE namespace_key = ?
+                    ORDER BY created_at ASC
+                    """,
+                    (key,),
+                )
+                results = []
+                for row in cursor.fetchall():
+                    results.append(self._row_to_repair_bundle(row, api_origin=norm_origin))
                 return tuple(results)
             finally:
                 conn.close()

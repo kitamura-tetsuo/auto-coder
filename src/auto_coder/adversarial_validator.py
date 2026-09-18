@@ -3097,32 +3097,107 @@ def assemble_adversarial_repair_prompt(
     repo_name: str,
     pr_number: int,
     head_sha: str,
+    *,
+    bundle: Optional[Any] = None,
+    original_objective: Optional[str] = None,
 ) -> str:
     """Assemble repair prompt containing only valid findings and material test-oracle gaps.
 
     Ensures specification gaps are not converted into code-repair instructions,
     and older summaries do not reintroduce rejected or duplicate obligations (REQ-009).
+    Uses bounded bundle semantics and preserves fixed Objective (REQ-001..REQ-003, REQ-009).
     """
-    from string import Template
-
+    from .bounded_repair_bundle import (
+        BoundedBlockerHandoff,
+        RepairHandoffBundle,
+        compute_bundle_id,
+        render_bounded_repair_payload,
+    )
+    from .canonical_pr_blocker_ledger import QualifiedRequirement
     from .pr_repair import build_existing_pr_repair_prompt
-    from .prompt_loader import get_prompt_template
 
-    feedback_blocks: List[str] = []
+    if bundle is not None:
+        return build_existing_pr_repair_prompt(target, render_bounded_repair_payload(bundle), bundle=bundle)
+
+    handoff_blockers = []
     for finding in result.findings:
-        feedback_blocks.append(format_adversarial_finding_comment(finding))
+        qrs = tuple(QualifiedRequirement(issue_number=pr_number, requirement_id=rid) for rid in finding.all_requirement_ids)
+        req_texts = tuple((finding.requirement_text or finding.violated_requirement) for _ in qrs)
+        oracle = f"{finding.evidence}. Counterexample: {finding.counterexample}" if finding.counterexample else finding.evidence
+        handoff_blockers.append(
+            BoundedBlockerHandoff(
+                blocker_id=finding.finding_identity,
+                category="IMPLEMENTATION",
+                authoritative_boundary=finding.anchor_path,
+                qualified_requirements=qrs,
+                requirement_texts=req_texts,
+                original_correction_scope=finding.required_behavior,
+                owned_concern_ids=(finding.correction_identity,) if finding.correction_identity else (finding.finding_identity,),
+                required_corrective_outcome=f"{finding.required_behavior}. Observed: {finding.actual_behavior}",
+                production_boundary_oracle=oracle,
+                reviewed_head_sha=head_sha,
+                current_evidence=finding.evidence,
+            )
+        )
     for gap in result.open_test_oracle_gaps:
-        feedback_blocks.append(format_test_oracle_gap_comment(gap))
+        qrs = (QualifiedRequirement(issue_number=pr_number, requirement_id=gap.requirement_id),)
+        req_texts = (gap.requirement_text or "",)
+        oracle = f"Missing test protection for {gap.invariant}. Minimal plausible incorrect implementation: {gap.plausible_incorrect_implementation}" if gap.plausible_incorrect_implementation else gap.invariant
+        handoff_blockers.append(
+            BoundedBlockerHandoff(
+                blocker_id=gap.gap_id,
+                category="TEST_ORACLE",
+                authoritative_boundary=gap.authoritative_boundary,
+                qualified_requirements=qrs,
+                requirement_texts=req_texts,
+                original_correction_scope=gap.invariant,
+                owned_concern_ids=(gap.gap_id,),
+                required_corrective_outcome=gap.focused_regression_scenario or gap.invariant,
+                production_boundary_oracle=oracle,
+                reviewed_head_sha=head_sha,
+                current_evidence=gap.resolution_evidence,
+            )
+        )
 
-    actionable_feedback = "\n\n---\n\n".join(feedback_blocks)
-    delivery_report = Template(get_prompt_template("pr.adversarial_feedback_new")).safe_substitute(actionable_feedback=actionable_feedback)
-    details = Template(get_prompt_template("pr.adversarial_validation_fix")).safe_substitute(
+    if not handoff_blockers:
+        from string import Template
+
+        from .prompt_loader import get_prompt_template
+
+        details = Template(get_prompt_template("pr.adversarial_validation_fix")).safe_substitute(
+            repo_name=repo_name,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            validation_report="(No actionable adversarial findings)",
+        )
+        return build_existing_pr_repair_prompt(target, details)
+
+    bundle_id = compute_bundle_id(
+        api_origin="https://api.github.com",
         repo_name=repo_name,
         pr_number=pr_number,
-        head_sha=head_sha,
-        validation_report=delivery_report,
+        head_branch=target.head_branch,
+        base_branch=target.base_branch,
+        reviewed_head_sha=head_sha,
+        requirement_manifest_revision="",
+        blockers=handoff_blockers,
+        original_objective=original_objective,
     )
-    return build_existing_pr_repair_prompt(target, details)
+    synth_bundle = RepairHandoffBundle(
+        bundle_id=bundle_id,
+        api_origin="https://api.github.com",
+        repo_name=repo_name,
+        pr_number=pr_number,
+        head_branch=target.head_branch,
+        base_branch=target.base_branch,
+        reviewed_head_sha=head_sha,
+        requirement_manifest_revision="",
+        original_objective=original_objective,
+        blockers=tuple(handoff_blockers),
+        is_failed_correction=False,
+    )
+    rendered_payload = render_bounded_repair_payload(synth_bundle)
+    return build_existing_pr_repair_prompt(target, rendered_payload, bundle=synth_bundle)
 
 
 def _apply_coverage_and_verdict_precedence(

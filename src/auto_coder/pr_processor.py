@@ -44,6 +44,11 @@ from .adversarial_validator import (
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ExplicitTargetOutcome, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
+from .bounded_repair_bundle import (
+    build_repair_handoff_bundle,
+    render_bounded_repair_payload,
+    validate_repair_handoff_bundle,
+)
 from .branch_manager import BranchManager
 from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
@@ -63,6 +68,7 @@ from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
+from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
@@ -5765,9 +5771,52 @@ def _delegate_cloud_review_thread_repair(
             _record_review_feedback_state(state_path, delivered, indeterminate)
         return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: current PR head/base branch metadata is unavailable"])
 
-    feedback = "\n\n".join(f"Thread `{thread.id}`:\n{comment.body}" for thread, comment, _identity in pending)
-    details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=feedback)
-    prompt = build_existing_pr_repair_prompt(target, details)
+    canonical_pending = [(thread, comment, identity) for thread, comment, identity in pending if comment.body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"))]
+    has_canonical_marker = any(_BLOCKER_ID_RE.search(comment.body) for _thread, comment, _identity in canonical_pending)
+    bundle_to_bind = None
+    ledger = CanonicalPRBlockerLedger()
+    snapshot = None
+    try:
+        snapshot = ledger.get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+    except Exception:
+        pass
+
+    matched_bids = set()
+    if snapshot is not None:
+        for _thread, comment, _identity in canonical_pending:
+            m = _BLOCKER_ID_RE.search(comment.body)
+            if m and snapshot.get_blocker(m.group(1) or m.group(2)):
+                matched_bids.add(m.group(1) or m.group(2))
+            gm = _GAP_ID_RE.search(comment.body)
+            if gm and snapshot.get_blocker(gm.group(1) or gm.group(2) or gm.group(3)):
+                matched_bids.add(gm.group(1) or gm.group(2) or gm.group(3))
+
+    if has_canonical_marker and not matched_bids:
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: canonical blocker bundle data is absent"])
+
+    if matched_bids and snapshot is not None:
+        bundle_to_bind = build_repair_handoff_bundle(
+            snapshot=snapshot,
+            repo_name=repo_name,
+            pr_number=pr_number,
+            head_branch=target.head_branch,
+            base_branch=target.base_branch,
+            reviewed_head_sha=target.head_sha,
+            requirement_manifest_revision=pr_data.get("requirement_manifest_revision", ""),
+            target_blocker_ids=sorted(matched_bids),
+        )
+        val_res = validate_repair_handoff_bundle(bundle_to_bind, target.head_sha, pr_data.get("requirement_manifest_revision", ""), snapshot)
+        if not val_res.is_valid:
+            return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: bundle {bundle_to_bind.bundle_id} is stale ({val_res.reason})"])
+
+        rendered_bundle = render_bounded_repair_payload(bundle_to_bind)
+        ledger.record_repair_bundle(bundle_to_bind, rendered_payload=rendered_bundle)
+        details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=rendered_bundle)
+        prompt = build_existing_pr_repair_prompt(target, details, bundle=bundle_to_bind)
+    else:
+        feedback = "\n\n".join(f"Thread `{thread.id}`:\n{comment.body}" for thread, comment, _identity in pending)
+        details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=feedback)
+        prompt = build_existing_pr_repair_prompt(target, details)
     try:
         if provider == "codex-cloud":
             accepted = client.send_followup(task_id, prompt, tuple(sorted(pending_identities)))
@@ -6446,24 +6495,79 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         if not pending_feedback:
             return [f"Skipped duplicate adversarial feedback to {provider} for PR #{pr_number}: all actionable feedback was already delivered"]
         failed_correction = any(finding_identity in delivered for _body, finding_identity, _generation_identity in pending_feedback)
-        report_template = "pr.adversarial_feedback_failed_correction" if failed_correction else "pr.adversarial_feedback_new"
-        delivery_report = Template(get_prompt_template(report_template)).safe_substitute(actionable_feedback="\n\n---\n\n".join(body for body, _finding_identity, _generation_identity in pending_feedback))
+
+        target = resolve_existing_pr_repair_target(repo_name, pr_data)
+        if not target:
+            return [f"Adversarial feedback was not delivered for PR #{pr_number}: PR head/base branch metadata is unavailable"]
+        target = replace(target, head_sha=head_sha)
+
+        has_canonical_marker = any(_BLOCKER_ID_RE.search(body) for body, _fid, _gid in pending_feedback)
+
+        ledger = CanonicalPRBlockerLedger()
+        snapshot = None
+        try:
+            snapshot = ledger.get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+        except Exception:
+            pass
+
+        matched_bids = set()
+        if snapshot is not None:
+            for body, _fid, _gid in pending_feedback:
+                m = _BLOCKER_ID_RE.search(body)
+                if m and snapshot.get_blocker(m.group(1) or m.group(2)):
+                    matched_bids.add(m.group(1) or m.group(2))
+                gm = _GAP_ID_RE.search(body)
+                if gm and snapshot.get_blocker(gm.group(1) or gm.group(2) or gm.group(3)):
+                    matched_bids.add(gm.group(1) or gm.group(2) or gm.group(3))
+                for blocker in snapshot.get_open_blockers():
+                    if blocker.authoritative_boundary and blocker.authoritative_boundary in body:
+                        matched_bids.add(blocker.blocker_id)
+
+        if has_canonical_marker and not matched_bids:
+            return [f"Deferred adversarial correction feedback for PR #{pr_number}: canonical blocker bundle data is absent"]
+
+        repair_bundle = None
+        if matched_bids and snapshot is not None:
+            failed_corrections: dict[str, tuple[Sequence[str], Sequence[str]]] = {}
+            if failed_correction:
+                for bid in matched_bids:
+                    b = snapshot.get_blocker(bid)
+                    if b:
+                        failed_corrections[str(bid)] = (
+                            b.concern_ids,
+                            ("The latest corrective attempt did not establish the required observable outcome. " "A pass body, renamed test, green helper test, or source-text assertion does not prove completion; " "the recorded production-boundary regression oracle remains unsatisfied.",),
+                        )
+
+            repair_bundle = build_repair_handoff_bundle(
+                snapshot=snapshot,
+                repo_name=repo_name,
+                pr_number=pr_number,
+                head_branch=target.head_branch,
+                base_branch=target.base_branch,
+                reviewed_head_sha=head_sha,
+                requirement_manifest_revision=pr_data.get("requirement_manifest_revision", ""),
+                target_blocker_ids=sorted(matched_bids),
+                failed_corrections=failed_corrections if failed_corrections else None,
+            )
+            val_res = validate_repair_handoff_bundle(repair_bundle, head_sha, pr_data.get("requirement_manifest_revision", ""), snapshot)
+            if not val_res.is_valid:
+                return [f"Deferred adversarial correction feedback for PR #{pr_number}: bundle {repair_bundle.bundle_id} is stale ({val_res.reason})"]
+
+            delivery_report = render_bounded_repair_payload(repair_bundle)
+            ledger.record_repair_bundle(repair_bundle, rendered_payload=delivery_report)
+        else:
+            report_template = "pr.adversarial_feedback_failed_correction" if failed_correction else "pr.adversarial_feedback_new"
+            delivery_report = Template(get_prompt_template(report_template, raw=True)).safe_substitute(actionable_feedback="\n\n---\n\n".join(body for body, _finding_identity, _generation_identity in pending_feedback))
+
+        details = Template(get_prompt_template("pr.adversarial_validation_fix", raw=True)).safe_substitute(
+            repo_name=repo_name,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            validation_report=delivery_report,
+        )
+        prompt = build_existing_pr_repair_prompt(target, details, bundle=repair_bundle)
     except (OSError, ValueError) as exc:
         return [f"Could not check prior {provider} actionable feedback for PR #{pr_number}: {exc}"]
-
-    target = resolve_existing_pr_repair_target(repo_name, pr_data)
-    if not target:
-        return [f"Adversarial feedback was not delivered for PR #{pr_number}: PR head/base branch metadata is unavailable"]
-    # The validated commit is authoritative; it may be newer than cached PR head metadata.
-    target = replace(target, head_sha=head_sha)
-
-    details = Template(get_prompt_template("pr.adversarial_validation_fix")).safe_substitute(
-        repo_name=repo_name,
-        pr_number=pr_number,
-        head_sha=head_sha,
-        validation_report=delivery_report,
-    )
-    prompt = build_existing_pr_repair_prompt(target, details)
 
     try:
         if provider == "codex-cloud":
