@@ -80,13 +80,11 @@ class TestAllowlistConfig:
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = os.path.join(tmpdir, "config.toml")
             with open(config_file, "w") as f:
-                f.write(
-                    """
+                f.write("""
 [github]
 issue_allowlist = [12345678, 87654321]
 pr_allowlist = [99887766]
-"""
-                )
+""")
 
             assert get_issue_allowlist_from_config(config_file) == [12345678, 87654321]
             assert get_pr_allowlist_from_config(config_file) == [99887766]
@@ -95,12 +93,10 @@ pr_allowlist = [99887766]
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = os.path.join(tmpdir, "config.toml")
             with open(config_file, "w") as f:
-                f.write(
-                    """
+                f.write("""
 [jules]
 enabled = true
-"""
-                )
+""")
 
             assert get_issue_allowlist_from_config(config_file) is None
             assert get_pr_allowlist_from_config(config_file) is None

@@ -55,8 +55,7 @@ def _repository(tmp_path: Path) -> Path:
 #       (Issue #2126 REQ-006's workspace-association preflight). Missing -> "[]"
 #       (no session associated with this directory), matching the real CLI's
 #       own behavior for a directory with no sessions.
-_DRIVER_SOURCE = textwrap.dedent(
-    """
+_DRIVER_SOURCE = textwrap.dedent("""
     #!/usr/bin/env python3
     import hashlib
     import json
@@ -117,8 +116,7 @@ _DRIVER_SOURCE = textwrap.dedent(
         sys.stderr.write(open(stderr_path).read())
 
     sys.exit(int(os.environ.get("OPENCODE_TEST_EXIT_CODE", "0")))
-    """
-).strip()
+    """).strip()
 
 
 def _driver(tmp_path: Path, name: str = "opencode") -> Path:
@@ -506,9 +504,7 @@ def test_git_and_gh_lifecycle_mutations_denied_before_effect(tmp_path: Path, mon
     script = _driver(tmp_path)
     report = tmp_path / "denials.json"
     body = tmp_path / "body.py"
-    body.write_text(
-        textwrap.dedent(
-            """
+    body.write_text(textwrap.dedent("""
             import json
             import subprocess
 
@@ -529,10 +525,7 @@ def test_git_and_gh_lifecycle_mutations_denied_before_effect(tmp_path: Path, mon
 
             with open(%(report)r, "w") as fh:
                 json.dump(results, fh)
-            """
-            % {"report": str(report)}
-        )
-    )
+            """ % {"report": str(report)}))
 
     stdout_file = tmp_path / "stdout.jsonl"
     stdout_file.write_text(_event("step_finish", part={"id": "sf1", "messageID": "m1", "reason": "stop"}) + "\n" + _event("text", part={"id": "t1", "messageID": "m1", "text": "done"}) + "\n")
@@ -576,18 +569,14 @@ def test_bypassed_git_commit_is_detected_restored_and_fails_invocation(tmp_path:
 
     script = _driver(tmp_path)
     body = tmp_path / "bypass_body.py"
-    body.write_text(
-        textwrap.dedent(
-            f"""
+    body.write_text(textwrap.dedent(f"""
             import subprocess
 
             with open("bypassed.txt", "w") as fh:
                 fh.write("mutated\\n")
             subprocess.run([{real_git!r}, "add", "bypassed.txt"], check=True)
             subprocess.run([{real_git!r}, "commit", "-m", "bypassed commit"], check=True)
-            """
-        )
-    )
+            """))
 
     config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5")})
     monkeypatch.chdir(repo)
@@ -616,9 +605,7 @@ def test_timeout_kills_process_group_before_any_late_write(tmp_path: Path, monke
     late_file = tmp_path / "late"
     child_pid_file = tmp_path / "child.pid"
     body = tmp_path / "timeout_body.py"
-    body.write_text(
-        textwrap.dedent(
-            f"""
+    body.write_text(textwrap.dedent(f"""
             import os
             import subprocess
             import sys
@@ -635,9 +622,7 @@ def test_timeout_kills_process_group_before_any_late_write(tmp_path: Path, monke
             while not os.path.exists({str(ready_file)!r}):
                 time.sleep(0.01)
             time.sleep(5)
-            """
-        )
-    )
+            """))
 
     config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5", timeout=1)})
     monkeypatch.chdir(repo)

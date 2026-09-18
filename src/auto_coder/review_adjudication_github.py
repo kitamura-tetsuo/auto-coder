@@ -124,8 +124,7 @@ class AdjudicationContextStore:
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
-        self._db.execute(
-            """CREATE TABLE IF NOT EXISTS adjudication_contexts (
+        self._db.execute("""CREATE TABLE IF NOT EXISTS adjudication_contexts (
                 repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
                 root_comment_id INTEGER NOT NULL, context_id TEXT NOT NULL UNIQUE,
                 live INTEGER NOT NULL, ledger TEXT NOT NULL,
@@ -133,8 +132,7 @@ class AdjudicationContextStore:
                 publication_body TEXT NOT NULL DEFAULT '',
                 observation_revision TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY(repository, pr_number, root_comment_id, context_id)
-            )"""
-        )
+            )""")
         self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS one_live_adjudication_context ON adjudication_contexts(repository, pr_number, root_comment_id) WHERE live = 1")
         self._db.execute("CREATE TABLE IF NOT EXISTS adjudication_issue_prs (repository TEXT NOT NULL, issue_number INTEGER NOT NULL, pr_number INTEGER NOT NULL, PRIMARY KEY(repository,issue_number,pr_number))")
         self._db.commit()

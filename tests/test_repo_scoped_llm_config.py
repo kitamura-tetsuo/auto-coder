@@ -170,8 +170,7 @@ class TestRepoScopedLLMBackendConfiguration:
 
             # Write base config
             with open(base_config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backend]
 default = "codex"
 order = ["codex", "claude"]
@@ -183,21 +182,18 @@ attempts = 1
 
 [backends.claude_routine]
 url = "https://base.routine.anthropic.com"
-"""
-                )
+""")
 
             # Write repo override for kitamura-tetsuo/auto-coder
             with open(repo_override_path, "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "env-autocoder-999"
 attempts = 3
 
 [backends.claude_routine]
 url = "https://custom.routine.anthropic.com"
-"""
-                )
+""")
 
             # 1. Loading without repo returns base config
             base_loaded = LLMBackendConfiguration.load_from_file(config_path=base_config_path)
@@ -242,35 +238,29 @@ url = "https://custom.routine.anthropic.com"
             decoy_dir = os.path.join(base_dir, "kitamura-tetsuo", "auto-coder")
             os.makedirs(decoy_dir, exist_ok=True)
             with open(os.path.join(decoy_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "decoy-env-should-not-be-used"
 attempts = 99
-"""
-                )
+""")
 
             # Real repo override in ~/.auto-coder/<owner>/<repo>/llm_config.toml
             real_override_dir = os.path.join(tmpdir, ".auto-coder", "kitamura-tetsuo", "auto-coder")
             os.makedirs(real_override_dir, exist_ok=True)
             with open(os.path.join(real_override_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "real-repo-env"
 attempts = 3
-"""
-                )
+""")
 
             with open(base_config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 model = "base-model"
 environment = "base-env"
 attempts = 1
-"""
-                )
+""")
 
             loaded = LLMBackendConfiguration.load_from_file(
                 config_path=base_config_path,
@@ -295,32 +285,26 @@ attempts = 1
             decoy_dir = os.path.join(env_base_dir, "owner", "repo")
             os.makedirs(decoy_dir, exist_ok=True)
             with open(os.path.join(decoy_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "decoy-env"
-"""
-                )
+""")
 
             # Real repo override in ~/.auto-coder/owner/repo/llm_config.toml
             real_dir = os.path.join(tmpdir, ".auto-coder", "owner", "repo")
             os.makedirs(real_dir, exist_ok=True)
             with open(os.path.join(real_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "real-env"
-"""
-                )
+""")
 
             with open(base_config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 model = "env-base-model"
 environment = "env-base-env"
-"""
-                )
+""")
 
             monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", base_config_path)
 
@@ -342,35 +326,29 @@ environment = "env-base-env"
             os.makedirs(local_auto_coder, exist_ok=True)
             local_config_path = os.path.join(local_auto_coder, "llm_config.toml")
             with open(local_config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 model = "local-base-model"
 environment = "local-base-env"
-"""
-                )
+""")
 
             # Decoy inside project's .auto-coder/<owner>/<repo>/
             decoy_dir = os.path.join(local_auto_coder, "owner", "repo")
             os.makedirs(decoy_dir, exist_ok=True)
             with open(os.path.join(decoy_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "decoy-local-env"
-"""
-                )
+""")
 
             # Real override in ~/.auto-coder/owner/repo/llm_config.toml
             real_dir = os.path.join(home_dir, ".auto-coder", "owner", "repo")
             os.makedirs(real_dir, exist_ok=True)
             with open(os.path.join(real_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "real-home-env"
-"""
-                )
+""")
 
             monkeypatch.chdir(project_dir)
 
@@ -390,23 +368,19 @@ environment = "real-home-env"
             home_auto_coder = os.path.join(home_dir, ".auto-coder")
             os.makedirs(home_auto_coder, exist_ok=True)
             with open(os.path.join(home_auto_coder, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 model = "home-base-model"
 environment = "home-base-env"
-"""
-                )
+""")
 
             repo_dir = os.path.join(home_auto_coder, "owner", "repo")
             os.makedirs(repo_dir, exist_ok=True)
             with open(os.path.join(repo_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "home-override-env"
-"""
-                )
+""")
 
             cfg = get_llm_config(repo_name="owner/repo")
             codex_cfg = cfg.get_backend_config("codex_cloud")
@@ -474,32 +448,26 @@ class TestGetLLMConfigAndIsolation:
             os.makedirs(repo_b_dir, exist_ok=True)
 
             with open(base_config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backend]
 default = "codex"
 
 [backends.codex_cloud]
 environment = "base-env"
 model = "base-model"
-"""
-                )
+""")
 
             with open(os.path.join(repo_a_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "repo-a-env"
-"""
-                )
+""")
 
             with open(os.path.join(repo_b_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "repo-b-env"
-"""
-                )
+""")
 
             # Global base lookup
             base_cfg = get_llm_config(config_path=base_config_path)
@@ -548,22 +516,18 @@ class TestCloudClientsRepoScoping:
             os.makedirs(repo_dir, exist_ok=True)
 
             with open(base_config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "env-outliner"
 attempts = 1
-"""
-                )
+""")
 
             with open(os.path.join(repo_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "env-autocoder"
 attempts = 3
-"""
-                )
+""")
 
             monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", base_config_path)
 
@@ -587,22 +551,18 @@ attempts = 3
             os.makedirs(repo_dir, exist_ok=True)
 
             with open(base_config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.claude_routine]
 claude_code_routine_token = "token-base"
 url = "https://base.url"
-"""
-                )
+""")
 
             with open(os.path.join(repo_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.claude_routine]
 claude_code_routine_token = "token-autocoder"
 url = "https://autocoder.url"
-"""
-                )
+""")
 
             monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", base_config_path)
 
@@ -625,22 +585,18 @@ url = "https://autocoder.url"
             os.makedirs(repo_dir, exist_ok=True)
 
             with open(base_config_path, "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "env-outliner-base"
 attempts = 1
-"""
-                )
+""")
 
             with open(os.path.join(repo_dir, "llm_config.toml"), "w", encoding="utf-8") as f:
-                f.write(
-                    """
+                f.write("""
 [backends.codex_cloud]
 environment = "env-autocoder-override"
 attempts = 3
-"""
-                )
+""")
 
             monkeypatch.setenv("AUTO_CODER_CONFIG_PATH", base_config_path)
 

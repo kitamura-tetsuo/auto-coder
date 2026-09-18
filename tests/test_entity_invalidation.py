@@ -228,10 +228,8 @@ def test_failed_deferral_transaction_stops_worker_and_preserves_recovery(tmp_pat
     engine = AutomationEngine(GitHubClient("test-token"), AutomationConfig())
     deferred = _github_deferral("rate_limit_cooldown", time.time() + 120.0)
     monkeypatch.setattr(engine.github, "get_pull_request_metadata_strict", MagicMock(side_effect=deferred))
-    engine.invalidations._connection.execute(
-        """CREATE TRIGGER fail_deferral BEFORE UPDATE OF deferral_reason ON entity_invalidations
-           WHEN NEW.deferral_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'disk unavailable'); END"""
-    )
+    engine.invalidations._connection.execute("""CREATE TRIGGER fail_deferral BEFORE UPDATE OF deferral_reason ON entity_invalidations
+           WHEN NEW.deferral_reason IS NOT NULL BEGIN SELECT RAISE(ABORT, 'disk unavailable'); END""")
     output = io.StringIO()
     sink = loguru_logger.add(output, format="{level}|{message}")
 
@@ -470,8 +468,7 @@ def test_one_delivery_can_invalidate_multiple_entities_with_preserved_metadata(t
 def test_http_redelivery_after_migration_recognizes_former_adapter_suffix(tmp_path: Path, monkeypatch):
     path = tmp_path / "invalidations.sqlite3"
     connection = sqlite3.connect(path)
-    connection.executescript(
-        """
+    connection.executescript("""
         CREATE TABLE entity_invalidations (
             repository TEXT NOT NULL, entity_type TEXT NOT NULL, entity_number INTEGER NOT NULL,
             generation INTEGER NOT NULL, claimed_generation INTEGER, state TEXT NOT NULL,
@@ -482,8 +479,7 @@ def test_http_redelivery_after_migration_recognizes_former_adapter_suffix(tmp_pa
             PRIMARY KEY(repository, delivery_id)
         );
         INSERT INTO github_deliveries VALUES ('owner/repo', 'same-delivery:0');
-        """
-    )
+        """)
     connection.commit()
     connection.close()
 
@@ -1179,11 +1175,9 @@ def test_failed_terminal_watch_retirement_keeps_invalidation_retryable(tmp_path:
     engine = AutomationEngine(github, AutomationConfig())
     monkeypatch.setattr(engine, "_is_pr_author_allowed", lambda _data: True)
     engine.invalidations.ensure_ci_watch("owner/repo", 100, "head", "ci.yml", now=100)
-    engine.invalidations._connection.execute(
-        """CREATE TRIGGER fail_watch_retirement BEFORE UPDATE OF active ON ci_watches
+    engine.invalidations._connection.execute("""CREATE TRIGGER fail_watch_retirement BEFORE UPDATE OF active ON ci_watches
            WHEN OLD.repository = 'owner/repo' AND OLD.pr_number = 100 AND NEW.active = 0
-           BEGIN SELECT RAISE(ABORT, 'disk unavailable'); END"""
-    )
+           BEGIN SELECT RAISE(ABORT, 'disk unavailable'); END""")
 
     async def scenario():
         await engine.invalidate_entity("owner/repo", "pr", 100)

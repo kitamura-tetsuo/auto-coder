@@ -91,15 +91,13 @@ class PendingWorkStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self._db_path, timeout=30)
         connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS github_pending_work (
+        connection.execute("""CREATE TABLE IF NOT EXISTS github_pending_work (
             work_key TEXT PRIMARY KEY, repository TEXT NOT NULL, entity TEXT NOT NULL,
             stage TEXT NOT NULL, revision TEXT NOT NULL, reason TEXT NOT NULL,
             not_before REAL NOT NULL, unfinished_effects TEXT NOT NULL,
             throttle_attempts INTEGER NOT NULL, last_error TEXT NOT NULL,
             updated_at REAL NOT NULL,
-            status TEXT NOT NULL DEFAULT 'waiting')"""
-        )
+            status TEXT NOT NULL DEFAULT 'waiting')""")
         # Preflight-schema databases predate the status column. A pre-existing
         # row cannot be safely interpreted as anything but eligible for
         # resumption, so it defaults to waiting rather than being dropped.

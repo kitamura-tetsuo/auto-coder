@@ -187,29 +187,23 @@ class MergeOperationStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self._db_path, timeout=30)
         connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS merge_operations (
+        connection.execute("""CREATE TABLE IF NOT EXISTS merge_operations (
             op_key TEXT PRIMARY KEY, api_origin TEXT NOT NULL, repository TEXT NOT NULL,
             pr_number INTEGER NOT NULL, expected_head_sha TEXT NOT NULL,
             merge_method TEXT NOT NULL, approval_credential_role TEXT NOT NULL,
             reviewer_identity TEXT NOT NULL, generation INTEGER NOT NULL,
             status TEXT NOT NULL, resume_reason TEXT NOT NULL,
-            not_before REAL NOT NULL, updated_at REAL NOT NULL)"""
-        )
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS merge_operation_effects (
+            not_before REAL NOT NULL, updated_at REAL NOT NULL)""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS merge_operation_effects (
             op_key TEXT NOT NULL, effect_name TEXT NOT NULL, state TEXT NOT NULL,
             attempt_id TEXT NOT NULL, generation INTEGER NOT NULL,
             receipt_json TEXT NOT NULL, throttle_attempts INTEGER NOT NULL,
             throttled_attempt_ids TEXT NOT NULL, last_error TEXT NOT NULL,
-            updated_at REAL NOT NULL, PRIMARY KEY (op_key, effect_name))"""
-        )
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS merge_operation_attempt_history (
+            updated_at REAL NOT NULL, PRIMARY KEY (op_key, effect_name))""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS merge_operation_attempt_history (
             history_id INTEGER PRIMARY KEY AUTOINCREMENT, op_key TEXT NOT NULL,
             effect_name TEXT NOT NULL, generation INTEGER NOT NULL, attempt_id TEXT NOT NULL,
-            outcome TEXT NOT NULL, detail TEXT NOT NULL, recorded_at REAL NOT NULL)"""
-        )
+            outcome TEXT NOT NULL, detail TEXT NOT NULL, recorded_at REAL NOT NULL)""")
         return connection
 
     # -- row <-> dataclass -------------------------------------------------

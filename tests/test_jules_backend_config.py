@@ -18,15 +18,13 @@ def test_jules_config_loading():
 
         # Create a test config file with a jules section
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = true
 model = "jules-test-model"
 api_key = "test-key"
 temperature = 0.7
-"""
-            )
+""")
 
         # Load configuration from the file
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -49,12 +47,10 @@ def test_jules_config_default_values():
 
         # Create a minimal config file without jules section
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.codex]
 enabled = true
-"""
-            )
+""")
 
         # Load configuration from the file
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -76,13 +72,11 @@ def test_jules_config_disabled():
 
         # Create a config file with jules explicitly disabled
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = false
 model = "jules-test-model"
-"""
-            )
+""")
 
         # Load configuration from the file
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -107,13 +101,11 @@ def test_jules_config_get_model():
 
         # Create a config file with jules having a specific model
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backends.jules]
 enabled = true
 model = "jules-specific-model"
-"""
-            )
+""")
 
         # Load configuration from the file
         config = LLMBackendConfiguration.load_from_file(config_path)
@@ -132,8 +124,7 @@ def test_jules_config_with_other_backends():
 
         # Create a config file with multiple backends including jules
         with open(config_path, "w") as f:
-            f.write(
-                """
+            f.write("""
 [backend]
 order = ["codex", "antigravity", "jules"]
 default = "codex"
@@ -149,8 +140,7 @@ model = "gemini-model"
 [backends.jules]
 enabled = true
 model = "jules-model"
-"""
-            )
+""")
 
         # Load configuration from the file
         config = LLMBackendConfiguration.load_from_file(config_path)

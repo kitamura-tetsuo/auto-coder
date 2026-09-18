@@ -78,8 +78,7 @@ def test_muse_transports_full_rendered_prompt_through_private_file(tmp_path: Pat
     repo = _repository(tmp_path)
     report = tmp_path / f"report-{size}.json"
     script = tmp_path / f"muse-{size}"
-    script.write_text(
-        """#!/usr/bin/env python3
+    script.write_text("""#!/usr/bin/env python3
 import hashlib
 import json
 import os
@@ -110,8 +109,7 @@ report = {
 }
 Path(os.environ["MUSE_TEST_REPORT"]).write_text(json.dumps(report))
 print("ACTION_SUMMARY: Muse completed")
-"""
-    )
+""")
     script.chmod(0o700)
     config = LLMBackendConfiguration(
         backends={
@@ -453,8 +451,7 @@ def test_muse_noedit_sanitizes_options_and_enforces_readonly_flags(tmp_path: Pat
     repo = _repository(tmp_path)
     captured_file = tmp_path / "captured_args.json"
     script = tmp_path / "muse"
-    script.write_text(
-        f"""#!/usr/bin/env python3
+    script.write_text(f"""#!/usr/bin/env python3
 import json
 import sys
 from pathlib import Path
@@ -465,8 +462,7 @@ if sys.argv[1:] == ["--version"]:
 arguments = sys.argv[1:]
 Path(r"{captured_file}").write_text(json.dumps(arguments))
 print("ACTION_SUMMARY: Muse review completed")
-"""
-    )
+""")
     script.chmod(0o700)
     config = LLMBackendConfiguration(
         backends={
@@ -503,8 +499,7 @@ def test_muse_edit_mode_strips_duplicate_exec(tmp_path: Path, monkeypatch: pytes
     repo = _repository(tmp_path)
     captured_file = tmp_path / "captured_edit_args.json"
     script = tmp_path / "muse"
-    script.write_text(
-        f"""#!/usr/bin/env python3
+    script.write_text(f"""#!/usr/bin/env python3
 import json
 import sys
 from pathlib import Path
@@ -515,8 +510,7 @@ if sys.argv[1:] == ["--version"]:
 arguments = sys.argv[1:]
 Path(r"{captured_file}").write_text(json.dumps(arguments))
 print("ACTION_SUMMARY: Muse edit completed")
-"""
-    )
+""")
     script.chmod(0o700)
     config = LLMBackendConfiguration(
         backends={
@@ -549,8 +543,7 @@ def test_muse_respects_command_execution_cwd(tmp_path: Path, monkeypatch: pytest
     _git(main_repo, "worktree", "add", str(worktree_dir), "HEAD")
     captured_file = tmp_path / "captured_cwd_args.json"
     script = tmp_path / "muse"
-    script.write_text(
-        f"""#!/usr/bin/env python3
+    script.write_text(f"""#!/usr/bin/env python3
 import json
 import os
 import sys
@@ -562,8 +555,7 @@ if sys.argv[1:] == ["--version"]:
 arguments = sys.argv[1:]
 Path(r"{captured_file}").write_text(json.dumps({{"cwd": os.getcwd(), "args": arguments}}))
 print("ACTION_SUMMARY: Muse worktree completed")
-"""
-    )
+""")
     script.chmod(0o700)
     config = LLMBackendConfiguration(
         backends={
@@ -596,8 +588,7 @@ print("ACTION_SUMMARY: Muse worktree completed")
 def test_muse_stderr_warnings_do_not_pollute_successful_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = tmp_path / "muse"
-    script.write_text(
-        """#!/usr/bin/env python3
+    script.write_text("""#!/usr/bin/env python3
 import sys
 
 if sys.argv[1:] == ["--version"]:
@@ -606,8 +597,7 @@ if sys.argv[1:] == ["--version"]:
 sys.stderr.write("muse: workspace root: /tmp/isolated\\n")
 sys.stderr.write("muse: warning: rules file at /workspace/CLAUDE.md is ignored\\n")
 print('{"verdict": "APPROVE"}')
-"""
-    )
+""")
     script.chmod(0o700)
     config = LLMBackendConfiguration(
         backends={
@@ -699,8 +689,7 @@ def test_muse_run_llm_cli_extracts_jsonl_stream(tmp_path: Path, monkeypatch: pyt
             "text": '{"verdict": "READY", "findings": []}',
         },
     }
-    script.write_text(
-        f"""#!/usr/bin/env python3
+    script.write_text(f"""#!/usr/bin/env python3
 import sys
 
 if sys.argv[1:] == ["--version"]:
@@ -708,8 +697,7 @@ if sys.argv[1:] == ["--version"]:
     raise SystemExit(0)
 print("muse: workspace root: /workspace")
 print({repr(json.dumps(event_payload))})
-"""
-    )
+""")
     script.chmod(0o700)
     config = LLMBackendConfiguration(
         backends={
@@ -884,8 +872,7 @@ def test_muse_run_llm_cli_with_pr2103_diff_succeeds_without_usage_limit_error(tm
             },
         },
     }
-    script.write_text(
-        f"""#!/usr/bin/env python3
+    script.write_text(f"""#!/usr/bin/env python3
 import sys
 
 if sys.argv[1:] == ["--version"]:
@@ -895,8 +882,7 @@ print("muse: workspace root: /workspace")
 print({repr(json.dumps(prompt_event))})
 print({repr(json.dumps(assistant_event))})
 print({repr(json.dumps(terminal_event))})
-"""
-    )
+""")
     script.chmod(0o700)
     config = LLMBackendConfiguration(
         backends={

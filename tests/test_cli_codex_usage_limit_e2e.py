@@ -6,9 +6,7 @@ import textwrap
 
 def _write_codex_stub(bin_dir):
     script_path = bin_dir / "codex"
-    script_path.write_text(
-        textwrap.dedent(
-            """\
+    script_path.write_text(textwrap.dedent("""\
             #!/usr/bin/env bash
             if [[ "$1" == "--version" ]]; then
               echo "codex stub 1.0.0"
@@ -24,9 +22,7 @@ def _write_codex_stub(bin_dir):
 
             >&2 echo "codex stub: unsupported invocation $*"
             exit 1
-            """
-        )
-    )
+            """))
     script_path.chmod(0o755)
     return script_path
 
@@ -39,8 +35,7 @@ def test_codex_cli_usage_limit_detection_e2e(tmp_path, monkeypatch):
     original_path = os.environ.get("PATH", "")
     monkeypatch.setenv("PATH", f"{bin_dir}:{original_path}")
 
-    python_code = textwrap.dedent(
-        """
+    python_code = textwrap.dedent("""
         import os
         from src.auto_coder.codex_client import CodexClient
         from src.auto_coder.exceptions import AutoCoderUsageLimitError
@@ -63,8 +58,7 @@ def test_codex_cli_usage_limit_detection_e2e(tmp_path, monkeypatch):
 
         if __name__ == "__main__":
             raise SystemExit(main())
-        """
-    )
+        """)
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{original_path}"

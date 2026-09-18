@@ -152,8 +152,7 @@ def test_priority_contract_and_review_versus_child_sources():
 def test_schema_upgrade_discards_unattributable_implementation_rows(tmp_path):
     path = tmp_path / "routing.sqlite3"
     connection = sqlite3.connect(path)
-    connection.executescript(
-        """
+    connection.executescript("""
         CREATE TABLE issue_lane_arrivals (
             arrival INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT NOT NULL,
             stage TEXT NOT NULL, target_number INTEGER NOT NULL,
@@ -164,8 +163,7 @@ def test_schema_upgrade_discards_unattributable_implementation_rows(tmp_path):
         INSERT INTO issue_lane_arrivals(repository,stage,target_number,generation,priority,state,remaining_json,created_at)
         VALUES ('owner/repo','review',10,'review-g',0,'pending','[]',1),
                ('owner/repo','implementation',12,'old-family-g',0,'pending','[]',1);
-        """
-    )
+        """)
     connection.commit()
     connection.close()
 

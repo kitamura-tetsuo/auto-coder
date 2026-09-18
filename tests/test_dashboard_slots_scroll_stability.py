@@ -203,12 +203,10 @@ def test_membership_update_refreshes_without_full_panel_rebuild(_use_real_sleep,
 
         page.evaluate("window.scrollTo(0, 50)")
         scroll_before = page.evaluate("window.scrollY")
-        page.evaluate(
-            """
+        page.evaluate("""
             window.__siblingCard = Array.from(document.querySelectorAll('.q-card'))
               .find(el => el.textContent.includes('Issue #9201'));
-            """
-        )
+            """)
 
         assert slots.record_implementation_pr(anchor_owner, 9299)
         time.sleep(1.3)  # next timer tick observes the new membership
@@ -216,12 +214,10 @@ def test_membership_update_refreshes_without_full_panel_rebuild(_use_real_sleep,
         assert "#9299" in page.content(), "a newly recorded PR must appear by the next successful refresh"
         scroll_after = page.evaluate("window.scrollY")
         assert scroll_after == scroll_before, "a membership-only update must not reset the viewport"
-        same_sibling_card = page.evaluate(
-            """
+        same_sibling_card = page.evaluate("""
             window.__siblingCard === Array.from(document.querySelectorAll('.q-card'))
               .find(el => el.textContent.includes('Issue #9201'));
-            """
-        )
+            """)
         assert same_sibling_card, "an unrelated owner's row must not be torn down by another owner's membership update"
 
 

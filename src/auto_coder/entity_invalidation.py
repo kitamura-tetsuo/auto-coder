@@ -151,8 +151,7 @@ class DurableInvalidationQueue:
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._lock = threading.Lock()
-        self._connection.executescript(
-            """
+        self._connection.executescript("""
             CREATE TABLE IF NOT EXISTS entity_invalidations (
                 repository TEXT NOT NULL,
                 entity_type TEXT NOT NULL CHECK(entity_type IN ('issue', 'pr', 'dependency')),
@@ -220,13 +219,11 @@ class DurableInvalidationQueue:
                 active INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY(repository, pr_number, head_sha, workflow_id)
             );
-            """
-        )
+            """)
         schema = self._connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entity_invalidations'").fetchone()[0]
         if "'queued'" not in schema:
             # Migrate databases created by the first durable-queue release.
-            self._connection.executescript(
-                """
+            self._connection.executescript("""
                 ALTER TABLE entity_invalidations RENAME TO entity_invalidations_v1;
                 CREATE TABLE entity_invalidations (
                     repository TEXT NOT NULL,
@@ -242,16 +239,14 @@ class DurableInvalidationQueue:
                     generation, claimed_generation, state)
                     SELECT * FROM entity_invalidations_v1;
                 DROP TABLE entity_invalidations_v1;
-                """
-            )
+                """)
 
         # Dependency reevaluation is represented by one coalescing repository
         # obligation.  Rebuild older CHECK-constrained databases before that
         # identity can be persisted.
         schema = self._connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entity_invalidations'").fetchone()[0]
         if "'dependency'" not in schema:
-            self._connection.executescript(
-                """
+            self._connection.executescript("""
                 ALTER TABLE entity_invalidations RENAME TO entity_invalidations_v2;
                 CREATE TABLE entity_invalidations (
                     repository TEXT NOT NULL,
@@ -270,8 +265,7 @@ class DurableInvalidationQueue:
                     claimed_generation, state, not_before, 0
                 FROM entity_invalidations_v2;
                 DROP TABLE entity_invalidations_v2;
-                """
-            )
+                """)
 
         invalidation_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(entity_invalidations)")}
         if "not_before" not in invalidation_columns:
@@ -289,8 +283,7 @@ class DurableInvalidationQueue:
         if "entity_type" not in delivery_columns:
             # Preserve old delivery IDs as repository-wide deduplication
             # tombstones because the previous schema did not record entities.
-            self._connection.executescript(
-                """
+            self._connection.executescript("""
                 INSERT OR IGNORE INTO legacy_github_deliveries(repository, delivery_id)
                     SELECT repository, delivery_id FROM github_deliveries;
                 DROP TABLE github_deliveries;
@@ -300,8 +293,7 @@ class DurableInvalidationQueue:
                     entity_number INTEGER NOT NULL, event_type TEXT, action TEXT,
                     PRIMARY KEY(repository, delivery_id, entity_type, entity_number)
                 );
-                """
-            )
+                """)
             legacy_rows = self._connection.execute("SELECT repository, delivery_id FROM legacy_github_deliveries").fetchall()
             with self._connection:
                 self._connection.executemany(
@@ -310,8 +302,7 @@ class DurableInvalidationQueue:
                 )
         delivery_schema = self._connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'github_deliveries'").fetchone()[0]
         if "'dependency'" not in delivery_schema:
-            self._connection.executescript(
-                """
+            self._connection.executescript("""
                 ALTER TABLE github_deliveries RENAME TO github_deliveries_v2;
                 CREATE TABLE github_deliveries (
                     repository TEXT NOT NULL, delivery_id TEXT NOT NULL,
@@ -321,8 +312,7 @@ class DurableInvalidationQueue:
                 );
                 INSERT INTO github_deliveries SELECT * FROM github_deliveries_v2;
                 DROP TABLE github_deliveries_v2;
-                """
-            )
+                """)
 
     def accept_ci_delivery(self, delivery: CIWebhookDelivery, now: Optional[float] = None) -> bool:
         """Atomically retain a CI delivery and advance its durable observation scopes."""
