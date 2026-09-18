@@ -1058,7 +1058,7 @@ def _resolve_adversarial_validation_candidate_route(validation_kind: Optional[st
         dedicated_config = config.get_backend_pr_adversarial_validation()
 
     if dedicated_order or dedicated_config is not None:
-        dedicated_candidates: List[str] = list(dedicated_order)
+        dedicated_candidates = list(dedicated_order)
         if not dedicated_candidates and dedicated_config is not None:
             dedicated_candidates = [dedicated_config.name]
         return dedicated_candidates
