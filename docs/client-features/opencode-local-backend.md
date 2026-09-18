@@ -232,3 +232,27 @@ review managers do not read, write, or alter `backend_session_state.json`.
   through configured eligible read-only review backends in priority order. If all
   candidates fail or are exhausted, review fails closed, blocking PR merge.
 
+### Distributed container runtime and operator setup
+
+The distributed Auto-Coder container image includes a pinned OpenCode CLI
+release (`1.18.31` on Linux `amd64` and `arm64`) alongside required system
+dependencies (`git` and `ca-certificates`). For full architecture and channel
+details, see `docs/client-features/opencode-container-runtime.md`.
+
+In `compose.channels.yml`, containers run with `HOME=/runtime/home`. OpenCode
+configuration and native data are stored under this effective user home:
+- Configuration: `/runtime/home/.config/opencode/opencode.jsonc` (or `.json`)
+- Authentication store: `/runtime/home/.local/share/opencode/auth.json`
+- Native session database: `/runtime/home/.local/share/opencode/opencode.db`
+- Auto-Coder configuration: `/runtime/home/.auto-coder/llm_config.toml`
+
+Channel mounts (`./runtime/release` and `./runtime/beta`) keep release and beta
+state isolated across container recreations. Preservation of native session data
+does not trigger implicit last-session resumption for new implementation tasks.
+Credentials are never baked into image layers or build arguments; runtime
+credential injection is performed non-interactively via environment variables
+(`OPENCODE_API_KEY`, `OPENAI_API_KEY`, etc.), `auth.json`, or `llm_config.toml`.
+Available models may be discovered via `docker compose run --rm release opencode models`,
+and aliases may configure any explicit `provider/model` without dependency on
+Union Alpha.
+
