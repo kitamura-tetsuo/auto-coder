@@ -1,11 +1,13 @@
-"""Real-CLI production regression coverage for OpenCode no-edit enforcement (Issue #2125).
+"""Real-CLI production regression coverage for OpenCode no-edit enforcement
+(Issue #2125) and explicit session continuation (Issue #2126).
 
-Executable-double tests in `tests/test_opencode_noedit_backend.py` establish
-option transport, cleanup, and interleaving. Only the actual released
-`opencode` CLI (pinned to v1.18.31, matching the Issue's baseline) against a
-controlled local provider can establish real tool exposure and configuration
-merge precedence; a fake CLI that merely honors an invented `--no-edit` flag
-would not be evidence of OpenCode safety.
+Executable-double tests in `tests/test_opencode_noedit_backend.py` and
+`tests/test_opencode_backend.py` establish option transport, cleanup, and
+interleaving. Only the actual released `opencode` CLI (pinned to v1.18.31,
+matching the Issues' baseline) against a controlled local provider can
+establish real tool exposure, configuration merge precedence, and real
+stored-session/directory continuation behavior; a fake CLI that merely
+honors an invented flag would not be evidence of OpenCode safety.
 
 These tests auto-install the pinned CLI via npm when it is not already on
 PATH, and skip (never fail) when npm/network are unavailable, so they run
@@ -27,6 +29,7 @@ from unittest.mock import patch
 
 import pytest
 
+from src.auto_coder.cli_helpers import build_backend_manager
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from src.auto_coder.opencode_client import OpenCodeClient
 from tests.test_opencode_backend import _git, _repository
@@ -517,3 +520,250 @@ def test_ac006_enforcement_prerequisite_unavailable_refused_before_task_launch(t
             client._run_llm_cli("inspect only", is_noedit=True)
 
     assert not launched_marker.exists()
+
+
+# ---------------------------------------------------------------------------
+# Issue #2126 AC-004: no-edit is reapplied on continuation, real CLI
+# ---------------------------------------------------------------------------
+
+
+def _run_edit_or_skip(client: OpenCodeClient, prompt: str) -> str:
+    try:
+        return client._run_llm_cli(prompt, is_noedit=False)
+    except RuntimeError as exc:
+        if _UPSTREAM_MODEL_RESOLUTION_BUG_MARKER not in str(exc):
+            raise
+        pytest.skip(f"opencode CLI could not resolve the config-only test provider/model (known upstream quirk, not reproduced locally): {exc}")
+
+
+def _continue_or_skip(client: OpenCodeClient, session_id: str, prompt: str, *, is_noedit: bool = True) -> str:
+    try:
+        return client.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
+    except RuntimeError as exc:
+        if _UPSTREAM_MODEL_RESOLUTION_BUG_MARKER not in str(exc):
+            raise
+        pytest.skip(f"opencode CLI could not resolve the config-only test provider/model (known upstream quirk, not reproduced locally): {exc}")
+
+
+def test_ac004_editable_session_continued_as_noedit_denies_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_cli: str, scripted_provider, _use_real_commands) -> None:
+    """A session created with edit permissions must not carry that permission into an explicit no-edit continuation."""
+    repo = _repository(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    target_file = repo / "should_not_exist.txt"
+
+    def _fresh_edit_answer_turn(_request: Dict[str, Any]) -> Tuple[str, Any]:
+        return "text", "edit-mode session created"
+
+    def _write_turn(_request: Dict[str, Any]) -> Tuple[str, Any]:
+        return "tool_calls", [{"name": "write", "arguments": {"filePath": str(target_file), "content": "written despite no-edit continuation"}}]
+
+    def _pass_turn(_request: Dict[str, Any]) -> Tuple[str, Any]:
+        return "text", "PASS"
+
+    # A trailing clean-completion turn lets OpenCode's own agent loop exit
+    # normally after the denied tool call, instead of retrying it forever
+    # against a scripted provider with nothing else to say (our own rejection
+    # of the earlier forbidden `tool_use` event, observed while parsing the
+    # full stream below, does not depend on how the process itself finishes).
+    provider = scripted_provider([_fresh_edit_answer_turn, _write_turn, _pass_turn])
+    _write_home_config(home, provider_name="fakeprov", model_name="fake-model", base_url=provider.base_url)
+    home_config_path = home / ".config" / "opencode" / "opencode.json"
+    home_config_before = home_config_path.read_text()
+
+    client = _client(repo, home, opencode_cli, monkeypatch)
+    assert _run_edit_or_skip(client, "create the session") == "edit-mode session created"
+    session_id = client.get_last_session_id()
+    assert session_id
+
+    with pytest.raises(RuntimeError, match="forbidden tool 'write'"):
+        _continue_or_skip(client, session_id, "please write the file")
+
+    assert not target_file.exists()
+    # Persistent user settings were never rewritten to implement the mode change.
+    assert home_config_path.read_text() == home_config_before
+
+
+def test_ac004_noedit_session_continued_as_noedit_still_reads_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_cli: str, scripted_provider, _use_real_commands) -> None:
+    """Safe no-edit creation followed by an explicit no-edit continuation stays useful."""
+    repo = _repository(tmp_path)
+    (repo / "evidence.txt").write_text("SENTINEL_CONTINUATION_42\n")
+    _git(repo, "add", "evidence.txt")
+    _git(repo, "commit", "-m", "add evidence")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    def _create_turn(_request: Dict[str, Any]) -> Tuple[str, Any]:
+        return "text", "noedit session created"
+
+    def _read_tool_turn(_request: Dict[str, Any]) -> Tuple[str, Any]:
+        return "tool_calls", [{"name": "read", "arguments": {"filePath": str(repo / "evidence.txt")}}]
+
+    def _echo_turn(request: Dict[str, Any]) -> Tuple[str, Any]:
+        tool_message = next(m for m in request["messages"] if m.get("role") == "tool")
+        content = tool_message.get("content")
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        return "text", f"CONTINUATION_ANSWER::{content}"
+
+    provider = scripted_provider([_create_turn, _read_tool_turn, _echo_turn])
+    _write_home_config(home, provider_name="fakeprov", model_name="fake-model", base_url=provider.base_url)
+
+    client = _client(repo, home, opencode_cli, monkeypatch)
+    assert _run_with_retry(client, "create the session", provider) == "noedit session created"
+    session_id = client.get_last_session_id()
+    assert session_id
+
+    answer = _continue_or_skip(client, session_id, "what does evidence.txt say?")
+    assert "SENTINEL_CONTINUATION_42" in answer
+
+
+# ---------------------------------------------------------------------------
+# Issue #2126 AC-005: history is not current filesystem authority, real CLI
+# ---------------------------------------------------------------------------
+
+
+def _evidence_turns() -> Tuple[Turn, Turn, Turn]:
+    def _create_turn(_request: Dict[str, Any]) -> Tuple[str, Any]:
+        return "text", "session created"
+
+    def _read_tool_turn(_request: Dict[str, Any]) -> Tuple[str, Any]:
+        return "tool_calls", [{"name": "read", "arguments": {"filePath": "evidence.txt"}}]
+
+    def _echo_turn(request: Dict[str, Any]) -> Tuple[str, Any]:
+        tool_message = next(m for m in request["messages"] if m.get("role") == "tool")
+        content = tool_message.get("content")
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        return "text", f"WORKSPACE_ANSWER::{content}"
+
+    return _create_turn, _read_tool_turn, _echo_turn
+
+
+def test_ac005_compatible_case_continuation_succeeds_in_a_stable_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_cli: str, scripted_provider, _use_real_commands) -> None:
+    """The normal, supported case: the operation-bound execution directory stays
+    the same real path across the fresh call and its continuation (exactly how
+    Auto-Coder's production flow runs -- already inside a dedicated per-task
+    linked worktree, so `isolated_local_llm_worktree` never nests a further
+    ephemeral temp worktree; see `test_ac001_linked_worktree_preserves_primary_checkout_and_shared_refs`
+    for the same non-nesting property under no-edit no-op mutation). Through
+    the real production `BackendManager`, a continuation must succeed and
+    read *current* file content, never a stale snapshot -- this is what makes
+    the explicit failure in the incompatible case below meaningful rather
+    than a blanket refusal."""
+    repo = _repository(tmp_path)
+    worktree_dir = tmp_path / "linked-worktree"
+    subprocess.run(["git", "worktree", "add", "--detach", str(worktree_dir), "HEAD"], cwd=repo, check=True, capture_output=True)
+    (worktree_dir / "evidence.txt").write_text("OLD_CONTENT_MARKER\n")
+    _git(worktree_dir, "add", "evidence.txt")
+    _git(worktree_dir, "commit", "-m", "seed evidence with OLD content")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    provider = scripted_provider(list(_evidence_turns()))
+    _write_home_config(home, provider_name="fakeprov", model_name="fake-model", base_url=provider.base_url)
+
+    config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="fakeprov/fake-model", timeout=60)})
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", opencode_cli)
+    monkeypatch.chdir(worktree_dir)
+
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
+        manager = build_backend_manager(["opencode"], "opencode", {})
+        manager._is_noedit = True
+
+        try:
+            first = manager._run_llm_cli("create the session")
+        except RuntimeError as exc:
+            if _UPSTREAM_MODEL_RESOLUTION_BUG_MARKER not in str(exc):
+                raise
+            pytest.skip(f"opencode CLI could not resolve the config-only test provider/model (known upstream quirk, not reproduced locally): {exc}")
+        assert first == "session created"
+        session_id = manager._last_session_id
+        assert session_id
+
+        (worktree_dir / "evidence.txt").write_text("NEW_CONTENT_MARKER\n")
+        _git(worktree_dir, "add", "evidence.txt")
+        _git(worktree_dir, "commit", "-m", "update evidence to NEW content")
+
+        try:
+            answer = manager.continue_session(session_id=session_id, prompt="what does evidence.txt say now?", is_noedit=True)
+        except RuntimeError as exc:
+            if _UPSTREAM_MODEL_RESOLUTION_BUG_MARKER not in str(exc):
+                raise
+            pytest.skip(f"opencode CLI could not resolve the config-only test provider/model (known upstream quirk, not reproduced locally): {exc}")
+
+    assert "NEW_CONTENT_MARKER" in answer
+    assert "OLD_CONTENT_MARKER" not in answer
+    assert manager._last_continue_session_resumed is True
+
+
+def test_ac005_incompatible_case_fails_explicitly_without_stale_content_or_recreated_worktree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_cli: str, scripted_provider, _use_real_commands) -> None:
+    """The genuinely unsupported case: the real, released OpenCode CLI (verified
+    directly, not assumed) ties a continued session's actual tool execution to
+    the directory it was *created* in -- not to `--dir` on the continuation --
+    and either silently reads/writes that original directory if it still
+    exists, or fails internally once it is gone; it does not itself redirect
+    to a new directory. When BackendManager is *not* already inside a
+    dedicated per-task worktree (so `isolated_local_llm_worktree` creates and
+    destroys its own fresh temp worktree per call -- AC-005's "worktree W1
+    later removed"), continuing a session from that now-destroyed worktree
+    must fail explicitly before/without ever promoting stale content, without
+    recreating W1, and without leaving continuity reported as true -- never
+    silently succeed against a directory that no longer matches the caller's
+    current workspace."""
+    repo = _repository(tmp_path)
+    (repo / "evidence.txt").write_text("OLD_CONTENT_MARKER\n")
+    _git(repo, "add", "evidence.txt")
+    _git(repo, "commit", "-m", "seed evidence with OLD content")
+    home = tmp_path / "home"
+    home.mkdir()
+
+    provider = scripted_provider(list(_evidence_turns()))
+    _write_home_config(home, provider_name="fakeprov", model_name="fake-model", base_url=provider.base_url)
+
+    config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="fakeprov/fake-model", timeout=60)})
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", opencode_cli)
+    monkeypatch.chdir(repo)
+
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
+        manager = build_backend_manager(["opencode"], "opencode", {})
+        manager._is_noedit = True
+
+        # `repo` is the primary checkout (not already an isolated worktree),
+        # so this fresh call runs inside its *own* ephemeral temp worktree,
+        # which BackendManager destroys again before returning.
+        try:
+            first = manager._run_llm_cli("create the session")
+        except RuntimeError as exc:
+            if _UPSTREAM_MODEL_RESOLUTION_BUG_MARKER not in str(exc):
+                raise
+            pytest.skip(f"opencode CLI could not resolve the config-only test provider/model (known upstream quirk, not reproduced locally): {exc}")
+        assert first == "session created"
+        session_id = manager._last_session_id
+        assert session_id
+
+        (repo / "evidence.txt").write_text("NEW_CONTENT_MARKER\n")
+        _git(repo, "add", "evidence.txt")
+        _git(repo, "commit", "-m", "update evidence to NEW content")
+        worktree_listing_before = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True).stdout
+
+        manager._last_continue_session_resumed = True  # prove it actually resets
+        # `BackendManager.continue_session` catches the client's explicit
+        # refusal and transparently falls back to a *fresh* session on the
+        # same backend (its documented behavior) -- so this does not raise;
+        # what matters is that the fallback answer is never the stale content
+        # a silently-misdirected continuation would have returned, and that
+        # continuity is correctly reported as false.
+        try:
+            fallback_answer = manager.continue_session(session_id=session_id, prompt="what does evidence.txt say now?", is_noedit=True)
+        except RuntimeError as exc:
+            if _UPSTREAM_MODEL_RESOLUTION_BUG_MARKER not in str(exc):
+                raise
+            pytest.skip(f"opencode CLI could not resolve the config-only test provider/model (known upstream quirk, not reproduced locally): {exc}")
+
+    assert manager._last_continue_session_resumed is False
+    assert "OLD_CONTENT_MARKER" not in fallback_answer
+    # No worktree was recreated to satisfy the continuation.
+    assert subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True).stdout == worktree_listing_before

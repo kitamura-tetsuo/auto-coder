@@ -384,6 +384,7 @@ class OpenCodeClient(LLMClientBase):
 
     def __init__(self, backend_name: Optional[str] = None) -> None:
         super().__init__()
+        self._resume_session_id: Optional[str] = None
         config = get_llm_config()
         self.config_backend = config.get_backend_config(backend_name or "opencode")
         model_name: str = (self.config_backend and self.config_backend.model) or ""
@@ -664,6 +665,38 @@ class OpenCodeClient(LLMClientBase):
             if tools.get(tool_name) is not True:
                 raise RuntimeError(f"OpenCode no-edit enforcement could not permit repository inspection for this CLI/environment: tool {tool_name!r} resolved to {tools.get(tool_name)!r} instead of allowed; refusing to submit the task")
 
+    def _verify_resumable_session_in_current_workspace(self, *, session_id: str, cwd: Path, env: Dict[str, str]) -> None:
+        """Refuse a continuation before task launch unless the session belongs to `cwd`.
+
+        Issue #2126 REQ-006: real OpenCode ties a session's actual tool
+        execution to the directory it was created in, not to `--dir` on a
+        later `--session` continuation -- verified against the real CLI: it
+        either silently reads/writes against that original directory (if
+        still present) or crashes once it is gone, in both cases regardless
+        of the current `--dir`. `opencode session list` is itself scoped to
+        the directory it runs in, so it is used here as a safe, read-only
+        preflight: a session absent from the current directory's list cannot
+        be continued here without risking stale evidence or an uncontrolled
+        crash, so this fails closed before the task is ever submitted rather
+        than let OpenCode redirect, recreate a removed directory, or operate
+        on stale content.
+        """
+        command = [*self.command, "session", "list", "--format", "json"]
+        try:
+            result = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True, timeout=60, env=env)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"OpenCode session continuation could not be verified before task launch: {exc}") from exc
+        if result.returncode != 0:
+            diagnostics = (result.stderr or result.stdout or "").strip()[:400]
+            raise RuntimeError(f"OpenCode session continuation could not be verified before task launch (exit code {result.returncode}): {diagnostics or 'no diagnostic output'}")
+        stripped_stdout = (result.stdout or "").strip()
+        try:
+            sessions = json.loads(stripped_stdout) if stripped_stdout else []
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"OpenCode session continuation could not be verified before task launch: the session list was not valid JSON ({exc})") from exc
+        if not isinstance(sessions, list) or not any(isinstance(entry, dict) and entry.get("id") == session_id for entry in sessions):
+            raise RuntimeError(f"OpenCode session {session_id!r} is not associated with the current execution directory {cwd}; refusing to continue rather than risk redirecting to, or silently reading stale content from, a different workspace")
+
     @classmethod
     def _protected_git_dirs(cls, cwd: Path) -> Tuple[str, ...]:
         """The bound repository/worktree's own Git metadata directories.
@@ -790,7 +823,7 @@ class OpenCodeClient(LLMClientBase):
         lowered = (text or "").lower()
         return any(marker in lowered for marker in _RETRYABLE_TRANSPORT_MARKERS)
 
-    def _extract_final_answer(self, *, stdout: str, stderr: str, returncode: int, is_noedit: bool = False) -> str:
+    def _extract_final_answer(self, *, stdout: str, stderr: str, returncode: int, is_noedit: bool = False, expected_session_id: Optional[str] = None) -> str:
         events: List[Dict[str, Any]] = []
         for line_number, raw_line in enumerate(stdout.splitlines(), start=1):
             line = raw_line.strip()
@@ -861,6 +894,16 @@ class OpenCodeClient(LLMClientBase):
                 raise AutoCoderRetryableBackendError(classification_text or "OpenCode transport failure")
             raise RuntimeError(f"OpenCode CLI failed with return code {returncode}\n{combined_output}")
 
+        # Issue #2126 REQ-003: a continuation may be reported as resumed only
+        # when root-session identity equals the requested ID. This is checked
+        # after the typed provider-failure classifications above (so a real
+        # usage-limit/retryable/session failure during a continuation attempt
+        # keeps its specific exception type per REQ-008) but before promoting
+        # an otherwise syntactically valid result, per AC-003: a plausible
+        # final answer for the wrong (or absent) session is never continuity.
+        if expected_session_id is not None and root_session != expected_session_id:
+            raise RuntimeError(f"OpenCode did not continue the requested session {expected_session_id!r} (observed root session {root_session!r}); rejecting the result rather than reporting a resumed continuation")
+
         if last_step_finish is None:
             raise RuntimeError("OpenCode did not emit a completed step_finish event; the result is incomplete")
 
@@ -879,6 +922,11 @@ class OpenCodeClient(LLMClientBase):
         if not final_texts:
             raise RuntimeError("OpenCode completed without producing a final assistant text message")
 
+        # REQ-001/REQ-003: only a successful, identity-consistent result exposes
+        # its root session ID; any earlier raise above leaves the previous
+        # value (if any) untouched rather than attributing a stale or
+        # mismatched ID to this invocation.
+        self._last_session_id = root_session
         return "\n\n".join(text.strip() for text in final_texts if text.strip())
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
@@ -886,10 +934,18 @@ class OpenCodeClient(LLMClientBase):
         if not self._is_git_repository(cwd):
             raise RuntimeError("OpenCode backend requires an execution directory inside a Git repository")
 
+        # One-shot resume request, if any (Issue #2126 REQ-002/REQ-007): consumed
+        # here regardless of outcome so it can never leak into a later ordinary
+        # (fresh) invocation on this same client instance.
+        resume_session_id = self._resume_session_id
+        self._resume_session_id = None
+
         raw_extra_args = self.consume_extra_args()
         effective_options = self.options_for_noedit if (is_noedit and self.options_for_noedit) else self.options
         sanitized_options, _unused_override = self._partition_options(effective_options, allow_model_override=False, allow_agent_override=not is_noedit)
-        sanitized_extra, model_override = self._partition_options(raw_extra_args, allow_model_override=True, allow_agent_override=not is_noedit)
+        # REQ-002/REQ-007: a continuation retains the alias's selected model; a
+        # caller/configuration-supplied model override cannot conflict with it.
+        sanitized_extra, model_override = self._partition_options(raw_extra_args, allow_model_override=resume_session_id is None, allow_agent_override=not is_noedit)
         effective_model = self.model_name
         if model_override:
             self._validate_model(model_override)
@@ -906,6 +962,9 @@ class OpenCodeClient(LLMClientBase):
             env["OPENCODE_CONFIG_CONTENT"] = self._noedit_config_content(noedit_agent_name)
             self._preflight_noedit_policy(agent_name=noedit_agent_name, cwd=cwd, env=env)
 
+        if resume_session_id is not None:
+            self._verify_resumable_session_in_current_workspace(session_id=resume_session_id, cwd=cwd, env=env)
+
         before = self._snapshot_guard(cwd)
         workspace_before = self._snapshot_noedit_workspace(cwd) if is_noedit else None
         rendered_prompt = render_prompt("opencode.noedit_execution" if is_noedit else "opencode.execution", task_prompt=prompt)
@@ -913,6 +972,12 @@ class OpenCodeClient(LLMClientBase):
         command = [*self.command, "run", "--format", "json", "--dir", str(cwd), "--model", effective_model, *sanitized_options, *sanitized_extra]
         if noedit_agent_name is not None:
             command += ["--agent", noedit_agent_name]
+        if resume_session_id is not None:
+            # Exact, explicit session selection only (Issue #2126 REQ-002): never
+            # `--continue` (implicit last-session) or `--fork` (a replacement
+            # session), which the option sanitizer above already forbids from
+            # ever reaching a caller-supplied path.
+            command += ["--session", resume_session_id]
 
         try:
             logger.warning("LLM invocation: OpenCode CLI is being called. Keep LLM calls minimized.")
@@ -939,9 +1004,27 @@ class OpenCodeClient(LLMClientBase):
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
-            return self._extract_final_answer(stdout=stdout, stderr=stderr, returncode=process.returncode, is_noedit=is_noedit)
+            return self._extract_final_answer(stdout=stdout, stderr=stderr, returncode=process.returncode, is_noedit=is_noedit, expected_session_id=resume_session_id)
         finally:
             shutil.rmtree(bin_dir, ignore_errors=True)
+
+    def get_last_session_id(self) -> Optional[str]:
+        return self._last_session_id
+
+    def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+        """Explicitly continue exactly `session_id` via `opencode run --session <id>`.
+
+        Issue #2126 REQ-002: this is a single, finite, non-interactive local
+        continuation of a caller-supplied opaque session identifier — never an
+        implicit `--continue`/last-session selection, a fork, or a replacement
+        session. The prompt/mode/model/directory authority and Git/GitHub
+        ownership boundary are identical to a fresh call because this reuses
+        `_run_llm_cli` unchanged beyond the one-shot `--session` flag.
+        """
+        if not isinstance(session_id, str) or not session_id.strip() or session_id.startswith("-"):
+            raise ValueError("A non-empty, explicit OpenCode session ID is required to continue a session")
+        self._resume_session_id = session_id
+        return self._run_llm_cli(prompt, is_noedit=is_noedit)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         return False
