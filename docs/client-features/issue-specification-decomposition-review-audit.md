@@ -70,7 +70,7 @@ stable `.key` digest, which already cryptographically includes
 column and as `native_report["reuse_source_review_id"]`.
 When no matching producer is found — including a decision computed or cached
 before this audit adapter existed — the association is left absent rather
-than fabricated. Exact producer lookup is a newest-first indexed query and
+than fabricated. Exact producer lookup is a newest-first direct query and
 is not bounded by the general 500-row history display window.
 
 ## External effects (publication)
