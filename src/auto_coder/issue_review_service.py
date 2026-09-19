@@ -32,6 +32,7 @@ from .decomposition_validation_lifecycle import DecompositionDecision, Decomposi
 from .issue_review_worker import FreshReviewView, IssueReviewWorker
 from .issue_stage_routing import REVIEW_STAGE, IssueStageRoutingStore, PendingLaneItem
 from .requirement_contract import NormativeIssueManifest
+from .review_capture import issue_review_audit
 from .specification_analyzer import IndividualRelationshipContext
 from .specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision
 from .validation_scheduler import ValidationScheduler
@@ -194,7 +195,7 @@ class IssueReviewService:
                 descriptor.parent_number,
                 "issue.decomposition-validation-job",
                 f"issue#{descriptor.parent_number} decomposition validation job",
-                {"parent_number": descriptor.parent_number, "caller_origin": "completed-handoff-recovery"},
+                {"parent_number": descriptor.parent_number, "caller_origin": "completed-handoff-recovery", "validation_identity": descriptor.identity_key},
                 lambda: self._decomp().decide(descriptor.identity, descriptor.parent_issue, descriptor.child_issues),
             )
             if not isinstance(decided, DecompositionDecision) or decided.identity.key != descriptor.identity_key:
@@ -267,7 +268,7 @@ class IssueReviewService:
                 descriptor.parent_number,
                 "issue.decomposition-validation-job",
                 f"issue#{descriptor.parent_number} decomposition validation job",
-                {"parent_number": descriptor.parent_number, "caller_origin": origin},
+                {"parent_number": descriptor.parent_number, "caller_origin": origin, "validation_identity": descriptor.identity_key},
                 lambda: self._decomp().decide(descriptor.identity, descriptor.parent_issue, descriptor.child_issues),
             )
         assert descriptor.manifest is not None
@@ -329,8 +330,16 @@ class IssueReviewService:
 
         lifecycle.authorize_automatic_repair(decision, is_current, lambda: None)
         if descriptor.role == "child" and descriptor.parent_number is not None:
-            return lifecycle.apply_inherited_blocked(github, decision, is_current)
-        return lifecycle.apply_blocked(github, decision, is_current)
+            error = lifecycle.apply_inherited_blocked(github, decision, is_current)
+        else:
+            error = lifecycle.apply_blocked(github, decision, is_current)
+        self._record_blocked_effect_best_effort(
+            review_kind=issue_review_audit.REVIEW_KIND_ISSUE_SPECIFICATION,
+            target_number=decision.identity.issue_number,
+            decision=decision,
+            error=error,
+        )
+        return error
 
     def _apply_decomposition_blocked(
         self,
@@ -339,7 +348,40 @@ class IssueReviewService:
     ) -> Optional[str]:
         lifecycle = self._decomp()
         lifecycle.authorize_automatic_repair(decision, lambda: self._decomposition_is_current(descriptor, decision), lambda: None)
-        return lifecycle.apply_blocked(self._github_provider(), decision, self._fetch_set)
+        error = lifecycle.apply_blocked(self._github_provider(), decision, self._fetch_set)
+        self._record_blocked_effect_best_effort(
+            review_kind=issue_review_audit.REVIEW_KIND_ISSUE_DECOMPOSITION,
+            target_number=decision.identity.parent.issue_number,
+            decision=decision,
+            error=error,
+        )
+        return error
+
+    def _record_blocked_effect_best_effort(
+        self,
+        *,
+        review_kind: str,
+        target_number: int,
+        decision: ReviewDecision,
+        error: Optional[str],
+    ) -> None:
+        """Observe a BLOCKED publication attempt's disposition (Issue #1984, REQ-006/REQ-007).
+
+        This is observation-only: it never changes what ``apply_blocked``/
+        ``apply_inherited_blocked`` returned or how the caller behaves. A
+        missing/unknown owning review_id (a legacy decision predating this
+        audit adapter) is a documented no-op in
+        ``issue_review_audit.record_effect`` itself.
+        """
+        issue_review_audit.record_effect(
+            repository=self._repository,
+            target_number=target_number,
+            review_kind=review_kind,
+            generation_key=decision.identity.key,
+            policy_identity=decision.identity.policy_identity,
+            disposition="confirmed" if error is None else "failed",
+            details={"error": error} if error is not None else None,
+        )
 
     def _individual_is_current(
         self,
