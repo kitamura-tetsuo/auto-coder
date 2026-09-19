@@ -6,8 +6,11 @@ Anthropic-managed cloud infrastructure via routine trigger endpoints.
 Reference: https://code.claude.com/docs/en/routines
 """
 
+import hashlib
 import json
+import math
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,9 +19,19 @@ import requests  # type: ignore
 from requests.adapters import HTTPAdapter  # type: ignore
 from urllib3.util.retry import Retry
 
-from .claude_usage_checker import check_claude_usage, check_claude_usage_or_raise
+from .claude_usage_checker import (
+    check_claude_usage,
+    check_claude_usage_or_raise,
+    observe_claude_usage_strict,
+    resolve_claude_oauth_token_non_inference,
+)
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
-from .exceptions import AutoCoderUsageLimitError
+from .exceptions import (
+    AutoCoderUsageLimitError,
+    ClaudeFollowupDeferralReason,
+    ClaudeFollowupUsageLimitError,
+    DeliveryCertainty,
+)
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger
 from .usage_marker_utils import has_usage_marker_match
@@ -67,6 +80,7 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         self.timeout = 30
         self.active_sessions: Dict[str, str] = {}  # session_id -> prompt
         self.token: Optional[str] = None
+        self.oauth_token: Optional[str] = None
         self.url: Optional[str] = None
 
         # Load configuration for this backend
@@ -74,9 +88,11 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         config_backend = config.get_backend_config(self.backend_name)
 
         self.options = (config_backend and config_backend.options) or []
+        self.usage_markers = (config_backend and config_backend.usage_markers) or []
         self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
         self.options_for_resume = (config_backend and config_backend.options_for_resume) or []
         self.token = (config_backend and (config_backend.claude_code_routine_token or config_backend.claude_code_oauth_token or config_backend.api_key)) or None
+        self.oauth_token = (config_backend and config_backend.claude_code_oauth_token) or None
         self.url = (config_backend and (config_backend.url or config_backend.base_url)) or None
 
         if not self.token:
@@ -419,6 +435,53 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         if not task_id or not message:
             return False
 
+        observed_at = time.time()
+        oauth_token = resolve_claude_oauth_token_non_inference(self.oauth_token)
+        credential_context = "unavailable"
+        if oauth_token:
+            credential_context = f"oauth:{hashlib.sha256(oauth_token.encode('utf-8')).hexdigest()[:12]}"
+
+        def defer(
+            reason: ClaudeFollowupDeferralReason,
+            diagnostic: str,
+            certainty: DeliveryCertainty = DeliveryCertainty.NOT_SENT,
+            blockers: tuple[str, ...] = (),
+            resets: tuple[float, ...] = (),
+            retry_after: float | None = None,
+        ) -> ClaudeFollowupUsageLimitError:
+            retry_not_before = observed_at + 60.0
+            if reason != ClaudeFollowupDeferralReason.QUOTA_UNAVAILABLE and blockers and len(resets) == len(blockers):
+                retry_not_before = max(retry_not_before, min(resets))
+            if retry_after is not None and math.isfinite(retry_after) and retry_after > observed_at:
+                retry_not_before = max(retry_not_before, retry_after)
+            return ClaudeFollowupUsageLimitError(
+                reason=reason,
+                repository=self.repo_name,
+                backend_name=self.backend_name,
+                credential_context=credential_context,
+                observed_at=observed_at,
+                retry_not_before=retry_not_before,
+                delivery_certainty=certainty,
+                blocking_windows=blockers,
+                reset_times=resets,
+                diagnostic=diagnostic,
+            )
+
+        if not oauth_token:
+            raise defer(ClaudeFollowupDeferralReason.QUOTA_UNAVAILABLE, "No usable Claude OAuth credential")
+        observation = observe_claude_usage_strict(oauth_token, now=observed_at)
+        if not observation.available:
+            raise defer(ClaudeFollowupDeferralReason.QUOTA_UNAVAILABLE, observation.detail)
+        if observation.insufficient:
+            reliable_resets = tuple(reset for reset in observation.blocker_resets if reset is not None)
+            raise defer(
+                ClaudeFollowupDeferralReason.QUOTA_INSUFFICIENT,
+                observation.detail,
+                blockers=observation.blockers,
+                resets=reliable_resets,
+                retry_after=observation.retry_after,
+            )
+
         from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
 
         # An existing-session continuation is never eligible for the initial
@@ -430,13 +493,57 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         env = os.environ.copy()
         if self.token:
             env["CLAUDE_CODE_ROUTINE_TOKEN"] = self.token
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = self.token
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+
+        def provider_limit(output: str) -> tuple[bool, DeliveryCertainty, float | None]:
+            """Recognize diagnostics while excluding ordinary prompt/task echoes."""
+            if not output:
+                return False, DeliveryCertainty.INDETERMINATE, None
+            diagnostic_lines = []
+            for line in output.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped in message or message in stripped:
+                    continue
+                is_error_record = False
+                if stripped.startswith("{"):
+                    try:
+                        record = json.loads(stripped)
+                        is_error_record = isinstance(record, dict) and (record.get("type") in {"error", "rate_limit_error"} or isinstance(record.get("error"), dict))
+                    except json.JSONDecodeError:
+                        pass
+                if is_error_record or re.match(r"(?i)^(error|provider error|claude error|stderr)\s*[:\[]", stripped):
+                    diagnostic_lines.append(stripped)
+            diagnostic = "\n".join(diagnostic_lines)
+            structured_rejection = bool(re.search(r'(?i)"type"\s*:\s*"rate_limit_error"', diagnostic))
+            explicit_usage = bool(re.search(r"(?i)\b(?:usage|quota)\b.{0,40}\b(?:exhausted|exceeded|limit|unavailable)\b", diagnostic))
+            marker = has_usage_marker_match(diagnostic, self.usage_markers)
+            if not (structured_rejection or explicit_usage or marker):
+                return False, DeliveryCertainty.INDETERMINATE, None
+            certainty = DeliveryCertainty.NOT_SENT if re.search(r"(?i)\b(rejected|not accepted|not assigned)\b", diagnostic) else DeliveryCertainty.INDETERMINATE
+            retry_at = None
+            match = re.search(r"(?i)retry[- ]after\s*[:=]?\s*(\d+(?:\.\d+)?)", diagnostic)
+            if match:
+                seconds = float(match.group(1))
+                if math.isfinite(seconds) and seconds > 0:
+                    retry_at = observed_at + seconds
+            return True, certainty, retry_at
+
         try:
-            result = CommandExecutor.run_command(cmd, env=env if self.token else None)
+            result = CommandExecutor.run_command(cmd, env=env)
+            limited, certainty, retry_after = provider_limit(f"{result.stderr or ''}\n{result.stdout or ''}")
+            if limited:
+                raise defer(
+                    ClaudeFollowupDeferralReason.PROVIDER_USAGE_LIMIT,
+                    "Claude CLI reported a provider usage limit",
+                    certainty=certainty,
+                    retry_after=retry_after,
+                )
             if result.returncode == 0:
                 self.active_sessions[task_id] = message
                 return True
             logger.warning(f"Failed to send follow-up to Claude session {task_id}: {result.stderr or result.stdout}")
+        except ClaudeFollowupUsageLimitError:
+            raise
         except Exception as exc:
             logger.warning(f"Error sending follow-up to Claude session {task_id}: {exc}")
         return False

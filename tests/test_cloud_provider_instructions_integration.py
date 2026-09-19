@@ -27,6 +27,7 @@ import yaml
 from auto_coder import prompt_loader
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.claude_routine_client import ClaudeRoutineClient
+from auto_coder.claude_usage_checker import ClaudeStrictUsageObservation
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.cloud_provider_instructions import CloudProviderInstructionError, CloudTaskOperation, prepare_cloud_task
 from auto_coder.codex_cloud_client import CodexCloudClient
@@ -512,7 +513,14 @@ def test_as006_jules_send_followup_receives_no_initial_component(homes, sentinel
 
 def test_as006_claude_send_followup_receives_no_initial_component(homes, sentinel_prompts_path):
     client = ClaudeRoutineClient()
-    with patch("auto_coder.claude_routine_client.CommandExecutor.run_command") as run_command:
+    with (
+        patch("auto_coder.claude_routine_client.resolve_claude_oauth_token_non_inference", return_value="oauth"),
+        patch(
+            "auto_coder.claude_routine_client.observe_claude_usage_strict",
+            return_value=ClaudeStrictUsageObservation(available=True, detail="eligible"),
+        ),
+        patch("auto_coder.claude_routine_client.CommandExecutor.run_command") as run_command,
+    ):
         run_command.return_value = MagicMock(returncode=0, stdout="", stderr="")
         client.send_followup("session-1", "please fix the CI failure")
     cmd_args = run_command.call_args.args[0]
