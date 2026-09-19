@@ -73,6 +73,15 @@ class TestHandleStaleJulesIssueSessions:
             implementation_slots.serialize.return_value = nullcontext()
             implementation_slots.active_execution_ids.return_value = ()
             implementation_slots.start_execution.return_value = "replacement-execution"
+            # Issue #2147 REQ-007/REQ-009: the stop-session outbound guard
+            # (admit_or_block_outbound_jules_send) queries these methods
+            # before sending the "stop" message. A bare MagicMock's default
+            # truthy return would make has_retired_session() look retired
+            # and admit_outbound_provider_activity() look admitted-but-that
+            # path is never reached first, so both must be stubbed to their
+            # realistic non-retired defaults for this fixture's sessions.
+            implementation_slots.has_retired_session.return_value = False
+            implementation_slots.admit_outbound_provider_activity.return_value = True
         jules_client = MagicMock()
         jules_client.get_session.return_value = {"state": "COMPLETED"}
         jules_client.list_sessions.return_value = sessions

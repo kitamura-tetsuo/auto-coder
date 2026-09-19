@@ -683,6 +683,7 @@ class TestSendJulesErrorFeedback:
         failed_checks = [{"name": "test", "status": "failed"}]
         repo_name = "owner/repo"
         config = Mock()
+        config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
         github_client = Mock()
 
         # Execute
@@ -721,6 +722,7 @@ class TestSendJulesErrorFeedback:
         failed_checks = [{"name": "test", "status": "failed"}]
         repo_name = "owner/repo"
         config = Mock()
+        config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
         github_client = Mock()
 
         # Execute
@@ -753,6 +755,7 @@ class TestSendJulesErrorFeedback:
         failed_checks = [{"name": "test", "status": "failed"}]
         repo_name = "owner/repo"
         config = Mock()
+        config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
         github_client = Mock()
 
         # Execute
@@ -784,6 +787,7 @@ class TestSendJulesErrorFeedback:
         failed_checks = []
         repo_name = "owner/repo"
         config = Mock()
+        config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
         github_client = Mock()
 
         # Execute
@@ -825,6 +829,7 @@ class TestSendJulesErrorFeedback:
         failed_checks = [{"name": "test", "status": "failed"}]
         repo_name = "owner/repo"
         config = Mock()
+        config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
         # No github_client provided (None)
 
         # Execute
@@ -857,6 +862,7 @@ class TestSendJulesErrorFeedback:
         failed_checks = [{"name": "test", "status": "failed"}]
         repo_name = "owner/repo"
         config = Mock()
+        config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
         github_client = Mock()
         # Make add_comment_to_pr raise an exception
         github_client.add_comment_to_pr.side_effect = Exception("GitHub API error")
@@ -869,6 +875,90 @@ class TestSendJulesErrorFeedback:
         assert "Sent CI failure logs to Jules session 'sessionCommentError' for PR #999" in actions[0]
         assert "Failed to post comment on PR #999: GitHub API error" in actions[1]
         mock_jules_client.send_message.assert_called_once()
+
+    @patch("auto_coder.pr_processor._get_github_actions_logs")
+    @patch("auto_coder.cloud_manager.CloudManager")
+    @patch("auto_coder.jules_client.JulesClient")
+    def test_send_jules_error_feedback_blocked_by_real_retirement_guard(self, mock_jules_client_class, mock_cloud_manager_class, mock_get_logs, tmp_path, monkeypatch):
+        """AS-005 (Issue #2147): the PR-repair outbound send must be blocked
+        through the REAL production guard/admission path when the owning
+        Issue's implementation slot has already been durably retired.
+
+        This exercises ``_send_jules_error_feedback`` -- a non-maintenance
+        outbound caller distinct from the periodic-maintenance entrypoint
+        covered in ``tests/test_jules_engine.py`` -- with a real,
+        file-backed ``ImplementationSlotRepository`` (isolated to a tmp
+        directory), proving the shared ``admit_or_block_outbound_jules_send``
+        guard is actually wired into this call site rather than only into
+        the maintenance loop.
+        """
+        from auto_coder.implementation_retirement import (
+            ContinuingObligations,
+            ImplementationPRObservation,
+            ImplementationRetirementObservation,
+            ProviderSessionObservation,
+            PRTerminalState,
+            SessionTerminalState,
+        )
+        from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+
+        monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(tmp_path))
+
+        repo_name = "owner/retirement-guard-repo"
+        session_id = "sessionRetiredGuard"
+        pr_number = 4242
+        owning_issue_number = 777
+        owner = ImplementationOwner("issue", owning_issue_number)
+
+        # Durably retire the owner's slot through the real repository, using
+        # the real retirement observation/result machinery (the same store
+        # the guard will read from inside pr_processor.py).
+        slots = ImplementationSlotRepository(repo_name, 2)
+        exec_id = slots.start_execution(owner, generation="gen-repair-guard")
+        slots.record_implementation_pr(owner, pr_number)
+        slots.record_provider_session(owner, session_id)
+        slots.finish_execution(owner, exec_id)
+        incarnation = slots.owner_incarnation(owner)
+        revision = slots.owner_activity_revision(owner)
+        obs = ImplementationRetirementObservation(
+            repository=repo_name,
+            owner=owner,
+            reservation_incarnation=incarnation,
+            activity_revision=revision,
+            implementation_prs=(ImplementationPRObservation(pr_number, PRTerminalState.CLOSED, merged=True),),
+            provider_sessions=(ProviderSessionObservation(session_id, "jules", SessionTerminalState.ENDED),),
+            continuing_obligations=ContinuingObligations(),
+        )
+        result = slots.retire_owner(obs)
+        assert result.status.value == "RELEASED"
+        assert slots.owner_incarnation(owner) is None
+
+        mock_cloud_manager = mock_cloud_manager_class.return_value
+        mock_cloud_manager.get_issue_by_session.return_value = owning_issue_number
+
+        mock_jules_client = Mock()
+        mock_jules_client_class.return_value = mock_jules_client
+        mock_get_logs.return_value = "Error: Test failed"
+
+        pr_data = {
+            "number": pr_number,
+            "title": "Fix authentication bug",
+            "user": {"login": "google-labs-jules"},
+            "_jules_session_id": session_id,
+        }
+        failed_checks = [{"name": "test", "status": "failed"}]
+        config = Mock()
+        config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
+        github_client = Mock()
+
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+
+        assert len(actions) == 1
+        assert f"session '{session_id}'" in actions[0]
+        assert "durably retired" in actions[0]
+        # The real production guard must have prevented the send entirely.
+        mock_jules_client.send_message.assert_not_called()
+        github_client.add_comment_to_pr.assert_not_called()
 
 
 class TestResolveJulesPrIssueNumberPatternFallback:

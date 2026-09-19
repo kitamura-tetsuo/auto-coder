@@ -346,6 +346,95 @@ class JulesClient(CloudTaskClientBase):
             logger.error(f"Failed to get Jules session {session_id}: {e}")
             raise RuntimeError(f"Failed to get Jules session {session_id}: {e}")
 
+    def get_session_activities(self, session_id: str) -> List[Dict[str, Any]]:
+        """Fetch the *complete*, ordered activity list for a Jules session (REQ-006).
+
+        Used by the retirement evidence collector to establish activity causality
+        — confirming that a terminal state is attributable to the current admitted
+        activity and not to a prior one that completed before a later resume/repair.
+
+        Returns an ordered list of raw activity dicts in the real Jules API
+        shape (an object per activity, with the event kind expressed as a
+        oneof-style field such as ``sessionCompleted``, plus a timestamp field
+        such as ``createTime``).
+
+        Follows ``nextPageToken`` across pages to retrieve the complete
+        history. A response that reports further pages (``nextPageToken``)
+        but cannot be paginated to completion (a later page's request fails,
+        or that page is empty/malformed while more pages were promised) is
+        NOT truncated silently: this raises ``RuntimeError`` so a partial
+        first page is never mistaken for complete history. A definitively
+        absent endpoint (404, meaning this session has no activities support)
+        returns an empty list, which callers must not confuse with an
+        incomplete read.
+        """
+        activities: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+        first_page = True
+        while True:
+            url = f"{self.base_url}/sessions/{session_id}/activities"
+            params: Dict[str, Any] = {}
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                logger.debug(f"Fetching activities for Jules session: {session_id} (page_token={page_token!r})")
+                response = self.session.get(url, params=params or None, timeout=self.timeout)
+            except Exception as exc:
+                if first_page:
+                    # No page collected yet: absence of contrary evidence is
+                    # not proof of completion, but there is also nothing to
+                    # falsely truncate — treat as "unavailable" (empty list),
+                    # matching prior conservative behavior for a wholly
+                    # unreachable endpoint.
+                    logger.warning(f"Failed to fetch activities for session {session_id}: {exc}")
+                    return []
+                raise RuntimeError(f"Incomplete Jules activities pagination for session {session_id}: {exc}") from exc
+
+            if response.status_code == 404:
+                if first_page:
+                    # Activities endpoint not supported for this session at all.
+                    logger.debug(f"Activities endpoint not found for session {session_id}")
+                    return []
+                raise RuntimeError(f"Jules activities pagination for session {session_id} failed mid-stream " f"(404 on a subsequent page)")
+            if response.status_code != 200:
+                if first_page:
+                    logger.warning(f"Unexpected status {response.status_code} fetching activities " f"for session {session_id}")
+                    return []
+                raise RuntimeError(f"Jules activities pagination for session {session_id} failed mid-stream " f"(status {response.status_code})")
+
+            try:
+                data = response.json()
+            except Exception as exc:
+                if first_page:
+                    logger.warning(f"Malformed activities JSON for session {session_id}: {exc}")
+                    return []
+                raise RuntimeError(f"Malformed Jules activities page for session {session_id}: {exc}") from exc
+
+            page_items: Optional[List[Any]] = None
+            next_token: Optional[str] = None
+            if isinstance(data, list):
+                page_items = data
+            elif isinstance(data, dict):
+                for key in ("activities", "items", "results"):
+                    if isinstance(data.get(key), list):
+                        page_items = data[key]
+                        break
+                next_token = data.get("nextPageToken") or data.get("next_page_token")
+
+            if page_items is None:
+                if first_page:
+                    return []
+                raise RuntimeError(f"Malformed Jules activities page for session {session_id}: no item list found")
+
+            activities.extend(page_items)
+            first_page = False
+
+            if not next_token:
+                break
+            page_token = next_token
+
+        return activities
+
     def send_message(self, session_id: str, message: str) -> str:
         """Send a message to an existing Jules session.
 

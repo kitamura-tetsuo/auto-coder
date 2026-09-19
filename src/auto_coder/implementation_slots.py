@@ -1033,6 +1033,61 @@ class ImplementationSlotRepository:
                 self._write(owners)
         return True
 
+    def admit_outbound_provider_activity(self, owner: ImplementationOwner, session_id: str) -> bool:
+        """Durably admit new implementation-mutating provider responsibility (Issue #2147, REQ-007).
+
+        Unlike ``record_provider_session`` — which is membership-idempotent and
+        does not advance ``activity_revision`` when *session_id* is already
+        known — this operation unconditionally advances the activity revision
+        for *owner*'s current incarnation, even when the session ID is
+        unchanged (same-session continuation). Callers must invoke this
+        *before* sending any outbound Jules mutation (resume, feedback, plan
+        approval, replacement session, or publication request) so that:
+
+        - the admission is persisted before the outbound call starts;
+        - any retirement observation collected before this call becomes
+          stale (``retire_implementation_slot`` will detect the activity
+          revision mismatch and return ``STALE_OBSERVATION`` rather than
+          releasing the slot);
+        - if the owner's incarnation has already retired (absent from the
+          active store), this returns False and callers must not send the
+          outbound mutation.
+
+        Session membership (``provider_sessions``) is still recorded here so
+        that ``record_provider_session``'s idempotent membership meaning is
+        preserved and not overloaded with this new revision-advancing
+        semantic; this method simply also unconditionally increments the
+        revision on top of that membership bookkeeping.
+        """
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                # Owner incarnation already retired (or never reserved) — the
+                # outbound mutation must not be sent (REQ-009).
+                return False
+            provider_sessions = record.setdefault("provider_sessions", [])
+            if not isinstance(provider_sessions, list):
+                raise ImplementationSlotUnavailable("Cannot safely parse provider session membership")
+            if session_id not in provider_sessions:
+                provider_sessions.append(session_id)
+            if record.get("admission_pending", False) and not record.get("admission_established", False):
+                record["admission_established"] = True
+            if "incarnation" not in record or not record["incarnation"]:
+                record["incarnation"] = uuid.uuid4().hex
+            # Unconditional revision advance — this is the defining difference
+            # from record_provider_session's idempotent membership semantics.
+            self._increment_activity_revision(record)
+            try:
+                self._write(owners)
+            except Exception:
+                # Failure to persist admission must prevent the outbound
+                # mutation (REQ-007): surface the failure to the caller.
+                raise
+            return True
+
     def has_provider_sessions(self, owner: ImplementationOwner) -> bool:
         """Return whether logical ownership includes asynchronous provider work."""
         with self._state_lock():

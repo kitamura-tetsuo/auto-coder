@@ -6218,8 +6218,14 @@ class AutomationEngine:
                     # All list-dependent maintenance shares this cycle's fresh listing.
                     invalidate_jules_sessions_cache()
 
-                    # Check and resume failed Jules sessions
-                    check_and_resume_or_archive_sessions()
+                    # Check and resume failed Jules sessions. Passing the real
+                    # ImplementationSlotRepository is required so retired-session
+                    # guards (REQ-009) actually apply in this production maintenance
+                    # loop instead of silently no-opping on the None default.
+                    check_and_resume_or_archive_sessions(
+                        repo_name,
+                        self._get_implementation_slots(repo_name),
+                    )
 
                     # Take issues away from Jules sessions that timed out without creating a PR
                     self.handle_stale_jules_issue_sessions(repo_name)
