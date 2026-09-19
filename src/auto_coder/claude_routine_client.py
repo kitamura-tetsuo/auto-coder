@@ -8,6 +8,7 @@ Reference: https://code.claude.com/docs/en/routines
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,9 +17,9 @@ import requests  # type: ignore
 from requests.adapters import HTTPAdapter  # type: ignore
 from urllib3.util.retry import Retry
 
-from .claude_usage_checker import check_claude_usage, check_claude_usage_or_raise
+from .claude_usage_checker import check_claude_usage, check_claude_usage_or_raise, resolve_claude_oauth_token
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
-from .exceptions import AutoCoderUsageLimitError
+from .exceptions import AutoCoderUsageLimitError, ClaudeUsageDeferralError, DeliveryCertainty, QuotaReason
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger
 from .usage_marker_utils import has_usage_marker_match
@@ -421,22 +422,136 @@ class ClaudeRoutineClient(CloudTaskClientBase):
 
         from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
 
-        # An existing-session continuation is never eligible for the initial
-        # component (REQ-007); routed through the same boundary for parity
-        # with new-task dispatch rather than skipping it implicitly.
-        message = prepare_cloud_task(message, recipient="claude-routine", operation=CloudTaskOperation.CONTINUATION, no_edit=False).prepared_task
+        # REQ-002: Resolve OAuth credential without triggering CLI inference
+        config = get_llm_config(repo_name=self.repo_name)
+        config_backend = config.get_backend_config(self.backend_name)
+        oauth_token = config_backend.claude_code_oauth_token if config_backend else None
 
-        cmd = ["claude", "-p", f"--cloud={task_id}", message]
+        resolved_token = resolve_claude_oauth_token(oauth_token, allow_cli_refresh=False)
+        if not resolved_token:
+            raise ClaudeUsageDeferralError(
+                message="Claude OAuth credential unavailable for follow-up.",
+                reason=QuotaReason.QUOTA_UNAVAILABLE,
+                certainty=DeliveryCertainty.NOT_SENT,
+                retry_not_before=time.time() + 60,
+                repository=self.repo_name,
+                backend_name=self.backend_name,
+                credential_context=None,
+                observation_time=time.time(),
+            )
+
+        # REQ-001, REQ-003, REQ-004: Strict usage check without cache fallback or CLI inference
+        obs_time = time.time()
+        quota = check_claude_usage(
+            token=resolved_token,
+            use_cache=False,
+            allow_cache_fallback=False,
+            allow_cli_refresh=False,
+        )
+
+        if quota.is_quota_insufficient:
+            retry_not_before = obs_time + 60
+
+            # Use reliable explicit Retry-After if provided
+            retry_after = getattr(quota, "retry_after_seconds", None)
+            if retry_after is not None and retry_after > 0:
+                retry_not_before = max(retry_not_before, obs_time + retry_after)
+            else:
+                # REQ-007: Parse blocking window resets if all blockers have valid resets
+                if quota.reason and "could not be retrieved" not in quota.reason:
+                    from datetime import datetime, timezone
+
+                    blocks = [b.strip() for b in quota.reason.split(";")]
+                    all_have_resets = True
+                    earliest_reset_ts = float("inf")
+
+                    for block in blocks:
+                        if not block:
+                            continue
+                        # Skip if just extra usage disabled or rate limit error without reset
+                        if "Extra usage disabled:" in block or "rate limit error" in block.lower():
+                            all_have_resets = False
+                            break
+
+                        m = re.search(r"resets at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", block)
+                        if m:
+                            try:
+                                dt = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                                ts = dt.timestamp()
+                                if ts < earliest_reset_ts:
+                                    earliest_reset_ts = ts
+                            except ValueError:
+                                all_have_resets = False
+                                break
+                        else:
+                            all_have_resets = False
+                            break
+
+                    if all_have_resets and earliest_reset_ts != float("inf"):
+                        retry_not_before = max(obs_time + 60, earliest_reset_ts)
+
+            reason = QuotaReason.QUOTA_UNAVAILABLE if ("could not be retrieved" in quota.reason or "rate limit error" in quota.reason.lower() or not quota.reason.strip()) else QuotaReason.QUOTA_INSUFFICIENT
+            raise ClaudeUsageDeferralError(
+                message=f"Claude usage limit reached before follow-up: {quota.reason}",
+                reason=reason,
+                certainty=DeliveryCertainty.NOT_SENT,
+                retry_not_before=retry_not_before,
+                repository=self.repo_name,
+                backend_name=self.backend_name,
+                credential_context="oauth_token",
+                observation_time=obs_time,
+            )
+
+        # REQ-008: Process normally if check passes
+        message_prepared = prepare_cloud_task(message, recipient="claude-routine", operation=CloudTaskOperation.CONTINUATION, no_edit=False).prepared_task
+
+        cmd = ["claude", "-p", f"--cloud={task_id}", message_prepared]
         env = os.environ.copy()
-        if self.token:
-            env["CLAUDE_CODE_ROUTINE_TOKEN"] = self.token
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = self.token
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = resolved_token
+        # Prevent substitution via other variables
+        if "ANTHROPIC_AUTH_TOKEN" in env:
+            del env["ANTHROPIC_AUTH_TOKEN"]
+
         try:
-            result = CommandExecutor.run_command(cmd, env=env if self.token else None)
+            result = CommandExecutor.run_command(cmd, env=env)
+
+            # REQ-005: Clean task prompt echoes out of stdout/stderr before checking markers
+            stdout_clean = result.stdout or ""
+            stderr_clean = result.stderr or ""
+
+            # Remove verbatim matches of the message to avoid false positive marker triggers
+            if message_prepared:
+                stdout_clean = stdout_clean.replace(message_prepared, "")
+                stderr_clean = stderr_clean.replace(message_prepared, "")
+
+            combined_clean = stdout_clean + "\\n" + stderr_clean
+
+            is_limit = False
+            if config_backend and config_backend.usage_markers:
+                is_limit = has_usage_marker_match(combined_clean, config_backend.usage_markers)
+
+            if is_limit:
+                # If exit zero but usage limit marker found, it's indeterminate
+                # If non-zero and usage limit marker, it's not sent
+                certainty = DeliveryCertainty.INDETERMINATE if result.returncode == 0 else DeliveryCertainty.NOT_SENT
+                raise ClaudeUsageDeferralError(
+                    message="Provider limit returned by Claude CLI follow-up.",
+                    reason=QuotaReason.PROVIDER_USAGE_LIMIT,
+                    certainty=certainty,
+                    retry_not_before=time.time() + 60,
+                    repository=self.repo_name,
+                    backend_name=self.backend_name,
+                    credential_context="oauth_token",
+                    observation_time=time.time(),
+                )
+
             if result.returncode == 0:
-                self.active_sessions[task_id] = message
+                self.active_sessions[task_id] = message_prepared
                 return True
+
             logger.warning(f"Failed to send follow-up to Claude session {task_id}: {result.stderr or result.stdout}")
+        except ClaudeUsageDeferralError:
+            raise
         except Exception as exc:
             logger.warning(f"Error sending follow-up to Claude session {task_id}: {exc}")
         return False

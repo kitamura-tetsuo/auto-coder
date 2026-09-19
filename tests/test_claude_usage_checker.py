@@ -403,7 +403,7 @@ class TestClaudeUsageChecker:
         ):
             token = resolve_claude_oauth_token(None)
             assert token == "proactive-refreshed-tok"
-            mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
+            mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"], allow_cli_refresh=True)
 
     def test_resolve_token_proactive_refresh_failure_falls_back_to_existing_token(self):
         """Test resolve_claude_oauth_token falls back to existing accessToken when expired and proactive refresh fails."""
@@ -423,7 +423,7 @@ class TestClaudeUsageChecker:
         ):
             token = resolve_claude_oauth_token(None)
             assert token == "expired-tok"
-            mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
+            mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"], allow_cli_refresh=True)
 
     def test_resolve_token_proactive_refresh_failure_returns_none_when_no_existing_token(self):
         """Test resolve_claude_oauth_token returns None when expired, proactive refresh fails, and no existing token exists."""
@@ -443,7 +443,7 @@ class TestClaudeUsageChecker:
         ):
             token = resolve_claude_oauth_token(None)
             assert token is None
-            mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"])
+            mock_refresh.assert_called_once_with("refresh-tok", scopes=["user:profile"], allow_cli_refresh=True)
 
     def test_resolve_token_proactive_refresh_when_no_refresh_token(self):
         """Test resolve_claude_oauth_token still calls refresh_claude_access_token when refreshToken is None."""
@@ -463,7 +463,7 @@ class TestClaudeUsageChecker:
         ):
             token = resolve_claude_oauth_token(None)
             assert token == "cli-refreshed-tok"
-            mock_refresh.assert_called_once_with(None, scopes=["user:profile"])
+            mock_refresh.assert_called_once_with(None, scopes=["user:profile"], allow_cli_refresh=True)
 
     def test_fetch_claude_usage_data_handles_401_and_refresh_without_refresh_token(self):
         """Test that HTTP 401 attempts token refresh even when credentials have no refreshToken."""

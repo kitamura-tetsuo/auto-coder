@@ -7,6 +7,22 @@ class CloudSubmissionNotStartedError(RuntimeError):
     """Cloud dispatch conclusively ended without submitting remote work."""
 
 
+from enum import Enum
+from typing import Optional
+
+
+class QuotaReason(str, Enum):
+    QUOTA_INSUFFICIENT = "QUOTA_INSUFFICIENT"
+    QUOTA_UNAVAILABLE = "QUOTA_UNAVAILABLE"
+    PROVIDER_USAGE_LIMIT = "PROVIDER_USAGE_LIMIT"
+
+
+class DeliveryCertainty(str, Enum):
+    NOT_SENT = "NOT_SENT"
+    INDETERMINATE = "INDETERMINATE"
+    DELIVERED = "DELIVERED"
+
+
 class AutoCoderUsageLimitError(RuntimeError):
     """Raised by an LLM client when the provider usage/rate limit is reached.
 
@@ -14,6 +30,30 @@ class AutoCoderUsageLimitError(RuntimeError):
     """
 
     pass
+
+
+class ClaudeUsageDeferralError(AutoCoderUsageLimitError):
+    """Raised by ClaudeRoutineClient when usage limits defer a follow-up."""
+
+    def __init__(
+        self,
+        message: str,
+        reason: QuotaReason,
+        certainty: DeliveryCertainty,
+        retry_not_before: float,
+        repository: Optional[str] = None,
+        backend_name: Optional[str] = None,
+        credential_context: Optional[str] = None,
+        observation_time: Optional[float] = None,
+    ):
+        super().__init__(message)
+        self.reason = reason
+        self.certainty = certainty
+        self.retry_not_before = retry_not_before
+        self.repository = repository
+        self.backend_name = backend_name
+        self.credential_context = credential_context
+        self.observation_time = observation_time
 
 
 class AutoCoderTimeoutError(RuntimeError):

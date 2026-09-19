@@ -76,6 +76,7 @@ class ClaudeUsageQuota:
     extra_usage: ClaudeExtraUsage = field(default_factory=ClaudeExtraUsage)
     is_quota_insufficient: bool = False
     reason: str = ""
+    retry_after_seconds: Optional[float] = None
     cached_at: float = field(default_factory=time.time)
 
 
@@ -139,6 +140,7 @@ def _quota_to_dict(quota: ClaudeUsageQuota) -> dict:
         },
         "is_quota_insufficient": quota.is_quota_insufficient,
         "reason": quota.reason,
+        "retry_after_seconds": quota.retry_after_seconds,
         "cached_at": quota.cached_at,
     }
 
@@ -176,6 +178,7 @@ def _dict_to_quota(data: dict) -> ClaudeUsageQuota:
         extra_usage=extra_usage,
         is_quota_insufficient=bool(data.get("is_quota_insufficient", False)),
         reason=str(data.get("reason", "")),
+        retry_after_seconds=data.get("retry_after_seconds"),
         cached_at=float(data.get("cached_at", time.time())),
     )
 
@@ -437,11 +440,12 @@ def refresh_claude_access_token(
     client_id: Optional[str] = None,
     try_cli_first: bool = True,
     cooldown_seconds: float = DEFAULT_REFRESH_COOLDOWN_SECONDS,
+    allow_cli_refresh: bool = True,
 ) -> Optional[str]:
     """Exchange refreshToken for a new accessToken using Claude CLI or direct HTTP request."""
     global _last_refresh_failed_at
 
-    if try_cli_first:
+    if try_cli_first and allow_cli_refresh:
         cli_token = refresh_claude_token_via_cli()
         if cli_token:
             _last_refresh_failed_at = 0.0
@@ -506,7 +510,7 @@ def refresh_claude_access_token(
     return None
 
 
-def resolve_claude_oauth_token(explicit_token: Optional[str] = None) -> Optional[str]:
+def resolve_claude_oauth_token(explicit_token: Optional[str] = None, allow_cli_refresh: bool = True) -> Optional[str]:
     """Resolve active OAuth token from parameter, env, or credentials file, proactively refreshing if expired."""
     if explicit_token and explicit_token.strip():
         return explicit_token.strip()
@@ -529,7 +533,7 @@ def resolve_claude_oauth_token(explicit_token: Optional[str] = None) -> Optional
                 now_ms = time.time() * 1000
                 if now_ms >= (expires_at - 60000):
                     logger.debug("Claude OAuth accessToken is expired or expiring soon; proactively refreshing")
-                    refreshed = refresh_claude_access_token(refresh_token, scopes=scopes)
+                    refreshed = refresh_claude_access_token(refresh_token, scopes=scopes, allow_cli_refresh=allow_cli_refresh)
                     if refreshed:
                         return refreshed
                     if now_ms >= expires_at:
@@ -593,12 +597,12 @@ def acquire_claude_usage_credential(explicit_token: Optional[str] = None) -> Cla
     return ClaudeCredentialResolution(status="credential_acquisition_failed")
 
 
-def fetch_claude_usage_data(token: Optional[str] = None, timeout: float = 10.0) -> Optional[dict]:
+def fetch_claude_usage_data(token: Optional[str] = None, timeout: float = 10.0, allow_cli_refresh: bool = True) -> Optional[dict]:
     """Fetch usage data from Anthropic OAuth usage API.
 
     Returns raw response dictionary, a rate-limited dictionary on HTTP 429, or None if fetch fails.
     """
-    resolved_token = resolve_claude_oauth_token(token)
+    resolved_token = resolve_claude_oauth_token(token, allow_cli_refresh=allow_cli_refresh)
     if not resolved_token:
         logger.debug("No Claude OAuth token available to check usage limits")
         return None
@@ -700,6 +704,8 @@ def check_claude_usage(
     seven_day_threshold_pct: float = 5.0,
     use_cache: bool = True,
     cache_ttl: float = DEFAULT_CACHE_TTL_SECONDS,
+    allow_cache_fallback: bool = True,
+    allow_cli_refresh: bool = True,
 ) -> ClaudeUsageQuota:
     """Check Claude usage quota and determine whether quota is insufficient.
 
@@ -715,7 +721,7 @@ def check_claude_usage(
     """
     global _cached_quota, _last_429_at
 
-    resolved_token = resolve_claude_oauth_token(token)
+    resolved_token = resolve_claude_oauth_token(token, allow_cli_refresh=allow_cli_refresh)
     token_key = _token_cache_key(resolved_token or token)
 
     now = time.time()
@@ -728,7 +734,7 @@ def check_claude_usage(
                 logger.debug(f"Skipping Claude usage check during 429 cooldown ({int(now - _last_429_at)}s < {DEFAULT_429_COOLDOWN_SECONDS}s). Using cached quota.")
                 return cached
 
-    raw_data = fetch_claude_usage_data(token=token)
+    raw_data = fetch_claude_usage_data(token=token, allow_cli_refresh=allow_cli_refresh)
     if not raw_data:
         # If API is unreachable or token cannot check usage, mark quota as insufficient
         quota = ClaudeUsageQuota(
@@ -753,8 +759,11 @@ def check_claude_usage(
             _last_429_at = now
             cached = _get_cached_quota(token_key)
             if cached is not None:
-                logger.warning(f"Claude OAuth usage API returned HTTP 429: Rate limit exceeded. Using cached quota from {int(now - cached.cached_at)}s ago.")
-                return cached
+                if allow_cache_fallback:
+                    logger.warning(f"Claude OAuth usage API returned HTTP 429: Rate limit exceeded. Using cached quota from {int(now - cached.cached_at)}s ago.")
+                    return cached
+                else:
+                    logger.warning("Claude OAuth usage API returned HTTP 429: Rate limit exceeded. allow_cache_fallback=False, returning fresh 429 result.")
 
     is_insufficient = False
     reasons: List[str] = []
@@ -869,6 +878,7 @@ def check_claude_usage(
         extra_usage=extra_usage,
         is_quota_insufficient=is_insufficient,
         reason="; ".join(reasons),
+        retry_after_seconds=raw_data.get("retry_after_seconds") if isinstance(raw_data, dict) else None,
         cached_at=now,
     )
 
