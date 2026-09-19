@@ -57,8 +57,11 @@ Selecting a winner is atomic and requires, in a single transaction:
 
 1. The generation is `ACTIVE` (not retired).
 2. No prior winner exists for this generation, or the same winner/PR is
-   being re-submitted (idempotent repeat — no new adoption obligation is
-   emitted).
+   being re-submitted with an acceptance record that still exactly matches
+   the generation and latest binding (idempotent repeat — no new adoption
+   obligation is emitted). Matching only the stored winner pointer is not
+   sufficient: a changed base, oracle fingerprint, or binding revision is
+   denied as stale or mismatched.
 3. No pending reconciliation from a different generation's uncertain merge
    outcome blocks new merge authorization (see below).
 4. The candidate is not retired.

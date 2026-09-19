@@ -1358,17 +1358,8 @@ class JulesCompetitionLedger:
                     return deny("Acceptance record identity does not match the requested selection target")
 
                 if existing_winner is not None:
-                    if existing_winner == candidate_id and existing_winner_pr_repo == acceptance.pr_repository and existing_winner_pr_number == acceptance.pr_number and existing_winner_head == acceptance.head_sha:
-                        # Idempotent repeat of the same successful selection (REQ-005): no
-                        # new adoption obligation is emitted.
-                        result_dict = {"selected": True, "denial_reason": None, "winner_candidate_id": existing_winner}
-                        new_epoch_local = current_epoch + 1
-                        self._bump_namespace_epoch(conn, key, new_epoch_local, now)
-                        self._journal(conn, operation_id, key, payload_hash, new_epoch_local, result_dict, now)
-                        conn.execute("COMMIT")
-                        snap = self.get_namespace_snapshot(repository, issue_number)
-                        return SelectionResult(selected=True, denial_reason=None, winner_candidate_id=existing_winner, snapshot=snap)
-                    return deny(f"Generation {generation_id!r} already has a different selected winner: {existing_winner!r}")
+                    if not (existing_winner == candidate_id and existing_winner_pr_repo == acceptance.pr_repository and existing_winner_pr_number == acceptance.pr_number and existing_winner_head == acceptance.head_sha and existing_winner_base == acceptance.base_sha):
+                        return deny(f"Generation {generation_id!r} already has a different selected winner: {existing_winner!r}")
 
                 if GenerationLifecycleState(lifecycle) != GenerationLifecycleState.ACTIVE:
                     return deny(f"Generation {generation_id!r} is not active (state {lifecycle})")
@@ -1408,6 +1399,18 @@ class JulesCompetitionLedger:
                     return deny("Acceptance record does not match the latest recorded target revision (stale or mismatched)")
                 if b_revision != acceptance.expected_binding_revision:
                     return deny(f"Acceptance record's expected binding revision {acceptance.expected_binding_revision} does not match current revision {b_revision}")
+
+                if existing_winner is not None:
+                    # This is idempotent only after the complete acceptance record has
+                    # been checked against the current generation and latest binding.
+                    # A matching winner pointer alone cannot authorize a stale record.
+                    result_dict = {"selected": True, "denial_reason": None, "winner_candidate_id": existing_winner}
+                    new_epoch_local = current_epoch + 1
+                    self._bump_namespace_epoch(conn, key, new_epoch_local, now)
+                    self._journal(conn, operation_id, key, payload_hash, new_epoch_local, result_dict, now)
+                    conn.execute("COMMIT")
+                    snap = self.get_namespace_snapshot(repository, issue_number)
+                    return SelectionResult(selected=True, denial_reason=None, winner_candidate_id=existing_winner, snapshot=snap)
 
                 # All checks passed: commit this selection and retire everyone else.
                 conn.execute(

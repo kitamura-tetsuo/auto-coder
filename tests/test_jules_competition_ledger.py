@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -417,6 +418,50 @@ def test_as003_old_record_cannot_authorize_a_further_effect_after_selection(stor
     same_result = store.select_winner(REPO, ISSUE, generation_id, "cand-a", "op-select-again", epoch, _acceptance(generation_id, "cand-a", 1, "h1", revision=1))
     assert same_result.selected
     assert same_result.winner_candidate_id == "cand-a"
+
+
+@pytest.mark.parametrize(
+    ("acceptance", "expected_reason"),
+    [
+        (_acceptance("placeholder", "cand-a", 1, "h1", base_sha="different-base", revision=1), "different selected winner"),
+        (_acceptance("placeholder", "cand-a", 1, "h1", fingerprint="different-fingerprint", revision=1), "fingerprint"),
+        (_acceptance("placeholder", "cand-a", 1, "h1", revision=2), "revision"),
+    ],
+)
+def test_as003_changed_acceptance_record_is_not_an_idempotent_selection(
+    store: JulesCompetitionLedger,
+    acceptance: AcceptanceRecord,
+    expected_reason: str,
+) -> None:
+    generation_id, epoch = _create_generation(store)
+    epoch = _bind(store, generation_id, epoch, "cand-a", pr_number=1, head_sha="h1")
+    selected = store.select_winner(
+        REPO,
+        ISSUE,
+        generation_id,
+        "cand-a",
+        "op-select",
+        epoch,
+        _acceptance(generation_id, "cand-a", 1, "h1", revision=1),
+    )
+    obligations_before = selected.snapshot.obligations
+
+    changed_acceptance = replace(acceptance, generation_id=generation_id)
+    repeated = store.select_winner(
+        REPO,
+        ISSUE,
+        generation_id,
+        "cand-a",
+        f"op-select-changed-{expected_reason}",
+        selected.snapshot.epoch,
+        changed_acceptance,
+    )
+
+    assert not repeated.selected
+    assert expected_reason in repeated.denial_reason.lower()
+    assert repeated.winner_candidate_id == "cand-a"
+    assert repeated.snapshot.generations[0].winner_candidate_id == "cand-a"
+    assert repeated.snapshot.obligations == obligations_before
 
 
 # ---------------------------------------------------------------------------
