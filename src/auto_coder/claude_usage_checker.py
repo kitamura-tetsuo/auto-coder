@@ -10,6 +10,7 @@ it raises AutoCoderUsageLimitError to defer LLM invocations and route to next ba
 
 import hashlib
 import json
+import math
 import os
 import platform
 import shlex
@@ -20,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional, Union
 
@@ -85,6 +87,18 @@ class ClaudeCredentialResolution:
 
     token: Optional[str] = None
     status: str = "missing_credentials"
+
+
+@dataclass
+class ClaudeStrictUsageObservation:
+    """Uncached usage observation used to authorize one follow-up send."""
+
+    available: bool = False
+    insufficient: bool = False
+    blockers: tuple[str, ...] = field(default_factory=tuple)
+    blocker_resets: tuple[Optional[float], ...] = field(default_factory=tuple)
+    retry_after: Optional[float] = None
+    detail: str = ""
 
 
 _cache_lock = threading.Lock()
@@ -544,6 +558,30 @@ def resolve_claude_oauth_token(explicit_token: Optional[str] = None) -> Optional
     return None
 
 
+def resolve_claude_oauth_token_non_inference(explicit_token: Optional[str] = None) -> Optional[str]:
+    """Resolve OAuth credentials without launching a Claude model request."""
+    if explicit_token and explicit_token.strip():
+        return explicit_token.strip()
+    env_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    if env_token and env_token.strip():
+        return env_token.strip()
+    credentials = _read_credentials_file() or _read_macos_keychain_credentials()
+    if not credentials:
+        return None
+    oauth = credentials.get("claudeAiOauth")
+    if not isinstance(oauth, dict):
+        return None
+    token = oauth.get("accessToken")
+    expires_at = oauth.get("expiresAt")
+    if isinstance(expires_at, (int, float)) and time.time() * 1000 >= expires_at - 60000:
+        refreshed = refresh_claude_access_token(oauth.get("refreshToken"), scopes=oauth.get("scopes"), try_cli_first=False)
+        if refreshed:
+            return refreshed
+        if time.time() * 1000 >= expires_at:
+            return None
+    return token.strip() if isinstance(token, str) and token.strip() else None
+
+
 def _claude_cli_is_authenticated(timeout: float = 10.0) -> bool:
     """Ask Claude Code whether its own current session is authenticated."""
     cmd_override = os.environ.get("AUTOCODER_CLAUDE_CLI")
@@ -692,6 +730,99 @@ def fetch_claude_usage_data(token: Optional[str] = None, timeout: float = 10.0) 
         logger.debug(f"Failed to fetch Claude OAuth usage: {e}")
 
     return None
+
+
+def observe_claude_usage_strict(token: str, now: Optional[float] = None, timeout: float = 10.0) -> ClaudeStrictUsageObservation:
+    """Read and validate current usage without cache or credential fallback.
+
+    This deliberately does not use :func:`fetch_claude_usage_data`: that display
+    path may fall back to another credential or cached data after HTTP 429.
+    """
+    observed_at = time.time() if now is None else now
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": BETA_HEADER,
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/json",
+    }
+    request = urllib.request.Request(USAGE_ENDPOINT, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return ClaudeStrictUsageObservation(detail=f"usage endpoint HTTP {exc.code}")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return ClaudeStrictUsageObservation(detail=f"usage observation failed: {type(exc).__name__}")
+    if not isinstance(raw, dict):
+        return ClaudeStrictUsageObservation(detail="usage response is not an object")
+
+    limits = raw.get("rate_limits") if isinstance(raw.get("rate_limits"), dict) else raw
+    measurements = 0
+    malformed = False
+    blockers: list[str] = []
+    resets: list[Optional[float]] = []
+
+    def percentage(value: Any) -> Optional[float]:
+        nonlocal measurements, malformed
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or not 0 <= float(value) <= 100:
+            malformed = True
+            return None
+        measurements += 1
+        return float(value)
+
+    def reset_timestamp(value: Any) -> Optional[float]:
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) and float(value) > observed_at:
+            return float(value)
+        if isinstance(value, str):
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+                return parsed if parsed > observed_at else None
+            except ValueError:
+                return None
+        return None
+
+    for key, threshold in (("five_hour", 20.0), ("seven_day", 5.0), ("seven_day_sonnet", 5.0), ("seven_day_opus", 5.0), ("seven_day_oauth_apps", 5.0)):
+        window = limits.get(key) if isinstance(limits, dict) else None
+        if not isinstance(window, dict):
+            continue
+        used = percentage(window.get("utilization", window.get("percent")))
+        if used is not None and 100.0 - used <= threshold:
+            blockers.append(key)
+            resets.append(reset_timestamp(window.get("resets_at")))
+
+    model_limits = raw.get("limits")
+    if isinstance(model_limits, list):
+        for index, entry in enumerate(model_limits):
+            if not isinstance(entry, dict):
+                malformed = True
+                continue
+            used = percentage(entry.get("percent", entry.get("utilization")))
+            if used is not None and 100.0 - used <= 5.0:
+                blockers.append(f"weekly_limit_{index}")
+                resets.append(reset_timestamp(entry.get("resets_at")))
+
+    extra = raw.get("extra_usage") or (limits.get("extra_usage") if isinstance(limits, dict) else None)
+    if isinstance(extra, dict):
+        used = percentage(extra.get("utilization"))
+        disabled = extra.get("disabled_reason")
+        if disabled in {"out_of_credits", "org_spend_cap_reached", "org_level_disabled_until", "org_level_disabled"}:
+            blockers.append(f"extra_usage:{disabled}")
+            resets.append(reset_timestamp(extra.get("resets_at") or extra.get("org_level_disabled_until")))
+        elif used is not None and 100.0 - used <= 20.0:
+            blockers.append("extra_usage")
+            resets.append(reset_timestamp(extra.get("resets_at")))
+
+    if malformed or measurements == 0:
+        return ClaudeStrictUsageObservation(detail="usage response has no valid complete measurement")
+    return ClaudeStrictUsageObservation(
+        available=True,
+        insufficient=bool(blockers),
+        blockers=tuple(blockers),
+        blocker_resets=tuple(resets),
+        detail="; ".join(blockers) if blockers else "eligible",
+    )
 
 
 def check_claude_usage(

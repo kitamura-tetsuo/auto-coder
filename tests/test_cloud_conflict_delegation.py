@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.claude_usage_checker import ClaudeStrictUsageObservation
 from src.auto_coder.cloud_run import CloudRun
 from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
 from src.auto_coder.issue_processor import _process_issue_claude_routine_mode
@@ -85,6 +86,10 @@ def test_named_claude_dispatch_survives_restart_through_conflict_delivery(tmp_pa
         patch("src.auto_coder.pr_processor.Path.home", return_value=tmp_path),
         patch("src.auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
         patch("src.auto_coder.claude_routine_client.ClaudeRoutineClient.fire_routine", return_value=("session-a", None)),
+        patch(
+            "src.auto_coder.claude_routine_client.observe_claude_usage_strict",
+            return_value=ClaudeStrictUsageObservation(available=True, detail="eligible"),
+        ),
         patch("src.auto_coder.issue_processor.get_commit_log", return_value="initial"),
         patch("src.auto_coder.claude_routine_client.CommandExecutor.run_command", return_value=CommandResult(True, "", "", 0)) as command,
     ):
@@ -95,7 +100,7 @@ def test_named_claude_dispatch_survives_restart_through_conflict_delivery(tmp_pa
     args, kwargs = command.call_args
     assert args[0][2] == "--cloud=session-a"
     assert kwargs["env"]["CLAUDE_CODE_ROUTINE_TOKEN"] == "token-a"
-    assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "token-a"
+    assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "token-b"
 
 
 def test_duplicate_named_backend_session_url_fails_closed_after_dispatch(tmp_path) -> None:
