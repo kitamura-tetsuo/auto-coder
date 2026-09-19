@@ -70,7 +70,7 @@ from .implementation_slots import (
     ImplementationSlotRepository,
     ImplementationSlotUnavailable,
 )
-from .invocation_admission import GateSnapshot, InvocationAdmissionGate, install_invocation_gate, reset_invocation_gate
+from .invocation_admission import GateSnapshot, GateState, InvocationAdmissionGate, install_invocation_gate, reset_invocation_gate
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
 from .issue_processor import create_feature_issues
@@ -871,8 +871,21 @@ class AutomationEngine:
             self._lifecycle = EngineLifecycle.DRAINING
         self.invocation_gate.close_admission(reason)
         logger.warning(f"Graceful shutdown requested by {reason}; entering draining state")
-        operations = list(self._critical_operations.values())
-        logger.warning(f"Waiting for {len(operations)} local critical operation(s): {operations or ['none']}")
+        # Issue #2010 REQ-007: report exactly what graceful draining actually
+        # waits for -- each still-unsettled admitted LLM invocation's own
+        # repository/target/stage/state -- rather than the coarser whole
+        # worker/maintenance thread-ownership descriptions in
+        # `_critical_operations`, which are interrupted (not awaited) and
+        # must never be presented as paid critical work.
+        unsettled = self.invocation_gate.unsettled_snapshot()
+        if unsettled:
+            descriptions = [f"{u.repository}#{u.target} stage={u.stage} state={u.state.value}" for u in unsettled]
+            logger.warning(f"Waiting for {len(unsettled)} protected LLM invocation(s) to reach a durable checkpoint: {descriptions}")
+        else:
+            logger.warning("No protected LLM invocation is in flight; shutdown proceeds without waiting for one")
+        local_operations = list(self._critical_operations.values())
+        if local_operations:
+            logger.info(f"Interrupting {len(local_operations)} unrelated local operation(s) without waiting for their natural completion: {local_operations}")
         if self._loop is not None and self._shutdown_event is not None:
             self._loop.call_soon_threadsafe(self._shutdown_event.set)
         if self._wake_up_event is not None and self._loop is not None:
@@ -932,11 +945,57 @@ class AutomationEngine:
             if task.done():
                 self._critical_operations.pop(task, None)
 
-    async def _wait_for_local_critical_operations(self) -> None:
-        """Wait for the drain-start local work, unless force-stop is requested."""
+    async def _wait_for_protected_invocations(self) -> None:
+        """Wait only for admitted LLM invocations to reach a durable checkpoint.
+
+        Issue #2010 REQ-001/REQ-002/REQ-003: graceful draining's exit gate is
+        narrowed to exactly the set this daemon's `invocation_gate` tracks --
+        an individual token/quota-consuming inference/agent invocation
+        admitted before closure, continuously protected through its
+        checkpoint. It never re-widens to the coarser `_critical_operations`
+        thread-ownership map (a whole worker/maintenance function), which is
+        interrupted independently (see `shutdown_interrupt.py` and the
+        cooperative `new_work_allowed()` checks already threaded through
+        `issue_processor.py`/`pr_processor.py`/`validation_scheduler.py`) and
+        must never delay process exit. A second interrupt (`force_stop`)
+        abandons this wait immediately, reporting a forced -- not
+        successfully graceful -- drain.
+        """
+        while True:
+            snapshot = self.invocation_gate.snapshot()
+            if snapshot.state is GateState.FORCED or not snapshot.unsettled:
+                return
+            logger.info("Draining protected LLM invocation(s): " + ", ".join(f"{u.repository}#{u.target} stage={u.stage} state={u.state.value}" for u in snapshot.unsettled))
+            force_wait = asyncio.create_task(self._force_stop_event.wait()) if self._force_stop_event is not None else None
+            poll_wait = asyncio.create_task(asyncio.sleep(0.05))
+            waiters = {poll_wait} | ({force_wait} if force_wait is not None else set())
+            done, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if force_wait is not None and force_wait in done:
+                return
+
+    async def _wait_for_interrupted_local_work(self) -> None:
+        """Reap the coarser thread-ownership wrapper's own bookkeeping.
+
+        `_run_local_critical` shields its thread from asyncio cancellation so
+        a caller never observes a claim/decision as released while the real
+        executor thread is still running (REQ-004/REQ-005). Since Issue #2010
+        REQ-003, that thread is no longer expected to run to its unrelated
+        work's natural completion: `shutdown_interrupt.py`'s cooperative
+        subprocess interruption and the `new_work_allowed()` checks already
+        threaded through the business-logic call graph make it return
+        promptly once admission has closed, so this wait -- unlike before
+        Issue #2010 -- settles quickly instead of blocking on maintenance's
+        own external response or timeout. It is not itself the daemon's
+        exit gate for a *protected* invocation; `_wait_for_protected_invocations`
+        already covers that.
+        """
         while self._critical_operations:
             pending = set(self._critical_operations)
-            logger.info(f"Draining local critical operations: {list(self._critical_operations.values())}")
+            logger.info(f"Waiting for {len(pending)} interrupted local operation(s) to finish returning: {list(self._critical_operations.values())}")
             force_wait = asyncio.create_task(self._force_stop_event.wait()) if self._force_stop_event is not None else None
             waiters = pending | ({force_wait} if force_wait is not None else set())
             done, _ = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
@@ -2413,7 +2472,8 @@ class AutomationEngine:
                 # ownership and make their callers wait for the true boundary.
                 for task in all_loop_tasks:
                     task.cancel()
-                await self._wait_for_local_critical_operations()
+                await self._wait_for_protected_invocations()
+                await self._wait_for_interrupted_local_work()
                 await asyncio.gather(*all_loop_tasks, return_exceptions=True)
                 if self.lifecycle is EngineLifecycle.FORCED:
                     logger.error("Automation engine force-stopped before its local drain completed")
@@ -4076,7 +4136,21 @@ class AutomationEngine:
 
         status = {
             "lifecycle": self.lifecycle.value,
+            # Diagnostic only: coarse worker/maintenance thread-ownership
+            # descriptions, interrupted (not awaited) during graceful
+            # draining. Never paid critical work by itself -- see
+            # "protected_invocations" for what draining actually waits on
+            # (Issue #2010 REQ-007).
             "local_critical_operations": list(self._critical_operations.values()),
+            "protected_invocations": [
+                {
+                    "repository": u.repository,
+                    "target": u.target,
+                    "stage": u.stage,
+                    "state": u.state.value,
+                }
+                for u in self.invocation_gate.unsettled_snapshot()
+            ],
             "startup_reconciliation": {
                 "complete": self.startup_reconciled,
                 "error": self.startup_reconciliation_error,

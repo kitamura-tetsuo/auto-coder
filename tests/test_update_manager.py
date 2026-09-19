@@ -5,6 +5,17 @@ from unittest.mock import patch
 import pytest
 
 from src.auto_coder import update_manager
+from src.auto_coder.utils import CommandResult
+
+
+def _command_result_from(completed: subprocess.CompletedProcess) -> CommandResult:
+    """Adapt a legacy `subprocess.CompletedProcess` fixture to `CommandResult`."""
+    return CommandResult(
+        success=completed.returncode == 0,
+        stdout=completed.stdout or "",
+        stderr=completed.stderr or "",
+        returncode=completed.returncode,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -115,14 +126,13 @@ def test_maybe_run_auto_update_runs_pipx(monkeypatch, tmp_path):
     with (
         patch("src.auto_coder.update_manager._detect_install_method", return_value="pipx"),
         patch("src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/pipx"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result) as mock_run,
+        patch("src.auto_coder.update_manager.CommandExecutor.run_command", return_value=_command_result_from(fake_result)) as mock_run,
     ):
         result = update_manager.maybe_run_auto_update()
         mock_run.assert_called_once_with(
             ["/usr/bin/pipx", "upgrade", "auto-coder"],
-            capture_output=True,
-            text=True,
             timeout=900,
+            stream_output=False,
         )
         assert result.attempted is True
         assert result.updated is True
@@ -150,7 +160,7 @@ def test_maybe_run_auto_update_reports_failure(monkeypatch, tmp_path, capsys):
     with (
         patch("src.auto_coder.update_manager._detect_install_method", return_value="pipx"),
         patch("src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/pipx"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result),
+        patch("src.auto_coder.update_manager.CommandExecutor.run_command", return_value=_command_result_from(fake_result)),
     ):
         result = update_manager.maybe_run_auto_update()
 
@@ -226,14 +236,13 @@ def test_maybe_run_auto_update_runs_uv(monkeypatch, tmp_path):
     with (
         patch("src.auto_coder.update_manager._detect_install_method", return_value="uv"),
         patch("src.auto_coder.update_manager.shutil.which", return_value="/home/node/.local/bin/uv"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result) as mock_run,
+        patch("src.auto_coder.update_manager.CommandExecutor.run_command", return_value=_command_result_from(fake_result)) as mock_run,
     ):
         result = update_manager.maybe_run_auto_update()
         mock_run.assert_called_once_with(
             ["/home/node/.local/bin/uv", "tool", "upgrade", "auto-coder"],
-            capture_output=True,
-            text=True,
             timeout=900,
+            stream_output=False,
         )
         assert result.attempted is True
         assert result.updated is True
@@ -260,7 +269,7 @@ def test_maybe_run_auto_update_uv_no_changes(monkeypatch, tmp_path):
     with (
         patch("src.auto_coder.update_manager._detect_install_method", return_value="uv"),
         patch("src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/uv"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result),
+        patch("src.auto_coder.update_manager.CommandExecutor.run_command", return_value=_command_result_from(fake_result)),
     ):
         result = update_manager.maybe_run_auto_update()
         assert result.attempted is True
@@ -301,7 +310,7 @@ def test_maybe_run_auto_update_uv_failure(monkeypatch, tmp_path, capsys):
     with (
         patch("src.auto_coder.update_manager._detect_install_method", return_value="uv"),
         patch("src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/uv"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result),
+        patch("src.auto_coder.update_manager.CommandExecutor.run_command", return_value=_command_result_from(fake_result)),
     ):
         result = update_manager.maybe_run_auto_update()
 
@@ -348,7 +357,7 @@ def test_check_for_updates_and_restart_triggers_capture(monkeypatch, tmp_path):
     with (
         patch("src.auto_coder.update_manager._detect_install_method", return_value="pipx"),
         patch("src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/pipx"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result),
+        patch("src.auto_coder.update_manager.CommandExecutor.run_command", return_value=_command_result_from(fake_result)),
     ):
         with pytest.raises(SystemExit) as exc:
             update_manager.check_for_updates_and_restart()
@@ -380,7 +389,7 @@ def test_check_for_updates_and_restart_with_uv(monkeypatch, tmp_path):
     with (
         patch("src.auto_coder.update_manager._detect_install_method", return_value="uv"),
         patch("src.auto_coder.update_manager.shutil.which", return_value="/usr/bin/uv"),
-        patch("src.auto_coder.update_manager.subprocess.run", return_value=fake_result),
+        patch("src.auto_coder.update_manager.CommandExecutor.run_command", return_value=_command_result_from(fake_result)),
     ):
         with pytest.raises(SystemExit) as exc:
             update_manager.check_for_updates_and_restart()

@@ -4,18 +4,32 @@
 model that protects individual LLM invocations from a graceful shutdown,
 distinct from the coarser thread-ownership wrapper described in
 [Graceful daemon shutdown](graceful-daemon-shutdown.md)
-(`AutomationEngine._run_local_critical`, which currently treats a whole
-worker or maintenance task as critical). `AutomationEngine` owns one
+(`AutomationEngine._run_local_critical`, which shields a whole worker or
+maintenance task from asyncio cancellation so a caller never observes its
+claim/decision as released mid-flight). `AutomationEngine` owns one
 `InvocationAdmissionGate` per daemon lifetime (`self.invocation_gate`),
 installs it ambiently alongside the existing `install_admission_check` inside
 `_run_local_critical` (so it reaches every worker/validation-executor/
 capacity-refill/maintenance/durable-resumption call that already runs through
 that boundary's `asyncio.to_thread`), closes its admission in
-`request_graceful_shutdown`, and forces it in `request_force_stop`. Retiring
-the broader `_wait_for_local_critical_operations` wait in favor of this gate
-is a separate follow-up (#2010): today this gate only tracks invocations and
-never gates the daemon's own exit, so the coarser wrapper remains the
-production wait set.
+`request_graceful_shutdown`, and forces it in `request_force_stop`.
+
+Issue #2010 makes this gate the daemon's actual exit condition:
+`AutomationEngine._wait_for_protected_invocations` (awaited first in
+`start_automation`'s shutdown branch) blocks only on
+`invocation_gate.snapshot()` reaching graceful readiness -- every admitted
+invocation SETTLED, or `force_stop()` called -- and no longer on the coarser
+`_critical_operations` thread-ownership map draining. That coarser wrapper
+still exists (`_wait_for_interrupted_local_work`, awaited immediately after)
+purely so its own bookkeeping clears before the daemon reports STOPPED, but
+it is expected to settle quickly: `shutdown_interrupt.py`'s
+`mark_invocation_active()` marks the narrow window around the actual
+provider call (inside `_execute_backend_with_providers`) during which a
+spawned subprocess is protected, and `utils.CommandExecutor`'s command loop
+kills any *other* locally owned subprocess the moment admission closes,
+instead of waiting for its natural completion, external response, or normal
+network/process timeout. See
+[Graceful daemon shutdown](graceful-daemon-shutdown.md) for the full picture.
 
 ## Wired production boundaries (Issue #2009)
 

@@ -20,6 +20,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .logger_config import get_logger
 from .progress_footer import get_progress_footer
 from .security_utils import redact_string
+from .shutdown_context import new_work_allowed
+from .shutdown_interrupt import is_invocation_active
 from .test_log_utils import extract_first_failed_test
 
 logger = get_logger(__name__)
@@ -562,6 +564,7 @@ class CommandExecutor:
         last_output_time = time.monotonic()
         dots_printed = 0
         input_error: Optional[str] = None
+        shutdown_interrupted = False
 
         try:
             while True:
@@ -570,6 +573,21 @@ class CommandExecutor:
                         input_error = input_errors.get_nowait()
                         process.kill()
                     except queue.Empty:
+                        pass
+                # Issue #2010 REQ-003/REQ-004: an unrelated local command (not
+                # part of an admitted LLM invocation's own controlled provider
+                # action or tool tree) must not hold graceful draining open
+                # until its natural completion, external response, or normal
+                # network/process timeout. Once shutdown has closed admission,
+                # stop it immediately instead of waiting; a command that is
+                # itself part of a still in-flight admitted invocation
+                # (``is_invocation_active()``) is never touched here.
+                if not shutdown_interrupted and process.poll() is None and not is_invocation_active() and not new_work_allowed():
+                    shutdown_interrupted = True
+                    logger.info(f"Interrupting unrelated local command during graceful shutdown drain: {shlex.join(cmd) if cmd else ''}")
+                    try:
+                        process.kill()
+                    except Exception:
                         pass
                 now = time.monotonic()
                 if timeout is not None:
@@ -674,6 +692,8 @@ class CommandExecutor:
             return_code = process.returncode
             stdout = "".join(stdout_lines)
             stderr = "".join(stderr_lines)
+            if shutdown_interrupted:
+                stderr += "\nCommand interrupted: graceful shutdown is draining"
             if input_error is not None:
                 diagnostic = input_error + "\n"
                 return -1, stdout, stderr + diagnostic

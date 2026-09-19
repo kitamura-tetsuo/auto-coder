@@ -32,6 +32,7 @@ from .review_audit import ReviewInteractionRecord
 from .review_capture.context import bind_interaction_id, get_active_review_context
 from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
+from .shutdown_interrupt import mark_invocation_active
 from .worktree_utils import isolated_local_llm_worktree
 
 logger = get_logger(__name__)
@@ -780,10 +781,17 @@ class BackendManager(LLMBackendManagerBase):
                     worktree_ctx = isolated_local_llm_worktree(is_noedit=is_noedit) if is_local else contextlib.nullcontext()
                     with worktree_ctx:
                         with bind_interaction_id(interaction_id):
-                            if session_id:
-                                out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
-                            else:
-                                out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                            # Issue #2010 REQ-004: only the controlled provider
+                            # action itself (and any subprocess/tool tree it
+                            # spawns) is marked protected, so graceful draining's
+                            # cooperative interruption never kills it, while any
+                            # unrelated command run outside this block remains
+                            # interruptible.
+                            with mark_invocation_active():
+                                if session_id:
+                                    out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
+                                else:
+                                    out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
                     self._settle_admitted_invocation(invocation_handle, success=True)
 
                     end_dt = datetime.now(timezone.utc)
