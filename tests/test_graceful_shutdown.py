@@ -1,7 +1,9 @@
 import asyncio
 import os
 import signal
+import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -17,6 +19,7 @@ from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.issue_processor import _apply_issue_actions_directly, _process_issue_claude_routine_mode, _process_issue_codex_cloud_mode, _process_issue_jules_mode
 from auto_coder.pr_processor import _apply_github_actions_fix, _apply_local_test_fix, _send_codex_cloud_error_feedback, _send_jules_error_feedback
+from auto_coder.utils import CommandExecutor
 
 
 def test_worker_drain_owns_real_to_thread_operation_until_durable_completion(monkeypatch, tmp_path):
@@ -1039,6 +1042,83 @@ def test_initial_session_launch_rechecks_drain_after_prompt_context(monkeypatch,
     restarted_actions = operation(*operation_args)
     assert restarted_actions != expected
     cloud_manager.add_session.assert_called_once()
+
+
+def _blocking_update_check_command():
+    return [sys.executable, "-c", "import time; time.sleep(5)"]
+
+
+def test_update_check_style_maintenance_does_not_delay_shutdown_wait(monkeypatch, tmp_path):
+    """Issue #2010: reproduces the reported "update check" shutdown hang.
+
+    A maintenance function with no admitted LLM invocation must not hold the
+    daemon's own shutdown-wait sequence open for its real subprocess's normal
+    completion; the subprocess is killed immediately once admission closes.
+    """
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    outcomes = {}
+
+    def blocking_update_check():
+        entered.set()
+        result = CommandExecutor.run_command(_blocking_update_check_command(), timeout=30, stream_output=False)
+        outcomes["result"] = result
+
+    async def scenario():
+        maintenance = asyncio.create_task(engine._run_local_critical("update check", blocking_update_check))
+        assert await asyncio.to_thread(entered.wait, 2)
+
+        assert engine.request_graceful_shutdown("SIGTERM")
+        start = time.monotonic()
+        # These are exactly the two calls `start_automation`'s shutdown
+        # branch awaits before reporting the daemon STOPPED.
+        await engine._wait_for_protected_invocations()
+        await engine._wait_for_interrupted_local_work()
+        elapsed = time.monotonic() - start
+        await maintenance
+        return elapsed
+
+    elapsed = asyncio.run(scenario())
+
+    # Nowhere near the real 5s sleep: the subprocess was killed, not awaited.
+    assert elapsed < 3.0
+    assert outcomes["result"].success is False
+    assert "graceful shutdown is draining" in outcomes["result"].stderr
+    assert engine._critical_operations == {}
+
+
+def test_protected_invocation_still_gates_exit_while_maintenance_is_interrupted(monkeypatch, tmp_path):
+    """A still-admitted LLM invocation keeps draining open; unrelated work does not."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+
+    def blocking_update_check():
+        entered.set()
+        CommandExecutor.run_command(_blocking_update_check_command(), timeout=30, stream_output=False)
+
+    async def scenario():
+        maintenance = asyncio.create_task(engine._run_local_critical("update check", blocking_update_check))
+        assert await asyncio.to_thread(entered.wait, 2)
+
+        handle = engine.invocation_gate.try_admit(repository="owner/repo", target="issue#1", stage="implementation")
+        assert handle is not None
+
+        assert engine.request_graceful_shutdown("SIGTERM")
+        wait_task = asyncio.create_task(engine._wait_for_protected_invocations())
+        await asyncio.sleep(0.3)
+        assert not wait_task.done()
+
+        handle.begin_checkpointing("result")
+        assert handle.confirm_settled()
+        await asyncio.wait_for(wait_task, timeout=2)
+
+        await engine._wait_for_interrupted_local_work()
+        await maintenance
+
+    asyncio.run(scenario())
+    assert engine.invocation_gate.unsettled_snapshot() == []
 
 
 def test_container_entrypoint_and_compose_grace_preserve_sigterm_delivery():

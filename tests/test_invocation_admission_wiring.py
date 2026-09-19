@@ -10,7 +10,11 @@ daemon lifetime that owns and drives the gate.
 """
 
 import asyncio
+import contextvars
 import json
+import sys
+import threading
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
@@ -36,8 +40,10 @@ from auto_coder.invocation_admission import (
 )
 from auto_coder.jules_engine import _recurrent_implementation_owner, check_and_start_recurrent_jules_tasks
 from auto_coder.requirement_contract import build_normative_issue_manifest
+from auto_coder.shutdown_context import install_admission_check, reset_admission_check
 from auto_coder.specification_analyzer import parse_specification_analysis_response
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from auto_coder.utils import CommandExecutor
 
 READY_JSON = json.dumps({"verdict": "READY", "remediation": "NONE", "findings": []})
 BLOCKED_JSON = json.dumps(
@@ -498,3 +504,104 @@ def test_invocation_admission_snapshot_reports_daemon_state(monkeypatch, tmp_pat
     snapshot = engine.invocation_admission_snapshot()
     assert snapshot.state is GateState.RUNNING
     assert snapshot.unsettled == ()
+
+
+# ---------------------------------------------------------------------------
+# Issue #2010 -- the admitted invocation's own subprocess/tool tree is never
+# interrupted by graceful draining, while an unrelated local subprocess is.
+# ---------------------------------------------------------------------------
+
+
+def _sleep_command(seconds: float):
+    return [sys.executable, "-c", f"import time; time.sleep({seconds})"]
+
+
+def test_admitted_invocations_subprocess_is_never_interrupted_by_drain(tmp_path):
+    """`mark_invocation_active` around the real provider call protects its subprocess."""
+
+    subprocess_started = threading.Event()
+
+    class RealSubprocessClient:
+        model_name = "test-model"
+
+        def _run_llm_cli(self, prompt, is_noedit=False):
+            # Admission already succeeded (this call only happens inside the
+            # admitted window), so signal the main thread it is now safe to
+            # close admission without racing `try_admit` itself.
+            subprocess_started.set()
+            result = CommandExecutor.run_command(_sleep_command(0.6), timeout=5, stream_output=False)
+            return "done" if result.success else f"failed: {result.stderr}"
+
+        def continue_session(self, session_id, prompt, is_noedit=False):
+            return self._run_llm_cli(prompt, is_noedit=is_noedit)
+
+        def get_last_session_id(self):
+            return None
+
+    manager = _manager(tmp_path, {"claude": RealSubprocessClient()})
+    gate = InvocationAdmissionGate()
+    gate_token = install_invocation_gate(gate)
+    admission_token = install_admission_check(lambda: gate.state is GateState.RUNNING)
+
+    results: dict = {}
+
+    def run_call():
+        with bind_invocation_target("owner/repo", "issue#42", "implementation"):
+            results["output"] = manager._run_llm_cli("prompt")
+
+    # See the sibling test below: a bare `threading.Thread` does not inherit
+    # the calling context, so the installed gate/admission-check are copied
+    # explicitly here (production code gets this via `asyncio.to_thread`).
+    ctx = contextvars.copy_context()
+    call_thread = threading.Thread(target=lambda: ctx.run(run_call))
+    start = time.monotonic()
+    call_thread.start()
+    assert subprocess_started.wait(2)
+    # Close admission only once the provider call's own subprocess is
+    # already running: draining must never kill it (REQ-004).
+    gate.close_admission("graceful shutdown")
+    call_thread.join(timeout=5)
+    elapsed = time.monotonic() - start
+
+    reset_admission_check(admission_token)
+    reset_invocation_gate(gate_token)
+
+    assert not call_thread.is_alive()
+    assert results["output"] == "done"
+    # The sleep ran its real 0.6s to completion instead of being killed the
+    # moment admission closed (which would show up as a near-instant return).
+    assert elapsed >= 0.55
+
+
+def test_unrelated_subprocess_outside_invocation_is_interrupted_by_drain():
+    """A command run outside `mark_invocation_active` is killed, not awaited (REQ-003)."""
+    draining = threading.Event()
+    admission_token = install_admission_check(lambda: not draining.is_set())
+
+    result_holder: dict = {}
+
+    def run_unrelated_command():
+        result_holder["result"] = CommandExecutor.run_command(_sleep_command(5), timeout=30, stream_output=False)
+
+    # A bare `threading.Thread` starts with a fresh, empty contextvar context
+    # (only `asyncio.to_thread` copies the calling context automatically), so
+    # the installed admission check is copied across explicitly here to
+    # exercise the same real cross-thread propagation production code relies
+    # on (`_run_local_critical` does this via `asyncio.to_thread`).
+    ctx = contextvars.copy_context()
+    worker = threading.Thread(target=lambda: ctx.run(run_unrelated_command))
+    start = time.monotonic()
+    worker.start()
+    time.sleep(0.2)
+    draining.set()
+    worker.join(timeout=5)
+    elapsed = time.monotonic() - start
+
+    reset_admission_check(admission_token)
+
+    assert not worker.is_alive()
+    result = result_holder["result"]
+    assert result.success is False
+    assert "graceful shutdown is draining" in result.stderr
+    # Killed almost immediately after draining started, nowhere near the 5s sleep.
+    assert elapsed < 2.0

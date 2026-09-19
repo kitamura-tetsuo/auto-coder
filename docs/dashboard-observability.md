@@ -867,3 +867,59 @@ pending work after a restart, and that diagnostic-recorder failure changes
 none of the real business outcome. Run
 `bash scripts/test.sh tests/test_repo_job_trace.py tests/test_entity_invalidation.py tests/test_dependency_rescan_repo_job_trace.py`
 for this boundary.
+
+# Shutdown wait narrowed to protected LLM invocations
+
+Issue #2010 changes what `AutomationEngine.start_automation`'s graceful
+shutdown branch actually waits on before reporting the daemon STOPPED, and
+narrows what the existing "Draining local critical operation(s)"/"Waiting for
+N local critical operation(s)" diagnostics may call critical: this is an
+admission-gate/durable-resumption change to *when the daemon exits*, not a
+new processing origin, outcome, provider route, or structured event, so
+`execution_trace.py`'s schema, `TraceCollector` stages, and every existing
+dispatch/outcome/provider-routing record continue exactly as before.
+
+`AutomationEngine._wait_for_protected_invocations` (new) is awaited first and
+blocks only on `self.invocation_gate.snapshot()` reaching graceful readiness
+-- the same `InvocationAdmissionGate` Issue #2009 already wired into every
+real LLM invocation boundary, now finally consulted for the daemon's own
+exit. `_wait_for_interrupted_local_work` (the renamed former
+`_wait_for_local_critical_operations`) still reaps `_critical_operations`
+bookkeeping afterward, but is expected to settle quickly instead of blocking
+on an unrelated operation's own completion, because two new mechanisms
+interrupt that unrelated work as soon as `request_graceful_shutdown` closes
+admission: the cooperative `new_work_allowed()` checks already threaded
+through `issue_processor.py`/`pr_processor.py`/`validation_scheduler.py`, and
+a new one in `utils.CommandExecutor`'s command-execution loop that kills any
+locally owned subprocess that is not part of the one still-admitted
+invocation's own controlled provider call or tool tree
+(`shutdown_interrupt.mark_invocation_active`/`is_invocation_active`, set only
+around the actual provider call inside `BackendManager
+._execute_backend_with_providers`). `update_manager.maybe_run_auto_update`
+now runs its upgrade command through `CommandExecutor.run_command` instead of
+a bare `subprocess.run`, specifically so this interruption reaches the
+concrete "update check" operation the reported regression named.
+
+`request_graceful_shutdown`'s own diagnostics are split accordingly: a
+"Waiting for N protected LLM invocation(s)" line names each unsettled
+invocation's repository/target/stage/state from `gate.unsettled_snapshot()`,
+and a separate "Interrupting N unrelated local operation(s)" line reports
+`_critical_operations`'s coarser descriptions without calling them critical
+or paid work. `AutomationEngine.get_status()`'s existing
+`local_critical_operations` diagnostic field is unchanged (still the same
+coarse thread-ownership descriptions, still process-internal-only, not
+dashboard-routed); a new sibling field, `protected_invocations` (the same
+repository/target/stage/state tuples), is added next to it for the same
+purpose, with no prompt/response/credential content.
+
+`tests/test_graceful_shutdown.py` adds regressions for: an unrelated
+maintenance operation's real subprocess being killed rather than joined once
+shutdown closes admission (mirroring the reported "update check" hang) while
+a concurrently admitted invocation's own subprocess is left untouched; the
+daemon reporting STOPPED once the protected gate drains even while an
+interrupted non-LLM operation is still winding down; and `update_manager`'s
+own `maybe_run_auto_update`/`check_for_updates_and_restart` regression suite
+(`tests/test_update_manager.py`) is updated for the `CommandExecutor.
+run_command` call it now makes. Run
+`bash scripts/test.sh tests/test_graceful_shutdown.py tests/test_invocation_admission_wiring.py tests/test_invocation_admission.py tests/test_update_manager.py tests/test_utils.py`
+for this boundary.

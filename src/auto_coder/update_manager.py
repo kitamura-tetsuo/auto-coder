@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ import click
 
 from .lock_manager import LockManager
 from .logger_config import get_logger
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
@@ -340,12 +340,13 @@ def maybe_run_auto_update() -> AutoUpdateResult:
     _save_state(state_file, state)
 
     try:
-        result = subprocess.run(
-            upgrade_cmd,
-            capture_output=True,
-            text=True,
-            timeout=900,
-        )
+        # Issue #2010 REQ-003: routed through the centralized CommandExecutor
+        # (AGENTS.md) instead of a bare `subprocess.run`, so this maintenance
+        # check's own subprocess is interrupted immediately -- rather than
+        # waited on for its normal completion or this 900s timeout -- once
+        # graceful draining closes admission and this call is not part of an
+        # admitted LLM invocation (see `shutdown_interrupt.py`).
+        result = CommandExecutor.run_command(upgrade_cmd, timeout=900, stream_output=False)
     except Exception as exc:
         _notify_manual_update(f"{tool_label} upgrade execution failed: {exc}", install_method=install_method)
         state["last_result"] = "error"
