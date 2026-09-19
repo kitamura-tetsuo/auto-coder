@@ -51,11 +51,12 @@ from .bounded_repair_bundle import (
 )
 from .branch_manager import BranchManager
 from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
+from .claude_followup_waits import get_claude_followup_wait_store, wait_from_error
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
 from .entity_invalidation import DurableInvalidationQueue
-from .exceptions import AutoCoderRetryableBackendError
+from .exceptions import AutoCoderRetryableBackendError, ClaudeFollowupUsageLimitError, DeliveryCertainty
 from .execution_trace import EventKind, Outcome, get_trace_collector
 from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
@@ -273,6 +274,8 @@ class CloudConflictDelegationResult:
     delegated: bool = False
     reason: str = ""
     accepted_action: str = ""
+    deferred: bool = False
+    retry_not_before: Optional[float] = None
 
     def __bool__(self) -> bool:
         return self.delegated
@@ -315,14 +318,56 @@ class PRActionList(list[str]):
     def __init__(self, values: Sequence[str] = (), adversarial_validation_error: Optional[str] = None) -> None:
         super().__init__(values)
         self.adversarial_validation_error = adversarial_validation_error
+        self.quota_deferred = False
+        self.retry_not_before: Optional[float] = None
 
 
 class CloudReviewRepairResult(list[str]):
     """Actions plus confirmation that blocking review work has an owner."""
 
-    def __init__(self, values: Sequence[str] = (), delivered: bool = False) -> None:
+    def __init__(self, values: Sequence[str] = (), delivered: bool = False, deferred: bool = False, retry_not_before: Optional[float] = None) -> None:
         super().__init__(values)
         self.delivered = delivered
+        self.deferred = deferred
+        self.retry_not_before = retry_not_before
+
+
+def _retain_claude_quota_deferral(
+    error: ClaudeFollowupUsageLimitError,
+    pr_number: int,
+    task_id: str,
+    purpose: str,
+    work_identity: str,
+) -> float:
+    """Commit a typed refusal before its caller releases delivery state."""
+    wait = wait_from_error(error, pr_number, task_id, purpose, work_identity)
+    get_claude_followup_wait_store().retain(wait, error.blocking_windows)
+    logger.warning(
+        "Claude follow-up deferred repository={} pr={} operation={} backend={} " "task={} reason={} certainty={} retry_not_before={}",
+        wait.repository,
+        pr_number,
+        purpose,
+        wait.backend_name,
+        task_id,
+        wait.reason,
+        wait.certainty.value,
+        wait.retry_not_before,
+    )
+    get_trace_logger().log(
+        "Claude Follow-up Deferred",
+        f"Deferred {purpose} for PR #{pr_number} until provider usage can be rechecked",
+        item_type="pr",
+        item_number=pr_number,
+        details={
+            "operation": purpose,
+            "backend": wait.backend_name,
+            "task_id": task_id,
+            "reason": wait.reason,
+            "certainty": wait.certainty.value,
+            "retry_not_before": wait.retry_not_before,
+        },
+    )
+    return wait.retry_not_before
 
 
 @dataclass(frozen=True)
@@ -2191,6 +2236,11 @@ def _take_pr_actions(
         )
         actions.extend(merge_actions)
         actions.adversarial_validation_error = getattr(merge_actions, "adversarial_validation_error", None)
+        actions.quota_deferred = getattr(merge_actions, "quota_deferred", False)
+        actions.retry_not_before = getattr(merge_actions, "retry_not_before", None)
+        if actions.quota_deferred and processing_status is not None:
+            processing_status.error = None
+            processing_status.outcome = PRProcessingOutcome.DEFERRED
 
         # If merge process completed successfully (PR was merged), skip analysis
         if any("Successfully merged" in action for action in merge_actions):
@@ -3134,14 +3184,17 @@ def _handle_pr_merge(
                                 unresolved_threads=repair_threads,
                             )
                             actions.extend(repair_result)
-                            if not repair_result.delivered and processing_status is not None and not force_admission_eligible:
+                            if repair_result.deferred and processing_status is not None:
+                                processing_status.error = None
+                                processing_status.outcome = PRProcessingOutcome.DEFERRED
+                            elif not repair_result.delivered and processing_status is not None and not force_admission_eligible:
                                 processing_status.error = repair_result[0] if repair_result else "Unresolved review repair was not delivered"
                                 processing_status.outcome = PRProcessingOutcome.FAILED
                             _record_pr_stage(
                                 pr_number,
                                 "pr.repair-delegation",
                                 f"pr#{pr_number} repair delegation",
-                                Outcome.ACCEPTED_HANDOFF if repair_result.delivered else Outcome.FAILED,
+                                Outcome.ACCEPTED_HANDOFF if repair_result.delivered else (Outcome.DEFERRED if repair_result.deferred else Outcome.FAILED),
                                 {"effect": "review-thread-repair", "thread_count": len(repair_threads)},
                             )
                     if not force_admission_eligible:
@@ -3702,6 +3755,9 @@ def _handle_pr_merge(
                             [format_adversarial_finding_comment(finding) for finding in val_result.findings] + [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
                         )
                         actions.extend(feedback_actions)
+                        if getattr(feedback_actions, "quota_deferred", False) and processing_status is not None:
+                            processing_status.error = None
+                            processing_status.outcome = PRProcessingOutcome.DEFERRED
                         _record_pr_stage(
                             pr_number,
                             "pr.repair-delegation",
@@ -3729,6 +3785,9 @@ def _handle_pr_merge(
                             [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
                         )
                         actions.extend(feedback_actions)
+                        if getattr(feedback_actions, "quota_deferred", False) and processing_status is not None:
+                            processing_status.error = None
+                            processing_status.outcome = PRProcessingOutcome.DEFERRED
                         _record_pr_stage(
                             pr_number,
                             "pr.repair-delegation",
@@ -4120,6 +4179,9 @@ def _handle_pr_merge(
                 actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
                 update_actions = _update_with_base_branch(repo_name, pr_data, config)
                 actions.extend(update_actions)
+                if update_actions.quota_deferred:
+                    actions.quota_deferred = True
+                    actions.retry_not_before = update_actions.retry_not_before
 
                 # Step 9: Check for special cases from base branch update
 
@@ -4350,13 +4412,13 @@ def _update_with_base_branch(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     github_client: Optional[Any] = None,
-) -> List[str]:
+) -> PRActionList:
     """Update PR branch with latest base branch commits.
 
     This function merges the PR's base branch (e.g., main, develop) into the PR branch
     to bring it up to date before attempting fixes.
     """
-    actions = []
+    actions = PRActionList()
     pr_number = pr_data["number"]
 
     try:
@@ -4452,6 +4514,13 @@ def _update_with_base_branch(
                 except Exception as exc:
                     logger.warning(f"Could not initialize GitHub reporting for PR #{pr_number}: {exc}")
             cloud_delegation = _delegate_cloud_merge_conflict_repair_result(repo_name, pr_data, reporting_client)
+            if cloud_delegation.deferred:
+                actions.append(f"DEFERRED Claude merge-conflict repair for PR #{pr_number}: {cloud_delegation.reason}")
+                actions.quota_deferred = True
+                actions.retry_not_before = cloud_delegation.retry_not_before
+                cmd.run_command(["git", "merge", "--abort"])
+                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                return actions
             if cloud_delegation:
                 cmd.run_command(["git", "merge", "--abort"])
                 if cloud_delegation.accepted_action:
@@ -6018,6 +6087,14 @@ def _delegate_cloud_review_thread_repair(
         return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: a prior follow-up has unconfirmed durable receipt status; duplicate delivery was suppressed"])
 
     pending_identities = {identity for _thread, _comment, identity in pending}
+    work_identity = hashlib.sha256("\n".join(sorted(pending_identities)).encode()).hexdigest()
+    retained_wait = get_claude_followup_wait_store().get(repo_name, task_id, "review-thread-repair", work_identity)
+    if retained_wait and (retained_wait.certainty is DeliveryCertainty.INDETERMINATE or retained_wait.retry_not_before > time.time()):
+        return CloudReviewRepairResult(
+            [f"DEFERRED Claude review repair for PR #{pr_number} until {retained_wait.retry_not_before}"],
+            deferred=True,
+            retry_not_before=retained_wait.retry_not_before,
+        )
     with _cloud_review_delivery_lock:
         try:
             _record_review_feedback_state(state_path, delivered, indeterminate | pending_identities)
@@ -6097,6 +6174,16 @@ def _delegate_cloud_review_thread_repair(
             accepted = client.send_followup(task_id, prompt, tuple(sorted(pending_identities)))
         else:
             accepted = client.send_followup(task_id, prompt)
+    except ClaudeFollowupUsageLimitError as exc:
+        retry_at = _retain_claude_quota_deferral(exc, pr_number, task_id, "review-thread-repair", work_identity)
+        if exc.delivery_certainty is DeliveryCertainty.NOT_SENT:
+            with _cloud_review_delivery_lock:
+                _record_review_feedback_state(state_path, delivered, indeterminate)
+        return CloudReviewRepairResult(
+            [f"DEFERRED Claude review repair for PR #{pr_number} until {retry_at}"],
+            deferred=True,
+            retry_not_before=retry_at,
+        )
     except Exception as exc:
         logger.warning(f"Cloud review repair delegation failed for PR #{pr_number}: {exc}")
         with _cloud_review_delivery_lock:
@@ -6112,6 +6199,8 @@ def _delegate_cloud_review_thread_repair(
             except OSError:
                 pass
         return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: {provider} task '{task_id}' rejected follow-up delivery"])
+
+    get_claude_followup_wait_store().retire(repo_name, task_id, "review-thread-repair", work_identity)
 
     local_receipt = False
     try:
@@ -6464,6 +6553,13 @@ def _delegate_cloud_merge_conflict_repair_result(
         return CloudConflictDelegationResult(reason="the PR head/base metadata required for repair is unavailable")
 
     fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}"
+    retained_wait = get_claude_followup_wait_store().get(repo_name, task_id, "merge-conflict-repair", fingerprint)
+    if retained_wait and (retained_wait.certainty is DeliveryCertainty.INDETERMINATE or retained_wait.retry_not_before > time.time()):
+        return CloudConflictDelegationResult(
+            reason=f"Claude quota wait is active until {retained_wait.retry_not_before}",
+            deferred=True,
+            retry_not_before=retained_wait.retry_not_before,
+        )
     accepted_action = f"Codex Cloud task '{task_id}' accepted merge-conflict-repair follow-up for " f"PR #{pr_number} at head {target.head_sha}"
     state_path = _cloud_conflict_state_path(repo_name)
     with _cloud_conflict_delivery_lock:
@@ -6504,6 +6600,17 @@ def _delegate_cloud_merge_conflict_repair_result(
     failure_reason: Optional[str] = None
     try:
         accepted = client.send_followup(task_id, message)
+    except ClaudeFollowupUsageLimitError as exc:
+        retry_at = _retain_claude_quota_deferral(exc, pr_number, task_id, "merge-conflict-repair", fingerprint)
+        if exc.delivery_certainty is DeliveryCertainty.NOT_SENT:
+            with _cloud_conflict_delivery_lock:
+                delivered.pop(fingerprint, None)
+                _record_cloud_conflict_deliveries(state_path, delivered)
+        return CloudConflictDelegationResult(
+            reason=f"Claude quota wait is active until {retry_at}",
+            deferred=True,
+            retry_not_before=retry_at,
+        )
     except Exception as exc:
         logger.warning(f"Cloud conflict repair delegation failed for PR #{pr_number}: {exc}")
         accepted = False
@@ -6519,6 +6626,8 @@ def _delegate_cloud_merge_conflict_repair_result(
                 logger.warning(f"Could not clear rejected cloud conflict repair reservation: {exc}")
                 failure_reason += f"; its delivery reservation could not be cleared: {exc}"
         return CloudConflictDelegationResult(reason=failure_reason)
+
+    get_claude_followup_wait_store().retire(repo_name, task_id, "merge-conflict-repair", fingerprint)
 
     with _cloud_conflict_delivery_lock:
         delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="confirmed")
@@ -6858,17 +6967,33 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     except (OSError, ValueError) as exc:
         return [f"Could not check prior {provider} actionable feedback for PR #{pr_number}: {exc}"]
 
+    work_identity = hashlib.sha256("\n".join(sorted(generation_identity for _body, _finding_identity, generation_identity in pending_feedback)).encode()).hexdigest()
+    retained_wait = get_claude_followup_wait_store().get(repo_name, task_id, "adversarial-feedback", work_identity)
+    if retained_wait and (retained_wait.certainty is DeliveryCertainty.INDETERMINATE or retained_wait.retry_not_before > time.time()):
+        deferred_actions = PRActionList([f"DEFERRED Claude adversarial feedback for PR #{pr_number} until {retained_wait.retry_not_before}"])
+        deferred_actions.quota_deferred = True
+        deferred_actions.retry_not_before = retained_wait.retry_not_before
+        return deferred_actions
+
     try:
         if provider == "codex-cloud":
             accepted = client.send_followup(task_id, prompt, tuple(sorted(generation_identity for _body, _finding_identity, generation_identity in pending_feedback)))
         else:
             accepted = client.send_followup(task_id, prompt)
+    except ClaudeFollowupUsageLimitError as exc:
+        retry_at = _retain_claude_quota_deferral(exc, pr_number, task_id, "adversarial-feedback", work_identity)
+        deferred_actions = PRActionList([f"DEFERRED Claude adversarial feedback for PR #{pr_number} until {retry_at}"])
+        deferred_actions.quota_deferred = True
+        deferred_actions.retry_not_before = retry_at
+        return deferred_actions
     except Exception as e:
         logger.error(f"Error sending adversarial feedback to {provider} for PR #{pr_number}: {e}")
         return [f"Adversarial feedback was not delivered to {provider} for PR #{pr_number}: {e}"]
 
     if not accepted:
         return [f"{provider} task '{task_id}' could not receive adversarial feedback for PR #{pr_number}"]
+
+    get_claude_followup_wait_store().retire(repo_name, task_id, "adversarial-feedback", work_identity)
 
     baseline_receipts: set[str] = set()
     if provider != "codex-cloud" and all(not remediation_tokens[finding_identity] for _body, finding_identity, _generation_identity in pending_feedback) and hasattr(client, "get_followup_remediation_baseline"):

@@ -972,3 +972,10 @@ remains in `tests/test_issue_review_worker.py`. Production acceptance and
 admission/deferred-state coverage lives in `tests/test_issue_review_service.py`;
 the durable operation status, rather than a trace event, exposes a request
 that cannot currently enter the Review lane.
+# Claude follow-up quota deferrals
+
+The `Claude Follow-up Deferred` trace event records the PR, operation, backend,
+task, typed quota reason, delivery certainty, and retry deadline. The same event
+is accompanied by a warning (not a worker-failure error), and credentials are
+excluded. PR processing exposes the machine-readable `DEFERRED` outcome rather
+than a successful handoff or ordinary failure.
