@@ -55,6 +55,12 @@ from .implementation_ownership import (
     confirm_implementation_ownership,
     evaluate_implementation_start,
 )
+from .implementation_reclamation_scheduler import (
+    ReclamationObligationStore,
+    recover_obligations_at_startup,
+    run_due_reclamation_checks,
+    schedule_reevaluation_for_pr_owner,
+)
 from .implementation_slots import (
     ImplementationHierarchyConflict,
     ImplementationHierarchyUnavailable,
@@ -784,6 +790,11 @@ class AutomationEngine:
         self._invalidation_drain_lock = asyncio.Lock()
         self._invalidation_wake_event: Optional[asyncio.Event] = None
         self._refill_lock = asyncio.Lock()
+        # Issue #2148: set by a reclamation due-check's on_capacity_freed
+        # callback to request the capacity-refill loop treat the next tick
+        # as a refill opportunity even if it hasn't independently observed
+        # a store identity change yet.
+        self._refill_wake_requested = False
         self.startup_reconciled = False
         self.startup_reconciliation_error: Optional[str] = None
         self._startup_reconciliation_event: Optional[asyncio.Event] = None
@@ -2501,8 +2512,15 @@ class AutomationEngine:
         # PR linked only by branch metadata has no Issue timeline event and
         # may not have been recorded if the previous process stopped before
         # its first candidate scan.
-        await asyncio.to_thread(self._get_implementation_slots(repo_name).reconcile, self.github, True)
-        await self._reconcile_open_github_entities(repo_name)
+        slots = self._get_implementation_slots(repo_name)
+        await asyncio.to_thread(slots.reconcile, self.github, True)
+        # Issue #2148 REQ-002: recover terminal-PR-backed reclamation candidates
+        # and unfinished obligations, including owners whose PRs closed while
+        # this daemon was offline and are therefore absent from the open-PR
+        # enumeration above. This only schedules a check; run_due_reclamation_checks
+        # (serviced from the capacity-refill loop) performs the actual fresh
+        # observation before retiring anything.
+        await asyncio.to_thread(recover_obligations_at_startup, slots)
 
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
         """One attempt at recovery through the normal invalidation path.
@@ -3232,12 +3250,62 @@ class AutomationEngine:
                 retry_required = retry_required or result.refill_retry_required
             return not retry_required
 
+    async def _run_due_reclamation_checks(self, repo_name: str, slots: ImplementationSlotRepository) -> int:
+        """Service due terminal-PR-backed reclamation obligations for *repo_name* once.
+
+        Issue #2148 REQ-003/REQ-006: piggybacks on the existing capacity-refill
+        loop tick rather than adding a new global poller. On any release, the
+        capacity-refill path for the same daemon run is invoked directly so a
+        freed slot can admit a new Issue without waiting for an unrelated
+        webhook or the next scheduled tick.
+        """
+        jules_client: Optional[Any] = None
+        try:
+            from .jules_client import JulesClient
+
+            jules_client = JulesClient()
+        except Exception as exc:
+            logger.debug(f"Jules client unavailable for reclamation checks on {repo_name}: {exc}")
+
+        cloud_manager: Optional[Any] = None
+        cloud_run_store: Optional[Any] = None
+        try:
+            from .cloud_manager import CloudManager
+            from .cloud_run import CloudRunRepository
+
+            cloud_manager = CloudManager(repo_name)
+            cloud_run_store = CloudRunRepository(repo_name)
+        except Exception as exc:
+            logger.debug(f"Cloud provider stores unavailable for reclamation checks on {repo_name}: {exc}")
+
+        def _on_capacity_freed() -> None:
+            self._refill_wake_requested = True
+
+        try:
+            return await asyncio.to_thread(
+                run_due_reclamation_checks,
+                slots,
+                None,
+                github_client=self.github,
+                jules_client=jules_client,
+                cloud_manager=cloud_manager,
+                cloud_run_store=cloud_run_store,
+                on_capacity_freed=_on_capacity_freed,
+            )
+        except Exception as exc:
+            logger.error(f"Reclamation due-check pass failed for {repo_name}: {exc}")
+            return 0
+
     async def _capacity_refill_loop(self, repo_name: str) -> None:
         """Observe shared slot state and service capacity transitions without GitHub polling."""
         slots = self._get_implementation_slots(repo_name)
         previous_count, previous_identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
         refill_pending = False
         while True:
+            self._refill_wake_requested = False
+            await self._run_due_reclamation_checks(repo_name, slots)
+            if self._refill_wake_requested:
+                refill_pending = True
             available_count, identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
             if available_count > 0 and (previous_count == 0 or identity != previous_identity):
                 refill_pending = True
@@ -3374,6 +3442,11 @@ class AutomationEngine:
                             # A retirement failure leaves completion false, so
                             # the generation remains durable and retryable.
                             await asyncio.to_thread(self.invalidations.retire_ci_watches, repo_name, int(item_number))
+                            # Issue #2148 REQ-001: this terminal early-return path
+                            # (a closed PR observed via invalidation/refresh, not
+                            # ordinary mutating PR work) must still make the old
+                            # owner eligible for reclamation.
+                            await asyncio.to_thread(self._schedule_pr_owner_reclamation, repo_name, candidate.data)
                             self.notify_pr_merged_or_closed()
                         decision_completed = True
                         continue
@@ -6046,6 +6119,21 @@ class AutomationEngine:
         result.actions = [f"Deferred BLOCKED publication: {obligation.reason.value}"]
         return result
 
+    def _schedule_pr_owner_reclamation(self, repo_name: str, pr_data: Dict[str, Any], reason: str = "pr-closed") -> None:
+        """Resolve a closed/merged PR's owner and schedule its reclamation check.
+
+        Issue #2148 REQ-001: a terminal PR observation must make the affected
+        ordinary Issue owner eligible for reconciliation without itself
+        starting a new coding execution. Failures here are logged and
+        swallowed -- this is a best-effort scheduling hint, never a blocker
+        for the caller's own (already-authorized) completion.
+        """
+        try:
+            slots = self._get_implementation_slots(repo_name)
+            schedule_reevaluation_for_pr_owner(pr_data, slots, self.github, reason=reason)
+        except Exception as exc:
+            logger.warning(f"Could not schedule reclamation reevaluation for PR reclamation in {repo_name}: {exc}")
+
     def _get_implementation_slots(self, repo_name: str) -> ImplementationSlotRepository:
         with self._implementation_slots_lock:
             if self.implementation_slots is None or self.implementation_slots.repo_name != repo_name:
@@ -7229,6 +7317,11 @@ class AutomationEngine:
                             # Commit retirement before returning absence to the
                             # durable worker, which may then complete generation.
                             self.invalidations.retire_ci_watches(repo_name, number)
+                            # Issue #2148 REQ-001/AS-006: an explicit single-target
+                            # (--only/--force) or otherwise-authoritative closure
+                            # observation of a PR must make its old owner eligible
+                            # for reclamation without starting a new execution.
+                            self._schedule_pr_owner_reclamation(repo_name, {"number": number})
                             return None
                         raise
                 else:
@@ -7240,6 +7333,7 @@ class AutomationEngine:
                 if propagate_errors:
                     if pr_data.get("state") == "closed":
                         self.invalidations.retire_ci_watches(repo_name, number)
+                        self._schedule_pr_owner_reclamation(repo_name, pr_data)
                     elif pr_data.get("state") == "open":
                         self.invalidations.restore_ci_watches_for_open_lifecycle(
                             repo_name,
