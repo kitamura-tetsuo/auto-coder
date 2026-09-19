@@ -22,7 +22,7 @@ from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linke
 from .logger_config import get_logger
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
-from .requirement_contract import build_normative_issue_manifest
+from .requirement_contract import build_normative_issue_manifest, is_explicit_test_deliverable
 from .reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
@@ -61,6 +61,7 @@ class AdversarialValidationFinding:
     finding_identity: str = ""
     correction_identity: str = ""
     violated_requirement: str = ""
+    requirement_text: str = ""
     reachability: str = ""
     required_behavior: str = ""
     actual_behavior: str = ""
@@ -390,6 +391,8 @@ class ReviewThreadDisposition:
     status: str = ""  # "ADDRESSED", "STILL_VALID", "INCONCLUSIVE"
     rationale: str = ""
     evidence: str = ""
+    blocker_id: Optional[str] = None
+    concern_ids: tuple[str, ...] = ()
 
 
 VALID_REVIEW_THREAD_DISPOSITION_STATUSES = {"ADDRESSED", "STILL_VALID", "INCONCLUSIVE"}
@@ -893,7 +896,7 @@ def format_adversarial_finding_comment(finding: AdversarialValidationFinding) ->
         "",
         "**Violated requirement**",
         "",
-        f"{requirement_label}{_bounded_comment_field(finding.violated_requirement) or 'Not specified.'}",
+        f"{requirement_label}{_bounded_comment_field(finding.requirement_text or finding.violated_requirement) or 'Not specified.'}",
     ]
     fields = (
         ("Required behavior", finding.required_behavior),
@@ -1401,7 +1404,24 @@ def _extract_thread_dispositions(raw_value: Any) -> List[ReviewThreadDisposition
         if not thread_id or status not in VALID_REVIEW_THREAD_DISPOSITION_STATUSES or not rationale or not evidence:
             logger.warning(f"Dropping malformed thread_dispositions entry for thread_id={thread_id!r}: incomplete or invalid fields")
             continue
-        dispositions.append(ReviewThreadDisposition(thread_id=thread_id, status=status, rationale=rationale, evidence=evidence))
+        raw_blocker_id = item.get("blocker_id")
+        blocker_id = str(raw_blocker_id).strip() if raw_blocker_id is not None and str(raw_blocker_id).strip() else None
+        raw_concern_ids = item.get("concern_ids")
+        concern_ids: tuple[str, ...] = ()
+        if isinstance(raw_concern_ids, list):
+            concern_ids = tuple(str(c).strip() for c in raw_concern_ids if str(c).strip())
+        elif isinstance(raw_concern_ids, str) and raw_concern_ids.strip():
+            concern_ids = (raw_concern_ids.strip(),)
+        dispositions.append(
+            ReviewThreadDisposition(
+                thread_id=thread_id,
+                status=status,
+                rationale=rationale,
+                evidence=evidence,
+                blocker_id=blocker_id,
+                concern_ids=concern_ids,
+            )
+        )
     return dispositions
 
 
@@ -2276,6 +2296,50 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
     )
 
 
+def is_valid_test_oracle_resolution_evidence(evidence: str) -> bool:
+    """Return whether test-oracle gap resolution evidence asserts the required invariant.
+
+    Accepts different valid test techniques that assert the required behavioral
+    invariant across the component boundary, while rejecting tests that only assert
+    source text or use empty inputs that do not exercise the production path (REQ-003).
+    """
+    normalized = evidence.strip().lower()
+    if not normalized:
+        return False
+
+    # Reject source-text inspection / AST assertions that do not execute behavior
+    source_text_cues = (
+        "source text",
+        "source-text",
+        "inspect source",
+        "file content",
+        "file contents",
+        "assert in file",
+        "ast.parse",
+        "ast inspection",
+        "string inspection",
+        "literal match",
+    )
+    if any(cue in normalized for cue in source_text_cues):
+        return False
+
+    # Reject empty/trivial inputs that do not cross the production boundary
+    empty_input_cues = (
+        "empty input",
+        "empty dict",
+        "empty list",
+        "empty string",
+        "trivial input",
+        "noop test",
+        "does not exercise production",
+        "does not cross boundary",
+    )
+    if any(cue in normalized for cue in empty_input_cues):
+        return False
+
+    return True
+
+
 def _same_test_oracle_gap_scope(left: TestOracleGap, right: TestOracleGap) -> bool:
     """Return whether two lifecycle entries describe the same missing oracle."""
     return left.gap_id == right.gap_id and left.requirement_id == right.requirement_id
@@ -2322,9 +2386,14 @@ def _reconcile_test_oracle_gap_lifecycle(
                 reconciled.append(prior)
                 continue
             if current_matches and current is not None and current.status in {"RESOLVED", "INVALID"}:
-                prior.status = current.status
-                prior.resolution_evidence = current.resolution_evidence
-                prior.resolution_head_sha = head_sha
+                if current.status == "RESOLVED" and not is_valid_test_oracle_resolution_evidence(current.resolution_evidence):
+                    prior.status = "OPEN"
+                    prior.resolution_evidence = ""
+                    prior.resolution_head_sha = ""
+                else:
+                    prior.status = current.status
+                    prior.resolution_evidence = current.resolution_evidence
+                    prior.resolution_head_sha = head_sha
                 reconciled.append(prior)
                 continue
             if current_matches and current is not None and current.status == "OPEN":
@@ -2366,10 +2435,15 @@ def _reconcile_test_oracle_gap_lifecycle(
             prior.resolution_evidence = addressed_gap_evidence[gap_id]
             prior.resolution_head_sha = head_sha
         else:
-            prior.status = current.status
-            prior.resolution_evidence = current.resolution_evidence
-            if current.status in {"RESOLVED", "INVALID"}:
-                prior.resolution_head_sha = head_sha
+            if current.status == "RESOLVED" and not is_valid_test_oracle_resolution_evidence(current.resolution_evidence):
+                prior.status = "OPEN"
+                prior.resolution_evidence = ""
+                prior.resolution_head_sha = ""
+            else:
+                prior.status = current.status
+                prior.resolution_evidence = current.resolution_evidence
+                if current.status in {"RESOLVED", "INVALID"}:
+                    prior.resolution_head_sha = head_sha
         reconciled.append(prior)
 
     for gap in current_by_id.values():
@@ -2409,6 +2483,8 @@ def _addressed_test_oracle_gap_evidence(
         requirement_match = re.search(r"^`(REQ-[^`]+)`:\s*\S", thread.original_finding, re.MULTILINE)
         current_gap = gaps_by_id.get(gap_match.group(1)) if gap_match else None
         if gap_match and requirement_match and current_gap is not None and current_gap.requirement_id == requirement_match.group(1):
+            if not is_valid_test_oracle_resolution_evidence(disposition.evidence):
+                continue
             evidence_by_gap[gap_match.group(1)] = f"{disposition.rationale}\nEvidence: {disposition.evidence}"
     return evidence_by_gap
 
@@ -2765,6 +2841,365 @@ def _lacks_independent_irrelevance_scope_basis(evidence: str) -> bool:
     return True
 
 
+def _populate_finding_requirement_text(
+    findings: List[AdversarialValidationFinding],
+    requirements: List[IssueRequirement],
+) -> None:
+    """Attach authoritative manifest text to findings with known stable IDs."""
+    requirement_text_by_id = {requirement.requirement_id: requirement.text for requirement in requirements}
+    for finding in findings:
+        valid_ids = [rid for rid in finding.all_requirement_ids if rid in requirement_text_by_id]
+        if valid_ids:
+            finding.requirement_ids = valid_ids
+            if finding.requirement_id not in requirement_text_by_id:
+                finding.requirement_id = valid_ids[0]
+            authoritative_text = "\n\n".join(requirement_text_by_id[rid] for rid in valid_ids)
+            finding.requirement_text = authoritative_text
+            if not finding.violated_requirement:
+                finding.violated_requirement = authoritative_text
+
+
+def _is_retired_artifact_objection(finding: AdversarialValidationFinding) -> bool:
+    """Return whether finding objects to the removal/omission of retired artifacts."""
+    target_text = " ".join(
+        [
+            finding.anchor_path,
+            finding.violated_requirement,
+            finding.required_behavior,
+            finding.actual_behavior,
+            finding.evidence,
+            finding.counterexample,
+        ]
+    ).lower()
+    return "docs/client-features.yaml" in target_text
+
+
+def _is_objective_or_scenario_demand(
+    finding: AdversarialValidationFinding,
+    expected_requirement_ids: set[str],
+) -> bool:
+    """Return whether finding demands an outcome mentioned only in Objective or Acceptance Scenario."""
+    req_id = finding.requirement_id.strip().upper()
+    if req_id.startswith(("OBJECTIVE", "CONTEXT", "AS-", "SCENARIO-")) or req_id in {"OBJECTIVE", "CONTEXT"}:
+        return True
+    target_text = " ".join(
+        [
+            finding.finding_identity,
+            finding.correction_identity,
+            finding.violated_requirement,
+            finding.required_behavior,
+            finding.actual_behavior,
+            finding.counterexample,
+        ]
+    ).lower()
+    cues = (
+        "objective-only",
+        "only mentioned in the objective",
+        "mentioned only in the objective",
+        "only in the objective",
+        "scenario-only",
+        "only in acceptance scenario",
+        "acceptance scenario only",
+        "only in the acceptance scenario",
+        "acceptance-scenario-only",
+    )
+    if any(cue in target_text for cue in cues):
+        return True
+    return False
+
+
+def _is_documentation_defect(finding: AdversarialValidationFinding) -> bool:
+    """Return whether finding describes a documentation defect (e.g. false claim)."""
+    target_text = " ".join(
+        [
+            finding.anchor_path,
+            finding.finding_identity,
+            finding.correction_identity,
+            finding.violated_requirement,
+            finding.required_behavior,
+            finding.actual_behavior,
+            finding.counterexample,
+        ]
+    ).lower()
+    doc_cues = (
+        "documentation",
+        "doc defect",
+        "false claim",
+        "falsely claims",
+        "inaccurate documentation",
+        "untruthful documentation",
+        "docs/",
+    )
+    return any(cue in target_text for cue in doc_cues) and (finding.anchor_path.startswith("docs/") or "docs" in finding.anchor_path or "documentation" in finding.actual_behavior.lower() or "falsely claims" in finding.actual_behavior.lower() or "false claim" in finding.actual_behavior.lower())
+
+
+def _is_missing_test_finding(finding: AdversarialValidationFinding) -> bool:
+    """Return whether a finding merely reports missing tests/regression protection."""
+    if _is_documentation_defect(finding):
+        return False
+    target_text = " ".join(
+        [
+            finding.finding_identity,
+            finding.actual_behavior,
+            finding.counterexample,
+            finding.evidence,
+        ]
+    ).lower()
+    missing_test_cues = (
+        "missing test",
+        "no test",
+        "untested",
+        "tests do not cover",
+        "lack of test",
+        "test is missing",
+        "no regression test",
+        "missing regression",
+        "not tested",
+        "no test asserts",
+        "tests pass without testing",
+        "lacks test",
+        "no automated test",
+        "missing dedicated test",
+        "missing negative-control",
+        "no test coverage",
+        "lacks regression test",
+    )
+    return any(cue in target_text for cue in missing_test_cues)
+
+
+def _normalize_findings_and_gaps(
+    result: AdversarialValidationResult,
+    context: AdversarialValidationContext,
+) -> None:
+    """Normalize findings and gaps against the authoritative Issue manifest.
+
+    1. Populates authoritative requirement text for findings citing valid IDs (REQ-008).
+    2. Reclassifies retired-artifact and objective/scenario demands as SpecificationGaps (REQ-004, REQ-005).
+    3. Isolates findings citing unknown or sibling-only requirement IDs without discarding
+       unrelated valid findings (REQ-008).
+    4. Deduplicates overlapping categories between findings and test-oracle gaps (REQ-006).
+    """
+    expected_requirement_ids = {r.requirement_id for r in context.issue_requirements}
+    req_text_by_id = {r.requirement_id: r.text for r in context.issue_requirements}
+    if not expected_requirement_ids:
+        return
+
+    # 1. Populate authoritative requirement text
+    _populate_finding_requirement_text(result.findings, context.issue_requirements)
+
+    # 2. Reclassify SpecificationGaps
+    retained_findings: List[AdversarialValidationFinding] = []
+    for finding in result.findings:
+        if _is_retired_artifact_objection(finding):
+            gap = SpecificationGap(
+                question="Should docs/client-features.yaml be maintained alongside standalone documentation fragments?",
+                why_existing_issue_is_insufficient="The Issue requirements do not mandate maintaining the retired docs/client-features.yaml artifact during standalone fragment migration.",
+                observed_case=finding.actual_behavior or finding.counterexample or "docs/client-features.yaml was deleted or omitted.",
+                affected_scope=finding.anchor_path or "docs/client-features.yaml",
+                candidate_options=[
+                    "Permit deletion of docs/client-features.yaml in favor of standalone fragments",
+                    "Retain docs/client-features.yaml",
+                ],
+            )
+            result.specification_gaps.append(gap)
+            for entry in result.requirement_coverage:
+                if entry.requirement_id in finding.all_requirement_ids and entry.status == "VIOLATED":
+                    entry.status = "VERIFIED"
+                    entry.evidence = (entry.evidence + "; retired artifact objection tracked as specification_gap").strip("; ")
+            continue
+
+        if _is_objective_or_scenario_demand(finding, expected_requirement_ids):
+            gap = SpecificationGap(
+                question=f"Should the outcome '{finding.required_behavior or finding.violated_requirement}' be required?",
+                why_existing_issue_is_insufficient="The behavior is mentioned only in the Objective or Acceptance Scenario and is not specified in the explicit Requirements manifest.",
+                observed_case=finding.actual_behavior or finding.counterexample or "Outcome mentioned only in Objective or Acceptance Scenario was not implemented.",
+                affected_scope=finding.anchor_path or "Specification and implementation scope",
+                candidate_options=[
+                    "Add explicit Requirement to target Issue",
+                    "Treat as optional or out-of-scope for this Issue",
+                ],
+            )
+            result.specification_gaps.append(gap)
+            continue
+
+        retained_findings.append(finding)
+
+    # 3. Isolate unknown / sibling-only findings if valid findings exist
+    surviving_findings: List[AdversarialValidationFinding] = []
+    unknown_findings: List[AdversarialValidationFinding] = []
+    for finding in retained_findings:
+        if any(rid in expected_requirement_ids for rid in finding.all_requirement_ids):
+            surviving_findings.append(finding)
+        else:
+            unknown_findings.append(finding)
+
+    if surviving_findings:
+        retained_findings = surviving_findings
+        if unknown_findings:
+            logger.warning(f"Isolated {len(unknown_findings)} finding(s) referencing unknown or sibling-only requirement IDs " f"({', '.join(f.requirement_id for f in unknown_findings)}) without discarding valid findings.")
+    else:
+        retained_findings = unknown_findings
+
+    # 4. Category deduplication between findings and test-oracle gaps
+    final_findings: List[AdversarialValidationFinding] = []
+    retained_gaps: List[TestOracleGap] = list(result.test_oracle_gaps)
+
+    for finding in retained_findings:
+        is_deliverable = any(is_explicit_test_deliverable(req_text_by_id.get(rid, "")) for rid in finding.all_requirement_ids if rid in expected_requirement_ids)
+        if is_deliverable:
+            final_findings.append(finding)
+            retained_gaps = [gap for gap in retained_gaps if gap.requirement_id not in finding.all_requirement_ids]
+        else:
+            if _is_missing_test_finding(finding):
+                has_matching_gap = any(gap.requirement_id in finding.all_requirement_ids for gap in retained_gaps)
+                if not has_matching_gap:
+                    primary_req = finding.requirement_id if finding.requirement_id in expected_requirement_ids else (finding.requirement_ids[0] if finding.requirement_ids else "")
+                    boundary = finding.reachability or finding.anchor_path or "runtime_boundary"
+                    invariant = finding.required_behavior or req_text_by_id.get(primary_req, "Runtime invariant")
+                    new_gap = TestOracleGap(
+                        gap_id=_stable_test_oracle_gap_id(primary_req, boundary, invariant),
+                        requirement_id=primary_req,
+                        requirement_text=req_text_by_id.get(primary_req, ""),
+                        authoritative_boundary=boundary,
+                        invariant=invariant,
+                        plausible_incorrect_implementation=finding.actual_behavior or "Omit required runtime behavior",
+                        why_tests_still_pass=finding.test_gap or "No test asserts this runtime invariant",
+                        material_consequence=finding.actual_behavior or "Regression risk for runtime behavior",
+                        focused_regression_scenario=finding.suggested_regression_scenario or f"Add regression test asserting {invariant}",
+                        anchor_path=finding.anchor_path,
+                        anchor_line=finding.anchor_line,
+                        anchor_side=finding.anchor_side,
+                        anchor_start_line=finding.anchor_start_line,
+                        status="OPEN",
+                    )
+                    retained_gaps.append(new_gap)
+                for entry in result.requirement_coverage:
+                    if entry.requirement_id in finding.all_requirement_ids and entry.status == "VIOLATED":
+                        entry.status = "VERIFIED"
+                        entry.evidence = (entry.evidence + "; regression protection tracked in test_oracle_gaps").strip("; ")
+            else:
+                final_findings.append(finding)
+
+    result.findings = final_findings
+    result.test_oracle_gaps = retained_gaps
+
+    if not result.findings and result.result == "NEEDS_FIX":
+        if any(gap.status == "OPEN" for gap in result.test_oracle_gaps):
+            result.result = "NEEDS_TESTS"
+        else:
+            result.result = "PASS"
+            result.summary = "Defined requirements pass."
+
+
+def assemble_adversarial_repair_prompt(
+    result: AdversarialValidationResult,
+    target: Any,
+    repo_name: str,
+    pr_number: int,
+    head_sha: str,
+    *,
+    bundle: Optional[Any] = None,
+    original_objective: Optional[str] = None,
+) -> str:
+    """Assemble repair prompt containing only valid findings and material test-oracle gaps.
+
+    Ensures specification gaps are not converted into code-repair instructions,
+    and older summaries do not reintroduce rejected or duplicate obligations (REQ-009).
+    Uses bounded bundle semantics and preserves fixed Objective (REQ-001..REQ-003, REQ-009).
+    """
+    from .bounded_repair_bundle import (
+        BoundedBlockerHandoff,
+        RepairHandoffBundle,
+        compute_bundle_id,
+        render_bounded_repair_payload,
+    )
+    from .canonical_pr_blocker_ledger import QualifiedRequirement
+    from .pr_repair import build_existing_pr_repair_prompt
+
+    if bundle is not None:
+        return build_existing_pr_repair_prompt(target, render_bounded_repair_payload(bundle), bundle=bundle)
+
+    handoff_blockers = []
+    for finding in result.findings:
+        qrs = tuple(QualifiedRequirement(issue_number=pr_number, requirement_id=rid) for rid in finding.all_requirement_ids)
+        req_texts = tuple((finding.requirement_text or finding.violated_requirement) for _ in qrs)
+        oracle = f"{finding.evidence}. Counterexample: {finding.counterexample}" if finding.counterexample else finding.evidence
+        handoff_blockers.append(
+            BoundedBlockerHandoff(
+                blocker_id=finding.finding_identity,
+                category="IMPLEMENTATION",
+                authoritative_boundary=finding.anchor_path,
+                qualified_requirements=qrs,
+                requirement_texts=req_texts,
+                original_correction_scope=finding.required_behavior,
+                owned_concern_ids=(finding.correction_identity,) if finding.correction_identity else (finding.finding_identity,),
+                required_corrective_outcome=f"{finding.required_behavior}. Observed: {finding.actual_behavior}",
+                production_boundary_oracle=oracle,
+                reviewed_head_sha=head_sha,
+                current_evidence=finding.evidence,
+            )
+        )
+    for gap in result.open_test_oracle_gaps:
+        qrs = (QualifiedRequirement(issue_number=pr_number, requirement_id=gap.requirement_id),)
+        req_texts = (gap.requirement_text or "",)
+        oracle = f"Missing test protection for {gap.invariant}. Minimal plausible incorrect implementation: {gap.plausible_incorrect_implementation}" if gap.plausible_incorrect_implementation else gap.invariant
+        handoff_blockers.append(
+            BoundedBlockerHandoff(
+                blocker_id=gap.gap_id,
+                category="TEST_ORACLE",
+                authoritative_boundary=gap.authoritative_boundary,
+                qualified_requirements=qrs,
+                requirement_texts=req_texts,
+                original_correction_scope=gap.invariant,
+                owned_concern_ids=(gap.gap_id,),
+                required_corrective_outcome=gap.focused_regression_scenario or gap.invariant,
+                production_boundary_oracle=oracle,
+                reviewed_head_sha=head_sha,
+                current_evidence=gap.resolution_evidence,
+            )
+        )
+
+    if not handoff_blockers:
+        from string import Template
+
+        from .prompt_loader import get_prompt_template
+
+        details = Template(get_prompt_template("pr.adversarial_validation_fix")).safe_substitute(
+            repo_name=repo_name,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            validation_report="(No actionable adversarial findings)",
+        )
+        return build_existing_pr_repair_prompt(target, details)
+
+    bundle_id = compute_bundle_id(
+        api_origin="https://api.github.com",
+        repo_name=repo_name,
+        pr_number=pr_number,
+        head_branch=target.head_branch,
+        base_branch=target.base_branch,
+        reviewed_head_sha=head_sha,
+        requirement_manifest_revision="",
+        blockers=handoff_blockers,
+        original_objective=original_objective,
+    )
+    synth_bundle = RepairHandoffBundle(
+        bundle_id=bundle_id,
+        api_origin="https://api.github.com",
+        repo_name=repo_name,
+        pr_number=pr_number,
+        head_branch=target.head_branch,
+        base_branch=target.base_branch,
+        reviewed_head_sha=head_sha,
+        requirement_manifest_revision="",
+        original_objective=original_objective,
+        blockers=tuple(handoff_blockers),
+        is_failed_correction=False,
+    )
+    rendered_payload = render_bounded_repair_payload(synth_bundle)
+    return build_existing_pr_repair_prompt(target, rendered_payload, bundle=synth_bundle)
+
+
 def _apply_coverage_and_verdict_precedence(
     result: AdversarialValidationResult,
     context: AdversarialValidationContext,
@@ -2772,6 +3207,9 @@ def _apply_coverage_and_verdict_precedence(
     """Apply deterministic finding-first and complete-coverage verdict rules."""
     if result.result == "ERROR" and result.diagnostic_category:
         return result
+
+    _normalize_findings_and_gaps(result, context)
+
     expected_requirement_ids = {requirement.requirement_id for requirement in context.issue_requirements}
     recovery_requirement_ids = {requirement_id for entry in result.evidence_recovery for requirement_id in entry.requirement_ids}
     evidence_gap_requirement_ids = {gap.requirement_id for gap in result.decision_critical_evidence_gaps}
@@ -2815,22 +3253,26 @@ def _apply_coverage_and_verdict_precedence(
         return result
 
     if unknown_finding_requirement_ids:
-        reason = f"Findings reference IDs outside the deterministic manifest: {', '.join(unknown_finding_requirement_ids)}"
-        result.result = "ERROR"
-        result.summary = "Invalid validator response: findings referenced unknown stable requirement IDs"
-        result.findings = []
-        result.diagnostic_category = "unknown_finding_requirement_id"
-        result.diagnostic_reason = reason
-        return result
+        if not result.findings or all(f.requirement_id in unknown_finding_requirement_ids for f in result.findings):
+            reason = f"Findings reference IDs outside the deterministic manifest: {', '.join(unknown_finding_requirement_ids)}"
+            result.result = "ERROR"
+            result.summary = "Invalid validator response: findings referenced unknown stable requirement IDs"
+            result.findings = []
+            result.diagnostic_category = "unknown_finding_requirement_id"
+            result.diagnostic_reason = reason
+            return result
+        else:
+            result.findings = [f for f in result.findings if any(rid in expected_requirement_ids for rid in f.all_requirement_ids)]
 
     if unknown_gap_requirement_ids:
-        reason = f"Test-oracle gaps reference IDs outside the deterministic manifest: {', '.join(unknown_gap_requirement_ids)}"
-        result.result = "ERROR"
-        result.summary = "Invalid validator response: test-oracle gaps referenced unknown stable requirement IDs"
         result.test_oracle_gaps = [gap for gap in result.test_oracle_gaps if gap.requirement_id in expected_requirement_ids]
-        result.diagnostic_category = "unknown_test_oracle_gap_requirement_id"
-        result.diagnostic_reason = reason
-        return result
+        if not result.findings and not result.test_oracle_gaps:
+            reason = f"Test-oracle gaps reference IDs outside the deterministic manifest: {', '.join(unknown_gap_requirement_ids)}"
+            result.result = "ERROR"
+            result.summary = "Invalid validator response: test-oracle gaps referenced unknown stable requirement IDs"
+            result.diagnostic_category = "unknown_test_oracle_gap_requirement_id"
+            result.diagnostic_reason = reason
+            return result
 
     # The stable ID is the model's only requirement reference.  Once that ID
     # has passed the fail-closed manifest check above, attach authoritative

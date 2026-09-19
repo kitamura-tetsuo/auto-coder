@@ -61,6 +61,21 @@
       "cases": [
         "prompt-evals/targets/parent-child-contract-boundary/cases/*.yaml"
       ]
+    },
+    {
+      "id": "jules-autonomy-checkpoint-recovery",
+      "prompt_dependencies": [
+        {
+          "path": "src/auto_coder/prompts.yaml",
+          "keys": [
+            "cloud_provider_instructions.jules.initial"
+          ]
+        }
+      ],
+      "config": "prompt-evals/targets/jules-autonomy-checkpoint-recovery/promptfooconfig.yaml",
+      "cases": [
+        "prompt-evals/targets/jules-autonomy-checkpoint-recovery/cases/*.yaml"
+      ]
     }
   ]
 }

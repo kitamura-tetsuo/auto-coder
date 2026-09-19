@@ -54,12 +54,28 @@ cloud_provider_instructions:
 # --- AS-001: independent provider entries, not a disguised Jules switch -----
 
 
-def test_default_shipped_entries_are_empty_and_neutral():
+def test_default_shipped_claude_and_codex_entries_are_empty_and_neutral():
+    """Only Jules ships non-empty guidance text (Issue #2092); Claude Routine
+    and Codex Cloud remain empty/neutral shipped defaults (REQ-001).
+    """
     raw = "Implement the feature."
-    for provider in SUPPORTED_CLOUD_PROVIDERS:
+    for provider in ("claude-routine", "codex-cloud"):
         prepared = prepare_cloud_task(raw, recipient=provider, operation=CloudTaskOperation.NEW_TASK, no_edit=False)
         assert prepared.prepared_task == raw
         assert prepared.instruction_text is None
+
+
+def test_default_shipped_jules_entry_is_non_empty_and_composed():
+    """The shipped Jules entry now carries guidance text (Issue #2092) and is
+    composed exactly once onto an eligible new-task call.
+    """
+    raw = "Implement the feature."
+    prepared = prepare_cloud_task(raw, recipient="jules", operation=CloudTaskOperation.NEW_TASK, no_edit=False)
+    assert prepared.instruction_text is not None
+    assert prepared.instruction_text.strip() != ""
+    assert prepared.prepared_task != raw
+    assert raw in prepared.prepared_task
+    assert prepared.prepared_task.count("AUTO-CODER CLOUD PROVIDER INITIAL INSTRUCTIONS (jules)") == 1
 
 
 def test_each_provider_receives_only_its_own_component(prompts_file):
@@ -377,9 +393,12 @@ def test_raw_task_without_final_newline_is_losslessly_recoverable(prompts_file):
 # --- AS-005 / REQ-007: initial-only, no-edit and neutral behavior ----------
 
 
-def test_loading_shipped_empty_entries_leaves_output_unchanged():
-    """The real, shipped prompts.yaml ships all three entries empty (REQ-001)."""
+def test_loading_shipped_claude_and_codex_empty_entries_leaves_output_unchanged():
+    """The real, shipped prompts.yaml ships Claude Routine and Codex Cloud
+    entries empty (REQ-001); Jules is covered separately since it now ships
+    non-empty guidance text (Issue #2092).
+    """
     raw = "Implement the feature."
-    for provider in SUPPORTED_CLOUD_PROVIDERS:
+    for provider in ("claude-routine", "codex-cloud"):
         result = prepare_cloud_task(raw, recipient=provider, operation=CloudTaskOperation.NEW_TASK, no_edit=False)
         assert result.prepared_task == raw

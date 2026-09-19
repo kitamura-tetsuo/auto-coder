@@ -1,10 +1,10 @@
 # Bounded PR test shards
 
 Each PR Tests shard runs the complete target-repository test script with a
-180-second attempt deadline. A timed-out process group is terminated (with a
+360-second attempt deadline. A timed-out process group is terminated (with a
 10-second TERM grace before KILL) and retried exactly once; ordinary failures,
 cancellation, launch errors, and cleanup errors are not retried. Attempt logs
-are retained separately, retry reports start clean, and an eight-minute Actions
+are retained separately, retry reports start clean, and a 12-minute Actions
 step limit provides an independent safety boundary.
 
 Shard output includes individual test names and emits Python thread stacks when

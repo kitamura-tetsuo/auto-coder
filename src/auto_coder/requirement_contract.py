@@ -123,3 +123,32 @@ def parse_requirement_contract(issue_number: int, body: str) -> RequirementContr
         invalid_reason = None
         error = None
     return RequirementContractResult(explicit=True, entries=[] if error else entries, error=error, invalid_reason=invalid_reason)
+
+
+_EXPLICIT_TEST_DELIVERABLE_PATTERNS = (
+    re.compile(r"\b(?:negative-control|negative control)\b", re.IGNORECASE),
+    re.compile(r"\b(?:regression deliverable|test deliverable)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:include|add|provide|write|deliver|implement)\b[^.;]*?\b(?:regression test|unit test|integration test|e2e test|end-to-end test|test suite|negative-control)\b",
+        re.IGNORECASE,
+    ),
+)
+_DOCUMENTATION_ONLY_COVERAGE_PATTERN = re.compile(
+    r"^(?:(?:update|modify|document|edit)\s+docs[/\w\.\-]*|docs[/\w\.\-]*).*\b(?:describe|document)\b.*\b(?:coverage|tests?)\b",
+    re.IGNORECASE,
+)
+
+
+def is_explicit_test_deliverable(requirement_text: str) -> bool:
+    """Return whether a requirement text explicitly mandates a test deliverable.
+
+    Distinguishes explicit test deliverables (e.g. requiring negative-control
+    regressions or committed test suites) from runtime behavior requirements
+    or documentation updates describing coverage.
+    """
+    normalized = requirement_text.strip()
+    if not normalized:
+        return False
+    if _DOCUMENTATION_ONLY_COVERAGE_PATTERN.search(normalized) and not any(phrase in normalized.lower() for phrase in ("include a regression", "add a regression", "negative-control regression")):
+        return False
+    return any(pattern.search(normalized) for pattern in _EXPLICIT_TEST_DELIVERABLE_PATTERNS)

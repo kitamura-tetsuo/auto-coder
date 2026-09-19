@@ -305,6 +305,57 @@ class PendingWorkStore:
             logger.error("Could not manually retry GitHub pending obligation {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be updated") from exc
 
+    def schedule_reevaluation(
+        self,
+        identity: WorkIdentity,
+        effects: tuple[str, ...] = (),
+        now: float | None = None,
+    ) -> PendingObligation:
+        """Schedule a durable normal re-evaluation obligation (e.g. following an operator grant).
+
+        Ensures the obligation is in WAITING status with not_before <= current_time,
+        making it immediately due for dispatch without requiring a new commit or --force.
+        """
+        current_time = time.time() if now is None else now
+        try:
+            with _LOCK, self._connect() as connection:
+                row = connection.execute(
+                    "SELECT unfinished_effects FROM github_pending_work WHERE work_key=?",
+                    (identity.key(),),
+                ).fetchone()
+                prior_effects = tuple(json.loads(row[0])) if row else ()
+                all_effects = tuple(dict.fromkeys((*prior_effects, *effects)))
+                obligation = PendingObligation(
+                    identity=identity,
+                    reason=PendingReason.ADMISSION_DEFERRED,
+                    not_before=current_time,
+                    unfinished_effects=all_effects,
+                    throttle_attempts=0,
+                    last_error="",
+                    status=ObligationStatus.WAITING.value,
+                )
+                connection.execute(
+                    "INSERT OR REPLACE INTO github_pending_work VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        identity.key(),
+                        identity.repository,
+                        identity.entity,
+                        identity.stage,
+                        identity.revision,
+                        obligation.reason.value,
+                        obligation.not_before,
+                        json.dumps(obligation.unfinished_effects),
+                        0,
+                        "",
+                        current_time,
+                        obligation.status,
+                    ),
+                )
+                return obligation
+        except Exception as exc:
+            logger.error("Could not schedule GitHub reevaluation obligation {}: {}", identity.key(), exc)
+            raise PendingWorkPersistenceError("GitHub pending work could not be persisted") from exc
+
     def complete_effect(self, identity: WorkIdentity, effect: str) -> bool:
         """Confirm one durable effect without completing its independent siblings."""
         try:

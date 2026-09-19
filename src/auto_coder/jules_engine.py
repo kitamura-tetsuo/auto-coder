@@ -92,7 +92,42 @@ def mark_session_stopped(session_id: str) -> None:
     _save_state(state)
 
 
-def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> None:
+def _admit_outbound_jules_send(
+    session_id: str,
+    issue_number: Optional[int],
+    implementation_slots: Optional["ImplementationSlotRepository"],
+) -> bool:
+    """Guard + durably admit one outbound Jules mutation (Issue #2147, REQ-007/REQ-009).
+
+    Must be called immediately before sending any outbound Jules mutation
+    (resume, feedback, plan approval, replacement session, or publication
+    request) that targets an ordinary Issue-owned implementation slot.
+
+    Returns True when the caller may proceed with the outbound mutation.
+    Returns False when the caller MUST NOT send it, either because:
+    - retirement has already been durably committed for this session
+      (``guard_retired_session_reuse``), or
+    - the durable admission itself failed because the owner's slot has
+      already been retired concurrently (``register_outbound_jules_activity``
+      returning False), or
+    - the admission write itself failed (raised), which must also block the
+      send rather than be silently treated as permission to proceed.
+
+    When ``implementation_slots`` is None (e.g. no repository context is
+    available) or *issue_number* cannot be resolved to an ordinary Issue
+    owner, this is a no-op that returns True — non-Jules-retirement-tracked
+    callers and code paths untouched by Issue #2147 must behave exactly as
+    before.
+    """
+    from .implementation_retirement_observer import admit_or_block_outbound_jules_send
+
+    return admit_or_block_outbound_jules_send(session_id, issue_number, implementation_slots)
+
+
+def check_and_resume_or_archive_sessions(
+    repo_name: Optional[str] = None,
+    implementation_slots: Optional["ImplementationSlotRepository"] = None,
+) -> None:
     """Check for Jules sessions to resume or archive.
 
     - If state is FAILED: Resume with "ok" (only if automationMode is AUTO_CREATE_PR).
@@ -104,6 +139,9 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
     - If state is COMPLETED and has "outputs"/"pullRequest":
         - Check if PR is closed or merged.
         - If so, archive the session.
+
+    implementation_slots: When provided, retired sessions are skipped before any
+        resume or continuation attempt (REQ-009).
     """
     try:
         jules_client = JulesClient()
@@ -160,6 +198,19 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                     logger.debug(f"Skipping session {session_id} as it was stopped after failing to create a PR in time.")
                     continue
 
+                # REQ-009: Do not automatically resume or continue a session that belongs to a
+                # durably retired implementation slot. Retired sessions must not be revived by
+                # stale maintenance or rediscovery scans.
+                if implementation_slots is not None:
+                    try:
+                        from .implementation_retirement_observer import guard_retired_session_reuse
+
+                        if guard_retired_session_reuse(session_id, implementation_slots):
+                            logger.info(f"Skipping Jules session {session_id}: belongs to a durably retired " "implementation slot (REQ-009)")
+                            continue
+                    except Exception as guard_exc:
+                        logger.warning(f"Could not check retirement guard for session {session_id}: {guard_exc}")
+
                 # Check if session is expired
                 update_time_str = session.get("updateTime")
                 if update_time_str:
@@ -191,6 +242,7 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
 
                 # Check if the associated issue or PR is closed or merged
                 is_target_closed = False
+                target_num: Optional[int] = None
                 if github_client and repo_name:
                     try:
                         from .cloud_manager import CloudManager
@@ -252,13 +304,46 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                         session_details = jules_client.get_session(session_id)
                         session_prompt = session_details.get("prompt")
                         if session_prompt:
+                            from .managed_prompts import ManagedPromptRecoveryError, get_managed_prompt, recover_original_task
+
+                            effective_repo = repo_name or "unknown"
+                            # The saved session prompt may carry a managed
+                            # instruction component (cloud_provider_instructions);
+                            # recover the exact original task so the
+                            # replacement session is rebuilt with exactly one
+                            # current component rather than accumulating one
+                            # or resending an opaque decorated payload
+                            # (Issue #2091, REQ-004).
+                            try:
+                                original_task = recover_original_task(session_prompt, effective_repo, session_id)
+                            except ManagedPromptRecoveryError as recovery_error:
+                                logger.error(f"Refusing to restart session {session_id}: {recovery_error}")
+                                raise
+
+                            managed_record = get_managed_prompt(effective_repo, session_id)
+                            recovered_no_edit = managed_record.no_edit if managed_record is not None else False
+
                             source_ctx = session_details.get("sourceContext", {})
                             base_branch = source_ctx.get("githubRepoContext", {}).get("startingBranch", "main")
                             if target_num:
                                 title = session_details.get("title", f"Restarted session for issue/PR #{target_num}")
                             else:
                                 title = session_details.get("title", f"Restarted session from {session_id}")
-                            new_session_id = jules_client.start_session(prompt=session_prompt, repo_name=repo_name or "unknown", base_branch=base_branch, title=title)
+
+                            # REQ-007/REQ-009: a replacement session is new
+                            # implementation-mutating provider responsibility;
+                            # do not create it for an owner whose slot has
+                            # already been durably retired, and durably admit
+                            # the old session id before starting the replacement
+                            # so a concurrent retirement observation is staled.
+                            if not _admit_outbound_jules_send(session_id, target_num, implementation_slots):
+                                logger.info(f"Skipping replacement session for retired Jules session {session_id} (REQ-007/REQ-009)")
+                                retry_state[session_id] = -1
+                                state_changed = True
+                                state = "FAILED"
+                                continue
+
+                            new_session_id = jules_client.start_session(prompt=original_task, repo_name=effective_repo, base_branch=base_branch, is_noedit=recovered_no_edit, title=title)
                             logger.info(f"Started new session {new_session_id}")
                             if target_num:
                                 if error_cloud_manager:
@@ -307,6 +392,9 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
 
                 # Case 1: Failed session or Timeout -> Resume (only if automationMode is AUTO_CREATE_PR)
                 if (state == "FAILED" or is_timeout) and automation_mode == "AUTO_CREATE_PR" and not is_target_closed:
+                    if not _admit_outbound_jules_send(session_id, target_num, implementation_slots):
+                        logger.info(f"Skipping resume of Jules session {session_id}: retirement guard blocked the outbound mutation (REQ-007/REQ-009)")
+                        continue
                     logger.info(f"Resuming failed/timed-out Jules session: {session_id}")
                     try:
                         jules_client.send_message(session_id, "ok")
@@ -325,6 +413,9 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
 
                 # Case 4: Awaiting Plan Approval -> Approve Plan
                 elif state == "AWAITING_PLAN_APPROVAL" and not is_target_closed:
+                    if not _admit_outbound_jules_send(session_id, target_num, implementation_slots):
+                        logger.info(f"Skipping plan approval for Jules session {session_id}: retirement guard blocked the outbound mutation (REQ-007/REQ-009)")
+                        continue
                     logger.info(f"Approving plan for Jules session: {session_id}")
                     try:
                         if jules_client.approve_plan(session_id):
@@ -345,6 +436,9 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                     and automation_mode == "AUTO_CREATE_PR"
                     and not is_target_closed
                 ):
+                    if not _admit_outbound_jules_send(session_id, target_num, implementation_slots):
+                        logger.info(f"Skipping continuation of Jules session {session_id}: retirement guard blocked the outbound mutation (REQ-007/REQ-009)")
+                        continue
                     retry_count = retry_state.get(session_id, 0)
 
                     if retry_count < 5:
@@ -613,7 +707,23 @@ def check_and_start_recurrent_jules_tasks(
                 if not session_prompt:
                     continue
 
-                session_metadata, _ = _parse_prompt_file_content(session_prompt)
+                # Composition (cloud_provider_instructions) only ever appends
+                # after the complete original task, so frontmatter anchored
+                # at position 0 survives decoration and this matches
+                # correctly straight off the saved/decorated prompt. A
+                # best-effort recovery is still attempted so a future
+                # composition change couldn't silently break identity
+                # matching; a missing/corrupt managed record must never turn
+                # into "no matching session" (Issue #2091, REQ-005), so any
+                # recovery failure just falls back to the raw session prompt.
+                from .managed_prompts import ManagedPromptRecoveryError, recover_original_task
+
+                try:
+                    matched_prompt = recover_original_task(session_prompt, repo_name, session_id)
+                except ManagedPromptRecoveryError:
+                    matched_prompt = session_prompt
+
+                session_metadata, _ = _parse_prompt_file_content(matched_prompt)
                 session_names_val = session_metadata.get("name", [])
                 if isinstance(session_names_val, str):
                     session_names = [session_names_val.strip()]
@@ -794,7 +904,19 @@ def check_and_restart_recurrent_jules_task_for_pr(repo_name: str, pr_number: int
             logger.info(f"No startup prompt found in session {session_id}")
             return
 
-        session_metadata, _ = _parse_prompt_file_content(session_prompt)
+        # See the matching comment in check_and_start_recurrent_jules_tasks:
+        # frontmatter survives decoration, so matching off the raw saved
+        # prompt is already correct; best-effort recovery is attempted but
+        # never allowed to turn a missing/corrupt managed record into "no
+        # match" (Issue #2091, REQ-005).
+        from .managed_prompts import ManagedPromptRecoveryError, recover_original_task
+
+        try:
+            matched_prompt = recover_original_task(session_prompt, repo_name, session_id)
+        except ManagedPromptRecoveryError:
+            matched_prompt = session_prompt
+
+        session_metadata, _ = _parse_prompt_file_content(matched_prompt)
         session_names_val = session_metadata.get("name", [])
         if isinstance(session_names_val, str):
             session_names = [session_names_val.strip()]

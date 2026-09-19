@@ -108,13 +108,36 @@ class ControlledProviderServer:
 
 
 def _ensure_image_built() -> str:
-    """Ensure auto-coder:opencode exists, building it if needed."""
-    check = subprocess.run(["docker", "image", "inspect", _IMAGE_TAG], capture_output=True, text=True)
+    """Ensure the current-checkout image exists, or use the dedicated prepared image."""
+    env_image = os.environ.get("AUTOCODER_OPENCODE_IMAGE") or os.environ.get("AUTO_CODER_OPENCODE_IMAGE")
+    if env_image:
+        check = subprocess.run(["docker", "image", "inspect", env_image], capture_output=True, text=True)
+        if check.returncode != 0:
+            raise RuntimeError(f"Specified OpenCode image '{env_image}' does not exist or Docker is unavailable: {check.stderr}")
+        return env_image
+
+    if os.environ.get("AUTO_CODER_REQUIRE_OPENCODE_LIVE") == "1":
+        raise RuntimeError("Dedicated OpenCode live CI requires an explicitly prepared image via AUTOCODER_OPENCODE_IMAGE")
+
+    # Local fallback: resolve current commit revision to avoid stale tags
+    try:
+        commit_res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+        commit = commit_res.stdout.strip()
+        local_tag = f"auto-coder:opencode-{commit[:12]}"
+    except Exception:
+        commit = "unknown"
+        local_tag = _IMAGE_TAG
+
+    check = subprocess.run(["docker", "image", "inspect", local_tag], capture_output=True, text=True)
     if check.returncode != 0:
-        build = subprocess.run(["docker", "build", "-t", _IMAGE_TAG, "."], capture_output=True, text=True)
+        build = subprocess.run(
+            ["docker", "build", "--build-arg", f"AUTO_CODER_SOURCE_REVISION={commit}", "-t", local_tag, "."],
+            capture_output=True,
+            text=True,
+        )
         if build.returncode != 0:
-            raise RuntimeError(f"Failed to build {_IMAGE_TAG}: {build.stderr}")
-    return _IMAGE_TAG
+            raise RuntimeError(f"Failed to build {local_tag}: {build.stderr}")
+    return local_tag
 
 
 def _container_network_args() -> List[str]:
@@ -251,6 +274,7 @@ def test_documentation_describes_opencode_container_runtime() -> None:
 # -----------------------------------------------------------------------------
 
 
+@pytest.mark.opencode_live
 def test_ac001_container_executes_opencode_task_against_controlled_provider() -> None:
     """AC-001: Build image, verify pinned CLI, and execute production path against controlled provider."""
     image = _ensure_image_built()
@@ -344,6 +368,7 @@ print("NORMALIZED_ANSWER:" + answer)
         provider.stop()
 
 
+@pytest.mark.opencode_live
 def test_ac002_effective_home_and_runtime_authentication() -> None:
     """AC-002: Run with HOME=/runtime/home and test runtime auth via auth store, env vars, and missing auth."""
     image = _ensure_image_built()
@@ -551,6 +576,7 @@ client._run_llm_cli("Task missing auth")
     assert "OpenCode CLI" in combined_err or "error" in combined_err.lower()
 
 
+@pytest.mark.opencode_live
 def test_ac003_retained_and_isolated_native_state_between_channels() -> None:
     """AC-003: Verify release mount retains native session data across container recreations, beta mount is isolated, and subsequent tasks remain fresh."""
     image = _ensure_image_built()
@@ -723,6 +749,7 @@ print("SESSION_ID_2:" + (client.get_last_session_id() or ""))
         subprocess.run(["docker", "volume", "rm", "-f", vol_beta], capture_output=True)
 
 
+@pytest.mark.opencode_live
 def test_ac004_no_baked_credentials_or_unsolicited_provider_calls() -> None:
     """AC-004: Inspect image history for credential leakage, and verify non-OpenCode startup contacts zero endpoints."""
     image = _ensure_image_built()
@@ -784,6 +811,7 @@ print("DEFAULT_BACKEND:" + config.default_backend)
         provider.stop()
 
 
+@pytest.mark.opencode_live
 def test_ac005_documentation_matches_production_compose_and_route() -> None:
     """AC-005: Follow documented setup with a substituted provider/model, verifying Compose mounts and production path."""
     image = _ensure_image_built()

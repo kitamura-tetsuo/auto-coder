@@ -84,10 +84,25 @@ class ImplementationOwnerSnapshot:
     provider_sessions: tuple[str, ...]
     admission_pending: Optional[bool]
     admission_established: Optional[bool]
+    incarnation: Optional[str] = None
+    activity_revision: Optional[int] = None
 
     @property
     def owner(self) -> ImplementationOwner:
         return ImplementationOwner(self.kind, self.number)
+
+
+@dataclass(frozen=True)
+class ImplementationRetiredSnapshot:
+    """Detached projection of one retired implementation reservation."""
+
+    repository: str
+    owner: ImplementationOwner
+    incarnation: str
+    implementation_prs: tuple[int, ...]
+    provider_sessions: tuple[str, ...]
+    generation: Optional[str]
+    retired_at: float
 
 
 @dataclass(frozen=True)
@@ -122,7 +137,13 @@ class ImplementationSlotRepository:
 
     _SHARED_FILE_MODE = 0o660
 
-    def __init__(self, repo_name: str, max_implementations: int, storage_path: Optional[Path] = None):
+    def __init__(
+        self,
+        repo_name: str,
+        max_implementations: int,
+        storage_path: Optional[Path] = None,
+        retired_storage_path: Optional[Path] = None,
+    ):
         if isinstance(max_implementations, bool) or max_implementations < 1:
             raise ValueError("max_concurrent_implementations must be a positive integer")
         self.repo_name = repo_name
@@ -130,11 +151,13 @@ class ImplementationSlotRepository:
         runtime_root = os.environ.get("AUTO_CODER_RUNTIME_ROOT")
         default_root = Path(runtime_root) / "state" if runtime_root else Path.home() / ".auto-coder"
         self.storage_path = storage_path or default_root / repo_name / "implementation_slots.json"
+        self.retired_storage_path = retired_storage_path or self.storage_path.parent / f"{self.storage_path.stem}_retired.json"
         self.lock_path = lock_path(repo_name, self.storage_path, "implementation-store")
         self._thread_lock = threading.RLock()
         self._owner_locks: Dict[str, threading.RLock] = {}
         self._serialization_depth = threading.local()
         self._execution_context = threading.local()
+        self._state_lock_depth = threading.local()
 
     def resolve_owner(self, candidate_type: str, data: Dict[str, Any], github_client: Any) -> ImplementationOwner:
         number = data.get("number")
@@ -266,6 +289,15 @@ class ImplementationSlotRepository:
 
     @contextmanager
     def _state_lock(self) -> Iterator[None]:
+        depth = getattr(self._state_lock_depth, "depth", 0)
+        if depth > 0:
+            self._state_lock_depth.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._state_lock_depth.depth -= 1
+            return
+
         try:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -285,10 +317,12 @@ class ImplementationSlotRepository:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 except OSError as exc:
                     self._raise_permission_error(self.lock_path, exc)
+                self._state_lock_depth.depth = 1
                 try:
                     yield
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    self._state_lock_depth.depth = 0
 
     def _open_lock_file(self, lock_path: Path) -> int:
         """Open the lock, atomically publishing fully prepared metadata if new."""
@@ -402,6 +436,12 @@ class ImplementationSlotRepository:
             prs = ImplementationSlotRepository._positive_integer_list(record, "implementation_prs", field)
             sessions = ImplementationSlotRepository._string_list(record, "provider_sessions", field)
             executions = ImplementationSlotRepository._execution_snapshots(record, field)
+            incarnation = record.get("incarnation")
+            if incarnation is not None and (not isinstance(incarnation, str) or not incarnation):
+                raise ImplementationSlotUnavailable(f"invalid {field}.incarnation: expected non-empty string")
+            activity_revision = record.get("activity_revision")
+            if activity_revision is not None and (isinstance(activity_revision, bool) or not isinstance(activity_revision, int) or activity_revision < 0):
+                raise ImplementationSlotUnavailable(f"invalid {field}.activity_revision: expected non-negative integer")
             if emergency:
                 emergency_usage += 1
                 if emergency_usage > 1:
@@ -417,6 +457,8 @@ class ImplementationSlotRepository:
                     sessions,
                     pending,
                     established,
+                    incarnation=incarnation,
+                    activity_revision=activity_revision,
                 )
             )
         projected.sort(key=lambda value: (value.kind, value.number))
@@ -522,6 +564,12 @@ class ImplementationSlotRepository:
                 normal += 1
         return normal, emergency_in_use
 
+    @staticmethod
+    def _increment_activity_revision(record: Dict[str, object]) -> None:
+        rev = record.get("activity_revision", 0)
+        current = rev if isinstance(rev, int) and not isinstance(rev, bool) else 0
+        record["activity_revision"] = current + 1
+
     def reserve(self, owner: ImplementationOwner, implementation_pr: Optional[int] = None) -> bool:
         """Reserve *owner* and durably record a PR known to belong to it."""
         if implementation_pr is not None and (owner.kind == "pr" or isinstance(implementation_pr, bool) or not isinstance(implementation_pr, int)):
@@ -536,6 +584,9 @@ class ImplementationSlotRepository:
                         raise ImplementationSlotUnavailable("Cannot safely parse implementation slot PR membership")
                     if implementation_pr not in known_prs:
                         known_prs.append(implementation_pr)
+                        if "incarnation" not in record or not record["incarnation"]:
+                            record["incarnation"] = uuid.uuid4().hex
+                        self._increment_activity_revision(record)
                         self._write(owners)
                 return True
             normal_usage, _ = self._capacity_usage(owners)
@@ -544,6 +595,8 @@ class ImplementationSlotRepository:
             owners[owner.key] = {
                 "kind": owner.kind,
                 "number": owner.number,
+                "incarnation": uuid.uuid4().hex,
+                "activity_revision": 1,
                 "implementation_prs": [implementation_pr] if implementation_pr is not None else [],
                 "provider_sessions": [],
             }
@@ -560,6 +613,8 @@ class ImplementationSlotRepository:
             owners[owner.key] = {
                 "kind": owner.kind,
                 "number": owner.number,
+                "incarnation": uuid.uuid4().hex,
+                "activity_revision": 1,
                 "implementation_prs": [],
                 "provider_sessions": [],
             }
@@ -650,6 +705,8 @@ class ImplementationSlotRepository:
                 record = {
                     "kind": owner.kind,
                     "number": owner.number,
+                    "incarnation": uuid.uuid4().hex,
+                    "activity_revision": 0,
                     "implementation_prs": [],
                     "provider_sessions": [],
                     "executions": [],
@@ -688,6 +745,9 @@ class ImplementationSlotRepository:
             if process_identity is not None:
                 execution.update({"boot_id": process_identity.boot_id, "process_start_ticks": process_identity.start_ticks})
             executions.append(execution)
+            if "incarnation" not in record or not record["incarnation"]:
+                record["incarnation"] = uuid.uuid4().hex
+            self._increment_activity_revision(record)
             if generation is not None:
                 record["implementation_generation"] = generation
             self._write(owners)
@@ -837,7 +897,9 @@ class ImplementationSlotRepository:
                     logger.info(f"Reclaimed stale implementation execution {execution['id']} for {owner_key}")
                 else:
                     remaining.append(execution)
-            record["executions"] = remaining
+            if len(remaining) != len(executions):
+                record["executions"] = remaining
+                self._increment_activity_revision(record)
         return tuple(removed)
 
     def reclaim_stale_executions(self) -> tuple[str, ...]:
@@ -862,6 +924,7 @@ class ImplementationSlotRepository:
             remaining = [value for value in executions if value["id"] != execution_id]
             if len(remaining) != len(executions):
                 record["executions"] = remaining
+                self._increment_activity_revision(record)
                 if record.get("admission_pending", False):
                     record["admission_established"] = True
                 self._write(owners)
@@ -938,6 +1001,9 @@ class ImplementationSlotRepository:
                 record["admission_established"] = True
                 changed = True
             if changed:
+                if "incarnation" not in record or not record["incarnation"]:
+                    record["incarnation"] = uuid.uuid4().hex
+                self._increment_activity_revision(record)
                 self._write(owners)
             return True
 
@@ -961,8 +1027,66 @@ class ImplementationSlotRepository:
                 record["admission_established"] = True
                 changed = True
             if changed:
+                if "incarnation" not in record or not record["incarnation"]:
+                    record["incarnation"] = uuid.uuid4().hex
+                self._increment_activity_revision(record)
                 self._write(owners)
         return True
+
+    def admit_outbound_provider_activity(self, owner: ImplementationOwner, session_id: str) -> bool:
+        """Durably admit new implementation-mutating provider responsibility (Issue #2147, REQ-007).
+
+        Unlike ``record_provider_session`` — which is membership-idempotent and
+        does not advance ``activity_revision`` when *session_id* is already
+        known — this operation unconditionally advances the activity revision
+        for *owner*'s current incarnation, even when the session ID is
+        unchanged (same-session continuation). Callers must invoke this
+        *before* sending any outbound Jules mutation (resume, feedback, plan
+        approval, replacement session, or publication request) so that:
+
+        - the admission is persisted before the outbound call starts;
+        - any retirement observation collected before this call becomes
+          stale (``retire_implementation_slot`` will detect the activity
+          revision mismatch and return ``STALE_OBSERVATION`` rather than
+          releasing the slot);
+        - if the owner's incarnation has already retired (absent from the
+          active store), this returns False and callers must not send the
+          outbound mutation.
+
+        Session membership (``provider_sessions``) is still recorded here so
+        that ``record_provider_session``'s idempotent membership meaning is
+        preserved and not overloaded with this new revision-advancing
+        semantic; this method simply also unconditionally increments the
+        revision on top of that membership bookkeeping.
+        """
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                # Owner incarnation already retired (or never reserved) — the
+                # outbound mutation must not be sent (REQ-009).
+                return False
+            provider_sessions = record.setdefault("provider_sessions", [])
+            if not isinstance(provider_sessions, list):
+                raise ImplementationSlotUnavailable("Cannot safely parse provider session membership")
+            if session_id not in provider_sessions:
+                provider_sessions.append(session_id)
+            if record.get("admission_pending", False) and not record.get("admission_established", False):
+                record["admission_established"] = True
+            if "incarnation" not in record or not record["incarnation"]:
+                record["incarnation"] = uuid.uuid4().hex
+            # Unconditional revision advance — this is the defining difference
+            # from record_provider_session's idempotent membership semantics.
+            self._increment_activity_revision(record)
+            try:
+                self._write(owners)
+            except Exception:
+                # Failure to persist admission must prevent the outbound
+                # mutation (REQ-007): surface the failure to the caller.
+                raise
+            return True
 
     def has_provider_sessions(self, owner: ImplementationOwner) -> bool:
         """Return whether logical ownership includes asynchronous provider work."""
@@ -991,6 +1115,7 @@ class ImplementationSlotRepository:
                 return False
             remaining = [value for value in sessions if value != session_id]
             record["provider_sessions"] = remaining
+            self._increment_activity_revision(record)
             if not remaining and not executions and not implementation_prs:
                 owners.pop(owner.key)
             self._write(owners)
@@ -1056,6 +1181,7 @@ class ImplementationSlotRepository:
             if record is None:
                 return False
             record["validation_identity"] = identity
+            self._increment_activity_revision(record)
             if record.get("admission_pending", False):
                 record["admission_established"] = True
             self._write(owners)
@@ -1215,3 +1341,155 @@ class ImplementationSlotRepository:
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
                     depths.pop(owner.key, None)
+
+    def establish_incarnation(self, owner: ImplementationOwner) -> str:
+        """Ensure *owner* has a durable reservation incarnation and activity revision."""
+        with self._state_lock():
+            owners = self._read()
+            record = owners.get(owner.key)
+            if record is None:
+                raise ImplementationSlotUnavailable(f"Cannot establish incarnation for unreserved owner {owner.key}")
+            changed = False
+            incarnation = record.get("incarnation")
+            if not isinstance(incarnation, str) or not incarnation:
+                incarnation = uuid.uuid4().hex
+                record["incarnation"] = incarnation
+                changed = True
+            if "activity_revision" not in record or not isinstance(record["activity_revision"], int):
+                record["activity_revision"] = 1
+                changed = True
+            if changed:
+                self._write(owners)
+            return incarnation
+
+    def owner_incarnation(self, owner: ImplementationOwner) -> Optional[str]:
+        """Return the current reservation incarnation for *owner*."""
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return None
+        incarnation = record.get("incarnation")
+        if incarnation is not None and not isinstance(incarnation, str):
+            raise ImplementationSlotUnavailable("Cannot safely parse implementation reservation incarnation")
+        return incarnation
+
+    def owner_activity_revision(self, owner: ImplementationOwner) -> Optional[int]:
+        """Return the current activity revision counter for *owner*."""
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return None
+        revision = record.get("activity_revision")
+        if revision is not None and (isinstance(revision, bool) or not isinstance(revision, int)):
+            raise ImplementationSlotUnavailable("Cannot safely parse implementation activity revision")
+        return revision
+
+    def _read_retired(self) -> Dict[str, Dict[str, object]]:
+        try:
+            os.stat(self.retired_storage_path)
+        except FileNotFoundError:
+            return {}
+        except OSError as exc:
+            self._raise_permission_error(self.retired_storage_path, exc)
+        try:
+            with io.open(self.retired_storage_path, "r", encoding="utf-8") as state_file:
+                value = json.load(state_file)
+            if not isinstance(value, dict):
+                raise ValueError("retired slot state root must be an object")
+            return value
+        except (json.JSONDecodeError, UnicodeError, ValueError) as exc:
+            raise ImplementationSlotUnavailable(f"Cannot safely parse retired slot state at '{self.retired_storage_path}': {exc}") from exc
+        except OSError as exc:
+            self._raise_permission_error(self.retired_storage_path, exc)
+
+    def _write_retired(self, retired_records: Dict[str, Dict[str, object]]) -> None:
+        temporary = self.retired_storage_path.with_suffix(".tmp")
+        try:
+            self.retired_storage_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, self._SHARED_FILE_MODE)
+            with os.fdopen(fd, "w", encoding="utf-8") as state_file:
+                self._establish_shared_permissions(state_file.fileno(), temporary)
+                json.dump(retired_records, state_file, indent=2, sort_keys=True)
+                state_file.flush()
+                os.fsync(state_file.fileno())
+            os.replace(temporary, self.retired_storage_path)
+        except OSError as exc:
+            self._raise_permission_error(temporary if temporary.exists() else self.retired_storage_path, exc)
+
+    def retired_records(self) -> tuple[ImplementationRetiredSnapshot, ...]:
+        """Return detached projections of all durably retired reservations."""
+        with self._state_lock():
+            data = self._read_retired()
+        results: list[ImplementationRetiredSnapshot] = []
+        for key, record in data.items():
+            if not isinstance(record, dict):
+                raise ImplementationSlotUnavailable("Cannot safely parse retired record")
+            kind = record.get("kind")
+            number = record.get("number")
+            incarnation = record.get("incarnation")
+            if not isinstance(kind, str) or kind not in {"issue", "pr"}:
+                raise ImplementationSlotUnavailable("invalid retired record kind")
+            if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                raise ImplementationSlotUnavailable("invalid retired record number")
+            if not isinstance(incarnation, str) or not incarnation:
+                raise ImplementationSlotUnavailable("invalid retired record incarnation")
+            prs = self._positive_integer_list(record, "implementation_prs", f"retired {key}")
+            sessions = self._string_list(record, "provider_sessions", f"retired {key}")
+            generation = record.get("generation")
+            if generation is not None and not isinstance(generation, str):
+                raise ImplementationSlotUnavailable("invalid retired record generation")
+            retired_at = record.get("retired_at", 0.0)
+            if isinstance(retired_at, bool) or not isinstance(retired_at, (int, float)):
+                raise ImplementationSlotUnavailable("invalid retired record retired_at")
+            results.append(
+                ImplementationRetiredSnapshot(
+                    repository=str(record.get("repository", self.repo_name)),
+                    owner=ImplementationOwner(kind, number),
+                    incarnation=incarnation,
+                    implementation_prs=prs,
+                    provider_sessions=sessions,
+                    generation=generation,
+                    retired_at=float(retired_at),
+                )
+            )
+        results.sort(key=lambda r: (r.owner.kind, r.owner.number, r.retired_at))
+        return tuple(results)
+
+    def is_incarnation_retired(self, incarnation: str) -> bool:
+        with self._state_lock():
+            return incarnation in self._read_retired()
+
+    def has_retired_pr(self, pr_number: int) -> bool:
+        for r in self.retired_records():
+            if pr_number in r.implementation_prs:
+                return True
+        return False
+
+    def has_retired_session(self, session_id: str) -> bool:
+        for r in self.retired_records():
+            if session_id in r.provider_sessions:
+                return True
+        return False
+
+    def has_retired_generation(self, generation: str) -> bool:
+        for r in self.retired_records():
+            if r.generation == generation:
+                return True
+        return False
+
+    def retired_associations(self, owner: ImplementationOwner) -> tuple[ImplementationRetiredSnapshot, ...]:
+        return tuple(r for r in self.retired_records() if r.owner == owner)
+
+    def has_retired_associations(self, owner: ImplementationOwner) -> bool:
+        return bool(self.retired_associations(owner))
+
+    def retire_owner(
+        self,
+        observation: Any,
+        routing: Optional[Any] = None,
+        *,
+        pre_lock_barrier: Optional[Any] = None,
+    ) -> Any:
+        from .implementation_retirement import retire_implementation_slot
+
+        return retire_implementation_slot(self, observation, routing, pre_lock_barrier=pre_lock_barrier)

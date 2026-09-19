@@ -62,6 +62,8 @@ def _find_or_install_opencode() -> Optional[str]:
 def opencode_cli() -> str:
     path = _find_or_install_opencode()
     if not path:
+        if os.environ.get("AUTO_CODER_REQUIRE_OPENCODE_LIVE") == "1":
+            raise RuntimeError("opencode CLI is required but not installed or usable in dedicated live CI")
         pytest.skip("opencode CLI is not installed and could not be installed (no npm/network available); skipping real-CLI no-edit regression coverage")
     return path
 

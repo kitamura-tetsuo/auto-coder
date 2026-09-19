@@ -60,23 +60,33 @@ _PR_CONTRACT_POLICY_PROMPTS = frozenset(
 
 
 def _prepend_contract_policy(key: str, template: str, prompts: Dict[str, Any]) -> str:
-    """Compose shared Objective policy into production Issue/PR prompts."""
+    """Compose shared Objective and contract policy into production Issue/PR prompts."""
     policies = prompts.get("policies")
     if not isinstance(policies, dict):
         return template
     fragments: List[str] = []
     if key in _ISSUE_POLICY_PROMPTS:
         authoring = policies.get("short_objective_authoring")
-        if isinstance(authoring, str):
+        if isinstance(authoring, str) and authoring.rstrip() not in template:
             fragments.append(authoring.rstrip())
     if key in _ISSUE_POLICY_PROMPTS or key in _PR_CONTRACT_POLICY_PROMPTS:
         boundary = policies.get("objective_requirements_boundary")
-        if isinstance(boundary, str):
+        if isinstance(boundary, str) and boundary.rstrip() not in template:
             fragments.append(boundary.rstrip())
     if key in _ISSUE_POLICY_PROMPTS or key in _PR_CONTRACT_POLICY_PROMPTS:
         parent_child_boundary = policies.get("parent_child_contract_boundary")
-        if isinstance(parent_child_boundary, str):
+        if isinstance(parent_child_boundary, str) and parent_child_boundary.rstrip() not in template:
             fragments.append(parent_child_boundary.rstrip())
+    if key in _ISSUE_POLICY_PROMPTS or key in _PR_CONTRACT_POLICY_PROMPTS:
+        validation_boundary = policies.get("pr_validation_contract_boundary")
+        if isinstance(validation_boundary, str) and validation_boundary.rstrip() not in template:
+            fragments.append(validation_boundary.rstrip())
+    if key in _ISSUE_POLICY_PROMPTS or key in _PR_CONTRACT_POLICY_PROMPTS:
+        bounded_boundary = policies.get("bounded_correction_contract")
+        if isinstance(bounded_boundary, str) and bounded_boundary.rstrip() not in template:
+            fragments.append(bounded_boundary.rstrip())
+    if not fragments:
+        return template
     return "\n\n".join([*fragments, template])
 
 
@@ -293,9 +303,11 @@ def _get_prompt_for_labels(
     return None
 
 
-def get_prompt_template(key: str, path: Optional[str] = None) -> str:
-    """Return the raw prompt template string for the given key.
+def get_prompt_template(key: str, path: Optional[str] = None, *, raw: bool = False) -> str:
+    """Return the prompt template string for the given key.
 
+    For contract-governed keys, prepends contract policies unless raw=True,
+    ensuring callers cannot bypass bounded contracts (AS-005).
     Referencing an undefined key has no meaning even if processing continues, so exit immediately with SystemExit as a fatal error.
     """
     prompts = load_prompts(path)
@@ -308,6 +320,8 @@ def get_prompt_template(key: str, path: Optional[str] = None) -> str:
         raise SystemExit(msg) from exc
     if not isinstance(template, str):
         raise ValueError(f"Prompt '{key}' must map to a string template")
+    if not raw:
+        template = _prepend_contract_policy(key, template, prompts)
     return template
 
 

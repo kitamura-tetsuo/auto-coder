@@ -10,12 +10,65 @@ see `src/auto_coder/issue_processor.py`) as the concept that should eventually
 select provider-specific initial guidance, without changing any current
 `render_prompt` behavior yet.
 
-This module is a composition boundary only. It performs no GitHub or cloud
-provider transport, and nothing in the codebase currently calls it from a
-production dispatch path — wiring actual startup/recovery call sites to it is
-a separate, later change. Until that wiring lands, the shipped configuration
-entries are empty, so composing through this module is a no-op for every
-provider.
+`cloud_provider_instructions.py` itself performs no GitHub or cloud provider
+transport; it is a pure composition boundary. See
+[`jules-autonomous-execution-checkpoint-recovery-guidance.md`](jules-autonomous-execution-checkpoint-recovery-guidance.md)
+for the shipped Jules initial-instruction text and its regression coverage
+(Issue #2092). It is wired into every supported provider's actual new-task
+submission boundary:
+`JulesClient.start_session`, `ClaudeRoutineClient.fire_routine`, and
+`CodexCloudClient.submit_task` each call `prepare_cloud_task` with their own
+canonical `recipient` immediately before building the outgoing HTTP
+payload/CLI argument, so their public wrappers (`start_task`, `_run_llm_cli`,
+Issue dispatch in `issue_processor.py`/`pr_processor.py`, and Jules recurrent
+task launch in `jules_engine.py`) all compose exactly once regardless of
+which wrapper was used to reach them. `send_followup` on each client passes
+`operation=CONTINUATION`, which is always ineligible, so existing-session
+follow-ups (PR review/CI/conflict repair, ordinary resume) never receive the
+initial component. Because eligibility and composition happen at the
+concrete adapter method rather than in a shared prompt template, the
+historical `is_jules=True` template flag that Claude Routine dispatch also
+sets (`issue_processor.py`, `pr_processor.py`) has no bearing on which
+component is chosen. The shipped Jules entry now carries real guidance text (Issue #2092), so
+composing through this module for a new Jules session decorates the outgoing
+prompt in practice. The Claude Routine and Codex Cloud entries remain empty
+by design (see the linked fragment above), so composing for either of them
+is still a no-op.
+
+## Recovering the original task (`managed_prompts.py`)
+
+`src/auto_coder/managed_prompts.py` is the durable side channel that makes a
+composed prompt's original task recoverable after the current process (and
+any in-memory state) is gone. Every successful composition at a client
+boundary calls `save_managed_prompt(repo_name, task_id, prepared)`, which
+records the full `PreparedCloudPrompt` (keyed by the provider's own
+task/session id) under `~/.auto-coder/<repo>/managed_prompts.json`.
+
+`recover_original_task(task_text, repo_name, task_id)` is the read side:
+
+- A durable record, when present and valid, is authoritative — it returns
+  that record's retained `original_task`, ignoring `task_text` itself.
+- Absent a record, a prompt containing no managed-instruction marker is a
+  genuine legacy/undecorated task and is returned unchanged.
+- Absent a record, a prompt that *does* contain the marker cannot be split
+  back into original task and managed component without guessing, so this
+  raises `ManagedPromptRecoveryError` instead of stripping guessed text or
+  resending the opaque payload as-is.
+
+`jules_engine.check_and_resume_or_archive_sessions`'s failed-session restart
+path is the one call site that resends a saved prompt as a new session: it
+calls `recover_original_task` (and reads the saved record's `no_edit`) before
+rebuilding, and lets `ManagedPromptRecoveryError` abort that specific restart
+rather than send an ambiguous payload. The remaining Jules recurrent-task
+call sites (`check_and_start_recurrent_jules_tasks`,
+`check_and_restart_recurrent_jules_task_for_pr`) only need to *match* a
+session's YAML frontmatter, not resend it — since composition always
+appends after the complete original task, frontmatter anchored at the start
+of the string survives decoration either way, so matching works directly off
+the raw saved prompt. Those two sites still attempt best-effort recovery and
+silently fall back to the raw prompt on `ManagedPromptRecoveryError`, so a
+missing or corrupted managed record can never be misread as "no matching
+session" and cause a duplicate launch.
 
 ## Configuration
 
