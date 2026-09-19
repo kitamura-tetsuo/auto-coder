@@ -2521,6 +2521,7 @@ class AutomationEngine:
         # (serviced from the capacity-refill loop) performs the actual fresh
         # observation before retiring anything.
         await asyncio.to_thread(recover_obligations_at_startup, slots)
+        await self._reconcile_open_github_entities(repo_name)
 
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
         """One attempt at recovery through the normal invalidation path.
