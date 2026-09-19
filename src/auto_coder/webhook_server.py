@@ -253,6 +253,11 @@ async def process_github_payload(
                 dependency_reevaluation = dependency_reevaluation or (action in _LABEL_CHANGE_ACTIONS and isinstance(changed_label, Mapping) and changed_label.get("name") == "implementation-ready")
             if event_type == "pull_request" and action == "closed":
                 engine.notify_pr_merged_or_closed()
+                # Issue #2148 REQ-001: a PR-closed webhook is an authoritative
+                # closure observation, not just a wake signal -- make the
+                # affected owner eligible for terminal-PR-backed reclamation.
+                if isinstance(entity, Mapping):
+                    await asyncio.to_thread(engine._schedule_pr_owner_reclamation, repo_name, dict(entity), "webhook-pr-closed")
 
     if event_type in _DEPENDENCY_EVENTS:
         dependency_reevaluation = True
