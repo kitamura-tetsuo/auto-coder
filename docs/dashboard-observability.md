@@ -934,6 +934,14 @@ own `maybe_run_auto_update`/`check_for_updates_and_restart` regression suite
 run_command` call it now makes. Run
 `bash scripts/test.sh tests/test_graceful_shutdown.py tests/test_invocation_admission_wiring.py tests/test_invocation_admission.py tests/test_update_manager.py tests/test_utils.py`
 for this boundary.
+Issue #2102 adds the production merge-authorization projection for that lifecycle.
+Its trace-facing diagnostics expose the selected phase/backend, audited and current
+heads, waiting reason, outstanding stable finding IDs, and the direct-strong-pass or
+bounded-ordinary-closure completion basis. These fields belong on the existing PR
+review/action detail surfaces; the feature does not add a Dashboard page. A pending
+strong audit, unconfirmed publication, open finding, active newer attempt, or stale
+head/base/contract/policy identity must be rendered as waiting or blocked, never as
+a successful review or merge authorization.
 
 # Crash-safe Jules candidate submission (inactive adapter)
 
