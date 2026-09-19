@@ -70,6 +70,11 @@ from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_
 from .logger_config import get_gh_logger, get_logger
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
+from .pr_repair_guard import (
+    PrRepairExhaustionInfo,
+    check_pr_repair_exhaustion,
+    publish_exhaustion_comment_deduped,
+)
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
@@ -750,6 +755,13 @@ def process_pull_request(
         )
 
         pr_number = pr_data["number"]
+
+        try:
+            from .durable_repair_allowance import reconcile_unfulfilled_grant_reevaluations
+
+            reconcile_unfulfilled_grant_reevaluations()
+        except Exception as exc:
+            logger.debug(f"Could not reconcile unfulfilled grant reevaluations: {exc}")
 
         # Resolve the execution origin before any diff, CI, merge, or checkout
         # behavior. ``work`` is Codex Cloud's shared/transient branch identity,
@@ -1494,6 +1506,12 @@ def _reject_unsafe_codex_cloud_pr(
         return result
 
     pr_number = int(pr_data["number"])
+    exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+    if exhaustion_info and exhaustion_info.is_exhausted:
+        result.actions.append(f"Skipping unsafe branch recovery for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+        publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+        return result
+
     issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
     client = github_client or GitHubClient.get_instance()
     client.close_pr(
@@ -1568,6 +1586,12 @@ def _close_empty_pr(
         if pr_data.get("state") == "closed":
             _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
             logger.debug(f"PR #{pr_number} is already closed, skipping empty PR check")
+            return result
+
+        exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+        if exhaustion_info and exhaustion_info.is_exhausted:
+            result.actions.append(f"Skipping empty PR recovery for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+            publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
             return result
 
         # The Codex Cloud branch-safety recovery owns these PRs, including
@@ -1719,6 +1743,12 @@ def _close_stale_jules_pr(
             logger.info(f"Jules PR #{pr_number} is older than {config.JULES_PR_CI_TIMEOUT_HOURS}h but CI is still running, keeping it open")
             return result
 
+        exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+        if exhaustion_info and exhaustion_info.is_exhausted:
+            result.actions.append(f"Skipping stale Jules recovery for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+            publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+            return result
+
         logger.info(f"Jules PR #{pr_number} did not pass CI within {config.JULES_PR_CI_TIMEOUT_HOURS} hours. Closing it.")
 
         # Resolve the issue(s) that this PR was created for
@@ -1809,6 +1839,18 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
     """
     actions = []
     state_text = merge_state_status or "unknown"
+
+    if repo_name:
+        exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+        if exhaustion_info and exhaustion_info.is_exhausted:
+            actions.append(f"Mergeability remediation stopped for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+            client = None
+            try:
+                client = GitHubClient.get_instance()
+            except Exception:
+                pass
+            publish_exhaustion_comment_deduped(client, repo_name, pr_number, exhaustion_info)
+            return actions
 
     try:
         log_action(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
@@ -2794,6 +2836,13 @@ def _handle_pr_merge(
             state_text = merge_state_status or "unknown"
             actions.append(f"PR #{pr_number} is not mergeable (state: {state_text})")
 
+            exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+            if exhaustion_info and exhaustion_info.is_exhausted:
+                actions.append(f"Mergeability remediation stopped for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+                publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+                _record_pr_stage(pr_number, "pr.mergeability-remediation", f"pr#{pr_number} mergeability remediation", Outcome.BLOCKED, {"merge_state_status": state_text, "reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids)})
+                return actions
+
             if config.ENABLE_MERGEABILITY_REMEDIATION:
                 remediation_actions = _start_mergeability_remediation(pr_number, merge_state_status, repo_name)
                 actions.extend(remediation_actions)
@@ -3002,23 +3051,29 @@ def _handle_pr_merge(
                     if pending_provenance:
                         actions.append(f"Awaiting implementer provenance clarification on {len(pending_provenance)} review thread(s); no code change was requested")
                     if repair_threads:
-                        repair_result = _delegate_cloud_review_thread_repair(
-                            repo_name,
-                            pr_data,
-                            github_client=github_client,
-                            unresolved_threads=repair_threads,
-                        )
-                        actions.extend(repair_result)
-                        if not repair_result.delivered and processing_status is not None and not force_admission_eligible:
-                            processing_status.error = repair_result[0] if repair_result else "Unresolved review repair was not delivered"
-                            processing_status.outcome = PRProcessingOutcome.FAILED
-                        _record_pr_stage(
-                            pr_number,
-                            "pr.repair-delegation",
-                            f"pr#{pr_number} repair delegation",
-                            Outcome.ACCEPTED_HANDOFF if repair_result.delivered else Outcome.FAILED,
-                            {"effect": "review-thread-repair", "thread_count": len(repair_threads)},
-                        )
+                        exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+                        if exhaustion_info and exhaustion_info.is_exhausted:
+                            actions.append(f"Review repair stopped for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+                            publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+                            _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.BLOCKED, {"effect": "review-thread-repair", "reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids)})
+                        else:
+                            repair_result = _delegate_cloud_review_thread_repair(
+                                repo_name,
+                                pr_data,
+                                github_client=github_client,
+                                unresolved_threads=repair_threads,
+                            )
+                            actions.extend(repair_result)
+                            if not repair_result.delivered and processing_status is not None and not force_admission_eligible:
+                                processing_status.error = repair_result[0] if repair_result else "Unresolved review repair was not delivered"
+                                processing_status.outcome = PRProcessingOutcome.FAILED
+                            _record_pr_stage(
+                                pr_number,
+                                "pr.repair-delegation",
+                                f"pr#{pr_number} repair delegation",
+                                Outcome.ACCEPTED_HANDOFF if repair_result.delivered else Outcome.FAILED,
+                                {"effect": "review-thread-repair", "thread_count": len(repair_threads)},
+                            )
                     if not force_admission_eligible:
                         return actions
                     # REQ-001/REQ-009: an explicit --force run still reaches a fresh
@@ -3118,6 +3173,15 @@ def _handle_pr_merge(
                             processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
                     if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not exhaustion_retry_due:
+                        exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+                        if exhaustion_info and exhaustion_info.is_exhausted:
+                            actions.append(f"Automatic merge disabled for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+                            publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+                            _record_pr_stage(
+                                pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.BLOCKED, {"reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids), "machine_readable_reason": exhaustion_info.machine_readable_reason}
+                            )
+                            return actions
+
                         actions.append(f"Skipped adversarial validation for PR #{pr_number}: reached maximum adversarial review limit ({max_adv_reviews})")
                         logger.info(f"PR #{pr_number} reached maximum adversarial review limit ({adv_review_count}/{max_adv_reviews}); proceeding to merge")
                         if saved_status == "PASS_WITH_SPECIFICATION_GAPS":
@@ -3287,15 +3351,21 @@ def _handle_pr_merge(
                                         processing_status.error = report_error
                                         processing_status.outcome = PRProcessingOutcome.FAILED
                                 elif published_report:
-                                    actions.extend(
-                                        _send_adversarial_validation_feedback_to_cloud_task(
-                                            repo_name,
-                                            pr_data,
-                                            head_sha,
-                                            published_report,
-                                            github_client,
+                                    exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+                                    if exhaustion_info and exhaustion_info.is_exhausted:
+                                        actions.append(f"Cached non-pass report replay stopped for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+                                        publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+                                        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.BLOCKED, {"effect": "adversarial-feedback-replay", "reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids)})
+                                    else:
+                                        actions.extend(
+                                            _send_adversarial_validation_feedback_to_cloud_task(
+                                                repo_name,
+                                                pr_data,
+                                                head_sha,
+                                                published_report,
+                                                github_client,
+                                            )
                                         )
-                                    )
                             return actions
                     else:
                         if force_adversarial_validation:
@@ -3691,6 +3761,13 @@ def _handle_pr_merge(
                     logger.warning(f"No github_client available to verify PR #{pr_number} head SHA; aborting merge.")
                     return actions
 
+                exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+                if exhaustion_info and exhaustion_info.is_exhausted:
+                    actions.append(f"Skipping merge for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+                    publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+                    _record_pr_stage(pr_number, "pr.merge-gate", f"pr#{pr_number} merge gate", Outcome.BLOCKED, {"reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids)})
+                    return actions
+
                 merge_transition = decision_attempt_repository.serialized_transition() if decision_attempt_repository is not None else contextlib.nullcontext()
                 with merge_transition:
                     if decision_attempt_repository is not None and decision_attempt_repository.latest_sequence(pr_number, head_sha) > decision_attempt_sequence:
@@ -3801,6 +3878,13 @@ def _handle_pr_merge(
         detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
         failed_checks = detailed_checks.failed_checks
         actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
+
+        exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+        if exhaustion_info and exhaustion_info.is_exhausted:
+            actions.append(f"Automatic repair stopped for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+            publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+            _record_pr_stage(pr_number, "pr.repair-exhaustion", f"pr#{pr_number} repair exhaustion", Outcome.BLOCKED, {"reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids), "machine_readable_reason": exhaustion_info.machine_readable_reason})
+            return actions
 
         # Codex Cloud owns corrective work for its PRs regardless of the local
         # checkout state. Resolve this execution origin before inspecting the
@@ -5164,6 +5248,11 @@ def _send_jules_error_feedback(
     actions = []
     pr_number = pr_data["number"]
 
+    exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+    if exhaustion_info and exhaustion_info.is_exhausted:
+        publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+        return [f"Skipped Jules error feedback for PR #{pr_number}: automatic repair allowance is exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}"]
+
     # Never send error feedback to Jules for PRs created by Codex or Claude
     if _is_codex_or_claude_pr(pr_data):
         logger.info(f"PR #{pr_number} is created by Codex/Claude, skipping Jules error feedback")
@@ -5693,6 +5782,11 @@ def _delegate_cloud_review_thread_repair(
     task, branch, or pull request is created by this path.
     """
     pr_number = int(pr_data["number"])
+    exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+    if exhaustion_info and exhaustion_info.is_exhausted:
+        publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: automatic repair allowance is exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}"])
+
     resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
     if resolution.origin is None:
         return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: {resolution.reason}"])
@@ -6298,6 +6392,15 @@ def _send_codex_cloud_error_feedback(
     actions = []
     pr_number = pr_data["number"]
 
+    exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+    if exhaustion_info and exhaustion_info.is_exhausted:
+        publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+        return CodexCloudFeedbackResult(
+            delivered=False,
+            retryable=False,
+            actions=(f"Codex Cloud continuation not delivered for PR #{pr_number}: automatic repair allowance is exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}",),
+        )
+
     try:
         task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
         if not task_id:
@@ -6368,6 +6471,11 @@ def _send_adversarial_validation_feedback_to_cloud_task(
 ) -> List[str]:
     """Send actionable findings only to the owning provider task."""
     pr_number = pr_data["number"]
+    exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+    if exhaustion_info and exhaustion_info.is_exhausted:
+        publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
+        return [f"Adversarial feedback was not delivered for PR #{pr_number}: automatic repair allowance is exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}"]
+
     if not new_work_allowed():
         return [f"Deferred adversarial correction feedback for PR #{pr_number}: graceful shutdown is draining"]
     feedback_marker = adversarial_validation_codex_feedback_marker(head_sha)
@@ -6691,6 +6799,12 @@ def _merge_pr(
         from auto_coder.util.gh_cache import get_ghapi_client
 
         client = github_client or GitHubClient.get_instance()
+        exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
+        if exhaustion_info and exhaustion_info.is_exhausted:
+            logger.warning(f"Merge aborted for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
+            publish_exhaustion_comment_deduped(client, repo_name, pr_number, exhaustion_info)
+            return False
+
         if _is_pr_review_thread_gate_enabled(config, repo_name):
             review_thread_state = _get_review_thread_gate_state(client, repo_name, pr_number, config=config)
             if review_thread_state.lookup_error:
