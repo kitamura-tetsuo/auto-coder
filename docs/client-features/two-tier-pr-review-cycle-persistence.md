@@ -54,7 +54,7 @@ store with `adversarial_validation_attempts.py` or
    B/M/P are unchanged from that round, an applicable ordinary PASS exists for
    H2, every outstanding finding has an evidence-backed `FIXED`/`INVALID`
    disposition, and the cumulative diff from the original strong-audit head
-   through H2 is certified `bounded=True` with reviewer-produced evidence. A
+   through H2 is certified `bounded=True` with reviewer-produced evidence. An
    omitted or wrong-head disposition is rejected without changing the finding
    set. The accepted closure remains non-authorizing until both the strong
    result and closure publication/bookkeeping are confirmed through
