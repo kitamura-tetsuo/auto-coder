@@ -789,17 +789,34 @@ def check_claude_usage(
             raw_util = data.get("utilization")
             if raw_util is None:
                 raw_util = data.get("percent")
-            return ClaudeUsageWindow(
-                utilization=float(raw_util) if raw_util is not None else None,
-                resets_at=data.get("resets_at"),
-            )
+            if raw_util is not None:
+                try:
+                    if isinstance(raw_util, bool):
+                        raise ValueError()
+                    util_float = float(raw_util)
+                    if util_float < 0 or util_float > 100:
+                        raise ValueError()
+                    return ClaudeUsageWindow(
+                        utilization=util_float,
+                        resets_at=data.get("resets_at"),
+                    )
+                except (ValueError, TypeError):
+                    raise ValueError("Malformed utilization value")
         return ClaudeUsageWindow()
 
-    five_hour_window = _parse_window(rate_limits_dict.get("five_hour"))
-    seven_day_window = _parse_window(rate_limits_dict.get("seven_day"))
-    seven_day_sonnet_window = _parse_window(rate_limits_dict.get("seven_day_sonnet"))
-    seven_day_opus_window = _parse_window(rate_limits_dict.get("seven_day_opus"))
-    seven_day_oauth_apps_window = _parse_window(rate_limits_dict.get("seven_day_oauth_apps"))
+    try:
+        five_hour_window = _parse_window(rate_limits_dict.get("five_hour"))
+        seven_day_window = _parse_window(rate_limits_dict.get("seven_day"))
+        seven_day_sonnet_window = _parse_window(rate_limits_dict.get("seven_day_sonnet"))
+        seven_day_opus_window = _parse_window(rate_limits_dict.get("seven_day_opus"))
+        seven_day_oauth_apps_window = _parse_window(rate_limits_dict.get("seven_day_oauth_apps"))
+    except ValueError as e:
+        quota = ClaudeUsageQuota(
+            is_quota_insufficient=True,
+            reason=f"Claude usage data could not be retrieved: {str(e)}",
+            cached_at=now,
+        )
+        return quota
 
     # Check 5-hour window: remaining <= threshold (e.g. remaining <= 20.0%)
     if five_hour_window.remaining_percent is not None:
@@ -838,22 +855,74 @@ def check_claude_usage(
             if isinstance(item, dict):
                 percent = item.get("percent")
                 if percent is not None:
-                    rem = max(0.0, 100.0 - float(percent))
-                    if rem <= seven_day_threshold_pct:
-                        scope = item.get("scope")
-                        scope_dict = scope if isinstance(scope, dict) else {}
-                        model = scope_dict.get("model")
-                        model_dict = model if isinstance(model, dict) else {}
-                        model_name = model_dict.get("display_name") or item.get("kind", "weekly")
-                        is_insufficient = True
-                        reasons.append(f"Weekly {model_name} limit remaining {rem:.1f}% " f"<= threshold {seven_day_threshold_pct:.1f}% (resets at {item.get('resets_at') or 'N/A'})")
+                    try:
+                        if isinstance(percent, bool):
+                            raise ValueError()
+                        percent_float = float(percent)
+                        if percent_float < 0 or percent_float > 100:
+                            raise ValueError()
+                        rem = max(0.0, 100.0 - percent_float)
+                        if rem <= seven_day_threshold_pct:
+                            scope = item.get("scope")
+                            scope_dict = scope if isinstance(scope, dict) else {}
+                            model = scope_dict.get("model")
+                            model_dict = model if isinstance(model, dict) else {}
+                            model_name = model_dict.get("display_name") or item.get("kind", "weekly")
+                            is_insufficient = True
+                            reasons.append(f"Weekly {model_name} limit remaining {rem:.1f}% " f"<= threshold {seven_day_threshold_pct:.1f}% (resets at {item.get('resets_at') or 'N/A'})")
+                    except (ValueError, TypeError):
+                        quota = ClaudeUsageQuota(
+                            is_quota_insufficient=True,
+                            reason="Claude usage data could not be retrieved: Malformed utilization value",
+                            cached_at=now,
+                        )
+                        return quota
 
     # Check extra_usage
     extra_usage_raw = raw_data.get("extra_usage") or (rate_limits.get("extra_usage") if isinstance(rate_limits, dict) else None)
+
+    if (
+        five_hour_window.utilization is None
+        and seven_day_window.utilization is None
+        and seven_day_sonnet_window.utilization is None
+        and seven_day_opus_window.utilization is None
+        and seven_day_oauth_apps_window.utilization is None
+        and not isinstance(limits_list, list)
+        and not isinstance(extra_usage_raw, dict)
+        and not raw_data.get("is_rate_limited")
+        and raw_data.get("http_status") != 429
+        and not isinstance(raw_data.get("error"), dict)
+    ):
+        quota = ClaudeUsageQuota(
+            is_quota_insufficient=True,
+            reason="Claude usage data could not be retrieved: no usable measurements",
+            cached_at=now,
+        )
+        return quota
+
     extra_usage = ClaudeExtraUsage()
     if isinstance(extra_usage_raw, dict):
         disabled_reason = extra_usage_raw.get("disabled_reason")
-        extra_utilization = float(extra_usage_raw["utilization"]) if extra_usage_raw.get("utilization") is not None else None
+
+        raw_util = extra_usage_raw.get("utilization")
+        if raw_util is not None:
+            try:
+                if isinstance(raw_util, bool):
+                    raise ValueError()
+                util_float = float(raw_util)
+                if util_float < 0 or util_float > 100:
+                    raise ValueError()
+                extra_utilization = util_float
+            except (ValueError, TypeError):
+                quota = ClaudeUsageQuota(
+                    is_quota_insufficient=True,
+                    reason="Claude usage data could not be retrieved: Malformed utilization value",
+                    cached_at=now,
+                )
+                return quota
+        else:
+            extra_utilization = None
+
         extra_usage = ClaudeExtraUsage(
             is_enabled=extra_usage_raw.get("is_enabled"),
             monthly_limit=float(extra_usage_raw["monthly_limit"]) if extra_usage_raw.get("monthly_limit") is not None else None,
