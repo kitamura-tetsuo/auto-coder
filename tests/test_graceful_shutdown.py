@@ -19,6 +19,7 @@ from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.issue_processor import _apply_issue_actions_directly, _process_issue_claude_routine_mode, _process_issue_codex_cloud_mode, _process_issue_jules_mode
 from auto_coder.pr_processor import _apply_github_actions_fix, _apply_local_test_fix, _send_codex_cloud_error_feedback, _send_jules_error_feedback
+from auto_coder.shutdown_context import new_work_allowed
 from auto_coder.utils import CommandExecutor
 
 
@@ -1085,6 +1086,36 @@ def test_update_check_style_maintenance_does_not_delay_shutdown_wait(monkeypatch
     assert elapsed < 3.0
     assert outcomes["result"].success is False
     assert "graceful shutdown is draining" in outcomes["result"].stderr
+    assert engine._critical_operations == {}
+
+
+def test_non_subprocess_backoff_does_not_delay_shutdown_wait(monkeypatch, tmp_path):
+    """A cooperative pure-Python wait stops without its completion barrier."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    entered = threading.Event()
+    natural_completion = threading.Event()
+
+    def blocking_backoff():
+        entered.set()
+        # Model a long retry/backoff deadline without a subprocess. Production
+        # local work observes the admission context between bounded wait slices,
+        # rather than requiring the external completion condition to occur.
+        while new_work_allowed() and not natural_completion.wait(0.05):
+            pass
+
+    async def scenario():
+        maintenance = asyncio.create_task(engine._run_local_critical("retry backoff", blocking_backoff))
+        assert await asyncio.to_thread(entered.wait, 2)
+
+        assert engine.request_graceful_shutdown("SIGTERM")
+        await asyncio.wait_for(engine._wait_for_protected_invocations(), timeout=1)
+        await asyncio.wait_for(engine._wait_for_interrupted_local_work(), timeout=1)
+        await asyncio.wait_for(maintenance, timeout=1)
+
+    asyncio.run(scenario())
+
+    assert not natural_completion.is_set()
     assert engine._critical_operations == {}
 
 
