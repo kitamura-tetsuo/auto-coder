@@ -75,6 +75,7 @@ from .invocation_admission import GateSnapshot, GateState, InvocationAdmissionGa
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
 from .issue_processor import create_feature_issues
+from .issue_review_rerun import IssueReviewRerunOperation, ReviewSubject, SubjectRerunStatus
 from .issue_review_service import (
     IssueReviewService,
     LaneItemOutcome,
@@ -2679,6 +2680,10 @@ class AutomationEngine:
         # observation before retiring anything.
         await asyncio.to_thread(recover_obligations_at_startup, slots)
         await self._reconcile_open_github_entities(repo_name)
+        # Explicit rerun acceptance precedes its wake.  If the prior process
+        # stopped in that gap, the authority journal remains the durable
+        # source from which Review-only routing is reconstructed here.
+        await asyncio.to_thread(self._recover_issue_review_reruns, repo_name)
 
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
         """One attempt at recovery through the normal invalidation path.
@@ -3082,6 +3087,42 @@ class AutomationEngine:
         It never acquires implementation slots or dispatches implementation.
         """
         return self._get_review_service(repo_name).pump(origin, max_items)
+
+    def accept_issue_review_rerun(self, request_id: str, subjects: Sequence[ReviewSubject]) -> tuple[SubjectRerunStatus, ...]:
+        """Accept a rerun and materialize its current Review-lane admission.
+
+        Acceptance itself is one durable transaction and never waits for a
+        reviewer invocation.  The following current-state pass either creates
+        durable Review-lane work or records why the subject is deferred.
+        """
+        if not subjects:
+            raise ValueError("at least one review subject is required")
+        repositories = {subject.repository.strip().lower() for subject in subjects}
+        if len(repositories) != 1:
+            raise ValueError("one rerun request must target exactly one repository")
+        repository = next(iter(repositories))
+        operation = IssueReviewRerunOperation(self._get_specification_validator(repository).reruns)
+        return operation.accept(request_id, subjects, lambda subject: self._admit_issue_review_rerun(subject))
+
+    def _admit_issue_review_rerun(self, subject: ReviewSubject) -> Optional[str]:
+        """Create reconstructible review-only work or explain its deferral."""
+        snapshot = self.github.get_issue_dispatch_snapshot_strict(subject.repository, subject.issue_number)
+        if not isinstance(snapshot, dict) or snapshot.get("number") != subject.issue_number or "pull_request" in snapshot:
+            return f"authoritative Issue #{subject.issue_number} snapshot is unavailable"
+        self._route_issue_stages_authoritatively(subject.repository, subject.issue_number, snapshot)
+        target_number = subject.issue_number
+        parent_number = self._get_authoritative_parent_number(subject.repository, subject.issue_number, snapshot)
+        if parent_number is not None:
+            target_number = parent_number
+        item = self.issue_stage_routing.get(subject.repository, REVIEW_STAGE, target_number)
+        if item is None:
+            return f"current authoritative admission deferred {subject.kind} review for Issue #{subject.issue_number}"
+        return None
+
+    def _recover_issue_review_reruns(self, repo_name: str) -> tuple[SubjectRerunStatus, ...]:
+        """Reconstruct accepted work after a crash between accept and wake."""
+        operation = IssueReviewRerunOperation(self._get_specification_validator(repo_name).reruns)
+        return operation.recover(repo_name, lambda subject: self._admit_issue_review_rerun(subject))
 
     def _reconcile_review_target(self, repo_name: str, issue_number: int, snapshot: Optional[Dict[str, Any]] = None) -> Optional[ReconciledReviewTarget]:
         """Refresh one Review target from authoritative state for one lane attempt."""

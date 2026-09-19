@@ -254,11 +254,18 @@ class IssueReviewService:
             lookup_terminal=lambda _key: None,
             review_identity=review_identity,
             persist=lambda _key, _verdict: None,
+            scheduler_identity=lambda key: self._scheduler_identity(cell[key]),
             pre_handoff=pre_handoff,
             on_routing_request=on_routing_request,
         )
         applied = {key for key, decision in decisions.items() if decision.verdict == "BLOCKED"} if outcome.status == "completed" else set()
         return LaneItemOutcome(item.target_number, item.generation, outcome.status, decisions, outcome.handed_off, applied)
+
+    def _scheduler_identity(self, descriptor: ReviewDescriptor) -> str:
+        """Prevent fresh rerun work from joining a pre-acceptance Future."""
+        if isinstance(descriptor, DecompositionReviewDescriptor):
+            return self._decomp().rerun_execution_key(descriptor.parent_number, descriptor.identity_key)
+        return self._spec().rerun_execution_key(descriptor.number, descriptor.identity_key)
 
     def _decide(self, descriptor: ReviewDescriptor, origin: str) -> ReviewDecision:
         if isinstance(descriptor, DecompositionReviewDescriptor):
