@@ -22,9 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 FROM python:3.12-slim
 ARG AUTO_CODER_SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$AUTO_CODER_SOURCE_REVISION
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl && \
+    MUSE_INSTALL_DIR=/usr/local/bin curl -fsSL https://dev.meta.ai/install.sh | bash && \
+    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 COPY --from=build /wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode
+ENV PATH="/home/node/.opencode/bin:${PATH}"
 WORKDIR /workspace
 ENTRYPOINT ["auto-coder"]
