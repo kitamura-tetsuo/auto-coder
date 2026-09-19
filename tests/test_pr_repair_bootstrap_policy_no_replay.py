@@ -459,6 +459,8 @@ def test_claude_routine_named_backend_dispatch_then_conflict_repair_omits_replay
         patch("auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
         patch("auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "conflict.json"),
         patch("auto_coder.claude_routine_client.CommandExecutor.run_command") as command,
+        patch("auto_coder.claude_routine_client.resolve_claude_oauth_token", return_value="token-named"),
+        patch("auto_coder.claude_routine_client.check_claude_usage", return_value=__import__("unittest.mock").mock.MagicMock(is_quota_insufficient=False)),
     ):
         command.return_value = MagicMock(returncode=0, stdout="", stderr="")
         result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pull_request, github)
@@ -470,7 +472,7 @@ def test_claude_routine_named_backend_dispatch_then_conflict_repair_omits_replay
     for marker in ALL_MARKERS:
         assert marker not in conflict_prompt
     assert "cloud/repair-1903" in conflict_prompt
-    assert kwargs["env"]["CLAUDE_CODE_ROUTINE_TOKEN"] == "token-named"
+    assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "token-named"
 
 
 # ---------------------------------------------------------------------------

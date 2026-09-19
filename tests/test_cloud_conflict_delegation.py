@@ -87,6 +87,8 @@ def test_named_claude_dispatch_survives_restart_through_conflict_delivery(tmp_pa
         patch("src.auto_coder.claude_routine_client.ClaudeRoutineClient.fire_routine", return_value=("session-a", None)),
         patch("src.auto_coder.issue_processor.get_commit_log", return_value="initial"),
         patch("src.auto_coder.claude_routine_client.CommandExecutor.run_command", return_value=CommandResult(True, "", "", 0)) as command,
+        patch("src.auto_coder.claude_routine_client.resolve_claude_oauth_token", return_value="token-a"),
+        patch("src.auto_coder.claude_routine_client.check_claude_usage", return_value=__import__("unittest.mock").mock.MagicMock(is_quota_insufficient=False)),
     ):
         _process_issue_claude_routine_mode("owner/repo", issue, AutomationConfig(), github, backend_name="claude-a")
         result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pull_request, github)
@@ -94,7 +96,7 @@ def test_named_claude_dispatch_survives_restart_through_conflict_delivery(tmp_pa
     assert result.delegated is True
     args, kwargs = command.call_args
     assert args[0][2] == "--cloud=session-a"
-    assert kwargs["env"]["CLAUDE_CODE_ROUTINE_TOKEN"] == "token-a"
+    assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "token-a"
     assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "token-a"
 
 

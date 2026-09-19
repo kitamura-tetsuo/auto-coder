@@ -512,7 +512,11 @@ def test_as006_jules_send_followup_receives_no_initial_component(homes, sentinel
 
 def test_as006_claude_send_followup_receives_no_initial_component(homes, sentinel_prompts_path):
     client = ClaudeRoutineClient()
-    with patch("auto_coder.claude_routine_client.CommandExecutor.run_command") as run_command:
+    with (
+        patch("auto_coder.claude_routine_client.CommandExecutor.run_command") as run_command,
+        patch("auto_coder.claude_routine_client.resolve_claude_oauth_token", return_value="fake-token"),
+        patch("auto_coder.claude_routine_client.check_claude_usage", return_value=__import__("unittest.mock").mock.MagicMock(is_quota_insufficient=False)),
+    ):
         run_command.return_value = MagicMock(returncode=0, stdout="", stderr="")
         client.send_followup("session-1", "please fix the CI failure")
     cmd_args = run_command.call_args.args[0]
