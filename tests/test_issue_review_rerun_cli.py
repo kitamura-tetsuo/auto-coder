@@ -1,3 +1,5 @@
+import os
+import platform
 from dataclasses import dataclass
 
 import pytest
@@ -6,6 +8,7 @@ from click.testing import CliRunner
 from auto_coder.cli import main
 from auto_coder.issue_review_rerun import SubjectRerunStatus
 from auto_coder.issue_review_rerun_scope import IssueReviewRerunScopeResolver
+from auto_coder.lock_manager import LockManager
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
 
 REPO = "owner/repo"
@@ -104,6 +107,55 @@ def test_cli_dry_run_and_acceptance_use_resolved_exact_subjects(monkeypatch) -> 
     assert '"mode": "accepted"' in live.output
     assert len(accepted) == 1
     assert [(subject.kind, subject.issue_number) for subject in accepted[0][1]] == [("individual", 1)]
+
+
+def test_root_invocation_preserves_live_controller_lock_with_force(monkeypatch, tmp_path) -> None:
+    github = FakeGitHub({7: issue(7)}, {}, {})
+    accepted: list[tuple[str, tuple[object, ...]]] = []
+
+    class Engine:
+        def __init__(self, supplied_github, config):
+            self.github = supplied_github
+
+        def accept_issue_review_rerun(self, request_id, subjects):
+            selected = tuple(subjects)
+            accepted.append((request_id, selected))
+            return tuple(SubjectRerunStatus(subject, request_id, 1, "pending") for subject in selected)
+
+    monkeypatch.setattr("auto_coder.cli_commands_review.GitHubClient.get_instance", lambda _token: github)
+    monkeypatch.setattr("auto_coder.cli_commands_review.AutomationEngine", Engine)
+    monkeypatch.setattr("auto_coder.cli_commands_review.get_github_token_or_fail", lambda _token: "token")
+    monkeypatch.setattr("auto_coder.cli_commands_review.get_issue_specification_validation_from_config", lambda **_kwargs: True)
+    monkeypatch.setattr("auto_coder.cli_commands_review.get_issue_decomposition_validation_from_config", lambda **_kwargs: True)
+    lock_path = tmp_path / "controller.lock"
+    monkeypatch.setattr(LockManager, "_get_lock_file_path", lambda _self: lock_path)
+
+    lock = LockManager()
+    assert lock.lock_file_path == lock_path
+    assert not lock.is_locked()
+    assert lock.acquire_lock()
+    try:
+        before = lock.lock_file_path.read_bytes()
+        held = lock.get_lock_info_obj()
+        assert held is not None
+        assert (held.hostname, held.pid) == (platform.node(), os.getpid())
+
+        runner = CliRunner()
+        dry = runner.invoke(main, ["review", "rerun", "--repo", REPO, "--issue", "7", "--dry-run"])
+        assert dry.exit_code == 0, dry.output
+        assert lock.lock_file_path.read_bytes() == before
+        assert accepted == []
+
+        live = runner.invoke(main, ["--force", "review", "rerun", "--repo", REPO, "--issue", "7"])
+        assert live.exit_code == 0, live.output
+        assert lock.lock_file_path.read_bytes() == before
+        after = lock.get_lock_info_obj()
+        assert after is not None
+        assert (after.hostname, after.pid) == (held.hostname, held.pid)
+        assert len(accepted) == 1
+        assert [(subject.repository, subject.kind, subject.issue_number) for subject in accepted[0][1]] == [(REPO, "individual", 7)]
+    finally:
+        lock.release_lock()
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "+1", "1.0", "01", "abc"])
