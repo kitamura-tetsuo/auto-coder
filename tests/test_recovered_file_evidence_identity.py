@@ -9,6 +9,7 @@ from auto_coder.adversarial_validator import (
     EvidenceRecoveryEntry,
     IssueRequirement,
     _build_recovery_ledger,
+    _carry_forward_current_run_recovered_evidence,
     _reconcile_reusable_recovered_evidence,
     build_adversarial_validation_context,
     run_adversarial_validation,
@@ -67,6 +68,75 @@ def test_cross_head_reuse_keeps_only_equivalent_recovered_file() -> None:
     result = _reconcile_reusable_recovered_evidence(AdversarialValidationResult(result="PASS"), stored, context, "head-2")
 
     assert [(entry.path, entry.provenance, entry.origin_head_sha) for entry in result.evidence_recovery] == [("src/b.py", "REUSED_EQUIVALENT", "head-1")]
+
+
+def test_equivalent_recovery_replaces_unavailable_final_disposition() -> None:
+    stored = _session(_entry("src/a.py", "same-a"))
+    context = AdversarialValidationContext(
+        unverified_files=["src/a.py"],
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve behavior")],
+        file_change_identities={"src/a.py": "same-a"},
+        requirement_manifest_identity="manifest-1",
+    )
+    unavailable = EvidenceRecoveryEntry(
+        path="src/a.py",
+        source="focused execution",
+        status="UNAVAILABLE",
+        evidence="The behavioral check was inconclusive",
+        requirement_ids=["REQ-001"],
+    )
+
+    result = _reconcile_reusable_recovered_evidence(AdversarialValidationResult(result="INCONCLUSIVE", evidence_recovery=[unavailable]), stored, context, "head-2")
+    repeated = _reconcile_reusable_recovered_evidence(result, stored, context, "head-2")
+
+    assert len(repeated.evidence_recovery) == 1
+    assert repeated.evidence_recovery[0].status == "RECOVERED"
+    assert repeated.evidence_recovery[0].requirement_ids == ["REQ-001"]
+    assert repeated.evidence_recovery[0].provenance == "REUSED_EQUIVALENT"
+
+
+def test_reconciliation_does_not_hide_unknown_current_requirement() -> None:
+    stored = _session(_entry("src/a.py", "same-a"))
+    context = AdversarialValidationContext(
+        issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="Preserve behavior")],
+        file_change_identities={"src/a.py": "same-a"},
+        requirement_manifest_identity="manifest-1",
+    )
+    current = EvidenceRecoveryEntry(
+        path="src/a.py",
+        source="focused execution",
+        status="UNAVAILABLE",
+        evidence="Unavailable",
+        requirement_ids=["REQ-UNKNOWN"],
+    )
+
+    result = _reconcile_reusable_recovered_evidence(AdversarialValidationResult(result="INCONCLUSIVE", evidence_recovery=[current]), stored, context, "head-2")
+
+    assert result.evidence_recovery == [current]
+
+
+def test_same_run_recovery_replaces_unavailable_without_unioning_scope() -> None:
+    recovered = EvidenceRecoveryEntry(
+        path="src/a.py",
+        source="repository inspection",
+        status="RECOVERED",
+        evidence="Complete change inspected",
+        requirement_ids=["REQ-001"],
+        provenance="FRESH",
+    )
+    unavailable = EvidenceRecoveryEntry(
+        path="src/a.py",
+        source="focused execution",
+        status="UNAVAILABLE",
+        evidence="Behavioral check inconclusive",
+        requirement_ids=["REQ-002"],
+    )
+
+    result = _carry_forward_current_run_recovered_evidence(AdversarialValidationResult(result="INCONCLUSIVE", evidence_recovery=[unavailable]), [recovered])
+    repeated = _carry_forward_current_run_recovered_evidence(result, [recovered])
+
+    assert repeated.evidence_recovery == [recovered]
+    assert repeated.evidence_recovery[0].requirement_ids == ["REQ-001"]
 
 
 def test_manifest_change_irrelevance_and_legacy_entries_fail_closed() -> None:

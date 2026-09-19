@@ -729,7 +729,7 @@ def test_evidence_recovery_parser_rejects_duplicate_path_entries() -> None:
     assert "src/one.py" in (result.diagnostic_reason or "")
 
 
-def test_inconclusive_without_recovery_or_irreducible_gap_is_rejected() -> None:
+def test_inconclusive_without_irreducible_gap_is_rejected() -> None:
     context = AdversarialValidationContext(
         all_changed_files=["src/state.py"],
         unverified_files=["src/state.py"],
@@ -758,7 +758,36 @@ def test_inconclusive_without_recovery_or_irreducible_gap_is_rejected() -> None:
 
     assert checked.result == "ERROR"
     assert checked.diagnostic_category == "inconclusive_without_exhausted_evidence_recovery"
-    assert checked.diagnostic_reason == "INCONCLUSIVE requires bounded evidence-recovery attempts, a decision-critical evidence gap"
+    assert checked.diagnostic_reason == "INCONCLUSIVE requires a decision-critical evidence gap"
+
+
+def test_inconclusive_behavioral_gap_does_not_require_path_recovery_entry() -> None:
+    context = AdversarialValidationContext(
+        issue_requirements=[IssueRequirement(requirement_id="REQ-013", text="Preserve runtime behavior")],
+    )
+    parsed = parse_adversarial_validation_response(
+        json.dumps(
+            {
+                "result": "INCONCLUSIVE",
+                "summary": "The focused execution did not exercise the behavior",
+                "requirement_coverage": [{"requirement_id": "REQ-013", "status": "UNVERIFIED", "evidence": "The execution selected no matching case"}],
+                "findings": [],
+                "evidence_recovery": [],
+                "decision_critical_evidence_gaps": [
+                    {
+                        "requirement_id": "REQ-013",
+                        "evidence_needed": "An execution that reaches the required transition",
+                        "recovery_attempts": ["Focused test exited successfully but selected no matching case"],
+                    }
+                ],
+            }
+        )
+    )
+
+    checked = _apply_coverage_and_verdict_precedence(parsed, context)
+
+    assert checked.result == "INCONCLUSIVE"
+    assert checked.diagnostic_category is None
 
 
 def test_inconclusive_rejects_recovery_scoped_only_to_verified_requirement() -> None:
@@ -802,7 +831,7 @@ def test_inconclusive_rejects_recovery_scoped_only_to_verified_requirement() -> 
 
     assert checked.result == "ERROR"
     assert checked.diagnostic_category == "inconclusive_evidence_scope_mismatch"
-    assert checked.diagnostic_reason == ("requirements without recovery attempts: REQ-A; requirements without decision-critical gaps: REQ-A; " "gaps for already-decided requirements: REQ-B")
+    assert checked.diagnostic_reason == ("requirements without decision-critical gaps: REQ-A; gaps for already-decided requirements: REQ-B")
 
 
 @pytest.mark.parametrize("anchor_line", ["abc", "0", "-1", 0, -1, 1.5, True])
