@@ -1,5 +1,15 @@
 # Dashboard observability verification
 
+Issue #2101 adds the read-only `STRONG_AUDIT` and `ORDINARY_CLOSURE` reviewer
+execution boundary consumed by the existing two-tier lifecycle. It introduces no
+production dispatch wiring, trace emission, processing origin/outcome, structured
+event schema, or dashboard projection: `pr_review_execution.py` returns validated
+evidence but has no publication or merge authority. The production integration
+that schedules these roles must add the corresponding production-to-view trace
+coverage. Run `bash scripts/test.sh tests/test_pr_review_execution.py` for prompt,
+portable-bundle, identity, disposition-completeness, and cumulative-scope boundary
+coverage.
+
 GitHub webhook-driven cache eviction and expedited CI watch recheck (PR #2119)
 improve the turnaround time from CI completion to validation launch. Upon webhook intake,
 matching HTTP cache entries in Hishel SQLite storage are evicted, CI observation requests
