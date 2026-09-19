@@ -11,8 +11,11 @@ select provider-specific initial guidance, without changing any current
 `render_prompt` behavior yet.
 
 `cloud_provider_instructions.py` itself performs no GitHub or cloud provider
-transport; it is a pure composition boundary. It is wired into every
-supported provider's actual new-task submission boundary:
+transport; it is a pure composition boundary. See
+[`jules-autonomous-execution-checkpoint-recovery-guidance.md`](jules-autonomous-execution-checkpoint-recovery-guidance.md)
+for the shipped Jules initial-instruction text and its regression coverage
+(Issue #2092). It is wired into every supported provider's actual new-task
+submission boundary:
 `JulesClient.start_session`, `ClaudeRoutineClient.fire_routine`, and
 `CodexCloudClient.submit_task` each call `prepare_cloud_task` with their own
 canonical `recipient` immediately before building the outgoing HTTP
@@ -26,9 +29,11 @@ initial component. Because eligibility and composition happen at the
 concrete adapter method rather than in a shared prompt template, the
 historical `is_jules=True` template flag that Claude Routine dispatch also
 sets (`issue_processor.py`, `pr_processor.py`) has no bearing on which
-component is chosen. Until a later change fills in real instruction text,
-the shipped configuration entries are still empty, so composing through this
-module remains a no-op for every provider in practice.
+component is chosen. The shipped Jules entry now carries real guidance text (Issue #2092), so
+composing through this module for a new Jules session decorates the outgoing
+prompt in practice. The Claude Routine and Codex Cloud entries remain empty
+by design (see the linked fragment above), so composing for either of them
+is still a no-op.
 
 ## Recovering the original task (`managed_prompts.py`)
 

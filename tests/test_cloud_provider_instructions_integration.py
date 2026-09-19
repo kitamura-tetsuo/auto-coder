@@ -91,7 +91,9 @@ def sentinel_prompts_path(tmp_path, monkeypatch):
 @pytest.fixture
 def empty_prompts_path(tmp_path, monkeypatch):
     """Point the real prompt loader at the actual shipped prompts.yaml
-    (unmodified): the real `cloud_provider_instructions` entries ship empty.
+    (unmodified). The real `cloud_provider_instructions` entries for Claude
+    Routine and Codex Cloud ship empty; Jules ships non-empty guidance text
+    (Issue #2092) and is covered by its own positive tests.
     """
     monkeypatch.setattr(prompt_loader, "DEFAULT_PROMPTS_PATH", prompt_loader.DEFAULT_PROMPTS_PATH)
     prompt_loader.clear_prompt_cache()
@@ -230,14 +232,62 @@ def test_as002_codex_start_task_wrapper_injects_exactly_once(homes, sentinel_pro
 
 
 def test_as002_missing_or_blank_entries_preserve_exact_baseline(homes, empty_prompts_path):
-    """The real shipped entries are empty: composing through any provider's
+    """The real shipped Claude Routine entry is empty: composing through its
     boundary must be an exact no-op (byte-for-byte baseline preservation).
+    Jules now ships non-empty guidance text (Issue #2092) and is covered by
+    its own tests below, not this empty-entry baseline.
+    """
+    client = ClaudeRoutineClient()
+    client.url = "https://example.test/routines/1"
+    client.token = "tok"
+    with (
+        patch("auto_coder.claude_routine_client.check_claude_usage_or_raise"),
+        patch.object(client.session, "post") as mock_post,
+    ):
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"claude_code_session_id": "s4"})
+        client._run_llm_cli("raw task, unchanged", is_noedit=False)
+    assert mock_post.call_args.kwargs["json"]["text"] == "raw task, unchanged"
+
+
+def test_as001_jules_shipped_default_delivers_required_guidance_clauses(homes, empty_prompts_path):
+    """The real shipped Jules entry (Issue #2092) is delivered exactly once
+    to a new Jules session and contains every REQ-002..REQ-007 distinction,
+    not just a marker or slogan.
     """
     client = JulesClient()
     with patch.object(client.session, "post") as mock_post:
-        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"sessionId": "s4"})
-        client.start_session("raw task, unchanged", repo_name="owner/repo", base_branch="main")
-    assert mock_post.call_args.kwargs["json"]["prompt"] == "raw task, unchanged"
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"sessionId": "s5"})
+        client.start_session("raw task, decorated", repo_name="owner/repo", base_branch="main")
+    prompt = mock_post.call_args.kwargs["json"]["prompt"]
+    assert prompt.startswith("raw task, decorated")
+    assert prompt.count("AUTO-CODER CLOUD PROVIDER INITIAL INSTRUCTIONS (jules)") == 1
+
+    # REQ-002: implementation uncertainty is not a permission stop.
+    assert "without pausing to ask routine permission" in prompt
+    # REQ-003: genuine specification uncertainty is a real escalation, with
+    # concrete evidence rather than an open-ended question.
+    assert "materially different required observable outcomes unresolved" in prompt
+    assert "anything else?" in prompt
+    # REQ-004: checkpoint coherent progress before the next substantial
+    # change; exclude unrelated edits/credentials/temp scripts; no empty
+    # commits; checkpoint is not completion.
+    assert "checkpoint coherent progress" in prompt
+    assert "exclude unrelated edits and any real credentials" in prompt
+    assert "Never create an empty commit" in prompt
+    # REQ-005: inspect actual state before diagnosing; recover only confirmed
+    # missing work; preserve newer changes; no blind destructive recovery.
+    assert "inspect the actual current working directory" in prompt
+    assert "preserve any newer or unrelated changes" in prompt
+    assert "wholesale reset or force-push as a default remedy" in prompt
+    # REQ-006: checkpoint permission grants no other authority.
+    assert "Permission to checkpoint grants no other authority" in prompt
+    assert "no-push" in prompt and "review/merge" in prompt
+    # REQ-007: distinguish local commit from external copy; distinguish
+    # attempted/passed/environment-blocked/checkpointed/completed; no
+    # unbounded retry instruction.
+    assert "not by itself a confirmed externally preserved copy" in prompt
+    assert '"attempted", "passed", "environment-blocked", "checkpointed", and "completed"' in prompt
+    assert "retrying the same thing indefinitely" in prompt
 
 
 def test_as002_malformed_selected_entry_causes_zero_external_sends(homes, tmp_path, monkeypatch):
@@ -494,8 +544,11 @@ def test_as007_marker_shaped_task_and_unicode_dollar_signs_survive_exactly(homes
     assert prepared.prepared_task.count("SENTINEL-JULES-INITIAL") == 1
 
 
-def test_as007_empty_configuration_yields_exact_baseline_for_all_three_providers(homes, empty_prompts_path):
+def test_as007_empty_configuration_yields_exact_baseline_for_claude_and_codex(homes, empty_prompts_path):
+    """Claude Routine and Codex Cloud ship empty (REQ-001); Jules's non-empty
+    shipped default (Issue #2092) is covered by a separate positive test.
+    """
     raw = "Implement the feature."
-    for recipient in ("jules", "claude-routine", "codex-cloud"):
+    for recipient in ("claude-routine", "codex-cloud"):
         result = prepare_cloud_task(raw, recipient=recipient, operation=CloudTaskOperation.NEW_TASK, no_edit=False)
         assert result.prepared_task == raw
