@@ -34,6 +34,7 @@ from .durable_repair_allowance import (
     GenerationLifecycleState,
     RepairAllowanceLedger,
     RepairAllowanceLedgerSnapshot,
+    RepairAllowanceStatus,
     ValidationAvailability,
     ValidationObservation,
 )
@@ -1252,6 +1253,7 @@ class ProviderRepairCoordinator:
         provider: str,
         owner_id: str,
         client: Optional[object] = None,
+        open_blocker_ids: Optional[Sequence[str]] = None,
     ) -> AdmissionTicket:
         """Durably bind an admission ticket before crossing an outbound repair boundary (REQ-002).
 
@@ -1274,10 +1276,33 @@ class ProviderRepairCoordinator:
         if not covered_ids:
             raise AdmissionRefusalError("Cannot admit a repair generation with an empty bundle")
 
+        # Collect all open blockers for this PR to ensure exhaustion hold is honored
+        all_open_blockers: set[str] = set(covered_ids)
+        if open_blocker_ids is not None:
+            all_open_blockers.update(open_blocker_ids)
+        else:
+            try:
+                from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
+
+                b_ledger = CanonicalPRBlockerLedger()
+                b_snapshot = b_ledger.get_snapshot(norm_origin, repository, pr_number, require_retained_state=False)
+                if b_snapshot:
+                    all_open_blockers.update(b.blocker_id for b in b_snapshot.get_open_blockers())
+            except Exception:
+                pass
+
+        if snapshot.has_exhausted_open_blocker(sorted(all_open_blockers)):
+            exhausted_ids = sorted(b.blocker_id for b in snapshot.blockers if b.blocker_id in all_open_blockers and b.status == RepairAllowanceStatus.EXHAUSTED)
+            raise AdmissionRefusalError(f"AUTO_REPAIR_EXHAUSTED: PR #{pr_number} has exhausted open blocker(s): {', '.join(exhausted_ids)}")
+
         # Check if an outstanding generation already exists
         outstanding = snapshot.get_outstanding_generation()
         if outstanding is not None:
             raise AdmissionRefusalError(f"PR #{pr_number} already has outstanding generation {outstanding.generation_id} in state {outstanding.lifecycle_state.value}")
+
+        from .llm_backend_config import get_pr_repair_max_failed_corrections
+
+        default_limit = get_pr_repair_max_failed_corrections(repo_name=repository)
 
         gen_bundle = CorrectiveGenerationBundle(
             bundle_reference=bundle.bundle_id,
@@ -1295,9 +1320,12 @@ class ProviderRepairCoordinator:
             op_id,
             expected_epoch,
             gen_bundle,
-            open_blocker_ids=covered_ids,
+            open_blocker_ids=sorted(all_open_blockers),
+            default_limit_for_new_blockers=default_limit,
         )
         if not admission_res.admitted:
+            if "exhausted" in (admission_res.denial_reason or "").lower():
+                raise AdmissionRefusalError(f"AUTO_REPAIR_EXHAUSTED: {admission_res.denial_reason}")
             raise AdmissionRefusalError(f"Admission denied for PR #{pr_number}: {admission_res.denial_reason}")
 
         generation_id = admission_res.generation_id

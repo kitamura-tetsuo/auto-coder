@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from .logger_config import get_logger
 from .util.github_request_outcome import normalize_api_origin
@@ -486,10 +486,14 @@ class RepairAllowanceLedger:
                     target_blocker_ids_json TEXT NOT NULL,
                     granted_blocker_ids_json TEXT NOT NULL,
                     new_limit INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    reevaluation_delivered INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(operator_grants)")}
+            if "reevaluation_delivered" not in columns:
+                conn.execute("ALTER TABLE operator_grants ADD COLUMN reevaluation_delivered INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS operation_journal (
@@ -1403,7 +1407,7 @@ class RepairAllowanceLedger:
                     granted_ids.append(blocker_id)
 
                 conn.execute(
-                    "INSERT INTO operator_grants (request_id, namespace_key, payload_hash, target_blocker_ids_json, granted_blocker_ids_json, new_limit, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO operator_grants (request_id, namespace_key, payload_hash, target_blocker_ids_json, granted_blocker_ids_json, new_limit, created_at, reevaluation_delivered) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
                     (request_id, key, payload_hash, json.dumps(list(target_blocker_ids) if target_blocker_ids is not None else []), json.dumps(granted_ids), new_limit, now),
                 )
                 self._bump_namespace_epoch(conn, key, new_epoch, now)
@@ -1423,3 +1427,75 @@ class RepairAllowanceLedger:
 
         snapshot = self.get_snapshot(norm_origin, repository, pr_number, require_retained_state=True)
         return OperatorGrantResult(granted=True, request_id=request_id, granted_blocker_ids=tuple(granted_ids), snapshot=snapshot)
+
+    def mark_grant_reevaluation_delivered(self, request_id: str) -> None:
+        """Mark an operator grant's normal re-evaluation obligation as delivered."""
+        self._check_db_integrity()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("UPDATE operator_grants SET reevaluation_delivered = 1 WHERE request_id = ?", (request_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_unfulfilled_operator_grants(self) -> list[dict]:
+        """Query operator grants that have not yet had their normal PR re-evaluation obligation delivered."""
+        self._check_db_integrity()
+        with self._lock:
+            conn = self._connect()
+            try:
+                cursor = conn.execute("SELECT request_id, namespace_key, new_limit, created_at FROM operator_grants WHERE reevaluation_delivered = 0 ORDER BY created_at")
+                rows = cursor.fetchall()
+                results = []
+                for row in rows:
+                    req_id, ns_key, limit, created = row
+                    parts = ns_key.split("::")
+                    api_origin = parts[0] if len(parts) >= 3 else ""
+                    repository = parts[1] if len(parts) >= 3 else ""
+                    try:
+                        pr_number = int(parts[2]) if len(parts) >= 3 else 0
+                    except ValueError:
+                        pr_number = 0
+                    results.append(
+                        {
+                            "request_id": req_id,
+                            "namespace_key": ns_key,
+                            "api_origin": api_origin,
+                            "repository": repository,
+                            "pr_number": pr_number,
+                            "new_limit": limit,
+                            "created_at": created,
+                        }
+                    )
+                return results
+            finally:
+                conn.close()
+
+    def reconcile_unfulfilled_grant_reevaluations(self, pending_work_store: Any = None) -> int:
+        """Deliver durable normal PR re-evaluation obligations for unfulfilled operator grants (REQ-010, AS-006)."""
+        from .github_pending_work import WorkIdentity, get_pending_work_store
+        from .pr_processor import PR_PROCESSING_REFRESH_EFFECT, PR_PROCESSING_STAGE
+
+        store = pending_work_store or get_pending_work_store()
+        unfulfilled = self.get_unfulfilled_operator_grants()
+        delivered_count = 0
+        for item in unfulfilled:
+            repo = item["repository"]
+            pr_num = item["pr_number"]
+            req_id = item["request_id"]
+            if repo and pr_num:
+                identity = WorkIdentity(repo, f"pr:{pr_num}", PR_PROCESSING_STAGE, revision="")
+                store.schedule_reevaluation(identity, effects=(PR_PROCESSING_REFRESH_EFFECT, PR_PROCESSING_STAGE))
+                self.mark_grant_reevaluation_delivered(req_id)
+                delivered_count += 1
+        return delivered_count
+
+
+def reconcile_unfulfilled_grant_reevaluations(
+    allowance_ledger: Optional[RepairAllowanceLedger] = None,
+    pending_work_store: Any = None,
+) -> int:
+    """Deliver durable normal PR re-evaluation obligations for unfulfilled operator grants (REQ-010, AS-006)."""
+    ledger = allowance_ledger or RepairAllowanceLedger()
+    return ledger.reconcile_unfulfilled_grant_reevaluations(pending_work_store=pending_work_store)

@@ -243,6 +243,7 @@ class AutomationConfig:
             get_jules_wait_timeout_hours_from_config,
             get_max_concurrent_implementations_from_config,
             get_pr_allowlist_from_config,
+            get_pr_repair_max_failed_corrections,
             get_validation_concurrency_from_config,
         )
 
@@ -262,6 +263,9 @@ class AutomationConfig:
         adversarial_validation_limit = get_adversarial_validation_concurrency_from_config(repo_name=effective_repo)
         object.__setattr__(self, "ADVERSARIAL_VALIDATION_CONCURRENCY", adversarial_validation_limit)
         object.__setattr__(self, "adversarial_validation_concurrency", adversarial_validation_limit)
+        repair_limit = get_pr_repair_max_failed_corrections(repo_name=effective_repo)
+        object.__setattr__(self, "PR_REPAIR_MAX_FAILED_CORRECTIONS", repair_limit)
+        object.__setattr__(self, "pr_repair_max_failed_corrections", repair_limit)
 
         configured_max_adv_reviews = max_adversarial_validations if max_adversarial_validations is not None else max_adversarial_reviews if max_adversarial_reviews is not None else get_adversarial_validation_max_reviews_from_config(repo_name=effective_repo)
         object.__setattr__(self, "MAX_ADVERSARIAL_VALIDATIONS", configured_max_adv_reviews)
@@ -699,6 +703,11 @@ class AutomationConfig:
     # GitHub Action log max length (default: 50000)
     # Configurable via [github_action].max_log_length in config.toml
     GITHUB_ACTION_LOG_MAX_LENGTH: int = 50000
+
+    # Maximum failed corrections for automatic PR repair before exhaustion (default: 3)
+    # Configurable via [pr_repair].max_failed_corrections in config.toml
+    PR_REPAIR_MAX_FAILED_CORRECTIONS: int = 3
+    pr_repair_max_failed_corrections: int = 3
 
     # Force clean workspace before PR checkout (git reset --hard + git clean -fd)
     # Default: False (do not force clean)

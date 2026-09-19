@@ -1678,6 +1678,11 @@ def load_app_config_data(
 
     effective_repo = repo_name if repo_name is not None else get_active_repo_name()
     if effective_repo:
+        inline_repo_override = base_data.get("repository", {}).get(effective_repo)
+        if isinstance(inline_repo_override, dict):
+            _normalize_feature_switches_dict(inline_repo_override)
+            base_data = deep_merge_config_dict(base_data, inline_repo_override)
+
         override_path = resolve_repo_override_path(effective_repo, filename="config.toml")
         if override_path and os.path.exists(override_path):
             try:
@@ -1912,6 +1917,47 @@ def get_jules_session_expiration_days_from_config(
         value_type=int,
         repo_name=repo_name,
     )
+
+
+def get_pr_repair_max_failed_corrections(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
+    """Get the maximum failed corrections limit for PR repair from config.toml.
+
+    Reads from [pr_repair].max_failed_corrections in config.toml.
+    Order of precedence (REQ-002):
+    1. Repository override at ~/.auto-coder/<owner>/<repo>/config.toml
+    2. User setting at ~/.auto-coder/config.toml
+    3. Default: 3
+
+    Rejects invalid non-positive integer values before new automatic repair admission.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+        repo_name: Optional repository name in 'owner/repo' format.
+
+    Returns:
+        Positive integer limit (default: 3).
+
+    Raises:
+        ValueError: If configured value is not a positive integer.
+    """
+    raw_val = _get_config_value(
+        section="pr_repair",
+        key="max_failed_corrections",
+        default=3,
+        config_path=config_path,
+        value_type=None,
+        repo_name=repo_name,
+    )
+    try:
+        val = int(raw_val)
+    except (ValueError, TypeError):
+        raise ValueError(f"Invalid pr_repair.max_failed_corrections in config.toml: {raw_val!r}. " "Must be a positive integer.")
+    if val <= 0:
+        raise ValueError(f"Invalid pr_repair.max_failed_corrections in config.toml: {val}. " "Must be a positive integer (> 0).")
+    return val
 
 
 def get_process_issues_sleep_time_from_config(
