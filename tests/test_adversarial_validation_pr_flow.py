@@ -47,6 +47,7 @@ from auto_coder.pr_processor import (
     _review_feedback_identity,
     _send_adversarial_validation_feedback_to_cloud_task,
     _take_pr_actions,
+    _two_tier_gate_inputs,
 )
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, ReviewThreadComment
 from auto_coder.util.github_action import GitHubActionsStatusResult
@@ -1238,6 +1239,64 @@ class TestAdversarialValidationPRFlow:
             return_value=ReviewPublicationResult(True, "APPROVE", ""),
         ) as publisher:
             yield publisher
+
+    @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
+    @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
+    @patch("auto_coder.pr_processor._check_github_actions_status")
+    @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    def test_configured_strong_tier_blocks_real_merge_boundary_after_cached_ordinary_pass(
+        self,
+        mock_merge_pr,
+        mock_checks,
+        mock_mergeable,
+        mock_exit_in_progress,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A legacy/cached ordinary PASS cannot bypass the production merge closure."""
+        from auto_coder.llm_backend_config import BackendConfig
+
+        head_sha, base_sha = "a" * 40, "b" * 40
+        pr_data = {
+            "number": 100,
+            "body": "Fixes #99",
+            "labels": [],
+            "head": {"ref": "feature", "sha": head_sha},
+            "base": {"ref": "main", "sha": base_sha},
+        }
+        issue = {"number": 99, "title": "Contract", "body": "## Requirements\nREQ-001: Preserve the gate."}
+        client = MagicMock()
+        client.get_issue.return_value = issue
+        client.get_pr_review_threads_strict.return_value = []
+        client.get_pr_comments.return_value = [
+            {
+                "body": format_adversarial_validation_comment(
+                    AdversarialValidationResult(result="PASS", summary="Ordinary review passed"),
+                    head_sha,
+                )
+            }
+        ]
+        client.get_pull_request.return_value = pr_data
+        mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
+        strong = BackendConfig(name="codex", model="strong-model")
+        llm_config = MagicMock()
+        llm_config.get_backend_strong_pr_adversarial_validation.return_value = strong
+        llm_config.get_strong_pr_adversarial_validation_backend_order.return_value = ["codex"]
+        llm_config.get_strong_pr_adversarial_validation_default_backend.return_value = "codex"
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+        config.ENABLE_ADVERSARIAL_VALIDATION = True
+        with patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        mock_merge_pr.assert_not_called()
+        assert any("required strong-audit phase STRONG_PENDING is not complete" in action for action in actions)
+        with patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config):
+            inputs = _two_tier_gate_inputs(client, "owner/repo", pr_data)
+        assert inputs is not None
+        assert inputs.gate.state.snapshot(100).phase == "STRONG_PENDING"
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

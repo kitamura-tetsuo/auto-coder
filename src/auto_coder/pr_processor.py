@@ -75,6 +75,7 @@ from .pr_repair_guard import (
     check_pr_repair_exhaustion,
     publish_exhaustion_comment_deduped,
 )
+from .pr_review_cycle import ContractSnapshot, StrongPolicyIdentity
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
@@ -116,6 +117,7 @@ from .shutdown_context import new_work_allowed
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
+from .two_tier_pr_gate import TwoTierPrGate
 from .util.github_action import _create_github_action_log_summary
 from .util.github_request_outcome import GitHubRequestError
 from .utils import CommandExecutor, CommandResult, bind_command_execution_cwd, get_pr_author_login, is_same_github_login, log_action, reset_command_execution_cwd
@@ -176,6 +178,74 @@ CODEX_REVIEW_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->"
 CODEX_REVIEW_BOT_LOGIN = "chatgpt-codex-connector[bot]"
 CLOUD_REVIEW_FEEDBACK_MARKER_PREFIX = "auto-coder-cloud-review-feedback:v1:"
 CLOUD_CONFLICT_FOLLOWUP_MARKER_PREFIX = "auto-coder-cloud-conflict-followup:v1:"
+
+
+@dataclass(frozen=True)
+class TwoTierGateInputs:
+    gate: TwoTierPrGate
+    contract: ContractSnapshot
+    policy: StrongPolicyIdentity
+    head_sha: str
+    base_sha: str
+
+
+def _numbered_requirements(body: str) -> List[str]:
+    """Return the complete numbered Requirement declarations from an Issue body."""
+    return [line.strip() for line in body.splitlines() if re.match(r"^REQ-\d{3}:\s*\S", line.strip())]
+
+
+def _two_tier_gate_inputs(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+) -> Optional[TwoTierGateInputs]:
+    """Resolve H/B/M/P only when the optional strong tier is configured.
+
+    Eligibility is deliberately resolved here rather than inferred from PR prose.
+    A failed lookup is represented by an exception so it cannot become a confirmed
+    Issue-less result and silently bypass the gate.
+    """
+    from .llm_backend_config import get_llm_config
+
+    llm_config = get_llm_config()
+    strong = llm_config.get_backend_strong_pr_adversarial_validation()
+    order = llm_config.get_strong_pr_adversarial_validation_backend_order()
+    if strong is None and not order:
+        return None
+
+    resolution = resolve_issue_oracles(github_client, repo_name, pr_data=pr_data)
+    if resolution.error:
+        raise RuntimeError(resolution.error)
+    if not resolution.issues:
+        return None
+
+    requirements: List[str] = []
+    issue_ids: List[str] = []
+    for issue in resolution.issues:
+        issue_ids.append(f"#{issue.number}")
+        declarations = _numbered_requirements(issue.body)
+        requirements.extend(f"Issue #{issue.number} {line}" for line in declarations)
+    if not requirements:
+        return None
+
+    route = tuple(order) or ((strong.name,) if strong is not None else ())
+    model_options = {
+        "route": route,
+        "default": llm_config.get_strong_pr_adversarial_validation_default_backend(),
+        "model": getattr(strong, "model", None),
+        "options": getattr(strong, "options", None),
+    }
+    contract = ContractSnapshot(tuple(issue_ids), "\n".join(requirements))
+    policy = StrongPolicyIdentity(
+        "backend_strong_pr_adversarial_validation",
+        json.dumps(model_options, sort_keys=True, default=str),
+        "v1",
+    )
+    head_sha = str((pr_data.get("head") or {}).get("sha") or "")
+    base_sha = str((pr_data.get("base") or {}).get("sha") or "")
+    if not head_sha or not base_sha:
+        raise RuntimeError("PR head/base identity is unavailable for required strong audit")
+    return TwoTierGateInputs(TwoTierPrGate(repo_name), contract, policy, head_sha, base_sha)
 
 
 @dataclass(frozen=True)
@@ -3706,6 +3776,31 @@ def _handle_pr_merge(
                         actions.append(f"Adversarial validation passed for PR #{pr_number}: {val_result.summary}")
                         _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.COMPLETED, {"examined_head": head_sha, "result": val_result.result})
 
+            # An ordinary PASS is convergence, not merge authority, when the
+            # optional strong tier applies. Persist it before entering the final
+            # boundary so every caller (--only/--force, daemon, local/cloud, and
+            # cached ordinary results) observes the same durable pending phase.
+            if adversarial_validation_enabled and adversarial_validation_applicable:
+                try:
+                    two_tier_inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
+                except Exception as exc:
+                    actions.append(f"Skipping merge for PR #{pr_number}: strong-audit identity could not be resolved: {exc}")
+                    _record_pr_stage(
+                        pr_number,
+                        "pr.strong-audit-gate",
+                        f"pr#{pr_number} strong-audit gate",
+                        Outcome.DEFERRED,
+                        {"reason": str(exc), "phase": "identity-resolution"},
+                    )
+                    return actions
+                if two_tier_inputs is not None:
+                    two_tier_inputs.gate.ordinary_pass(
+                        pr_number,
+                        two_tier_inputs.head_sha,
+                        two_tier_inputs.base_sha,
+                        two_tier_inputs.contract,
+                    )
+
             # Own the final read phase even when invoked outside candidate selection.
             with ci_read_phase("pr-final-merge-eligibility"):
                 # Reviewer work can accept a newer complete CI observation than the
@@ -3796,6 +3891,45 @@ def _handle_pr_merge(
                         return actions
 
                     def merge_current_head() -> bool:
+                        # Resolve H/B/M/P again inside the lowest merge mutation
+                        # closure. This prevents any automatic origin from using a
+                        # stale pre-validation snapshot or bypassing pending strong
+                        # work through a cached ordinary PASS/review-budget shortcut.
+                        if adversarial_validation_enabled and adversarial_validation_applicable:
+                            try:
+                                current_two_tier = _two_tier_gate_inputs(github_client, repo_name, current_pr)
+                            except Exception as exc:
+                                actions.append(f"Skipping merge for PR #{pr_number}: final strong-audit identity could not be resolved: {exc}")
+                                return False
+                            if current_two_tier is not None and not current_two_tier.gate.authorize_merge(
+                                pr_number,
+                                current_head_sha=current_two_tier.head_sha,
+                                current_base_sha=current_two_tier.base_sha,
+                                current_contract=current_two_tier.contract,
+                                current_policy=current_two_tier.policy,
+                            ):
+                                diagnostic = current_two_tier.gate.diagnostic(
+                                    pr_number,
+                                    current_head_sha=current_two_tier.head_sha,
+                                    backend=current_two_tier.policy.strong_route,
+                                )
+                                actions.append(f"Skipping merge for PR #{pr_number}: required strong-audit phase " f"{diagnostic.phase} is not complete ({diagnostic.waiting_reason})")
+                                _record_pr_stage(
+                                    pr_number,
+                                    "pr.strong-audit-gate",
+                                    f"pr#{pr_number} strong-audit gate",
+                                    Outcome.BLOCKED,
+                                    {
+                                        "phase": diagnostic.phase,
+                                        "backend": diagnostic.backend,
+                                        "audited_head": diagnostic.audited_head,
+                                        "current_head": diagnostic.current_head,
+                                        "waiting_reason": diagnostic.waiting_reason,
+                                        "outstanding_finding_ids": list(diagnostic.outstanding_finding_ids),
+                                        "completion_basis": diagnostic.completion_basis,
+                                    },
+                                )
+                                return False
                         return _merge_pr(
                             repo_name,
                             pr_number,
