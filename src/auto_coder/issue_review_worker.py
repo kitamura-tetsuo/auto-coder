@@ -73,6 +73,7 @@ class IssueReviewWorker:
         persist: Callable[[str, str], None],
         pre_handoff: Optional[Callable[[PendingLaneItem, dict[str, str]], bool]] = None,
         on_routing_request: Callable[[PendingLaneItem], None],
+        scheduler_identity: Callable[[str], str] = lambda key: key,
     ) -> ReviewOutcome:
         """Run one claimed review item to durable completion or deferral."""
         view = refresh(item)
@@ -97,7 +98,7 @@ class IssueReviewWorker:
             def _review(key: str = identity_key) -> str:
                 return review_identity(key)
 
-            jobs[identity_key] = self._scheduler.submit(identity_key, _review)
+            jobs[identity_key] = self._scheduler.submit(scheduler_identity(identity_key), _review)
         for identity_key, job in jobs.items():
             try:
                 verdict = job.result()
@@ -130,6 +131,7 @@ class IssueReviewWorker:
         persist: Callable[[str, str], None],
         pre_handoff: Optional[Callable[[PendingLaneItem, dict[str, str]], bool]] = None,
         on_routing_request: Callable[[PendingLaneItem], None],
+        scheduler_identity: Callable[[str], str] = lambda key: key,
     ) -> Optional[ReviewOutcome]:
         """Run the next pending review item to durable completion or deferral."""
         item = self.next_work(repository)
@@ -143,6 +145,7 @@ class IssueReviewWorker:
             lookup_terminal=lookup_terminal,
             review_identity=review_identity,
             persist=persist,
+            scheduler_identity=scheduler_identity,
             pre_handoff=pre_handoff,
             on_routing_request=on_routing_request,
         )

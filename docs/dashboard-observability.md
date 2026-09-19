@@ -956,3 +956,19 @@ dashboard coverage remain unchanged. The production-boundary tests in
 `tests/test_jules_candidate_submission.py` establish that the inactive
 adapter preserves its durable claims and exact reconciliation state without
 substituting dashboard diagnostics for provider/session ownership.
+# Explicit Issue-review rerun authority
+
+Explicit review reruns add durable authorization state but do not add a new
+structured dashboard event or change an existing event schema. The existing
+individual/decomposition validation-job traces continue to describe actual
+review executions; request inspection uses the durable rerun operation status
+(`pending`, `deferred`, `satisfied`, or `superseded`) and its decision
+reference/source. This is intentionally observability-neutral for the trace
+pipeline: reset acceptance, cache cleanup, and queue admission are not review
+outcomes and must not be emitted as successful validation jobs. Runnable
+authority and stale-completion coverage lives in
+`tests/test_issue_review_rerun.py`, while Review-lane coalescing coverage
+remains in `tests/test_issue_review_worker.py`. Production acceptance and
+admission/deferred-state coverage lives in `tests/test_issue_review_service.py`;
+the durable operation status, rather than a trace event, exposes a request
+that cannot currently enter the Review lane.
