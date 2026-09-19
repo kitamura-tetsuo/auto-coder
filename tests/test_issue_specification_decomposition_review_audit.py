@@ -36,7 +36,7 @@ from auto_coder.decomposition_validation_lifecycle import (
 )
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.review_audit import EvaluationLifecycle, ExecutionMode, ReviewAuditStore
-from auto_coder.specification_analyzer import SpecificationAnalysisResult
+from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.validation_scheduler import ValidationScheduler
 
@@ -562,3 +562,196 @@ class TestAuditFailuresAreNonAuthorizing:
         assert original.creation_time == bypassed_before[0].creation_time
         executed = next(r for r in rows if r.review_id != bypassed_before[0].review_id)
         assert executed.execution_mode == ExecutionMode.EXECUTED
+
+
+class TestRequiredFailureAndOrderingRegressions:
+    """Production-boundary regressions required by REQ-009/AS-005..AS-007."""
+
+    def test_authorization_store_failure_retains_ready_and_original_exception(self, temp_audit_db, tmp_path, mock_llm_config):
+        backend = make_backend_manager(mock_llm_config)
+        lifecycle = SpecificationValidationLifecycle(
+            REPO,
+            "policy",
+            tmp_path / "authorization.json",
+            lambda *_args: (backend.run_prompt("review"), SpecificationAnalysisResult("READY"))[1],
+        )
+        manifest = build_normative_issue_manifest(1100, "Title", OBJECTIVE_A_BODY)
+        identity = lifecycle.identity(1100, "Title", OBJECTIVE_A_BODY)
+        failure = OSError("authoritative store unavailable")
+
+        with patch.object(lifecycle.store, "save", side_effect=failure):
+            with pytest.raises(OSError, match="authoritative store unavailable") as raised:
+                AutomationEngine._traced_validation_job(
+                    REPO,
+                    1100,
+                    "issue.individual-validation-job",
+                    "issue#1100 individual validation job",
+                    {"validation_identity": identity.key, "audit_identity": identity},
+                    lambda: lifecycle.decide(manifest, "Title", OBJECTIVE_A_BODY),
+                )
+
+        assert raised.value is failure
+        row = temp_audit_db.find_finished_evaluation(REPO, "issue", "1100", "issue_specification", identity.key, (ExecutionMode.EXECUTED,))
+        assert row is not None
+        assert row.native_verdict == "READY"
+        assert row.native_report is not None
+        assert row.native_report["authorization_persistence"] == {
+            "disposition": "failed",
+            "error": "authoritative store unavailable",
+        }
+        assert lifecycle.store.get(identity) is None
+
+    def test_late_g1_completion_never_rebinds_g2_audit_generation(self, temp_audit_db, tmp_path, mock_llm_config):
+        backend = make_backend_manager(mock_llm_config)
+        g1_release = threading.Event()
+        g1_started = threading.Event()
+
+        def g1_analyzer(*_args):
+            g1_started.set()
+            assert g1_release.wait(timeout=10)
+            backend.run_prompt("review G1")
+            return SpecificationAnalysisResult("READY")
+
+        g1 = SpecificationValidationLifecycle(REPO, "policy", tmp_path / "g1.json", g1_analyzer)
+        g2 = SpecificationValidationLifecycle(
+            REPO,
+            "policy",
+            tmp_path / "g2.json",
+            lambda *_args: (backend.run_prompt("review G2"), SpecificationAnalysisResult("READY"))[1],
+        )
+        m1 = build_normative_issue_manifest(1101, "Title", OBJECTIVE_A_BODY)
+        m2 = build_normative_issue_manifest(1101, "Title", OBJECTIVE_B_BODY)
+        i1 = g1.identity(1101, "Title", OBJECTIVE_A_BODY)
+        i2 = g2.identity(1101, "Title", OBJECTIVE_B_BODY)
+        scheduler = ValidationScheduler(2)
+        try:
+            job1 = scheduler.submit(
+                i1.key,
+                lambda: AutomationEngine._traced_validation_job(
+                    REPO,
+                    1101,
+                    "issue.individual-validation-job",
+                    "G1",
+                    {"validation_identity": i1.key, "audit_identity": i1},
+                    lambda: g1.decide(m1, "Title", OBJECTIVE_A_BODY),
+                ),
+            )
+            assert g1_started.wait(timeout=10)
+            job2 = scheduler.submit(
+                i2.key,
+                lambda: AutomationEngine._traced_validation_job(
+                    REPO,
+                    1101,
+                    "issue.individual-validation-job",
+                    "G2",
+                    {"validation_identity": i2.key, "audit_identity": i2},
+                    lambda: g2.decide(m2, "Title", OBJECTIVE_B_BODY),
+                ),
+            )
+            assert job2.result().identity == i2
+            g1_release.set()
+            assert job1.result().identity == i1
+        finally:
+            g1_release.set()
+            scheduler.shutdown()
+
+        rows = temp_audit_db.get_related_evaluations(REPO, "issue", "1101", review_kind="issue_specification").records
+        assert {row.reviewed_generation for row in rows} == {i1.key, i2.key}
+        assert all(row.native_report["identity"]["specification_digest"] in {i1.specification_digest, i2.specification_digest} for row in rows)
+
+    def test_unavailable_middle_read_does_not_replace_known_producer(self, temp_audit_db, tmp_path, mock_llm_config):
+        backend = make_backend_manager(mock_llm_config)
+        lifecycle = SpecificationValidationLifecycle(
+            REPO,
+            "policy",
+            tmp_path / "known.json",
+            lambda *_args: (backend.run_prompt("review known"), SpecificationAnalysisResult("READY"))[1],
+        )
+        manifest = build_normative_issue_manifest(1102, "Title", OBJECTIVE_A_BODY)
+        identity = lifecycle.identity(1102, "Title", OBJECTIVE_A_BODY)
+        facts = {"validation_identity": identity.key, "audit_identity": identity}
+        first = AutomationEngine._traced_validation_job(REPO, 1102, "issue.individual-validation-job", "known", facts, lambda: lifecycle.decide(manifest, "Title", OBJECTIVE_A_BODY))
+        assert first.verdict == "READY"
+        producer = temp_audit_db.find_finished_evaluation(REPO, "issue", "1102", "issue_specification", identity.key, (ExecutionMode.EXECUTED,))
+        assert producer is not None
+
+        original_get = lifecycle.store.get
+        with patch.object(lifecycle.store, "get", side_effect=OSError("authoritative evidence unavailable")):
+            with pytest.raises(OSError, match="authoritative evidence unavailable"):
+                AutomationEngine._traced_validation_job(REPO, 1102, "issue.individual-validation-job", "unavailable", facts, lambda: lifecycle.decide(manifest, "Title", OBJECTIVE_A_BODY))
+        assert original_get(identity) is not None
+        restored = AutomationEngine._traced_validation_job(REPO, 1102, "issue.individual-validation-job", "restored", facts, lambda: lifecycle.decide(manifest, "Title", OBJECTIVE_A_BODY))
+        assert restored.evaluation_source == "stored-decision-reuse"
+        rows = temp_audit_db.get_related_evaluations(REPO, "issue", "1102", review_kind="issue_specification").records
+        reused = max((row for row in rows if row.execution_mode == ExecutionMode.REUSED), key=lambda row: row.creation_sequence)
+        assert reused.source_review_id == producer.review_id
+        assert len([row for row in rows if row.execution_mode == ExecutionMode.EXECUTED]) == 1
+
+    def test_pending_publication_handler_appends_effect_to_original_review(self, temp_audit_db, tmp_path, mock_llm_config, monkeypatch):
+        from auto_coder.automation_engine import _ValidationPublicationStageHandler
+        from auto_coder.github_pending_work import PendingObligation, PendingReason, WorkIdentity
+
+        backend = make_backend_manager(mock_llm_config)
+        finding = SpecificationFinding("material_ambiguity", ("REQ-001",), "Undefined value", "Define it", "", "")
+        lifecycle = SpecificationValidationLifecycle(
+            REPO,
+            "policy",
+            tmp_path / "blocked.json",
+            lambda *_args: (backend.run_prompt("review blocked"), SpecificationAnalysisResult("BLOCKED", (finding,)))[1],
+        )
+        manifest = build_normative_issue_manifest(1103, "Title", OBJECTIVE_A_BODY)
+        identity = lifecycle.identity(1103, "Title", OBJECTIVE_A_BODY)
+        decision = AutomationEngine._traced_validation_job(
+            REPO,
+            1103,
+            "issue.individual-validation-job",
+            "blocked",
+            {"validation_identity": identity.key, "audit_identity": identity},
+            lambda: lifecycle.decide(manifest, "Title", OBJECTIVE_A_BODY),
+        )
+        assert decision.verdict == "BLOCKED"
+        producer = temp_audit_db.find_finished_evaluation(REPO, "issue", "1103", "issue_specification", identity.key, (ExecutionMode.EXECUTED,))
+        assert producer is not None
+
+        engine = MagicMock()
+        engine.github.get_issue_dispatch_snapshot_strict.return_value = {
+            "number": 1103,
+            "title": "Title",
+            "body": OBJECTIVE_A_BODY,
+        }
+        engine._get_specification_validator.return_value = lifecycle
+        engine._get_authoritative_parent_number.return_value = None
+        lifecycle.apply_blocked = MagicMock(return_value=None)
+        monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: MagicMock(get=lambda _identity: None))
+        obligation = PendingObligation(
+            WorkIdentity(REPO, "issue:1103", "validation-publication", identity.key),
+            PendingReason.THROTTLED,
+            0,
+            ("diagnostic",),
+        )
+        outcome = _ValidationPublicationStageHandler(engine, REPO)._run_impl(obligation, 1103)
+        assert outcome.completed_effects == ("diagnostic",)
+
+        full = temp_audit_db.get_evaluation(REPO, producer.review_id).record
+        assert full is not None
+        assert [(effect.disposition, effect.details) for effect in full.effects] == [("unknown", {"recovery": True, "error": None})]
+
+    def test_recovery_effect_uses_source_unavailable_observation_for_legacy_decision(self, temp_audit_db):
+        from auto_coder.review_capture.issue_review_audit import record_effect
+
+        record_effect(
+            repository=REPO,
+            target_number=1103,
+            review_kind="issue_specification",
+            generation_key="legacy-generation",
+            policy_identity="policy",
+            disposition="unknown",
+            details={"recovery": True},
+        )
+        rows = temp_audit_db.get_related_evaluations(REPO, "issue", "1103", review_kind="issue_specification").records
+        assert len(rows) == 1
+        assert rows[0].execution_mode == ExecutionMode.REUSED
+        assert rows[0].native_report == {"source_unavailable": True}
+        full = temp_audit_db.get_evaluation(REPO, rows[0].review_id).record
+        assert full is not None
+        assert [(effect.disposition, effect.details) for effect in full.effects] == [("unknown", {"recovery": True})]
