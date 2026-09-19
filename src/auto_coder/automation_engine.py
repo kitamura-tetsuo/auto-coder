@@ -3,6 +3,7 @@ Main automation engine for Auto-Coder.
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import os
@@ -1762,6 +1763,7 @@ class AutomationEngine:
         operation: Any,
         origin: str,
         scheduler: Optional[ValidationScheduler] = None,
+        audit_identity: Any = None,
     ) -> ValidationJob[ValidationDecision]:
         """Submit every individual review through the diagnostic job boundary.
 
@@ -1775,6 +1777,8 @@ class AutomationEngine:
             "review_kind": "individual",
             "validation_identity": identity_key,
             "caller_origin": origin,
+            "audit_identity": audit_identity,
+            "audit_queued_time": datetime.now(timezone.utc).isoformat(),
         }
         _record_issue_stage_result(
             item_number,
@@ -1885,7 +1889,13 @@ class AutomationEngine:
                     parent_number,
                     "issue.decomposition-validation-job",
                     f"issue#{parent_number} decomposition validation job",
-                    {"parent_number": parent_number, "member_issue_numbers": member_numbers, "validation_identity": set_identity.key},
+                    {
+                        "parent_number": parent_number,
+                        "member_issue_numbers": member_numbers,
+                        "validation_identity": set_identity.key,
+                        "audit_identity": set_identity,
+                        "audit_queued_time": datetime.now(timezone.utc).isoformat(),
+                    },
                     lambda: decomposition.decide(set_identity, DecompositionIssue(parent_manifest, str(parent.get("body") or "")), child_inputs),
                 ),
             )
@@ -1928,6 +1938,7 @@ class AutomationEngine:
                     partial(individual.decide, manifest, title, body, relationship_context),
                     "parent-child-scheduling",
                     scheduler,
+                    identity,
                 )
         else:
             # Mirrors the decomposition-disabled BYPASSED observation above,
@@ -2323,6 +2334,15 @@ class AutomationEngine:
                 return None
             if decision.verdict != "READY":
                 return None
+        elif parent_number is None:
+            issue_review_audit.record_bypassed(
+                repository=repo_name,
+                target_number=issue_number,
+                review_kind=issue_review_audit.REVIEW_KIND_ISSUE_SPECIFICATION,
+                origin="automation_engine.standalone-intake:disabled",
+                policy_identity=individual_identity.policy_identity,
+                related_issue_membership=str(dataclasses.asdict(individual_identity)),
+            )
         refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
         if not isinstance(refreshed, dict) or not self._is_open_issue(refreshed):
             return None

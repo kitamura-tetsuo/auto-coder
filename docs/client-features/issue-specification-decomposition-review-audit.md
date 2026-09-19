@@ -66,23 +66,31 @@ A REUSED observation looks up the most recent same-generation `EXECUTED`/
 `FINISHED` record (`review_capture.issue_review_audit.find_reusable_source_review_id`,
 matched on the producing `ValidationIdentity`/`DecompositionIdentity`'s
 stable `.key` digest, which already cryptographically includes
-`policy_identity`) and records it as `native_report["reuse_source_review_id"]`.
+`policy_identity`) and records it both in the dedicated `source_review_id`
+column and as `native_report["reuse_source_review_id"]`.
 When no matching producer is found — including a decision computed or cached
 before this audit adapter existed — the association is left absent rather
-than fabricated. The dedicated `source_review_id` column is not populated for
-these post-hoc-classified rows: `ReviewAuditStore.update_evaluation` (the
-existing, out-of-scope store's public API) has no parameter to set it after
-a row's initial insert, and REUSED cannot be known before `fn()` runs, so the
-association is instead recorded inside the durable, queryable `native_report`.
+than fabricated. Exact producer lookup is a newest-first indexed query and
+is not bounded by the general 500-row history display window.
 
 ## External effects (publication)
 
-A best-effort `ReviewEffectRecord` (`confirmed`/`failed`) is appended after a
+A best-effort `ReviewEffectRecord` (`unknown`/`failed`) is appended after a
 BLOCKED decision's publication attempt in `IssueReviewService._apply_individual_blocked`/
 `_apply_decomposition_blocked`, attached to the review that produced the
 decision (looked up the same way as reuse provenance). This never changes
 what `apply_blocked`/`apply_inherited_blocked` return or how their callers
-behave; a missing/unknown owning review is a documented no-op.
+behave. Because the legacy publication API cannot distinguish a successful
+no-error return from a stale-generation refusal, it is never promoted to a
+false `confirmed` observation. A missing/unknown producer gets an explicit
+source-unavailable reuse observation rather than being silently dropped.
+
+Queued, started, and terminal UTC observations are retained in each native
+report. Producing identity and decomposition membership are bound on the
+initial row before backend invocation. If authoritative decision persistence
+raises after parsing, the native verdict/report remains audit evidence and
+the failed authorization disposition is recorded separately; the original
+business exception is still re-raised unchanged.
 
 ## Non-interference guarantee
 

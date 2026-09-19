@@ -195,7 +195,7 @@ class IssueReviewService:
                 descriptor.parent_number,
                 "issue.decomposition-validation-job",
                 f"issue#{descriptor.parent_number} decomposition validation job",
-                {"parent_number": descriptor.parent_number, "caller_origin": "completed-handoff-recovery", "validation_identity": descriptor.identity_key},
+                {"parent_number": descriptor.parent_number, "caller_origin": "completed-handoff-recovery", "validation_identity": descriptor.identity_key, "audit_identity": descriptor.identity},
                 lambda: self._decomp().decide(descriptor.identity, descriptor.parent_issue, descriptor.child_issues),
             )
             if not isinstance(decided, DecompositionDecision) or decided.identity.key != descriptor.identity_key:
@@ -211,7 +211,7 @@ class IssueReviewService:
             descriptor.number,
             "issue.individual-validation-job",
             f"issue#{descriptor.number} individual validation job",
-            {"issue_number": descriptor.number, "review_kind": "individual", "validation_identity": descriptor.identity_key, "caller_origin": "completed-handoff-recovery"},
+            {"issue_number": descriptor.number, "review_kind": "individual", "validation_identity": descriptor.identity_key, "audit_identity": individual_identity, "caller_origin": "completed-handoff-recovery"},
             lambda: self._spec().decide(descriptor.manifest, descriptor.title, descriptor.body, descriptor.relationship),
         )
         if not isinstance(individual_decided, ValidationDecision) or individual_decided.identity.key != descriptor.identity_key:
@@ -268,7 +268,7 @@ class IssueReviewService:
                 descriptor.parent_number,
                 "issue.decomposition-validation-job",
                 f"issue#{descriptor.parent_number} decomposition validation job",
-                {"parent_number": descriptor.parent_number, "caller_origin": origin, "validation_identity": descriptor.identity_key},
+                {"parent_number": descriptor.parent_number, "caller_origin": origin, "validation_identity": descriptor.identity_key, "audit_identity": descriptor.identity},
                 lambda: self._decomp().decide(descriptor.identity, descriptor.parent_issue, descriptor.child_issues),
             )
         assert descriptor.manifest is not None
@@ -277,7 +277,7 @@ class IssueReviewService:
             descriptor.number,
             "issue.individual-validation-job",
             f"issue#{descriptor.number} individual validation job",
-            {"issue_number": descriptor.number, "review_kind": "individual", "validation_identity": descriptor.identity_key, "caller_origin": origin},
+            {"issue_number": descriptor.number, "review_kind": "individual", "validation_identity": descriptor.identity_key, "audit_identity": self._spec().identity(descriptor.number, descriptor.title, descriptor.body, descriptor.relationship), "caller_origin": origin},
             lambda: self._spec().decide(descriptor.manifest, descriptor.title, descriptor.body, descriptor.relationship),
         )
 
@@ -379,7 +379,10 @@ class IssueReviewService:
             review_kind=review_kind,
             generation_key=decision.identity.key,
             policy_identity=decision.identity.policy_identity,
-            disposition="confirmed" if error is None else "failed",
+            # The lifecycle's legacy Optional[str] result cannot distinguish
+            # a completed publication from a currentness refusal.  Do not
+            # turn silence into false confirmation.
+            disposition="unknown" if error is None else "failed",
             details={"error": error} if error is not None else None,
         )
 

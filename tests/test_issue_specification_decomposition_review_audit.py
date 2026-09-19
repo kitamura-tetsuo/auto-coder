@@ -244,6 +244,8 @@ class TestAS002ReusedRoundTrip:
         assert second_row.native_verdict == "READY"
         assert second_row.native_report is not None
         assert second_row.native_report["reuse_source_review_id"] == first_row_after.review_id
+        assert second_row.source_review_id == first_row_after.review_id
+        assert set(second_row.native_report["observation_times"]) == {"queued", "started", "terminal"}
         # No new interaction was captured for the reuse.
         second_full = store.get_evaluation(REPO, second_row.review_id)
         assert second_full.record is not None

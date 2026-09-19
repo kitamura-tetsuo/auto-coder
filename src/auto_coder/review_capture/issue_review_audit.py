@@ -41,6 +41,7 @@ import dataclasses
 import os
 import time
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Sequence, TypeVar
 
@@ -67,6 +68,31 @@ _STAGE_REVIEW_KIND = {
 }
 
 T = TypeVar("T")
+
+
+@dataclasses.dataclass
+class _ObservedReview:
+    decision: Any = None
+    authorization_disposition: Optional[str] = None
+    authorization_error: Optional[str] = None
+
+
+_observed_review: ContextVar[Optional[_ObservedReview]] = ContextVar("issue_review_audit_observation", default=None)
+
+
+def observe_native_decision(decision: Any) -> None:
+    """Retain a parsed result before authoritative persistence can raise."""
+    observation = _observed_review.get()
+    if observation is not None:
+        observation.decision = decision
+
+
+def observe_authorization_persistence(disposition: str, error: Optional[str] = None) -> None:
+    """Observe the existing decision-store boundary without authorizing it."""
+    observation = _observed_review.get()
+    if observation is not None:
+        observation.authorization_disposition = disposition
+        observation.authorization_error = error
 
 
 def _now_iso() -> str:
@@ -136,6 +162,7 @@ def _update_evaluation_best_effort(
     execution_mode: ExecutionMode,
     native_verdict: Optional[str] = None,
     native_report: Optional[Dict[str, Any]] = None,
+    source_review_id: Optional[str] = None,
 ) -> None:
     try:
         get_review_audit_store().update_evaluation(
@@ -145,6 +172,7 @@ def _update_evaluation_best_effort(
             execution_mode=execution_mode,
             native_verdict=native_verdict,
             native_report=native_report,
+            source_review_id=source_review_id,
         )
     except Exception:
         logger.opt(exception=True).warning(f"Issue review audit: failed to update evaluation {review_id}")
@@ -211,7 +239,14 @@ def find_reusable_source_review_id(
     if not generation_key:
         return None
     try:
-        result = get_review_audit_store().get_related_evaluations(repository, "issue", str(target_number), review_kind=review_kind)
+        record = get_review_audit_store().find_finished_evaluation(
+            repository,
+            "issue",
+            str(target_number),
+            review_kind,
+            generation_key,
+            (ExecutionMode.EXECUTED, ExecutionMode.LOCAL_ONLY),
+        )
     except Exception:
         logger.opt(exception=True).warning("Issue review audit: failed to look up reusable source review")
         return None
@@ -224,11 +259,7 @@ def find_reusable_source_review_id(
     # ``generation_key``. ``policy_identity`` is accepted for documentation
     # symmetry with the PR adapter but is not needed as an extra filter.
     del policy_identity
-    candidates = [record for record in result.records if record.reviewed_generation == generation_key and record.execution_mode == ExecutionMode.EXECUTED and record.lifecycle == EvaluationLifecycle.FINISHED]
-    if not candidates:
-        return None
-    latest = max(candidates, key=lambda record: record.creation_sequence)
-    return latest.review_id
+    return record.review_id if record is not None else None
 
 
 def run_traced_review(
@@ -254,14 +285,9 @@ def run_traced_review(
     interactions captured during ``fn()`` are attributable back to this
     review_id (``ReviewAuditStore.get_evaluation`` only returns interactions
     for a review_id that already has an evaluation row). Because
-    ``ReviewAuditStore.update_evaluation`` has no parameter to set the
-    dedicated ``source_review_id`` column after that initial insert (only
-    the first ``record_evaluation`` call can set it, and REUSED cannot be
-    known before ``fn()`` runs), a REUSED classification's resolved
-    provenance is instead recorded inside ``native_report["reuse_source_review_id"]``,
-    which remains durable and queryable; the dedicated column stays ``None``
-    for these rows rather than being fabricated (REQ-005). ``review_audit.py``
-    is an existing, out-of-scope store and is not modified to close this gap.
+    REUSED cannot be known before ``fn()`` runs, so its exact producer is set
+    atomically with the terminal update in both the dedicated
+    ``source_review_id`` column and the normalized report (REQ-005).
 
     Every audit-recording step is wrapped in a narrow try/except that only
     logs: a raised exception from ``fn()`` is always re-raised unchanged, and
@@ -274,6 +300,14 @@ def run_traced_review(
 
     review_id = _new_id()
     generation_hint = str((facts or {}).get("validation_identity") or "")
+    queued_time = str((facts or {}).get("audit_queued_time") or _now_iso())
+    start_time = _now_iso()
+    identity = (facts or {}).get("audit_identity")
+    identity_dict = dataclasses.asdict(identity) if dataclasses.is_dataclass(identity) and not isinstance(identity, type) else None
+    policy_identity = str(identity_dict.get("policy_identity") or "") if identity_dict else ""
+    membership = None
+    if identity_dict is not None:
+        membership = str(identity_dict)
     try:
         record = ReviewAuditRecord(
             review_id=review_id,
@@ -283,11 +317,11 @@ def run_traced_review(
             review_kind=review_kind,
             origin=origin,
             process_identity=str(os.getpid()),
-            creation_time=_now_iso(),
+            creation_time=queued_time,
             creation_sequence=_monotonic_sequence(),
             reviewed_generation=generation_hint,
-            policy_identity="",
-            related_issue_membership=None,
+            policy_identity=policy_identity,
+            related_issue_membership=membership,
             diagnostic_execution_references=None,
             lifecycle=EvaluationLifecycle.QUEUED,
             execution_mode=ExecutionMode.UNKNOWN,
@@ -305,6 +339,8 @@ def run_traced_review(
     except Exception:
         logger.opt(exception=True).warning(f"Issue review audit: failed to open evaluation {review_id}")
 
+    observation = _ObservedReview()
+    observation_token = _observed_review.set(observation)
     try:
         with bind_review_context(
             review_id=review_id,
@@ -321,25 +357,47 @@ def run_traced_review(
             repository=repository,
             target_number=target_number,
             review_kind=review_kind,
-            decision=None,
+            decision=observation.decision,
+            raised=True,
+            observation=observation,
+            queued_time=queued_time,
+            start_time=start_time,
         )
         raise
+    finally:
+        _observed_review.reset(observation_token)
     _finish_traced_review_best_effort(
         review_id=review_id,
         repository=repository,
         target_number=target_number,
         review_kind=review_kind,
         decision=decision,
+        raised=False,
+        observation=observation,
+        queued_time=queued_time,
+        start_time=start_time,
     )
     return decision
 
 
-def _finish_traced_review_best_effort(*, review_id: str, repository: str, target_number: int, review_kind: str, decision: Any) -> None:
-    invoked = False
+def _finish_traced_review_best_effort(
+    *,
+    review_id: str,
+    repository: str,
+    target_number: int,
+    review_kind: str,
+    decision: Any,
+    raised: bool,
+    observation: _ObservedReview,
+    queued_time: str,
+    start_time: str,
+) -> None:
+    invoked: Optional[bool] = False
     try:
         read = get_review_audit_store().get_evaluation(repository, review_id)
         invoked = bool(read.record and read.record.interactions)
     except Exception:
+        invoked = None
         logger.opt(exception=True).warning(f"Issue review audit: failed to inspect interactions for {review_id}")
 
     native_report: Optional[Dict[str, Any]]
@@ -350,27 +408,43 @@ def _finish_traced_review_best_effort(*, review_id: str, repository: str, target
         # treated like a local refusal (mirrors
         # pr_adversarial_audit.finish_executed_review's ``result is None``
         # branch).
-        execution_mode = ExecutionMode.EXECUTED if invoked else ExecutionMode.LOCAL_ONLY
+        execution_mode = ExecutionMode.EXECUTED if invoked is True else ExecutionMode.UNKNOWN
         native_verdict: Optional[str] = "ERROR"
         native_report = {
             "diagnostic_category": "unrecovered_exception",
             "diagnostic_reason": f"{review_kind} validation raised before producing a decision",
+            "observation_times": {"queued": queued_time, "started": start_time, "terminal": _now_iso()},
         }
     else:
         evaluation_source = getattr(decision, "evaluation_source", None)
-        if invoked:
+        if invoked is True:
             execution_mode = ExecutionMode.EXECUTED
         elif evaluation_source == "local-only":
             execution_mode = ExecutionMode.LOCAL_ONLY
+        elif invoked is None:
+            execution_mode = ExecutionMode.UNKNOWN
         else:
             execution_mode = ExecutionMode.REUSED
         native_verdict = str(getattr(decision, "verdict", None) or "ERROR")
         try:
             native_report = normalize_decision_for_audit(decision)
+            if raised:
+                native_report["business_exception_raised"] = True
+            if observation.authorization_disposition:
+                native_report["authorization_persistence"] = {
+                    "disposition": observation.authorization_disposition,
+                    "error": observation.authorization_error,
+                }
+            native_report["observation_times"] = {
+                "queued": queued_time,
+                "started": start_time,
+                "terminal": _now_iso(),
+            }
         except Exception:
             logger.opt(exception=True).warning(f"Issue review audit: failed to normalize decision for {review_id}")
             native_report = None
 
+    source_review_id: Optional[str] = None
     if execution_mode == ExecutionMode.REUSED and native_report is not None:
         try:
             identity = getattr(decision, "identity", None)
@@ -394,6 +468,7 @@ def _finish_traced_review_best_effort(*, review_id: str, repository: str, target
         execution_mode=execution_mode,
         native_verdict=native_verdict,
         native_report=native_report,
+        source_review_id=source_review_id,
     )
 
 
@@ -410,11 +485,10 @@ def record_effect(
     """Append one external-effect observation for the review that produced this decision.
 
     Mirrors ``pr_adversarial_audit.record_effect`` (REQ-006, REQ-007):
-    observation-only, best-effort, and a no-op when no owning EXECUTED
-    review_id can be found for ``generation_key`` (a legacy decision
-    predating this audit adapter, or one whose executing review was never
-    durably recorded). Never fails the caller and never changes publication
-    behavior or scheduling.
+    observation-only and best-effort. When an owning producer cannot be
+    found, an explicitly source-unavailable REUSED observation owns the
+    effect; it is never misrepresented as an execution. Never fails the
+    caller and never changes publication behavior or scheduling.
     """
     try:
         review_id = find_reusable_source_review_id(
@@ -425,7 +499,32 @@ def record_effect(
             policy_identity=policy_identity,
         )
         if not review_id:
-            return
+            # Legacy decisions and audit outages still need an honest effect
+            # observation.  This row is explicitly source-unavailable and is
+            # never represented as a model execution.
+            review_id = _new_id()
+            _record_evaluation_best_effort(
+                ReviewAuditRecord(
+                    review_id=review_id,
+                    repository=repository,
+                    target_type="issue",
+                    target_number=str(target_number),
+                    review_kind=review_kind,
+                    origin="issue_review_audit.record_effect:source-unavailable",
+                    process_identity=str(os.getpid()),
+                    creation_time=_now_iso(),
+                    creation_sequence=_monotonic_sequence(),
+                    reviewed_generation=generation_key or "",
+                    policy_identity=policy_identity or "",
+                    related_issue_membership=None,
+                    diagnostic_execution_references=None,
+                    lifecycle=EvaluationLifecycle.FINISHED,
+                    execution_mode=ExecutionMode.REUSED,
+                    native_verdict=None,
+                    native_report={"source_unavailable": True},
+                    source_review_id=None,
+                )
+            )
         effect = ReviewEffectRecord(
             review_id=review_id,
             effect_id=_new_id(),

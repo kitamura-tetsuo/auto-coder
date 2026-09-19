@@ -536,14 +536,19 @@ class SpecificationValidationLifecycle:
         REQ-003/REQ-009). An ERROR decision is never cached, so there is
         nothing further to protect once decide() returns it.
         """
+        from .review_capture.issue_review_audit import observe_authorization_persistence, observe_native_decision
+
+        observe_native_decision(decision)
         if decision.verdict in {"READY", "BLOCKED"}:
             try:
                 self.store.save(decision)
             except Exception as exc:
+                observe_authorization_persistence("failed", str(exc))
                 handle = take_pending_invocation_handle()
                 if handle is not None:
                     handle.record_checkpoint_attempt_failed(str(exc))
                 raise
+            observe_authorization_persistence("confirmed")
         handle = take_pending_invocation_handle()
         if handle is not None:
             handle.confirm_settled()
