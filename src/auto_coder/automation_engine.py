@@ -649,7 +649,25 @@ class _ValidationPublicationStageHandler:
             else:
                 side_effect_error = validator.apply_blocked(engine.github, decision, lambda: engine._standalone_validation_is_current(repo_name, decision))
         except GitHubRequestError as exc:
+            issue_review_audit.record_effect(
+                repository=repo_name,
+                target_number=issue_number,
+                review_kind=issue_review_audit.REVIEW_KIND_ISSUE_SPECIFICATION,
+                generation_key=decision.identity.key,
+                policy_identity=decision.identity.policy_identity,
+                disposition="failed",
+                details={"recovery": True, "error": str(exc)},
+            )
             return StageOutcome(error=exc)
+        issue_review_audit.record_effect(
+            repository=repo_name,
+            target_number=issue_number,
+            review_kind=issue_review_audit.REVIEW_KIND_ISSUE_SPECIFICATION,
+            generation_key=decision.identity.key,
+            policy_identity=decision.identity.policy_identity,
+            disposition="failed" if side_effect_error else "unknown",
+            details={"recovery": True, "error": side_effect_error},
+        )
         if side_effect_error:
             logger.warning("Validation publication effects remain incomplete for Issue #{}: {}", issue_number, side_effect_error)
             return StageOutcome()
@@ -741,6 +759,15 @@ class _DecompositionPublicationStageHandler:
         if decision is None or decision.verdict != "BLOCKED":
             return StageOutcome(superseded=True)
         side_effect_error = validator.apply_blocked(engine.github, decision, lambda number: engine._fetch_authoritative_decomposition_set(repo_name, number))
+        issue_review_audit.record_effect(
+            repository=repo_name,
+            target_number=parent_number,
+            review_kind=issue_review_audit.REVIEW_KIND_ISSUE_DECOMPOSITION,
+            generation_key=decision.identity.key,
+            policy_identity=decision.identity.policy_identity,
+            disposition="failed" if side_effect_error else "unknown",
+            details={"recovery": True, "error": side_effect_error},
+        )
         if side_effect_error:
             logger.warning("Decomposition publication effects remain incomplete for parent Issue #{}: {}", parent_number, side_effect_error)
             return StageOutcome()
