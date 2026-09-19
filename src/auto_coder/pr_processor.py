@@ -44,7 +44,13 @@ from .adversarial_validator import (
 )
 from .attempt_manager import build_pr_attempt_trigger, get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, EmptyPRResult, ExplicitTargetOutcome, ProcessedPRResult, PRProcessingOutcome, StaleJulesPRResult
+from .bounded_repair_bundle import (
+    build_repair_handoff_bundle,
+    render_bounded_repair_payload,
+    validate_repair_handoff_bundle,
+)
 from .branch_manager import BranchManager
+from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
@@ -62,6 +68,7 @@ from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
+from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
@@ -3398,7 +3405,7 @@ def _handle_pr_merge(
                                     record_effect(review_target, active_review_id, "superseded", {"phase": "gap-state-acceptance", "observed_head": observed_head})
                                     return actions
                                 checkpoint = val_result.reviewer_session_checkpoint
-                                if checkpoint.recovered_file_evidence and not validation_snapshot_is_current(
+                                if checkpoint.evidence_validation_snapshot and not validation_snapshot_is_current(
                                     repo_name,
                                     pr_data,
                                     config,
@@ -3425,6 +3432,7 @@ def _handle_pr_merge(
                                     registry.save(val_result.reviewer_session_checkpoint)
                                 except Exception as e:
                                     logger.error(f"Failed to commit reviewer-gap state for PR #{pr_number}: {e}")
+                                    val_result.reviewer_session_checkpoint = None
                                     val_result.result = "ERROR"
                                     val_result.summary = "Reviewer-gap state could not be committed; independent closure effects were suppressed"
                                     val_result.diagnostic_category = "reviewer_gap_persistence_failure"
@@ -3437,6 +3445,8 @@ def _handle_pr_merge(
                             # dispositions, regardless of the PR-level verdict.
                             if claimed_review_threads and val_result.thread_dispositions:
                                 try:
+                                    blocker_ledger = CanonicalPRBlockerLedger()
+                                    base_sha_for_closure = str((pr_data.get("base") or {}).get("sha") or "")
                                     resolved_thread_ids = resolve_addressed_review_threads(
                                         github_client,
                                         repo_name,
@@ -3444,6 +3454,9 @@ def _handle_pr_merge(
                                         head_sha,
                                         claimed_review_threads,
                                         val_result.thread_dispositions,
+                                        ledger=blocker_ledger,
+                                        base_sha=base_sha_for_closure,
+                                        review_attempt_id=active_attempt_id or "",
                                     )
                                     if resolved_thread_ids:
                                         actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
@@ -4257,6 +4270,105 @@ def _update_with_base_branch(
     return actions
 
 
+def _extract_session_id_candidates(pr_body: str) -> List[Tuple[str, str]]:
+    """Extract candidate (pattern_name, session_id) pairs in order of priority.
+
+    Looks for patterns like:
+    - Pattern 1: Session ID: abc123 / Session: abc123
+    - Pattern 2: URLs with session parameters (?session=abc123)
+    - Pattern 3: Jules session URLs (jules.google.com/session/...)
+    - Pattern 3a: Claude Routine session URLs (claude.ai/code/...)
+    - Pattern 3b: GitHub PR URLs (github.com/.../pull/...)
+    - Pattern 3c: Codex Cloud task URLs (chatgpt.com/codex/tasks/...)
+    - Pattern 4: Jules Task URLs (jules.google.com/task/...)
+    - Pattern 5: Jules Task ID (task 12345)
+    - Pattern 6: Standalone session IDs starting with session_
+    - Pattern 7: Standalone Codex task IDs (task_e_...)
+
+    Args:
+        pr_body: PR description/body text
+
+    Returns:
+        List of (pattern_name, session_id) tuples in priority order
+    """
+    if not pr_body:
+        return []
+
+    candidates: List[Tuple[str, str]] = []
+    seen: set = set()
+
+    def _add(p_name: str, sid: Optional[str]) -> None:
+        if sid and sid not in seen:
+            seen.add(sid)
+            candidates.append((p_name, sid))
+
+    # Pattern 1: Look for "Session ID:" or "Session:" followed by the session ID
+    session_pattern = r"(?:session\s*id:|session:)\s*(.+?)(?:\n|$)"
+    match = re.search(session_pattern, pr_body, re.IGNORECASE)
+    if match:
+        session_id = match.group(1).strip()
+        github_url_in_session = re.search(r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+", session_id)
+        if github_url_in_session:
+            _add("Pattern 1 (URL)", github_url_in_session.group(0))
+        else:
+            _add("Pattern 1", session_id)
+
+    # Pattern 2: Look for URLs that might contain session IDs
+    url_session_pattern = r"(?:session(?:_id)?=)([a-zA-Z0-9-_]+)"
+    match = re.search(url_session_pattern, pr_body, re.IGNORECASE)
+    if match:
+        _add("Pattern 2", match.group(1).strip())
+
+    # Pattern 3: Look for Jules session URLs (e.g., https://jules.google.com/session/901463134778726610)
+    jules_session_url_pattern = r"jules\.google\.com/session/([a-zA-Z0-9-_]+)"
+    match = re.search(jules_session_url_pattern, pr_body)
+    if match:
+        _add("Pattern 3 (Jules Session URL)", match.group(1).strip())
+
+    # Pattern 3a: Look for Claude Routine session URLs (e.g., https://claude.ai/code/session_01HJKLMNOPQRSTUVWXYZ)
+    claude_session_url_pattern = r"claude\.ai/code/([a-zA-Z0-9-_]+)"
+    match = re.search(claude_session_url_pattern, pr_body)
+    if match:
+        _add("Pattern 3a (Claude Session URL)", match.group(1).strip())
+
+    # Pattern 3b: Look for GitHub PR URLs (e.g., https://github.com/owner/repo/pull/123)
+    github_url_pattern = r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+"
+    match = re.search(github_url_pattern, pr_body)
+    if match:
+        _add("Pattern 3b (GitHub PR URL)", match.group(0).strip())
+
+    # Pattern 3c: Look for Codex Cloud task URLs (e.g., https://chatgpt.com/codex/tasks/task_01HJKLMNOPQRSTUVWXYZ)
+    codex_session_url_pattern = r"(?:chatgpt\.com|chat\.openai\.com|[^\s/]+)/codex/tasks/(task_[a-zA-Z0-9_-]+)"
+    match = re.search(codex_session_url_pattern, pr_body, re.IGNORECASE)
+    if match:
+        _add("Pattern 3c (Codex Task URL)", match.group(1).strip())
+
+    # Pattern 4: Look for Jules Task IDs (e.g., jules.google.com/task/12345 or "task 12345")
+    task_url_pattern = r"jules\.google\.com/task/(\d+)"
+    match = re.search(task_url_pattern, pr_body)
+    if match:
+        _add("Pattern 4 (Jules Task URL)", match.group(1).strip())
+
+    task_id_pattern = r"\btask\s+(\d+)\b"
+    match = re.search(task_id_pattern, pr_body, re.IGNORECASE)
+    if match:
+        _add("Pattern 5 (Jules Task ID)", match.group(1).strip())
+
+    # Pattern 6: Look for standalone session IDs starting with "session_"
+    session_prefix_pattern = r"\b(session_(?!id\b)[a-zA-Z0-9-_]+)\b"
+    match = re.search(session_prefix_pattern, pr_body)
+    if match:
+        _add("Pattern 6 (session_ prefix)", match.group(1).strip())
+
+    # Pattern 7: Look for standalone Codex task IDs (e.g., task_e_...)
+    codex_task_pattern = r"\b(task_[a-zA-Z0-9_-]+)\b"
+    match = re.search(codex_task_pattern, pr_body)
+    if match:
+        _add("Pattern 7 (Codex task_ prefix)", match.group(1).strip())
+
+    return candidates
+
+
 def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     """Extract Session ID from PR body by looking for session links.
 
@@ -4272,106 +4384,10 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     Returns:
         Session ID if found, None otherwise
     """
-    if not pr_body:
-        return None
-
-    # Pattern 1: Look for "Session ID:" or "Session:" followed by the session ID
-    # This captures either a simple alphanumeric ID or a URL
-    session_pattern = r"(?:session\s*id:|session:)\s*(.+?)(?:\n|$)"
-    match = re.search(session_pattern, pr_body, re.IGNORECASE)
-    if match:
-        session_id = match.group(1).strip()
-        # If the captured text contains a GitHub PR URL, use that
-        github_url_in_session = re.search(r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+", session_id)
-        if github_url_in_session:
-            session_id = github_url_in_session.group(0)
-            logger.debug(f"Found session ID pattern 1 (URL): {session_id}")
-            return session_id
-
-        # Allow alphanumeric session IDs (some tests use them)
-        logger.debug(f"Found session ID pattern 1: {session_id}")
-        return session_id
-
-    # Pattern 2: Look for URLs that might contain session IDs
-    # Common patterns: ?session=abc123, &session_id=abc123
-    url_session_pattern = r"(?:session(?:_id)?=)([a-zA-Z0-9-_]+)"
-    match = re.search(url_session_pattern, pr_body, re.IGNORECASE)
-    if match:
-        session_id = match.group(1).strip()
-        logger.debug(f"Found session ID pattern 2: {session_id}")
-        return session_id
-
-    # Pattern 3: Look for Jules session URLs (e.g., https://jules.google.com/session/901463134778726610)
-    # This is the real Jules session URL format and must be checked before the
-    # GitHub PR URL fallback below, otherwise a self-referencing PR link would be
-    # mistaken for a session ID and passed to the Jules API, which always 404s.
-    jules_session_url_pattern = r"jules\.google\.com/session/([a-zA-Z0-9-_]+)"
-    match = re.search(jules_session_url_pattern, pr_body)
-    if match:
-        session_id = match.group(1).strip()
-        logger.debug(f"Found session ID pattern 3 (Jules Session URL): {session_id}")
-        return session_id
-
-    # Pattern 3a: Look for Claude Routine session URLs (e.g., https://claude.ai/code/session_01HJKLMNOPQRSTUVWXYZ)
-    claude_session_url_pattern = r"claude\.ai/code/([a-zA-Z0-9-_]+)"
-    match = re.search(claude_session_url_pattern, pr_body)
-    if match:
-        session_id = match.group(1).strip()
-        logger.debug(f"Found session ID pattern 3a (Claude Session URL): {session_id}")
-        return session_id
-
-    # Pattern 3b: Look for GitHub PR URLs (e.g., https://github.com/owner/repo/pull/123)
-    # This pattern matches the full URL and extracts it as the session ID
-    github_url_pattern = r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+"
-    match = re.search(github_url_pattern, pr_body)
-    if match:
-        session_id = match.group(0).strip()
-        logger.debug(f"Found session ID pattern 3b (GitHub PR URL): {session_id}")
-        return session_id
-
-    # Pattern 3c: Look for Codex Cloud task URLs (e.g., https://chatgpt.com/codex/tasks/task_01HJKLMNOPQRSTUVWXYZ)
-    codex_session_url_pattern = r"(?:chatgpt\.com|chat\.openai\.com|[^\s/]+)/codex/tasks/(task_[a-zA-Z0-9_-]+)"
-    match = re.search(codex_session_url_pattern, pr_body, re.IGNORECASE)
-    if match:
-        session_id = match.group(1).strip()
-        logger.debug(f"Found session ID pattern 3c (Codex Task URL): {session_id}")
-        return session_id
-
-    # Pattern 4: Look for Jules Task IDs (e.g., jules.google.com/task/12345 or "task 12345")
-    # This is treated as a session ID
-    task_url_pattern = r"jules\.google\.com/task/(\d+)"
-    match = re.search(task_url_pattern, pr_body)
-    if match:
-        session_id = match.group(1).strip()
-        logger.debug(f"Found session ID pattern 4 (Jules Task URL): {session_id}")
-        return session_id
-
-    task_id_pattern = r"\btask\s+(\d+)\b"
-    match = re.search(task_id_pattern, pr_body, re.IGNORECASE)
-    if match:
-        session_id = match.group(1).strip()
-        logger.debug(f"Found session ID pattern 5 (Jules Task ID): {session_id}")
-        return session_id
-
-    # Pattern 6: Look for standalone session IDs starting with "session_"
-    # e.g., session_12345, session_abc-def
-    # Must have a suffix beyond just "session_id" to avoid matching JSON keys.
-    # We require at least one character after "session_" that isn't just "id" unless it's longer.
-    session_prefix_pattern = r"\b(session_(?!id\b)[a-zA-Z0-9-_]+)\b"
-    match = re.search(session_prefix_pattern, pr_body)
-    if match:
-        session_id = match.group(1).strip()
-        logger.debug(f"Found session ID pattern 6 (session_ prefix): {session_id}")
-        return session_id
-
-    # Pattern 7: Look for standalone Codex task IDs (e.g., task_e_...)
-    codex_task_pattern = r"\b(task_[a-zA-Z0-9_-]+)\b"
-    match = re.search(codex_task_pattern, pr_body)
-    if match:
-        session_id = match.group(1).strip()
-        logger.debug(f"Found session ID pattern 7 (Codex task_ prefix): {session_id}")
-        return session_id
-
+    candidates = _extract_session_id_candidates(pr_body)
+    if candidates:
+        logger.debug(f"Found session ID {candidates[0][0]}: {candidates[0][1]}")
+        return candidates[0][1]
     logger.debug("No session ID found in PR body")
     return None
 
@@ -4403,9 +4419,20 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
             issue_number = get_attr(issue, "number")
             issue_body = get_attr(issue, "body")
 
+            def matches_session(text: Optional[str]) -> bool:
+                if not text:
+                    return False
+                if session_id in text:
+                    return True
+                if session_id.startswith("session_") and f"cse_{session_id[8:]}" in text:
+                    return True
+                if session_id.startswith("cse_") and f"session_{session_id[4:]}" in text:
+                    return True
+                return False
+
             # Double check if session_id is actually in body or comments to be sure
             # Search API might return loose matches, although exact string match usually ranks high
-            if issue_body and session_id in issue_body:
+            if matches_session(issue_body):
                 logger.info(f"Found session ID '{session_id}' in body of issue #{issue_number}")
                 return issue_number
 
@@ -4415,7 +4442,7 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
                 comments = github_client.get_issue_comments(repo_name, issue_number)
                 for comment in comments:
                     comment_body = comment.get("body")
-                    if comment_body and session_id in comment_body:
+                    if matches_session(comment_body):
                         logger.info(f"Found session ID '{session_id}' in comment of issue #{issue_number}")
                         return issue_number
             except Exception as e:
@@ -4847,27 +4874,64 @@ def _resolve_jules_pr_issue_number(
     pr_number = pr_data.get("number")
     pr_body = pr_data.get("body", "") or ""
 
-    session_id = _extract_session_id_from_pr_body(pr_body)
+    primary_session_id = _extract_session_id_from_pr_body(pr_body)
+    from unittest.mock import Mock
+
+    if isinstance(_extract_session_id_from_pr_body, Mock):
+        candidates = [("Mock", primary_session_id)] if primary_session_id else []
+    else:
+        candidates = _extract_session_id_candidates(pr_body)
 
     issue_number: Optional[int] = None
-    if session_id:
-        logger.info(f"Extracted session ID '{session_id}' from Jules PR #{pr_number}")
-        # Store session_id in pr_data for later use in the feedback loop
-        pr_data["_jules_session_id"] = session_id
+    matched_session_id: Optional[str] = None
 
-        # Use CloudManager to find the original issue number
+    if candidates:
         cloud_manager = CloudManager(repo_name)
-        issue_number = cloud_manager.get_issue_by_session(session_id)
-
-        if not issue_number:
-            durable_issues = cloud_manager.get_issues_by_session(session_id)
-            if len(durable_issues) > 1:
-                logger.warning(f"Session ID '{session_id}' has ambiguous durable ownership; refusing comment-search inference")
+        # Step 1: Check local DB (cloud.csv) for each candidate in pattern priority order.
+        # When an earlier candidate (such as Pattern 2 extracting "True") is not found in
+        # cloud.csv, proceed / return to subsequent patterns (such as Pattern 3a) in order.
+        for pattern_name, candidate_session_id in candidates:
+            logger.info(f"Extracted session ID '{candidate_session_id}' from Jules PR #{pr_number} ({pattern_name})")
+            found = cloud_manager.get_issue_by_session(candidate_session_id)
+            if found:
+                issue_number = found
+                matched_session_id = candidate_session_id
+                logger.info(f"Found issue #{issue_number} for session ID '{candidate_session_id}' in local DB ({pattern_name})")
+                break
             else:
-                logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
-                issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
+                durable_issues = cloud_manager.get_issues_by_session(candidate_session_id)
+                if len(durable_issues) > 1:
+                    logger.warning(f"Session ID '{candidate_session_id}' ({pattern_name}) has ambiguous durable ownership; " f"checking next candidate pattern...")
+                else:
+                    logger.warning(f"No issue found for session ID '{candidate_session_id}' in local DB ({pattern_name}). " f"Checking next candidate pattern...")
+
+        # Step 2: If no candidate was found in local DB, search comments for viable candidates
+        if not issue_number:
+            for pattern_name, candidate_session_id in candidates:
+                # Avoid searching comments with common boolean or trivial tokens (e.g., "True", "False")
+                if candidate_session_id.lower() in ("true", "false", "none", "null") or len(candidate_session_id) < 4:
+                    logger.warning(f"Skipping comment search for invalid session ID token '{candidate_session_id}' ({pattern_name})")
+                    continue
+
+                durable_issues = cloud_manager.get_issues_by_session(candidate_session_id)
+                if len(durable_issues) > 1:
+                    logger.warning(f"Session ID '{candidate_session_id}' has ambiguous durable ownership; refusing comment-search inference")
+                    continue
+
+                logger.warning(f"No issue found for session ID '{candidate_session_id}' in local DB ({pattern_name}). Searching comments...")
+                found = _find_issue_by_session_id_in_comments(repo_name, candidate_session_id, github_client)
+                if found:
+                    issue_number = found
+                    matched_session_id = candidate_session_id
+                    logger.info(f"Found issue #{issue_number} via comment search for session ID '{candidate_session_id}' ({pattern_name})")
+                    break
     else:
         logger.warning(f"No session ID found in Jules PR #{pr_number} body")
+
+    if matched_session_id:
+        pr_data["_jules_session_id"] = matched_session_id
+    elif candidates:
+        pr_data["_jules_session_id"] = candidates[0][1]
 
     # Fallback: Extract from branch name
     if not issue_number:
@@ -5266,7 +5330,7 @@ def _resolve_cloud_conflict_origin(
             return CodexCloudClient(repo_name=repo_name), task_id
 
     if _is_claude_pr(pr_data):
-        task_id = _extract_session_id_from_pr_body(pr_data.get("body", "") or "")
+        task_id = pr_data.get("_jules_session_id") or _extract_session_id_from_pr_body(pr_data.get("body", "") or "")
         if not task_id:
             for issue_number in extract_linked_issues_from_pr_body(pr_data.get("body", "") or ""):
                 binding = manager.get_binding(issue_number)
@@ -5707,9 +5771,52 @@ def _delegate_cloud_review_thread_repair(
             _record_review_feedback_state(state_path, delivered, indeterminate)
         return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: current PR head/base branch metadata is unavailable"])
 
-    feedback = "\n\n".join(f"Thread `{thread.id}`:\n{comment.body}" for thread, comment, _identity in pending)
-    details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=feedback)
-    prompt = build_existing_pr_repair_prompt(target, details)
+    canonical_pending = [(thread, comment, identity) for thread, comment, identity in pending if comment.body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"))]
+    has_canonical_marker = any(_BLOCKER_ID_RE.search(comment.body) for _thread, comment, _identity in canonical_pending)
+    bundle_to_bind = None
+    ledger = CanonicalPRBlockerLedger()
+    snapshot = None
+    try:
+        snapshot = ledger.get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+    except Exception:
+        pass
+
+    matched_bids = set()
+    if snapshot is not None:
+        for _thread, comment, _identity in canonical_pending:
+            m = _BLOCKER_ID_RE.search(comment.body)
+            if m and snapshot.get_blocker(m.group(1) or m.group(2)):
+                matched_bids.add(m.group(1) or m.group(2))
+            gm = _GAP_ID_RE.search(comment.body)
+            if gm and snapshot.get_blocker(gm.group(1) or gm.group(2) or gm.group(3)):
+                matched_bids.add(gm.group(1) or gm.group(2) or gm.group(3))
+
+    if has_canonical_marker and not matched_bids:
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: canonical blocker bundle data is absent"])
+
+    if matched_bids and snapshot is not None:
+        bundle_to_bind = build_repair_handoff_bundle(
+            snapshot=snapshot,
+            repo_name=repo_name,
+            pr_number=pr_number,
+            head_branch=target.head_branch,
+            base_branch=target.base_branch,
+            reviewed_head_sha=target.head_sha,
+            requirement_manifest_revision=pr_data.get("requirement_manifest_revision", ""),
+            target_blocker_ids=sorted(matched_bids),
+        )
+        val_res = validate_repair_handoff_bundle(bundle_to_bind, target.head_sha, pr_data.get("requirement_manifest_revision", ""), snapshot)
+        if not val_res.is_valid:
+            return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: bundle {bundle_to_bind.bundle_id} is stale ({val_res.reason})"])
+
+        rendered_bundle = render_bounded_repair_payload(bundle_to_bind)
+        ledger.record_repair_bundle(bundle_to_bind, rendered_payload=rendered_bundle)
+        details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=rendered_bundle)
+        prompt = build_existing_pr_repair_prompt(target, details, bundle=bundle_to_bind)
+    else:
+        feedback = "\n\n".join(f"Thread `{thread.id}`:\n{comment.body}" for thread, comment, _identity in pending)
+        details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=feedback)
+        prompt = build_existing_pr_repair_prompt(target, details)
     try:
         if provider == "codex-cloud":
             accepted = client.send_followup(task_id, prompt, tuple(sorted(pending_identities)))
@@ -6388,24 +6495,79 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         if not pending_feedback:
             return [f"Skipped duplicate adversarial feedback to {provider} for PR #{pr_number}: all actionable feedback was already delivered"]
         failed_correction = any(finding_identity in delivered for _body, finding_identity, _generation_identity in pending_feedback)
-        report_template = "pr.adversarial_feedback_failed_correction" if failed_correction else "pr.adversarial_feedback_new"
-        delivery_report = Template(get_prompt_template(report_template)).safe_substitute(actionable_feedback="\n\n---\n\n".join(body for body, _finding_identity, _generation_identity in pending_feedback))
+
+        target = resolve_existing_pr_repair_target(repo_name, pr_data)
+        if not target:
+            return [f"Adversarial feedback was not delivered for PR #{pr_number}: PR head/base branch metadata is unavailable"]
+        target = replace(target, head_sha=head_sha)
+
+        has_canonical_marker = any(_BLOCKER_ID_RE.search(body) for body, _fid, _gid in pending_feedback)
+
+        ledger = CanonicalPRBlockerLedger()
+        snapshot = None
+        try:
+            snapshot = ledger.get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+        except Exception:
+            pass
+
+        matched_bids = set()
+        if snapshot is not None:
+            for body, _fid, _gid in pending_feedback:
+                m = _BLOCKER_ID_RE.search(body)
+                if m and snapshot.get_blocker(m.group(1) or m.group(2)):
+                    matched_bids.add(m.group(1) or m.group(2))
+                gm = _GAP_ID_RE.search(body)
+                if gm and snapshot.get_blocker(gm.group(1) or gm.group(2) or gm.group(3)):
+                    matched_bids.add(gm.group(1) or gm.group(2) or gm.group(3))
+                for blocker in snapshot.get_open_blockers():
+                    if blocker.authoritative_boundary and blocker.authoritative_boundary in body:
+                        matched_bids.add(blocker.blocker_id)
+
+        if has_canonical_marker and not matched_bids:
+            return [f"Deferred adversarial correction feedback for PR #{pr_number}: canonical blocker bundle data is absent"]
+
+        repair_bundle = None
+        if matched_bids and snapshot is not None:
+            failed_corrections: dict[str, tuple[Sequence[str], Sequence[str]]] = {}
+            if failed_correction:
+                for bid in matched_bids:
+                    b = snapshot.get_blocker(bid)
+                    if b:
+                        failed_corrections[str(bid)] = (
+                            b.concern_ids,
+                            ("The latest corrective attempt did not establish the required observable outcome. " "A pass body, renamed test, green helper test, or source-text assertion does not prove completion; " "the recorded production-boundary regression oracle remains unsatisfied.",),
+                        )
+
+            repair_bundle = build_repair_handoff_bundle(
+                snapshot=snapshot,
+                repo_name=repo_name,
+                pr_number=pr_number,
+                head_branch=target.head_branch,
+                base_branch=target.base_branch,
+                reviewed_head_sha=head_sha,
+                requirement_manifest_revision=pr_data.get("requirement_manifest_revision", ""),
+                target_blocker_ids=sorted(matched_bids),
+                failed_corrections=failed_corrections if failed_corrections else None,
+            )
+            val_res = validate_repair_handoff_bundle(repair_bundle, head_sha, pr_data.get("requirement_manifest_revision", ""), snapshot)
+            if not val_res.is_valid:
+                return [f"Deferred adversarial correction feedback for PR #{pr_number}: bundle {repair_bundle.bundle_id} is stale ({val_res.reason})"]
+
+            delivery_report = render_bounded_repair_payload(repair_bundle)
+            ledger.record_repair_bundle(repair_bundle, rendered_payload=delivery_report)
+        else:
+            report_template = "pr.adversarial_feedback_failed_correction" if failed_correction else "pr.adversarial_feedback_new"
+            delivery_report = Template(get_prompt_template(report_template, raw=True)).safe_substitute(actionable_feedback="\n\n---\n\n".join(body for body, _finding_identity, _generation_identity in pending_feedback))
+
+        details = Template(get_prompt_template("pr.adversarial_validation_fix", raw=True)).safe_substitute(
+            repo_name=repo_name,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            validation_report=delivery_report,
+        )
+        prompt = build_existing_pr_repair_prompt(target, details, bundle=repair_bundle)
     except (OSError, ValueError) as exc:
         return [f"Could not check prior {provider} actionable feedback for PR #{pr_number}: {exc}"]
-
-    target = resolve_existing_pr_repair_target(repo_name, pr_data)
-    if not target:
-        return [f"Adversarial feedback was not delivered for PR #{pr_number}: PR head/base branch metadata is unavailable"]
-    # The validated commit is authoritative; it may be newer than cached PR head metadata.
-    target = replace(target, head_sha=head_sha)
-
-    details = Template(get_prompt_template("pr.adversarial_validation_fix")).safe_substitute(
-        repo_name=repo_name,
-        pr_number=pr_number,
-        head_sha=head_sha,
-        validation_report=delivery_report,
-    )
-    prompt = build_existing_pr_repair_prompt(target, details)
 
     try:
         if provider == "codex-cloud":

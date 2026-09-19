@@ -53,14 +53,36 @@ def resolve_existing_pr_repair_target(repo_name: str, pr_data: Dict[str, Any]) -
     )
 
 
-def build_existing_pr_repair_prompt(target: ExistingPrRepairTarget, details: str) -> str:
+def build_existing_pr_repair_prompt(
+    target: ExistingPrRepairTarget,
+    details: str,
+    *,
+    bundle: Optional[Any] = None,
+) -> str:
     """Render a PR-repair follow-up prompt that enforces the same-PR invariant.
 
     ``details`` carries the workflow-specific corrective instructions
     (adversarial-validation findings, merge-conflict resolution steps, CI
     failure context, or review feedback). The invariant preamble/suffix is
     identical for every workflow so it cannot be independently weakened.
+
+    When ``bundle`` is provided, validates that the bundle is bound to the
+    exact target PR and head commit (REQ-003, REQ-009).
     """
+    if bundle is not None:
+        from .bounded_repair_bundle import BundleStaleError
+
+        if bundle.reviewed_head_sha != target.head_sha:
+            raise BundleStaleError(
+                bundle.bundle_id,
+                f"Bundle reviewed head '{bundle.reviewed_head_sha[:8]}' does not match target head '{target.head_sha[:8]}'",
+            )
+        if bundle.pr_number != target.pr_number or bundle.repo_name != target.repo_name:
+            raise BundleStaleError(
+                bundle.bundle_id,
+                f"Bundle target '{bundle.repo_name}#{bundle.pr_number}' does not match target '{target.repo_name}#{target.pr_number}'",
+            )
+
     return render_prompt(
         "pr.existing_pr_repair",
         repo_name=target.repo_name,
@@ -70,3 +92,18 @@ def build_existing_pr_repair_prompt(target: ExistingPrRepairTarget, details: str
         head_sha=target.head_sha,
         details=details,
     )
+
+
+def build_bounded_existing_pr_repair_prompt(
+    target: ExistingPrRepairTarget,
+    bundle: Any,
+    *,
+    extra_details: Optional[str] = None,
+) -> str:
+    """Render a PR-repair prompt driven directly by a bounded repair bundle (REQ-001..REQ-003)."""
+    from .bounded_repair_bundle import render_bounded_repair_payload
+
+    payload = render_bounded_repair_payload(bundle)
+    if extra_details:
+        payload = f"{payload}\n\n---\n\n{extra_details}"
+    return build_existing_pr_repair_prompt(target, payload, bundle=bundle)

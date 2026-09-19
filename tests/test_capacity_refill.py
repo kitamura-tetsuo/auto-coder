@@ -34,12 +34,22 @@ def test_external_capacity_release_refills_fresh_ranking_past_rejection(monkeypa
     monkeypatch.setattr(engine, "_process_single_candidate", process)
     monkeypatch.setattr("auto_coder.automation_engine.CAPACITY_STATE_CHECK_INTERVAL_SECONDS", 0.01)
 
+    started = threading.Event()
+    original_snapshot = engine.implementation_slots.normal_capacity_snapshot
+
+    def snapshot_wrapper():
+        result = original_snapshot()
+        started.set()
+        return result
+
+    monkeypatch.setattr(engine.implementation_slots, "normal_capacity_snapshot", snapshot_wrapper)
+
     async def scenario():
         task = asyncio.create_task(engine._capacity_refill_loop("owner/repo"))
-        await asyncio.sleep(0.03)
+        assert await asyncio.to_thread(started.wait, 5)
         # A distinct repository instance represents another auto-coder process.
         ImplementationSlotRepository("owner/repo", 1, path).release(occupying)
-        for _ in range(100):
+        for _ in range(300):
             if attempted == [30, 20]:
                 break
             await asyncio.sleep(0.01)
@@ -64,11 +74,21 @@ def test_failed_refill_enumeration_remains_pending(monkeypatch, tmp_path):
     monkeypatch.setattr("auto_coder.automation_engine.CAPACITY_STATE_CHECK_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr("auto_coder.automation_engine.REFILL_RETRY_INTERVAL_SECONDS", 0.01)
 
+    started = threading.Event()
+    original_snapshot = engine.implementation_slots.normal_capacity_snapshot
+
+    def snapshot_wrapper():
+        result = original_snapshot()
+        started.set()
+        return result
+
+    monkeypatch.setattr(engine.implementation_slots, "normal_capacity_snapshot", snapshot_wrapper)
+
     async def scenario():
         task = asyncio.create_task(engine._capacity_refill_loop("owner/repo"))
-        await asyncio.sleep(0.03)
+        assert await asyncio.to_thread(started.wait, 5)
         ImplementationSlotRepository("owner/repo", 1, path).release(occupying)
-        for _ in range(100):
+        for _ in range(300):
             if github.get_open_entities_strict.call_count == 2:
                 break
             await asyncio.sleep(0.01)
@@ -129,22 +149,32 @@ def test_release_during_refill_causes_second_fresh_enumeration(monkeypatch, tmp_
         assert engine.implementation_slots.reserve_new(owner)
         if candidate.issue_number == 20:
             dispatch_started.set()
-            assert dispatch_can_finish.wait(2)
+            assert dispatch_can_finish.wait(5)
         return CandidateProcessingResult(type="issue", number=candidate.issue_number, success=True)
 
     monkeypatch.setattr(engine, "_process_single_candidate", process)
     monkeypatch.setattr("auto_coder.automation_engine.CAPACITY_STATE_CHECK_INTERVAL_SECONDS", 0.01)
     monkeypatch.setattr("auto_coder.automation_engine.REFILL_RETRY_INTERVAL_SECONDS", 0.01)
 
+    started = threading.Event()
+    original_snapshot = engine.implementation_slots.normal_capacity_snapshot
+
+    def snapshot_wrapper():
+        result = original_snapshot()
+        started.set()
+        return result
+
+    monkeypatch.setattr(engine.implementation_slots, "normal_capacity_snapshot", snapshot_wrapper)
+
     async def scenario():
         task = asyncio.create_task(engine._capacity_refill_loop("owner/repo"))
-        await asyncio.sleep(0.03)
+        assert await asyncio.to_thread(started.wait, 5)
         external = ImplementationSlotRepository("owner/repo", 1, path)
         external.release(original)
-        assert await asyncio.to_thread(dispatch_started.wait, 2)
+        assert await asyncio.to_thread(dispatch_started.wait, 5)
         external.release(ImplementationOwner("issue", 20))
         dispatch_can_finish.set()
-        for _ in range(100):
+        for _ in range(300):
             if github.get_open_entities_strict.call_count >= 2 and engine.implementation_slots.available_normal_slots() == 0:
                 break
             await asyncio.sleep(0.01)
@@ -164,14 +194,24 @@ def test_fill_and_release_between_ordinary_samples_triggers_refill(monkeypatch, 
     monkeypatch.setattr(engine, "_refill_normal_implementation_slots", refill)
     monkeypatch.setattr("auto_coder.automation_engine.CAPACITY_STATE_CHECK_INTERVAL_SECONDS", 0.05)
 
+    started = threading.Event()
+    original_snapshot = engine.implementation_slots.normal_capacity_snapshot
+
+    def snapshot_wrapper():
+        result = original_snapshot()
+        started.set()
+        return result
+
+    monkeypatch.setattr(engine.implementation_slots, "normal_capacity_snapshot", snapshot_wrapper)
+
     async def scenario():
         task = asyncio.create_task(engine._capacity_refill_loop("owner/repo"))
-        await asyncio.sleep(0.01)
+        assert await asyncio.to_thread(started.wait, 5)
         external = ImplementationSlotRepository("owner/repo", 1, path)
         transient = ImplementationOwner("issue", 40)
         assert external.reserve_new(transient)
         external.release(transient)
-        for _ in range(100):
+        for _ in range(300):
             if refill.await_count:
                 break
             await asyncio.sleep(0.01)

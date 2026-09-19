@@ -3,6 +3,7 @@ Pytest configuration and fixtures for Auto-Coder tests.
 """
 
 import atexit
+import json
 import os
 import sys
 from pathlib import Path
@@ -824,11 +825,75 @@ def mock_backend_manager():
     return mock_manager
 
 
+_MIGRATED_CONTAINER_SCENARIOS = {
+    "test_ac001_container_executes_opencode_task_against_controlled_provider",
+    "test_ac002_effective_home_and_runtime_authentication",
+    "test_ac003_retained_and_isolated_native_state_between_channels",
+    "test_ac004_no_baked_credentials_or_unsolicited_provider_calls",
+    "test_ac005_documentation_matches_production_compose_and_route",
+}
+_opencode_live_test_reports: dict[str, dict[str, str]] = {}
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    if os.environ.get("AUTO_CODER_REQUIRE_OPENCODE_LIVE") == "1":
+        reports = _opencode_live_test_reports.setdefault(item.nodeid, {})
+        reports[rep.when] = rep.outcome
+        if rep.failed:
+            reports["status"] = "failed"
+        elif rep.skipped and reports.get("status") != "failed":
+            reports["status"] = "skipped"
+        elif rep.when == "call" and rep.passed and "status" not in reports:
+            reports["status"] = "passed"
+
+
 def pytest_sessionfinish(session, exitstatus):
     """
     Called after the entire test session finishes.
     Collects log if running via simple pytest command (not via local_test_log_collector.py).
     """
+    if os.environ.get("AUTO_CODER_REQUIRE_OPENCODE_LIVE") == "1":
+        failure_reasons = []
+
+        if not session.items:
+            failure_reasons.append("Empty live test selection (zero tests collected)")
+
+        collected_function_names = {item.name for item in session.items}
+        missing_scenarios = _MIGRATED_CONTAINER_SCENARIOS - collected_function_names
+        if missing_scenarios:
+            failure_reasons.append(f"Missing required container scenarios from collection: {sorted(missing_scenarios)}")
+
+        for item in session.items:
+            if item.name in _MIGRATED_CONTAINER_SCENARIOS:
+                reports = _opencode_live_test_reports.get(item.nodeid, {})
+                call_outcome = reports.get("call")
+                status = reports.get("status")
+                if status != "passed" or call_outcome != "passed":
+                    failure_reasons.append(f"Migrated scenario '{item.name}' did not execute to passing result: " f"status={status}, setup={reports.get('setup')}, call={call_outcome}, teardown={reports.get('teardown')}")
+
+        if failure_reasons:
+            session.exitstatus = 1
+            print("\n[opencode-live-tests] FAIL-CLOSED VALIDATION FAILED:", file=sys.stderr)
+            for reason in failure_reasons:
+                print(f"  - {reason}", file=sys.stderr)
+
+        try:
+            log_dir = Path("opencode-live-logs")
+            log_dir.mkdir(parents=True, exist_ok=True)
+            results_file = log_dir / "test-results.json"
+            summary = {
+                "exit_status": session.exitstatus,
+                "total_collected": len(session.items),
+                "selected_tests": [item.nodeid for item in session.items],
+                "test_reports": _opencode_live_test_reports,
+                "failure_reasons": failure_reasons,
+            }
+            results_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        except Exception as exc:
+            print(f"[opencode-live-tests] Could not write test-results.json: {exc}", file=sys.stderr)
     # Check if we are running via local_test_log_collector.py by checking an env var or arg
     # Ideally, local_test_log_collector.py could set an env var, but we didn't add that.
     # However, if we blindly save a log here, we might duplicate it if the runner also saves it.

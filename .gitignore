@@ -247,5 +247,8 @@ pyright_results.json
 /setup.py.backup
 /=1.0.0
 /<MagicMock*
+/opencode-live-logs/
+/pr-test-logs/
 
 node_modules/
+.vscode/launch.json

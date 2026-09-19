@@ -68,6 +68,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * Workflow files:
   * `.github/workflows/pr-tests.yml` (name: `PR Tests`)
   * `.github/workflows/browser-tests.yml` (name: `Browser Tests`)
+  * `.github/workflows/opencode-live-tests.yml` (name: `OpenCode Live Tests`)
   * `.github/workflows/update-version.yml` (name: `Update Version`)
 * Required jobs in `PR Tests`:
   * **Lint & Type Check** (black / isort / flake8 / mypy)
@@ -90,14 +91,25 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
   submodules), not just files changed in a PR or files already imported elsewhere.
   A detected type error fails the gate even when the offending line is unrelated to
   the PR's diff; there is no baseline/error-count allowance.
-* `PR Tests` excludes pytest tests marked `browser` (`-m "not browser"`) and does not
-  install Playwright browser binaries. `Browser Tests` is a separate, independently
+* `PR Tests` excludes pytest tests marked `browser` or `opencode_live`
+  (`-m "not browser and not opencode_live"`) and does not install Playwright browser
+  binaries or the OpenCode CLI. `Browser Tests` is a separate, independently
   triggered workflow that installs Playwright Chromium and runs exactly the tests
   marked `@pytest.mark.browser` (real headless-browser regressions such as
   `tests/test_dashboard_detail_scroll_stability.py`). Classify any new pytest test
   whose correctness oracle requires launching and driving a real browser with
   `@pytest.mark.browser` (or module-level `pytestmark = pytest.mark.browser`) so it
   is picked up automatically by `Browser Tests` and excluded from `PR Tests`.
+  `OpenCode Live Tests` installs the pinned `opencode` CLI, explicitly prepares the
+  production runtime image for the checked-out commit (`scripts/prepare_opencode_image.py`),
+  and runs all tests marked `@pytest.mark.opencode_live` (both real-CLI host regressions such
+  as `tests/test_opencode_noedit_live.py` and container runtime verification scenarios in
+  `tests/test_opencode_container_runtime.py`). Ordinary static tests (e.g., Dockerfile/Compose
+  syntax and documentation tests) remain unmarked and execute within ordinary `PR Tests` shards
+  without building Docker images or starting live containers. To run ordinary tests locally
+  without Docker or OpenCode CLI installed, use `pytest -m "not browser and not opencode_live"`.
+  To execute the live suite locally, run `python scripts/prepare_opencode_image.py` and
+  `pytest -m opencode_live`.
 * Branch protection should include the following required status checks:
   * `PR Tests / Lint & Type Check`
   * `PR Tests / Tests with Coverage`

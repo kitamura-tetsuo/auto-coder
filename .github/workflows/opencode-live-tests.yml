@@ -1,0 +1,69 @@
+name: OpenCode Live Tests
+
+'on':
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  opencode-live-tests:
+    name: OpenCode Live Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Sync dependencies with uv
+        run: |
+          uv sync --dev --extra test
+
+      - name: Install pinned OpenCode CLI
+        run: |
+          npm install -g opencode-ai@1.18.31
+
+      - name: Prepare OpenCode runtime image
+        timeout-minutes: 10
+        run: |
+          uv run python scripts/prepare_opencode_image.py
+
+      - name: Run opencode_live-marked tests
+        timeout-minutes: 20
+        env:
+          AUTOCODER_OPENCODE_GIT_DEBUG_LOG: ${{ github.workspace }}/opencode-git-debug.log
+          AUTOCODER_OPENCODE_VERBOSE_DEBUG: "1"
+          AUTO_CODER_REQUIRE_OPENCODE_LIVE: "1"
+        run: |
+          uv run pytest -m opencode_live -vv
+
+      - name: Print git-wrapper debug log (non-read-only decisions only)
+        if: always()
+        run: |
+          echo "::group::opencode-git-debug.log (deny / allow-unprotected-target only)"
+          grep -v '"decision": "allow-read-only"' opencode-git-debug.log 2>/dev/null || echo "(no non-read-only decisions logged)"
+          echo "::endgroup::"
+
+      - name: Upload OpenCode live test diagnostics
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: opencode-live-test-diagnostics-${{ github.run_attempt }}
+          path: |
+            htmlcov/
+            .pytest_cache/
+            opencode-git-debug.log
+            opencode-live-logs/
+          if-no-files-found: ignore

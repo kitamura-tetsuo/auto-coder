@@ -409,7 +409,10 @@ async def test_scheduler_stage_error_redefers_remaining_effects(tmp_path):
     task = asyncio.create_task(scheduler.run(shutdown))
     try:
         await _run_until(lambda: handler.calls >= 1)
-        await _run_until(lambda: store.get(identity).status == ObligationStatus.WAITING.value)
+        await _run_until(
+            lambda: (rem := store.get(identity)) is not None and rem.status == ObligationStatus.WAITING.value,
+            timeout=5.0,
+        )
         remaining = store.get(identity)
         assert remaining is not None
         assert remaining.unfinished_effects == ("second",)

@@ -238,6 +238,7 @@ class TestCreateAdversarialValidationBackendManager:
         assert is_read_only_review_capable_backend("claude") is True
         assert is_read_only_review_capable_backend("codex") is True
         assert is_read_only_review_capable_backend("muse") is True
+        assert is_read_only_review_capable_backend("opencode") is True
 
         # Ineligible MCP variants, cloud backends, routines, and non-enforcing clients
         assert is_read_only_review_capable_backend("codex_mcp") is False

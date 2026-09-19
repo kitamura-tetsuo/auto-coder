@@ -503,6 +503,10 @@ def retry_pending_stale_review_thread_rollbacks(
     return still_blocked
 
 
+_BLOCKER_ID_RE = re.compile(r"(?:Blocker identity:\s*`?([^`\s\n]+)`?|blocker_id[=:]\s*`?([^`\s\n]+)`?)", re.IGNORECASE)
+_GAP_ID_RE = re.compile(r"(?:Gap identity:\s*`?([^`\s\n]+)`?|gap_id[=:]\s*`?([^`\s\n]+)`?|TEST_ORACLE_GAP\s+([a-zA-Z0-9_-]+))", re.IGNORECASE)
+
+
 @dataclass(frozen=True)
 class ClaimedReviewThread:
     """One unresolved review thread eligible for independent adjudication."""
@@ -516,6 +520,10 @@ class ClaimedReviewThread:
     claim_evidence: str = ""
     revalidation_after_head_change: bool = False
     revalidation_forced: bool = False
+    blocker_ids: tuple[str, ...] = ()
+    concern_ids: tuple[str, ...] = ()
+    authoritative_boundary: str = ""
+    category: str = ""
 
 
 @dataclass(frozen=True)
@@ -526,7 +534,12 @@ class ReviewThreadClassification:
     blocking_unresolved_count: int = 0
 
 
-def classify_review_threads(threads: Iterable[ReviewThread], eligible_author_ids: Set[int]) -> ReviewThreadClassification:
+def classify_review_threads(
+    threads: Iterable[ReviewThread],
+    eligible_author_ids: Set[int],
+    *,
+    snapshot: Optional[Any] = None,
+) -> ReviewThreadClassification:
     """Split unresolved review threads into claimed-addressed and ordinary blockers.
 
     A thread is "claimed" only when its root (first) comment was authored by a
@@ -560,6 +573,39 @@ def classify_review_threads(threads: Iterable[ReviewThread], eligible_author_ids
 
         if is_eligible and has_claim:
             discussion = "\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in comments)
+            blocker_ids: list[str] = []
+            concern_ids: list[str] = []
+            authoritative_boundary = ""
+            category = ""
+
+            if snapshot is not None:
+                root_id_str = str(root.database_id) if root.database_id is not None else None
+                matching = []
+                if root_id_str:
+                    matching.extend(snapshot.get_blockers_for_alias("github_root_comment", root_id_str))
+                    matching.extend(snapshot.get_blockers_for_alias("root_comment_id", root_id_str))
+                matching.extend(snapshot.get_blockers_for_alias("github_thread", thread.id))
+                for b in matching:
+                    if b.blocker_id not in blocker_ids:
+                        blocker_ids.append(b.blocker_id)
+                    if b.authoritative_boundary and not authoritative_boundary:
+                        authoritative_boundary = b.authoritative_boundary
+                    if b.category and not category:
+                        category = b.category
+                    for c in b.concern_ids or b.accepted_scope.concern_ids:
+                        if c not in concern_ids:
+                            concern_ids.append(c)
+
+            if not blocker_ids:
+                match = _BLOCKER_ID_RE.search(root.body)
+                if match:
+                    bid = match.group(1) or match.group(2)
+                    if bid and bid not in blocker_ids:
+                        blocker_ids.append(bid)
+                gap_match = _GAP_ID_RE.search(root.body)
+                if gap_match:
+                    category = "TEST_ORACLE"
+
             claimed.append(
                 ClaimedReviewThread(
                     thread_id=thread.id,
@@ -569,6 +615,10 @@ def classify_review_threads(threads: Iterable[ReviewThread], eligible_author_ids
                     discussion=discussion,
                     is_change_provenance=CHANGE_PROVENANCE_CLARIFICATION_MARKER in root.body,
                     claim_evidence="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in claim_comments),
+                    blocker_ids=tuple(blocker_ids),
+                    concern_ids=tuple(concern_ids),
+                    authoritative_boundary=authoritative_boundary,
+                    category=category,
                 )
             )
         else:
@@ -615,18 +665,26 @@ def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]
         else:
             heading = "Claimed-addressed review thread"
             discussion_label = "Full thread discussion (chronological, includes the implementation-agent addressed claim and rationale):"
-        blocks.append(
-            "\n".join(
-                [
-                    f"### {heading}: {thread.thread_id}",
-                    f"Original review finding (thread root, author: {thread.root_author_login or 'unknown'}):",
-                    thread.original_finding or "(empty)",
-                    "",
-                    discussion_label,
-                    thread.discussion or "(empty)",
-                ]
-            )
+
+        lines = [f"### {heading}: {thread.thread_id}"]
+        if thread.blocker_ids:
+            lines.append(f"Canonical blocker identity: {', '.join(thread.blocker_ids)}")
+        if thread.category:
+            lines.append(f"Finding category: {thread.category}")
+        if thread.authoritative_boundary:
+            lines.append(f"Authoritative production boundary: {thread.authoritative_boundary}")
+        if thread.concern_ids:
+            lines.append(f"Owned concrete concern IDs: {', '.join(thread.concern_ids)}")
+        lines.extend(
+            [
+                f"Original review finding (thread root, author: {thread.root_author_login or 'unknown'}):",
+                thread.original_finding or "(empty)",
+                "",
+                discussion_label,
+                thread.discussion or "(empty)",
+            ]
         )
+        blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
 
@@ -664,15 +722,23 @@ def resolve_addressed_review_threads(
     claimed: Sequence[ClaimedReviewThread],
     dispositions: Sequence[ReviewThreadDisposition],
     stale_registry: Optional[StaleReviewThreadRegistry] = None,
+    *,
+    ledger: Optional[Any] = None,
+    api_origin: str = "https://api.github.com",
+    base_sha: str = "",
+    requirement_manifest_revision: str = "",
+    review_attempt_id: str = "",
+    expected_ledger_revision: Optional[int] = None,
+    known_absent_apis: tuple[str, ...] = (),
 ) -> List[str]:
     """Resolve every thread the validator confirmed ADDRESSED, fail-closed.
 
-    Implements REQ-006 through REQ-010: resolution requires an exact,
+    Implements REQ-001 through REQ-010: resolution requires an exact,
     well-formed ADDRESSED disposition for a thread that was actually claimed
-    for this run, the PR head must still equal ``validated_head_sha`` at the
-    moment of resolution, and both the explanation reply and the resolve
-    mutation must independently succeed. Any failure leaves that single
-    thread unresolved without affecting any other thread.
+    for this run, evaluated against its authenticated canonical blocker scope
+    and boundary, durably persisted in the canonical blocker ledger before
+    executing GitHub mutations, with compound root gating and CAS/staleness
+    fencing.
 
     Returns the thread IDs that were actually resolved.
     """
@@ -680,145 +746,49 @@ def resolve_addressed_review_threads(
     if not addressed_thread_ids:
         return []
 
-    def _head_is_still_current() -> bool:
-        """Re-read the PR's live head and confirm it still matches the
-        validated head. Called both before starting and again immediately
-        before each resolve mutation, since a new commit can land at any
-        point during this loop (REQ-006, AC-009)."""
+    from .pr_blocker_closure import (
+        adjudicate_claimed_thread_closures,
+        execute_durable_thread_closures,
+        extract_closure_candidates,
+    )
+    from .util.github_request_outcome import normalize_api_origin
+
+    snapshot = None
+    if ledger is not None:
         try:
-            current_head_sha = github_client.get_pull_request_head_sha_strict(repo_name, pr_number)
+            snapshot = ledger.get_snapshot(normalize_api_origin(api_origin), repo_name, pr_number, require_retained_state=True)
         except Exception as exc:
-            logger.error(f"Could not verify current PR head before resolving review threads on PR #{pr_number}: {exc}")
-            return False
-        if not validated_head_sha or not current_head_sha or current_head_sha != validated_head_sha:
-            logger.warning(f"PR #{pr_number} head changed since adversarial validation (validated {validated_head_sha}, current {current_head_sha}); " "not resolving claimed review thread(s)")
-            return False
-        return True
+            logger.error(f"Could not load canonical blocker ledger snapshot: {exc}")
 
-    if not _head_is_still_current():
-        return []
+    candidates = extract_closure_candidates(
+        claimed,
+        snapshot=snapshot,
+        api_origin=api_origin,
+        repository=repo_name,
+        pr_number=pr_number,
+        reviewed_head_sha=validated_head_sha,
+        reviewed_base_sha=base_sha,
+        requirement_manifest_revision=requirement_manifest_revision,
+        review_attempt_id=review_attempt_id,
+        known_absent_apis=known_absent_apis,
+    )
 
-    resolved: List[str] = []
-    for thread_id in addressed_thread_ids:
-        claimed_thread = _find_claimed_thread(claimed, thread_id)
-        if claimed_thread is None:
-            logger.warning(f"Validator returned ADDRESSED for thread {thread_id} on PR #{pr_number}, which was not among the claimed threads for this run; ignoring")
-            continue
-        if claimed_thread.root_comment_database_id is None:
-            logger.error(f"Cannot record resolver explanation for thread {thread_id} on PR #{pr_number}: no root comment ID available")
-            continue
+    evaluations = adjudicate_claimed_thread_closures(candidates, dispositions, snapshot=snapshot)
 
-        disposition = next(d for d in dispositions if d.thread_id == thread_id and d.status == "ADDRESSED")
-        try:
-            github_client.reply_to_review_thread(repo_name, pr_number, claimed_thread.root_comment_database_id, _format_resolver_explanation(disposition))
-        except Exception as exc:
-            logger.error(f"Failed to record independent validator explanation for thread {thread_id} on PR #{pr_number}: {exc}")
-            continue
+    exec_result = execute_durable_thread_closures(
+        github_client=github_client,
+        repo_name=repo_name,
+        pr_number=pr_number,
+        validated_head_sha=validated_head_sha,
+        evaluations=evaluations,
+        ledger=ledger,
+        api_origin=api_origin,
+        stale_registry=stale_registry,
+        expected_ledger_revision=expected_ledger_revision,
+        claimed_threads=claimed,
+    )
 
-        # Re-check immediately before the resolve mutation: a new commit can
-        # land between the initial check (or the previous iteration's reply)
-        # and this point.
-        if not _head_is_still_current():
-            return resolved
-
-        # Durability-before-risk: record intent on GitHub itself BEFORE
-        # attempting the resolve mutation, not only after a rollback failure.
-        # This guarantees at least one durable, independently-discoverable
-        # record exists before the thread ever enters the risky
-        # "resolved-but-possibly-stale" state, so even a simultaneous local
-        # registry write failure and process restart cannot make the
-        # integrity failure vanish (REQ-006, REQ-008). If this durable
-        # record cannot be established, the thread is not resolved at all —
-        # it simply stays unresolved, which the ordinary gate already
-        # handles safely.
-        try:
-            github_client.reply_to_review_thread(repo_name, pr_number, claimed_thread.root_comment_database_id, _format_stale_blocker_marker(validated_head_sha))
-        except Exception as exc:
-            logger.error(f"Could not durably record resolve-intent for thread {thread_id} on PR #{pr_number}; skipping this thread rather than risking an unrecoverable stale resolution: {exc}")
-            continue
-
-        try:
-            github_client.resolve_review_thread(thread_id)
-        except Exception as exc:
-            logger.error(f"Failed to resolve review thread {thread_id} on PR #{pr_number} after recording its explanation: {exc}")
-            continue
-
-        # The head can still advance between the pre-mutation check above and
-        # the mutation actually completing. Re-verify once more and, if the
-        # head moved, revert the resolution rather than leave a thread
-        # resolved against a disposition for a head that is no longer current
-        # (REQ-006, AC-009).
-        if not _head_is_still_current():
-            rollback_registry = stale_registry or StaleReviewThreadRegistry()
-            try:
-                rollback_registry.record_rollback_transition(
-                    repo_name,
-                    pr_number,
-                    thread_id,
-                    claimed_thread.root_comment_database_id,
-                )
-            except Exception as transition_exc:
-                logger.error(f"Could not durably prepare rollback of stale resolution for thread {thread_id} on PR #{pr_number}: {transition_exc}")
-                raise StaleReviewThreadResolutionError(thread_id, repo_name, pr_number) from transition_exc
-
-            last_exc: Optional[Exception] = None
-            for attempt in range(1, UNRESOLVE_ROLLBACK_MAX_ATTEMPTS + 1):
-                try:
-                    github_client.unresolve_review_thread(thread_id)
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    logger.error(f"Attempt {attempt}/{UNRESOLVE_ROLLBACK_MAX_ATTEMPTS} to revert stale resolution of thread {thread_id} on PR #{pr_number} failed: {exc}")
-            if last_exc is not None:
-                # Every rollback attempt failed or was unconfirmed: the thread
-                # is durably resolved against a stale head. This must not be
-                # a log-and-continue outcome (REQ-006, REQ-008). Persist the
-                # failure locally too so it survives past this single run
-                # without depending on a future GitHub scan; the intent
-                # marker posted above already durably records it on GitHub
-                # regardless of whether this local write succeeds.
-                try:
-                    rollback_registry.record(repo_name, pr_number, thread_id)
-                except Exception as persist_exc:
-                    logger.error(f"Failed to persist stale-resolution blocker for thread {thread_id} on PR #{pr_number} locally; the GitHub-side marker posted before the resolve attempt remains the durable record: {persist_exc}")
-                raise StaleReviewThreadResolutionError(thread_id, repo_name, pr_number) from last_exc
-
-            # Rollback succeeded: close out the intent marker. If the reply
-            # fails, persist cleanup-only state so later runs retry the reply
-            # without ever unresolving a new legitimate resolution.
-            if claimed_thread.root_comment_database_id is not None:
-                try:
-                    github_client.reply_to_review_thread(repo_name, pr_number, claimed_thread.root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
-                except Exception as exc:
-                    logger.error(f"Rolled back thread {thread_id} on PR #{pr_number} but could not post the cleared marker: {exc}")
-                    try:
-                        rollback_registry.record_marker_cleanup(
-                            repo_name,
-                            pr_number,
-                            thread_id,
-                            claimed_thread.root_comment_database_id,
-                        )
-                    except Exception as persist_exc:
-                        logger.error(f"Could not record marker cleanup for thread {thread_id} on PR #{pr_number}; the fail-closed rollback transition remains: {persist_exc}")
-                else:
-                    try:
-                        rollback_registry.clear(repo_name, thread_id)
-                    except Exception as persist_exc:
-                        logger.error(f"Cleared stale marker for thread {thread_id} on PR #{pr_number} but could not retire its fail-closed rollback transition: {persist_exc}")
-            return resolved
-
-        # Fully successful resolution on the still-current head: close out
-        # the intent marker (best effort) so the thread is never mistaken
-        # for a pending stale blocker by a later scan.
-        if claimed_thread.root_comment_database_id is not None:
-            try:
-                github_client.reply_to_review_thread(repo_name, pr_number, claimed_thread.root_comment_database_id, STALE_BLOCKER_CLEARED_MARKER)
-            except Exception as exc:
-                logger.error(f"Resolved thread {thread_id} on PR #{pr_number} but could not post the cleared marker: {exc}")
-        resolved.append(thread_id)
-
-    return resolved
+    return list(exec_result.resolved_thread_ids)
 
 
 def reopen_review_threads_after_publication_failure(

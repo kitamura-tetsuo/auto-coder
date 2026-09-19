@@ -35,3 +35,8 @@
     label_locking:
       - "Jules mode keeps the @auto-coder label on an issue for the lifetime of its session, so an aborted session would otherwise lock the issue permanently."
       - "With check_labels=False (--only and WIP-branch resume) an existing @auto-coder label no longer blocks processing; the label is left in place because the run does not own it."
+    session_id_resolution_fallback:
+      - "Session ID resolution from PR bodies extracts candidates across all supported patterns (explicit prefixes, URL parameters, provider session URLs such as Jules and Claude Routine, task IDs, and standalone IDs) in priority order."
+      - "Candidates are checked against the local session tracking database (cloud.csv) first. If an earlier pattern (e.g. an ambiguous URL parameter like 'start_new_session=True') produces a candidate not recorded in cloud.csv, resolution returns to subsequent patterns (e.g. Claude Routine session URL Pattern 3a) in order rather than prematurely inferring an issue via comment search."
+      - "Claude Routine session IDs are matched flexibly across 'session_' and 'cse_' prefix variants sharing the same identifier suffix."
+      - "Comment search on GitHub is only attempted after all candidates fail local database lookup, and clearly invalid tokens (such as boolean literals or tokens under 4 characters) are excluded from comment search."

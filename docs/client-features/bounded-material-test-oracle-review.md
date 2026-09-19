@@ -65,3 +65,12 @@ boundaries to detect information loss, flattening, reinterpretation, or bypass.
 A synthetic-state helper test remains useful as additional unit coverage, but
 cannot be presented as the regression oracle unless production-origin coverage
 proves the same state can be created and preserved.
+
+When an Issue requirement explicitly mandates a regression test deliverable in
+its requirement text, the absence of that deliverable is tracked as an
+implementation finding rather than a test-oracle gap. For runtime requirements
+without an explicit test deliverable, missing regression protection is tracked
+solely as a material test-oracle gap. Equivalent test techniques that assert the
+required behavioral invariant across the boundary are accepted even when they
+differ from illustrated Acceptance Scenarios; superficial tests that merely assert
+source text or pass empty inputs without exercising the production path are rejected.

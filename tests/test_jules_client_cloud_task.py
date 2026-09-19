@@ -53,6 +53,7 @@ class TestJulesClientCloudTask:
                     prompt="Fix bug",
                     repo_name="owner/repo",
                     base_branch="main",
+                    is_noedit=False,
                     title="Task Title",
                 )
 

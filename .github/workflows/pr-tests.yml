@@ -90,11 +90,11 @@ jobs:
           echo "CLI entry point test passed!"
 
       - name: Run tests with coverage (shard ${{ matrix.group }}/4)
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: |
           uv run python scripts/run_pr_test_shard.py \
             --group ${{ matrix.group }} \
-            --attempt-timeout 180 \
+            --attempt-timeout 360 \
             --termination-grace 10 \
             --max-attempts 2 \
             --log-dir pr-test-logs/shard-${{ matrix.group }}

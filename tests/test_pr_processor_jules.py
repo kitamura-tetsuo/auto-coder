@@ -6,9 +6,11 @@ import pytest
 
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.pr_processor import (
+    _extract_session_id_candidates,
     _extract_session_id_from_pr_body,
     _is_jules_pr,
     _process_jules_pr,
+    _resolve_jules_pr_issue_number,
     _send_jules_error_feedback,
     _update_jules_pr_body,
 )
@@ -867,3 +869,70 @@ class TestSendJulesErrorFeedback:
         assert "Sent CI failure logs to Jules session 'sessionCommentError' for PR #999" in actions[0]
         assert "Failed to post comment on PR #999: GitHub API error" in actions[1]
         mock_jules_client.send_message.assert_called_once()
+
+
+class TestResolveJulesPrIssueNumberPatternFallback:
+    """Test cases for session ID pattern fallback when not found in local DB."""
+
+    def test_falls_back_to_pattern_3a_when_earlier_session_not_in_local_db(self, tmp_path):
+        """When Pattern 2 extracts 'True' (e.g. from start_new_session=True) but 'True'
+        is not in cloud.csv, it proceeds to Pattern 3a, extracts the Claude Routine session ID,
+        and matches the issue recorded in cloud.csv."""
+        repo_name = "owner/repo"
+        cloud_file = tmp_path / "cloud.csv"
+        manager = CloudManager(repo_name, cloud_file_path=cloud_file)
+        manager.add_session(2124, "cse_013LQWaEue387YHUzLAM6G85", provider="claude-routine", backend_name="claude-sonnet-routine")
+
+        # PR body containing both start_new_session=True (matching Pattern 2)
+        # and a Claude session URL (matching Pattern 3a)
+        pr_body = "## Summary\n" "Classification: start_new_session=True + killpg(SIGKILL)\n\n" "🤖 Generated with [Claude Code](https://claude.ai/code)\n" "https://claude.ai/code/session_013LQWaEue387YHUzLAM6G85\n"
+        pr_data = {
+            "number": 2130,
+            "title": "Add OpenCode as a local implementation backend",
+            "body": pr_body,
+            "user": {"login": "kitamura-tetsuo"},
+            "head": {"ref": "claude/optimistic-curie-62c7s5"},
+        }
+
+        with patch("auto_coder.pr_processor.CloudManager", return_value=manager):
+            github_client = Mock()
+            issue_number = _resolve_jules_pr_issue_number(repo_name, pr_data, github_client)
+
+        assert issue_number == 2124
+        assert pr_data.get("_jules_session_id") == "session_013LQWaEue387YHUzLAM6G85"
+        # Verify that github_client.search_issues was NOT called with query containing 'True'
+        for call in github_client.search_issues.call_args_list:
+            assert "True" not in call[0][0]
+
+    def test_skips_comment_search_for_boolean_tokens_when_not_in_local_db(self, tmp_path):
+        """When none of the candidates are in local DB, tokens like 'True' or 'false'
+        are skipped during comment search to avoid false positive queries."""
+        repo_name = "owner/repo"
+        cloud_file = tmp_path / "cloud.csv"
+        manager = CloudManager(repo_name, cloud_file_path=cloud_file)
+
+        pr_body = "Classification: start_new_session=True\n"
+        pr_data = {
+            "number": 3001,
+            "title": "Fix something",
+            "body": pr_body,
+            "user": {"login": "dev"},
+            "head": {"ref": "feature-branch"},
+        }
+
+        with patch("auto_coder.pr_processor.CloudManager", return_value=manager):
+            github_client = Mock()
+            issue_number = _resolve_jules_pr_issue_number(repo_name, pr_data, github_client)
+
+        assert issue_number is None
+        # Comment search should never search for 'True'
+        github_client.search_issues.assert_not_called()
+
+    def test_extract_session_id_candidates_order(self):
+        """Verify _extract_session_id_candidates extracts distinct patterns in order."""
+        pr_body = "Session ID: explicit_session_1\n" "http://example.com/?session=param_session_2\n" "https://claude.ai/code/session_claude_3a\n"
+        candidates = _extract_session_id_candidates(pr_body)
+        assert len(candidates) == 3
+        assert candidates[0] == ("Pattern 1", "explicit_session_1")
+        assert candidates[1] == ("Pattern 2", "param_session_2")
+        assert candidates[2] == ("Pattern 3a (Claude Session URL)", "session_claude_3a")
