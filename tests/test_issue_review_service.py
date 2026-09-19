@@ -15,6 +15,7 @@ from auto_coder.automation_engine import AutomationEngine
 from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from auto_coder.decomposition_validation_lifecycle import DecompositionValidationLifecycle
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.issue_review_rerun import ReviewSubject
 from auto_coder.issue_stage_routing import REVIEW_STAGE
 from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -121,6 +122,55 @@ def test_standalone_ready_pump_hands_off_and_reuses_without_new_backend_call(tmp
     outcome = engine._get_review_service(REPO).pump_target(1, "test-origin")
     assert outcome is not None and outcome.status == "completed" and outcome.handed_off
     assert calls.call_count == 1
+
+
+def test_rerun_acceptance_materializes_review_lane_without_invoking_backend(tmp_path, monkeypatch):
+    github = FakeGitHub([])
+    github.issues[1] = github.snapshot(1)
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine = engine_with_lane(tmp_path, github, calls, monkeypatch=monkeypatch)
+
+    initial = engine._get_review_service(REPO).pump_target(1, "initial")
+    assert initial is not None and initial.status == "completed"
+    assert calls.call_count == 1
+
+    statuses = engine.accept_issue_review_rerun("rerun-1", [ReviewSubject(REPO, "individual", 1)])
+
+    assert [(status.state, status.reason) for status in statuses] == [("pending", None)]
+    pending = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(pending) == 1 and pending[0].target_number == 1
+    assert calls.call_count == 1
+
+
+def test_rerun_acceptance_records_current_admission_deferral(tmp_path, monkeypatch):
+    github = FakeGitHub([])
+    github.issues[1] = github.snapshot(1, ready=False)
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine = engine_with_lane(tmp_path, github, calls, monkeypatch=monkeypatch)
+
+    statuses = engine.accept_issue_review_rerun("rerun-1", [ReviewSubject(REPO, "individual", 1)])
+
+    assert statuses[0].state == "deferred"
+    assert statuses[0].reason == "current authoritative admission deferred individual review for Issue #1"
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+    assert calls.call_count == 0
+
+
+def test_rerun_recovery_reconstructs_review_lane_after_acceptance_crash(tmp_path, monkeypatch):
+    github = FakeGitHub([])
+    github.issues[1] = github.snapshot(1)
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine = engine_with_lane(tmp_path, github, calls, monkeypatch=monkeypatch)
+    subject = ReviewSubject(REPO, "individual", 1)
+    engine._get_specification_validator(REPO).reruns.accept("rerun-1", [subject])
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+
+    recovered = engine._recover_issue_review_reruns(REPO)
+
+    assert [(status.request_id, status.state) for status in recovered] == [("rerun-1", "pending")]
+    pending = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(pending) == 1 and pending[0].target_number == 1
+    assert calls.call_count == 0
 
 
 def test_closed_issue_removes_review_work_without_invoking_analyzer(tmp_path, monkeypatch):

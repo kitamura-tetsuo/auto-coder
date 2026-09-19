@@ -968,4 +968,7 @@ pipeline: reset acceptance, cache cleanup, and queue admission are not review
 outcomes and must not be emitted as successful validation jobs. Runnable
 authority and stale-completion coverage lives in
 `tests/test_issue_review_rerun.py`, while Review-lane coalescing coverage
-remains in `tests/test_issue_review_worker.py`.
+remains in `tests/test_issue_review_worker.py`. Production acceptance and
+admission/deferred-state coverage lives in `tests/test_issue_review_service.py`;
+the durable operation status, rather than a trace event, exposes a request
+that cannot currently enter the Review lane.

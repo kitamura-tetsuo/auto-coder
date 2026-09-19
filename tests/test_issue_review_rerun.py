@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from auto_coder.issue_review_rerun import IssueReviewRerunStore, ReviewSubject
+from auto_coder.issue_review_rerun import IssueReviewRerunOperation, IssueReviewRerunStore, ReviewSubject
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -50,6 +50,39 @@ def test_status_requires_current_fresh_terminal_and_records_source(tmp_path):
         "decision",
         "local-only",
     )
+
+
+def test_accept_materializes_review_work_or_records_concrete_deferral(tmp_path):
+    store = IssueReviewRerunStore(tmp_path / "reruns.sqlite3")
+    operation = IssueReviewRerunOperation(store)
+    runnable = ReviewSubject("owner/repo", "individual", 12)
+    deferred = ReviewSubject("owner/repo", "decomposition", 20)
+    admitted = []
+
+    statuses = operation.accept(
+        "request",
+        [runnable, deferred],
+        lambda subject: admitted.append(subject.key) or ("parent readiness is absent" if subject == deferred else None),
+    )
+
+    assert admitted == [deferred.key, runnable.key]
+    by_subject = {status.subject.key: status for status in statuses}
+    assert by_subject[runnable.key].state == "pending"
+    assert by_subject[runnable.key].reason is None
+    assert by_subject[deferred.key].state == "deferred"
+    assert by_subject[deferred.key].reason == "parent readiness is absent"
+
+
+def test_recovery_reconstructs_crash_after_accept_before_wake(tmp_path):
+    path = tmp_path / "reruns.sqlite3"
+    subject = ReviewSubject("owner/repo", "individual", 42)
+    IssueReviewRerunStore(path).accept("request", [subject])
+    admitted = []
+
+    recovered = IssueReviewRerunOperation(IssueReviewRerunStore(path)).recover("owner/repo", lambda current: admitted.append(current.key) or None)
+
+    assert admitted == [subject.key]
+    assert [(status.request_id, status.state, status.reason) for status in recovered] == [("request", "pending", None)]
 
 
 def test_running_pre_request_review_cannot_restore_or_satisfy_authority(tmp_path):

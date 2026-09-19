@@ -14,7 +14,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 
 class RerunAuthorityUnavailable(RuntimeError):
@@ -175,7 +175,76 @@ class IssueReviewRerunStore:
         except (OSError, sqlite3.Error) as exc:
             raise RerunAuthorityUnavailable(str(exc)) from exc
 
+    def active_subjects(self, repository: str) -> tuple[SubjectRerunStatus, ...]:
+        """Return reconstructible current work for one repository."""
+        normalized_repository = repository.strip().lower()
+        try:
+            with self._connect() as db:
+                rows = db.execute(
+                    """SELECT repository, kind, issue_number, request_id, authority,
+                       state, reason, decision_reference, evaluation_source
+                       FROM rerun_subjects
+                       WHERE repository=? AND state IN ('pending', 'deferred')
+                       ORDER BY authority, subject_key""",
+                    (normalized_repository,),
+                ).fetchall()
+            return tuple(
+                SubjectRerunStatus(
+                    ReviewSubject(row[0], row[1], int(row[2])),
+                    str(row[3]),
+                    int(row[4]),
+                    str(row[5]),
+                    row[6],
+                    row[7],
+                    row[8],
+                )
+                for row in rows
+            )
+        except (OSError, sqlite3.Error) as exc:
+            raise RerunAuthorityUnavailable(str(exc)) from exc
+
     def execution_key(self, subject: ReviewSubject, semantic_identity: str) -> str:
         """Key scheduler coalescing to both semantic and current rerun authority."""
         authority, _request_id, _state = self.authority(subject)
         return f"{semantic_identity}:rerun-authority:{authority}"
+
+
+Admission = Callable[[ReviewSubject], Optional[str]]
+
+
+class IssueReviewRerunOperation:
+    """Accept and durably materialize review-only rerun work.
+
+    ``admit`` returns ``None`` only after current authoritative admission has
+    created reconstructible Review-lane work.  Otherwise it returns the
+    concrete deferral reason persisted on the request.  Since acceptance is
+    committed first, a crash before this pass is recovered by ``recover``.
+    """
+
+    def __init__(self, store: IssueReviewRerunStore) -> None:
+        self.store = store
+
+    def accept(self, request_id: str, subjects: Iterable[ReviewSubject], admit: Admission) -> tuple[SubjectRerunStatus, ...]:
+        selected = tuple(subjects)
+        if len({subject.repository.strip().lower() for subject in selected}) > 1:
+            raise ValueError("one rerun request must target exactly one repository")
+        accepted = self.store.accept(request_id, selected)
+        self._admit_current(accepted, admit)
+        return self.store.status(request_id)
+
+    def recover(self, repository: str, admit: Admission) -> tuple[SubjectRerunStatus, ...]:
+        active = self.store.active_subjects(repository)
+        self._admit_current(active, admit)
+        return self.store.active_subjects(repository)
+
+    def _admit_current(self, statuses: Iterable[SubjectRerunStatus], admit: Admission) -> None:
+        for status in statuses:
+            authority, request_id, state = self.store.authority(status.subject)
+            if authority != status.authority or request_id != status.request_id or state not in {"pending", "deferred"}:
+                continue
+            try:
+                reason = admit(status.subject)
+            except Exception as exc:
+                reason = f"authoritative review admission unavailable: {type(exc).__name__}: {exc}"
+            if reason:
+                self.store.defer(status.subject, status.authority, reason)

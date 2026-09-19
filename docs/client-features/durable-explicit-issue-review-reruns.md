@@ -31,7 +31,11 @@ availability error rather than making an old decision reusable.
 The operation does not delete validation reports, Objective anchors,
 baselines, publication receipts, repair state, reissue stops, or
 implementation ownership. It neither changes implementation generation nor
-cancels already-owned implementation work. Callers remain responsible for
-authoritative current-state admission and for recording a deferred reason
-when readiness, category, stabilization, or family reconciliation prevents a
-fresh review.
+cancels already-owned implementation work. The production operation performs
+authoritative current-state admission immediately after durable acceptance.
+It creates a durable Review-lane arrival without invoking the reviewer, or
+records a concrete deferred reason when readiness, category, stabilization,
+or family reconciliation prevents fresh review. Startup recovery enumerates
+pending and deferred request subjects and repeats that same admission pass,
+so a crash after acceptance but before the initial wake cannot orphan the
+request.
