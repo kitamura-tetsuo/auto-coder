@@ -7,7 +7,6 @@ This client uses HTTP API instead of Jules CLI to communicate with Jules.
 
 import json
 import threading
-import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -96,6 +95,9 @@ class JulesClient(CloudTaskClientBase):
             total=3,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
+            # Session creation is not idempotent.  urllib3 must never replay a
+            # POST after the provider may have accepted it.
+            allowed_methods=frozenset({"DELETE", "GET", "HEAD", "OPTIONS", "PUT"}),
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("http://", adapter)
@@ -157,17 +159,21 @@ class JulesClient(CloudTaskClientBase):
             # Parse the response to get the session ID
             try:
                 response_data = response.json()
-                # Extract the session ID from the response
-                # The exact field name depends on the API response format
-                session_id = response_data.get("sessionId") or response_data.get("session_id") or response_data.get("id")
+                if not isinstance(response_data, dict):
+                    raise JulesSessionOutcomeUncertainError("Jules returned a malformed successful response")
+                raw_id = response_data.get("id")
+                raw_name = response_data.get("name")
+                name_id = raw_name.removeprefix("sessions/") if isinstance(raw_name, str) and raw_name.startswith("sessions/") else None
+                valid_id = raw_id if isinstance(raw_id, str) and raw_id and "/" not in raw_id else None
+                if raw_name is not None and (not name_id or "/" in name_id):
+                    raise JulesSessionOutcomeUncertainError("Jules returned a malformed Session name")
+                if valid_id and name_id and valid_id != name_id:
+                    raise JulesSessionOutcomeUncertainError("Jules returned conflicting Session identities")
+                session_id = valid_id or name_id
                 if not session_id:
-                    # Fallback: generate a session ID based on timestamp
-                    session_id = f"session_{int(time.time())}"
-                    logger.warning(f"Could not extract session ID from response, using generated ID: {session_id}")
-            except json.JSONDecodeError:
-                # Fallback: generate a session ID
-                session_id = f"session_{int(time.time())}"
-                logger.warning(f"Could not parse response JSON, using generated ID: {session_id}")
+                    raise JulesSessionOutcomeUncertainError("Jules successful response did not contain a canonical Session identity")
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise JulesSessionOutcomeUncertainError("Jules returned an unparseable successful response") from exc
 
             # Track the session
             self.active_sessions[session_id] = prompt

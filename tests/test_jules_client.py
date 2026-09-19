@@ -135,7 +135,7 @@ class TestJulesClient:
         # Mock the POST response
         mock_response = Mock()
         mock_response.status_code = 201
-        mock_response.json.return_value = {"sessionId": "test-session-123"}
+        mock_response.json.return_value = {"id": "test-session-123"}
         mock_post.return_value = mock_response
 
         client = JulesClient()
@@ -177,7 +177,7 @@ class TestJulesClient:
         # Mock the POST response
         mock_response = Mock()
         mock_response.status_code = 201
-        mock_response.json.return_value = {"sessionId": "test-session-title"}
+        mock_response.json.return_value = {"id": "test-session-title"}
         mock_post.return_value = mock_response
 
         client = JulesClient()
@@ -208,7 +208,7 @@ class TestJulesClient:
         # Mock the POST response
         mock_response = Mock()
         mock_response.status_code = 201
-        mock_response.json.return_value = {"sessionId": "session-456"}
+        mock_response.json.return_value = {"id": "session-456"}
         mock_post.return_value = mock_response
 
         client = JulesClient()
@@ -258,6 +258,45 @@ class TestJulesClient:
 
         with pytest.raises(JulesSessionOutcomeUncertainError, match="HTTP 500"):
             client.start_session("Test prompt", "owner/repo", "main")
+
+    @pytest.mark.parametrize(
+        ("response_data", "expected"),
+        [
+            ({"id": "abc"}, "abc"),
+            ({"name": "sessions/abc"}, "abc"),
+            ({"id": "abc", "name": "sessions/abc"}, "abc"),
+        ],
+    )
+    @patch("src.auto_coder.cloud_provider_instructions.load_prompts", return_value={})
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_start_session_accepts_only_canonical_response_identity(self, mock_post, mock_get_config, _mock_load_prompts, response_data, expected):
+        mock_get_config.return_value.get_backend_config.return_value = Mock(options=[], options_for_noedit=[], api_key=None)
+        mock_post.return_value = Mock(status_code=201)
+        mock_post.return_value.json.return_value = response_data
+
+        assert JulesClient().start_session("task", "owner/repo", "main") == expected
+
+    @pytest.mark.parametrize(
+        "response_data",
+        [
+            {},
+            {"sessionId": "legacy"},
+            {"id": "one", "name": "sessions/two"},
+            {"id": "sessions/not-an-id"},
+            {"name": "malformed"},
+        ],
+    )
+    @patch("src.auto_coder.cloud_provider_instructions.load_prompts", return_value={})
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_start_session_keeps_malformed_success_unknown(self, mock_post, mock_get_config, _mock_load_prompts, response_data):
+        mock_get_config.return_value.get_backend_config.return_value = Mock(options=[], options_for_noedit=[], api_key=None)
+        mock_post.return_value = Mock(status_code=201)
+        mock_post.return_value.json.return_value = response_data
+
+        with pytest.raises(JulesSessionOutcomeUncertainError):
+            JulesClient().start_session("task", "owner/repo", "main")
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
@@ -488,7 +527,7 @@ class TestJulesClient:
         # Mock responses for start_session, send_message, end_session
         mock_start_response = Mock()
         mock_start_response.status_code = 201
-        mock_start_response.json.return_value = {"sessionId": "abc123"}
+        mock_start_response.json.return_value = {"id": "abc123"}
 
         mock_send_response = Mock()
         mock_send_response.status_code = 200
@@ -530,7 +569,7 @@ class TestJulesClient:
         # start_session succeeds, send_message fails, end_session should still be called
         mock_start_response = Mock()
         mock_start_response.status_code = 201
-        mock_start_response.json.return_value = {"sessionId": "abc123"}
+        mock_start_response.json.return_value = {"id": "abc123"}
 
         mock_send_response = Mock()
         mock_send_response.status_code = 500

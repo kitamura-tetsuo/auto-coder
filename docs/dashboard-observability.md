@@ -934,3 +934,17 @@ own `maybe_run_auto_update`/`check_for_updates_and_restart` regression suite
 run_command` call it now makes. Run
 `bash scripts/test.sh tests/test_graceful_shutdown.py tests/test_invocation_admission_wiring.py tests/test_invocation_admission.py tests/test_update_manager.py tests/test_utils.py`
 for this boundary.
+
+# Crash-safe Jules candidate submission (inactive adapter)
+
+Issue #2071 adds a durable candidate submission/reconciliation adapter, but
+does not connect it to public fan-out, singleton Jules dispatch, worker
+admission, provider routing, or dashboard projection. Consequently there is
+no new production processing origin, admission outcome, structured event, or
+durable-resumption path visible to the dashboard in this stage; adding a
+dashboard trace before the final integration would falsely imply that the
+adapter is reachable. Existing `issue.dispatch.jules` events and their
+dashboard coverage remain unchanged. The production-boundary tests in
+`tests/test_jules_candidate_submission.py` establish that the inactive
+adapter preserves its durable claims and exact reconciliation state without
+substituting dashboard diagnostics for provider/session ownership.

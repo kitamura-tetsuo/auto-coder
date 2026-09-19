@@ -139,7 +139,7 @@ def test_as001_misleading_aliases_and_is_jules_template_do_not_leak(homes, senti
         patch("requests.sessions.Session.post") as jules_post,
     ):
         jules_llm_cfg.return_value.get_backend_config.return_value = BackendConfig(name="claude-flavored-alias", backend_type="jules")
-        jules_post.return_value = MagicMock(status_code=200, json=lambda: {"sessionId": "jules-session-1"})
+        jules_post.return_value = MagicMock(status_code=200, json=lambda: {"id": "jules-session-1"})
         jules_actions = _process_issue_jules_mode("owner/repo", _codex_issue(1), config, github_client)
     assert any("Started Jules session" in a for a in jules_actions)
     jules_payload = jules_post.call_args.kwargs["json"]
@@ -191,7 +191,7 @@ def test_as001_misleading_aliases_and_is_jules_template_do_not_leak(homes, senti
 def test_as002_jules_start_task_wrapper_injects_exactly_once(homes, sentinel_prompts_path):
     client = JulesClient()
     with patch.object(client.session, "post") as mock_post:
-        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"sessionId": "s1"})
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"id": "s1"})
         client.start_task("raw task", repo_name="owner/repo", base_branch="main")
     prompt = mock_post.call_args.kwargs["json"]["prompt"]
     assert prompt.count("SENTINEL-JULES-INITIAL") == 1
@@ -256,7 +256,7 @@ def test_as001_jules_shipped_default_delivers_required_guidance_clauses(homes, e
     """
     client = JulesClient()
     with patch.object(client.session, "post") as mock_post:
-        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"sessionId": "s5"})
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"id": "s5"})
         client.start_session("raw task, decorated", repo_name="owner/repo", base_branch="main")
     prompt = mock_post.call_args.kwargs["json"]["prompt"]
     assert prompt.startswith("raw task, decorated")
@@ -316,7 +316,7 @@ def test_as003_failed_session_replacement_recovers_original_and_rebuilds_with_cu
 
     jules = JulesClient()
     with patch.object(jules.session, "post") as mock_post:
-        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"sessionId": "jules-orig"})
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"id": "jules-orig"})
         jules.start_session("original task body", repo_name="owner/repo", base_branch="main")
 
     saved = get_managed_prompt("owner/repo", "jules-orig")
@@ -453,7 +453,7 @@ def test_as004_recurrent_next_run_receives_one_current_component(homes, sentinel
         patch("requests.sessions.Session.get", return_value=_sessions_get_response([])),
         patch("requests.sessions.Session.post") as mock_post,
     ):
-        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"sessionId": "nightly-2"})
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"id": "nightly-2"})
         check_and_start_recurrent_jules_tasks("owner/repo")
 
         sent_prompt = mock_post.call_args.kwargs["json"]["prompt"]
