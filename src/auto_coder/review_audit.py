@@ -405,7 +405,9 @@ class ReviewAuditStore:
                 pass
             return False
 
-    def update_evaluation(self, review_id: str, repository: str, lifecycle: EvaluationLifecycle, execution_mode: ExecutionMode, native_verdict: Optional[str] = None, native_report: Optional[Dict[str, Any]] = None, credentials: Optional[Sequence[str]] = None) -> bool:
+    def update_evaluation(
+        self, review_id: str, repository: str, lifecycle: EvaluationLifecycle, execution_mode: ExecutionMode, native_verdict: Optional[str] = None, native_report: Optional[Dict[str, Any]] = None, source_review_id: Optional[str] = None, credentials: Optional[Sequence[str]] = None
+    ) -> bool:
         """Updates an existing evaluation."""
         conn = self._ensure_db(repository)
         if not conn:
@@ -441,6 +443,9 @@ class ReviewAuditStore:
                 if redacted_report:
                     updates.append("native_report = ?")
                     params.append(json.dumps(redacted_report))
+                if source_review_id:
+                    updates.append("source_review_id = ?")
+                    params.append(source_review_id)
 
                 params.append(review_id)
                 conn.execute(f"UPDATE evaluation SET {', '.join(updates)} WHERE review_id = ?", params)
@@ -448,6 +453,44 @@ class ReviewAuditStore:
         except Exception as e:
             logger.error(f"Failed to update evaluation {review_id}: {e}")
             return False
+
+    def find_finished_evaluation(
+        self,
+        repository: str,
+        target_type: str,
+        target_number: str,
+        review_kind: str,
+        reviewed_generation: str,
+        execution_modes: Sequence[ExecutionMode],
+    ) -> Optional[ReviewAuditRecord]:
+        """Return the newest exact producer without a history-window scan."""
+        conn, _health = self._connect_readonly(repository)
+        if not conn:
+            return None
+        placeholders = ", ".join("?" for _ in execution_modes)
+        params: list[Any] = [
+            target_type,
+            target_number,
+            review_kind,
+            reviewed_generation,
+            EvaluationLifecycle.FINISHED.value,
+            *(mode.value for mode in execution_modes),
+        ]
+        try:
+            row = conn.execute(
+                f"""SELECT * FROM evaluation
+                    WHERE target_type = ? AND target_number = ? AND review_kind = ?
+                      AND reviewed_generation = ? AND lifecycle = ?
+                      AND execution_mode IN ({placeholders})
+                    ORDER BY creation_sequence DESC LIMIT 1""",
+                params,
+            ).fetchone()
+            return self._row_to_evaluation(row) if row is not None else None
+        except Exception as exc:
+            logger.error(f"Failed to find exact audit producer: {exc}")
+            return None
+        finally:
+            conn.close()
 
     def record_interaction(self, repository: str, interaction: ReviewInteractionRecord, credentials: Optional[Sequence[str]] = None) -> bool:
         conn = self._ensure_db(repository)

@@ -3,6 +3,7 @@ Main automation engine for Auto-Coder.
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import os
@@ -123,6 +124,7 @@ from .repo_job_trace import (
 )
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
 from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService
+from .review_capture import issue_review_audit
 from .shutdown_context import install_admission_check, reset_admission_check
 from .sibling_dependencies import (
     BlockedByDeclarationStatus,
@@ -647,7 +649,25 @@ class _ValidationPublicationStageHandler:
             else:
                 side_effect_error = validator.apply_blocked(engine.github, decision, lambda: engine._standalone_validation_is_current(repo_name, decision))
         except GitHubRequestError as exc:
+            issue_review_audit.record_effect(
+                repository=repo_name,
+                target_number=issue_number,
+                review_kind=issue_review_audit.REVIEW_KIND_ISSUE_SPECIFICATION,
+                generation_key=decision.identity.key,
+                policy_identity=decision.identity.policy_identity,
+                disposition="failed",
+                details={"recovery": True, "error": str(exc)},
+            )
             return StageOutcome(error=exc)
+        issue_review_audit.record_effect(
+            repository=repo_name,
+            target_number=issue_number,
+            review_kind=issue_review_audit.REVIEW_KIND_ISSUE_SPECIFICATION,
+            generation_key=decision.identity.key,
+            policy_identity=decision.identity.policy_identity,
+            disposition="failed" if side_effect_error else "unknown",
+            details={"recovery": True, "error": side_effect_error},
+        )
         if side_effect_error:
             logger.warning("Validation publication effects remain incomplete for Issue #{}: {}", issue_number, side_effect_error)
             return StageOutcome()
@@ -739,6 +759,15 @@ class _DecompositionPublicationStageHandler:
         if decision is None or decision.verdict != "BLOCKED":
             return StageOutcome(superseded=True)
         side_effect_error = validator.apply_blocked(engine.github, decision, lambda number: engine._fetch_authoritative_decomposition_set(repo_name, number))
+        issue_review_audit.record_effect(
+            repository=repo_name,
+            target_number=parent_number,
+            review_kind=issue_review_audit.REVIEW_KIND_ISSUE_DECOMPOSITION,
+            generation_key=decision.identity.key,
+            policy_identity=decision.identity.policy_identity,
+            disposition="failed" if side_effect_error else "unknown",
+            details={"recovery": True, "error": side_effect_error},
+        )
         if side_effect_error:
             logger.warning("Decomposition publication effects remain incomplete for parent Issue #{}: {}", parent_number, side_effect_error)
             return StageOutcome()
@@ -1748,8 +1777,31 @@ class AutomationEngine:
         A diagnostic-recorder failure (opening the scope or recording the
         result) is caught and logged rather than allowed to prevent ``fn``
         from running or to change the decision it returns (REQ-008).
+
+        This is also the single shared choke point for durable review-audit
+        recording (Issue #1984): every standalone, forced/explicit,
+        retained-owner-reevaluation, parent/child-scheduling, and
+        pending-work-resumption path funnels its ``decide()`` call through
+        here (see ``_submit_individual_validation``, ``_schedule_parent_validations``,
+        and ``IssueReviewService``'s injected ``trace_job``), so wrapping
+        ``fn`` with ``issue_review_audit.run_traced_review`` here — instead
+        of inside the lifecycles themselves — covers every caller with one
+        implementation. That wrapping is itself best-effort and
+        non-authorizing (REQ-007): it never changes ``fn``'s return value or
+        raised exception.
         """
         collector = get_trace_collector()
+
+        def run_audited() -> Any:
+            return issue_review_audit.run_traced_review(
+                repository=repo_name,
+                target_number=item_number,
+                stage_id=stage_id,
+                facts=facts,
+                origin="automation_engine._traced_validation_job",
+                fn=fn,
+            )
+
         try:
             handle_cm = collector.start_execution(
                 repository=repo_name,
@@ -1762,10 +1814,10 @@ class AutomationEngine:
             )
         except Exception:
             logger.opt(exception=True).debug("Diagnostic trace recording failed opening validation scope for issue#{}; continuing untraced", item_number)
-            return fn()
+            return run_audited()
         with handle_cm as handle:
             try:
-                decision = fn()
+                decision = run_audited()
             except BaseException:
                 try:
                     handle.set_outcome(Outcome.FAILED)
@@ -1797,6 +1849,7 @@ class AutomationEngine:
         operation: Any,
         origin: str,
         scheduler: Optional[ValidationScheduler] = None,
+        audit_identity: Any = None,
     ) -> ValidationJob[ValidationDecision]:
         """Submit every individual review through the diagnostic job boundary.
 
@@ -1810,6 +1863,8 @@ class AutomationEngine:
             "review_kind": "individual",
             "validation_identity": identity_key,
             "caller_origin": origin,
+            "audit_identity": audit_identity,
+            "audit_queued_time": datetime.now(timezone.utc).isoformat(),
         }
         _record_issue_stage_result(
             item_number,
@@ -1920,7 +1975,13 @@ class AutomationEngine:
                     parent_number,
                     "issue.decomposition-validation-job",
                     f"issue#{parent_number} decomposition validation job",
-                    {"parent_number": parent_number, "member_issue_numbers": member_numbers},
+                    {
+                        "parent_number": parent_number,
+                        "member_issue_numbers": member_numbers,
+                        "validation_identity": set_identity.key,
+                        "audit_identity": set_identity,
+                        "audit_queued_time": datetime.now(timezone.utc).isoformat(),
+                    },
                     lambda: decomposition.decide(set_identity, DecompositionIssue(parent_manifest, str(parent.get("body") or "")), child_inputs),
                 ),
             )
@@ -1931,6 +1992,18 @@ class AutomationEngine:
                 f"issue#{parent_number} decomposition validation job",
                 Outcome.SKIPPED,
                 {"parent_number": parent_number, "member_issue_numbers": member_numbers, "reason": "decomposition validation is disabled"},
+            )
+            # This is a genuine "would have reviewed but the flag says no"
+            # decision point feeding directly into scheduling (Issue #1984,
+            # REQ-001, REQ-003): no LLM job or authorization decision is
+            # created for this generation, so it is recorded as a durable
+            # BYPASSED observation rather than silently producing no audit
+            # trail at all.
+            issue_review_audit.record_bypassed(
+                repository=repo_name,
+                target_number=parent_number,
+                review_kind=issue_review_audit.REVIEW_KIND_ISSUE_DECOMPOSITION,
+                origin="automation_engine._schedule_parent_validations:disabled",
             )
         child_jobs: dict[int, ValidationJob[ValidationDecision]] = {}
         if self._is_issue_specification_validation_enabled(repo_name, config):
@@ -1951,6 +2024,21 @@ class AutomationEngine:
                     partial(individual.decide, manifest, title, body, relationship_context),
                     "parent-child-scheduling",
                     scheduler,
+                    identity,
+                )
+        else:
+            # Mirrors the decomposition-disabled BYPASSED observation above,
+            # one per child that would otherwise have been individually
+            # reviewed as part of this family generation.
+            for child in children:
+                number = int(child["number"])
+                if selected_child_number is not None and number != selected_child_number:
+                    continue
+                issue_review_audit.record_bypassed(
+                    repository=repo_name,
+                    target_number=number,
+                    review_kind=issue_review_audit.REVIEW_KIND_ISSUE_SPECIFICATION,
+                    origin="automation_engine._schedule_parent_validations:disabled",
                 )
         return set_job, child_jobs
 
@@ -2332,6 +2420,15 @@ class AutomationEngine:
                 return None
             if decision.verdict != "READY":
                 return None
+        elif parent_number is None:
+            issue_review_audit.record_bypassed(
+                repository=repo_name,
+                target_number=issue_number,
+                review_kind=issue_review_audit.REVIEW_KIND_ISSUE_SPECIFICATION,
+                origin="automation_engine.standalone-intake:disabled",
+                policy_identity=individual_identity.policy_identity,
+                related_issue_membership=str(dataclasses.asdict(individual_identity)),
+            )
         refreshed = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
         if not isinstance(refreshed, dict) or not self._is_open_issue(refreshed):
             return None
