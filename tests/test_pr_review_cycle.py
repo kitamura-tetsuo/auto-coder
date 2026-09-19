@@ -1,15 +1,18 @@
+import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import pytest
 
 from auto_coder.pr_review_cycle import (
+    FIXED,
     PHASE_COMPLETE,
     PHASE_ORDINARY_CLOSURE,
     PHASE_ORDINARY_REVIEW,
     PHASE_STRONG_PENDING,
     VERDICT_FINDINGS,
     VERDICT_PASS,
+    ClaimContendedError,
     ContractSnapshot,
     Finding,
     FindingDisposition,
@@ -30,16 +33,18 @@ def _policy() -> StrongPolicyIdentity:
     return StrongPolicyIdentity(strong_route="backend_strong_pr_adversarial_validation", model_options="model=strong-1", protocol_version="v1")
 
 
-def _finding(finding_id: str, origin_round_id: str = "") -> Finding:
+def _finding(finding_id: str, origin_round_id: str) -> Finding:
     return Finding(
         finding_id=finding_id,
         origin_round_id=origin_round_id,
         requirement_ids=("REQ-001",),
+        requirement_texts=("REQ-001: do the thing",),
         counterexample="Given state S, action A occurs",
         expected_behavior="R",
         actual_behavior="X",
         evidence="repro at line 10",
         affected_boundary="owner-deletion path",
+        focused_regression_scenario="exercise the affected path and assert the invariant",
     )
 
 
@@ -102,8 +107,8 @@ def test_two_distinct_completion_paths_and_recovery(tmp_path):
     # A second PR completes via repair + ordinary closure instead.
     repo.record_ordinary_pass(2, RoundProvenance("h0b", "base"), _contract())
     claim_b = repo.claim_strong_audit(2, RoundProvenance("h0b", "base"), _contract(), _policy())
-    finding_a = _finding("finding-a")
-    finding_b = _finding("finding-b")
+    finding_a = _finding("finding-a", claim_b.claim_id)
+    finding_b = _finding("finding-b", claim_b.claim_id)
     strong_round = repo.record_strong_result(2, claim_b.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[finding_a, finding_b])
     repo.acknowledge_publication(2, strong_round.round_id)
 
@@ -122,6 +127,7 @@ def test_two_distinct_completion_paths_and_recovery(tmp_path):
         bounded=True,
         bounded_evidence="cumulative diff h0..h1 touches only the two flagged paths",
     )
+    snapshot = repo.acknowledge_closure_publication(2, snapshot.accepted_closure.closure_id)
     assert snapshot.phase == PHASE_COMPLETE
     assert repo.is_completion_authorized(2, "h1")
 
@@ -141,26 +147,26 @@ def test_omitted_finding_disposition_blocks_completion(tmp_path):
     provenance0 = RoundProvenance("h0", "base")
     repo.record_ordinary_pass(1, provenance0, _contract())
     claim = repo.claim_strong_audit(1, provenance0, _contract(), _policy())
-    finding_a = _finding("finding-a")
-    finding_b = _finding("finding-b")
+    finding_a = _finding("finding-a", claim.claim_id)
+    finding_b = _finding("finding-b", claim.claim_id)
     strong_round = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[finding_a, finding_b])
 
     repo.record_ordinary_pass(1, RoundProvenance("h1", "base"), _contract())
-    snapshot = repo.certify_closure(
-        1,
-        RoundProvenance("h1", "base"),
-        _contract(),
-        _policy(),
-        references_round_id=strong_round.round_id,
-        finding_set_revision=strong_round.finding_set_revision,
-        dispositions=[FindingDisposition("finding-a", "FIXED", "regression test added", "h1")],
-        bounded=True,
-        bounded_evidence="cumulative diff h0..h1 touches only the flagged path",
-    )
+    with pytest.raises(ValueError, match="complete current open finding set"):
+        repo.certify_closure(
+            1,
+            RoundProvenance("h1", "base"),
+            _contract(),
+            _policy(),
+            references_round_id=strong_round.round_id,
+            finding_set_revision=strong_round.finding_set_revision,
+            dispositions=[FindingDisposition("finding-a", "FIXED", "regression test added", "h1")],
+            bounded=True,
+            bounded_evidence="cumulative diff h0..h1 touches only the flagged path",
+        )
 
-    assert snapshot.completion is None
-    assert snapshot.phase == PHASE_ORDINARY_CLOSURE
-    assert any(f.finding_id == "finding-b" and f.status == "OPEN" for f in snapshot.open_findings)
+    snapshot = repo.snapshot(1)
+    assert {finding.finding_id for finding in snapshot.open_findings} == {"finding-a", "finding-b"}
     assert not repo.is_completion_authorized(1, "h1")
 
 
@@ -169,7 +175,7 @@ def test_disposition_requires_evidence(tmp_path):
     provenance0 = RoundProvenance("h0", "base")
     repo.record_ordinary_pass(1, provenance0, _contract())
     claim = repo.claim_strong_audit(1, provenance0, _contract(), _policy())
-    strong_round = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("finding-a")])
+    strong_round = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("finding-a", claim.claim_id)])
 
     repo.record_ordinary_pass(1, RoundProvenance("h1", "base"), _contract())
     with pytest.raises(ValueError):
@@ -194,7 +200,7 @@ def test_closure_assesses_full_lineage_from_original_strong_audit(tmp_path):
     provenance0 = RoundProvenance("h0", "base")
     repo.record_ordinary_pass(1, provenance0, _contract())
     claim = repo.claim_strong_audit(1, provenance0, _contract(), _policy())
-    strong_round = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("finding-a")])
+    strong_round = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("finding-a", claim.claim_id)])
 
     # h1 is an intermediate repair head that never certifies closure.
     repo.record_ordinary_pass(1, RoundProvenance("h1", "base"), _contract())
@@ -213,6 +219,8 @@ def test_closure_assesses_full_lineage_from_original_strong_audit(tmp_path):
         bounded=True,
         bounded_evidence="assessed cumulative diff h0..h2",
     )
+    repo.acknowledge_publication(1, strong_round.round_id)
+    snapshot = repo.acknowledge_closure_publication(1, snapshot.accepted_closure.closure_id)
     assert snapshot.phase == PHASE_COMPLETE
 
 
@@ -221,7 +229,7 @@ def test_expanded_closure_requires_new_strong_round(tmp_path):
     provenance0 = RoundProvenance("h0", "base")
     repo.record_ordinary_pass(1, provenance0, _contract())
     claim = repo.claim_strong_audit(1, provenance0, _contract(), _policy())
-    strong_round = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("finding-a")])
+    strong_round = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("finding-a", claim.claim_id)])
 
     repo.record_ordinary_pass(1, RoundProvenance("h1", "base"), _contract())
     snapshot = repo.certify_closure(
@@ -320,8 +328,9 @@ def test_duplicate_claims_for_the_same_phase_do_not_double_authorize(tmp_path):
         first_future.result(timeout=2)
         second_claim_result = second_future.result(timeout=2)
 
-    duplicate_claim = repo_a.claim_strong_audit(1, provenance, _contract(), _policy())
-    assert duplicate_claim.claim_id == second_claim_result.claim_id
+    with pytest.raises(ClaimContendedError):
+        repo_a.claim_strong_audit(1, provenance, _contract(), _policy())
+    assert repo_b.claim_strong_audit(1, provenance, _contract(), _policy()).claim_id == second_claim_result.claim_id
 
 
 def test_newer_attempt_supersedes_and_older_result_is_rejected(tmp_path):
@@ -340,7 +349,7 @@ def test_newer_attempt_supersedes_and_older_result_is_rejected(tmp_path):
 
     # The older failure must not be accepted either.
     with pytest.raises(UnknownClaimError):
-        repo.record_strong_result(1, old_claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("late-finding")])
+        repo.record_strong_result(1, old_claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("late-finding", old_claim.claim_id)])
 
     round_new = repo.record_strong_result(1, new_claim.claim_id, VERDICT_PASS, reviewer_provenance="codex/strong-1")
     assert round_new.head_sha == "h1"
@@ -392,7 +401,7 @@ def test_unknown_delivery_is_retired_on_independent_closure_without_being_marked
     provenance0 = RoundProvenance("h0", "base")
     repo.record_ordinary_pass(1, provenance0, _contract())
     claim = repo.claim_strong_audit(1, provenance0, _contract(), _policy())
-    strong_round = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("finding-a")])
+    strong_round = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, reviewer_provenance="codex/strong-1", findings=[_finding("finding-a", claim.claim_id)])
     repo.acknowledge_publication(1, strong_round.round_id)
 
     repo.set_finding_delivery_status(1, "finding-a", "UNKNOWN")
@@ -409,6 +418,7 @@ def test_unknown_delivery_is_retired_on_independent_closure_without_being_marked
         bounded=True,
         bounded_evidence="cumulative diff h0..h1 fixes the flagged path",
     )
+    snapshot = repo.acknowledge_closure_publication(1, snapshot.accepted_closure.closure_id)
     assert snapshot.phase == PHASE_COMPLETE
     fixed_finding = repo.snapshot(1)
     # Finding is no longer open, so it is absent from open_findings; check via internal state through delivery API.
@@ -470,3 +480,123 @@ def test_closed_pr_grants_no_authority_and_reopen_requires_fresh_observations(tm
     repo.acknowledge_publication(1, new_round.round_id)
     repo.accept_strong_pass_completion(1, new_round.round_id)
     assert repo.is_completion_authorized(1, "h0")
+
+
+def test_changed_observation_immediately_revokes_completion_and_rejects_old_result(tmp_path):
+    repo = PrReviewCycleRepository("owner/repo", tmp_path / "state.json")
+    provenance = RoundProvenance("h0", "base")
+    original = _contract("REQ-001: original")
+    repo.record_ordinary_pass(1, provenance, original)
+    claim = repo.claim_strong_audit(1, provenance, original, _policy())
+    round0 = repo.record_strong_result(1, claim.claim_id, VERDICT_PASS, "codex/strong-1")
+    repo.acknowledge_publication(1, round0.round_id)
+    repo.accept_strong_pass_completion(1, round0.round_id)
+
+    changed = _contract("REQ-001: changed")
+    repo.record_ordinary_pass(1, provenance, changed)
+    assert not repo.is_completion_authorized(1, "h0")
+    with pytest.raises(NotApplicableError):
+        repo.accept_strong_pass_completion(1, round0.round_id)
+
+
+def test_closure_requires_current_head_dispositions_and_effect_acknowledgements(tmp_path):
+    repo = PrReviewCycleRepository("owner/repo", tmp_path / "state.json")
+    audit = RoundProvenance("h0", "base")
+    repo.record_ordinary_pass(1, audit, _contract())
+    claim = repo.claim_strong_audit(1, audit, _contract(), _policy())
+    round0 = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, "codex/strong-1", [_finding("a", claim.claim_id)])
+    repo.record_ordinary_pass(1, RoundProvenance("h2", "base"), _contract())
+
+    with pytest.raises(ValueError, match="closure head"):
+        repo.certify_closure(
+            1,
+            RoundProvenance("h2", "base"),
+            _contract(),
+            _policy(),
+            round0.round_id,
+            round0.finding_set_revision,
+            [FindingDisposition("a", FIXED, "proof", "h1")],
+            True,
+            "h0..h2",
+        )
+    snapshot = repo.certify_closure(
+        1,
+        RoundProvenance("h2", "base"),
+        _contract(),
+        _policy(),
+        round0.round_id,
+        round0.finding_set_revision,
+        [FindingDisposition("a", FIXED, "proof", "h2")],
+        True,
+        "h0..h2",
+    )
+    assert snapshot.completion is None
+    with pytest.raises(NotApplicableError, match="Strong-audit publication"):
+        repo.acknowledge_closure_publication(1, snapshot.accepted_closure.closure_id)
+    repo.acknowledge_publication(1, round0.round_id)
+    snapshot = repo.acknowledge_closure_publication(1, snapshot.accepted_closure.closure_id)
+    assert snapshot.phase == PHASE_COMPLETE
+
+
+def test_complete_evidence_payload_and_retry_metadata_survive_restart(tmp_path):
+    path = tmp_path / "state.json"
+    repo = PrReviewCycleRepository("owner/repo", path)
+    provenance = RoundProvenance("h0", "base")
+    contract = _contract("REQ-001: exact authoritative text")
+    repo.record_ordinary_pass(1, provenance, contract)
+    claim = repo.claim_strong_audit(1, provenance, contract, _policy())
+    finding = _finding("a", claim.claim_id)
+    round0 = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, "codex/strong-1", [finding])
+
+    recovered = PrReviewCycleRepository("owner/repo", path).snapshot(1)
+    assert recovered.accepted_strong_round.contract_snapshot == contract
+    assert recovered.accepted_strong_round.policy == _policy()
+    assert recovered.accepted_strong_round.claim_id == claim.claim_id
+    assert recovered.open_findings[0].requirement_texts == ("REQ-001: do the thing",)
+
+    repo.record_ordinary_pass(2, provenance, contract)
+    deferred = repo.claim_strong_audit(2, provenance, contract, _policy())
+    deadline = time.time() + 3600
+    repo.abandon_claim(2, deferred.claim_id, "quota unavailable", deadline)
+    recovered_deferred = PrReviewCycleRepository("owner/repo", path).snapshot(2)
+    assert recovered_deferred.attempt_error_reason == "quota unavailable"
+    assert recovered_deferred.retry_not_before == deadline
+    with pytest.raises(NotApplicableError, match="deferred"):
+        repo.claim_strong_audit(2, provenance, contract, _policy())
+
+
+def test_new_closure_finding_remains_open_after_restart(tmp_path):
+    path = tmp_path / "state.json"
+    repo = PrReviewCycleRepository("owner/repo", path)
+    audit = RoundProvenance("h0", "base")
+    repo.record_ordinary_pass(1, audit, _contract())
+    claim = repo.claim_strong_audit(1, audit, _contract(), _policy())
+    round0 = repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, "codex/strong-1", [_finding("a", claim.claim_id)])
+    repo.record_ordinary_pass(1, RoundProvenance("h1", "base"), _contract())
+    snapshot = repo.certify_closure(
+        1,
+        RoundProvenance("h1", "base"),
+        _contract(),
+        _policy(),
+        round0.round_id,
+        round0.finding_set_revision,
+        [FindingDisposition("a", FIXED, "fixed", "h1")],
+        True,
+        "h0..h1",
+        new_findings=[_finding("b", round0.round_id)],
+    )
+    assert snapshot.completion is None
+    recovered = PrReviewCycleRepository("owner/repo", path).snapshot(1)
+    assert [finding.finding_id for finding in recovered.open_findings] == ["b"]
+
+
+def test_pass_with_findings_and_duplicate_finding_ids_are_rejected(tmp_path):
+    repo = PrReviewCycleRepository("owner/repo", tmp_path / "state.json")
+    provenance = RoundProvenance("h0", "base")
+    repo.record_ordinary_pass(1, provenance, _contract())
+    claim = repo.claim_strong_audit(1, provenance, _contract(), _policy())
+    finding = _finding("a", claim.claim_id)
+    with pytest.raises(ValueError, match="PASS verdict"):
+        repo.record_strong_result(1, claim.claim_id, VERDICT_PASS, "codex/strong-1", [finding])
+    with pytest.raises(ValueError, match="unique"):
+        repo.record_strong_result(1, claim.claim_id, VERDICT_FINDINGS, "codex/strong-1", [finding, finding])

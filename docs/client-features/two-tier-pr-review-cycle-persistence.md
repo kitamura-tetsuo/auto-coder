@@ -34,10 +34,12 @@ separately as `reviewer_provenance` and never gates authorization.
 `PrReviewCycleRepository.snapshot(pr_number)` returns a `PrReviewCycleSnapshot`
 whose `phase` is one of `ORDINARY_REVIEW`, `STRONG_PENDING`,
 `STRONG_RUNNING`, `ORDINARY_CLOSURE`, `COMPLETE`, or `CLOSED`, plus a
-`waiting_reason`. A generic ordinary PASS, a claimed-but-unresolved strong
-attempt, or a legacy single-tier review record (this module shares no store
-with `adversarial_validation_attempts.py` or `reviewer_session_registry.py`)
-never represents completed strong auditing.
+`waiting_reason`, `pending_effect`, and durable retry reason/deadline. An
+accepted result awaiting publication is exposed as effect work, not as a new
+model-execution request. A generic ordinary PASS, a claimed-but-unresolved
+strong attempt, or a legacy single-tier review record (this module shares no
+store with `adversarial_validation_attempts.py` or
+`reviewer_session_registry.py`) never represents completed strong auditing.
 
 ## Two ways to reach COMPLETE
 
@@ -47,31 +49,38 @@ never represents completed strong auditing.
    `accept_strong_pass_completion`. Completion is authorized only once
    publication is confirmed.
 2. **Ordinary closure of strong findings**: after a `FINDINGS` verdict,
-   `certify_closure` at a repair head H2 completes the cycle only when it
+   `certify_closure` at a repair head H2 accepts closure evidence only when it
    references the still-current accepted round and finding-set revision,
    B/M/P are unchanged from that round, an applicable ordinary PASS exists for
    H2, every outstanding finding has an evidence-backed `FIXED`/`INVALID`
    disposition, and the cumulative diff from the original strong-audit head
    through H2 is certified `bounded=True` with reviewer-produced evidence. A
-   finding omitted from `dispositions` simply stays open and blocks
-   completion; a `bounded=False` (EXPANDED) result requires a brand-new
+   omitted or wrong-head disposition is rejected without changing the finding
+   set. The accepted closure remains non-authorizing until both the strong
+   result and closure publication/bookkeeping are confirmed through
+   `acknowledge_publication` and `acknowledge_closure_publication`. A
+   `bounded=False` (EXPANDED) result requires a brand-new
    independent strong round on the current ordinary-passed H2 rather than
    another closure attempt.
 
-Findings discovered during closure (`new_findings`) join the tracked
-obligations instead of being suppressed, and a disposition never overwrites
-an already-dispositioned finding, preserving the originating payload.
+Findings retain their complete Requirement identities and texts, producing
+claim/round identity, counterexample, behavioral evidence, affected boundary,
+and focused regression request. Findings discovered during closure
+(`new_findings`) join the tracked obligations instead of being suppressed,
+and a disposition never overwrites an already-dispositioned finding,
+preserving the originating payload.
 
 ## Fencing overlapping controllers
 
 Every transition is taken under a dedicated file lock
 (`serialized_transition`) distinct from the short read/write lock, mirroring
 `AdversarialValidationAttemptRepository`. `claim_strong_audit` is idempotent
-for a duplicate claim on the same H/B/M/P (returns the existing claim) and
-supersedes an older in-progress claim when a newer applicable identity
-appears; `record_strong_result` rejects a result whose claim is no longer the
-active one, so a stale result can never publish authority after a newer
-attempt superseded it. Callers may also pass `expected_version` (from
+for a retry by the owning controller, while another controller receives
+`ClaimContendedError` and therefore never obtains the owner's execution
+credential. A claim for a newer applicable identity supersedes an older
+in-progress claim; `record_strong_result` rejects a result whose claim is no
+longer the active one, so a stale result can never publish authority after a
+newer attempt superseded it. Callers may also pass `expected_version` (from
 `current_version`) to any mutating call for optimistic-concurrency fencing;
 a mismatch raises `StaleTransitionError` before any write occurs.
 
@@ -79,8 +88,9 @@ a mismatch raises `StaleTransitionError` before any write occurs.
 
 All state is written atomically (temp file + `os.replace`) to
 `~/.auto-coder/<repo>/pr_review_cycle.json`. After a restart, `snapshot`
-reconstructs the pending phase, the accepted strong-audit bundle, outstanding
-findings, and each round's `publication_status`
+reconstructs the pending phase, complete contract and policy snapshots, the
+accepted strong-audit bundle, accepted closure, outstanding findings,
+retry-not-before/error metadata, and each result's `publication_status`
 (`PENDING`/`ACKNOWLEDGED`) without requiring another model invocation; only
 publication/acknowledgement work needs to resume. `set_finding_delivery_status`
 tracks a finding's repair-message delivery (`NONE`/`PENDING`/`UNKNOWN`); when

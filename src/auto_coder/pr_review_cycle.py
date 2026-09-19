@@ -54,6 +54,9 @@ PHASE_ORDINARY_CLOSURE = "ORDINARY_CLOSURE"
 PHASE_COMPLETE = "COMPLETE"
 PHASE_CLOSED = "CLOSED"
 
+EFFECT_STRONG_PUBLICATION = "STRONG_PUBLICATION"
+EFFECT_CLOSURE_PUBLICATION = "CLOSURE_PUBLICATION"
+
 CLAIM_STRONG_AUDIT = "STRONG_AUDIT"
 
 
@@ -79,6 +82,10 @@ class NotApplicableError(ReviewCycleError):
 
 class UnknownClaimError(ReviewCycleError):
     """Raised when a result references a claim that is not the active one."""
+
+
+class ClaimContendedError(ReviewCycleError):
+    """Raised when another controller owns the active execution claim."""
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,7 @@ class Finding:
     finding_id: str
     origin_round_id: str
     requirement_ids: Tuple[str, ...]
+    requirement_texts: Tuple[str, ...]
     counterexample: str
     expected_behavior: str
     actual_behavior: str
@@ -147,6 +155,10 @@ class StrongAuditRound:
     base_sha: str
     contract_identity: str
     policy_identity: str
+    contract_snapshot: ContractSnapshot
+    policy: StrongPolicyIdentity
+    claim_id: str
+    open_epoch: int
     reviewer_provenance: str
     verdict: str
     finding_ids: Tuple[str, ...] = field(default_factory=tuple)
@@ -168,6 +180,8 @@ class ClosureCertification:
     bounded: bool
     bounded_evidence: str
     accepted_at: float = 0.0
+    publication_status: str = PUBLICATION_PENDING
+    closure_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -194,6 +208,8 @@ class ActiveClaim:
     contract_identity: str
     policy_identity: str
     based_on_version: int
+    owner_id: str
+    open_epoch: int
     claimed_at: float = 0.0
 
 
@@ -226,6 +242,10 @@ class PrReviewCycleSnapshot:
     open_findings: Tuple[Finding, ...]
     finding_set_revision: int
     completion: Optional[CompletionRecord]
+    accepted_closure: Optional[ClosureCertification]
+    retry_not_before: float
+    attempt_error_reason: str
+    pending_effect: str
 
 
 class PrReviewCycleRepository:
@@ -236,6 +256,7 @@ class PrReviewCycleRepository:
         self.storage_path = storage_path or Path.home() / ".auto-coder" / repo_name / "pr_review_cycle.json"
         self.lock_path = lock_path(repo_name, self.storage_path, "pr-review-cycle-store")
         self.transition_lock_path = lock_path(repo_name, self.storage_path, "pr-review-cycle-transition")
+        self.controller_id = uuid.uuid4().hex
 
     # -- storage plumbing -------------------------------------------------
 
@@ -306,6 +327,9 @@ class PrReviewCycleRepository:
             "active_claim": None,
             "completion": None,
             "requires_new_strong_round": False,
+            "accepted_closure_id": "",
+            "retry_not_before": 0.0,
+            "attempt_error_reason": "",
         }
 
     # -- (de)serialization --------------------------------------------------
@@ -315,6 +339,7 @@ class PrReviewCycleRepository:
             finding_id=str(raw["finding_id"]),
             origin_round_id=str(raw.get("origin_round_id", "")),
             requirement_ids=tuple(raw.get("requirement_ids", []) or []),
+            requirement_texts=tuple(raw.get("requirement_texts", []) or []),
             counterexample=str(raw.get("counterexample", "")),
             expected_behavior=str(raw.get("expected_behavior", "")),
             actual_behavior=str(raw.get("actual_behavior", "")),
@@ -332,6 +357,8 @@ class PrReviewCycleRepository:
         )
 
     def _strong_round_from_raw(self, raw: dict) -> StrongAuditRound:
+        contract_raw = raw.get("contract_snapshot", {})
+        policy_raw = raw.get("policy", {})
         return StrongAuditRound(
             round_id=str(raw["round_id"]),
             sequence=int(raw["sequence"]),
@@ -339,6 +366,17 @@ class PrReviewCycleRepository:
             base_sha=str(raw["base_sha"]),
             contract_identity=str(raw["contract_identity"]),
             policy_identity=str(raw["policy_identity"]),
+            contract_snapshot=ContractSnapshot(
+                issue_ids=tuple(contract_raw.get("issue_ids", []) or []),
+                requirements_text=str(contract_raw.get("requirements_text", "")),
+            ),
+            policy=StrongPolicyIdentity(
+                strong_route=str(policy_raw.get("strong_route", "")),
+                model_options=str(policy_raw.get("model_options", "")),
+                protocol_version=str(policy_raw.get("protocol_version", "")),
+            ),
+            claim_id=str(raw.get("claim_id", "")),
+            open_epoch=int(raw.get("open_epoch", 0)),
             reviewer_provenance=str(raw.get("reviewer_provenance", "")),
             verdict=str(raw["verdict"]),
             finding_ids=tuple(raw.get("finding_ids", []) or []),
@@ -358,7 +396,24 @@ class PrReviewCycleRepository:
             contract_identity=str(raw["contract_identity"]),
             policy_identity=str(raw["policy_identity"]),
             based_on_version=int(raw["based_on_version"]),
+            owner_id=str(raw.get("owner_id", "")),
+            open_epoch=int(raw.get("open_epoch", 0)),
             claimed_at=float(raw.get("claimed_at", 0.0)),
+        )
+
+    def _closure_from_raw(self, raw: dict) -> ClosureCertification:
+        return ClosureCertification(
+            head_sha=str(raw["head_sha"]),
+            base_sha=str(raw["base_sha"]),
+            contract_identity=str(raw["contract_identity"]),
+            policy_identity=str(raw["policy_identity"]),
+            references_round_id=str(raw["references_round_id"]),
+            finding_set_revision=int(raw["finding_set_revision"]),
+            bounded=bool(raw["bounded"]),
+            bounded_evidence=str(raw["bounded_evidence"]),
+            accepted_at=float(raw.get("accepted_at", 0.0)),
+            publication_status=str(raw.get("publication_status", PUBLICATION_PENDING)),
+            closure_id=str(raw.get("closure_id", "")),
         )
 
     def _completion_from_raw(self, raw: Optional[dict]) -> Optional[CompletionRecord]:
@@ -414,13 +469,24 @@ class PrReviewCycleRepository:
             ordinary_contract = str(ordinary_pass.get("contract_identity", ""))
 
         active_claim = self._active_claim_from_raw(raw_pr.get("active_claim"))
+        accepted_closure = None
+        accepted_closure_id = str(raw_pr.get("accepted_closure_id", ""))
+        for raw_closure in raw_pr.get("closures", []) or []:
+            if isinstance(raw_closure, dict) and raw_closure.get("closure_id") == accepted_closure_id:
+                accepted_closure = self._closure_from_raw(raw_closure)
+                break
         completion = self._completion_from_raw(raw_pr.get("completion"))
         closed = bool(raw_pr.get("closed", False))
         open_epoch = int(raw_pr.get("open_epoch", 0))
         applicable_completion = completion if completion is not None and completion.open_epoch == open_epoch else None
         requires_new_strong_round = bool(raw_pr.get("requires_new_strong_round", False))
 
-        phase, waiting_reason = self._compute_phase(raw_pr, open_findings, accepted_round, active_claim, applicable_completion, closed, requires_new_strong_round)
+        phase, waiting_reason = self._compute_phase(raw_pr, open_findings, accepted_round, active_claim, applicable_completion, closed, requires_new_strong_round, accepted_closure)
+        pending_effect = ""
+        if accepted_closure is not None and accepted_closure.publication_status == PUBLICATION_PENDING:
+            pending_effect = EFFECT_CLOSURE_PUBLICATION
+        elif accepted_round is not None and accepted_round.publication_status == PUBLICATION_PENDING:
+            pending_effect = EFFECT_STRONG_PUBLICATION
 
         return PrReviewCycleSnapshot(
             repository=self.repo_name,
@@ -438,6 +504,10 @@ class PrReviewCycleRepository:
             open_findings=open_findings,
             finding_set_revision=int(raw_pr.get("finding_set_revision", 0)),
             completion=applicable_completion,
+            accepted_closure=accepted_closure,
+            retry_not_before=float(raw_pr.get("retry_not_before", 0.0)),
+            attempt_error_reason=str(raw_pr.get("attempt_error_reason", "")),
+            pending_effect=pending_effect,
         )
 
     @staticmethod
@@ -449,21 +519,29 @@ class PrReviewCycleRepository:
         completion: Optional[CompletionRecord],
         closed: bool,
         requires_new_strong_round: bool,
+        accepted_closure: Optional[ClosureCertification],
     ) -> Tuple[str, str]:
         if closed:
             return PHASE_CLOSED, "PR is closed; reopening requires fresh observations"
         if completion is not None:
             return PHASE_COMPLETE, ""
+        if active_claim is not None and active_claim.phase == CLAIM_STRONG_AUDIT:
+            return PHASE_STRONG_RUNNING, "strong audit in progress"
         if requires_new_strong_round:
             if isinstance(raw_pr.get("ordinary_pass"), dict):
                 return PHASE_STRONG_PENDING, "prior closure was EXPANDED; a new independent strong round is required"
             return PHASE_ORDINARY_REVIEW, "prior closure was EXPANDED; awaiting a new applicable ordinary PASS"
+        if accepted_closure is not None and accepted_closure.publication_status == PUBLICATION_PENDING:
+            return PHASE_ORDINARY_CLOSURE, "closure accepted; publication acknowledgement pending"
+        if accepted_round is not None and accepted_round.publication_status == PUBLICATION_PENDING:
+            return PHASE_ORDINARY_CLOSURE if accepted_round.verdict == VERDICT_FINDINGS else PHASE_STRONG_PENDING, "strong result accepted; publication acknowledgement pending"
         if accepted_round is not None and accepted_round.verdict == VERDICT_FINDINGS and open_findings:
             return PHASE_ORDINARY_CLOSURE, f"{len(open_findings)} strong finding(s) outstanding"
         if accepted_round is not None and accepted_round.verdict == VERDICT_FINDINGS and not open_findings:
             return PHASE_ORDINARY_CLOSURE, "all findings dispositioned; awaiting bounded closure certification"
-        if active_claim is not None and active_claim.phase == CLAIM_STRONG_AUDIT:
-            return PHASE_STRONG_RUNNING, "strong audit in progress"
+        retry_not_before = float(raw_pr.get("retry_not_before", 0.0))
+        if retry_not_before > time.time():
+            return PHASE_STRONG_PENDING, str(raw_pr.get("attempt_error_reason", "strong audit retry deferred"))
         if isinstance(raw_pr.get("ordinary_pass"), dict):
             return PHASE_STRONG_PENDING, "ordinary PASS recorded; strong audit required"
         return PHASE_ORDINARY_REVIEW, "awaiting an applicable ordinary PASS"
@@ -480,6 +558,38 @@ class PrReviewCycleRepository:
     def _bump(self, pr_state: dict) -> None:
         pr_state["transition_version"] = int(pr_state.get("transition_version", 0)) + 1
 
+    @staticmethod
+    def _validate_identity(provenance: RoundProvenance, contract: ContractSnapshot) -> None:
+        if not provenance.head_sha.strip() or not provenance.base_sha.strip():
+            raise ValueError("Head and base identities must be nonempty")
+        if not contract.issue_ids or not all(value.strip() for value in contract.issue_ids):
+            raise ValueError("Contract snapshot requires authoritative issue identities")
+        if not contract.requirements_text.strip():
+            raise ValueError("Contract snapshot requires complete Requirements text")
+
+    @staticmethod
+    def _validate_policy(policy: StrongPolicyIdentity) -> None:
+        if not policy.strong_route.strip() or not policy.model_options.strip() or not policy.protocol_version.strip():
+            raise ValueError("Strong policy route, options, and protocol version are required")
+
+    @staticmethod
+    def _validate_finding(finding: Finding) -> None:
+        required = (
+            finding.finding_id,
+            *finding.requirement_ids,
+            *finding.requirement_texts,
+            finding.counterexample,
+            finding.expected_behavior,
+            finding.actual_behavior,
+            finding.evidence,
+            finding.affected_boundary,
+            finding.focused_regression_scenario,
+        )
+        if not finding.requirement_ids or len(finding.requirement_ids) != len(finding.requirement_texts) or not all(value.strip() for value in required):
+            raise ValueError("Finding requires a unique identity and complete evidence payload")
+        if finding.is_regression_gap and not all(value.strip() for value in (finding.plausible_incorrect_implementation, finding.why_tests_admit_it, finding.material_consequence)):
+            raise ValueError("Regression-gap findings require implementation, test-gap, and consequence evidence")
+
     # -- public transition API ----------------------------------------------
 
     def record_ordinary_pass(
@@ -495,6 +605,7 @@ class PrReviewCycleRepository:
         after strong findings exist, the ordinary-convergence half of a
         closure certification for a repair head H2 (REQ-005).
         """
+        self._validate_identity(provenance, contract)
         with self.serialized_transition(), self._locked():
             state = self._read()
             prs = state["prs"]
@@ -503,10 +614,19 @@ class PrReviewCycleRepository:
             self._check_version(pr_state, expected_version)
             if pr_state.get("closed"):
                 raise NotApplicableError("Cannot record an ordinary PASS for a closed PR")
+            previous = pr_state.get("ordinary_pass")
+            changed = not isinstance(previous, dict) or (previous.get("head_sha"), previous.get("base_sha"), previous.get("contract_identity")) != (provenance.head_sha, provenance.base_sha, contract.identity)
+            if changed:
+                pr_state["completion"] = None
+                pr_state["accepted_closure_id"] = ""
+                active = pr_state.get("active_claim")
+                if isinstance(active, dict) and (active.get("head_sha"), active.get("base_sha"), active.get("contract_identity")) != (provenance.head_sha, provenance.base_sha, contract.identity):
+                    pr_state["active_claim"] = None
             pr_state["ordinary_pass"] = {
                 "head_sha": provenance.head_sha,
                 "base_sha": provenance.base_sha,
                 "contract_identity": contract.identity,
+                "contract_snapshot": {"issue_ids": list(contract.issue_ids), "requirements_text": contract.requirements_text},
                 "open_epoch": pr_state.get("open_epoch", 0),
                 "recorded_at": time.time(),
             }
@@ -529,6 +649,8 @@ class PrReviewCycleRepository:
         newer identity supersedes any older in-progress claim so an older
         result cannot later publish authority (REQ-009).
         """
+        self._validate_identity(provenance, contract)
+        self._validate_policy(policy)
         with self.serialized_transition(), self._locked():
             state = self._read()
             prs = state["prs"]
@@ -537,6 +659,12 @@ class PrReviewCycleRepository:
             self._check_version(pr_state, expected_version)
             if pr_state.get("closed"):
                 raise NotApplicableError("Cannot claim a strong audit for a closed PR")
+            if float(pr_state.get("retry_not_before", 0.0)) > time.time():
+                raise NotApplicableError("Strong-audit retry is deferred")
+            accepted_id = str(pr_state.get("accepted_strong_round_id", ""))
+            for raw_round in pr_state.get("strong_rounds", []) or []:
+                if not pr_state.get("requires_new_strong_round") and isinstance(raw_round, dict) and raw_round.get("round_id") == accepted_id and raw_round.get("publication_status") == PUBLICATION_PENDING:
+                    raise NotApplicableError("Accepted strong result awaits publication acknowledgement")
 
             ordinary_pass = pr_state.get("ordinary_pass")
             if not isinstance(ordinary_pass, dict):
@@ -549,6 +677,8 @@ class PrReviewCycleRepository:
                 existing = self._active_claim_from_raw(existing_raw)
                 assert existing is not None
                 if existing.head_sha == provenance.head_sha and existing.base_sha == provenance.base_sha and existing.contract_identity == contract.identity and existing.policy_identity == policy.identity:
+                    if existing.owner_id != self.controller_id:
+                        raise ClaimContendedError("Another controller owns the active strong-audit execution")
                     return existing
 
             claim = ActiveClaim(
@@ -559,6 +689,8 @@ class PrReviewCycleRepository:
                 contract_identity=contract.identity,
                 policy_identity=policy.identity,
                 based_on_version=int(pr_state.get("transition_version", 0)),
+                owner_id=self.controller_id,
+                open_epoch=int(pr_state.get("open_epoch", 0)),
                 claimed_at=time.time(),
             )
             pr_state["active_claim"] = {
@@ -568,14 +700,30 @@ class PrReviewCycleRepository:
                 "base_sha": claim.base_sha,
                 "contract_identity": claim.contract_identity,
                 "policy_identity": claim.policy_identity,
+                "policy": {
+                    "strong_route": policy.strong_route,
+                    "model_options": policy.model_options,
+                    "protocol_version": policy.protocol_version,
+                },
                 "based_on_version": claim.based_on_version,
+                "owner_id": claim.owner_id,
+                "open_epoch": claim.open_epoch,
                 "claimed_at": claim.claimed_at,
             }
+            pr_state["completion"] = None
+            pr_state["retry_not_before"] = 0.0
+            pr_state["attempt_error_reason"] = ""
             self._bump(pr_state)
             self._write(state)
             return claim
 
-    def abandon_claim(self, pr_number: int, claim_id: str) -> None:
+    def abandon_claim(
+        self,
+        pr_number: int,
+        claim_id: str,
+        reason: str = "",
+        retry_not_before: float = 0.0,
+    ) -> None:
         """Release a claim (deferred/errored attempt) without accepting a result."""
         with self.serialized_transition(), self._locked():
             state = self._read()
@@ -587,6 +735,8 @@ class PrReviewCycleRepository:
             active_claim = pr_state.get("active_claim")
             if isinstance(active_claim, dict) and active_claim.get("claim_id") == claim_id:
                 pr_state["active_claim"] = None
+                pr_state["attempt_error_reason"] = reason
+                pr_state["retry_not_before"] = retry_not_before
                 self._bump(pr_state)
                 self._write(state)
 
@@ -618,10 +768,26 @@ class PrReviewCycleRepository:
             active_claim = pr_state.get("active_claim")
             if not isinstance(active_claim, dict) or active_claim.get("claim_id") != claim_id or active_claim.get("phase") != CLAIM_STRONG_AUDIT:
                 raise UnknownClaimError("Claim is not the currently active strong-audit claim")
+            if active_claim.get("owner_id") != self.controller_id:
+                raise UnknownClaimError("This controller does not own the active execution claim")
+            if int(active_claim.get("open_epoch", -1)) != int(pr_state.get("open_epoch", 0)):
+                raise UnknownClaimError("Claim belongs to a prior PR open epoch")
+            ordinary_pass = pr_state.get("ordinary_pass")
+            if not isinstance(ordinary_pass, dict) or (ordinary_pass.get("head_sha"), ordinary_pass.get("base_sha"), ordinary_pass.get("contract_identity")) != (active_claim.get("head_sha"), active_claim.get("base_sha"), active_claim.get("contract_identity")):
+                raise UnknownClaimError("Claim is no longer applicable to the current ordinary PASS")
 
             findings = findings or []
             if verdict == VERDICT_FINDINGS and not findings:
                 raise ValueError("A FINDINGS verdict requires at least one finding")
+            if verdict == VERDICT_PASS and findings:
+                raise ValueError("A PASS verdict cannot carry findings")
+            finding_ids = [finding.finding_id for finding in findings]
+            if len(finding_ids) != len(set(finding_ids)):
+                raise ValueError("Finding IDs must be unique within a result")
+            for finding in findings:
+                self._validate_finding(finding)
+                if finding.origin_round_id != claim_id:
+                    raise ValueError("Finding origin must identify the producing audit claim")
 
             existing_findings = pr_state.get("findings", {})
             assert isinstance(existing_findings, dict)
@@ -629,12 +795,12 @@ class PrReviewCycleRepository:
             new_finding_ids: List[str] = []
             for finding in findings:
                 if finding.finding_id in existing_findings:
-                    # Preserve the originating payload; do not rewrite it.
-                    continue
+                    raise ValueError("Finding identity already exists; originating payload is immutable")
                 existing_findings[finding.finding_id] = {
                     "finding_id": finding.finding_id,
                     "origin_round_id": finding.origin_round_id,
                     "requirement_ids": list(finding.requirement_ids),
+                    "requirement_texts": list(finding.requirement_texts),
                     "counterexample": finding.counterexample,
                     "expected_behavior": finding.expected_behavior,
                     "actual_behavior": finding.actual_behavior,
@@ -662,6 +828,17 @@ class PrReviewCycleRepository:
                 base_sha=str(active_claim["base_sha"]),
                 contract_identity=str(active_claim["contract_identity"]),
                 policy_identity=str(active_claim["policy_identity"]),
+                contract_snapshot=ContractSnapshot(
+                    issue_ids=tuple(ordinary_pass["contract_snapshot"]["issue_ids"]),
+                    requirements_text=str(ordinary_pass["contract_snapshot"]["requirements_text"]),
+                ),
+                policy=StrongPolicyIdentity(
+                    strong_route=str(active_claim["policy"]["strong_route"]),
+                    model_options=str(active_claim["policy"]["model_options"]),
+                    protocol_version=str(active_claim["policy"]["protocol_version"]),
+                ),
+                claim_id=claim_id,
+                open_epoch=int(active_claim["open_epoch"]),
                 reviewer_provenance=reviewer_provenance,
                 verdict=verdict,
                 finding_ids=tuple(new_finding_ids),
@@ -680,6 +857,10 @@ class PrReviewCycleRepository:
                     "base_sha": round_record.base_sha,
                     "contract_identity": round_record.contract_identity,
                     "policy_identity": round_record.policy_identity,
+                    "contract_snapshot": {"issue_ids": list(round_record.contract_snapshot.issue_ids), "requirements_text": round_record.contract_snapshot.requirements_text},
+                    "policy": {"strong_route": round_record.policy.strong_route, "model_options": round_record.policy.model_options, "protocol_version": round_record.policy.protocol_version},
+                    "claim_id": round_record.claim_id,
+                    "open_epoch": round_record.open_epoch,
                     "reviewer_provenance": round_record.reviewer_provenance,
                     "verdict": round_record.verdict,
                     "finding_ids": list(round_record.finding_ids),
@@ -768,6 +949,10 @@ class PrReviewCycleRepository:
         tracked obligations rather than being suppressed; if any remain OPEN
         after applying dispositions, the cycle does not complete.
         """
+        self._validate_identity(provenance, contract)
+        self._validate_policy(policy)
+        if not bounded_evidence.strip():
+            raise ValueError("Closure scope requires reviewer-produced cumulative-diff evidence")
         with self.serialized_transition(), self._locked():
             state = self._read()
             prs = state["prs"]
@@ -780,6 +965,8 @@ class PrReviewCycleRepository:
                 raise NotApplicableError("Cannot certify closure for a closed PR")
             if pr_state.get("requires_new_strong_round"):
                 raise NotApplicableError("A prior closure was EXPANDED; a new independent strong round is required first")
+            if isinstance(pr_state.get("active_claim"), dict):
+                raise StaleTransitionError("A newer strong-audit claim supersedes this closure result")
 
             if pr_state.get("accepted_strong_round_id") != references_round_id:
                 raise NotApplicableError("Closure does not reference the currently accepted strong round")
@@ -804,13 +991,35 @@ class PrReviewCycleRepository:
             findings = pr_state.get("findings", {})
             assert isinstance(findings, dict)
 
-            for new_finding in new_findings or []:
-                if new_finding.finding_id in findings:
-                    continue
+            new_findings = new_findings or []
+            new_ids = [finding.finding_id for finding in new_findings]
+            if len(new_ids) != len(set(new_ids)) or any(finding_id in findings for finding_id in new_ids):
+                raise ValueError("New closure finding IDs must be unique and previously unseen")
+            for new_finding in new_findings:
+                self._validate_finding(new_finding)
+                if new_finding.origin_round_id != references_round_id:
+                    raise ValueError("Closure finding origin must identify the referenced audit round")
+
+            open_ids = {finding_id for finding_id, raw in findings.items() if isinstance(raw, dict) and raw.get("status") == OPEN}
+            disposition_ids = [disposition.finding_id for disposition in dispositions]
+            if len(disposition_ids) != len(set(disposition_ids)):
+                raise ValueError("Each finding may be dispositioned only once")
+            if set(disposition_ids) != open_ids:
+                raise ValueError("Closure must disposition the complete current open finding set")
+            for disposition in dispositions:
+                if disposition.status not in (FIXED, INVALID):
+                    raise ValueError(f"Disposition status must be FIXED or INVALID, got {disposition.status!r}")
+                if not disposition.evidence.strip():
+                    raise ValueError("A finding disposition requires evidence")
+                if disposition.head_sha != provenance.head_sha:
+                    raise ValueError("Finding disposition evidence must apply to the closure head")
+
+            for new_finding in new_findings:
                 findings[new_finding.finding_id] = {
                     "finding_id": new_finding.finding_id,
                     "origin_round_id": new_finding.origin_round_id or references_round_id,
                     "requirement_ids": list(new_finding.requirement_ids),
+                    "requirement_texts": list(new_finding.requirement_texts),
                     "counterexample": new_finding.counterexample,
                     "expected_behavior": new_finding.expected_behavior,
                     "actual_behavior": new_finding.actual_behavior,
@@ -829,15 +1038,9 @@ class PrReviewCycleRepository:
                 pr_state["finding_set_revision"] = int(pr_state.get("finding_set_revision", 0)) + 1
 
             for disposition in dispositions:
-                if disposition.status not in (FIXED, INVALID):
-                    raise ValueError(f"Disposition status must be FIXED or INVALID, got {disposition.status!r}")
-                if not disposition.evidence:
-                    raise ValueError("A finding disposition requires evidence")
                 raw_finding = findings.get(disposition.finding_id)
                 if not isinstance(raw_finding, dict):
                     raise NotApplicableError(f"Disposition references unknown finding {disposition.finding_id!r}")
-                if raw_finding.get("status") != OPEN:
-                    continue
                 raw_finding["status"] = disposition.status
                 raw_finding["disposition_evidence"] = disposition.evidence
                 raw_finding["disposition_head_sha"] = disposition.head_sha
@@ -868,9 +1071,6 @@ class PrReviewCycleRepository:
                 self._bump(pr_state)
                 self._write(state)
                 return self._snapshot_from_raw(pr_state)
-            if not bounded_evidence:
-                raise ValueError("A bounded closure requires reviewer-produced cumulative-diff evidence")
-
             closure = ClosureCertification(
                 head_sha=provenance.head_sha,
                 base_sha=provenance.base_sha,
@@ -881,6 +1081,8 @@ class PrReviewCycleRepository:
                 bounded=bounded,
                 bounded_evidence=bounded_evidence,
                 accepted_at=time.time(),
+                publication_status=PUBLICATION_PENDING,
+                closure_id=uuid.uuid4().hex,
             )
             closures = pr_state.setdefault("closures", [])
             assert isinstance(closures, list)
@@ -895,20 +1097,53 @@ class PrReviewCycleRepository:
                     "bounded": closure.bounded,
                     "bounded_evidence": closure.bounded_evidence,
                     "accepted_at": closure.accepted_at,
+                    "publication_status": closure.publication_status,
+                    "closure_id": closure.closure_id,
                 }
             )
-
             if not outstanding:
-                pr_state["completion"] = {
-                    "head_sha": provenance.head_sha,
-                    "base_sha": provenance.base_sha,
-                    "contract_identity": contract.identity,
-                    "policy_identity": policy.identity,
-                    "basis": "ORDINARY_CLOSURE",
-                    "accepted_at": time.time(),
-                    "open_epoch": pr_state.get("open_epoch", 0),
-                }
+                pr_state["accepted_closure_id"] = closure.closure_id
 
+            self._bump(pr_state)
+            self._write(state)
+            return self._snapshot_from_raw(pr_state)
+
+    def acknowledge_closure_publication(self, pr_number: int, closure_id: str) -> PrReviewCycleSnapshot:
+        """Confirm closure publication/bookkeeping and grant authority when all effects are done."""
+        with self.serialized_transition(), self._locked():
+            state = self._read()
+            prs = state["prs"]
+            assert isinstance(prs, dict)
+            pr_state = prs.get(self._pr_key(pr_number))
+            if not isinstance(pr_state, dict) or pr_state.get("accepted_closure_id") != closure_id:
+                raise NotApplicableError("Closure is not the currently accepted closure")
+            if pr_state.get("closed") or isinstance(pr_state.get("active_claim"), dict):
+                raise NotApplicableError("Closure is no longer applicable")
+            closure_raw = next(
+                (raw for raw in pr_state.get("closures", []) if isinstance(raw, dict) and raw.get("closure_id") == closure_id),
+                None,
+            )
+            if closure_raw is None:
+                raise NotApplicableError("Unknown closure identity")
+            round_raw = next(
+                (raw for raw in pr_state.get("strong_rounds", []) if isinstance(raw, dict) and raw.get("round_id") == closure_raw["references_round_id"]),
+                None,
+            )
+            if round_raw is None or round_raw.get("publication_status") != PUBLICATION_ACKNOWLEDGED:
+                raise NotApplicableError("Strong-audit publication is not yet confirmed")
+            ordinary = pr_state.get("ordinary_pass")
+            if not isinstance(ordinary, dict) or (ordinary.get("head_sha"), ordinary.get("base_sha"), ordinary.get("contract_identity")) != (closure_raw["head_sha"], closure_raw["base_sha"], closure_raw["contract_identity"]):
+                raise NotApplicableError("Closure is stale for the current ordinary PASS")
+            closure_raw["publication_status"] = PUBLICATION_ACKNOWLEDGED
+            pr_state["completion"] = {
+                "head_sha": closure_raw["head_sha"],
+                "base_sha": closure_raw["base_sha"],
+                "contract_identity": closure_raw["contract_identity"],
+                "policy_identity": closure_raw["policy_identity"],
+                "basis": "ORDINARY_CLOSURE",
+                "accepted_at": time.time(),
+                "open_epoch": pr_state.get("open_epoch", 0),
+            }
             self._bump(pr_state)
             self._write(state)
             return self._snapshot_from_raw(pr_state)
@@ -950,6 +1185,16 @@ class PrReviewCycleRepository:
                 raise NotApplicableError("Referenced round is not a PASS")
             if round_raw.get("publication_status") != PUBLICATION_ACKNOWLEDGED:
                 raise NotApplicableError("Strong-audit publication is not yet confirmed")
+            if int(round_raw.get("open_epoch", -1)) != int(pr_state.get("open_epoch", 0)):
+                raise NotApplicableError("Strong-audit round belongs to a prior PR open epoch")
+            if isinstance(pr_state.get("active_claim"), dict):
+                raise NotApplicableError("A newer validation attempt is active")
+            ordinary = pr_state.get("ordinary_pass")
+            if not isinstance(ordinary, dict) or (ordinary.get("head_sha"), ordinary.get("base_sha"), ordinary.get("contract_identity")) != (round_raw.get("head_sha"), round_raw.get("base_sha"), round_raw.get("contract_identity")):
+                raise NotApplicableError("Strong PASS is stale for the current ordinary PASS")
+            findings = pr_state.get("findings", {})
+            if any(isinstance(raw, dict) and raw.get("status") == OPEN for raw in findings.values()):
+                raise NotApplicableError("Outstanding findings prevent PASS completion")
 
             pr_state["completion"] = {
                 "head_sha": round_raw["head_sha"],
