@@ -18,6 +18,7 @@ import pytest
 
 from auto_coder import prompt_loader
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.claude_usage_checker import ClaudeStrictUsageObservation
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.issue_processor import (
     _process_issue_claude_routine_mode,
@@ -428,7 +429,13 @@ def test_claude_routine_named_backend_dispatch_then_conflict_repair_omits_replay
     """
     tmp_path = cloud_home
     backend_name = "claude-named-backend"
-    backend = BackendConfig(name=backend_name, backend_type="claude-routine", url="https://claude-named.example/fire", api_key="token-named")
+    backend = BackendConfig(
+        name=backend_name,
+        backend_type="claude-routine",
+        url="https://claude-named.example/fire",
+        claude_code_routine_token="token-named",
+        claude_code_oauth_token="oauth-named",
+    )
     llm_config = MagicMock()
     llm_config.get_backend_config.return_value = backend
     github = MagicMock()
@@ -458,6 +465,10 @@ def test_claude_routine_named_backend_dispatch_then_conflict_repair_omits_replay
     with (
         patch("auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
         patch("auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "conflict.json"),
+        patch(
+            "auto_coder.claude_routine_client.observe_claude_usage_strict",
+            return_value=ClaudeStrictUsageObservation(available=True, detail="eligible"),
+        ),
         patch("auto_coder.claude_routine_client.CommandExecutor.run_command") as command,
     ):
         command.return_value = MagicMock(returncode=0, stdout="", stderr="")
@@ -471,6 +482,7 @@ def test_claude_routine_named_backend_dispatch_then_conflict_repair_omits_replay
         assert marker not in conflict_prompt
     assert "cloud/repair-1903" in conflict_prompt
     assert kwargs["env"]["CLAUDE_CODE_ROUTINE_TOKEN"] == "token-named"
+    assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-named"
 
 
 # ---------------------------------------------------------------------------
