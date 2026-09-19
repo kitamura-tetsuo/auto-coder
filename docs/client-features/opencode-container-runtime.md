@@ -187,3 +187,16 @@ python scripts/prepare_opencode_image.py
 pytest -m opencode_live -vv
 ```
 
+### 3. Publish Beta gate
+
+The `Publish Beta` workflow (`.github/workflows/publish-beta.yml`), which builds and
+pushes the `sha-${{ github.sha }}` image on every push to `main`, invokes
+`bash scripts/test.sh -m "not opencode_live"`. This keeps live container/host-CLI
+tests out of the publication gate — the workflow never installs the OpenCode CLI,
+prepares a live runtime image, or launches real containers/tasks solely to service
+those excluded tests — while still enforcing the full code-quality gates and every
+other test, including static OpenCode tests and browser-only tests. A successful
+`Publish Beta` run therefore does not by itself demonstrate that the dedicated
+`OpenCode Live Tests` workflow (which runs independently on every pull request and
+`workflow_dispatch`) currently passes.
+
