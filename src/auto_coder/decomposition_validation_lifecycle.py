@@ -27,6 +27,7 @@ from .decomposition_analyzer import (
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_review_publication import find_confirmed_publication
+from .issue_review_rerun import IssueReviewRerunStore, ReviewSubject
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
@@ -112,6 +113,8 @@ class DecompositionDecision:
     # decision that never reached the legacy-candidate scan. Never used to
     # authorize reuse.
     legacy_candidates_detected: int = 0
+    rerun_authority: int = 0
+    rerun_request_id: Optional[str] = None
 
 
 def decomposition_policy_identity() -> str:
@@ -141,6 +144,8 @@ class DecompositionValidationStore:
         root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
         self.path = path or root / repository / "decomposition_validations.json"
         self.repository = repository
+        rerun_path = path.with_name("issue_review_reruns.sqlite3") if path is not None else None
+        self.reruns = IssueReviewRerunStore(rerun_path)
 
     def _read(self) -> dict[str, object]:
         try:
@@ -171,6 +176,9 @@ class DecompositionValidationStore:
         serialized_identity = json.loads(json.dumps(asdict(identity)))
         if not isinstance(raw, dict) or raw.get("identity") != serialized_identity or raw.get("verdict") not in {"READY", "BLOCKED"}:
             return None
+        authority, _request_id, _state = self.reruns.authority(ReviewSubject(self.repository, "decomposition", identity.parent.issue_number))
+        if int(raw.get("rerun_authority") or 0) != authority:
+            return None
         findings = tuple(
             DecompositionFinding(
                 category=str(item["category"]),
@@ -199,6 +207,9 @@ class DecompositionValidationStore:
             int(raw.get("publication_schema_version") or 0),
             publication_receipt,
             provenance if isinstance(provenance, str) else None,
+            0,
+            int(raw.get("rerun_authority") or 0),
+            raw.get("rerun_request_id") if isinstance(raw.get("rerun_request_id"), str) else None,
         )
 
     def legacy_candidates(self, identity: DecompositionIdentity) -> tuple[dict[str, object], ...]:
@@ -238,6 +249,8 @@ class DecompositionValidationStore:
                 "publication_schema_version": decision.publication_schema_version,
                 "publication_receipt": decision.publication_receipt,
                 "execution_provenance": decision.execution_provenance,
+                "rerun_authority": decision.rerun_authority,
+                "rerun_request_id": decision.rerun_request_id,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -344,6 +357,13 @@ class DecompositionValidationLifecycle:
         rounds_path = path.with_name("specification_repair_rounds.json") if path is not None else None
         self.repair_rounds = SpecificationRepairRoundStore(repository, rounds_path)
         self.analyzer = analyzer or (lambda parent, children: analyze_issue_decomposition(parent, children))
+        self.reruns = self.store.reruns
+
+    def _rerun_subject(self, parent_number: int) -> ReviewSubject:
+        return ReviewSubject(self.repository, "decomposition", parent_number)
+
+    def rerun_execution_key(self, parent_number: int, semantic_identity: str) -> str:
+        return self.reruns.execution_key(self._rerun_subject(parent_number), semantic_identity)
 
     def identity(self, parent: dict[str, object], children: Sequence[dict[str, object]]) -> DecompositionIdentity:
         def member(snapshot: dict[str, object]) -> SetMemberIdentity:
@@ -361,6 +381,8 @@ class DecompositionValidationLifecycle:
         return DecompositionIdentity(self.repository, member(parent), tuple(sorted((member(child) for child in children), key=lambda item: (item.issue_id, item.issue_number))), self.policy_identity)
 
     def decide(self, identity: DecompositionIdentity, parent: DecompositionIssue, children: Sequence[DecompositionIssue]) -> DecompositionDecision:
+        subject = self._rerun_subject(identity.parent.issue_number)
+        authority, request_id, _request_state = self.reruns.authority(subject)
         with self.store.locked(identity.key):
             members = (parent, *children)
             member_roles = ((parent, ROLE_TRACKING_PARENT), *((child, ROLE_IMPLEMENTATION_CHILD) for child in children))
@@ -373,7 +395,7 @@ class DecompositionValidationLifecycle:
                 elif assessment.status != "VALID":
                     valid = False
             if structural_errors:
-                return DecompositionDecision(identity, "ERROR", remediation_reason="; ".join(structural_errors), evaluation_source="local-only")
+                return DecompositionDecision(identity, "ERROR", remediation_reason="; ".join(structural_errors), evaluation_source="local-only", rerun_authority=authority, rerun_request_id=request_id)
             evidence: Optional[DecompositionReviewEvidence] = None
             if valid:
                 try:
@@ -381,15 +403,13 @@ class DecompositionValidationLifecycle:
                     objectives = tuple(self.objective_store.capture(item.manifest.issue_number, item.body, "complete-direct-child-set-snapshot:v1") for item in members)
                     evidence = DecompositionReviewEvidence(history.baseline, history.prior_applied_outcomes, objectives)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    return DecompositionDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}", evaluation_source="local-only")
+                    return DecompositionDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}", evaluation_source="local-only", rerun_authority=authority, rerun_request_id=request_id)
                 integrity = objective_integrity_result(evidence, members)
                 if integrity is not None:
-                    decision = DecompositionDecision(identity, integrity.verdict, integrity.findings, remediation=integrity.remediation, remediation_reason=integrity.error, evaluation_source="local-only")
-                    if integrity.verdict == "BLOCKED":
-                        self.store.save(decision)
-                    return decision
+                    decision = DecompositionDecision(identity, integrity.verdict, integrity.findings, remediation=integrity.remediation, remediation_reason=integrity.error, evaluation_source="local-only", rerun_authority=authority, rerun_request_id=request_id)
+                    return self._settle_decision_checkpoint(decision)
             existing = self.store.get(identity)
-            if existing is not None:
+            if existing is not None and existing.rerun_authority == authority:
                 return existing
             # Diagnostic only (REQ-006/REQ-009): see the mirrored comment in
             # ``SpecificationValidationLifecycle.decide``. A current-format
@@ -426,6 +446,8 @@ class DecompositionValidationLifecycle:
                 remediation_reason=analyzed.error,
                 execution_provenance=provenance,
                 legacy_candidates_detected=legacy_candidates_detected,
+                rerun_authority=authority,
+                rerun_request_id=request_id,
             )
             return self._settle_decision_checkpoint(decision)
 
@@ -439,6 +461,13 @@ class DecompositionValidationLifecycle:
         from .review_capture.issue_review_audit import observe_authorization_persistence, observe_native_decision
 
         observe_native_decision(decision)
+        subject = self._rerun_subject(decision.identity.parent.issue_number)
+        authority, _request_id, _state = self.reruns.authority(subject)
+        if authority != decision.rerun_authority:
+            handle = take_pending_invocation_handle()
+            if handle is not None:
+                handle.confirm_settled()
+            return replace(decision, verdict="ERROR", remediation_reason="review occurrence was revoked by a newer explicit rerun")
         if decision.verdict in {"READY", "BLOCKED"}:
             try:
                 self.store.save(decision)
@@ -449,6 +478,9 @@ class DecompositionValidationLifecycle:
                     handle.record_checkpoint_attempt_failed(str(exc))
                 raise
             observe_authorization_persistence("confirmed")
+            if authority:
+                if not self.reruns.satisfy(subject, authority, decision.identity.key, decision.evaluation_source):
+                    return replace(decision, verdict="ERROR", remediation_reason="rerun authority changed before decision acceptance")
         handle = take_pending_invocation_handle()
         if handle is not None:
             handle.confirm_settled()

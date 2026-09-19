@@ -16,6 +16,7 @@ from loguru import logger
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_review_publication import find_confirmed_publication
+from .issue_review_rerun import IssueReviewRerunStore, ReviewSubject
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
@@ -167,6 +168,8 @@ class ValidationDecision:
     # decision that never reached the legacy-candidate scan. Never used to
     # authorize reuse.
     legacy_candidates_detected: int = 0
+    rerun_authority: int = 0
+    rerun_request_id: Optional[str] = None
 
 
 def _contract_evidence(manifest: NormativeIssueManifest, title: str, body: str) -> str:
@@ -291,6 +294,8 @@ class SpecificationValidationStore:
         state_root = Path(os.environ.get("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", Path.home() / ".auto-coder"))
         self.path = path or state_root / repository / "specification_validations.json"
         self.repository = repository
+        rerun_path = path.with_name("issue_review_reruns.sqlite3") if path is not None else None
+        self.reruns = IssueReviewRerunStore(rerun_path)
 
     def _read(self) -> dict[str, object]:
         try:
@@ -322,6 +327,9 @@ class SpecificationValidationStore:
             return None
         if raw.get("identity") != asdict(identity):
             return None
+        authority, _request_id, _state = self.reruns.authority(ReviewSubject(self.repository, "individual", identity.issue_number))
+        if int(raw.get("rerun_authority") or 0) != authority:
+            return None
         findings = tuple(SpecificationFinding(**item) for item in raw.get("findings", []) if isinstance(item, dict))
         remediation = str(raw.get("remediation", "NONE"))
         raw_receipt = raw.get("publication_receipt")
@@ -342,6 +350,9 @@ class SpecificationValidationStore:
             int(raw.get("publication_schema_version") or 0),
             publication_receipt,
             provenance if isinstance(provenance, str) else None,
+            0,
+            int(raw.get("rerun_authority") or 0),
+            raw.get("rerun_request_id") if isinstance(raw.get("rerun_request_id"), str) else None,
         )
 
     def legacy_candidates(self, identity: ValidationIdentity) -> tuple[dict[str, object], ...]:
@@ -387,6 +398,8 @@ class SpecificationValidationStore:
                 "publication_schema_version": decision.publication_schema_version,
                 "publication_receipt": decision.publication_receipt,
                 "execution_provenance": decision.execution_provenance,
+                "rerun_authority": decision.rerun_authority,
+                "rerun_request_id": decision.rerun_request_id,
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -421,6 +434,13 @@ class SpecificationValidationLifecycle:
         rounds_path = path.with_name("specification_repair_rounds.json") if path is not None else None
         self.repair_rounds = SpecificationRepairRoundStore(repository, rounds_path)
         self.analyzer = analyzer
+        self.reruns = self.store.reruns
+
+    def _rerun_subject(self, issue_number: int) -> ReviewSubject:
+        return ReviewSubject(self.repository, "individual", issue_number)
+
+    def rerun_execution_key(self, issue_number: int, semantic_identity: str) -> str:
+        return self.reruns.execution_key(self._rerun_subject(issue_number), semantic_identity)
 
     def identity(
         self,
@@ -441,6 +461,8 @@ class SpecificationValidationLifecycle:
         relationship_context: Optional[IndividualRelationshipContext] = None,
     ) -> ValidationDecision:
         identity = self.identity(manifest.issue_number, title, body, relationship_context)
+        subject = self._rerun_subject(manifest.issue_number)
+        authority, request_id, _request_state = self.reruns.authority(subject)
         with self.store.locked(identity.key):
             evidence: Optional[IndividualReviewEvidence] = None
             if manifest.explicit_contract_present and manifest.explicit_contract_valid:
@@ -450,7 +472,7 @@ class SpecificationValidationLifecycle:
                     objective = self.objective_store.capture(manifest.issue_number, body, "individual-current-snapshot:v1")
                     evidence = IndividualReviewEvidence(history.baseline, history.prior_applied_outcomes, objective)
                 except (OSError, ValueError, json.JSONDecodeError) as exc:
-                    return ValidationDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}", evaluation_source="local-only")
+                    return ValidationDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}", evaluation_source="local-only", rerun_authority=authority, rerun_request_id=request_id)
                 integrity = objective_integrity_result(evidence, manifest.issue_number)
                 if integrity is not None:
                     decision = ValidationDecision(
@@ -460,12 +482,12 @@ class SpecificationValidationLifecycle:
                         remediation=integrity.remediation,
                         remediation_reason=integrity.error,
                         evaluation_source="local-only",
+                        rerun_authority=authority,
+                        rerun_request_id=request_id,
                     )
-                    if integrity.verdict == "BLOCKED":
-                        self.store.save(decision)
-                    return decision
+                    return self._settle_decision_checkpoint(decision)
             existing = self.store.get(identity)
-            if existing is not None:
+            if existing is not None and existing.rerun_authority == authority:
                 return existing
             # Diagnostic only (REQ-006/REQ-009): a current-format miss may
             # still have a pre-migration terminal record under the old,
@@ -506,6 +528,8 @@ class SpecificationValidationLifecycle:
                     remediation_reason=analyzed.error,
                     execution_provenance=provenance,
                     legacy_candidates_detected=legacy_candidates_detected,
+                    rerun_authority=authority,
+                    rerun_request_id=request_id,
                 )
                 return self._settle_decision_checkpoint(decision)
             assert evidence is not None
@@ -523,6 +547,8 @@ class SpecificationValidationLifecycle:
                 remediation_reason=analyzed.error,
                 execution_provenance=provenance,
                 legacy_candidates_detected=legacy_candidates_detected,
+                rerun_authority=authority,
+                rerun_request_id=request_id,
             )
             return self._settle_decision_checkpoint(decision)
 
@@ -539,6 +565,13 @@ class SpecificationValidationLifecycle:
         from .review_capture.issue_review_audit import observe_authorization_persistence, observe_native_decision
 
         observe_native_decision(decision)
+        subject = self._rerun_subject(decision.identity.issue_number)
+        authority, _request_id, _state = self.reruns.authority(subject)
+        if authority != decision.rerun_authority:
+            handle = take_pending_invocation_handle()
+            if handle is not None:
+                handle.confirm_settled()
+            return replace(decision, verdict="ERROR", remediation_reason="review occurrence was revoked by a newer explicit rerun")
         if decision.verdict in {"READY", "BLOCKED"}:
             try:
                 self.store.save(decision)
@@ -549,6 +582,9 @@ class SpecificationValidationLifecycle:
                     handle.record_checkpoint_attempt_failed(str(exc))
                 raise
             observe_authorization_persistence("confirmed")
+            if authority:
+                if not self.reruns.satisfy(subject, authority, decision.identity.key, decision.evaluation_source):
+                    return replace(decision, verdict="ERROR", remediation_reason="rerun authority changed before decision acceptance")
         handle = take_pending_invocation_handle()
         if handle is not None:
             handle.confirm_settled()
