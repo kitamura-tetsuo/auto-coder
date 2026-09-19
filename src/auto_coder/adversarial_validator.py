@@ -2498,8 +2498,6 @@ def _enforce_inconclusive_recovery_contract(
         return result
 
     missing_contract_parts: List[str] = []
-    if not result.evidence_recovery:
-        missing_contract_parts.append("bounded evidence-recovery attempts")
     if not result.decision_critical_evidence_gaps:
         missing_contract_parts.append("a decision-critical evidence gap")
     if missing_contract_parts:
@@ -2511,15 +2509,11 @@ def _enforce_inconclusive_recovery_contract(
         return result
 
     incomplete_ids = set(incomplete_requirement_ids)
-    recovery_ids = {requirement_id for entry in result.evidence_recovery for requirement_id in entry.requirement_ids}
     gap_ids = {gap.requirement_id for gap in result.decision_critical_evidence_gaps}
-    requirements_without_recovery = sorted(incomplete_ids - recovery_ids)
     requirements_without_gap = sorted(incomplete_ids - gap_ids)
     gaps_for_verified_requirements = sorted(gap_ids - incomplete_ids)
-    if requirements_without_recovery or requirements_without_gap or gaps_for_verified_requirements:
+    if requirements_without_gap or gaps_for_verified_requirements:
         scope_errors: List[str] = []
-        if requirements_without_recovery:
-            scope_errors.append(f"requirements without recovery attempts: {', '.join(requirements_without_recovery)}")
         if requirements_without_gap:
             scope_errors.append(f"requirements without decision-critical gaps: {', '.join(requirements_without_gap)}")
         if gaps_for_verified_requirements:
@@ -2560,20 +2554,32 @@ def _reconcile_reusable_recovered_evidence(
     head_sha: str,
 ) -> AdversarialValidationResult:
     """Install only independently proven equivalent file recovery evidence."""
-    current_resolved = {entry.path for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"}}
+    if result.result == "ERROR":
+        return result
+    authoritative_ids = {requirement.requirement_id for requirement in context.issue_requirements}
+    if any(requirement_id not in authoritative_ids for entry in result.evidence_recovery for requirement_id in entry.requirement_ids):
+        # Coverage validation must see invalid current references; retained
+        # evidence must never erase them by replacing the current entry.
+        return result
+    current_by_path = {entry.path: entry for entry in result.evidence_recovery}
     for persisted in _reusable_recovered_evidence(stored_session, context, head_sha):
-        if persisted.path not in current_resolved:
-            result.evidence_recovery.append(
-                EvidenceRecoveryEntry(
-                    path=persisted.path,
-                    source=f"reused equivalent evidence from {persisted.source}",
-                    status=persisted.status,
-                    evidence=persisted.evidence,
-                    requirement_ids=list(persisted.requirement_ids),
-                    provenance="REUSED_EQUIVALENT",
-                    origin_head_sha=persisted.origin_head_sha or stored_session.evidence_head_sha if stored_session else "",
-                )
-            )
+        current = current_by_path.get(persisted.path)
+        if current is not None and current.status in {"RECOVERED", "IRRELEVANT"}:
+            continue
+        retained = EvidenceRecoveryEntry(
+            path=persisted.path,
+            source=f"reused equivalent evidence from {persisted.source}",
+            status=persisted.status,
+            evidence=persisted.evidence,
+            requirement_ids=list(persisted.requirement_ids),
+            provenance="REUSED_EQUIVALENT",
+            origin_head_sha=persisted.origin_head_sha or stored_session.evidence_head_sha if stored_session else "",
+        )
+        if current is None:
+            result.evidence_recovery.append(retained)
+        else:
+            result.evidence_recovery[result.evidence_recovery.index(current)] = retained
+        current_by_path[persisted.path] = retained
     return result
 
 
@@ -2640,10 +2646,19 @@ def _carry_forward_current_run_recovered_evidence(
     recovered_evidence: List[EvidenceRecoveryEntry],
 ) -> AdversarialValidationResult:
     """Preserve successful recovery when a dynamic follow-up replaces the result."""
-    resolved_paths = {entry.path for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"}}
+    if result.result == "ERROR":
+        return result
+    current_by_path = {entry.path: entry for entry in result.evidence_recovery}
     for entry in recovered_evidence:
-        if entry.path not in resolved_paths:
-            result.evidence_recovery.append(replace(entry, requirement_ids=list(entry.requirement_ids)))
+        current = current_by_path.get(entry.path)
+        if current is not None and current.status in {"RECOVERED", "IRRELEVANT"}:
+            continue
+        retained = replace(entry, requirement_ids=list(entry.requirement_ids))
+        if current is None:
+            result.evidence_recovery.append(retained)
+        else:
+            result.evidence_recovery[result.evidence_recovery.index(current)] = retained
+        current_by_path[entry.path] = retained
     return result
 
 
