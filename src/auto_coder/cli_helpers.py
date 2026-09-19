@@ -1039,7 +1039,7 @@ def _resolve_adversarial_validation_candidate_route(validation_kind: Optional[st
     """
     # Strong PR adversarial validation is a separate dedicated section
     # (REQ-007: distinct from ordinary PR review, leaves ordinary routing unchanged)
-    if validation_kind == "pr":
+    if validation_kind == "strong_pr":
         strong_order = config.get_strong_pr_adversarial_validation_backend_order()
         strong_config = config.get_backend_strong_pr_adversarial_validation()
         if strong_order or strong_config is not None:
@@ -1047,6 +1047,9 @@ def _resolve_adversarial_validation_candidate_route(validation_kind: Optional[st
             if not dedicated_candidates and strong_config is not None:
                 dedicated_candidates = [strong_config.name]
             return dedicated_candidates
+        # Absence is an intentional no-invocation state for the independent
+        # tier, never permission to borrow an ordinary reviewer route.
+        return []
 
     dedicated_order: List[str] = []
     dedicated_config = None

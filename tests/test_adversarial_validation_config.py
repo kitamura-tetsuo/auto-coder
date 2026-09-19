@@ -8,7 +8,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from auto_coder.automation_config import AutomationConfig
-from auto_coder.cli_helpers import create_adversarial_validation_backend_manager, resolve_adversarial_validation_availability
+from auto_coder.cli_helpers import (
+    _resolve_adversarial_validation_candidate_route,
+    create_adversarial_validation_backend_manager,
+    resolve_adversarial_validation_availability,
+)
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.quota_selector import BackendQuotaEvaluation
 
@@ -79,6 +83,24 @@ class TestStrongPRAdversarialValidationConfiguration:
         reloaded = LLMBackendConfiguration.load_from_file(config_path)
         assert reloaded.get_strong_pr_adversarial_validation_backend_order() == ["muse", "codex"]
         assert reloaded.get_strong_pr_adversarial_validation_default_backend() == "muse"
+
+    def test_strong_and_ordinary_routes_are_distinct(self):
+        config = LLMBackendConfiguration(
+            backend_order=["high-score"],
+            backend_adversarial_validation_order=["general-reviewer"],
+            backend_pr_adversarial_validation_order=["ordinary-reviewer"],
+            backend_strong_pr_adversarial_validation_order=["strong-reviewer"],
+        )
+        assert _resolve_adversarial_validation_candidate_route("strong_pr", config) == ["strong-reviewer"]
+        assert _resolve_adversarial_validation_candidate_route("pr", config) == ["ordinary-reviewer"]
+
+    def test_absent_strong_route_does_not_fall_back_to_ordinary(self):
+        config = LLMBackendConfiguration(
+            backend_order=["high-score"],
+            backend_adversarial_validation_order=["general-reviewer"],
+            backend_pr_adversarial_validation_order=["ordinary-reviewer"],
+        )
+        assert _resolve_adversarial_validation_candidate_route("strong_pr", config) == []
 
 
 class TestAdversarialValidationConfiguration:

@@ -589,6 +589,56 @@ pr:
     Example format:
     {"title": "Fix authentication bug in login flow", "body": "Updated the authentication logic to properly handle edge cases when users have special characters in their passwords. This resolves the login failures reported in the issue."}
 
+  two_tier_review_execution: |-
+    You are executing the explicitly tagged read-only PR reviewer role $mode.
+    Do not edit files, continue a prior conversation, mutate GitHub, or claim merge authority.
+    Requirements below are the only normative implementation contract. Objective,
+    Context, acceptance examples, prior reviewers, and model reputation are evidence only.
+
+    Identity (copy every value exactly into the JSON response):
+    round_id=$round_id
+    attempt_id=$attempt_id
+    head_sha=$head_sha
+    base_sha=$base_sha
+    contract_identity=$contract_identity
+    policy_identity=$policy_identity
+    finding_set_revision=$finding_set_revision
+    audited_head_sha=$audited_head_sha
+    Issue identities: $issue_ids
+
+    Authoritative Requirements:
+    $requirements_text
+
+    Current repository and test evidence:
+    $repository_evidence
+
+    Complete cumulative diff from audited_head_sha through head_sha:
+    $cumulative_diff
+
+    Accepted portable findings (empty for independent STRONG_AUDIT):
+    $findings
+
+    STRONG_AUDIT independently searches current production paths and tests for
+    demonstrated, practically consequential explicit-Requirement violations and
+    material regression-oracle gaps. Do not inherit conclusions or demand proof
+    that unknown defects are absent. Each finding must include stable identity,
+    exact Requirement IDs/text, a reachable counterexample, expected and actual
+    behavior, evidence, affected boundary, material consequence, and a focused
+    regression scenario. A regression-only gap must also state the plausible
+    incorrect implementation and why current tests admit it.
+
+    ORDINARY_CLOSURE independently verifies every supplied finding on the current
+    head as FIXED, INVALID, OPEN, or INCONCLUSIVE with concrete production-boundary
+    evidence. Assess the entire cumulative diff as BOUNDED, EXPANDED, or UNKNOWN;
+    BOUNDED permits finding corrections and directly associated regressions only.
+    Continue ordinary inspection and return newly demonstrated material findings.
+
+    Return one JSON object with the identity fields above, `verdict` (PASS,
+    FINDINGS, or INCONCLUSIVE), `findings`, and, for ORDINARY_CLOSURE,
+    `dispositions`, `scope`, and non-empty `scope_evidence`. PASS is permitted only
+    when no finding remains/newly exists and closure scope is BOUNDED. Never report
+    a test as executed unless the supplied evidence proves its execution.
+
   adversarial_validation: |-
     You are an expert adversarial software correctness reviewer with deep domain expertise.
 

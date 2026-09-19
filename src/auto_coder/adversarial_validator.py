@@ -3514,7 +3514,10 @@ def run_adversarial_validation(
     if backend_manager is None:
         from .cli_helpers import resolve_adversarial_validation_availability
 
-        availability = resolve_adversarial_validation_availability(validation_kind="pr")
+        # This legacy entry point performs the independent strong pass.  Keep
+        # its route distinct from the ordinary PR reviewer route even when the
+        # two aliases happen to resolve to the same provider/model.
+        availability = resolve_adversarial_validation_availability(validation_kind="strong_pr")
         backend_manager = availability.backend_manager
 
         if backend_manager is None and availability.exhausted:
