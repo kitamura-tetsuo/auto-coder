@@ -7,11 +7,13 @@ Auto-Coder-owned instruction component onto a raw task string without ever
 mutating the original task bytes.
 
 Scope note: this module does not perform any provider dispatch, transport, or
-session-lifecycle work. It never talks to GitHub or a cloud provider. Wiring
-actual startup/recovery call sites to this boundary is owned by a separate
-change; until that wiring lands, the shipped instruction entries below are
-all empty, so composing a prompt through this module for any provider is a
-no-op that returns the original task unchanged.
+session-lifecycle work. It never talks to GitHub or a cloud provider. Startup
+and recovery call sites (`JulesClient`, `ClaudeRoutineClient`,
+`CodexCloudClient`) are wired to this boundary. The shipped Jules entry
+carries non-empty autonomous-execution/checkpoint/recovery guidance text
+(Issue #2092); the Claude Routine and Codex Cloud entries remain empty by
+design, so composing a prompt through this module for either of them is
+still a no-op that returns the original task unchanged.
 
 Configuration
 -------------

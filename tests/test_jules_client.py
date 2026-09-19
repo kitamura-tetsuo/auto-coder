@@ -114,10 +114,15 @@ class TestJulesClient:
             ("another-owner/service", "release/2026.09"),
         ],
     )
+    @patch("src.auto_coder.cloud_provider_instructions.load_prompts")
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
-    def test_start_session(self, mock_post, mock_get_config, repo_name, base_branch):
+    def test_start_session(self, mock_post, mock_get_config, mock_load_prompts, repo_name, base_branch):
         """Test starting a new Jules session."""
+        # No provider initial-instruction component: this test is about the
+        # session-start API mechanics, not prompt composition.
+        mock_load_prompts.return_value = {}
+
         # Mock config
         mock_config = Mock()
         mock_backend_config = Mock()
@@ -151,10 +156,15 @@ class TestJulesClient:
         assert payload["sourceContext"]["githubRepoContext"]["startingBranch"] == base_branch
         assert "title" not in payload
 
+    @patch("src.auto_coder.cloud_provider_instructions.load_prompts")
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
-    def test_start_session_with_title(self, mock_post, mock_get_config):
+    def test_start_session_with_title(self, mock_post, mock_get_config, mock_load_prompts):
         """Test starting a new Jules session with a title."""
+        # No provider initial-instruction component: this test is about the
+        # session-start API mechanics, not prompt composition.
+        mock_load_prompts.return_value = {}
+
         # Mock config
         mock_config = Mock()
         mock_backend_config = Mock()
