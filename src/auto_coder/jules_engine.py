@@ -92,7 +92,10 @@ def mark_session_stopped(session_id: str) -> None:
     _save_state(state)
 
 
-def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> None:
+def check_and_resume_or_archive_sessions(
+    repo_name: Optional[str] = None,
+    implementation_slots: Optional["ImplementationSlotRepository"] = None,
+) -> None:
     """Check for Jules sessions to resume or archive.
 
     - If state is FAILED: Resume with "ok" (only if automationMode is AUTO_CREATE_PR).
@@ -104,6 +107,9 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
     - If state is COMPLETED and has "outputs"/"pullRequest":
         - Check if PR is closed or merged.
         - If so, archive the session.
+
+    implementation_slots: When provided, retired sessions are skipped before any
+        resume or continuation attempt (REQ-009).
     """
     try:
         jules_client = JulesClient()
@@ -159,6 +165,19 @@ def check_and_resume_or_archive_sessions(repo_name: Optional[str] = None) -> Non
                 if retry_state.get(session_id) == SESSION_STATE_STOPPED:
                     logger.debug(f"Skipping session {session_id} as it was stopped after failing to create a PR in time.")
                     continue
+
+                # REQ-009: Do not automatically resume or continue a session that belongs to a
+                # durably retired implementation slot. Retired sessions must not be revived by
+                # stale maintenance or rediscovery scans.
+                if implementation_slots is not None:
+                    try:
+                        from .implementation_retirement_observer import guard_retired_session_reuse
+
+                        if guard_retired_session_reuse(session_id, implementation_slots):
+                            logger.info(f"Skipping Jules session {session_id}: belongs to a durably retired " "implementation slot (REQ-009)")
+                            continue
+                    except Exception as guard_exc:
+                        logger.warning(f"Could not check retirement guard for session {session_id}: {guard_exc}")
 
                 # Check if session is expired
                 update_time_str = session.get("updateTime")

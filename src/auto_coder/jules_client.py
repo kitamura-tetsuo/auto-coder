@@ -346,6 +346,46 @@ class JulesClient(CloudTaskClientBase):
             logger.error(f"Failed to get Jules session {session_id}: {e}")
             raise RuntimeError(f"Failed to get Jules session {session_id}: {e}")
 
+    def get_session_activities(self, session_id: str) -> List[Dict[str, Any]]:
+        """Fetch the ordered activity list for a Jules session (REQ-006).
+
+        Used by the retirement evidence collector to establish activity causality
+        — confirming that a terminal state is attributable to the current admitted
+        activity and not to a prior one that completed before a later resume/repair.
+
+        Returns an ordered list of activity dicts.  Each dict has at least a
+        ``type`` field (e.g. ``userMessage``, ``planApproval``, ``sessionCompleted``,
+        ``sessionFailed``) and a timestamp field (``createTime``, ``timestamp``, or
+        ``eventTime``).
+
+        Returns an empty list when the endpoint is unavailable or the session
+        cannot be reached.  The caller (``_check_activity_causality``) treats an
+        empty list conservatively.
+        """
+        try:
+            url = f"{self.base_url}/sessions/{session_id}/activities"
+            logger.debug(f"Fetching activities for Jules session: {session_id}")
+            response = self.session.get(url, timeout=self.timeout)
+            if response.status_code == 404:
+                # Activities endpoint not supported for this session
+                logger.debug(f"Activities endpoint not found for session {session_id}")
+                return []
+            if response.status_code != 200:
+                logger.warning(f"Unexpected status {response.status_code} fetching activities " f"for session {session_id}")
+                return []
+            data = response.json()
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                # Some endpoints wrap results in a field
+                for key in ("activities", "items", "results"):
+                    if isinstance(data.get(key), list):
+                        return data[key]
+            return []
+        except Exception as exc:
+            logger.warning(f"Failed to fetch activities for session {session_id}: {exc}")
+            return []
+
     def send_message(self, session_id: str, message: str) -> str:
         """Send a message to an existing Jules session.
 

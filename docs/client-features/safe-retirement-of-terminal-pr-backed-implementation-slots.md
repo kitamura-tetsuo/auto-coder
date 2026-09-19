@@ -34,3 +34,26 @@ Before removing an active reservation, retirement ensures that any captured gene
 
 The retirement transaction follows a crash-safe commit sequence: acquired-start preservation and retired history are committed before the active reservation is removed. Any interruption or write failure prior to active removal recovers the reservation as still-occupied, ensuring capacity is never released optimistically while fencing evidence could be lost. Repeating retirement after a committed result is fully idempotent.
 
+## Evidence Collection for Retirement Decisions
+
+The `implementation_retirement_observer` module derives authoritative `ImplementationRetirementObservation` instances from live API data. It is strictly read-only — it does not close issues, merge or reopen PRs, send Jules messages, or mutate any store.
+
+### PR Candidate Set Construction
+
+The candidate set is the union of: durable implementation PR membership from the slot store, native GitHub Development/closing associations to the source Issue, every PR output of each positively bound Jules session, and current open PR discovery with restricted attribution. Attribution requires a closing directive for the exact local Issue, an Issue-bearing head-branch marker, a native association, or an established durable provider association — ordinary mentions and "relates to" prose are not counted. Contradictory or foreign-repository attribution marks discovery incomplete rather than attributing ambiguously.
+
+### Fresh Per-PR GitHub Reads
+
+Each candidate PR is read individually with a fresh GitHub REST API call. A 404, access denial, throttle response, malformed payload, or wrong-identity response is recorded as `UNKNOWN`, not as an absent or terminal PR. Listing omissions, cached responses, and Issue state are never used as substitutes.
+
+### Jules Session Observation
+
+Each bound Jules session is read individually with a direct session GET (not from the cached full-session list). COMPLETED and FAILED states are terminal candidates only when established PR publication exists in the session's outputs. COMPLETED without established publication is retained as ACTIVE (waiting-for-publication). Every `pullRequest` or `pull_request` output in both mapping and list payloads is preserved without flattening to avoid silently discarding additional output entries.
+
+### Activity Causality Binding
+
+A COMPLETED or FAILED terminal state captured before a later resume, repair, or plan-approval must not settle the newer activity. The observer queries the Jules activities API for each terminal session and confirms that no user-message or plan-approval event post-dates the terminal completion event. When activities are unavailable or contradictory, causality is conservatively unconfirmed and the session is retained as UNKNOWN.
+
+### Retired Session and PR Guards
+
+Before automatically resuming, continuing, or reusing a Jules session, callers check `guard_retired_session_reuse` and `guard_retired_pr_reuse`. A session or PR that belongs to a durably retired implementation slot must not be revived by stale maintenance or rediscovery scans. The `register_outbound_jules_activity` function must be called before sending resume, feedback, plan-approval, or replacement work to advance the activity revision durably before the outbound call.
