@@ -283,11 +283,7 @@ def retire_implementation_slot(
 
             # Check membership completeness (stored members must be covered in observation)
             stored_prs_raw = record.get("implementation_prs")
-            stored_prs: set[int] = (
-                {p for p in stored_prs_raw if isinstance(p, int) and not isinstance(p, bool)}
-                if isinstance(stored_prs_raw, list)
-                else set()
-            )
+            stored_prs: set[int] = {p for p in stored_prs_raw if isinstance(p, int) and not isinstance(p, bool)} if isinstance(stored_prs_raw, list) else set()
             observed_prs = {pr.number for pr in observation.implementation_prs}
             if not stored_prs.issubset(observed_prs):
                 missing = tuple(f"pr:{num}" for num in sorted(stored_prs - observed_prs))
@@ -298,11 +294,7 @@ def retire_implementation_slot(
                 )
 
             stored_sessions_raw = record.get("provider_sessions")
-            stored_sessions: set[str] = (
-                {s for s in stored_sessions_raw if isinstance(s, str)}
-                if isinstance(stored_sessions_raw, list)
-                else set()
-            )
+            stored_sessions: set[str] = {s for s in stored_sessions_raw if isinstance(s, str)} if isinstance(stored_sessions_raw, list) else set()
             observed_sessions = {s.session_id for s in observation.provider_sessions}
             if not stored_sessions.issubset(observed_sessions):
                 missing = tuple(f"session:{sid}" for sid in sorted(stored_sessions - observed_sessions))
@@ -316,14 +308,8 @@ def retire_implementation_slot(
             stored_executions_raw = record.get("executions")
             stored_executions = stored_executions_raw if isinstance(stored_executions_raw, list) else []
             if stored_executions:
-                stored_exec_ids: set[str] = {
-                    str(e["id"])
-                    for e in stored_executions
-                    if isinstance(e, dict) and "id" in e and isinstance(e["id"], str)
-                }
-                observed_ended_exec_ids = {
-                    e.execution_id for e in observation.local_executions if e.state is ExecutionTerminalState.ENDED
-                }
+                stored_exec_ids: set[str] = {str(e["id"]) for e in stored_executions if isinstance(e, dict) and "id" in e and isinstance(e["id"], str)}
+                observed_ended_exec_ids = {e.execution_id for e in observation.local_executions if e.state is ExecutionTerminalState.ENDED}
                 active_execs: list[str] = sorted(stored_exec_ids - observed_ended_exec_ids)
                 if active_execs:
                     responsible = tuple(f"execution:{eid}" for eid in active_execs)
