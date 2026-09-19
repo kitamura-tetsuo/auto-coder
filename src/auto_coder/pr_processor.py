@@ -4285,6 +4285,13 @@ def _update_with_base_branch(
                     jules_client = JulesClient()
                     session_id = _extract_session_id_from_pr_body(pr_data.get("body", ""))
                     if session_id:
+                        # REQ-007/REQ-009 (Issue #2147): guard + durably admit
+                        # this outbound mutation to an existing Jules session
+                        # before sending it.
+                        if not _guard_outbound_jules_send(repo_name, config, session_id):
+                            actions.append(f"Blocked merge-conflict resolution request for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
+                            actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                            return actions
                         prompt = render_prompt("pr.jules_merge_conflict_resolution")
                         jules_client.send_message(session_id, prompt)
                         actions.append(f"Requested Jules to resolve merge conflict in session {session_id}")
@@ -5226,6 +5233,39 @@ def _archive_jules_session(repo_name: str, pr_number: int) -> None:
         logger.warning(f"Error processing Jules session archiving for PR #{pr_number}: {e}")
 
 
+def _guard_outbound_jules_send(repo_name: str, config: AutomationConfig, session_id: str) -> bool:
+    """Resolve the owning Issue and durably admit/guard one outbound Jules send.
+
+    Shared boundary wrapper (REQ-007/REQ-009, Issue #2147) around
+    :func:`admit_or_block_outbound_jules_send` for every production caller in
+    this module that mutates an existing Jules session (error feedback,
+    merge-conflict-resolution requests, branch-update conflict delegation,
+    etc). Resolves the owning Issue and constructs the repo-scoped
+    :class:`ImplementationSlotRepository` (the same file-backed store the
+    maintenance loop uses, so it observes the same live retirement/admission
+    state regardless of which caller constructs it), then delegates to the
+    shared guard/admission helper. Never send the outbound mutation when this
+    returns False.
+    """
+    from .cloud_manager import CloudManager
+    from .implementation_retirement_observer import admit_or_block_outbound_jules_send
+    from .implementation_slots import ImplementationSlotRepository
+
+    owning_issue: Optional[int] = None
+    try:
+        owning_issue = CloudManager(repo_name).get_issue_by_session(session_id)
+    except Exception as exc:
+        logger.warning(f"Could not resolve owning Issue for Jules session {session_id}: {exc}")
+
+    try:
+        implementation_slots = ImplementationSlotRepository(repo_name, config.MAX_CONCURRENT_IMPLEMENTATIONS)
+    except Exception as exc:
+        logger.error(f"Could not construct ImplementationSlotRepository for {repo_name}: {exc}; " "blocking outbound Jules send (REQ-007)")
+        return False
+
+    return admit_or_block_outbound_jules_send(session_id, owning_issue, implementation_slots)
+
+
 def _send_jules_error_feedback(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -5288,6 +5328,13 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
 
         if not new_work_allowed():
             actions.append(f"Deferred Jules CI feedback for PR #{pr_number}: graceful shutdown is draining")
+            return actions
+
+        # REQ-007/REQ-009 (Issue #2147): this is a PR-repair outbound boundary
+        # that messages an existing Jules session. Guard + durably admit the
+        # outbound mutation before sending it.
+        if not _guard_outbound_jules_send(repo_name, config, session_id):
+            actions.append(f"Blocked Jules CI feedback for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
             return actions
 
         # Import JulesClient here to avoid circular imports
@@ -6982,6 +7029,13 @@ def _handle_definitive_merge_rejection(
             jules_client = JulesClient()
             session_id = _extract_session_id_from_pr_body(pr_info.get("body", ""))
             if session_id:
+                # REQ-007/REQ-009 (Issue #2147): guard + durably admit this
+                # outbound mutation to an existing Jules session before
+                # sending it.
+                if not _guard_outbound_jules_send(repo_name, config, session_id):
+                    logger.info(f"Blocked merge-conflict resolution request for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
+                    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.SKIPPED, {"effect": "merge-conflict", "backend": "jules", "reason": "retired implementation slot"})
+                    return False
                 prompt = render_prompt("pr.jules_merge_conflict_resolution")
                 jules_client.send_message(session_id, prompt)
                 logger.info(f"Requested Jules to resolve merge conflict in session {session_id}")

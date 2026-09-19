@@ -1049,3 +1049,232 @@ class TestNormalizeSessionOutputs(unittest.TestCase):
         self.assertEqual(get_session_pull_request({"outputs": {"pullRequest": "url-1"}}), "url-1")
         self.assertEqual(get_session_pull_request({"outputs": [{"pull_request": "url-2"}]}), "url-2")
         self.assertIsNone(get_session_pull_request({"outputs": {}}))
+
+
+class TestCheckAndResumeRetirementGuard(unittest.TestCase):
+    """Production-origin AS-005-style tests (Issue #2147, items 7-9).
+
+    Exercises the REAL production entrypoint (``check_and_resume_or_archive_sessions``)
+    with only the JulesClient/GitHubClient/CloudManager transport faked — not
+    calling the retirement guard helpers directly — and a REAL
+    ``ImplementationSlotRepository`` backing store, proving retirement, once
+    committed, is durable against this maintenance loop: it sends zero
+    provider mutations and never reacquires/resurrects the slot.
+    """
+
+    def setUp(self):
+        self.tmp_dir = TemporaryDirectory()
+        self.addCleanup(self.tmp_dir.cleanup)
+        self.repo_name = "kitamura-tetsuo/auto-coder"
+        self.owner = ImplementationOwner("issue", 555)
+        self.slots = ImplementationSlotRepository(self.repo_name, 2, Path(self.tmp_dir.name) / "slots.json")
+
+    def _retire_owner_with_session(self, session_id: str, pr_number: int) -> None:
+        from auto_coder.implementation_retirement import (
+            ContinuingObligations,
+            ImplementationPRObservation,
+            ImplementationRetirementObservation,
+            ProviderSessionObservation,
+            PRTerminalState,
+            SessionTerminalState,
+        )
+
+        exec_id = self.slots.start_execution(self.owner, generation="gen-guard")
+        self.slots.record_implementation_pr(self.owner, pr_number)
+        self.slots.record_provider_session(self.owner, session_id)
+        self.slots.finish_execution(self.owner, exec_id)
+
+        incarnation = self.slots.owner_incarnation(self.owner)
+        revision = self.slots.owner_activity_revision(self.owner)
+        obs = ImplementationRetirementObservation(
+            repository=self.repo_name,
+            owner=self.owner,
+            reservation_incarnation=incarnation,
+            activity_revision=revision,
+            implementation_prs=(ImplementationPRObservation(pr_number, PRTerminalState.CLOSED, merged=True),),
+            provider_sessions=(ProviderSessionObservation(session_id, "jules", SessionTerminalState.ENDED),),
+            continuing_obligations=ContinuingObligations(),
+        )
+        result = self.slots.retire_owner(obs)
+        self.assertEqual(result.status.value, "RELEASED")
+
+    @patch("auto_coder.cloud_manager.CloudManager")
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_retired_session_blocks_resume_through_real_maintenance_entrypoint(
+        self,
+        mock_save_state,
+        mock_load_state,
+        mock_github_client_cls,
+        mock_jules_client_cls,
+        mock_cloud_manager_cls,
+    ):
+        session_id = "sess-retired-guard"
+        self._retire_owner_with_session(session_id, 601)
+
+        mock_load_state.return_value = {}
+        mock_jules_client = mock_jules_client_cls.return_value
+        # Server still reports this session as FAILED — a stale maintenance
+        # scan reporting the old session again, per AS-006 scope.
+        mock_jules_client.list_sessions.return_value = [{"name": f"projects/p/locations/l/sessions/{session_id}", "state": "FAILED", "automationMode": "AUTO_CREATE_PR"}]
+        mock_cloud_manager = mock_cloud_manager_cls.return_value
+        mock_cloud_manager.get_issue_by_session.return_value = self.owner.number
+
+        check_and_resume_or_archive_sessions(self.repo_name, self.slots)
+
+        # Zero provider mutations: no resume/approve/replacement calls.
+        mock_jules_client.send_message.assert_not_called()
+        mock_jules_client.approve_plan.assert_not_called()
+        mock_jules_client.start_session.assert_not_called()
+
+        # No slot reacquisition/resurrection: the owner remains retired.
+        self.assertIsNone(self.slots.owner_incarnation(self.owner))
+
+    @patch("auto_coder.cloud_manager.CloudManager")
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_active_owner_resume_still_proceeds_when_not_retired(
+        self,
+        mock_save_state,
+        mock_load_state,
+        mock_github_client_cls,
+        mock_jules_client_cls,
+        mock_cloud_manager_cls,
+    ):
+        """Non-interference (item 10): an ordinary, non-retired owner's Jules
+        session must still be resumed exactly as before when a real
+        ImplementationSlotRepository is supplied.
+        """
+        session_id = "sess-active-guard"
+        self.slots.start_execution(self.owner, generation="gen-active")
+        self.slots.record_provider_session(self.owner, session_id)
+
+        mock_load_state.return_value = {}
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [{"name": f"projects/p/locations/l/sessions/{session_id}", "state": "FAILED", "automationMode": "AUTO_CREATE_PR"}]
+        mock_cloud_manager = mock_cloud_manager_cls.return_value
+        mock_cloud_manager.get_issue_by_session.return_value = self.owner.number
+
+        check_and_resume_or_archive_sessions(self.repo_name, self.slots)
+
+        mock_jules_client.send_message.assert_called_once_with(session_id, "ok")
+
+    @patch("auto_coder.cloud_manager.CloudManager")
+    @patch("auto_coder.jules_engine.JulesClient")
+    @patch("auto_coder.jules_engine.GitHubClient")
+    @patch("auto_coder.jules_engine._load_state")
+    @patch("auto_coder.jules_engine._save_state")
+    def test_admission_wins_stale_retirement_attempt_is_rejected(
+        self,
+        mock_save_state,
+        mock_load_state,
+        mock_github_client_cls,
+        mock_jules_client_cls,
+        mock_cloud_manager_cls,
+    ):
+        """AS-005 (Issue #2147, item 9): "admission wins" companion to
+        ``test_retired_session_blocks_resume_through_real_maintenance_entrypoint``.
+
+        Exercises the REAL production entrypoint
+        (``check_and_resume_or_archive_sessions``) so that it durably admits
+        new outbound activity (advancing ``activity_revision`` through the
+        real ``admit_outbound_provider_activity`` guard/admission path)
+        *before* a concurrent retirement attempt -- built from a stale
+        observation collected before that admission -- is allowed to
+        proceed. A real ``threading.Event`` barrier proves the contested
+        ordering was actually reached (the retirement thread is blocked
+        until the maintenance thread's real admission call commits), rather
+        than relying on incidental thread scheduling. The stale retirement
+        attempt must be rejected (``STALE_OBSERVATION``) and the admitted
+        session/activity must remain owned.
+        """
+        import threading
+
+        from auto_coder.implementation_retirement import (
+            ContinuingObligations,
+            ImplementationPRObservation,
+            ImplementationRetirementObservation,
+            ProviderSessionObservation,
+            PRTerminalState,
+            SessionTerminalState,
+        )
+
+        session_id = "sess-admission-wins"
+        pr_number = 701
+        exec_id = self.slots.start_execution(self.owner, generation="gen-admission-wins")
+        self.slots.record_implementation_pr(self.owner, pr_number)
+        self.slots.record_provider_session(self.owner, session_id)
+        self.slots.finish_execution(self.owner, exec_id)
+
+        # Observation collected BEFORE maintenance's admission runs: this is
+        # the stale observation a concurrent retirement attempt would be
+        # using. Its PR/session evidence is otherwise fully terminal (as a
+        # real evidence-normalization pass would report), so the only reason
+        # this retirement attempt must be rejected is the stale
+        # activity_revision -- proving the store-level admission check, not
+        # incomplete evidence, is what wins the race.
+        stale_incarnation = self.slots.owner_incarnation(self.owner)
+        stale_revision = self.slots.owner_activity_revision(self.owner)
+        stale_obs = ImplementationRetirementObservation(
+            repository=self.repo_name,
+            owner=self.owner,
+            reservation_incarnation=stale_incarnation,
+            activity_revision=stale_revision,
+            implementation_prs=(ImplementationPRObservation(pr_number, PRTerminalState.CLOSED, merged=True),),
+            provider_sessions=(ProviderSessionObservation(session_id, "jules", SessionTerminalState.ENDED),),
+            continuing_obligations=ContinuingObligations(),
+        )
+
+        mock_load_state.return_value = {}
+        mock_jules_client = mock_jules_client_cls.return_value
+        mock_jules_client.list_sessions.return_value = [{"name": f"projects/p/locations/l/sessions/{session_id}", "state": "FAILED", "automationMode": "AUTO_CREATE_PR"}]
+        mock_cloud_manager = mock_cloud_manager_cls.return_value
+        mock_cloud_manager.get_issue_by_session.return_value = self.owner.number
+
+        admission_committed = threading.Event()
+        original_admit = ImplementationSlotRepository.admit_outbound_provider_activity
+
+        def wrapped_admit(self_slots, owner, session_id_arg):
+            result = original_admit(self_slots, owner, session_id_arg)
+            # Signal only AFTER the real admission has been durably
+            # committed, so the retirement thread's barrier wait proves
+            # "admission happened first" rather than merely "was attempted".
+            admission_committed.set()
+            return result
+
+        retirement_result: list = []
+
+        def run_retirement_after_admission():
+            # Blocks until the maintenance thread's real admission call has
+            # committed -- a genuine cross-thread synchronization barrier,
+            # not a sleep-based race.
+            reached = admission_committed.wait(timeout=5)
+            retirement_result.append(reached)
+            retirement_result.append(self.slots.retire_owner(stale_obs))
+
+        with patch.object(ImplementationSlotRepository, "admit_outbound_provider_activity", wrapped_admit):
+            retirement_thread = threading.Thread(target=run_retirement_after_admission)
+            retirement_thread.start()
+
+            check_and_resume_or_archive_sessions(self.repo_name, self.slots)
+
+            retirement_thread.join(timeout=5)
+
+        self.assertFalse(retirement_thread.is_alive(), "retirement thread did not complete in time")
+        reached_barrier, retire_result = retirement_result
+        self.assertTrue(reached_barrier, "admission barrier was never reached: ordering was not proven")
+
+        # The stale retirement attempt must be rejected: admission durably
+        # advanced activity_revision first, so the observation collected
+        # beforehand is now stale.
+        self.assertEqual(retire_result.status.value, "STALE_OBSERVATION")
+
+        # The admitted activity actually proceeded (real resume send), and
+        # the owner/session remain owned -- the slot was never released.
+        mock_jules_client.send_message.assert_called_once_with(session_id, "ok")
+        self.assertEqual(self.slots.owner_incarnation(self.owner), stale_incarnation)
+        self.assertTrue(self.slots.has_provider_sessions(self.owner))

@@ -66,6 +66,16 @@ def _make_github_client(
 
     client.get_pull_request.side_effect = _get_pull_request
 
+    def _get_pull_request_metadata_strict(repo: str, number: int) -> Dict[str, Any]:
+        # Production callers use the strict, cache-bypassing direct read
+        # (REQ-003); this raises on absence like the real implementation
+        # does (it never silently returns None for a missing PR).
+        if pr_responses is None or number not in pr_responses:
+            raise RuntimeError(f"GitHub did not return PR metadata for PR #{number}")
+        return pr_responses[number]
+
+    client.get_pull_request_metadata_strict.side_effect = _get_pull_request_metadata_strict
+
     def _get_connected_prs(repo: str, issue: int, strict: bool = False) -> List[int]:
         if connected_prs is None:
             return []
@@ -73,10 +83,14 @@ def _make_github_client(
 
     client.get_connected_prs.side_effect = _get_connected_prs
 
-    def _get_open_pull_requests(repo: str) -> List[Dict[str, Any]]:
+    def _get_open_pull_requests_strict(repo: str) -> List[Dict[str, Any]]:
         return open_prs or []
 
-    client.get_open_pull_requests.side_effect = _get_open_pull_requests
+    # Production callers use the strict, cache-bypassing complete enumeration
+    # API (REQ-003); wire it explicitly so a bare MagicMock auto-attribute
+    # does not get treated as a malformed non-list response.
+    client.get_open_pull_requests_strict.side_effect = _get_open_pull_requests_strict
+    client.get_open_pull_requests.side_effect = _get_open_pull_requests_strict
 
     def _get_issue(repo: str, number: int) -> Optional[Dict[str, Any]]:
         return {"number": number, "state": "open"}
@@ -326,14 +340,32 @@ def test_as003_completed_without_pr_retains_as_publication_pending(tmp_path: Pat
 
 
 def test_as003_active_states_retain_capacity(tmp_path: Path) -> None:
-    """AS-003: QUEUED/PLANNING/IN_PROGRESS/PAUSED/AWAITING_* all retain capacity as ACTIVE."""
-    for state in ["QUEUED", "PLANNING", "IN_PROGRESS", "PAUSED", "AWAITING_PLAN_APPROVAL", "AWAITING_USER_FEEDBACK", "AWAITING_COMMENT", "AWAITING_COMMENTS", "AWAITING_SOMETHING"]:
+    """AS-003: QUEUED/PLANNING/IN_PROGRESS/PAUSED/supported AWAITING_* retain capacity as ACTIVE."""
+    for state in ["QUEUED", "PLANNING", "IN_PROGRESS", "PAUSED", "AWAITING_PLAN_APPROVAL", "AWAITING_USER_FEEDBACK", "AWAITING_COMMENT", "AWAITING_COMMENTS"]:
         jules_client = _make_jules_client(
             session_responses={"sess": {"name": "projects/x/sessions/sess", "state": state, "outputs": {}}},
         )
         evidence = _observe_jules_session("sess", jules_client, REPO, 1, "issue:100")
         assert evidence.state is SessionTerminalState.ACTIVE, f"State {state} should be ACTIVE"
         assert evidence.latest_activity_ended is False
+
+
+def test_as003_unsupported_awaiting_variant_becomes_unknown(tmp_path: Path) -> None:
+    """REQ-005: an AWAITING_* variant NOT in the supported contract is UNKNOWN, never implicitly ACTIVE.
+
+    Issue #2147 item 5: unknown AWAITING_* variants must not be treated as
+    ACTIVE merely because they share the "AWAITING_" prefix with supported
+    states — that would let an evolving/unrecognized Jules state silently
+    retain capacity forever without ever being flagged as needing attention,
+    but more importantly could also let it silently combine with other
+    terminal evidence in ways this predicate does not intend. Per spec, any
+    unsupported/unknown state resolves to UNKNOWN.
+    """
+    jules_client = _make_jules_client(
+        session_responses={"sess": {"name": "projects/x/sessions/sess", "state": "AWAITING_SOMETHING", "outputs": {}}},
+    )
+    evidence = _observe_jules_session("sess", jules_client, REPO, 1, "issue:100")
+    assert evidence.state is SessionTerminalState.UNKNOWN
 
 
 def test_as003_pr_404_becomes_unknown(tmp_path: Path) -> None:
@@ -411,6 +443,39 @@ def test_as004_user_message_after_completion_blocks_retirement(tmp_path: Path) -
     assert evidence.state is SessionTerminalState.UNKNOWN
 
 
+def test_item4_real_oneof_shaped_activity_payload_confirms_causality(tmp_path: Path) -> None:
+    """Issue #2147 item 4: real Jules Activity payloads express the event kind
+    as a oneof-style field (e.g. ``sessionCompleted``: {...}) rather than a
+    synthetic top-level ``type`` string. The causality check must recognize
+    this real shape, not only the ``type``-string test convention.
+    """
+    activities = [
+        {"name": "sessions/sess/activities/1", "userMessage": {"prompt": "please continue"}, "createTime": "2026-01-01T09:00:00Z"},
+        {"name": "sessions/sess/activities/2", "sessionCompleted": {}, "createTime": "2026-01-01T10:00:00Z"},
+    ]
+    jules_client = _make_jules_client(
+        session_responses={"sess": _jules_session("sess", "COMPLETED", pr_number=201)},
+        activities={"sess": activities},
+    )
+    evidence = _observe_jules_session("sess", jules_client, REPO, 1, "issue:100")
+    assert evidence.state is SessionTerminalState.ENDED
+
+
+def test_item4_real_oneof_shaped_activity_after_completion_blocks(tmp_path: Path) -> None:
+    """Same real oneof shape, but a userMessage AFTER sessionCompleted must
+    still block causality (newer admitted activity)."""
+    activities = [
+        {"name": "sessions/sess/activities/1", "sessionCompleted": {}, "createTime": "2026-01-01T10:00:00Z"},
+        {"name": "sessions/sess/activities/2", "userMessage": {"prompt": "one more thing"}, "createTime": "2026-01-01T11:00:00Z"},
+    ]
+    jules_client = _make_jules_client(
+        session_responses={"sess": _jules_session("sess", "COMPLETED", pr_number=201)},
+        activities={"sess": activities},
+    )
+    evidence = _observe_jules_session("sess", jules_client, REPO, 1, "issue:100")
+    assert evidence.state is SessionTerminalState.UNKNOWN
+
+
 def test_as004_completion_before_user_message_allows_retirement(tmp_path: Path) -> None:
     """AS-004: activities show completion after user-message → causality confirmed → ENDED."""
     activities = [
@@ -425,15 +490,22 @@ def test_as004_completion_before_user_message_allows_retirement(tmp_path: Path) 
     assert evidence.state is SessionTerminalState.ENDED
 
 
-def test_as004_no_activities_api_uses_conservative_terminal(tmp_path: Path) -> None:
-    """AS-004: no activities support → conservative acceptance of terminal state."""
+def test_as004_no_activities_api_is_unknown_not_terminal(tmp_path: Path) -> None:
+    """Issue #2147 item 4/REQ-006: missing activities support must not turn a
+    terminal session into ENDED.
+
+    Absence of contrary evidence (no activities API at all) is NOT proof
+    that the latest admitted activity ended: this must resolve to UNKNOWN,
+    not a "conservative" terminal acceptance. Accepting terminal here would
+    let an unreadable/absent activities endpoint silently authorize release
+    for any provider/session combination that lacks activity support.
+    """
     jules_client = MagicMock()
     jules_client.get_session.return_value = _jules_session("sess", "COMPLETED", pr_number=201)
     del jules_client.get_session_activities  # Remove the attribute to simulate missing API
 
     evidence = _observe_jules_session("sess", jules_client, REPO, 1, "issue:100")
-    # Conservative: no contradicting evidence → accept terminal
-    assert evidence.state is SessionTerminalState.ENDED
+    assert evidence.state is SessionTerminalState.UNKNOWN
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +569,75 @@ def test_as005_register_outbound_activity_before_send(tmp_path: Path) -> None:
     # may advance revision; validate it doesn't error
     assert new_revision is not None
     assert isinstance(new_revision, int)
+
+
+def test_item6_same_session_admission_advances_revision_and_stales_prior_observation(tmp_path: Path) -> None:
+    """Issue #2147 item 6: durable admission for SAME session id advances
+    activity_revision, and an observation captured before that admission
+    becomes STALE_OBSERVATION (not a release) when retirement is attempted
+    afterward.
+
+    ``record_provider_session`` is membership-idempotent: calling it again
+    with an already-known session id does not by itself advance the
+    revision. ``register_outbound_jules_activity`` (backed by
+    ``admit_outbound_provider_activity``) must advance the revision even for
+    an unchanged session id, because this represents new durably-admitted
+    implementation-mutating responsibility (e.g. a repair message sent to
+    the same session), not new membership.
+    """
+    from auto_coder.implementation_retirement import (
+        ContinuingObligations,
+        ImplementationPRObservation,
+        ImplementationRetirementObservation,
+        ProviderSessionObservation,
+    )
+    from auto_coder.issue_stage_routing import IssueStageRoutingStore
+
+    slots = _setup_slots(tmp_path)
+    routing = IssueStageRoutingStore(tmp_path / "routing.sqlite3")
+
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-item6")
+    slots.record_implementation_pr(ISSUE_100, 201)
+    slots.record_provider_session(ISSUE_100, "sess-same")
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    # Capture an observation "before" the same-session admission.
+    incarnation = slots.owner_incarnation(ISSUE_100)
+    revision_before = slots.owner_activity_revision(ISSUE_100)
+    assert revision_before is not None
+
+    # Confirm record_provider_session alone (membership-idempotent) does NOT
+    # advance the revision for an already-known session id.
+    slots.record_provider_session(ISSUE_100, "sess-same")
+    assert slots.owner_activity_revision(ISSUE_100) == revision_before
+
+    stale_observation = ImplementationRetirementObservation(
+        repository=REPO,
+        owner=ISSUE_100,
+        reservation_incarnation=incarnation,
+        activity_revision=revision_before,
+        implementation_prs=(ImplementationPRObservation(201, PRTerminalState.CLOSED),),
+        provider_sessions=(ProviderSessionObservation("sess-same", "jules", SessionTerminalState.ENDED),),
+        continuing_obligations=ContinuingObligations(),
+    )
+
+    # Now durably admit new outbound activity for the SAME session id.
+    admitted = register_outbound_jules_activity(ISSUE_100, slots, "sess-same")
+    assert admitted is True
+    revision_after = slots.owner_activity_revision(ISSUE_100)
+    assert revision_after is not None
+    assert revision_after > revision_before
+
+    # The observation captured before admission must now be stale, not a
+    # release, when checked against the live store.
+    result = slots.retire_owner(stale_observation, routing)
+    assert result.status is RetirementStatus.STALE_OBSERVATION
+
+    # If the owner had already retired before the admission attempt, the
+    # admission itself must fail so the outbound mutation is never sent.
+    slots2 = _setup_slots(tmp_path, limit=2)
+    other_owner = ImplementationOwner("issue", 900)
+    assert register_outbound_jules_activity(other_owner, slots2, "sess-never-reserved") is False
 
 
 # ---------------------------------------------------------------------------
@@ -694,3 +835,141 @@ def test_merged_pr_observation(tmp_path: Path) -> None:
     assert obs.state is PRTerminalState.MERGED
     assert obs.merged is True
     assert obs.is_terminal
+
+
+# ---------------------------------------------------------------------------
+# Item 1: fresh, cache-bypassing GitHub reads (REQ-003)
+# ---------------------------------------------------------------------------
+
+
+def test_item1_stale_cached_closed_state_cannot_authorize_release(tmp_path: Path) -> None:
+    """Issue #2147 item 1: a stale CACHED 'closed' PR response must never
+    authorize retirement when a fresh (strict) read says the PR is open.
+
+    ``_observe_pr`` must call the strict, cache-bypassing PR metadata read
+    rather than the cached ``get_pull_request`` — this test wires the two
+    APIs to disagree (cached says closed, strict says open) and asserts the
+    STRICT result wins: the PR is observed OPEN, and retirement is refused.
+    """
+    slots = _setup_slots(tmp_path)
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-item1")
+    slots.record_implementation_pr(ISSUE_100, 201)
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    github_client = MagicMock()
+    # Cached endpoint (must NOT be trusted) reports closed.
+    github_client.get_pull_request.side_effect = lambda repo, number: _closed_pr(201) if number == 201 else None
+    # Strict, cache-bypassing endpoint reports the PR is still open.
+    github_client.get_pull_request_metadata_strict.side_effect = lambda repo, number: _open_pr(201) if number == 201 else None
+    github_client.get_connected_prs.side_effect = lambda repo, issue, strict=False: []
+    github_client.get_open_pull_requests_strict.side_effect = lambda repo: []
+
+    obs = _observe_pr(github_client, REPO, 201)
+    assert obs.state is PRTerminalState.OPEN, "strict fresh read must win over a stale cached closed response"
+
+    full_obs = collect_retirement_observation(ISSUE_100, slots, github_client)
+    assert full_obs is not None
+    result = slots.retire_owner(full_obs)
+    assert result.status is RetirementStatus.RETAINED_ACTIVE
+
+
+# ---------------------------------------------------------------------------
+# Item 2: incomplete discovery fails closed unconditionally (REQ-002)
+# ---------------------------------------------------------------------------
+
+
+def test_item2_incomplete_open_pr_discovery_blocks_even_with_other_terminal_pr(tmp_path: Path) -> None:
+    """Issue #2147 item 2: candidate_set.incomplete_discovery must block
+    retirement UNCONDITIONALLY, even when another known PR exists and is
+    terminal/closed.
+
+    One known implementation PR (#201) is terminal/closed, but native/open-PR
+    enumeration fails (raises), so another unobserved implementation PR may
+    still exist for this owner. ``retire_owner()`` must NOT return RELEASED.
+    """
+    slots = _setup_slots(tmp_path)
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-item2")
+    slots.record_implementation_pr(ISSUE_100, 201)
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    github_client = MagicMock()
+    github_client.get_pull_request_metadata_strict.side_effect = lambda repo, number: (_closed_pr(201) if number == 201 else None)
+    # Native association enumeration fails outright.
+    github_client.get_connected_prs.side_effect = RuntimeError("GitHub API throttled (429)")
+    # Open-PR enumeration also fails — an unobserved implementation PR
+    # (e.g. published just after a publisher crash) could still exist.
+    github_client.get_open_pull_requests_strict.side_effect = RuntimeError("GitHub API throttled (429)")
+
+    obs = collect_retirement_observation(ISSUE_100, slots, github_client)
+    assert obs is not None
+    result = slots.retire_owner(obs)
+    assert result.status is not RetirementStatus.RELEASED
+    assert result.status is RetirementStatus.RETAINED_UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Item 3: real CloudRunRepository API (REQ-004)
+# ---------------------------------------------------------------------------
+
+
+def test_item3_real_cloud_run_repository_pending_run_blocks_retirement(tmp_path: Path) -> None:
+    """Issue #2147 item 3: accepted/unresolved Jules work recorded ONLY in a
+    real ``CloudRunRepository`` (not mirrored into the slot's
+    ``provider_sessions``) must participate in retirement evidence.
+
+    Uses a real ``CloudRunRepository`` instance (not a mock with invented
+    method names like ``get_runs_for_issue``/``list_runs``) to persist a
+    Jules CloudRun for this owner's issue, and proves it blocks retirement
+    even though the slot store's own ``provider_sessions`` is empty.
+    """
+    from auto_coder.cloud_run import CloudRun, CloudRunRepository
+
+    slots = _setup_slots(tmp_path)
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-item3")
+    slots.record_implementation_pr(ISSUE_100, 201)
+    slots.finish_execution(ISSUE_100, exec_id)
+    # Confirm the slot store itself has no provider_sessions recorded — the
+    # CloudRun below is the ONLY evidence of this Jules work.
+    assert slots.has_provider_sessions(ISSUE_100) is False
+
+    cloud_run_store = CloudRunRepository(REPO, storage_path=tmp_path / "cloud_runs.json")
+    pending_run = CloudRun(
+        repo_name=REPO,
+        issue_number=ISSUE_100.number,
+        attempt=1,
+        provider="jules",
+        task_id="sess-pending-cloudrun",
+    )
+    assert cloud_run_store.save(pending_run) is True
+
+    github_client = _make_github_client(pr_responses={201: _closed_pr(201)})
+    jules_client = _make_jules_client(
+        session_responses={"sess-pending-cloudrun": _jules_session("sess-pending-cloudrun", "IN_PROGRESS")},
+    )
+
+    obs = collect_retirement_observation(
+        ISSUE_100,
+        slots,
+        github_client,
+        jules_client=jules_client,
+        cloud_run_store=cloud_run_store,
+    )
+    assert obs is not None
+    session_ids = {s.session_id for s in obs.provider_sessions}
+    assert "sess-pending-cloudrun" in session_ids, "CloudRun-only Jules work must appear in observed provider sessions"
+
+    result = slots.retire_owner(obs)
+    assert result.status is RetirementStatus.RETAINED_ACTIVE
+    assert any("sess-pending-cloudrun" in member for member in result.responsible_members)
+
+
+def test_item3_cloud_run_repository_uses_list_for_issue_not_invented_methods() -> None:
+    """The observer must call CloudRunRepository's real API (list_for_issue /
+    list_all), never invented methods such as get_runs_for_issue/list_runs."""
+    from auto_coder.implementation_retirement_observer import _get_cloud_runs_for_issue
+
+    store = MagicMock(spec=["list_for_issue", "list_all"])
+    store.list_for_issue.return_value = []
+    runs = _get_cloud_runs_for_issue(store, REPO, ISSUE_100.number)
+    assert runs == []
+    store.list_for_issue.assert_called_once_with(ISSUE_100.number)

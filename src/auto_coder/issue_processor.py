@@ -799,12 +799,36 @@ def _stop_jules_session_for_issue(
     session_id: str,
     timeout_hours: int,
     github_client: GitHubClient,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> bool:
     """Request a stop and confirm authoritative remote termination.
 
     Returns:
         True only when the Jules API subsequently reports a terminal state.
     """
+    # REQ-009 (Issue #2147): unlike every other outbound Jules send in this
+    # codebase, this "stop" ends rather than extends a session's mutating
+    # responsibility, so it deliberately does NOT go through the full
+    # admit_or_block_outbound_jules_send()/admit_outbound_provider_activity()
+    # admission path. That admission path requires an existing *active*
+    # owner record in the slot store and fails closed when one is absent --
+    # but this call site is reached precisely for orphaned/legacy stale
+    # sessions that may predate any provider-session membership ever being
+    # recorded for this owner (see the "Legacy launches may predate
+    # provider-session membership" handling at this function's only call
+    # site). Requiring an active record here would incorrectly block
+    # stopping such a session and prevent its replacement, even though the
+    # stop itself creates no new implementation-mutating responsibility.
+    # Instead, only the independent retired-session guard applies: a
+    # session already committed to a durably retired incarnation must not
+    # be reused/resumed by this path either.
+    if implementation_slots is not None:
+        from .implementation_retirement_observer import guard_retired_session_reuse
+
+        if guard_retired_session_reuse(session_id, implementation_slots):
+            logger.info(f"Blocked stop request for Jules session {session_id} (issue #{issue_number}): " "session belongs to a durably retired implementation slot (REQ-009)")
+            return False
+
     try:
         jules_client.send_message(session_id, "stop")
     except Exception as e:
@@ -978,7 +1002,7 @@ def handle_stale_jules_issue_sessions(
                 # replacement execution below must carry the same captured
                 # generation forward rather than recomputing "current" state.
                 captured_generation = implementation_slots.implementation_generation(owner)
-                if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client):
+                if not _stop_jules_session_for_issue(jules_client, repo_name, issue_number, session_id, timeout_hours, github_client, implementation_slots=implementation_slots):
                     continue
 
                 # The remote generation is now stopped. Remove its durable task

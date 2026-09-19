@@ -258,18 +258,51 @@ class _DiscoveryIncomplete(RuntimeError):
 
 
 def _safe_get_connected_prs(github_client: Any, repo_name: str, issue_number: int) -> List[int]:
-    """Return native GitHub Development/closing connections for issue_number."""
+    """Return native GitHub Development/closing connections for issue_number.
+
+    REQ-003: retirement evidence must never be authorized from a cached
+    response, so this always requests a strict, cache-bypassing read when the
+    client supports it. A client that lacks the strict parameter entirely
+    (no ``get_connected_prs`` at all) contributes nothing — the caller treats
+    an exception here as incomplete discovery, but an absent API is not by
+    itself an error, so this returns an empty list and callers rely on other
+    candidate sources.
+    """
     getter = getattr(github_client, "get_connected_prs", None)
     if not callable(getter):
         return []
-    result = getter(repo_name, issue_number)
+    try:
+        result = getter(repo_name, issue_number, strict=True)
+    except TypeError:
+        # Client does not support the strict keyword at all — this is not a
+        # fresh read, so treat it as a failed discovery rather than silently
+        # falling back to a cached/non-strict result (REQ-003).
+        raise
     if not isinstance(result, (list, tuple, set, frozenset)):
-        return []
+        raise _DiscoveryIncomplete("get_connected_prs(strict=True) returned non-collection")
     return [n for n in result if isinstance(n, int) and not isinstance(n, bool) and n > 0]
 
 
 def _safe_get_open_pull_requests(github_client: Any, repo_name: str) -> List[Dict[str, Any]]:
-    """Return open PRs, raising _DiscoveryIncomplete on pagination failure."""
+    """Return open PRs via a strict, cache-bypassing complete enumeration (REQ-003).
+
+    Prefers ``get_open_pull_requests_strict`` (fresh, complete pagination).
+    Falls back to ``get_open_pull_requests`` only when the strict API does not
+    exist on this client at all; any read failure, throttling, malformed
+    result, or incomplete pagination raises ``_DiscoveryIncomplete`` so the
+    caller marks discovery incomplete rather than treating an empty/partial
+    result as a complete candidate set.
+    """
+    strict_getter = getattr(github_client, "get_open_pull_requests_strict", None)
+    if callable(strict_getter):
+        try:
+            result = strict_getter(repo_name)
+        except Exception as exc:
+            raise _DiscoveryIncomplete(str(exc)) from exc
+        if not isinstance(result, (list, tuple)):
+            raise _DiscoveryIncomplete("get_open_pull_requests_strict returned non-list")
+        return list(result)
+
     getter = getattr(github_client, "get_open_pull_requests", None)
     if not callable(getter):
         return []
@@ -377,13 +410,30 @@ def _observe_pr(github_client: Any, repo_name: str, pr_number: int) -> Implement
 
     Missing/404/denied/throttled/malformed/wrong-repo/wrong-number → UNKNOWN.
     Never uses cached responses, listing omissions, or Issue state.
+
+    Uses ``get_pull_request_metadata_strict`` — a cache-bypassing direct read
+    — rather than ``get_pull_request``, which is backed by a reusable cache
+    (see ``util/gh_cache.py``) and could return a stale ``closed`` snapshot
+    after the PR reopened. A client that lacks the strict API entirely falls
+    back to ``get_pull_request`` only so this function still degrades
+    gracefully for legacy/test doubles that never exercise this specific
+    freshness guarantee; production ``GitHubClient`` always has the strict
+    method.
     """
     try:
-        getter = getattr(github_client, "get_pull_request", None)
-        if not callable(getter):
-            logger.warning(f"github_client has no get_pull_request method; PR #{pr_number} → UNKNOWN")
-            return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
-        pr_data = getter(repo_name, pr_number)
+        strict_getter = getattr(github_client, "get_pull_request_metadata_strict", None)
+        if callable(strict_getter):
+            try:
+                pr_data = strict_getter(repo_name, pr_number)
+            except Exception as exc:
+                logger.warning(f"Strict transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
+                return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
+        else:
+            getter = getattr(github_client, "get_pull_request", None)
+            if not callable(getter):
+                logger.warning(f"github_client has no PR read method; PR #{pr_number} → UNKNOWN")
+                return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
+            pr_data = getter(repo_name, pr_number)
     except Exception as exc:
         logger.warning(f"Transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
@@ -516,14 +566,22 @@ def _resolve_jules_session_ownership(
 
 
 def _get_cloud_runs_for_issue(cloud_run_store: Any, repo_name: str, issue_number: int) -> List[Any]:
-    """Return CloudRun records for an issue, or empty list if unavailable."""
-    getter = getattr(cloud_run_store, "get_runs_for_issue", None)
-    if callable(getter):
-        return list(getter(repo_name, issue_number) or [])
-    # Try iterating all runs and filtering
-    lister = getattr(cloud_run_store, "list_runs", None)
+    """Return CloudRun records for an issue using CloudRunRepository's real API.
+
+    ``CloudRunRepository`` (see ``cloud_run.py``) exposes ``list_for_issue``
+    (issue-scoped, preferred) and ``list_all`` — there is no
+    ``get_runs_for_issue``/``list_runs`` method on the real class. Calling a
+    nonexistent method would silently return an empty list via ``getattr``
+    and make accepted/unresolved Jules work recorded only in CloudRunRepository
+    invisible to retirement evidence (REQ-004).
+    """
+    issue_getter = getattr(cloud_run_store, "list_for_issue", None)
+    if callable(issue_getter):
+        return list(issue_getter(issue_number) or [])
+    # Fall back to the full listing only when the issue-scoped API is absent.
+    lister = getattr(cloud_run_store, "list_all", None)
     if callable(lister):
-        return [r for r in (lister(repo_name) or []) if getattr(r, "issue_number", None) == issue_number]
+        return [r for r in (lister() or []) if getattr(r, "issue_number", None) == issue_number]
     return []
 
 
@@ -573,8 +631,11 @@ def _observe_jules_session(
         logger.warning(f"Jules session {session_id} for {owner_key}: missing/invalid state → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
-    # Active states retain capacity immediately (REQ-005)
-    if raw_state in _JULES_ACTIVE_STATES or (raw_state.startswith("AWAITING_") and raw_state not in _JULES_TERMINAL_STATES):
+    # Explicitly supported active states retain capacity immediately (REQ-005).
+    # Any AWAITING_* variant NOT in the supported contract (_JULES_ACTIVE_STATES)
+    # must fall through to UNKNOWN below, never be implicitly treated as ACTIVE
+    # merely because it happens to start with "AWAITING_".
+    if raw_state in _JULES_ACTIVE_STATES:
         return _JulesSessionEvidence(
             session_id=session_id,
             state=SessionTerminalState.ACTIVE,
@@ -582,7 +643,8 @@ def _observe_jules_session(
         )
 
     if raw_state not in _JULES_TERMINAL_STATES:
-        # Unsupported/unknown state → UNKNOWN
+        # Unsupported/unknown state (including an unknown AWAITING_* variant
+        # not in the supported contract) → UNKNOWN, never implicitly ACTIVE.
         logger.warning(f"Jules session {session_id} for {owner_key}: " f"unsupported state {raw_state!r} → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
@@ -631,11 +693,11 @@ def _check_activity_causality(
     """
     activities_getter = getattr(jules_client, "get_session_activities", None)
     if not callable(activities_getter):
-        # No activities support — use update timestamp heuristic only as a
-        # conservative fallback: if the session is terminal and there is no
-        # activities API, we cannot corroborate causality.
-        logger.debug(f"Jules session {session_id}: activities API not available; " "using conservative terminal confirmation")
-        return True  # Conservative: without contradicting evidence, accept terminal
+        # No activities support at all. REQ-006/Issue #2147 item 4: absence of
+        # contrary evidence is NOT proof the latest admitted activity ended,
+        # so this must be UNKNOWN rather than a conservative terminal accept.
+        logger.debug(f"Jules session {session_id}: activities API not available → UNKNOWN causality")
+        return False
 
     try:
         activities = activities_getter(session_id)
@@ -644,6 +706,7 @@ def _check_activity_causality(
         return False
 
     if not isinstance(activities, (list, tuple)):
+        logger.warning(f"Malformed activities payload for Jules session {session_id} " f"(expected list, got {type(activities).__name__}) → UNKNOWN causality")
         return False
 
     # Look for sessionCompleted/sessionFailed event preceded by a
@@ -652,8 +715,8 @@ def _check_activity_causality(
     # local store has registered; if the activities list shows a completion
     # event that post-dates the most recent user-message/plan event, the
     # terminal state is causally attributable to the current activity.
-    completion_events = [a for a in activities if isinstance(a, dict) and a.get("type") in ("sessionCompleted", "sessionFailed", "session_completed", "session_failed")]
-    user_events = [a for a in activities if isinstance(a, dict) and a.get("type") in ("userMessage", "user_message", "planApproval", "plan_approval")]
+    completion_events = [a for a in activities if isinstance(a, dict) and _activity_kind(a) in ("session_completed", "session_failed")]
+    user_events = [a for a in activities if isinstance(a, dict) and _activity_kind(a) in ("user_message", "plan_approval")]
 
     if not completion_events:
         return False
@@ -673,6 +736,63 @@ def _check_activity_causality(
         return False
 
     return True
+
+
+# Real Jules Activity payloads (jules.google/docs/api/reference/activities/)
+# represent the event kind as a "oneof"-style field: exactly one of these keys
+# holds the event's own (possibly empty) object, rather than a synthetic
+# top-level "type" string. Some historical/test fixtures use the latter
+# convention directly; both are normalized to the same canonical kind so
+# causality checks do not depend on which shape the payload used.
+_ACTIVITY_KIND_ONEOF_KEYS: Dict[str, str] = {
+    "userMessage": "user_message",
+    "user_message": "user_message",
+    "planApproval": "plan_approval",
+    "plan_approval": "plan_approval",
+    "planApprovalActivity": "plan_approval",
+    "sessionCompleted": "session_completed",
+    "session_completed": "session_completed",
+    "sessionCompletedActivity": "session_completed",
+    "sessionFailed": "session_failed",
+    "session_failed": "session_failed",
+    "sessionFailedActivity": "session_failed",
+}
+
+_ACTIVITY_KIND_TYPE_ALIASES: Dict[str, str] = {
+    "userMessage": "user_message",
+    "user_message": "user_message",
+    "planApproval": "plan_approval",
+    "plan_approval": "plan_approval",
+    "sessionCompleted": "session_completed",
+    "session_completed": "session_completed",
+    "sessionFailed": "session_failed",
+    "session_failed": "session_failed",
+}
+
+
+def _activity_kind(activity: Dict[str, Any]) -> Optional[str]:
+    """Return the canonical kind of one Jules activity event, or None.
+
+    Canonical kinds: "user_message", "plan_approval", "session_completed",
+    "session_failed". Supports both a synthetic ``type`` string field (used
+    by some historical fixtures) and the real oneof-style payload shape where
+    the event kind is expressed as the presence of one specific field (e.g.
+    ``sessionCompleted``) holding the event's own object. Reject ambiguous
+    entries (more than one oneof key present) conservatively by returning
+    None rather than guessing.
+    """
+    raw_type = activity.get("type")
+    if isinstance(raw_type, str) and raw_type in _ACTIVITY_KIND_TYPE_ALIASES:
+        return _ACTIVITY_KIND_TYPE_ALIASES[raw_type]
+
+    found: List[str] = []
+    for key, kind in _ACTIVITY_KIND_ONEOF_KEYS.items():
+        if key in activity and activity.get(key) is not None:
+            if kind not in found:
+                found.append(kind)
+    if len(found) == 1:
+        return found[0]
+    return None
 
 
 def _max_activity_time(activities: List[Dict[str, Any]]) -> Optional[float]:
@@ -900,8 +1020,16 @@ def collect_retirement_observation(
     for pr_num in candidate_set.contradicted_prs:
         pr_observations.append(ImplementationPRObservation(pr_num, PRTerminalState.UNKNOWN))
 
-    # Incomplete discovery → add a synthetic UNKNOWN PR blocker (REQ-002)
-    if candidate_set.incomplete_discovery and not candidate_set.local_prs and not candidate_set.contradicted_prs:
+    # Incomplete discovery → add a synthetic UNKNOWN PR blocker (REQ-002).
+    #
+    # This must block unconditionally, even when other known/local PR
+    # candidates exist and are all terminal: incomplete native-association or
+    # open-PR enumeration means an unobserved implementation PR could still
+    # exist for this owner, and evidence of *other* terminal PRs does not
+    # establish that no such PR exists. Only gating this on "no other known
+    # PRs" would let a stale/incomplete crash-recovery discovery authorize
+    # release merely because the already-known PR happened to be closed.
+    if candidate_set.incomplete_discovery:
         pr_observations.append(ImplementationPRObservation(-1, PRTerminalState.UNKNOWN))
 
     # Observe each Jules session individually (REQ-005)
@@ -993,12 +1121,67 @@ def register_outbound_jules_activity(
     """Durably register Jules outbound activity before the actual send (REQ-007).
 
     Must be called before sending resume, feedback, plan-approval,
-    replacement-session, or publication work. Records the session as a
-    provider session to advance the activity_revision, ensuring that any
-    concurrent or subsequent retirement attempt sees a newer revision and
-    produces STALE_OBSERVATION rather than releasing capacity prematurely.
+    replacement-session, or publication work. Uses
+    ``ImplementationSlotRepository.admit_outbound_provider_activity``, which
+    unconditionally advances ``activity_revision`` for the owner's current
+    incarnation — even when *session_id* is already a known provider session
+    (same-session continuation) — unlike ``record_provider_session``, whose
+    membership recording is idempotent and therefore does not by itself
+    advance the revision for an unchanged session id.
 
-    Returns True if the registration succeeded, False if the owner is no
-    longer active (indicating retirement has already occurred).
+    This ensures any retirement observation collected before this call
+    becomes stale: a subsequent ``retire_implementation_slot`` call using
+    that older observation will detect the activity_revision mismatch and
+    return STALE_OBSERVATION rather than releasing capacity prematurely.
+
+    Returns True if the admission succeeded, False if the owner is no
+    longer active (indicating retirement has already occurred) — in which
+    case the caller MUST NOT send the outbound mutation (REQ-009).
     """
-    return slots.record_provider_session(owner, session_id)
+    return slots.admit_outbound_provider_activity(owner, session_id)
+
+
+def admit_or_block_outbound_jules_send(
+    session_id: str,
+    issue_number: Optional[int],
+    slots: Optional[ImplementationSlotRepository],
+) -> bool:
+    """Guard + durably admit one outbound Jules mutation (REQ-007, REQ-009).
+
+    Shared boundary helper for every real outbound Jules production caller
+    (periodic maintenance resume/plan-approval/replacement-session, PR
+    repair/recovery feedback, explicit --only/--force paths, etc). Must be
+    called immediately before sending the outbound provider mutation.
+
+    Returns True when the caller may proceed with the outbound mutation.
+    Returns False when the caller MUST NOT send it: either the session
+    already belongs to a durably retired slot, or durable admission of the
+    new activity failed because the owner's slot retired concurrently, or
+    the guard/admission check itself failed (a failure here must block the
+    send, never be silently treated as permission to proceed).
+
+    When *slots* is None (no repository/slot-store context available) or
+    *issue_number* does not resolve to an ordinary Issue owner, this is a
+    no-op returning True: non-Jules-retirement-tracked callers and code
+    paths untouched by Issue #2147 behave exactly as before.
+    """
+    if slots is None:
+        return True
+    try:
+        if guard_retired_session_reuse(session_id, slots):
+            logger.info(f"Jules session {session_id} belongs to a durably retired implementation slot; " "refusing outbound mutation (REQ-009)")
+            return False
+
+        if not isinstance(issue_number, int) or isinstance(issue_number, bool) or issue_number <= 0:
+            # No resolvable ordinary Issue owner for this session — nothing to
+            # admit against, and the retired-session guard above already ran.
+            return True
+
+        owner = ImplementationOwner("issue", issue_number)
+        if not register_outbound_jules_activity(owner, slots, session_id):
+            logger.info(f"Jules session {session_id} owner #{issue_number} has already retired; " "refusing outbound mutation (REQ-007/REQ-009)")
+            return False
+        return True
+    except Exception as exc:
+        logger.error(f"Retirement guard/admission failed for Jules session {session_id}: {exc}; " "blocking outbound mutation")
+        return False
