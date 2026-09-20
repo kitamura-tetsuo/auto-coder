@@ -20,6 +20,10 @@ from .jules_candidate_observation import ArtifactClassification, ClassificationR
 class SpeculativeClassifier(Protocol):
     def classify(self, repository: str, issue_number: int, pr_repository: str, pr_number: int) -> ClassificationResult: ...
 
+    def classify_pr(self, repository: str, pr_repository: str, pr_number: int, hinted_issue_numbers: tuple[int, ...] = ()) -> tuple[Optional[int], ClassificationResult]: ...
+
+    def selected_pr_number(self, repository: str, issue_number: int, generation_id: str) -> Optional[int]: ...
+
 
 class CleanupGitHubClient(Protocol):
     def get_pull_request_metadata_strict(self, repository: str, pr_number: int) -> Mapping[str, object]: ...
@@ -96,14 +100,17 @@ class SpeculativeJulesLifecycle:
         self.classifier = classifier
         self.cleanup_store = cleanup_store
 
-    def evaluate_pr(self, repository: str, issue_number: int, pr_number: int) -> LifecycleDecision:
-        result = self.classifier.classify(repository, issue_number, repository, pr_number)
+    def evaluate_pr(self, repository: str, pr_number: int, hinted_issue_numbers: tuple[int, ...] = ()) -> LifecycleDecision:
+        issue_number, result = self.classifier.classify_pr(repository, repository, pr_number, hinted_issue_numbers)
         if result.classification is ArtifactClassification.LEGACY:
             return LifecycleDecision()
         if result.classification is ArtifactClassification.SELECTED:
             return LifecycleDecision(result.classification, True)
         if result.classification is ArtifactClassification.RETIRED:
-            self.cleanup_store.retain(repository, issue_number, result, pr_number, None)
+            if issue_number is None or result.generation_id is None:
+                return LifecycleDecision(ArtifactClassification.BLOCKED, False, False, "retired artifact ownership is unavailable")
+            selected_pr = self.classifier.selected_pr_number(repository, issue_number, result.generation_id)
+            self.cleanup_store.retain(repository, issue_number, result, pr_number, selected_pr)
             return LifecycleDecision(result.classification, False, True, "verified retired Jules competitor")
         # Active candidates use the competition evaluator; suspected/conflicting
         # artifacts must be retried after authoritative evidence becomes available.
@@ -150,6 +157,25 @@ class RefreshingSpeculativeClassifier:
                     self.adapter.observe_candidate(repository, issue_number, generation.generation_id, candidate.candidate_id)  # type: ignore[attr-defined]
         return self.adapter.classify(repository, issue_number, pr_repository, pr_number)  # type: ignore[no-any-return,attr-defined]
 
+    def classify_pr(self, repository: str, pr_repository: str, pr_number: int, hinted_issue_numbers: tuple[int, ...] = ()) -> tuple[Optional[int], ClassificationResult]:
+        issue_numbers = tuple(dict.fromkeys((*hinted_issue_numbers, *self.ledger.list_issue_numbers(repository))))  # type: ignore[attr-defined]
+        if not issue_numbers:
+            return None, ClassificationResult(ArtifactClassification.LEGACY, mutation_allowed=True)
+        classified = tuple((issue, self.classify(repository, issue, pr_repository, pr_number)) for issue in issue_numbers)
+        relevant = tuple(item for item in classified if item[1].classification is not ArtifactClassification.LEGACY)
+        if not relevant:
+            return None, ClassificationResult(ArtifactClassification.LEGACY, mutation_allowed=True)
+        definitive = tuple(item for item in relevant if item[1].classification in (ArtifactClassification.ACTIVE_UNSELECTED, ArtifactClassification.SELECTED, ArtifactClassification.RETIRED))
+        if len(definitive) == 1:
+            return definitive[0]
+        if len(definitive) > 1 or len(relevant) > 1:
+            return None, ClassificationResult(ArtifactClassification.BLOCKED, diagnostics=("PR has multiple speculative Issue associations",))
+        return relevant[0]
+
+    def selected_pr_number(self, repository: str, issue_number: int, generation_id: str) -> Optional[int]:
+        generation = self.ledger.get_namespace_snapshot(repository, issue_number).get_generation(generation_id)  # type: ignore[attr-defined]
+        return generation.winner_pr_number if generation is not None else None
+
 
 _lifecycle: Optional[SpeculativeJulesLifecycle] = None
 
@@ -186,3 +212,11 @@ def get_speculative_jules_lifecycle(github_client: Optional[object] = None) -> O
 def default_cleanup_path() -> Path:
     root = Path(os.environ.get("AUTO_CODER_RUNTIME_ROOT", Path.home() / ".auto-coder"))
     return root / "state" / "jules_speculative_cleanup.db"
+
+
+def consume_due_speculative_cleanup(github_client: object) -> int:
+    """Run restart-recovered cleanup from a production maintenance origin."""
+    lifecycle = get_speculative_jules_lifecycle(github_client)
+    if lifecycle is None:
+        return 0
+    return lifecycle.consume_cleanup(github_client)  # type: ignore[arg-type]

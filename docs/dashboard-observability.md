@@ -7,6 +7,9 @@ cancellation, released provider capacity, or cleanup success. The dashboard need
 no new projection because this uses the existing PR stage/result event schema.
 `tests/test_speculative_jules_lifecycle.py` covers durable cleanup and the
 mutation-boundary authority recheck.
+The startup/hourly Jules maintenance loop now drives pending cleanup without
+introducing a new event shape; completion still requires a confirmed closed or
+merged GitHub state, and denied or ambiguous cleanup emits no false success.
 
 Issue #2101 adds the read-only `STRONG_AUDIT` and `ORDINARY_CLOSURE` reviewer
 execution boundary consumed by the existing two-tier lifecycle. It introduces no

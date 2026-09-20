@@ -894,20 +894,19 @@ def process_pull_request(
         speculative = get_speculative_jules_lifecycle(github_client)
         if speculative is not None:
             issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
-            if issue_numbers:
-                decision = speculative.evaluate_pr(repo_name, issue_numbers[0], pr_number)
-                if not decision.allow_ordinary_processing:
-                    processed_pr.priority = "cleanup" if decision.cleanup_pending else "defer"
-                    processed_pr.outcome = PRProcessingOutcome.DEFERRED
-                    processed_pr.actions_taken = [f"Speculative Jules {decision.classification.value.lower()} artifact fenced: {decision.reason}"]
-                    _record_pr_stage(
-                        pr_number,
-                        "pr.speculative-jules-authority",
-                        f"pr#{pr_number} speculative Jules authority",
-                        Outcome.DEFERRED,
-                        {"classification": decision.classification.value, "cleanup_pending": decision.cleanup_pending},
-                    )
-                    return processed_pr
+            decision = speculative.evaluate_pr(repo_name, pr_number, tuple(issue_numbers))
+            if not decision.allow_ordinary_processing:
+                processed_pr.priority = "cleanup" if decision.cleanup_pending else "defer"
+                processed_pr.outcome = PRProcessingOutcome.DEFERRED
+                processed_pr.actions_taken = [f"Speculative Jules {decision.classification.value.lower()} artifact fenced: {decision.reason}"]
+                _record_pr_stage(
+                    pr_number,
+                    "pr.speculative-jules-authority",
+                    f"pr#{pr_number} speculative Jules authority",
+                    Outcome.DEFERRED,
+                    {"classification": decision.classification.value, "cleanup_pending": decision.cleanup_pending},
+                )
+                return processed_pr
 
         try:
             from .durable_repair_allowance import reconcile_unfulfilled_grant_reevaluations
