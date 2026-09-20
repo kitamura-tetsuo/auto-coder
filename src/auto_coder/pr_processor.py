@@ -396,7 +396,7 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
         reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name))
     except Exception:
         return False, "configured reviewer identity is unavailable; publication was not started"
-    executor = ReviewEffectExecutor(ReviewEffectRepository(repo_name), owner_token=f"publication:{payload.identity}")
+    executor = ReviewEffectExecutor(ReviewEffectRepository(repo_name))
     operation = executor.apply(
         payload,
         "review-publication",
