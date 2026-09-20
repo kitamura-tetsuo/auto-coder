@@ -24,6 +24,15 @@ class SpeculativeClassifier(Protocol):
 
     def selected_pr_number(self, repository: str, issue_number: int, generation_id: str) -> Optional[int]: ...
 
+    def selected_merge_authorized(
+        self,
+        repository: str,
+        issue_number: int,
+        result: ClassificationResult,
+        pr_data: Mapping[str, object],
+        issue_data: Mapping[str, object],
+    ) -> bool: ...
+
 
 class CleanupGitHubClient(Protocol):
     def get_pull_request_metadata_strict(self, repository: str, pr_number: int) -> Mapping[str, object]: ...
@@ -116,6 +125,24 @@ class SpeculativeJulesLifecycle:
         # artifacts must be retried after authoritative evidence becomes available.
         return LifecycleDecision(result.classification, False, False, "; ".join(result.diagnostics) or "candidate-aware evaluation required")
 
+    def evaluate_merge_authority(
+        self,
+        repository: str,
+        pr_number: int,
+        pr_data: Mapping[str, object],
+        issue_data: Mapping[str, object],
+        hinted_issue_numbers: tuple[int, ...] = (),
+    ) -> LifecycleDecision:
+        """Reestablish fresh selected-pair authority at the merge mutation boundary."""
+        issue_number, result = self.classifier.classify_pr(repository, repository, pr_number, hinted_issue_numbers)
+        if result.classification is ArtifactClassification.LEGACY:
+            return LifecycleDecision()
+        if issue_number is None or result.classification is not ArtifactClassification.SELECTED:
+            return LifecycleDecision(result.classification, False, False, "artifact is not the selected Jules result")
+        if not self.classifier.selected_merge_authorized(repository, issue_number, result, pr_data, issue_data):
+            return LifecycleDecision(ArtifactClassification.BLOCKED, False, False, "selected acceptance is stale or invalidated")
+        return LifecycleDecision(ArtifactClassification.SELECTED, True)
+
     def consume_cleanup(self, github_client: CleanupGitHubClient) -> int:
         """Attempt every due close, rechecking authority at the outbound boundary."""
         completed = 0
@@ -175,6 +202,42 @@ class RefreshingSpeculativeClassifier:
     def selected_pr_number(self, repository: str, issue_number: int, generation_id: str) -> Optional[int]:
         generation = self.ledger.get_namespace_snapshot(repository, issue_number).get_generation(generation_id)  # type: ignore[attr-defined]
         return generation.winner_pr_number if generation is not None else None
+
+    def selected_merge_authorized(
+        self,
+        repository: str,
+        issue_number: int,
+        result: ClassificationResult,
+        pr_data: Mapping[str, object],
+        issue_data: Mapping[str, object],
+    ) -> bool:
+        from .jules_candidate_selection import CandidateTarget, selected_pair_authorized
+
+        if result.generation_id is None or result.candidate_id is None:
+            return False
+        generation = self.ledger.get_namespace_snapshot(repository, issue_number).get_generation(result.generation_id)  # type: ignore[attr-defined]
+        if generation is None or issue_data.get("state") != "open" or issue_data.get("body") != generation.issue_oracle_snapshot:
+            return False
+        head = pr_data.get("head")
+        base = pr_data.get("base")
+        if not isinstance(head, Mapping) or not isinstance(base, Mapping):
+            return False
+        raw_pr_number = pr_data.get("number")
+        if not isinstance(raw_pr_number, int) or isinstance(raw_pr_number, bool):
+            return False
+        target = CandidateTarget(
+            repository=repository,
+            issue_number=issue_number,
+            generation_id=result.generation_id,
+            candidate_id=result.candidate_id,
+            pr_repository=repository,
+            pr_number=raw_pr_number,
+            head_sha=str(head.get("sha") or ""),
+            base_sha=str(base.get("sha") or ""),
+            issue_oracle_fingerprint=generation.issue_oracle_fingerprint,
+        )
+        invalidation_revision = self.adapter.store.current_invalidation_revision(repository, issue_number, result.generation_id, result.candidate_id)  # type: ignore[attr-defined]
+        return selected_pair_authorized(self.ledger, target, current_invalidation_revision=invalidation_revision)  # type: ignore[arg-type]
 
 
 _lifecycle: Optional[SpeculativeJulesLifecycle] = None
