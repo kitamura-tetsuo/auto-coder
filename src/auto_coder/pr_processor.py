@@ -7192,7 +7192,11 @@ def _merge_pr(
         speculative = get_speculative_jules_lifecycle(client)
         if speculative is not None:
             issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_info, client)
-            authority = speculative.evaluate_pr(repo_name, pr_number, tuple(issue_numbers))
+            issue_data: Dict[str, Any] = {}
+            if len(issue_numbers) == 1:
+                issue = client.get_issue(repo_name, issue_numbers[0])
+                issue_data = issue if isinstance(issue, dict) else {"state": getattr(issue, "state", None), "body": getattr(issue, "body", None)}
+            authority = speculative.evaluate_merge_authority(repo_name, pr_number, pr_info, issue_data, tuple(issue_numbers))
             if not authority.allow_ordinary_processing:
                 logger.warning(f"Merge aborted for PR #{pr_number}: speculative Jules " f"authority is {authority.classification.value} ({authority.reason})")
                 _record_pr_stage(

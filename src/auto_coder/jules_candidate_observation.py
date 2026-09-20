@@ -316,6 +316,13 @@ class CandidateObservationStore:
         except (ValueError, TypeError, json.JSONDecodeError):
             return EvidenceStatus.CONFLICTING
 
+    def current_invalidation_revision(self, repository: str, issue_number: int, generation_id: str, candidate_id: str) -> int:
+        """Return the latest accepted invalidation fence for one candidate."""
+        scope = self.scope(repository, issue_number, generation_id, candidate_id)
+        with self._connect() as connection:
+            row = connection.execute("SELECT invalidated_read FROM clocks WHERE scope = ?", (scope,)).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def has_membership_conflict(
         self,
         repository: str,
