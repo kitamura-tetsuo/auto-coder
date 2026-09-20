@@ -16,7 +16,7 @@ Covers:
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import ANY, MagicMock, Mock, patch
 
 import pytest
 
@@ -274,6 +274,7 @@ class TestAS001DisabledOnGreenPRSkipsValidatorAndMerges:
             config,
             github_client=client,
             expected_head_sha=head_sha,
+            route_disposition=ANY,
         )
         assert any("Successfully merged PR #100" in a for a in actions)
 
@@ -534,7 +535,7 @@ class TestAS005NonAdversarialMergeGatesStillApply:
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor._merge_pr", return_value=False)
-    def test_branch_protection_failure_reports_error(
+    def test_legacy_false_merge_result_is_deferred_without_ci_repair(
         self,
         mock_merge_pr,
         mock_checks,
@@ -550,10 +551,21 @@ class TestAS005NonAdversarialMergeGatesStillApply:
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
 
         config = AutomationConfig(pr_adversarial_validation=False)
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        from auto_coder.automation_config import ProcessedPRResult
+
+        processing_status = ProcessedPRResult(pr_data=pr_data)
+        with (
+            patch("auto_coder.pr_processor.get_detailed_checks_from_history") as detailed_checks,
+            patch("auto_coder.pr_processor._send_codex_cloud_error_feedback") as cloud_feedback,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, processing_status)
 
         mock_merge_pr.assert_called_once()
-        assert any("Failed to merge PR #100" in a for a in actions)
+        assert processing_status.outcome.value == "deferred"
+        assert any("not confirmed" in action for action in actions)
+        assert all("GitHub Actions checks failed" not in action for action in actions)
+        detailed_checks.assert_not_called()
+        cloud_feedback.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

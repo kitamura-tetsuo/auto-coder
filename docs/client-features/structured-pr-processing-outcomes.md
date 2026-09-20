@@ -33,6 +33,13 @@ human-readable action diagnostics and are also added to the top-level errors, so
 single-item completion output cannot report a false success. Expected states such
 as red CI, merge gates, and cloud-task waits remain deferred rather than failures.
 
+A successful exact-head CI evaluation selects the merge route once. If its final
+strong-audit gate is still pending or the merge operation does not confirm
+completion, processing returns a deferred merge disposition and does not fall
+through to CI-failure repair. The existing audit and durable merge-operation state
+remain owned by their normal recovery paths; a later current CI evaluation may
+still independently select CI repair when it establishes an actionable failure.
+
 Codex CLI provider transport failures are classified from structured diagnostic
 events (with a conservative text fallback). Exhausted reconnects defer the
 current target to normal scheduling without consuming an implementation attempt,

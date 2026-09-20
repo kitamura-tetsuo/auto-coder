@@ -2888,6 +2888,14 @@ def _refresh_adversarial_ci_status(
     return _check_github_actions_status(repo_name, pr_data, config, github_client)
 
 
+@dataclass
+class MergeRouteDisposition:
+    """Structured result retained alongside the legacy boolean merge API."""
+
+    outcome: PRProcessingOutcome = PRProcessingOutcome.DEFERRED
+    reason: str = "Merge was not confirmed"
+
+
 def _handle_pr_merge(
     github_client: Any,
     repo_name: str,
@@ -3987,6 +3995,8 @@ def _handle_pr_merge(
                         _record_pr_stage(pr_number, "pr.head-refresh", f"pr#{pr_number} head refresh", Outcome.FAILED, {"reason": str(e)})
                         return actions
 
+                    merge_disposition = MergeRouteDisposition()
+
                     def merge_current_head() -> bool:
                         # Resolve H/B/M/P again inside the lowest merge mutation
                         # closure. This prevents any automatic origin from using a
@@ -4034,6 +4044,7 @@ def _handle_pr_merge(
                             config,
                             github_client=github_client,
                             expected_head_sha=current_head_sha or head_sha or None,
+                            route_disposition=merge_disposition,
                         )
 
                     merge_result = False
@@ -4102,7 +4113,26 @@ def _handle_pr_merge(
 
                 return actions
             else:
-                actions.append(f"Failed to merge PR #{pr_number}")
+                # A false merge result after green CI is not CI-failure
+                # evidence. It also represents retryable strong-audit and
+                # durable merge-delivery states, so leave recovery to their
+                # existing owners instead of entering a CI repair route.
+                reason = next(
+                    (action for action in reversed(actions) if action.startswith("Skipping merge for PR #")),
+                    merge_disposition.reason,
+                )
+                actions.append(reason if reason not in actions else f"PR #{pr_number} remains {merge_disposition.outcome.value} at the merge boundary")
+                if processing_status is not None:
+                    processing_status.error = reason if merge_disposition.outcome is PRProcessingOutcome.FAILED else None
+                    processing_status.outcome = merge_disposition.outcome
+                _record_pr_stage(
+                    pr_number,
+                    "pr.merge-route",
+                    f"pr#{pr_number} merge route",
+                    Outcome.FAILED if merge_disposition.outcome is PRProcessingOutcome.FAILED else Outcome.DEFERRED,
+                    {"reason": reason, "ci_failure": False},
+                )
+                return actions
 
         # Step 4: GitHub Actions failed - handle Jules PR feedback loop
         # Fetch detailed checks only when needed to save API calls
@@ -7143,6 +7173,7 @@ def _merge_pr(
     config: AutomationConfig,
     github_client: Optional[Any] = None,
     expected_head_sha: Optional[str] = None,
+    route_disposition: Optional[MergeRouteDisposition] = None,
 ) -> bool:
     """Merge a PR through the durable per-effect merge operation (Issue #1939).
 
@@ -7301,11 +7332,15 @@ def _merge_pr(
             identity,
             _try_merge,
             head_sha,
+            route_disposition,
         )
 
     except Exception as e:
         logger.error(f"Error merging PR #{pr_number}: {e}")
         _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"reason": str(e)})
+        if route_disposition is not None:
+            route_disposition.outcome = PRProcessingOutcome.FAILED
+            route_disposition.reason = str(e)
         return False
 
 
@@ -7321,6 +7356,7 @@ def _handle_definitive_merge_rejection(
     identity: Any,
     try_merge: Any,
     head_sha: str,
+    route_disposition: Optional[MergeRouteDisposition] = None,
 ) -> bool:
     """Handle a GitHub-confirmed, cause-specified merge rejection (REQ-007).
 
@@ -7332,6 +7368,14 @@ def _handle_definitive_merge_rejection(
     """
     from .merge_operation_adapter import AdapterOutcomeKind
     from .merge_operation_state import EffectName, EffectState
+
+    # Preserve the durable adapter's cause-specified classification across
+    # the legacy boolean return. A successful retry below still returns True,
+    # but every non-successful exit remains a rejection rather than being
+    # reconstructed as an opaque deferral by the enclosing merge route.
+    if route_disposition is not None:
+        route_disposition.outcome = PRProcessingOutcome.FAILED
+        route_disposition.reason = "Definitive merge rejection"
 
     try:
         pr_info = api.pulls.get(owner, repo, pr_number)
@@ -7356,10 +7400,16 @@ def _handle_definitive_merge_rejection(
                     return _finalize_merge_success(repo_name, pr_number, alt)
             log_action(f"Failed to merge PR #{pr_number} with any currently allowed merge method", False, "Merge API failed")
             _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"examined_head": head_sha, "reason": "no allowed alternate merge method succeeded"})
+            if route_disposition is not None:
+                route_disposition.outcome = PRProcessingOutcome.FAILED
+                route_disposition.reason = "No allowed alternate merge method succeeded"
             return False
 
         log_action(f"Failed to merge PR #{pr_number}", False, "Merge API failed (not conflict)")
         _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"examined_head": head_sha, "reason": "definitive rejection (not a conflict)"})
+        if route_disposition is not None:
+            route_disposition.outcome = PRProcessingOutcome.FAILED
+            route_disposition.reason = "Definitive merge rejection"
         try:
             pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
             _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed")
@@ -7463,6 +7513,9 @@ def _handle_definitive_merge_rejection(
                 return _finalize_merge_success(repo_name, pr_number, alt)
 
     _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"examined_head": new_head_sha, "reason": "merge failed after conflict resolution"})
+    if route_disposition is not None:
+        route_disposition.outcome = PRProcessingOutcome.FAILED
+        route_disposition.reason = "Definitive merge rejection after conflict resolution"
     try:
         pr_data = {"number": pr_number, "body": refreshed_pr.get("body", "")}
         _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution exhausted)")
