@@ -4,7 +4,7 @@ from dataclasses import replace
 import pytest
 
 from auto_coder import pr_processor
-from auto_coder.github_app_reviewer import ReviewPublicationResult
+from auto_coder.github_app_reviewer import ReviewerAppIdentity, ReviewPublicationResult
 from auto_coder.pr_review_cycle import (
     PUBLICATION_ACKNOWLEDGED,
     ContractSnapshot,
@@ -25,6 +25,7 @@ from auto_coder.pr_review_effects import (
     ReviewEffectRepository,
 )
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
+from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 
 
 def _payload() -> AcceptedReviewPayload:
@@ -132,6 +133,26 @@ def test_rendered_closure_shows_disposition_evidence():
     visible = pr_processor._render_two_tier_review(payload).split("<details>", 1)[0]
     assert "**Status:** FIXED" in visible
     assert "**Disposition evidence:** Both paths now enforce the guard." in visible
+
+
+@pytest.mark.parametrize("author,recognized", [("reviewer[bot]", True), ("untrusted-user", False)])
+def test_strong_finding_threads_enter_normal_authenticated_revalidation(author, recognized):
+    transport = pr_processor._GitHubReviewEffectTransport(None, _payload(), lambda: True)
+    thread = ReviewThread(
+        id="strong-thread",
+        is_resolved=False,
+        comments=[ReviewThreadComment(database_id=12, body=transport.comments[0].body, author_login=author)],
+    )
+    identity = ReviewerAppIdentity("reviewer[bot]", 123)
+    assert pr_processor.is_authoritative_adversarial_thread(thread, "owner/repo", identity) is recognized
+    state = pr_processor.ClaimedReviewThreadGateState(claimed=(), unresolved=(thread,), blocking_unresolved=(thread,), has_blocking_unresolved=True)
+    updated = pr_processor._allow_older_head_adversarial_threads(state, identity.login)
+    assert updated.has_blocking_unresolved is not recognized
+    assert len(updated.claimed) == int(recognized)
+    if recognized:
+        assert updated.claimed[0].original_finding == transport.comments[0].body
+        assert updated.claimed[0].revalidation_after_head_change is True
+    assert thread.is_resolved is False
 
 
 def test_contention_allows_only_reservation_owner_to_send(tmp_path):

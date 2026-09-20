@@ -49,6 +49,10 @@ verifies the pre-publication head fence. Run these with
 `bash scripts/test.sh tests/test_github_app_reviewer.py tests/test_pr_review_effects.py`.
 The existing production effect event and dashboard timeline need no additional
 field or renderer to display the confirmed/deferred result.
+`tests/test_pr_review_effects.py::test_strong_finding_threads_enter_normal_authenticated_revalidation`
+checks that strong roots use the existing reviewer-thread admission path, while
+spoofed authors remain blocked and neither path resolves a thread. This retains
+the existing `pr.review-thread-gate` event schema and unresolved-thread semantics.
 
 GitHub webhook-driven cache eviction and expedited CI watch recheck (PR #2119)
 improve the turnaround time from CI completion to validation launch. Upon webhook intake,

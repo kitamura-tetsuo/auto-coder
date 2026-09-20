@@ -23,6 +23,10 @@ reviews display disposition evidence without recreating strong finding threads.
 Publication uses the versioned `github-reviewer-app:threads-v1` effect destination;
 an older summary-only receipt does not confirm thread publication. Reconciliation
 checks all expected comment bodies on the authenticated exact-head review.
+The strong finding marker is recognized by the existing authenticated reviewer
+thread gate, so changed-head revalidation can inspect these roots under the same
+rules as ordinary findings. A matching marker from another author grants no such
+eligibility, and recognition never resolves a thread by itself.
 
 Strong findings remain durable and are verified by `ORDINARY_CLOSURE` using the
 ordinary PR route and the cumulative diff. A bounded closure can authorize the

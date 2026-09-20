@@ -808,6 +808,7 @@ def _get_claimed_review_thread_state(
 _ADVERSARIAL_THREAD_HEADINGS = (
     "### Auto-Coder adversarial finding",
     "### Auto-Coder material test-oracle gap",
+    "<!-- auto-coder-two-tier-finding:v1:",
 )
 
 
