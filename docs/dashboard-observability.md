@@ -30,7 +30,9 @@ PR reentry emits the existing stage/result schema as `pr.strong-audit` or
 base, contract/policy identities, finding revision and IDs, and the accepted or
 deferred reason. No new dashboard projection is needed because these events use the
 existing PR stage timeline, while accepted closure remains distinct from publication
-or merge confirmation. Run `bash scripts/test.sh tests/test_pr_review_execution.py
+or merge confirmation. Durable retry wakes reuse those stage identities and facts;
+their invalidation deadline is scheduling state, not a new dashboard event schema.
+Run `bash scripts/test.sh tests/test_pr_review_execution.py
 tests/test_pr_review_cycle.py tests/test_two_tier_pr_gate.py` for prompt,
 portable-bundle, identity, disposition-completeness, cumulative-scope, durable
 acceptance, and renewed-audit coverage.

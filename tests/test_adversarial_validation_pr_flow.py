@@ -1304,6 +1304,10 @@ class TestAdversarialValidationPRFlow:
 
         mock_merge_pr.assert_not_called()
         assert processing_status.outcome is PRProcessingOutcome.DEFERRED
+        assert processing_status.retry_not_before is not None
+        assert time.time() < processing_status.retry_not_before <= time.time() + 61
+        assert actions.quota_deferred is True
+        assert actions.retry_not_before == processing_status.retry_not_before
         assert any("strong reviewer route is UNAVAILABLE" in action for action in actions)
         strong_producer.assert_called_once()
         assert all("GitHub Actions checks failed" not in action for action in actions)
