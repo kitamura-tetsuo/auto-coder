@@ -39,3 +39,25 @@ or family reconciliation prevents fresh review. Startup recovery enumerates
 pending and deferred request subjects and repeats that same admission pass,
 so a crash after acceptance but before the initial wake cannot orphan the
 request.
+
+## Operator command
+
+Operators request this operation with `auto-coder review rerun --repo
+OWNER/REPO` and exactly one of `--issue NUMBER`, `--family PARENT_NUMBER`, or
+`--all`. The standalone selector rejects parents and children rather than
+expanding them. The family selector includes decomposition review and each
+native direct child's individual review, including closed retained children,
+but never a parent individual review. `--all` exhaustively selects current
+open standalone Issues and open native families in that repository; pull
+requests, closed standalones, closed families, and open children of closed
+parents are excluded and reported.
+
+`--dry-run` performs the same authoritative resolution and reports subjects,
+exclusions, and current admission blockers without accepting or enqueueing
+work. A normal invocation reports the durable request identifier and exact
+subject set. “Accepted” means reusable authorization was revoked and a fresh
+review obligation was retained—not that review started or completed. Missing
+readiness, disabled categories, stabilization, unavailable authority, and a
+stopped controller defer execution. The command neither removes nor replaces
+the live controller lock, and it never runs reviewer or implementation work
+inline.
