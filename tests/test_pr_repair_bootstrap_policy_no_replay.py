@@ -12,12 +12,14 @@ implementation dispatch) must keep receiving them exactly as before.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from auto_coder import prompt_loader
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.claude_usage_checker import ClaudeStrictUsageObservation
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.issue_processor import (
@@ -40,6 +42,17 @@ SHORT_OBJECTIVE_MARKER = "ISSUE AUTHORING AND REVIEW-RESPONSE POLICY:"
 OBJECTIVE_REQUIREMENTS_MARKER = "OBJECTIVE / REQUIREMENTS CONTRACT POLICY:"
 PARENT_CHILD_MARKER = "PARENT/CHILD ISSUE CONTRACT BOUNDARY POLICY:"
 ALL_MARKERS = (SHORT_OBJECTIVE_MARKER, OBJECTIVE_REQUIREMENTS_MARKER, PARENT_CHILD_MARKER)
+
+
+@pytest.fixture(autouse=True)
+def admitted_ci_repair():
+    """Repair-prompt tests exercise behavior after exact-head admission."""
+    authority = CIRepairAuthority(True, "current exact-head CI failure", "test-head")
+    with patch(
+        "auto_coder.pr_processor.current_ci_failure_authority",
+        return_value=nullcontext(authority),
+    ):
+        yield
 
 
 @pytest.fixture

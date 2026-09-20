@@ -51,6 +51,7 @@ from .bounded_repair_bundle import (
 )
 from .branch_manager import BranchManager
 from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
+from .ci_repair_authority import current_ci_failure_authority
 from .claude_followup_waits import ClaudeFollowupHoldActive, get_claude_followup_wait_store, wait_from_error
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
@@ -4189,83 +4190,90 @@ def _handle_pr_merge(
         # Step 7: Checkout PR branch for non-Jules PRs
         # pr_branch_name is defined earlier (around line 1004)
 
-        # Prepare branch (ensure fetched)
-        prepare_ok = True if already_on_pr_branch else _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
-        if not prepare_ok:
-            actions.append(f"Failed to prepare PR #{pr_number} branch")
-            return actions
-
-        with BranchManager(pr_branch_name) as manager:
-            actions.append(f"Checked out PR #{pr_number} branch")
-
-            # Step 8: Optionally update with latest base branch commits (configurable)
-            if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
-                actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
-                get_trace_logger().log("Update Base", f"Skipped base branch update for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "skipped"})
-
-                # Proceed directly to extracting GitHub Actions logs and attempting fixes
-                if failed_checks:
-                    github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
-                    actions.extend(fix_actions)
-                else:
-                    actions.append(f"No specific failed checks found for PR #{pr_number}")
-
+        expected_head = str(pr_data.get("head", {}).get("sha") or "")
+        with current_ci_failure_authority(github_client, repo_name, pr_number, expected_head) as authority:
+            if not authority.allowed:
+                actions.append(f"Deferred local CI repair for PR #{pr_number}: {authority.reason}")
                 return actions
-            else:
-                actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
-                update_actions = _update_with_base_branch(repo_name, pr_data, config)
-                actions.extend(update_actions)
-                if update_actions.quota_deferred:
-                    actions.quota_deferred = True
-                    actions.retry_not_before = update_actions.retry_not_before
+            logger.info(f"Initiating local CI repair for PR #{pr_number}; head={expected_head} failures={authority.failure_identities}")
+            # Branch preparation may reset or clean the worktree, making it
+            # the first effect for a different-checkout repair.
+            prepare_ok = True if already_on_pr_branch else _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
+            if not prepare_ok:
+                actions.append(f"Failed to prepare PR #{pr_number} branch")
+                return actions
 
-                # Step 9: Check for special cases from base branch update
+            with BranchManager(pr_branch_name) as manager:
+                actions.append(f"Checked out PR #{pr_number} branch")
 
-                # Check if LLM determined merge would degrade code quality
-                if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
-                    actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
-                    # Close the PR without merging
-                    try:
-                        client = GitHubClient.get_instance()
-                        close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
-                        client.close_pr(repo_name, pr_number, close_comment)
-                        _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
-                        actions.append(f"Closed PR #{pr_number} without merging")
+                # Step 8: Optionally update with latest base branch commits (configurable)
+                if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
+                    actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
+                    get_trace_logger().log("Update Base", f"Skipped base branch update for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "skipped"})
 
-                        # BranchManager handles return to original branch
-                    except Exception as e:
-                        logger.error(f"Failed to close PR #{pr_number}: {e}")
-                        actions.append(f"Error closing PR #{pr_number}: {e}")
-                    return actions
-
-                # If base branch update required pushing changes, skip to next PR
-                if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
-                    actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
-                    get_trace_logger().log("Update Base", f"Pushed updated branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "pushed"})
-                    return actions
-
-                # Step 10: If no main branch updates were needed, the test failures are due to PR content
-                # Get GitHub Actions error logs and ask Gemini to fix
-                if any("up to date with" in action for action in update_actions):
-                    actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
-                    get_trace_logger().log("Update Base", f"PR #{pr_number} is up to date", item_type="pr", item_number=pr_number, details={"result": "up_to_date"})
-
-                    if not _is_automatic_test_fix_enabled(config, repo_name):
-                        actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping test-failure repair")
-                        return actions
-
-                    # Fix PR issues using GitHub Actions logs first, then local tests
+                    # Proceed directly to extracting GitHub Actions logs and attempting fixes
                     if failed_checks:
-                        # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
-                        github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                        fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                        github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
+                        fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
                         actions.extend(fix_actions)
                     else:
                         actions.append(f"No specific failed checks found for PR #{pr_number}")
+
+                    return actions
                 else:
-                    # If we reach here, some other update action occurred
-                    actions.append(f"PR #{pr_number} processing completed")
+                    actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
+                    update_actions = _update_with_base_branch(repo_name, pr_data, config)
+                    actions.extend(update_actions)
+                    if update_actions.quota_deferred:
+                        actions.quota_deferred = True
+                        actions.retry_not_before = update_actions.retry_not_before
+
+                    # Step 9: Check for special cases from base branch update
+
+                    # Check if LLM determined merge would degrade code quality
+                    if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
+                        actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
+                        # Close the PR without merging
+                        try:
+                            client = GitHubClient.get_instance()
+                            close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
+                            client.close_pr(repo_name, pr_number, close_comment)
+                            _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
+                            actions.append(f"Closed PR #{pr_number} without merging")
+
+                            # BranchManager handles return to original branch
+                        except Exception as e:
+                            logger.error(f"Failed to close PR #{pr_number}: {e}")
+                            actions.append(f"Error closing PR #{pr_number}: {e}")
+                        return actions
+
+                    # If base branch update required pushing changes, skip to next PR
+                    if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
+                        actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
+                        get_trace_logger().log("Update Base", f"Pushed updated branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "pushed"})
+                        return actions
+
+                    # Step 10: If no main branch updates were needed, the test failures are due to PR content
+                    # Get GitHub Actions error logs and ask Gemini to fix
+                    if any("up to date with" in action for action in update_actions):
+                        actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
+                        get_trace_logger().log("Update Base", f"PR #{pr_number} is up to date", item_type="pr", item_number=pr_number, details={"result": "up_to_date"})
+
+                        if not _is_automatic_test_fix_enabled(config, repo_name):
+                            actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping test-failure repair")
+                            return actions
+
+                        # Fix PR issues using GitHub Actions logs first, then local tests
+                        if failed_checks:
+                            # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
+                            github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
+                            fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                            actions.extend(fix_actions)
+                        else:
+                            actions.append(f"No specific failed checks found for PR #{pr_number}")
+                    else:
+                        # If we reach here, some other update action occurred
+                        actions.append(f"PR #{pr_number} processing completed")
 
     except Exception as e:
         diagnostic = f"Error handling PR merge for PR #{pr_number}: {e}"
@@ -5570,20 +5578,22 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
             actions.append(f"Deferred Jules CI feedback for PR #{pr_number}: graceful shutdown is draining")
             return actions
 
-        # REQ-007/REQ-009 (Issue #2147): this is a PR-repair outbound boundary
-        # that messages an existing Jules session. Guard + durably admit the
-        # outbound mutation before sending it.
-        if not _guard_outbound_jules_send(repo_name, config, session_id):
-            actions.append(f"Blocked Jules CI feedback for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
-            return actions
+        expected_head = str(pr_data.get("head", {}).get("sha") or "")
+        with current_ci_failure_authority(github_client, repo_name, pr_number, expected_head) as authority:
+            if not authority.allowed:
+                actions.append(f"Deferred Jules CI feedback for PR #{pr_number}: {authority.reason}")
+                return actions
+            # The retirement admission and provider mutation are inside the
+            # same invalidation barrier as the final exact-head observation.
+            if not _guard_outbound_jules_send(repo_name, config, session_id):
+                actions.append(f"Blocked Jules CI feedback for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
+                return actions
 
-        # Import JulesClient here to avoid circular imports
-        from .jules_client import JulesClient
+            from .jules_client import JulesClient
 
-        # Send the error logs to Jules
-        logger.info(f"Sending CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
-        jules_client = JulesClient()
-        response = jules_client.send_message(session_id, message)
+            logger.info(f"Sending CI failure logs to Jules session '{session_id}' for PR #{pr_number}; " f"head={expected_head} failures={authority.failure_identities}")
+            jules_client = JulesClient()
+            response = jules_client.send_message(session_id, message)
 
         get_trace_logger().log("Jules Feedback", f"Sent CI failure logs to Jules for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"session_id": session_id})
 
@@ -6752,12 +6762,20 @@ def _send_codex_cloud_error_feedback(
         if not new_work_allowed():
             actions.append(f"Deferred Codex Cloud continuation for PR #{pr_number}: graceful shutdown is draining")
             return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+        prompt = None
         if target:
             details = get_prompt_template("codex_cloud.ci_review_repair_details")
             prompt = build_existing_pr_repair_prompt(target, details)
-            resumed = client.continue_if_paused(task_id, prompt=prompt)
-        else:
-            resumed = client.continue_if_paused(task_id)
+        expected_head = str(pr_data.get("head", {}).get("sha") or "")
+        with current_ci_failure_authority(github_client, repo_name, pr_number, expected_head) as authority:
+            if not authority.allowed:
+                actions.append(f"Deferred Codex Cloud continuation for PR #{pr_number}: {authority.reason}")
+                return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+            logger.info(f"Initiating Codex Cloud CI repair for PR #{pr_number}; " f"head={expected_head} failures={authority.failure_identities}")
+            if prompt is not None:
+                resumed = client.continue_if_paused(task_id, prompt=prompt)
+            else:
+                resumed = client.continue_if_paused(task_id)
 
         if resumed:
             get_trace_logger().log(
