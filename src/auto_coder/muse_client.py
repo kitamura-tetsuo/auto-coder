@@ -80,6 +80,8 @@ def _read_only_special_git_command(name: object, argv: object) -> bool:
         return len([argument for argument in arguments if not argument.startswith("-")]) <= 1
     if name == "tag":
         return not any(not argument.startswith("-") for argument in arguments)
+    if name == "worktree":
+        return bool(arguments) and arguments[0] == "list"
     return False
 
 
@@ -108,6 +110,7 @@ class _GitState:
     git_dir: Path
     branch: Optional[str]
     head: str
+    index_state: bytes
     status: bytes
     staged_patch: bytes
     unstaged_patch: bytes
@@ -115,7 +118,6 @@ class _GitState:
     ignored_files: tuple[_WorkspaceFile, ...]
     tracked_modes: tuple[_WorkspaceMode, ...]
     directory_modes: tuple[_WorkspaceMode, ...]
-    refs: tuple[tuple[str, str], ...]
 
 
 class MuseClient(LLMClientBase):
@@ -164,26 +166,32 @@ class MuseClient(LLMClientBase):
         branch_result = self._git("symbolic-ref", "--quiet", "HEAD", cwd=cwd)
         git_dir_result = self._git("rev-parse", "--path-format=absolute", "--git-dir", cwd=cwd)
         status = self._git("status", "--porcelain=v2", "--untracked-files=all", cwd=cwd)
-        if status.returncode != 0 or git_dir_result.returncode != 0:
+        index_state = self._git("ls-files", "--stage", "-z", cwd=cwd)
+        staged_patch = self._git("diff", "--cached", "--binary", cwd=cwd)
+        unstaged_patch = self._git("diff", "--binary", cwd=cwd)
+        untracked = self._git("ls-files", "--others", "--exclude-standard", "-z", cwd=cwd)
+        ignored = self._git("ls-files", "--others", "--ignored", "--exclude-standard", "-z", cwd=cwd)
+        tracked = self._git("ls-files", "-z", cwd=cwd)
+        required_results = (status, git_dir_result, index_state, staged_patch, unstaged_patch, untracked, ignored, tracked)
+        if branch_result.returncode not in (0, 1) or any(result.returncode != 0 for result in required_results):
             raise RuntimeError("Unable to snapshot repository state before Muse execution")
-        untracked_files = self._snapshot_files(self._git("ls-files", "--others", "--exclude-standard", "-z", cwd=cwd).stdout, cwd=cwd)
-        ignored_files = self._snapshot_files(self._git("ls-files", "--others", "--ignored", "--exclude-standard", "-z", cwd=cwd).stdout, cwd=cwd)
-        tracked_modes = self._snapshot_modes(self._git("ls-files", "-z", cwd=cwd).stdout, cwd=cwd)
+        untracked_files = self._snapshot_files(untracked.stdout, cwd=cwd)
+        ignored_files = self._snapshot_files(ignored.stdout, cwd=cwd)
+        tracked_modes = self._snapshot_modes(tracked.stdout, cwd=cwd)
         directory_modes = self._snapshot_directory_modes(cwd=cwd)
-        refs = self._snapshot_refs(cwd=cwd)
         return _GitState(
             worktree=cwd.resolve(),
             git_dir=Path(os.fsdecode(git_dir_result.stdout).strip()).resolve(),
             branch=branch_result.stdout.decode().strip() if branch_result.returncode == 0 else None,
             head=head.stdout.decode().strip(),
+            index_state=index_state.stdout,
             status=status.stdout,
-            staged_patch=self._git("diff", "--cached", "--binary", cwd=cwd).stdout,
-            unstaged_patch=self._git("diff", "--binary", cwd=cwd).stdout,
+            staged_patch=staged_patch.stdout,
+            unstaged_patch=unstaged_patch.stdout,
             untracked_files=untracked_files,
             ignored_files=ignored_files,
             tracked_modes=tracked_modes,
             directory_modes=directory_modes,
-            refs=refs,
         )
 
     @classmethod
@@ -227,16 +235,6 @@ class MuseClient(LLMClientBase):
                 if not path.is_symlink():
                     modes.append(_WorkspaceMode(str(path.relative_to(root)), stat.S_IMODE(path.stat().st_mode)))
         return tuple(modes)
-
-    def _snapshot_refs(self, cwd: Optional[Path] = None) -> tuple[tuple[str, str], ...]:
-        result = self._git("for-each-ref", "--format=%(refname) %(objectname)", cwd=cwd)
-        if result.returncode != 0:
-            raise RuntimeError("Unable to snapshot Git refs for Muse execution")
-        refs = []
-        for line in result.stdout.splitlines():
-            ref_name, object_name = os.fsdecode(line).split(" ", 1)
-            refs.append((ref_name, object_name))
-        return tuple(refs)
 
     def _restore_lifecycle(self, state: _GitState) -> None:
         """Restore only HEAD and index state private to the captured worktree."""
@@ -327,9 +325,8 @@ class MuseClient(LLMClientBase):
 
     def _assert_invariants(self, before: _GitState, is_noedit: bool, mutation_observed: bool = False) -> None:
         after = self._snapshot_at(before.worktree)
-        lifecycle_changed = (after.branch, after.head) != (before.branch, before.head)
-        refs_changed = after.refs != before.refs
-        index_changed = after.staged_patch != before.staged_patch
+        lifecycle_changed = (after.git_dir, after.branch, after.head) != (before.git_dir, before.branch, before.head)
+        index_changed = after.index_state != before.index_state
         noedit_changed = is_noedit and (
             after.status != before.status or after.unstaged_patch != before.unstaged_patch or after.untracked_files != before.untracked_files or after.ignored_files != before.ignored_files or after.tracked_modes != before.tracked_modes or after.directory_modes != before.directory_modes
         )
@@ -344,31 +341,19 @@ class MuseClient(LLMClientBase):
                 self._restore_index(before)
         except RuntimeError as exc:
             recovery_error = exc
-        if lifecycle_changed or refs_changed or index_changed or noedit_changed or mutation_observed:
-            ref_diagnostics = []
-            if refs_changed:
-                before_refs = dict(before.refs)
-                after_refs = dict(after.refs)
-                for ref_name in sorted(before_refs.keys() | after_refs.keys()):
-                    if before_refs.get(ref_name) != after_refs.get(ref_name):
-                        ref_diagnostics.append(f"ref={ref_name} before={before_refs.get(ref_name, '<missing>')} " f"observed={after_refs.get(ref_name, '<missing>')} current={after_refs.get(ref_name, '<missing>')} " "recovery=skipped reason=invocation ownership unavailable")
-            detail = "Git lifecycle or index" if lifecycle_changed or refs_changed or index_changed else "working tree"
+        if lifecycle_changed or index_changed or noedit_changed or mutation_observed:
+            detail = "Git lifecycle or index" if lifecycle_changed or index_changed else "working tree"
             if mutation_observed:
                 detail = "Git lifecycle command"
             logger.warning(
-                "Muse Git-state invariant violated: detail={} lifecycle={} refs={} index={} noedit={} mutation_observed={}",
+                "Muse Git-state invariant violated: detail={} lifecycle={} index={} noedit={} mutation_observed={}",
                 detail,
                 lifecycle_changed,
-                refs_changed,
                 index_changed,
                 noedit_changed,
                 mutation_observed,
             )
-            for diagnostic in ref_diagnostics:
-                logger.warning("Muse shared-ref recovery refused: worktree={} {}", before.worktree, diagnostic)
             failure = RuntimeError(f"Muse execution violated the Git-state invariant ({detail} changed)")
-            if ref_diagnostics:
-                failure.add_note("Unsafe shared-ref recovery skipped: " + "; ".join(ref_diagnostics))
             if recovery_error is not None:
                 failure.add_note(f"Recovery failed or was unsafe: {recovery_error}")
             raise failure

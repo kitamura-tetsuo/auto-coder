@@ -14,11 +14,18 @@ in no-edit mode, Auto-Coder invokes Muse with sandboxed execution (`--disable-wr
 `--disable-shell`, `--disable-approval`) and strips dangerous bypass flags, ensuring
 file and command mutations are completely disabled.
 
-Recovery is bound to the worktree and worktree-private Git directory captured
-before the invocation. It never replays the repository-wide ref snapshot:
-unattributed branch, tag, and remote-tracking changes are reported by the
-invariant check but are left untouched. HEAD and index recovery uses only the
-captured worktree's private state, and an attached HEAD is restored only while
-its original branch still points to the captured commit. If that shared branch
-has moved or disappeared, recovery refuses the unsafe write and the invocation
-remains failed.
+Validation and recovery are bound to the worktree and worktree-private Git
+directory captured before the invocation. Validation retains the worktree's
+symbolic-or-detached HEAD identity, HEAD object, and semantic index entries;
+it does not snapshot or compare repository-wide refs. Concurrent branch, tag,
+remote-tracking-ref, and peer-worktree registration changes therefore do not
+invalidate a clean invocation. Invocation-attributed lifecycle commands still
+fail through the per-invocation Git trace, including transient mutations whose
+final state matches the initial snapshot. Read-only `git branch --list` and
+`git worktree list` inspection is permitted.
+
+Recovery never replays repository-wide refs. HEAD and index recovery uses only
+the captured worktree's private state, and an attached HEAD is restored only
+while its original branch still points to the captured commit. If that shared
+branch has moved or disappeared, recovery refuses the unsafe write and the
+invocation remains failed.
