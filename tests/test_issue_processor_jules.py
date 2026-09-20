@@ -345,6 +345,7 @@ class TestProcessIssueJulesMode:
 
         mock_config = Mock()
         mock_config.MAIN_BRANCH = "main"
+        mock_config.JULES_SPECULATIVE_PARALLELISM = 1
 
         # Mock get_commit_log to prevent git command execution
         mock_get_commit_log.return_value = "No commits"

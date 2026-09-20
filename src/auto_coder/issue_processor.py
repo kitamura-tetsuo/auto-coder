@@ -195,7 +195,7 @@ def _process_issue_jules_mode(
     issue_body = issue_data.get("body", "")
 
     try:
-        configured_width = vars(config).get("JULES_SPECULATIVE_PARALLELISM", 1)
+        configured_width = getattr(config, "JULES_SPECULATIVE_PARALLELISM", 1)
         if isinstance(configured_width, bool) or not isinstance(configured_width, int) or configured_width < 1:
             raise ValueError("[jules].speculative_parallelism must be a positive integer (booleans are not valid)")
         width = configured_width
