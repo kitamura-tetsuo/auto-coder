@@ -77,8 +77,10 @@ from .pr_repair_guard import (
     check_pr_repair_exhaustion,
     publish_exhaustion_comment_deduped,
 )
-from .pr_review_cycle import VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot, NotApplicableError, RoundProvenance, StrongPolicyIdentity
-from .pr_review_execution import ReviewExecutionInput, ReviewMode, execute_review
+from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot
+from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
+from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongPolicyIdentity
+from .pr_review_execution import ReviewExecutionInput, ReviewMode, ScopeAssessment, execute_review
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
@@ -311,6 +313,76 @@ def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTie
     except Exception as exc:
         inputs.gate.state.abandon_claim(pr_number, claim.claim_id, str(exc))
         return False, f"strong audit execution failed: {exc}"
+
+
+def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
+    """Run ordinary verification for a retained strong finding bundle.
+
+    Acceptance is fenced by the durable transition version observed before the
+    provider call.  Consequently a concurrent head, contract, policy, finding,
+    or attempt transition makes the late result stale rather than authoritative.
+    """
+    snapshot = inputs.gate.state.snapshot(pr_number)
+    strong_round = snapshot.accepted_strong_round
+    if snapshot.phase != PHASE_ORDINARY_CLOSURE or strong_round is None or not snapshot.open_findings:
+        return False, "ordinary closure is not currently applicable"
+    if strong_round.base_sha != inputs.base_sha or strong_round.contract_identity != inputs.contract.identity or strong_round.policy_identity != inputs.policy.identity:
+        return False, "retained strong evidence is stale for the current base, contract, or policy"
+
+    try:
+        with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
+            from .cli_helpers import resolve_adversarial_validation_availability
+
+            availability = resolve_adversarial_validation_availability("pr", execution_cwd=worktree)
+            if availability.backend_manager is None:
+                reason = "ordinary reviewer route is EXHAUSTED" if availability.exhausted else "ordinary reviewer route is UNAVAILABLE"
+                return False, reason
+            diff = CommandExecutor.run_command(
+                ["git", "diff", "--no-ext-diff", "--binary", strong_round.head_sha, inputs.head_sha],
+                cwd=worktree,
+            )
+            tracked = CommandExecutor.run_command(["git", "ls-files"], cwd=worktree)
+            if not diff.success or not tracked.success:
+                return False, "required cumulative diff or repository evidence is unavailable"
+            review_input = ReviewExecutionInput(
+                mode=ReviewMode.ORDINARY_CLOSURE,
+                round_id=strong_round.round_id,
+                attempt_id=f"{snapshot.open_epoch}:{snapshot.transition_version}",
+                head_sha=inputs.head_sha,
+                base_sha=inputs.base_sha,
+                contract=inputs.contract,
+                policy=inputs.policy,
+                repository_evidence="Pinned read-only snapshot. Tracked paths:\n" + tracked.stdout,
+                diff_evidence=diff.stdout,
+                finding_set_revision=snapshot.finding_set_revision,
+                findings=snapshot.open_findings,
+                audited_head_sha=strong_round.head_sha,
+            )
+            result = execute_review(review_input, availability.backend_manager, worktree)
+        if not result.is_complete:
+            return False, result.diagnostic
+        if result.verdict != VERDICT_PASS:
+            return False, f"ordinary verification retained {result.verdict} findings"
+        dispositions = [DurableFindingDisposition(item.finding_id, item.status, item.evidence, inputs.head_sha) for item in result.dispositions]
+        inputs.gate.state.certify_closure(
+            pr_number,
+            RoundProvenance(inputs.head_sha, inputs.base_sha),
+            inputs.contract,
+            inputs.policy,
+            strong_round.round_id,
+            snapshot.finding_set_revision,
+            dispositions,
+            bounded=result.scope is ScopeAssessment.BOUNDED,
+            bounded_evidence=result.scope_evidence,
+            new_findings=list(result.findings),
+            expected_version=snapshot.transition_version,
+        )
+        if result.scope is ScopeAssessment.BOUNDED:
+            return True, f"accepted bounded ordinary closure from {result.reviewer_provenance}; publication remains pending"
+        scope = result.scope.value if result.scope is not None else "UNKNOWN"
+        return True, f"accepted ordinary convergence with {scope} scope; renewed strong audit is required"
+    except Exception as exc:
+        return False, f"ordinary closure execution failed: {exc}"
 
 
 @dataclass(frozen=True)
@@ -3967,17 +4039,25 @@ def _handle_pr_merge(
                         two_tier_inputs.base_sha,
                         two_tier_inputs.contract,
                     )
-                    accepted, reason = _execute_pending_strong_audit(repo_name, pr_number, two_tier_inputs)
+                    pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
+                    if pending_snapshot.phase == PHASE_ORDINARY_CLOSURE and pending_snapshot.open_findings:
+                        accepted, reason = _execute_pending_ordinary_closure(repo_name, pr_number, two_tier_inputs)
+                        stage_id = "pr.ordinary-closure"
+                        stage_label = f"pr#{pr_number} ordinary closure"
+                    else:
+                        accepted, reason = _execute_pending_strong_audit(repo_name, pr_number, two_tier_inputs)
+                        stage_id = "pr.strong-audit"
+                        stage_label = f"pr#{pr_number} strong audit"
                     strong_diagnostic = two_tier_inputs.gate.diagnostic(
                         pr_number,
                         current_head_sha=two_tier_inputs.head_sha,
                         backend=two_tier_inputs.policy.strong_route,
                     )
-                    actions.append(f"Strong audit for PR #{pr_number}: {reason} " f"(phase={strong_diagnostic.phase}, head={two_tier_inputs.head_sha[:8]}, " f"contract={two_tier_inputs.contract.identity[:12]}, " f"policy={two_tier_inputs.policy.identity[:12]})")
+                    actions.append(f"Two-tier review for PR #{pr_number}: {reason} " f"(phase={strong_diagnostic.phase}, head={two_tier_inputs.head_sha[:8]}, " f"contract={two_tier_inputs.contract.identity[:12]}, " f"policy={two_tier_inputs.policy.identity[:12]})")
                     _record_pr_stage(
                         pr_number,
-                        "pr.strong-audit",
-                        f"pr#{pr_number} strong audit",
+                        stage_id,
+                        stage_label,
                         Outcome.COMPLETED if accepted else Outcome.DEFERRED,
                         {
                             "phase": strong_diagnostic.phase,
@@ -3987,6 +4067,8 @@ def _handle_pr_merge(
                             "contract_identity": two_tier_inputs.contract.identity,
                             "policy_identity": two_tier_inputs.policy.identity,
                             "reason": reason,
+                            "finding_revision": pending_snapshot.finding_set_revision,
+                            "finding_ids": [item.finding_id for item in pending_snapshot.open_findings],
                         },
                     )
                     # Acceptance is not merge authority. Publication and repair
