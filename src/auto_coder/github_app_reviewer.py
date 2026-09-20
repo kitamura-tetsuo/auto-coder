@@ -215,6 +215,69 @@ class GitHubAppReviewer:
             self._tokens[cache_key] = _CachedToken(token, expiry)
             return token
 
+    def publish_exact_pr_review(
+        self,
+        repo_name: str,
+        pr_number: int,
+        head_sha: str,
+        body: str,
+        authorize_fn: Callable[[], bool],
+    ) -> ReviewPublicationResult:
+        """Publish an exact role-bound review body with the App identity.
+
+        This narrow primitive is used by the two-tier effect journal.  It does
+        not infer findings, cache a generic PASS, or fall back to user
+        credentials.  The caller owns reservation and response reconciliation.
+        """
+        try:
+            if not authorize_fn():
+                return ReviewPublicationResult(False, "", "Review authority is no longer current")
+            token = self._installation_token(repo_name, frozenset({("pull_requests", "write")}))
+            response = self._request(
+                "POST",
+                f"/repos/{repo_name}/pulls/{pr_number}/reviews",
+                token,
+                json={"body": body, "event": "COMMENT", "commit_id": head_sha},
+            )
+            review = response.json()
+            review_id = review.get("id") if isinstance(review, dict) else None
+            if not isinstance(review_id, int):
+                return ReviewPublicationResult(False, "", "GitHub did not return a review receipt")
+            return ReviewPublicationResult(True, str(review_id), "")
+        except Exception:
+            logger.bind(repository=repo_name, target=str(pr_number), phase="two-tier-publication").error("Dedicated reviewer GitHub App could not publish exact review evidence")
+            return ReviewPublicationResult(False, "", "Dedicated reviewer GitHub App publication outcome is uncertain")
+
+    def find_exact_pr_review(self, repo_name: str, pr_number: int, head_sha: str, body: str) -> ReviewPublicationResult:
+        """Reconcile an exact review using authenticated author, head, and body."""
+        try:
+            identity = self.get_identity()
+            token = self._installation_token(repo_name, frozenset({("pull_requests", "read")}))
+            page = 1
+            while True:
+                response = self._request(
+                    "GET",
+                    f"/repos/{repo_name}/pulls/{pr_number}/reviews?per_page=100&page={page}",
+                    token,
+                )
+                reviews = response.json()
+                if not isinstance(reviews, list):
+                    return ReviewPublicationResult(False, "", "GitHub did not return pull-request reviews")
+                for review in reviews:
+                    if not isinstance(review, dict):
+                        continue
+                    user = review.get("user")
+                    login = user.get("login") if isinstance(user, dict) else None
+                    commit_id = review.get("commit_id")
+                    if identity.matches_login(login) and commit_id == head_sha and review.get("body") == body:
+                        return ReviewPublicationResult(True, str(review.get("id", "")), "")
+                if len(reviews) < 100:
+                    return ReviewPublicationResult(False, "", "Exact authenticated review was not found")
+                page += 1
+        except Exception:
+            logger.bind(repository=repo_name, target=str(pr_number), phase="two-tier-reconciliation").error("Dedicated reviewer GitHub App could not reconcile exact review evidence")
+            return ReviewPublicationResult(False, "", "Exact review reconciliation is unavailable")
+
     def publish_issue_comment(self, repo_name: str, issue_number: int, body: str, authorize_fn: Callable[[], bool]) -> IssuePublicationResult:
         """Submit an Issue review comment, verifying exact identity and returning a detailed outcome."""
         try:

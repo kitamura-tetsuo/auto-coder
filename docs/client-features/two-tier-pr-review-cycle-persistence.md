@@ -96,6 +96,10 @@ publication/acknowledgement work needs to resume. `set_finding_delivery_status`
 tracks a finding's repair-message delivery (`NONE`/`PENDING`/`UNKNOWN`); when
 a finding is later dispositioned through `certify_closure`, a pending or
 unknown delivery is automatically retired rather than invented as delivered.
+Snapshots retain both the complete finding history (including disposition and
+delivery evidence) and the separately filtered open-finding view so an effect
+consumer can publish an exact accepted closure after restart without reviving
+closed findings.
 
 `mark_closed` blocks every transition and `is_completion_authorized` on a
 closed PR; `mark_reopened` advances an internal open-epoch counter so a
