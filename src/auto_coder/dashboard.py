@@ -28,9 +28,11 @@ from .dashboard_detail import (
     resolve_selected_execution,
     unscoped_events_for_item,
 )
+from .dashboard_reviews import list_row, record_signature, selection_error
 from .execution_trace import get_trace_collector
 from .implementation_slots import ImplementationSlotSnapshot, ImplementationSlotSnapshotUnavailable
 from .logger_config import get_logger
+from .review_audit import ReviewAuditRecord, ReviewAuditStore, StorageHealth
 from .trace_logger import get_trace_logger
 
 logger = get_logger(__name__)
@@ -62,9 +64,45 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
     incoming request happens to name.
     """
 
+    review_store = ReviewAuditStore()
+
+    def render_review(record: ReviewAuditRecord, container: Any) -> None:
+        """Render retained values as inert text; only recorded IDs are linked."""
+        container.clear()
+        with container:
+            ui.label(f"Review ID: {record.review_id}").classes("font-mono text-sm")
+            ui.label(f"{record.repository} · {record.target_type} #{record.target_number} · {record.review_kind}")
+            ui.label(f"Created/observed: {record.creation_time}; lifecycle: {record.lifecycle.value}; mode: {record.execution_mode.value}")
+            ui.label(f"Latest recorded verdict: {record.native_verdict or 'unavailable'} (historical evidence, not current authorization)").classes("font-bold")
+            ui.label(f"Reviewed generation: {record.reviewed_generation or 'unavailable'}").classes("font-mono text-sm")
+            ui.label(f"Policy identity: {record.policy_identity or 'unavailable'}").classes("font-mono text-sm")
+            if record.source_review_id:
+                ui.link(f"Reused from {record.source_review_id}", f"/detail/{record.target_type}/{record.target_number}?review_id={record.source_review_id}")
+            elif record.execution_mode.value == "REUSED":
+                ui.label("Reuse source provenance unavailable (legacy record).").classes("text-amber-600")
+            ui.label("Normalized report").classes("font-bold mt-2")
+            ui.code(json.dumps(record.native_report, indent=2, sort_keys=True, default=str) if record.native_report is not None else "Report unavailable")
+            ui.label("Backend interactions").classes("font-bold mt-2")
+            if not record.interactions:
+                ui.label("No new LLM execution was recorded.")
+            for interaction in record.interactions:
+                ui.label(
+                    f"{interaction.interaction_id}: {interaction.completion_status}; "
+                    f"backend={interaction.backend_alias or interaction.backend_type or 'unavailable'}, "
+                    f"provider={interaction.provider_alias or 'unavailable'}, requested model={interaction.requested_model or 'unavailable'}, "
+                    f"reported model={interaction.reported_model or 'unavailable'}; {interaction.start_time} → {interaction.end_time or 'unfinished/unknown'}"
+                ).classes("text-sm")
+            ui.label("Recorded effects/dispositions").classes("font-bold mt-2")
+            if not record.effects:
+                ui.label("No persistence/application/publication effect was recorded.")
+            for effect in record.effects:
+                ui.label(f"{effect.observation_time}: {effect.disposition} — {json.dumps(effect.details, sort_keys=True, default=str)}").classes("text-sm")
+            ui.label("Execution Trace is process-local and separate; trace evidence may be unavailable after eviction or restart.").classes("text-xs text-gray-500 mt-2")
+
     @ui.page("/")
     def main_page() -> None:
         ui.label("Auto-Coder Dashboard").classes("text-2xl font-bold mb-4")
+        ui.link("LLM Reviews — retained repository history", "/reviews").classes("text-lg text-blue-600 font-bold mb-4")
 
         # Search Section
         ui.label("Search").classes("text-xl font-bold mt-4")
@@ -387,6 +425,90 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         # Auto-refresh every 1 second
         ui.timer(1.0, refresh_status)
 
+    @ui.page("/reviews")
+    def reviews_page() -> None:
+        ui.label("LLM Reviews").classes("text-2xl font-bold mb-2")
+        ui.label("Durable local history; latest means latest recorded, not currently authoritative.").classes("text-sm text-gray-500")
+        ui.link("Back to Dashboard", "/").classes("text-blue-500")
+        with ui.row().classes("items-end gap-2"):
+            target_type = ui.select(["", "issue", "pr"], value="", label="Exact target type")
+            target_number = ui.input(label="Exact target number")
+            review_kind = ui.select(["", "issue_specification", "issue_decomposition", "pr_adversarial"], value="", label="Review kind")
+            page_size = ui.number(label="Page size (1–200)", value=50, min=1, max=200, format="%.0f")
+        banner = ui.label("Loading retained review history...")
+        rows_container = ui.column().classes("w-full")
+        report_container = ui.column().classes("w-full border-t mt-4 pt-4")
+        state: Dict[str, Any] = {"high_water": None, "before": None, "pinned_snapshot": False, "last_ok": None, "signature": None, "selected": None, "refreshing": False}
+
+        def select(record: ReviewAuditRecord) -> None:
+            state["selected"] = record.review_id
+            state["signature"] = record_signature(record)
+            render_review(record, report_container)
+
+        def refresh(reset: bool = False) -> None:
+            if state["refreshing"]:
+                return
+            state["refreshing"] = True
+            try:
+                if reset:
+                    state["high_water"] = None
+                    state["before"] = None
+                    state["pinned_snapshot"] = False
+                size = max(1, min(200, int(page_size.value or 50)))
+                result = review_store.get_recent_history(
+                    repo_name,
+                    limit=size,
+                    high_water_mark_seq=state["high_water"] if state["pinned_snapshot"] else None,
+                    before_seq=state["before"],
+                    target_type=target_type.value or None,
+                    target_number=str(target_number.value).strip() or None,
+                    review_kind=review_kind.value or None,
+                )
+                if result.health is not StorageHealth.AVAILABLE:
+                    stale = state["last_ok"] or "never"
+                    banner.set_text(f"Review audit unavailable; retained display is stale as of {stale}.")
+                    banner.classes(replace="text-red-600 font-bold")
+                    return
+                state["last_ok"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                banner.set_text(f"Local audit snapshot observed {state['last_ok']}.")
+                banner.classes(replace="text-sm text-gray-500")
+                signature = tuple(record_signature(record) for record in result.records)
+                if signature != state.get("rows_signature"):
+                    rows_container.clear()
+                    with rows_container:
+                        if not result.records:
+                            ui.label("No matching retained records. Missing history does not prove no review occurred.")
+                        for record in result.records:
+                            row = list_row(record)
+                            with ui.card().classes("w-full"):
+                                ui.link(f"{row.kind} · {row.target}", row.detail_path).classes("font-bold text-blue-600")
+                                ui.label(f"{row.observed_at} · {row.lifecycle} · {row.mode} · {row.verdict}")
+                                ui.label(f"Generation: {row.generation}; {row.backend}").classes("text-xs")
+                                ui.button("Inspect here", on_click=lambda current=record: select(current)).props("flat dense")
+                        if result.records:
+                            ui.button(
+                                "Older snapshot page",
+                                on_click=lambda: older(result.records[-1].creation_sequence, result.records[0].creation_sequence),
+                            ).props("flat")
+                    state["rows_signature"] = signature
+                if state["selected"]:
+                    selected = review_store.get_evaluation(repo_name, state["selected"])
+                    if selected.record is not None and record_signature(selected.record) != state["signature"]:
+                        select(selected.record)
+            finally:
+                state["refreshing"] = False
+
+        def older(before: int, high_water: int) -> None:
+            if not state["pinned_snapshot"]:
+                state["high_water"] = high_water
+                state["pinned_snapshot"] = True
+            state["before"] = before
+            refresh()
+
+        ui.button("Apply exact filters", on_click=lambda: refresh(True)).classes("mt-2")
+        refresh()
+        ui.timer(1.0, refresh)
+
     @ui.page("/detail/{item_type}/{item_number}")
     def detail_page(item_type: str, item_number: int) -> None:
         ui.label(f"Detail View: {item_type.capitalize()} #{item_number}").classes("text-2xl font-bold mb-4")
@@ -399,6 +521,90 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
             return
 
         ui.label(f"Repository: {repo_name}").classes("text-sm text-gray-500 mb-2")
+
+        ui.label("Review History").classes("text-xl font-bold mt-2")
+        ui.label("Durable review evidence (separate from the process-local Execution Trace below).").classes("text-sm text-gray-500")
+        review_status_banner = ui.label("Loading retained review history...").classes("text-sm text-gray-500")
+        review_history_container = ui.column().classes("w-full mb-4")
+        review_report_container = ui.column().classes("w-full mb-6")
+        request = getattr(getattr(ui.context, "client", None), "request", None)
+        candidate_review_id = request.query_params.get("review_id") if request is not None else None
+        requested_review_id = candidate_review_id if isinstance(candidate_review_id, str) else None
+        review_state: Dict[str, Any] = {
+            "list_signature": None,
+            "report_signature": None,
+            "last_ok": None,
+            "refreshing": False,
+        }
+
+        def refresh_review_history() -> None:
+            """Patch durable history without disturbing selection or scroll."""
+            if review_state["refreshing"]:
+                return
+            review_state["refreshing"] = True
+            try:
+                history = review_store.get_related_evaluations(repo_name, item_type, str(item_number))
+                related = None
+                if item_type == "issue":
+                    related = review_store.get_decomposition_evaluations_for_member(repo_name, str(item_number))
+                if history.health is not StorageHealth.AVAILABLE or (related is not None and related.health is not StorageHealth.AVAILABLE):
+                    stale = review_state["last_ok"] or "never"
+                    review_status_banner.set_text(f"Review audit unavailable; retained display is stale as of {stale}.")
+                    review_status_banner.classes(replace="text-sm text-red-600 font-bold")
+                    return
+
+                records = list(history.records)
+                known = {record.review_id for record in records}
+                if related is not None:
+                    records.extend(record for record in related.records if record.review_id not in known)
+                records.sort(key=lambda value: value.creation_sequence, reverse=True)
+                list_signature = tuple(record_signature(record) for record in records)
+                if list_signature != review_state["list_signature"]:
+                    review_history_container.clear()
+                    with review_history_container:
+                        if not records:
+                            ui.label("No retained reviews for this target; missing history does not prove no review occurred.")
+                        if history.truncated:
+                            ui.label("Target history is truncated to the latest 500 retained reviews; older records are omitted.").classes("text-sm text-amber-600")
+                        for record in records:
+                            related_label = "related captured parent-set review" if record.target_number != str(item_number) else "target review"
+                            ui.link(
+                                f"{record.review_kind}: {record.native_verdict or 'no verdict'} · {record.execution_mode.value} ({related_label})",
+                                f"/detail/{record.target_type}/{record.target_number}?review_id={record.review_id}",
+                            ).classes("text-blue-600")
+                    review_state["list_signature"] = list_signature
+
+                if requested_review_id:
+                    selected_read = review_store.get_evaluation(repo_name, requested_review_id)
+                    if selected_read.health is not StorageHealth.AVAILABLE:
+                        stale = review_state["last_ok"] or "never"
+                        review_status_banner.set_text(f"Review audit unavailable; retained display is stale as of {stale}.")
+                        review_status_banner.classes(replace="text-sm text-red-600 font-bold")
+                        return
+                    error = selection_error(selected_read.record, item_type, item_number)
+                    if error:
+                        selected_signature: Any = ("error", error)
+                    elif selected_read.record is not None:
+                        selected_signature = record_signature(selected_read.record)
+                    else:  # selection_error already covers this; keep narrowing explicit.
+                        selected_signature = ("error", "unavailable")
+                    if selected_signature != review_state["report_signature"]:
+                        if error:
+                            review_report_container.clear()
+                            with review_report_container:
+                                ui.label(error).classes("text-red-600 font-bold")
+                        elif selected_read.record is not None:
+                            render_review(selected_read.record, review_report_container)
+                        review_state["report_signature"] = selected_signature
+
+                review_state["last_ok"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                review_status_banner.set_text(f"Local audit snapshot observed {review_state['last_ok']}.")
+                review_status_banner.classes(replace="text-sm text-gray-500")
+            finally:
+                review_state["refreshing"] = False
+
+        refresh_review_history()
+        review_timer = ui.timer(1.0, refresh_review_history)
 
         status_banner = ui.label("Loading...").classes("text-sm text-gray-500 mb-2")
 
@@ -695,7 +901,12 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         # page-scoped timers automatically on client disconnect, and this
         # explicit hook makes that stop deterministic (REQ-008).
         detail_timer = ui.timer(1.0, refresh_details)
-        ui.context.client.on_disconnect(detail_timer.deactivate)
+
+        def stop_detail_timers() -> None:
+            review_timer.deactivate()
+            detail_timer.deactivate()
+
+        ui.context.client.on_disconnect(stop_detail_timers)
 
     # Mount NiceGUI at /dashboard
     # Note: When using mount_path, pages defined with '/' will be available at mount_path + '/'

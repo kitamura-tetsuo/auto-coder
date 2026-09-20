@@ -1,5 +1,26 @@
 # Dashboard observability verification
 
+Issue #1986 joins the existing Issue/decomposition and PR adversarial review
+producers to the durable `/dashboard/reviews` and detail-page Review History
+views. The projection reads `ReviewAuditStore` only: it introduces no GitHub or
+provider polling, review dispatch, authorization write, or new trace event
+schema. `tests/test_dashboard_reviews.py` verifies database-side exact filters,
+captured decomposition membership, stable deep links, and distinct requested
+versus reported models; `tests/test_review_audit.py`,
+`tests/test_issue_specification_decomposition_review_audit.py`, and
+`tests/test_pr_adversarial_review_audit.py` remain the runnable producer and
+retention coverage. The producer suites now also project their real emitted
+READY/PASS/error/fallback/stale rows through the dashboard view model, while
+`tests/test_dashboard_detail_scroll_stability.py` drives the mounted detail
+page in headless Chromium and verifies that a newly retained review appears on
+the timer without replacing the deep-linked report DOM. Run
+`bash scripts/test.sh tests/test_dashboard_reviews.py
+tests/test_review_audit.py tests/test_issue_specification_decomposition_review_audit.py
+tests/test_pr_adversarial_review_audit.py` and, with Chromium installed,
+`bash scripts/test.sh tests/test_dashboard_detail_scroll_stability.py`.
+Review rows are historical evidence,
+not approval, publication, implementation, or merge authorization.
+
 Production fan-out records a `Jules Competition` trace after the fixed candidate
 set is submitted. Its details expose the durable generation identity and the
 requested, accepted, unknown, and exhausted counts; the action is dispatch

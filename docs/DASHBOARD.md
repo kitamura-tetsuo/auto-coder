@@ -106,6 +106,11 @@ Once the daemon is running, the dashboard is accessible at:
 The main dashboard view provides an overview of the current system state:
 
 *   **Search Section**: Allows quick navigation to the detail view of a specific Issue or PR. Select the type (PR/Issue) and enter the number, then click "Go".
+*   **LLM Reviews**: Opens repository-wide retained review history. Exact
+    Issue/PR and review-kind filters are evaluated across the durable audit,
+    and a record can be reopened by its stable detail-page `review_id` link
+    after a controller restart. The display is historical evidence, not a
+    current approval, provider-activity, publication, or merge assertion.
 *   **Active Workers**: Displays the currently active worker tasks. Each card shows the worker ID, the item being processed (with a link to details), and the current task description.
 *   **Implementation Slots**: A distinct, read-only view of durable
     implementation-slot occupancy -- not derived from Active Workers or the
@@ -168,6 +173,13 @@ dashboard's single configured repository. It never queries GitHub or any
 other provider, and it never asserts that what it shows is current
 GitHub/provider state -- everything displayed is an *observation*, with
 its own observation timestamp, not a live status.
+
+Each Issue and PR detail page also has a separate **Review History** section.
+It reads the durable review audit rather than the process-local Execution
+Trace. A child Issue can show a captured parent-set decomposition review as a
+related review without presenting it as the child's individual approval.
+Deep links use `?review_id=<id>`; an unknown or wrong-target ID is reported as
+unavailable and never silently replaced with another review.
 
 #### Executions, not a static workflow
 

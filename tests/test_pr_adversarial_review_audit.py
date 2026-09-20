@@ -31,6 +31,7 @@ from auto_coder.adversarial_validator import AdversarialValidationResult
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.backend_manager import BackendManager
 from auto_coder.cli_helpers import AdversarialValidationAvailability
+from auto_coder.dashboard_reviews import list_row
 from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
@@ -397,6 +398,10 @@ print(os.environ["MUSE_VERDICT"])
         reread = audit_store.get_evaluation(REPO_NAME, record.review_id)
         assert reread.record is not None
         assert reread.record.native_verdict == "PASS"
+        dashboard_row = list_row(reread.record)
+        assert dashboard_row.verdict == "PASS"
+        assert dashboard_row.mode == "EXECUTED"
+        assert dashboard_row.detail_path == f"/detail/pr/{PR_NUMBER}?review_id={record.review_id}"
 
     def test_non_json_response_is_one_executed_review_with_native_error(self, tmp_path, monkeypatch, audit_store):
         repo, head_sha = _build_pr_repo(tmp_path)
@@ -421,6 +426,7 @@ print(os.environ["MUSE_VERDICT"])
         assert record.execution_mode == ExecutionMode.EXECUTED
         assert record.native_verdict != "PASS"
         assert len(record.interactions) == 1
+        assert list_row(record).verdict == record.native_verdict
 
     def test_pass_with_specification_gaps_retains_both(self, tmp_path, monkeypatch, audit_store):
         """AS-002: a PASS report with additional blocking specification gaps is
@@ -759,6 +765,9 @@ class TestReq012MultiCallFixtures:
         assert record.interactions[1].backend_alias == "reviewer-b"
         assert record.interactions[1].completion_status == "RETURNED"
         assert record.interactions[0].interaction_id != record.interactions[1].interaction_id
+        dashboard_row = list_row(record)
+        assert "reviewer-a" in dashboard_row.backend
+        assert "reviewer-b" in dashboard_row.backend
 
     def test_dynamic_followup_is_one_review_with_two_ordered_invocations(self, tmp_path, monkeypatch, audit_store):
         repo, head_sha = _build_pr_repo(tmp_path)
@@ -1002,6 +1011,7 @@ class TestStaleHeadPublicationAndRestart:
         effect_dispositions = [effect.disposition for effect in record.effects]
         assert effect_dispositions == ["superseded"]
         assert record.effects[0].details is not None and record.effects[0].details.get("phase") == "pre-publication"
+        assert list_row(record).generation == h1_sha
 
     def test_head_changed_before_durable_acceptance_is_superseded(self, tmp_path, monkeypatch, audit_store):
         """REQ-006: the current PR head moved before the gap-state checkpoint

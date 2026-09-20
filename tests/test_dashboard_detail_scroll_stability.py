@@ -15,6 +15,8 @@ requirement that a helper-level test comparing snapshots or constructing the
 desired final state directly is not sufficient regression coverage.
 """
 
+import os
+import tempfile
 import threading
 import time
 from typing import Iterator
@@ -27,10 +29,12 @@ from fastapi import FastAPI
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.dashboard import init_dashboard
 from src.auto_coder.execution_trace import EventKind, ExecutionHandle, Outcome, TraceCollector, _current_scope, get_trace_collector
+from src.auto_coder.review_audit import EvaluationLifecycle, ExecutionMode, ReviewAuditRecord, ReviewAuditStore
 from src.auto_coder.trace_logger import TraceLogger
 from tests.support.browser_launch import headless_page
 
 REPO = "owner/repo"
+DASHBOARD_AUDIT_ROOT = tempfile.mkdtemp(prefix="auto-coder-dashboard-review-")
 
 # Real-browser regression coverage: excluded from ordinary `PR Tests` shards
 # and run instead by the dedicated `Browser Tests` GitHub Actions workflow.
@@ -87,7 +91,15 @@ def dashboard_base_url() -> Iterator[str]:
     if _nicegui_core.app.middleware_stack is not None:
         _nicegui_core.app.middleware_stack = None
 
-    init_dashboard(app, engine, REPO)
+    old_audit_root = os.environ.get("AUTO_CODER_REVIEW_AUDIT_ROOT")
+    os.environ["AUTO_CODER_REVIEW_AUDIT_ROOT"] = DASHBOARD_AUDIT_ROOT
+    try:
+        init_dashboard(app, engine, REPO)
+    finally:
+        if old_audit_root is None:
+            os.environ.pop("AUTO_CODER_REVIEW_AUDIT_ROOT", None)
+        else:
+            os.environ["AUTO_CODER_REVIEW_AUDIT_ROOT"] = old_audit_root
 
     config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
     server = uvicorn.Server(config)
@@ -126,6 +138,45 @@ def _seed_execution(item_number: int, stage_count: int) -> ExecutionHandle:
             facts={"n": i},
         )
     return handle
+
+
+def _review(review_id: str, sequence: int, item_number: int) -> ReviewAuditRecord:
+    return ReviewAuditRecord(
+        review_id=review_id,
+        repository=REPO,
+        target_type="issue",
+        target_number=str(item_number),
+        review_kind="issue_specification",
+        origin="production",
+        process_identity="process",
+        creation_time=f"2026-01-01T00:00:{sequence:02d}Z",
+        creation_sequence=sequence,
+        reviewed_generation=f"generation-{sequence}",
+        policy_identity="policy",
+        related_issue_membership=None,
+        diagnostic_execution_references=None,
+        lifecycle=EvaluationLifecycle.FINISHED,
+        execution_mode=ExecutionMode.EXECUTED,
+        native_verdict="READY",
+        native_report={"verdict": "READY", "findings": []},
+        source_review_id=None,
+    )
+
+
+def test_review_history_refresh_preserves_deep_link_report_and_dom(_use_real_sleep, dashboard_base_url) -> None:
+    """REQ-005/006: real timer refresh adds rows without retargeting selection."""
+    store = ReviewAuditStore(DASHBOARD_AUDIT_ROOT)
+    assert store.record_evaluation(_review("browser-review-1", 9001, 909))
+    with _headless_page() as page:
+        page.goto(f"{dashboard_base_url}/detail/issue/909?review_id=browser-review-1")
+        page.wait_for_selector("text=Review ID: browser-review-1", timeout=10000)
+        page.evaluate("window.__selectedReport = Array.from(document.querySelectorAll('*')).find(e => e.textContent === 'Review ID: browser-review-1')")
+
+        assert store.record_evaluation(_review("browser-review-2", 9002, 909))
+        page.wait_for_selector("a[href*='review_id=browser-review-2']", timeout=5000)
+
+        assert page.locator("text=Review ID: browser-review-1").count() == 1
+        assert page.evaluate("window.__selectedReport.isConnected") is True
 
 
 def test_unchanged_snapshot_preserves_scroll_dom_identity_and_pagination(_use_real_sleep, _use_real_home, dashboard_base_url) -> None:
