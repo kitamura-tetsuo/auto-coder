@@ -13,6 +13,7 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional, Sequence
@@ -104,6 +105,24 @@ class PendingLaneItem:
     remaining_identity_keys: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ImplementationRetryRequest:
+    """Durable operator authority for one distinct implementation attempt."""
+
+    request_id: str
+    repository: str
+    target_number: int
+    generation: str
+    attempt_id: str
+    status: str
+    ownership_reference: Optional[str] = None
+    refusal: Optional[str] = None
+
+
+class RetryRequestConflict(ValueError):
+    """Raised when a request identity is reused with different inputs."""
+
+
 def standalone_review_generation(contract: ContractIdentity, requirements: Sequence[ReviewRequirement]) -> str:
     """Build a standalone generation from its enabled validation identity set."""
     enabled = sorted((item.category, item.subject_number, item.identity_key) for item in requirements)
@@ -188,6 +207,20 @@ class IssueStageRoutingStore:
                     owned_at REAL NOT NULL,
                     PRIMARY KEY(repository, target_number, generation)
                 );
+                CREATE TABLE IF NOT EXISTS implementation_retry_requests (
+                    request_id TEXT PRIMARY KEY,
+                    repository TEXT NOT NULL,
+                    target_number INTEGER NOT NULL CHECK(target_number > 0),
+                    generation TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL CHECK(status IN ('pending', 'owned', 'invalidated')),
+                    ownership_reference TEXT,
+                    refusal TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS implementation_retry_target
+                    ON implementation_retry_requests(repository, target_number);
                 """
             )
             columns = {row[1] for row in self._connection.execute("PRAGMA table_info(issue_lane_arrivals)")}
@@ -197,6 +230,167 @@ class IssueStageRoutingStore:
                 # row was standalone or belonged to a now-changed family.
                 # Fail closed and let startup authority reconstruct it.
                 self._connection.execute("DELETE FROM issue_lane_arrivals WHERE stage='implementation'")
+
+    def accept_retry_request(
+        self,
+        request_id: str,
+        repository: str,
+        target_number: int,
+        generation: str,
+        now: Optional[float] = None,
+    ) -> ImplementationRetryRequest:
+        """Create, or idempotently replay, explicit retry authority.
+
+        The insert and generated attempt identity are one SQLite transaction.
+        Consequently an accepted result is never returned before it is durable.
+        """
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise ValueError("request_id must be a non-empty string")
+        if not isinstance(repository, str) or not repository.strip():
+            raise ValueError("repository must be a non-empty string")
+        if isinstance(target_number, bool) or not isinstance(target_number, int) or target_number <= 0:
+            raise ValueError("target_number must be a positive integer")
+        if not isinstance(generation, str) or not generation:
+            raise ValueError("generation must be a non-empty exact identity")
+        timestamp = time.time() if now is None else now
+        with self._lock, self._connection:
+            existing = self._retry_locked(request_id)
+            if existing is not None:
+                if (existing.repository, existing.target_number, existing.generation) != (repository, target_number, generation):
+                    raise RetryRequestConflict(f"retry request {request_id!r} is already bound to different inputs")
+                return existing
+            self._connection.execute(
+                "INSERT INTO implementation_retry_requests(request_id,repository,target_number,generation,attempt_id,status,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?)",
+                (request_id, repository, target_number, generation, uuid.uuid4().hex, timestamp, timestamp),
+            )
+            result = self._retry_locked(request_id)
+            assert result is not None
+            return result
+
+    def retry_request(self, request_id: str) -> Optional[ImplementationRetryRequest]:
+        """Return one durable retry authorization without changing it."""
+        with self._lock:
+            return self._retry_locked(request_id)
+
+    def retry_requests(self, repository: Optional[str] = None, target_number: Optional[int] = None) -> tuple[ImplementationRetryRequest, ...]:
+        """Enumerate durable retry authority for recovery and diagnostics."""
+        clauses: list[str] = []
+        values: list[object] = []
+        if repository is not None:
+            clauses.append("repository=?")
+            values.append(repository)
+        if target_number is not None:
+            clauses.append("target_number=?")
+            values.append(target_number)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT request_id,repository,target_number,generation,attempt_id,status,ownership_reference,refusal FROM implementation_retry_requests" + where + " ORDER BY created_at,request_id",
+                values,
+            ).fetchall()
+        return tuple(self._decode_retry(row) for row in rows)
+
+    def claim_retry_acquisition(self, request_id: str, repository: str, target_number: int, generation: str, now: Optional[float] = None) -> ImplementationRetryRequest:
+        """Linearize authorization before crossing the ownership boundary."""
+        del now
+        with self._lock:
+            return self._require_retry_locked(request_id, repository, target_number, generation)
+
+    def defer_retry_acquisition(self, request_id: str, reason: str, now: Optional[float] = None) -> ImplementationRetryRequest:
+        """Return an unperformed claim to pending after operational contention."""
+        timestamp = time.time() if now is None else now
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE implementation_retry_requests SET status='pending',refusal=?,updated_at=? WHERE request_id=? AND status='pending'",
+                (reason, timestamp, request_id),
+            )
+            result = self._retry_locked(request_id)
+            if result is None:
+                raise ValueError(f"unknown retry request {request_id!r}")
+            return result
+
+    def mark_retry_owned(self, request_id: str, ownership_reference: str, now: Optional[float] = None) -> ImplementationRetryRequest:
+        """Project a captured slot acquisition into the request record."""
+        if not ownership_reference:
+            raise ValueError("ownership_reference must be non-empty")
+        timestamp = time.time() if now is None else now
+        with self._lock, self._connection:
+            record = self._retry_locked(request_id)
+            if record is None:
+                raise ValueError(f"unknown retry request {request_id!r}")
+            if record.status == "owned":
+                if record.ownership_reference != ownership_reference:
+                    raise RetryRequestConflict("retry request has conflicting ownership references")
+                return record
+            if record.status == "invalidated":
+                return record
+            if record.status != "pending":
+                raise RetryRequestConflict("retry request is not pending acquisition")
+            self._connection.execute(
+                "UPDATE implementation_retry_requests SET status='owned',ownership_reference=?,refusal=NULL,updated_at=? WHERE request_id=? AND status='pending'",
+                (ownership_reference, timestamp, request_id),
+            )
+            result = self._retry_locked(request_id)
+            assert result is not None
+            return result
+
+    def invalidate_retry_request(self, request_id: str, current_generation: str, reason: Optional[str] = None, now: Optional[float] = None) -> ImplementationRetryRequest:
+        """Invalidate unconsumed authority on an authoritative generation change."""
+        if not current_generation:
+            raise ValueError("current_generation must be known and non-empty")
+        timestamp = time.time() if now is None else now
+        with self._lock, self._connection:
+            record = self._retry_locked(request_id)
+            if record is None:
+                raise ValueError(f"unknown retry request {request_id!r}")
+            if record.generation == current_generation or record.status == "owned":
+                return record
+            detail = reason or f"current generation changed to {current_generation}"
+            self._connection.execute(
+                "UPDATE implementation_retry_requests SET status='invalidated',refusal=?,updated_at=? WHERE request_id=? AND status='pending'",
+                (detail, timestamp, request_id),
+            )
+            result = self._retry_locked(request_id)
+            assert result is not None
+            return result
+
+    def _require_retry_locked(self, request_id: str, repository: str, target_number: int, generation: str) -> ImplementationRetryRequest:
+        record = self._retry_locked(request_id)
+        if record is None:
+            raise ValueError(f"unknown retry request {request_id!r}")
+        if (record.repository, record.target_number, record.generation) != (repository, target_number, generation):
+            raise RetryRequestConflict("retry request does not authorize these inputs")
+        return record
+
+    def _retry_locked(self, request_id: str) -> Optional[ImplementationRetryRequest]:
+        row = self._connection.execute(
+            "SELECT request_id,repository,target_number,generation,attempt_id,status,ownership_reference,refusal FROM implementation_retry_requests WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        return self._decode_retry(row) if row is not None else None
+
+    @staticmethod
+    def _decode_retry(row: tuple[object, ...]) -> ImplementationRetryRequest:
+        request_id, repository, target_number, generation, attempt_id, status, reference, refusal = row
+        if (
+            not isinstance(request_id, str)
+            or not request_id
+            or not isinstance(repository, str)
+            or not repository
+            or isinstance(target_number, bool)
+            or not isinstance(target_number, int)
+            or target_number <= 0
+            or not isinstance(generation, str)
+            or not generation
+            or not isinstance(attempt_id, str)
+            or not attempt_id
+            or not isinstance(status, str)
+            or status not in {"pending", "owned", "invalidated"}
+            or (reference is not None and (not isinstance(reference, str) or not reference))
+            or (refusal is not None and not isinstance(refusal, str))
+        ):
+            raise ValueError("invalid durable implementation retry request")
+        return ImplementationRetryRequest(request_id, repository, target_number, generation, attempt_id, status, reference, refusal)
 
     def reconcile(self, classification: LaneClassification, now: Optional[float] = None) -> Optional[PendingLaneItem]:
         """Atomically replace superseded work or update priority/work in place."""
