@@ -115,6 +115,7 @@ from .review_thread_validation import (
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
 from .shutdown_context import new_work_allowed
+from .speculative_jules_lifecycle import get_speculative_jules_lifecycle
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -885,6 +886,28 @@ def process_pull_request(
         )
 
         pr_number = pr_data["number"]
+
+        # Competition authority is checked before branch recovery, empty/stale
+        # cleanup, labels, CI, repair, fallback, merge, or provider continuation.
+        # ``--force`` therefore cannot turn a loser or an uncertain artifact into
+        # ordinary work (Issue #2073, REQ-001/REQ-004).
+        speculative = get_speculative_jules_lifecycle()
+        if speculative is not None:
+            issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
+            if issue_numbers:
+                decision = speculative.evaluate_pr(repo_name, issue_numbers[0], pr_number)
+                if not decision.allow_ordinary_processing:
+                    processed_pr.priority = "cleanup" if decision.cleanup_pending else "defer"
+                    processed_pr.outcome = PRProcessingOutcome.DEFERRED
+                    processed_pr.actions_taken = [f"Speculative Jules {decision.classification.value.lower()} artifact fenced: {decision.reason}"]
+                    _record_pr_stage(
+                        pr_number,
+                        "pr.speculative-jules-authority",
+                        f"pr#{pr_number} speculative Jules authority",
+                        Outcome.DEFERRED,
+                        {"classification": decision.classification.value, "cleanup_pending": decision.cleanup_pending},
+                    )
+                    return processed_pr
 
         try:
             from .durable_repair_allowance import reconcile_unfulfilled_grant_reevaluations
