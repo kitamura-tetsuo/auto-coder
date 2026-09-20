@@ -979,3 +979,8 @@ task, typed quota reason, delivery certainty, and retry deadline. The same event
 is accompanied by a warning (not a worker-failure error), and credentials are
 excluded. PR processing exposes the machine-readable `DEFERRED` outcome rather
 than a successful handoff or ordinary failure.
+
+The `claude-followup-quota-recovery` daemon task services due waits without an
+external event. Recovery uses the ordinary PR execution path, so its refreshed
+evaluation and eventual delivery or successor deferral remain visible in the
+existing PR stage trace rather than introducing a parallel success signal.

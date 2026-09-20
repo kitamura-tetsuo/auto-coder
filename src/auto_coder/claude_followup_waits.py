@@ -5,6 +5,8 @@ import os
 import sqlite3
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -25,6 +27,23 @@ class ClaudeFollowupWait:
     observed_at: float
     retry_not_before: float
     certainty: DeliveryCertainty
+
+
+@dataclass(frozen=True)
+class ClaudeFollowupAdmission:
+    token: str
+    repository: str
+    backend_name: str
+    credential_context: str
+    refusal_epoch: float
+
+
+class ClaudeFollowupHoldActive(RuntimeError):
+    """Raised before a usage read when a context hold or recheck owns admission."""
+
+    def __init__(self, retry_not_before: float) -> None:
+        self.retry_not_before = retry_not_before
+        super().__init__(f"Claude quota hold is active until {retry_not_before}")
 
 
 class ClaudeFollowupWaitStore:
@@ -57,6 +76,13 @@ class ClaudeFollowupWaitStore:
                           task_id, purpose, work_identity)
             )
             """
+        )
+        self._connection.execute(
+            """CREATE TABLE IF NOT EXISTS claude_followup_admissions (
+                 repository TEXT NOT NULL, backend_name TEXT NOT NULL,
+                 credential_context TEXT NOT NULL, token TEXT NOT NULL,
+                 refusal_epoch REAL NOT NULL, lease_until REAL NOT NULL,
+                 PRIMARY KEY(repository, backend_name, credential_context))"""
         )
         self._connection.commit()
 
@@ -117,6 +143,98 @@ class ClaudeFollowupWaitStore:
                                     ELSE excluded.certainty END,
                      details=excluded.details""",
                 (wait.repository, wait.pr_number, wait.backend_name, wait.credential_context, wait.task_id, wait.purpose, wait.work_identity, wait.reason, wait.observed_at, wait.retry_not_before, wait.certainty.value, json.dumps(details), DeliveryCertainty.INDETERMINATE.value),
+            )
+            self._connection.commit()
+
+    @contextmanager
+    def admission(
+        self,
+        repository: str,
+        backend_name: str,
+        credential_context: str,
+        now: Optional[float] = None,
+    ):
+        """Own one context recheck and fence it against newer refusals."""
+        at = time.time() if now is None else now
+        token = uuid.uuid4().hex
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            hold = self.active_hold(repository, backend_name, credential_context, at)
+            row = self._connection.execute(
+                """SELECT token,lease_until FROM claude_followup_admissions
+                   WHERE repository=? AND backend_name=? AND credential_context=?""",
+                (repository, backend_name, credential_context),
+            ).fetchone()
+            if hold is not None:
+                self._connection.rollback()
+                raise ClaudeFollowupHoldActive(hold)
+            if row and float(row[1]) > at:
+                self._connection.rollback()
+                raise ClaudeFollowupHoldActive(float(row[1]))
+            refusal = self._latest_refusal(repository, backend_name, credential_context)
+            self._connection.execute(
+                "INSERT OR REPLACE INTO claude_followup_admissions VALUES(?,?,?,?,?,?)",
+                (repository, backend_name, credential_context, token, refusal, at + 300.0),
+            )
+            self._connection.commit()
+        claim = ClaudeFollowupAdmission(token, repository, backend_name, credential_context, refusal)
+        try:
+            yield claim
+        finally:
+            with self._lock:
+                self._connection.execute(
+                    """DELETE FROM claude_followup_admissions WHERE repository=?
+                       AND backend_name=? AND credential_context=? AND token=?""",
+                    (repository, backend_name, credential_context, token),
+                )
+                self._connection.commit()
+
+    def authorize_assignment(self, claim: ClaudeFollowupAdmission) -> bool:
+        """Reject a stale positive observation after a newer refusal was retained."""
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT token FROM claude_followup_admissions WHERE repository=?
+                   AND backend_name=? AND credential_context=?""",
+                (claim.repository, claim.backend_name, claim.credential_context),
+            ).fetchone()
+            return bool(row and row[0] == claim.token and self._latest_refusal(claim.repository, claim.backend_name, claim.credential_context) <= claim.refusal_epoch)
+
+    def _latest_refusal(self, repository: str, backend_name: str, credential_context: str) -> float:
+        row = self._connection.execute(
+            """SELECT MAX(observed_at) FROM claude_followup_waits
+               WHERE repository=? AND backend_name=? AND credential_context=?""",
+            (repository, backend_name, credential_context),
+        ).fetchone()
+        return float(row[0]) if row and row[0] is not None else 0.0
+
+    def due_prs(self, repository: str, now: Optional[float] = None) -> tuple[int, ...]:
+        """Return PRs with definitely-unsent work whose retained deadline is due."""
+        at = time.time() if now is None else now
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT DISTINCT pr_number FROM claude_followup_waits
+                   WHERE repository=? AND certainty=? AND retry_not_before<=?
+                   ORDER BY pr_number""",
+                (repository, DeliveryCertainty.NOT_SENT.value, at),
+            ).fetchall()
+        return tuple(int(row[0]) for row in rows)
+
+    def next_due_at(self, repository: str) -> Optional[float]:
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT MIN(retry_not_before) FROM claude_followup_waits
+                   WHERE repository=? AND certainty=?""",
+                (repository, DeliveryCertainty.NOT_SENT.value),
+            ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
+    def retire_obsolete_pr_work(self, repository: str, pr_number: int, due_before: float) -> None:
+        """Retire only a due unsent incarnation after authoritative evaluation."""
+        with self._lock:
+            self._connection.execute(
+                """DELETE FROM claude_followup_waits WHERE repository=? AND
+                   pr_number=? AND certainty=? AND retry_not_before<=?""",
+                (repository, pr_number, DeliveryCertainty.NOT_SENT.value, due_before),
             )
             self._connection.commit()
 

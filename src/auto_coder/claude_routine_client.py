@@ -441,6 +441,8 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         if oauth_token:
             credential_context = f"oauth:{hashlib.sha256(oauth_token.encode('utf-8')).hexdigest()[:12]}"
 
+        admission = getattr(self, "_followup_admission", None)
+
         def defer(
             reason: ClaudeFollowupDeferralReason,
             diagnostic: str,
@@ -481,6 +483,15 @@ class ClaudeRoutineClient(CloudTaskClientBase):
                 resets=reliable_resets,
                 retry_after=observation.retry_after,
             )
+
+        if admission is not None:
+            from .claude_followup_waits import get_claude_followup_wait_store
+
+            if not get_claude_followup_wait_store().authorize_assignment(admission):
+                raise defer(
+                    ClaudeFollowupDeferralReason.QUOTA_UNAVAILABLE,
+                    "A newer Claude quota refusal superseded this usage observation",
+                )
 
         from .cloud_provider_instructions import CloudTaskOperation, prepare_cloud_task
 
@@ -547,6 +558,14 @@ class ClaudeRoutineClient(CloudTaskClientBase):
         except Exception as exc:
             logger.warning(f"Error sending follow-up to Claude session {task_id}: {exc}")
         return False
+
+    def followup_quota_context(self) -> tuple[str, str]:
+        """Return the non-secret routing identity used by durable admission."""
+        oauth_token = resolve_claude_oauth_token_non_inference(self.oauth_token)
+        credential_context = "unavailable"
+        if oauth_token:
+            credential_context = f"oauth:{hashlib.sha256(oauth_token.encode('utf-8')).hexdigest()[:12]}"
+        return self.backend_name, credential_context
 
     def list_tasks(self, repo_name: Optional[str] = None) -> List[CloudTask]:
         """List active or recent Claude Routine sessions."""

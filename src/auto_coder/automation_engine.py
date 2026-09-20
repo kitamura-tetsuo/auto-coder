@@ -22,6 +22,7 @@ from .adversarial_validation_scheduler import AdversarialValidationScheduler
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome, ProcessResult, PRProcessingOutcome
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .candidate_queue import CandidateQueue
+from .claude_followup_waits import get_claude_followup_wait_store
 from .decomposition_analyzer import DecompositionIssue
 from .decomposition_validation_lifecycle import (
     DECOMPOSITION_PUBLICATION_STAGE,
@@ -2501,6 +2502,10 @@ class AutomationEngine:
         # second obligation store.
         merge_operation_task = asyncio.create_task(self.merge_operation_scheduler.run(self._shutdown_event), name="merge-operation-scheduler")
         self.merge_operation_scheduler.register_resume_handler(_MergeOperationResumeHandler(self, repo_name))
+        claude_followup_recovery_task = asyncio.create_task(
+            self._claude_followup_recovery_loop(repo_name),
+            name="claude-followup-quota-recovery",
+        )
 
         if not self.is_draining:
             # Webhooks are not a durable event log. Recover work missed while
@@ -2556,7 +2561,7 @@ class AutomationEngine:
         # Reserve worker capacity for each type so either lane can make progress.
         workers = [asyncio.create_task(self._worker_loop(repo_name, offset * concurrency + i, item_type), name=f"{item_type}-worker-{i}") for offset, item_type in enumerate(("issue", "pr")) for i in range(concurrency)]
 
-        all_loop_tasks = [producer_task, invalidation_task, pending_work_task, merge_operation_task, *workers]
+        all_loop_tasks = [producer_task, invalidation_task, pending_work_task, merge_operation_task, claude_followup_recovery_task, *workers]
         if codex_recovery_task is not None:
             all_loop_tasks.append(codex_recovery_task)
         if capacity_task is not None:
@@ -2806,6 +2811,41 @@ class AutomationEngine:
                     await self._invalidation_wake_event.wait()
                 else:
                     await asyncio.wait_for(self._invalidation_wake_event.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _claude_followup_recovery_loop(self, repo_name: str) -> None:
+        """Re-enter authoritative PR evaluation when retained quota waits mature."""
+        store = get_claude_followup_wait_store()
+        assert self._shutdown_event is not None
+        while not self._shutdown_event.is_set():
+            try:
+                due_prs = await asyncio.to_thread(store.due_prs, repo_name)
+                for pr_number in due_prs:
+                    evaluation_started = time.time()
+                    raw_pr = await asyncio.to_thread(self.github.get_pull_request_metadata_strict, repo_name, pr_number)
+                    pr_data = self.github.get_pr_details(raw_pr)
+                    if str(pr_data.get("state") or raw_pr.get("state") or "").lower() == "closed":
+                        await asyncio.to_thread(store.retire_obsolete_pr_work, repo_name, pr_number, evaluation_started)
+                        continue
+                    result = await self._run_local_critical(
+                        f"Claude follow-up recovery for PR #{pr_number}",
+                        partial(
+                            self._process_single_candidate,
+                            origin="claude-followup-quota-recovery",
+                        ),
+                        repo_name,
+                        Candidate(type="pr", data=pr_data, priority=0),
+                    )
+                    if result.success and not result.error and result.outcome is PRProcessingOutcome.SUCCESS:
+                        await asyncio.to_thread(store.retire_obsolete_pr_work, repo_name, pr_number, evaluation_started)
+                next_due = await asyncio.to_thread(store.next_due_at, repo_name)
+                delay = 60.0 if next_due is None else max(1.0, next_due - time.time())
+            except Exception as exc:
+                logger.opt(exception=True).error("Claude follow-up recovery failed repository={}: {}", repo_name, exc)
+                delay = 60.0
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 pass
 
