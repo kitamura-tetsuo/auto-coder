@@ -77,7 +77,8 @@ from .pr_repair_guard import (
     check_pr_repair_exhaustion,
     publish_exhaustion_comment_deduped,
 )
-from .pr_review_cycle import ContractSnapshot, StrongPolicyIdentity
+from .pr_review_cycle import VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot, NotApplicableError, RoundProvenance, StrongPolicyIdentity
+from .pr_review_execution import ReviewExecutionInput, ReviewMode, execute_review
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
@@ -249,6 +250,67 @@ def _two_tier_gate_inputs(
     if not head_sha or not base_sha:
         raise RuntimeError("PR head/base identity is unavailable for required strong audit")
     return TwoTierGateInputs(TwoTierPrGate(repo_name), contract, policy, head_sha, base_sha)
+
+
+def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
+    """Claim, execute, and durably accept one production strong-audit round."""
+    provenance = RoundProvenance(inputs.head_sha, inputs.base_sha)
+    try:
+        claim = inputs.gate.state.claim_strong_audit(pr_number, provenance, inputs.contract, inputs.policy)
+    except ClaimContendedError:
+        return False, "another controller owns the live strong-audit claim"
+    except NotApplicableError as exc:
+        return False, str(exc)
+
+    try:
+        with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
+            from .cli_helpers import resolve_adversarial_validation_availability
+
+            availability = resolve_adversarial_validation_availability("strong_pr", execution_cwd=worktree)
+            if availability.backend_manager is None:
+                reason = "strong reviewer route is EXHAUSTED" if availability.exhausted else "strong reviewer route is UNAVAILABLE"
+                inputs.gate.state.abandon_claim(
+                    pr_number,
+                    claim.claim_id,
+                    reason,
+                    retry_not_before=availability.retry_not_before_epoch or 0.0,
+                )
+                return False, reason
+
+            diff = CommandExecutor.run_command(
+                ["git", "diff", "--no-ext-diff", "--binary", inputs.base_sha, inputs.head_sha],
+                cwd=worktree,
+            )
+            tracked = CommandExecutor.run_command(["git", "ls-files"], cwd=worktree)
+            if not diff.success or not tracked.success:
+                raise RuntimeError("required repository or reviewed-diff evidence is unavailable")
+            review_input = ReviewExecutionInput(
+                mode=ReviewMode.STRONG_AUDIT,
+                round_id=claim.claim_id,
+                attempt_id=f"{claim.open_epoch}:{claim.based_on_version}",
+                head_sha=inputs.head_sha,
+                base_sha=inputs.base_sha,
+                contract=inputs.contract,
+                policy=inputs.policy,
+                repository_evidence="Pinned read-only snapshot. Tracked paths:\n" + tracked.stdout,
+                diff_evidence=diff.stdout,
+            )
+            result = execute_review(review_input, availability.backend_manager, worktree)
+        if not result.is_complete or result.verdict not in {VERDICT_PASS, VERDICT_FINDINGS}:
+            reason = result.diagnostic or f"strong reviewer returned {result.verdict}"
+            inputs.gate.state.abandon_claim(pr_number, claim.claim_id, reason)
+            return False, reason
+        inputs.gate.state.record_strong_result(
+            pr_number,
+            claim.claim_id,
+            result.verdict,
+            result.reviewer_provenance,
+            list(result.findings),
+        )
+        return True, f"accepted {result.verdict} from {result.reviewer_provenance}; publication remains pending"
+    except Exception as exc:
+        inputs.gate.state.abandon_claim(pr_number, claim.claim_id, str(exc))
+        return False, f"strong audit execution failed: {exc}"
 
 
 @dataclass(frozen=True)
@@ -3905,6 +3967,31 @@ def _handle_pr_merge(
                         two_tier_inputs.base_sha,
                         two_tier_inputs.contract,
                     )
+                    accepted, reason = _execute_pending_strong_audit(repo_name, pr_number, two_tier_inputs)
+                    strong_diagnostic = two_tier_inputs.gate.diagnostic(
+                        pr_number,
+                        current_head_sha=two_tier_inputs.head_sha,
+                        backend=two_tier_inputs.policy.strong_route,
+                    )
+                    actions.append(f"Strong audit for PR #{pr_number}: {reason} " f"(phase={strong_diagnostic.phase}, head={two_tier_inputs.head_sha[:8]}, " f"contract={two_tier_inputs.contract.identity[:12]}, " f"policy={two_tier_inputs.policy.identity[:12]})")
+                    _record_pr_stage(
+                        pr_number,
+                        "pr.strong-audit",
+                        f"pr#{pr_number} strong audit",
+                        Outcome.COMPLETED if accepted else Outcome.DEFERRED,
+                        {
+                            "phase": strong_diagnostic.phase,
+                            "backend": strong_diagnostic.backend,
+                            "head": two_tier_inputs.head_sha,
+                            "base": two_tier_inputs.base_sha,
+                            "contract_identity": two_tier_inputs.contract.identity,
+                            "policy_identity": two_tier_inputs.policy.identity,
+                            "reason": reason,
+                        },
+                    )
+                    # Acceptance is not merge authority. Publication and repair
+                    # consume the durable pending effect in later stages.
+                    return actions
 
             # Own the final read phase even when invoked outside candidate selection.
             with ci_read_phase("pr-final-merge-eligibility"):

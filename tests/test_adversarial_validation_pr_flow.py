@@ -1295,12 +1295,17 @@ class TestAdversarialValidationPRFlow:
             patch("auto_coder.pr_processor._send_codex_cloud_error_feedback") as cloud_feedback,
             patch("auto_coder.pr_processor._send_jules_error_feedback") as jules_feedback,
             patch("auto_coder.pr_processor.CommandExecutor.run_command") as checkout_or_local_repair,
+            patch(
+                "auto_coder.pr_processor._execute_pending_strong_audit",
+                return_value=(False, "strong reviewer route is UNAVAILABLE"),
+            ) as strong_producer,
         ):
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, processing_status)
 
         mock_merge_pr.assert_not_called()
         assert processing_status.outcome is PRProcessingOutcome.DEFERRED
-        assert any("required strong-audit phase STRONG_PENDING is not complete" in action for action in actions)
+        assert any("strong reviewer route is UNAVAILABLE" in action for action in actions)
+        strong_producer.assert_called_once()
         assert all("GitHub Actions checks failed" not in action for action in actions)
         detailed_checks.assert_not_called()
         cloud_feedback.assert_not_called()
