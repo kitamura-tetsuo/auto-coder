@@ -2,12 +2,14 @@
 Tests for Codex Cloud PR CI failure handling and continuation workflow.
 """
 
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.pr_processor import (
     CodexCloudFeedbackResult,
@@ -24,6 +26,16 @@ class TestCodexCloudPRCIFlow:
         cfg = AutomationConfig()
         cfg.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
         return cfg
+
+    @pytest.fixture(autouse=True)
+    def current_ci_failure(self):
+        """These legacy delivery tests start after CI admission has succeeded."""
+        authority = CIRepairAuthority(True, "current exact-head CI failure", "test-head")
+        with patch(
+            "auto_coder.pr_processor.current_ci_failure_authority",
+            return_value=nullcontext(authority),
+        ):
+            yield
 
     @pytest.fixture
     def mock_github_client(self):

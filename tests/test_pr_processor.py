@@ -527,6 +527,42 @@ class TestPRProcessorMerge:
         store = MergeOperationStore(db_path=tmp_path / "merge_ops.db")
         return patch("src.auto_coder.merge_operation_state.get_merge_operation_store", return_value=store)
 
+    @patch("auto_coder.util.gh_cache.get_ghapi_client")
+    def test_merge_pr_blocks_stale_selected_jules_authority(self, mock_get_ghapi_client, tmp_path):
+        """The final sender consumes fresh selected-pair currency, not classification alone."""
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.jules_candidate_observation import ArtifactClassification
+        from src.auto_coder.pr_processor import _merge_pr
+        from src.auto_coder.speculative_jules_lifecycle import LifecycleDecision
+
+        client = MagicMock(token="token")
+        client.get_issue.return_value = {"state": "open", "body": "requirements-v2"}
+        api = MagicMock()
+        api.pulls.get.return_value = {
+            "number": 123,
+            "head": {"sha": "head-b"},
+            "base": {"sha": "base-a", "ref": "main"},
+        }
+        mock_get_ghapi_client.return_value = api
+        lifecycle = MagicMock()
+        lifecycle.evaluate_merge_authority.return_value = LifecycleDecision(
+            ArtifactClassification.BLOCKED,
+            False,
+            False,
+            "selected acceptance is stale or invalidated",
+        )
+
+        with (
+            self._patch_merge_operation_store(tmp_path),
+            patch("src.auto_coder.pr_processor._is_pr_review_thread_gate_enabled", return_value=False),
+            patch("src.auto_coder.pr_processor.get_speculative_jules_lifecycle", return_value=lifecycle),
+            patch("src.auto_coder.pr_processor._resolve_pr_issue_numbers", return_value=[2074]),
+        ):
+            assert _merge_pr("owner/repo", 123, {}, AutomationConfig(), github_client=client) is False
+
+        lifecycle.evaluate_merge_authority.assert_called_once_with("owner/repo", 123, api.pulls.get.return_value, {"state": "open", "body": "requirements-v2"}, (2074,))
+        api.pulls.merge.assert_not_called()
+
     @patch("src.auto_coder.merge_operation_adapter.get_ghapi_client")
     @patch("auto_coder.util.gh_cache.get_ghapi_client")
     @patch("src.auto_coder.pr_processor.GitHubClient")
@@ -695,8 +731,8 @@ class TestPRProcessorMerge:
     @patch("src.auto_coder.pr_processor._get_allowed_merge_methods")
     def test_merge_pr_skips_conflict_resolution_for_dependabot(self, mock_get_allowed_methods, mock_github_client_class, mock_get_ghapi_client, mock_get_ghapi_client_adapter, tmp_path):
         """Merge conflicts of Dependabot PRs must not trigger conflict resolution."""
-        from src.auto_coder.automation_config import AutomationConfig
-        from src.auto_coder.pr_processor import _merge_pr
+        from src.auto_coder.automation_config import AutomationConfig, PRProcessingOutcome
+        from src.auto_coder.pr_processor import MergeRouteDisposition, _merge_pr
 
         config = AutomationConfig()
         config.MERGE_METHOD = "--squash"
@@ -734,9 +770,12 @@ class TestPRProcessorMerge:
             patch("src.auto_coder.pr_processor._close_linked_issues"),
             patch("src.auto_coder.pr_processor._archive_jules_session"),
         ):
-            result = _merge_pr("owner/repo", 126, {}, config)
+            disposition = MergeRouteDisposition()
+            result = _merge_pr("owner/repo", 126, {}, config, route_disposition=disposition)
 
         assert result is False
+        assert disposition.outcome is PRProcessingOutcome.FAILED
+        assert disposition.reason == "Definitive merge rejection"
         mock_resolve.assert_not_called()
 
 

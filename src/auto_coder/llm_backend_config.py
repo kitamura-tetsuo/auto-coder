@@ -1999,6 +1999,28 @@ def get_jules_issue_pr_timeout_hours_from_config(
     )
 
 
+def get_jules_speculative_parallelism_from_config(
+    config_path: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> int:
+    """Return the number of Jules candidates for one Issue implementation.
+
+    Unlike timeout settings this value is deliberately not coerced.  TOML
+    booleans are subclasses of ``int`` in Python, and accepting ``true`` as a
+    width of one would hide an operator error at the dispatch boundary.
+    """
+    value = _get_config_value(
+        section="jules",
+        key="speculative_parallelism",
+        default=1,
+        config_path=config_path,
+        repo_name=repo_name,
+    )
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("[jules].speculative_parallelism must be a positive integer (booleans are not valid)")
+    return value
+
+
 def get_jules_pr_ci_timeout_hours_from_config(
     config_path: Optional[str] = None,
     repo_name: Optional[str] = None,

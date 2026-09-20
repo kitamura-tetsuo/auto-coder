@@ -980,7 +980,7 @@ def is_read_only_review_capable_backend(backend_name: Optional[str], config: Opt
     return normalized in READ_ONLY_REVIEW_CAPABLE_TYPES
 
 
-def _build_adversarial_validation_manager_from_capable_backends(capable_backends: List[str], config: Any) -> Optional[BackendManager]:
+def _build_adversarial_validation_manager_from_capable_backends(capable_backends: List[str], config: Any, execution_cwd: Optional[str] = None) -> Optional[BackendManager]:
     """Build a BackendManager from an already capability-filtered backend name list."""
     from .quota_selector import rank_high_score_backends_by_quota
 
@@ -998,7 +998,7 @@ def _build_adversarial_validation_manager_from_capable_backends(capable_backends
     # opt in to the container sandbox fallback.
     from pathlib import Path
 
-    is_isolated_worktree = Path(".git").is_file()
+    is_isolated_worktree = (Path(execution_cwd) if execution_cwd else Path.cwd()).joinpath(".git").is_file()
 
     try:
         if is_isolated_worktree:
@@ -1117,7 +1117,7 @@ class AdversarialValidationAvailability:
     retry_not_before_epoch: Optional[float] = None
 
 
-def resolve_adversarial_validation_availability(validation_kind: Optional[str] = None) -> AdversarialValidationAvailability:
+def resolve_adversarial_validation_availability(validation_kind: Optional[str] = None, execution_cwd: Optional[str] = None) -> AdversarialValidationAvailability:
     """Resolve a PR/issue adversarial-validation backend, classifying exhaustion.
 
     Distinguishes three outcomes for the authoritative candidate route
@@ -1163,7 +1163,7 @@ def resolve_adversarial_validation_availability(validation_kind: Optional[str] =
     # REQ-003). A construction/execution failure for it falls back to the
     # existing generic None outcome (non-quota unavailable, REQ-003), never
     # EXHAUSTED, because it is not part of the quota-ineligible set above.
-    manager = _build_adversarial_validation_manager_from_capable_backends(quota_eligible, config)
+    manager = _build_adversarial_validation_manager_from_capable_backends(quota_eligible, config, execution_cwd=execution_cwd)
     return AdversarialValidationAvailability(backend_manager=manager)
 
 

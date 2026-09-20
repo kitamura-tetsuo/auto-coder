@@ -9,6 +9,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import partial
@@ -53,6 +54,7 @@ from .github_request_governor import GitHubRequestDeferred, GitHubRequestGoverno
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_ownership import (
     OwnershipStartDecision,
+    acquire_explicit_retry,
     begin_implementation_ownership,
     confirm_implementation_ownership,
     evaluate_implementation_start,
@@ -88,6 +90,7 @@ from .issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
     ContractIdentity,
+    ImplementationRetryRequest,
     IssueStageRoutingStore,
     ReviewRequirement,
     family_review_generation,
@@ -2746,6 +2749,21 @@ class AutomationEngine:
         while True:
             try:
                 iteration += 1
+                # This targeted durable consumer runs immediately on startup and
+                # at the 60-second maintenance cadence. It never calls the
+                # account-wide Jules listing used by the separate hourly cycle.
+                from .speculative_jules_lifecycle import consume_due_speculative_work
+
+                await self._run_local_critical(
+                    "speculative Jules competition maintenance",
+                    consume_due_speculative_work,
+                    repo_name,
+                    self.github,
+                    lambda number: self.invalidate_entity(repo_name, "issue", number),
+                    lambda number: self.invalidate_entity(repo_name, "pr", number),
+                )
+                if self.is_draining:
+                    return
                 heartbeat("producer:check-updates", f"iteration {iteration}")
                 # Check updates
                 await self._run_local_critical("update check", check_for_updates_and_restart)
@@ -3721,6 +3739,25 @@ class AutomationEngine:
                             candidate,
                         )
                     decision_completed = (not bool(result.error) or result.blocked_cacheable) and not (candidate.urgent_admission and result.capacity_deferred)
+
+                    if invalidation_claim is not None and candidate.type == "pr" and result.outcome is PRProcessingOutcome.DEFERRED and result.retry_not_before is not None:
+                        retained = await asyncio.to_thread(
+                            self.invalidations.defer,
+                            invalidation_claim,
+                            "two-tier review work remains pending",
+                            result.retry_not_before,
+                            "pr-review-cycle",
+                        )
+                        deferral_committed = True
+                        decision_completed = False
+                        logger.info(
+                            "Retained two-tier PR review wake repository={} pr={} retry_at={}",
+                            repo_name,
+                            item_number,
+                            retained.retry_not_before,
+                        )
+                        if self._invalidation_wake_event is not None:
+                            self._invalidation_wake_event.set()
 
                     if result.error:
                         logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
@@ -5026,6 +5063,7 @@ class AutomationEngine:
         authoritative_parent_number: Optional[int] = None,
         origin: str = "worker",
         retry: bool = False,
+        retry_request_id: Optional[str] = None,
     ) -> CandidateProcessingResult:
         """Open (or continue) an execution-scoped trace, then dispatch to the real implementation.
 
@@ -5055,10 +5093,11 @@ class AutomationEngine:
             authoritative_parent_number,
             origin,
             retry,
+            retry_request_id,
         )
 
         def dispatch() -> CandidateProcessingResult:
-            cache_issue = candidate.type == "issue" and isinstance(item_number, int) and not isinstance(item_number, bool) and not continue_execution
+            cache_issue = candidate.type == "issue" and isinstance(item_number, int) and not isinstance(item_number, bool) and not continue_execution and not retry
             if cache_issue:
                 observed = self.issue_admission_cache.observe(repo_name, candidate.data)
                 epoch = self.issue_admission_cache.epoch(repo_name)
@@ -5108,6 +5147,7 @@ class AutomationEngine:
         authoritative_parent_number: Optional[int] = None,
         origin: str = "worker",
         retry: bool = False,
+        retry_request_id: Optional[str] = None,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -5132,6 +5172,8 @@ class AutomationEngine:
         from .label_manager import LabelManager
 
         manual_retry = explicit_only and force and retry and candidate.type == "issue"
+        if manual_retry and not retry_request_id:
+            retry_request_id = f"implementation-retry-{uuid.uuid4().hex}"
         result = CandidateProcessingResult(
             type=candidate.type,
             number=candidate.data.get("number"),
@@ -5247,6 +5289,10 @@ class AutomationEngine:
                 result.error = f"Cannot determine authoritative direct-child membership: {exc}"
                 return result
             if isinstance(direct_children, list) and direct_children:
+                if manual_retry:
+                    result.target_outcome = ExplicitTargetOutcome.BLOCKED
+                    result.actions = ["Rejected - retry target is a container Issue; select a direct child"]
+                    return result
                 try:
                     parent_snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item_number)
                 except GitHubRequestError as exc:
@@ -5496,6 +5542,7 @@ class AutomationEngine:
                         authoritative_parent_number=authoritative_parent_number,
                         origin=origin,
                         retry=retry,
+                        retry_request_id=retry_request_id,
                     )
             try:
                 current_issue = self._reconcile_validation_snapshot(
@@ -5943,17 +5990,42 @@ class AutomationEngine:
             try:
                 if not inherited_execution:
                     implementation_key = self._compute_implementation_generation(repo_name, generation_context["snapshot"], generation_context.get("family_set")) if candidate.type == "issue" else None
-                    execution_id, already_owned = self._start_issue_implementation_execution(
-                        repo_name,
-                        slots,
-                        owner,
-                        implementation_key,
-                        implementation_pr=implementation_pr,
-                        bypass_capacity=explicit_only,
-                        bypass_active_execution=explicit_only and force and candidate.type == "pr",
-                        allow_urgent_emergency=urgent_issue,
-                        github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
-                    )
+                    if manual_retry:
+                        assert implementation_key is not None
+                        assert retry_request_id is not None
+                        pending = tuple(request for request in self.issue_stage_routing.retry_requests(repo_name, item_number) if request.status == "pending" and request.request_id != retry_request_id)
+                        if pending:
+                            blocker = pending[0]
+                            result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                            result.actions = [f"Deferred - retry request {blocker.request_id} has no known creation outcome"]
+                            return result
+                        authority = self.issue_stage_routing.accept_retry_request(retry_request_id, repo_name, item_number, implementation_key)
+                        authority = acquire_explicit_retry(
+                            self.issue_stage_routing,
+                            slots,
+                            repo_name,
+                            item_number,
+                            implementation_key,
+                            authority.request_id,
+                            github_client=self.github if isinstance(self.github, GitHubClient) else None,
+                            bypass_capacity=explicit_only,
+                        )
+                        execution_id = authority.ownership_reference if authority.status == "owned" else None
+                        already_owned = False
+                        retry_authority = authority
+                    else:
+                        retry_authority = None
+                        execution_id, already_owned = self._start_issue_implementation_execution(
+                            repo_name,
+                            slots,
+                            owner,
+                            implementation_key,
+                            implementation_pr=implementation_pr,
+                            bypass_capacity=explicit_only,
+                            bypass_active_execution=explicit_only and force and candidate.type == "pr",
+                            allow_urgent_emergency=urgent_issue,
+                            github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
+                        )
                 if execution_id is None and not already_owned and not explicit_only:
                     slots.reconcile(self.github)
                     try:
@@ -6033,8 +6105,33 @@ class AutomationEngine:
             else:
                 with slots.serialize(owner):
                     if manual_retry:
-                        _record_issue_stage_result(item_number, "issue.manual-retry", f"issue#{item_number} manual retry authorized", Outcome.COMPLETED, {"reason": "explicit --only --force --retry", "owner": owner.key})
-                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, manual_retry=True)
+                        assert retry_authority is not None
+                        _record_issue_stage_result(
+                            item_number,
+                            "issue.manual-retry",
+                            f"issue#{item_number} manual retry authorized",
+                            Outcome.COMPLETED,
+                            {
+                                "reason": "explicit --only --force --retry",
+                                "owner": owner.key,
+                                "request_id": retry_authority.request_id,
+                                "attempt_id": retry_authority.attempt_id,
+                                "generation": retry_authority.generation,
+                                "phase": "owned",
+                            },
+                        )
+                        result = self._process_single_candidate_reserved(
+                            repo_name,
+                            candidate,
+                            config,
+                            jules_mode,
+                            manual_retry=True,
+                            retry_authority=retry_authority,
+                        )
+                        result.actions.insert(
+                            0,
+                            f"Retry accepted for issue #{item_number}: request={retry_authority.request_id} attempt={retry_authority.attempt_id} phase=owned",
+                        )
                     elif advance_issue_attempt:
                         result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True)
                     else:
@@ -6072,6 +6169,7 @@ class AutomationEngine:
         force_adversarial_validation: bool = False,
         advance_issue_attempt: bool = False,
         manual_retry: bool = False,
+        retry_authority: Optional[ImplementationRetryRequest] = None,
     ) -> CandidateProcessingResult:
         """Process a candidate after its durable owner slot is reserved."""
         result = CandidateProcessingResult(
@@ -6086,6 +6184,11 @@ class AutomationEngine:
         if self.is_draining:
             result.target_outcome = ExplicitTargetOutcome.DEFERRED
             result.actions = ["Deferred - graceful shutdown began before reserved dispatch"]
+            return result
+        if manual_retry and retry_authority is None:
+            result.target_outcome = ExplicitTargetOutcome.DEFERRED
+            result.error = "Explicit retry dispatch requires durable owned retry authority"
+            result.actions = ["Deferred - explicit retry dispatch authority is unavailable"]
             return result
 
         try:
@@ -6217,7 +6320,8 @@ class AutomationEngine:
                             self.github,
                             label_context=should_process,
                             implementation_slots=implementation_slots,
-                            **({"manual_retry": True} if manual_retry else {}),
+                            **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
+                            **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                         )
                     elif jules_mode:
                         # Use Cloud mode (backend_cloud, defaulting to Jules) for issue processing
@@ -6232,14 +6336,15 @@ class AutomationEngine:
                             self.github,
                             label_context=should_process,
                             implementation_slots=implementation_slots,
-                            **({"manual_retry": True} if manual_retry else {}),
+                            **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
+                            **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                         )
 
                     else:
                         # Regular issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode", item_type="issue", item_number=item_number, details={"mode": "local"})
                         _record_issue_stage_result(item_number, "issue.dispatch-route", f"issue#{item_number} dispatch route", Outcome.COMPLETED, {"route": "local"})
-                        result.actions = self._take_issue_actions(repo_name, candidate.data)
+                        result.actions = self._take_issue_actions(repo_name, candidate.data, **({"retry_authority": retry_authority} if retry_authority is not None else {}))  # type: ignore[arg-type]
 
                     # Cloud launchers persist the authoritative provider task in
                     # CloudManager. Mirror that production output into logical
@@ -6272,6 +6377,7 @@ class AutomationEngine:
                     if pr_result.error:
                         result.error = pr_result.error
                     result.outcome = pr_result.outcome
+                    result.retry_not_before = pr_result.retry_not_before
                     result.success = pr_result.outcome != PRProcessingOutcome.FAILED
                     result.target_outcome = {
                         PRProcessingOutcome.SUCCESS: ExplicitTargetOutcome.SUCCESS,
@@ -6728,6 +6834,7 @@ class AutomationEngine:
                     }
 
                 try:
+                    retry_request_id = f"implementation-retry-{uuid.uuid4().hex}" if retry else None
                     # Create a Candidate from the single item
                     candidate = self._create_candidate_from_single(repo_name, target_type, number, propagate_errors=True) if explicit_only else self._create_candidate_from_single(repo_name, target_type, number)
                     if not candidate:
@@ -6778,7 +6885,16 @@ class AutomationEngine:
 
                     # Use unified processing function
                     processing_args = (repo_name, candidate, self.config, jules_mode)
-                    if explicit_only:
+                    if explicit_only and retry_request_id is not None:
+                        processing_result = self._process_single_candidate_unified(
+                            *processing_args,
+                            explicit_only=True,
+                            force=force,
+                            origin="explicit-single-target",
+                            retry=retry,
+                            retry_request_id=retry_request_id,
+                        )
+                    elif explicit_only:
                         processing_result = self._process_single_candidate_unified(
                             *processing_args,
                             explicit_only=True,
@@ -7068,6 +7184,7 @@ class AutomationEngine:
         repo_name: str,
         issue_data: Dict[str, Any],
         backend_manager: Optional[Any] = None,
+        retry_authority: Optional[ImplementationRetryRequest] = None,
     ) -> List[str]:
         """Take actions on an issue using direct LLM CLI analysis and implementation."""
         from .issue_processor import _take_issue_actions as _take_issue_actions_func
@@ -7079,6 +7196,7 @@ class AutomationEngine:
             self.github,
             backend_manager=backend_manager,
             implementation_slots=self._get_implementation_slots(repo_name),
+            **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
         )
 
     def _apply_issue_actions_directly(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:

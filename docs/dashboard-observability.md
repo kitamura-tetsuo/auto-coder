@@ -1,14 +1,55 @@
 # Dashboard observability verification
 
-Issue #2101 adds the read-only `STRONG_AUDIT` and `ORDINARY_CLOSURE` reviewer
-execution boundary consumed by the existing two-tier lifecycle. It introduces no
-production dispatch wiring, trace emission, processing origin/outcome, structured
-event schema, or dashboard projection: `pr_review_execution.py` returns validated
-evidence but has no publication or merge authority. The production integration
-that schedules these roles must add the corresponding production-to-view trace
-coverage. Run `bash scripts/test.sh tests/test_pr_review_execution.py` for prompt,
-portable-bundle, identity, disposition-completeness, and cumulative-scope boundary
-coverage.
+Issue #1986 joins the existing Issue/decomposition and PR adversarial review
+producers to the durable `/dashboard/reviews` and detail-page Review History
+views. The projection reads `ReviewAuditStore` only: it introduces no GitHub or
+provider polling, review dispatch, authorization write, or new trace event
+schema. `tests/test_dashboard_reviews.py` verifies database-side exact filters,
+captured decomposition membership, stable deep links, and distinct requested
+versus reported models; `tests/test_review_audit.py`,
+`tests/test_issue_specification_decomposition_review_audit.py`, and
+`tests/test_pr_adversarial_review_audit.py` remain the runnable producer and
+retention coverage. Run `bash scripts/test.sh tests/test_dashboard_reviews.py
+tests/test_review_audit.py tests/test_issue_specification_decomposition_review_audit.py
+tests/test_pr_adversarial_review_audit.py`. Review rows are historical evidence,
+not approval, publication, implementation, or merge authorization.
+
+Production fan-out records a `Jules Competition` trace after the fixed candidate
+set is submitted. Its details expose the durable generation identity and the
+requested, accepted, unknown, and exhausted counts; the action is dispatch
+status and never reports session submission as completed Issue implementation.
+Candidate quarantine, selection, cleanup, and merge-authority events retain the
+existing production-to-view boundaries described below.
+The daemon's targeted speculative maintenance consumer runs at startup and on
+the 60-second maintenance cadence, while account-wide Jules discovery remains
+hourly. It refreshes retained candidate identities and routes durable adoption
+or aggregate-failure deliveries back through the existing PR/Issue invalidation
+stages; cleanup continues to require confirmed GitHub state.
+
+Issue #2073 adds a fail-closed `pr.speculative-jules-authority` admission event
+before ordinary PR lifecycle effects. Deferred events carry only the authoritative
+classification and whether durable cleanup is pending; they do not claim remote
+cancellation, released provider capacity, or cleanup success. The dashboard needs
+no new projection because this uses the existing PR stage/result event schema.
+`tests/test_speculative_jules_lifecycle.py` covers durable cleanup and the
+mutation-boundary authority recheck.
+The startup/hourly Jules maintenance loop now drives pending cleanup without
+introducing a new event shape; completion still requires a confirmed closed or
+merged GitHub state, and denied or ambiguous cleanup emits no false success.
+
+Issues #2101 and #2210 add the read-only `STRONG_AUDIT` and `ORDINARY_CLOSURE`
+reviewer execution boundary consumed by the existing two-tier lifecycle. Production
+PR reentry emits the existing stage/result schema as `pr.strong-audit` or
+`pr.ordinary-closure`; ordinary-closure facts include phase/backend, target head and
+base, contract/policy identities, finding revision and IDs, and the accepted or
+deferred reason. No new dashboard projection is needed because these events use the
+existing PR stage timeline, while accepted closure remains distinct from publication
+or merge confirmation. Durable retry wakes reuse those stage identities and facts;
+their invalidation deadline is scheduling state, not a new dashboard event schema.
+Run `bash scripts/test.sh tests/test_pr_review_execution.py
+tests/test_pr_review_cycle.py tests/test_two_tier_pr_gate.py` for prompt,
+portable-bundle, identity, disposition-completeness, cumulative-scope, durable
+acceptance, and renewed-audit coverage.
 
 GitHub webhook-driven cache eviction and expedited CI watch recheck (PR #2119)
 improve the turnaround time from CI completion to validation launch. Upon webhook intake,
@@ -156,9 +197,14 @@ with `bash scripts/test.sh tests/test_codex_wham_client.py tests/test_adversaria
 
 Explicit Issue restart (`--only <issue> --force --retry`) keeps the
 `explicit-single-target` origin and emits `issue.manual-retry` after admission,
-with the Issue owner and explicit flag reason. `completed` means retry was
+with the Issue owner, request, attempt, semantic generation, owned phase, and
+explicit flag reason. `completed` means retry ownership was
 authorized, not that a provider accepted it. Existing provider dispatch stages
 report the subsequent handoff or failure. No event schema change is needed.
+The CLI action carries the same request and attempt identities. A historical
+same-generation tombstone remains visible in durable ownership history but no
+longer turns an otherwise authorized new explicit request into a duplicate
+skip; ordinary wakes and invocations without all three flags remain unchanged.
 `tests/test_specification_validation_lifecycle.py::test_manual_retry_retained_provider_admission_and_trace`
 checks the real admission path and emitted authorization for every flag boundary;
 `tests/test_dashboard_observability.py::test_manual_retry_authorization_reaches_mounted_detail`
@@ -554,7 +600,10 @@ also mount and refresh the detail view from that snapshot.
 | PR adversarial-validation backend exhaustion (`EXHAUSTED`) | `tests/test_adversarial_validation_config.py::TestResolveAdversarialValidationAvailabilityExhaustion` (candidate-route classification: whole-set exhaustion, disabled/incapable exclusion, non-quota unavailability, quota-unknown/runnable fallback, missing-reset-time cooldown); `tests/test_adversarial_validator.py::TestRunAdversarialValidation::test_run_adversarial_validation_reports_exhaustion_instead_of_blocked` (fresh selection surfaces `EXHAUSTED` instead of the generic `BLOCKED`); `tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationPRFlow::test_fresh_exhaustion_publishes_exhausted_and_does_not_merge`, `test_exhausted_same_sha_not_due_skips_revalidation`, `test_exhausted_same_sha_due_triggers_automatic_retry_without_force`, and `test_exhausted_retry_superseded_by_newer_attempt_performs_no_publication` (drive `_handle_pr_merge` end to end: publication, fail-closed non-merge, same-HEAD dedup while not due, the automatic due retry without `--force`, and supersession of a pending retry by a newer same-HEAD attempt). `EXHAUSTED` reuses the existing `pr.adversarial-validation` event schema; the new distinguishing signal is `Outcome.DEFERRED` (instead of `Outcome.BLOCKED`) plus a `retry_not_before_epoch` metadata field, and the retry-not-before time itself is carried durably in the published comment/review body rather than in a new local store, so it survives restart without a bespoke schema addition. |
 | Forced same-head admission past the unresolved-thread gate (issue #2106) | `tests/test_adversarial_validation_pr_flow.py::TestClaimedReviewThreadValidationFlow::test_forced_revalidation_reaches_validation_despite_same_head_error_and_unresolved_thread`, `test_forced_revalidation_with_mixed_threads_only_promotes_authentic_root`, `test_forced_revalidation_bypasses_post_codex_recheck_blocker`, and `test_non_forced_run_with_same_head_error_and_unresolved_thread_does_not_start_validation` (drive `_handle_pr_merge` end to end through the initial unresolved-thread gate and the post-Codex-review recheck). Both existing `pr.review-thread-gate` and `pr.repair-delegation` events keep their schema; the new admission path is distinguished by a `Continuing to forced adversarial validation` / `Forcing adversarial validation ... via explicit --force` action rather than a new field. The forced attempt still reuses the unchanged `pr.adversarial-validation` event for its own result. |
 | Fresh review-thread read at the merge boundary (issue #2106) | Same tests as above, plus `test_forced_revalidation_with_mixed_threads_only_promotes_authentic_root` (asserts `merge_pr` is not called and the human thread remains unresolved). This adds one more `pr.review-thread-gate` emission (`phase: "merge-boundary"` in its metadata) immediately before merge, reusing the existing event name/schema; it fires for every merge attempt (forced or not) whenever the review-thread gate is enabled, not only the forced path. |
+| Green-CI non-merge routing (issue #2195) | `tests/test_pr_adversarial_validation_kill_switch.py::TestAS005NonAdversarialMergeGatesStillApply::test_legacy_false_merge_result_is_deferred_without_ci_repair` covers the opaque legacy-false result. `tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationPRFlow::test_configured_strong_tier_blocks_real_merge_boundary_after_cached_ordinary_pass` reaches the production-created pending strong-audit gate, while `test_definitive_merge_rejection_remains_failed_without_ci_repair` verifies rejection mapping. Together they assert returned dispositions and zero CI/provider/local repair effects. The shared boundary emits `pr.merge-route` with `Outcome.DEFERRED` for pending or unconfirmed work and `Outcome.FAILED` for a definitive rejection, always with the merge reason and `ci_failure=false`; existing strong-audit and merge-delivery owners are unchanged. |
+| Two-tier accepted-review publication (issue #2209) | `tests/test_pr_review_effects.py` exercises exact accepted payload preservation, reservation contention, uncertain-response reconciliation across restart, and stale-authority rejection at the production effect journal. Production PR processing emits `pr.two-tier-review-effect` after the strong-audit stage with `effect="review-publication"`, the current review-cycle phase, and a receipt/reconciliation reason. `COMPLETED` means the authenticated exact publication was confirmed; every unconfirmed, unavailable, or contended effect is `DEFERRED`, remains outside CI-repair routing, and cannot grant merge authority. |
 | PR adversarial-review durable audit (issue #1985) | `tests/test_pr_adversarial_review_audit.py` (drives `_handle_pr_merge` and the real `BackendManager`/`run_adversarial_validation` boundary for one-call PASS/ERROR execution, post-feature and legacy reuse, local-only-blocked and disabled-bypassed non-executions, backend-fallback and dynamic-follow-up multi-call reviews, and a paired instrumented/instrumentation-disabled comparison including an injected audit-write failure). This is observability-neutral for the existing `pr.adversarial-validation` execution-trace event and `TraceCollector`/dashboard-detail schema covered above: it adds a separate, independently-queryable `ReviewAuditStore` (`review_kind="pr_adversarial"`) recording the same boundaries this table already covers (admission/reuse/bypass, execution, publication/reconciliation), but introduces no new processing origin, admission gate, outcome value, provider-routing branch, or structured `_record_pr_stage`/`TraceCollector` field, and its own recording never runs in a path that decides eligibility, merge safety, or review/publication policy. |
+| Muse invocation-scoped Git invariants (issue #2192) | `tests/test_muse_backend.py::test_muse_ignores_peer_ref_and_worktree_changes` drives the configured Muse alias through the real executable, Trace2 audit, and operation-bound attached/detached worktrees while peer refs and registrations change. This is observability-neutral: it corrects provider-local classification so unrelated peer activity no longer manufactures a backend `ERROR`, but introduces no processing origin, admission gate, outcome value, provider route, or structured event field; successful and genuine invariant-failure results continue through the existing backend and `pr.adversarial-validation` emissions. |
 | Issue specification/decomposition review durable audit (issue #1984) | `tests/test_issue_specification_decomposition_review_audit.py` (drives `AutomationEngine._traced_validation_job`/`_schedule_parent_validations` and the real `SpecificationValidationLifecycle`/`DecompositionValidationLifecycle`/`BackendManager` boundary for a fresh EXECUTED READY round-trip readable after a fresh-collector restart, REUSED reuse-provenance linking plus a legacy-decision-with-no-association fallback, malformed-backend-output/local-Objective-integrity-refusal/disabled-BYPASSED as distinct outcomes, a parent+open-child+closed-child decomposition identity, two scheduler waiters coalescing onto exactly one review, and an unwritable audit store that never changes the returned decision). Mirrors the PR adversarial audit above: it adds a separate, independently-queryable `ReviewAuditStore` (`review_kind` `"issue_specification"`/`"issue_decomposition"`) recording the same "Individual/decomposition validation jobs" boundary this table already covers, but introduces no new processing origin, admission gate, outcome value, provider-routing branch, or structured `TraceCollector` field, and its own recording never runs in a path that decides Issue readiness, remediation, or publication. |
 | PR repair exhaustion and operator resumption (issue #2142) | `tests/test_pr_repair_exhaustion.py` (covers end-to-end non-convergence stopping dispatch across all repair origins, fail-closed non-merge, canonical blocker hold clearing upon human revalidation, atomic operator grants and re-evaluation scheduling via CLI `auto-coder pr-repair resume`, crash recovery of unfulfilled grant re-evaluations, and review limits never turning into repair success). When repair allowance is exhausted, automatic merge and repair delegations are blocked with `Outcome.BLOCKED` and metadata containing `{"reason": "repair allowance exhausted", "blocker_ids": list(...), "machine_readable_reason": "AUTO_REPAIR_EXHAUSTED"}`; explicit operator resumption records a trace under `pr.repair-resumption` before scheduling re-evaluation in `PendingWorkStore`. |
 
@@ -996,3 +1045,31 @@ The `claude-followup-quota-recovery` daemon task services due waits without an
 external event. Recovery uses the ordinary PR execution path, so its refreshed
 evaluation and eventual delivery or successor deferral remain visible in the
 existing PR stage trace rather than introducing a parallel success signal.
+# CI repair initiation authority
+
+CI-triggered Codex Cloud and Jules repair delegation now emits the existing
+`pr.repair-delegation` stage only after a fresh exact-head admission at the
+provider boundary. Refused admissions remain failed/deferred actions with the
+specific current-evidence reason and do not emit an accepted-handoff outcome or
+a provider receipt. Initiation logs include the bound PR head and qualifying
+failure identities; no structured event schema or dashboard field changed.
+
+# Jules candidate selection and final merge fencing
+
+Speculative candidate evaluation is intentionally represented by existing CI,
+adversarial-validation, and speculative-authority stages rather than by a synthetic
+"winner" success. The final sender emits `pr.speculative-jules-merge-authority`
+with the current classification and denial reason when an artifact loses authority
+after admission. This stage is blocking and never reports Issue completion;
+confirmed merge delivery remains the sole completion trace.
+## Explicit retry dispatch handoff journal
+
+Identity-based explicit retry dispatch adds a durable handoff journal between
+retry ownership and the local/provider creation boundary. The journal is a
+machine-readable recovery authority, not a dashboard event source: it records
+`claimed`, `definitely-not-started`, `accepted`, `indeterminate`, and
+`completed` creation states plus projection completion. Existing dispatch
+stage events continue to describe the same provider calls and outcomes, and no
+event schema, processing origin, stage identifier, or dashboard rendering is
+changed by this child. A later controller integration may add a production
+origin and must add its own production-to-view scenario then.

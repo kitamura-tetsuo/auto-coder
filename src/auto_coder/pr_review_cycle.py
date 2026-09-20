@@ -239,6 +239,7 @@ class PrReviewCycleSnapshot:
     ordinary_pass_contract_identity: str
     accepted_strong_round: Optional[StrongAuditRound]
     active_claim: Optional[ActiveClaim]
+    findings: Tuple[Finding, ...]
     open_findings: Tuple[Finding, ...]
     finding_set_revision: int
     completion: Optional[CompletionRecord]
@@ -451,7 +452,8 @@ class PrReviewCycleRepository:
         findings_raw = raw_pr.get("findings", {})
         assert isinstance(findings_raw, dict)
         findings = {finding_id: self._finding_from_raw(raw) for finding_id, raw in findings_raw.items()}
-        open_findings = tuple(sorted((f for f in findings.values() if f.status == OPEN), key=lambda f: f.finding_id))
+        all_findings = tuple(sorted(findings.values(), key=lambda f: f.finding_id))
+        open_findings = tuple(finding for finding in all_findings if finding.status == OPEN)
 
         accepted_round_id = str(raw_pr.get("accepted_strong_round_id", ""))
         accepted_round = None
@@ -501,6 +503,7 @@ class PrReviewCycleRepository:
             ordinary_pass_contract_identity=ordinary_contract,
             accepted_strong_round=accepted_round,
             active_claim=active_claim,
+            findings=all_findings,
             open_findings=open_findings,
             finding_set_revision=int(raw_pr.get("finding_set_revision", 0)),
             completion=applicable_completion,
@@ -542,6 +545,9 @@ class PrReviewCycleRepository:
         retry_not_before = float(raw_pr.get("retry_not_before", 0.0))
         if retry_not_before > time.time():
             return PHASE_STRONG_PENDING, str(raw_pr.get("attempt_error_reason", "strong audit retry deferred"))
+        attempt_error = str(raw_pr.get("attempt_error_reason", ""))
+        if attempt_error and isinstance(raw_pr.get("ordinary_pass"), dict):
+            return PHASE_STRONG_PENDING, attempt_error
         if isinstance(raw_pr.get("ordinary_pass"), dict):
             return PHASE_STRONG_PENDING, "ordinary PASS recorded; strong audit required"
         return PHASE_ORDINARY_REVIEW, "awaiting an applicable ordinary PASS"

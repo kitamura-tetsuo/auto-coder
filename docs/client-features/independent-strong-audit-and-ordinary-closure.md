@@ -23,10 +23,33 @@ gap also records the incorrect implementation admitted by existing tests and why
 those tests remain green. Ordinary closure must return exactly one evidence-backed
 `FIXED`, `INVALID`, `OPEN`, or `INCONCLUSIVE` disposition for every accepted
 finding and separately classify cumulative scope as `BOUNDED`, `EXPANDED`, or
-`UNKNOWN`. It may report new concrete findings. Only complete dispositions, no
-new findings, and evidence-backed `BOUNDED` scope can produce closure evidence.
+`UNKNOWN`. It may report new concrete findings. Ordinary `PASS` with `EXPANDED`
+or semantically `UNKNOWN` scope remains a complete convergence result, but it
+cannot produce closure evidence; production durably admits a renewed independent
+strong audit. Only complete dispositions, no new findings, and evidence-backed
+`BOUNDED` scope can produce closure evidence.
 
 The output parser validates every execution identity and required field. Invalid,
 stale, incomplete, contradictory, or unavailable output becomes an explicit
 non-complete diagnostic, never PASS. The result is evidence for the durable
 lifecycle; it cannot publish reviews, close threads, mutate Issues, or merge.
+
+Production PR processing consumes `STRONG_PENDING` after an applicable ordinary
+PASS. It atomically claims the durable phase, creates a detached read-only
+worktree at the audited head, resolves only the configured strong route, supplies
+the complete base-to-head diff and Requirements contract, and durably accepts
+the validated portable result. Unavailable, exhausted, inconclusive, failed,
+and contended executions remain pending with diagnostic and retry evidence;
+accepted results remain blocked on their separately owned publication or repair
+effect and therefore do not grant merge authority.
+
+When accepted strong findings survive into a later ordinary-pass head,
+production processing instead runs `ORDINARY_CLOSURE` through the ordinary PR
+route. The invocation receives the retained finding payloads and revision, the
+fresh Requirements snapshot and repository paths, and the cumulative diff from
+the strong-audited head to the current head. Acceptance uses the pre-invocation
+durable transition version as a fence. Bounded convergence records a pending
+closure certification; expanded or semantically unknown convergence records the
+non-closing assessment and requires a renewed strong round. Trace events use the
+`pr.ordinary-closure` stage and expose the head/base, backend, contract and policy
+identities, finding revision and IDs, phase, and acceptance/defer reason.

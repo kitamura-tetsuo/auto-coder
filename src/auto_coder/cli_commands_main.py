@@ -135,7 +135,11 @@ async def _run_process_issues_daemon(
     "only_target",
     help="Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)",
 )
-@click.option("--retry", is_flag=True, help="Start a new Issue implementation and replace provider tracking; requires --only and --force.")
+@click.option(
+    "--retry",
+    is_flag=True,
+    help="Authorize one durable, request-scoped Issue implementation attempt; requires --only and --force and preserves existing safety gates.",
+)
 @click.option(
     "--log-level",
     default="INFO",

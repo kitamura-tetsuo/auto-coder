@@ -18,10 +18,12 @@ each test below is named after the fixture/scenario it drives.
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -31,6 +33,7 @@ from auto_coder.backend_manager import BackendManager
 from auto_coder.cli_helpers import AdversarialValidationAvailability
 from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.github_app_reviewer import ReviewPublicationResult
+from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.pr_processor import _handle_pr_merge
 from auto_coder.review_audit import EvaluationLifecycle, ExecutionMode, ReviewAuditStore
 from auto_coder.review_capture import recorder as review_recorder
@@ -240,6 +243,120 @@ def _get_only_evaluation(store: ReviewAuditStore, repository: str):
 
 
 class TestReq010OneCallExecution:
+    def test_muse_peer_commit_reaches_publication_with_original_head_and_attempt(self, tmp_path, monkeypatch, audit_store):
+        """Issue #2192/REQ-008: peer refs cannot replace a real PR verdict."""
+        repo, head_sha = _build_pr_repo(tmp_path)
+        validation_worktree = tmp_path / "validation-worktree"
+        _git(["worktree", "add", "--detach", str(validation_worktree), head_sha], repo)
+        client = _build_github_client(head_sha)
+        pr_data = _build_pr_data(head_sha)
+        config = _build_config()
+        ready = tmp_path / "muse-ready"
+        release = tmp_path / "muse-release"
+        invocation_count = tmp_path / "muse-invocations"
+        executable = tmp_path / "muse-reviewer"
+        executable.write_text(
+            """#!/usr/bin/env python3
+import os
+import sys
+import time
+from pathlib import Path
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code test")
+    raise SystemExit(0)
+count_path = Path(os.environ["MUSE_INVOCATION_COUNT"])
+count_path.write_text(count_path.read_text() + "1\\n" if count_path.exists() else "1\\n")
+Path(os.environ["MUSE_READY"]).write_text("ready")
+while not Path(os.environ["MUSE_RELEASE"]).exists():
+    time.sleep(0.01)
+print(os.environ["MUSE_VERDICT"])
+"""
+        )
+        executable.chmod(0o700)
+        backend_config = LLMBackendConfiguration(
+            backends={
+                "muse-reviewer": BackendConfig(
+                    name="muse-reviewer",
+                    backend_type="muse",
+                    model="muse-spark-1.3",
+                    options_for_noedit=["--no-edit"],
+                )
+            }
+        )
+        monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(executable))
+        monkeypatch.setenv("MUSE_READY", str(ready))
+        monkeypatch.setenv("MUSE_RELEASE", str(release))
+        monkeypatch.setenv("MUSE_INVOCATION_COUNT", str(invocation_count))
+        monkeypatch.setenv("MUSE_VERDICT", PASS_PAYLOAD)
+
+        from auto_coder.cli_helpers import build_backend_manager
+
+        with (
+            patch("auto_coder.cli_helpers.get_llm_config", return_value=backend_config),
+            patch("auto_coder.muse_client.get_llm_config", return_value=backend_config),
+        ):
+            manager = build_backend_manager(
+                ["muse-reviewer"],
+                "muse-reviewer",
+                {"muse-reviewer": "muse-spark-1.3"},
+                use_noedit_options=True,
+            )
+
+        _apply_standard_merge_gates(monkeypatch, mergeable=True, merge_result=False)
+        merge_gate = MagicMock(return_value=False)
+        monkeypatch.setattr("auto_coder.pr_processor._merge_pr", merge_gate)
+        _wire_backend(monkeypatch, manager)
+        monkeypatch.setattr(
+            "auto_coder.pr_processor.isolated_pr_head_worktree",
+            lambda *a, **k: _static_worktree(validation_worktree),
+        )
+        publications: list[tuple[str, int, str, AdversarialValidationResult]] = []
+
+        def publish(repo_name, pr_number, published_head, result, **_kwargs):
+            publications.append((repo_name, pr_number, published_head, result))
+            return ReviewPublicationResult(True, "APPROVE", "")
+
+        monkeypatch.setattr("auto_coder.pr_processor.publish_adversarial_review", publish)
+        outcomes: list[object] = []
+
+        def process_pr() -> None:
+            try:
+                outcomes.append(_handle_pr_merge(client, REPO_NAME, pr_data, config, {}))
+            except BaseException as exc:
+                outcomes.append(exc)
+
+        worker = threading.Thread(target=process_pr)
+        worker.start()
+        deadline = time.monotonic() + 30
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), f"Muse did not pause after its invocation snapshot: {outcomes!r}"
+
+        (repo / "peer.txt").write_text("peer progress\n")
+        _git(["add", "peer.txt"], repo)
+        _git(["commit", "-q", "-m", "peer commit"], repo)
+        peer_head = _git(["rev-parse", "HEAD"], repo)
+        release.write_text("continue")
+        worker.join(timeout=10)
+
+        assert not worker.is_alive()
+        assert len(outcomes) == 1 and not isinstance(outcomes[0], BaseException)
+        actions = outcomes[0]
+        assert invocation_count.read_text().splitlines() == ["1"]
+        assert len(publications) == 1
+        published_repo, published_pr, published_head, published_result = publications[0]
+        assert (published_repo, published_pr, published_head) == (REPO_NAME, PR_NUMBER, head_sha)
+        assert published_result.result == "PASS"
+        assert published_result.summary == "greet() returns hello at the reviewed head."
+        assert published_result.attempt_id
+        assert published_result.attempt_sequence == 1
+        assert _git(["rev-parse", "HEAD"], validation_worktree) == head_sha
+        assert _git(["rev-parse", "HEAD"], repo) == peer_head
+        assert any("Published APPROVE adversarial review" in action for action in actions)
+        merge_gate.assert_called_once()
+        assert not any("Successfully merged" in action for action in actions)
+
     def test_pass_payload_is_one_executed_review_with_one_invocation(self, tmp_path, monkeypatch, audit_store):
         repo, head_sha = _build_pr_repo(tmp_path)
         client = _build_github_client(head_sha)

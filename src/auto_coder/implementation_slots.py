@@ -648,6 +648,8 @@ class ImplementationSlotRepository:
         allow_urgent_emergency: bool = False,
         github_client: Optional[Any] = None,
         generation: Optional[str] = None,
+        retry_request_id: Optional[str] = None,
+        implementation_attempt_id: Optional[str] = None,
     ) -> Optional[str]:
         """Atomically admit and durably identify one mutating execution.
 
@@ -664,6 +666,12 @@ class ImplementationSlotRepository:
         """
         if implementation_pr is not None and (owner.kind == "pr" or isinstance(implementation_pr, bool) or not isinstance(implementation_pr, int)):
             raise ValueError("implementation_pr must identify a PR belonging to a non-PR implementation owner")
+        if (retry_request_id is None) != (implementation_attempt_id is None):
+            raise ValueError("retry_request_id and implementation_attempt_id must be supplied together")
+        if retry_request_id is not None and (not retry_request_id or not implementation_attempt_id):
+            raise ValueError("retry and attempt identities must be non-empty")
+        if retry_request_id is not None and generation is None:
+            raise ValueError("explicit retry acquisition requires a generation")
         execution_id = uuid.uuid4().hex
         process_identity = self._current_process_identity()
         with self._state_lock():
@@ -742,9 +750,18 @@ class ImplementationSlotRepository:
             if implementation_pr is not None and implementation_pr not in known_prs:
                 known_prs.append(implementation_pr)
             execution = {"id": execution_id, "pid": os.getpid(), "started_at": time.time()}
+            if retry_request_id is not None:
+                execution["retry_request_id"] = retry_request_id
+                execution["implementation_attempt_id"] = implementation_attempt_id
             if process_identity is not None:
                 execution.update({"boot_id": process_identity.boot_id, "process_start_ticks": process_identity.start_ticks})
             executions.append(execution)
+            if retry_request_id is not None:
+                # The duplicate-execution check above proves there is no live
+                # local mutation. Retained remote/PR membership is historical
+                # association, not a local-execution conflict.
+                record["retry_request_id"] = retry_request_id
+                record["implementation_attempt_id"] = implementation_attempt_id
             if "incarnation" not in record or not record["incarnation"]:
                 record["incarnation"] = uuid.uuid4().hex
             self._increment_activity_revision(record)
@@ -768,6 +785,28 @@ class ImplementationSlotRepository:
         active[owner.key] = execution_id
         self._execution_context.owners = active
         return execution_id
+
+    def retry_acquisition_reference(
+        self,
+        owner: ImplementationOwner,
+        request_id: str,
+        attempt_id: str,
+        generation: str,
+    ) -> Optional[str]:
+        """Recover the execution that captured an explicit retry binding."""
+        with self._state_lock():
+            record = self._read().get(owner.key)
+        if record is None:
+            return None
+        if record.get("retry_request_id") != request_id or record.get("implementation_attempt_id") != attempt_id or record.get("implementation_generation") != generation:
+            return None
+        executions = record.get("executions", [])
+        if not isinstance(executions, list) or any(not isinstance(value, dict) or not isinstance(value.get("id"), str) for value in executions):
+            raise ImplementationSlotUnavailable("Cannot safely parse retry acquisition executions")
+        matches = [value["id"] for value in executions if value.get("retry_request_id") == request_id and value.get("implementation_attempt_id") == attempt_id]
+        if len(matches) > 1:
+            raise ImplementationSlotUnavailable("Retry attempt has contradictory ownership references")
+        return matches[0] if matches else None
 
     @staticmethod
     def _parse_stored_hierarchy(record: Dict[str, object]) -> tuple[Optional[int], tuple[int, ...]]:

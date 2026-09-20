@@ -165,6 +165,14 @@ def check_and_resume_or_archive_sessions(
                 logger.warning("GitHubClient not initialized and no token found, skipping PR status checks")
                 github_client = None
 
+        # The regular startup/hourly Jules maintenance cycle is also the due
+        # consumer for restart-recovered loser cleanup; it does not require a
+        # fresh Issue or PR event.
+        if github_client is not None:
+            from .speculative_jules_lifecycle import consume_due_speculative_cleanup
+
+            consume_due_speculative_cleanup(github_client)
+
         now = datetime.now(timezone.utc)
         expiration_days = get_jules_session_expiration_days_from_config()
         expiration_date_threshold = now - timedelta(days=expiration_days)

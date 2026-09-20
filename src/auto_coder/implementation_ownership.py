@@ -54,7 +54,7 @@ from enum import Enum
 from typing import Optional
 
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
-from .issue_stage_routing import IssueStageRoutingStore
+from .issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 
 
 class OwnershipStartDecision(str, Enum):
@@ -172,3 +172,69 @@ def confirm_implementation_ownership(
     generation (REQ-004, REQ-005).
     """
     routing.record_implementation_owned(repository, owner.number, generation)
+
+
+def acquire_explicit_retry(
+    routing: IssueStageRoutingStore,
+    slots: ImplementationSlotRepository,
+    repository: str,
+    target_number: int,
+    generation: str,
+    request_id: str,
+    *,
+    github_client: object | None = None,
+    bypass_capacity: bool = False,
+) -> ImplementationRetryRequest:
+    """Consume one accepted request at the real local-execution boundary.
+
+    The per-owner lock serializes independent consumers. If a process dies
+    after the slot write, the next caller recovers the exact R/A/G binding from
+    the slot rather than starting another execution.
+    """
+    if slots.repo_name != repository:
+        raise ValueError("slot repository does not match retry repository")
+    owner = ImplementationOwner("issue", target_number)
+    with slots.serialize(owner):
+        request = routing.claim_retry_acquisition(request_id, repository, target_number, generation)
+        if request.status in {"owned", "invalidated"}:
+            return request
+        recovered = slots.retry_acquisition_reference(owner, request.request_id, request.attempt_id, request.generation)
+        if recovered is not None:
+            return routing.mark_retry_owned(request_id, recovered)
+        # Validate any historical binding through the strict public reader;
+        # start_execution deliberately accepts legacy callers and therefore
+        # cannot interpret a malformed value as explicit retry authority.
+        slots.implementation_generation(owner)
+        execution_id = slots.start_execution(
+            owner,
+            bypass_capacity=bypass_capacity,
+            github_client=github_client,
+            generation=generation,
+            retry_request_id=request.request_id,
+            implementation_attempt_id=request.attempt_id,
+        )
+        if execution_id is None:
+            return routing.defer_retry_acquisition(request_id, "local execution contention or capacity unavailable")
+        # The generation tombstone remains historical; this request is the
+        # narrow authority for a distinct attempt of that exact generation.
+        routing.record_implementation_owned(repository, target_number, generation)
+        return routing.mark_retry_owned(request_id, execution_id)
+
+
+def invalidate_explicit_retry(
+    routing: IssueStageRoutingStore,
+    slots: ImplementationSlotRepository,
+    request_id: str,
+    current_generation: str,
+    *,
+    reason: Optional[str] = None,
+) -> ImplementationRetryRequest:
+    """Order authoritative supersession against ownership acquisition."""
+    request = routing.retry_request(request_id)
+    if request is None:
+        raise ValueError(f"unknown retry request {request_id!r}")
+    if slots.repo_name != request.repository:
+        raise ValueError("slot repository does not match retry repository")
+    owner = ImplementationOwner("issue", request.target_number)
+    with slots.serialize(owner):
+        return routing.invalidate_retry_request(request_id, current_generation, reason)

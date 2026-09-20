@@ -16,6 +16,10 @@ repaired head without another strong call; expanded scope, changed contract/base
 strong policy, or an unrelated head requires a new audit. Unavailable or exhausted
 strong routes remain pending (exhaustion uses the reported reset or a 1,800-second
 cooldown), and restarts resume retained publication, delivery, or verification work.
+The daemon retains a durable PR invalidation until that pending phase is runnable:
+authoritative quota deadlines are preserved exactly, while contention and pending
+effect delivery receive a bounded retry wake. Thus a due same-head cycle resumes in
+the live controller without requiring another GitHub event, commit, or restart.
 
 The final merge boundary compares the open PR's current head, reviewed base,
 complete Requirements snapshot, strong-policy identity, outstanding findings, and

@@ -1,8 +1,10 @@
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.ci_repair_authority import CIRepairAuthority
 from src.auto_coder.pr_processor import _handle_pr_merge
 
 
@@ -13,6 +15,17 @@ def _client():
 
 
 from src.auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
+
+
+@pytest.fixture(autouse=True)
+def admitted_ci_repair():
+    """Local override tests exercise behavior after exact-head admission."""
+    authority = CIRepairAuthority(True, "current exact-head CI failure", "test-head")
+    with patch(
+        "src.auto_coder.pr_processor.current_ci_failure_authority",
+        return_value=nullcontext(authority),
+    ):
+        yield
 
 
 class TestPRProcessorLocalOverride:

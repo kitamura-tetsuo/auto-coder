@@ -21,6 +21,7 @@ Covers:
   for both local-test and GitHub Actions failures through the repair decision point.
 """
 
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -28,6 +29,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, EmptyPRResult, PRProcessingOutcome, StaleJulesPRResult
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.fix_to_pass_tests_runner import fix_to_pass_tests
 from auto_coder.llm_backend_config import (
     get_automatic_test_fix_from_config,
@@ -42,6 +44,17 @@ from auto_coder.pr_processor import (
 )
 from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_action import GitHubActionsStatusResult
+
+
+@pytest.fixture(autouse=True)
+def current_ci_failure_authority():
+    """Kill-switch tests exercise behavior after CI repair admission."""
+    authority = CIRepairAuthority(True, "current exact-head CI failure", "test-head")
+    with patch(
+        "auto_coder.pr_processor.current_ci_failure_authority",
+        return_value=nullcontext(authority),
+    ):
+        yield
 
 
 def _pr_data(

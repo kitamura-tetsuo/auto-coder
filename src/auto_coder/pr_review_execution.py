@@ -17,7 +17,7 @@ from typing import Mapping, Optional, Sequence, Tuple
 from .backend_manager import BackendManager, run_llm_prompt
 from .pr_review_cycle import ContractSnapshot, Finding, StrongPolicyIdentity
 from .prompt_loader import render_prompt
-from .utils import CommandExecutor
+from .utils import CommandExecutor, bind_command_execution_cwd, reset_command_execution_cwd
 
 
 class ReviewMode(str, Enum):
@@ -115,9 +115,13 @@ def execute_review(
     execution_cwd: str,
 ) -> ReviewExecutionResult:
     """Invoke a reviewer in read-only mode against the exact requested head."""
-    _verify_head(execution_cwd, review_input.head_sha)
-    response = run_llm_prompt(build_review_prompt(review_input), backend_manager=backend_manager, is_noedit=True)
-    _verify_head(execution_cwd, review_input.head_sha)
+    execution_token = bind_command_execution_cwd(execution_cwd)
+    try:
+        _verify_head(execution_cwd, review_input.head_sha)
+        response = run_llm_prompt(build_review_prompt(review_input), backend_manager=backend_manager, is_noedit=True)
+        _verify_head(execution_cwd, review_input.head_sha)
+    finally:
+        reset_command_execution_cwd(execution_token)
     identity = backend_manager.get_current_backend_identity()
     provenance = "/".join(str(part) for part in identity) if isinstance(identity, tuple) else "unavailable"
     return parse_review_result(response, review_input, provenance)
@@ -168,8 +172,8 @@ def parse_review_result(response: str, expected: ReviewExecutionInput, reviewer_
     if not isinstance(scope_evidence, str) or not scope_evidence.strip():
         return _diagnostic(expected, reviewer_provenance, "Cumulative scope assessment requires evidence")
     unresolved = any(item.status in {"OPEN", "INCONCLUSIVE"} for item in dispositions)
-    if verdict == "PASS" and (unresolved or scope is not ScopeAssessment.BOUNDED):
-        return _diagnostic(expected, reviewer_provenance, "PASS contradicts dispositions or cumulative scope")
+    if verdict == "PASS" and unresolved:
+        return _diagnostic(expected, reviewer_provenance, "PASS contradicts unresolved finding dispositions")
     new_findings = _parse_findings(raw.get("findings", []), expected.round_id)
     if new_findings is None:
         return _diagnostic(expected, reviewer_provenance, "New ordinary findings are malformed")

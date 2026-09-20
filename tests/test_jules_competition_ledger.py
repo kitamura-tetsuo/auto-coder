@@ -102,6 +102,8 @@ def _acceptance(generation_id: str, candidate_id: str, pr_number: int, head_sha:
         base_sha=base_sha,
         issue_oracle_fingerprint=fingerprint,
         expected_binding_revision=revision,
+        validation_revision=1,
+        invalidation_revision=1,
     )
 
 

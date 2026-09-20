@@ -133,6 +133,21 @@ def _normalize_key(key: str) -> str:
     return key.lower().replace("-", "_")
 
 
+def _membership_numbers(value: Any) -> List[str]:
+    """Extract explicitly captured Issue numbers from legacy membership JSON."""
+    found: List[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in {"issue_number", "number"} and isinstance(child, (str, int)):
+                found.append(str(child))
+            else:
+                found.extend(_membership_numbers(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_membership_numbers(child))
+    return found
+
+
 def redact_sensitive_data(data: Any, credentials: Optional[Sequence[str]] = None) -> Any:
     """Redact sensitive credentials and known token patterns."""
     creds_list = [c for c in (credentials or []) if c]
@@ -606,8 +621,21 @@ class ReviewAuditStore:
             logger.error(f"Failed to get evaluation {review_id}: {e}")
             return AuditSingleReadResult(health=StorageHealth.UNAVAILABLE, record=None)
 
-    def get_recent_history(self, repository: str, limit: int = 50, high_water_mark_seq: Optional[int] = None, before_seq: Optional[int] = None) -> AuditReadResult:
-        """Gets recent evaluations. Page sizes strictly 1-200."""
+    def get_recent_history(
+        self,
+        repository: str,
+        limit: int = 50,
+        high_water_mark_seq: Optional[int] = None,
+        before_seq: Optional[int] = None,
+        target_type: Optional[str] = None,
+        target_number: Optional[str] = None,
+        review_kind: Optional[str] = None,
+    ) -> AuditReadResult:
+        """Get one bounded, creation-sequence snapshot page.
+
+        Filters are applied by SQLite before the limit.  In particular this is
+        not a filter over whichever fifty rows happened to be loaded by a UI.
+        """
         if not 1 <= limit <= 200:
             logger.error("Page size must be between 1 and 200")
             return AuditReadResult(health=StorageHealth.UNAVAILABLE, records=[])
@@ -629,6 +657,16 @@ class ReviewAuditStore:
                 if before_seq is not None:
                     conditions.append("creation_sequence < ?")
                     params.append(before_seq)
+
+                if target_type is not None:
+                    conditions.append("target_type = ?")
+                    params.append(target_type)
+                if target_number is not None:
+                    conditions.append("target_number = ?")
+                    params.append(target_number)
+                if review_kind is not None:
+                    conditions.append("review_kind = ?")
+                    params.append(review_kind)
 
                 if conditions:
                     query += " WHERE " + " AND ".join(conditions)
@@ -680,6 +718,47 @@ class ReviewAuditStore:
         except Exception as e:
             logger.error(f"Failed to get related evaluations: {e}")
             return AuditReadResult(health=StorageHealth.UNAVAILABLE, records=[])
+
+    def get_decomposition_evaluations_for_member(self, repository: str, issue_number: str) -> AuditReadResult:
+        """Return captured parent-set reviews containing an Issue member.
+
+        Membership is evaluated from the retained review payload.  No current
+        GitHub relationship lookup is involved, so later reparenting cannot
+        rewrite history.
+        """
+        conn, health = self._connect_readonly(repository)
+        if conn is None:
+            return AuditReadResult(health=health, records=[])
+        try:
+            rows = conn.execute(
+                "SELECT * FROM evaluation WHERE review_kind = ? ORDER BY creation_sequence DESC",
+                ("issue_decomposition",),
+            ).fetchall()
+            result = AuditReadResult(
+                health=StorageHealth.AVAILABLE,
+                records=[self._row_to_evaluation(row) for row in rows],
+            )
+        except Exception as exc:
+            logger.error(f"Failed to read captured decomposition membership: {exc}")
+            return AuditReadResult(health=StorageHealth.UNAVAILABLE, records=[])
+        finally:
+            conn.close()
+
+        def contains(record: ReviewAuditRecord) -> bool:
+            report = record.native_report or {}
+            identity = report.get("identity", report)
+            members = [identity.get("parent"), *(identity.get("children") or [])]
+            for member in members:
+                if isinstance(member, dict) and str(member.get("issue_number", member.get("number", ""))) == str(issue_number):
+                    return True
+            # Early producers retained membership as a JSON string column.
+            try:
+                captured = json.loads(record.related_issue_membership or "null")
+            except (TypeError, json.JSONDecodeError):
+                captured = None
+            return str(issue_number) in {str(value) for value in _membership_numbers(captured)}
+
+        return AuditReadResult(health=result.health, records=[record for record in result.records if contains(record)])
 
     def _row_to_evaluation(self, row: sqlite3.Row) -> ReviewAuditRecord:
         return ReviewAuditRecord(

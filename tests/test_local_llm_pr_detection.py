@@ -1,15 +1,28 @@
 """Unit tests for local LLM PR identification and fix limitation."""
 
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.issue_processor import _create_pr_for_issue
 from auto_coder.pr_processor import _handle_pr_merge, _is_local_llm_pr, is_local_llm_pr
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
+
+
+@pytest.fixture(autouse=True)
+def admitted_ci_repair():
+    """Local repair tests exercise behavior after exact-head admission."""
+    authority = CIRepairAuthority(True, "current exact-head CI failure", "test-head")
+    with patch(
+        "auto_coder.pr_processor.current_ci_failure_authority",
+        return_value=nullcontext(authority),
+    ):
+        yield
 
 
 class TestIsLocalLLMPrDetection:

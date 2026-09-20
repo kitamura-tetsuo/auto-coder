@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
@@ -51,6 +51,7 @@ from .bounded_repair_bundle import (
 )
 from .branch_manager import BranchManager
 from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
+from .ci_repair_authority import current_ci_failure_authority
 from .claude_followup_waits import ClaudeFollowupHoldActive, get_claude_followup_wait_store, wait_from_error
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
@@ -62,7 +63,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .github_app_reviewer import ReviewerAppIdentity, publish_adversarial_review, resolve_reviewer_app_identity
+from .github_app_reviewer import GitHubAppReviewer, ReviewerAppIdentity, load_reviewer_app_config, publish_adversarial_review, resolve_reviewer_app_identity
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .invocation_admission import bind_invocation_target
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
@@ -76,7 +77,11 @@ from .pr_repair_guard import (
     check_pr_repair_exhaustion,
     publish_exhaustion_comment_deduped,
 )
-from .pr_review_cycle import ContractSnapshot, StrongPolicyIdentity
+from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot
+from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
+from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongPolicyIdentity
+from .pr_review_effects import CONFIRMED, REJECTED, UNCERTAIN, AcceptedReviewPayload, EffectAttempt, EffectOperation, ReviewEffectExecutor, ReviewEffectRepository
+from .pr_review_execution import ReviewExecutionInput, ReviewMode, ScopeAssessment, execute_review
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
@@ -115,6 +120,7 @@ from .review_thread_validation import (
 from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
 from .shutdown_context import new_work_allowed
+from .speculative_jules_lifecycle import get_speculative_jules_lifecycle
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -247,6 +253,230 @@ def _two_tier_gate_inputs(
     if not head_sha or not base_sha:
         raise RuntimeError("PR head/base identity is unavailable for required strong audit")
     return TwoTierGateInputs(TwoTierPrGate(repo_name), contract, policy, head_sha, base_sha)
+
+
+def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
+    """Claim, execute, and durably accept one production strong-audit round."""
+    provenance = RoundProvenance(inputs.head_sha, inputs.base_sha)
+    try:
+        claim = inputs.gate.state.claim_strong_audit(pr_number, provenance, inputs.contract, inputs.policy)
+    except ClaimContendedError:
+        return False, "another controller owns the live strong-audit claim"
+    except NotApplicableError as exc:
+        return False, str(exc)
+
+    try:
+        with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
+            from .cli_helpers import resolve_adversarial_validation_availability
+
+            availability = resolve_adversarial_validation_availability("strong_pr", execution_cwd=worktree)
+            if availability.backend_manager is None:
+                reason = "strong reviewer route is EXHAUSTED" if availability.exhausted else "strong reviewer route is UNAVAILABLE"
+                inputs.gate.state.abandon_claim(
+                    pr_number,
+                    claim.claim_id,
+                    reason,
+                    retry_not_before=availability.retry_not_before_epoch or 0.0,
+                )
+                return False, reason
+
+            diff = CommandExecutor.run_command(
+                ["git", "diff", "--no-ext-diff", "--binary", inputs.base_sha, inputs.head_sha],
+                cwd=worktree,
+            )
+            tracked = CommandExecutor.run_command(["git", "ls-files"], cwd=worktree)
+            if not diff.success or not tracked.success:
+                raise RuntimeError("required repository or reviewed-diff evidence is unavailable")
+            review_input = ReviewExecutionInput(
+                mode=ReviewMode.STRONG_AUDIT,
+                round_id=claim.claim_id,
+                attempt_id=f"{claim.open_epoch}:{claim.based_on_version}",
+                head_sha=inputs.head_sha,
+                base_sha=inputs.base_sha,
+                contract=inputs.contract,
+                policy=inputs.policy,
+                repository_evidence="Pinned read-only snapshot. Tracked paths:\n" + tracked.stdout,
+                diff_evidence=diff.stdout,
+            )
+            result = execute_review(review_input, availability.backend_manager, worktree)
+        if not result.is_complete or result.verdict not in {VERDICT_PASS, VERDICT_FINDINGS}:
+            reason = result.diagnostic or f"strong reviewer returned {result.verdict}"
+            inputs.gate.state.abandon_claim(pr_number, claim.claim_id, reason)
+            return False, reason
+        inputs.gate.state.record_strong_result(
+            pr_number,
+            claim.claim_id,
+            result.verdict,
+            result.reviewer_provenance,
+            list(result.findings),
+        )
+        return True, f"accepted {result.verdict} from {result.reviewer_provenance}; publication remains pending"
+    except Exception as exc:
+        inputs.gate.state.abandon_claim(pr_number, claim.claim_id, str(exc))
+        return False, f"strong audit execution failed: {exc}"
+
+
+def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str, str]:
+    """Run ordinary verification for a retained strong finding bundle."""
+    snapshot = inputs.gate.state.snapshot(pr_number)
+    strong_round = snapshot.accepted_strong_round
+    if snapshot.phase != PHASE_ORDINARY_CLOSURE or strong_round is None or not snapshot.open_findings:
+        return False, "ordinary closure is not currently applicable", ""
+    if strong_round.base_sha != inputs.base_sha or strong_round.contract_identity != inputs.contract.identity or strong_round.policy_identity != inputs.policy.identity:
+        return False, "retained strong evidence is stale for the current base, contract, or policy", ""
+    try:
+        with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
+            from .cli_helpers import resolve_adversarial_validation_availability
+
+            availability = resolve_adversarial_validation_availability("pr", execution_cwd=worktree)
+            if availability.backend_manager is None:
+                reason = "ordinary reviewer route is EXHAUSTED" if availability.exhausted else "ordinary reviewer route is UNAVAILABLE"
+                return False, reason, ""
+            diff = CommandExecutor.run_command(
+                ["git", "diff", "--no-ext-diff", "--binary", strong_round.head_sha, inputs.head_sha],
+                cwd=worktree,
+            )
+            tracked = CommandExecutor.run_command(["git", "ls-files"], cwd=worktree)
+            if not diff.success or not tracked.success:
+                return False, "required cumulative diff or repository evidence is unavailable", ""
+            review_input = ReviewExecutionInput(
+                mode=ReviewMode.ORDINARY_CLOSURE,
+                round_id=strong_round.round_id,
+                attempt_id=f"{snapshot.open_epoch}:{snapshot.transition_version}",
+                head_sha=inputs.head_sha,
+                base_sha=inputs.base_sha,
+                contract=inputs.contract,
+                policy=inputs.policy,
+                repository_evidence="Pinned read-only snapshot. Tracked paths:\n" + tracked.stdout,
+                diff_evidence=diff.stdout,
+                finding_set_revision=snapshot.finding_set_revision,
+                findings=snapshot.open_findings,
+                audited_head_sha=strong_round.head_sha,
+            )
+            result = execute_review(review_input, availability.backend_manager, worktree)
+        if not result.is_complete:
+            return False, result.diagnostic, result.reviewer_provenance
+        if result.verdict != VERDICT_PASS:
+            return False, f"ordinary verification retained {result.verdict} findings", result.reviewer_provenance
+        dispositions = [DurableFindingDisposition(item.finding_id, item.status, item.evidence, inputs.head_sha) for item in result.dispositions]
+        inputs.gate.state.certify_closure(
+            pr_number,
+            RoundProvenance(inputs.head_sha, inputs.base_sha),
+            inputs.contract,
+            inputs.policy,
+            strong_round.round_id,
+            snapshot.finding_set_revision,
+            dispositions,
+            bounded=result.scope is ScopeAssessment.BOUNDED,
+            bounded_evidence=result.scope_evidence,
+            new_findings=list(result.findings),
+            expected_version=snapshot.transition_version,
+        )
+        if result.scope is ScopeAssessment.BOUNDED:
+            return True, f"accepted bounded ordinary closure from {result.reviewer_provenance}; publication remains pending", result.reviewer_provenance
+        scope = result.scope.value if result.scope is not None else "UNKNOWN"
+        return True, f"accepted ordinary convergence with {scope} scope; renewed strong audit is required", result.reviewer_provenance
+    except Exception as exc:
+        return False, f"ordinary closure execution failed: {exc}", ""
+
+
+def _render_two_tier_review(payload: AcceptedReviewPayload) -> str:
+    """Render role-distinguishable evidence while retaining the exact payload."""
+    title = "Strong audit" if payload.mode == "STRONG_AUDIT" else "Ordinary closure"
+    marker = f"<!-- auto-coder-two-tier-review:v1:{payload.identity} -->"
+    return (
+        f"{marker}\n## {title} evidence (attempt {payload.attempt})\n\n"
+        f"Verdict: **{payload.verdict}**  \n"
+        f"Target head: `{payload.target_head}`  \n"
+        f"Round: `{payload.round_id}`  \n\n"
+        "<details><summary>Exact accepted payload</summary>\n\n"
+        f"```json\n{payload.canonical_json()}\n```\n\n</details>"
+    )
+
+
+class _GitHubReviewEffectTransport:
+    """Authenticated GitHub adapter for one exact review publication."""
+
+    def __init__(self, reviewer: GitHubAppReviewer, payload: AcceptedReviewPayload, authorize: Callable[[], bool]):
+        self.reviewer = reviewer
+        self.payload = payload
+        self.authorize = authorize
+        self.body = _render_two_tier_review(payload)
+
+    def send(self, operation: EffectOperation) -> EffectAttempt:
+        result = self.reviewer.publish_exact_pr_review(
+            self.payload.repository,
+            self.payload.pr_number,
+            self.payload.target_head,
+            self.body,
+            self.authorize,
+        )
+        if result.success:
+            return EffectAttempt(CONFIRMED, result.event)
+        if result.reason == "Review authority is no longer current":
+            return EffectAttempt(REJECTED, reason=result.reason)
+        return EffectAttempt(UNCERTAIN, reason=result.reason)
+
+    def reconcile(self, operation: EffectOperation) -> EffectAttempt:
+        result = self.reviewer.find_exact_pr_review(
+            self.payload.repository,
+            self.payload.pr_number,
+            self.payload.target_head,
+            self.body,
+        )
+        if result.success:
+            return EffectAttempt(CONFIRMED, result.event)
+        # A completed authenticated listing positively establishes absence;
+        # an unavailable listing remains uncertain and cannot authorize replay.
+        if result.reason == "Exact authenticated review was not found":
+            return EffectAttempt(REJECTED, reason=result.reason)
+        return EffectAttempt(UNCERTAIN, reason=result.reason)
+
+
+def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
+    """Publish only a current, durably accepted two-tier result and acknowledge it."""
+    snapshot = inputs.gate.state.snapshot(pr_number)
+    strong = snapshot.accepted_strong_round
+    if strong is None or not snapshot.pending_effect:
+        return False, "no accepted review publication is pending"
+    if snapshot.pending_effect == "CLOSURE_PUBLICATION":
+        closure = snapshot.accepted_closure
+        if closure is None:
+            return False, "accepted closure payload is unavailable"
+        payload = AcceptedReviewPayload.closure(repo_name, pr_number, strong, closure, snapshot.findings)
+    else:
+        payload = AcceptedReviewPayload.strong(repo_name, pr_number, strong, snapshot.findings)
+
+    def is_current() -> bool:
+        current = inputs.gate.state.snapshot(pr_number)
+        return bool(
+            not current.closed
+            and current.open_epoch == payload.open_epoch
+            and current.accepted_strong_round is not None
+            and current.accepted_strong_round.round_id == strong.round_id
+            and current.finding_set_revision == payload.finding_set_revision
+            and current.pending_effect == snapshot.pending_effect
+        )
+
+    try:
+        reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name))
+    except Exception:
+        return False, "configured reviewer identity is unavailable; publication was not started"
+    executor = ReviewEffectExecutor(ReviewEffectRepository(repo_name))
+    operation = executor.apply(
+        payload,
+        "review-publication",
+        "github-reviewer-app",
+        _GitHubReviewEffectTransport(reviewer, payload, is_current),
+        is_current,
+    )
+    if operation.status != CONFIRMED:
+        return False, f"publication {operation.status.lower()}: {operation.reason or 'awaiting the reservation owner'}"
+    if payload.mode == "ORDINARY_CLOSURE":
+        inputs.gate.state.acknowledge_closure_publication(pr_number, payload.round_id)
+    else:
+        inputs.gate.state.acknowledge_publication(pr_number, payload.round_id)
+    return True, f"confirmed authenticated {payload.mode} publication receipt {operation.receipt}"
 
 
 @dataclass(frozen=True)
@@ -885,6 +1115,27 @@ def process_pull_request(
         )
 
         pr_number = pr_data["number"]
+
+        # Competition authority is checked before branch recovery, empty/stale
+        # cleanup, labels, CI, repair, fallback, merge, or provider continuation.
+        # ``--force`` therefore cannot turn a loser or an uncertain artifact into
+        # ordinary work (Issue #2073, REQ-001/REQ-004).
+        speculative = get_speculative_jules_lifecycle(github_client)
+        if speculative is not None:
+            issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
+            decision = speculative.evaluate_pr(repo_name, pr_number, tuple(issue_numbers))
+            if not decision.allow_ordinary_processing:
+                processed_pr.priority = "cleanup" if decision.cleanup_pending else "defer"
+                processed_pr.outcome = PRProcessingOutcome.DEFERRED
+                processed_pr.actions_taken = [f"Speculative Jules {decision.classification.value.lower()} artifact fenced: {decision.reason}"]
+                _record_pr_stage(
+                    pr_number,
+                    "pr.speculative-jules-authority",
+                    f"pr#{pr_number} speculative Jules authority",
+                    Outcome.DEFERRED,
+                    {"classification": decision.classification.value, "cleanup_pending": decision.cleanup_pending},
+                )
+                return processed_pr
 
         try:
             from .durable_repair_allowance import reconcile_unfulfilled_grant_reevaluations
@@ -2865,6 +3116,14 @@ def _refresh_adversarial_ci_status(
     return _check_github_actions_status(repo_name, pr_data, config, github_client)
 
 
+@dataclass
+class MergeRouteDisposition:
+    """Structured result retained alongside the legacy boolean merge API."""
+
+    outcome: PRProcessingOutcome = PRProcessingOutcome.DEFERRED
+    reason: str = "Merge was not confirmed"
+
+
 def _handle_pr_merge(
     github_client: Any,
     repo_name: str,
@@ -3874,6 +4133,77 @@ def _handle_pr_merge(
                         two_tier_inputs.base_sha,
                         two_tier_inputs.contract,
                     )
+                    pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
+                    if pending_snapshot.phase == PHASE_ORDINARY_CLOSURE and pending_snapshot.open_findings:
+                        accepted, reason, reviewer_backend = _execute_pending_ordinary_closure(repo_name, pr_number, two_tier_inputs)
+                        stage_id = "pr.ordinary-closure"
+                        stage_label = f"pr#{pr_number} ordinary closure"
+                    else:
+                        accepted, reason = _execute_pending_strong_audit(repo_name, pr_number, two_tier_inputs)
+                        reviewer_backend = two_tier_inputs.policy.strong_route
+                        stage_id = "pr.strong-audit"
+                        stage_label = f"pr#{pr_number} strong audit"
+                    published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, two_tier_inputs)
+                    if published:
+                        published_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
+                        published_round = published_snapshot.accepted_strong_round
+                        if published_round is not None and published_round.verdict == VERDICT_PASS:
+                            two_tier_inputs.gate.state.accept_strong_pass_completion(pr_number, published_round.round_id)
+                    strong_diagnostic = two_tier_inputs.gate.diagnostic(
+                        pr_number,
+                        current_head_sha=two_tier_inputs.head_sha,
+                        backend=two_tier_inputs.policy.strong_route,
+                    )
+                    actions.append(f"Two-tier review for PR #{pr_number}: {reason} " f"(phase={strong_diagnostic.phase}, head={two_tier_inputs.head_sha[:8]}, " f"contract={two_tier_inputs.contract.identity[:12]}, " f"policy={two_tier_inputs.policy.identity[:12]})")
+                    actions.append(f"Two-tier review effect for PR #{pr_number}: {publication_reason}")
+                    _record_pr_stage(
+                        pr_number,
+                        stage_id,
+                        stage_label,
+                        Outcome.COMPLETED if accepted else Outcome.DEFERRED,
+                        {
+                            "phase": strong_diagnostic.phase,
+                            "backend": reviewer_backend,
+                            "head": two_tier_inputs.head_sha,
+                            "base": two_tier_inputs.base_sha,
+                            "contract_identity": two_tier_inputs.contract.identity,
+                            "policy_identity": two_tier_inputs.policy.identity,
+                            "reason": reason,
+                            "finding_revision": pending_snapshot.finding_set_revision,
+                            "finding_ids": [item.finding_id for item in pending_snapshot.open_findings],
+                        },
+                    )
+                    _record_pr_stage(
+                        pr_number,
+                        "pr.two-tier-review-effect",
+                        f"pr#{pr_number} two-tier review effect",
+                        Outcome.COMPLETED if published else Outcome.DEFERRED,
+                        {
+                            "phase": strong_diagnostic.phase,
+                            "effect": "review-publication",
+                            "reason": publication_reason,
+                        },
+                    )
+                    # Acceptance by itself is never merge authority. A confirmed
+                    # exact strong PASS may continue to the ordinary final gate;
+                    # findings and unresolved effects remain blocked here.
+                    if not two_tier_inputs.gate.authorize_merge(
+                        pr_number,
+                        current_head_sha=two_tier_inputs.head_sha,
+                        current_base_sha=two_tier_inputs.base_sha,
+                        current_contract=two_tier_inputs.contract,
+                        current_policy=two_tier_inputs.policy,
+                    ):
+                        # Retain an authoritative due wake for the daemon. A
+                        # quota deadline is preserved exactly; contention and
+                        # pending effects receive a bounded retry so progress
+                        # does not require a new webhook, commit, or restart.
+                        actions.quota_deferred = True
+                        actions.retry_not_before = pending_snapshot.retry_not_before or (time.time() + 60.0)
+                        if processing_status is not None:
+                            processing_status.outcome = PRProcessingOutcome.DEFERRED
+                            processing_status.retry_not_before = actions.retry_not_before
+                        return actions
 
             # Own the final read phase even when invoked outside candidate selection.
             with ci_read_phase("pr-final-merge-eligibility"):
@@ -3964,6 +4294,8 @@ def _handle_pr_merge(
                         _record_pr_stage(pr_number, "pr.head-refresh", f"pr#{pr_number} head refresh", Outcome.FAILED, {"reason": str(e)})
                         return actions
 
+                    merge_disposition = MergeRouteDisposition()
+
                     def merge_current_head() -> bool:
                         # Resolve H/B/M/P again inside the lowest merge mutation
                         # closure. This prevents any automatic origin from using a
@@ -4011,6 +4343,7 @@ def _handle_pr_merge(
                             config,
                             github_client=github_client,
                             expected_head_sha=current_head_sha or head_sha or None,
+                            route_disposition=merge_disposition,
                         )
 
                     merge_result = False
@@ -4079,7 +4412,26 @@ def _handle_pr_merge(
 
                 return actions
             else:
-                actions.append(f"Failed to merge PR #{pr_number}")
+                # A false merge result after green CI is not CI-failure
+                # evidence. It also represents retryable strong-audit and
+                # durable merge-delivery states, so leave recovery to their
+                # existing owners instead of entering a CI repair route.
+                reason = next(
+                    (action for action in reversed(actions) if action.startswith("Skipping merge for PR #")),
+                    merge_disposition.reason,
+                )
+                actions.append(reason if reason not in actions else f"PR #{pr_number} remains {merge_disposition.outcome.value} at the merge boundary")
+                if processing_status is not None:
+                    processing_status.error = reason if merge_disposition.outcome is PRProcessingOutcome.FAILED else None
+                    processing_status.outcome = merge_disposition.outcome
+                _record_pr_stage(
+                    pr_number,
+                    "pr.merge-route",
+                    f"pr#{pr_number} merge route",
+                    Outcome.FAILED if merge_disposition.outcome is PRProcessingOutcome.FAILED else Outcome.DEFERRED,
+                    {"reason": reason, "ci_failure": False},
+                )
+                return actions
 
         # Step 4: GitHub Actions failed - handle Jules PR feedback loop
         # Fetch detailed checks only when needed to save API calls
@@ -4167,83 +4519,90 @@ def _handle_pr_merge(
         # Step 7: Checkout PR branch for non-Jules PRs
         # pr_branch_name is defined earlier (around line 1004)
 
-        # Prepare branch (ensure fetched)
-        prepare_ok = True if already_on_pr_branch else _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
-        if not prepare_ok:
-            actions.append(f"Failed to prepare PR #{pr_number} branch")
-            return actions
-
-        with BranchManager(pr_branch_name) as manager:
-            actions.append(f"Checked out PR #{pr_number} branch")
-
-            # Step 8: Optionally update with latest base branch commits (configurable)
-            if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
-                actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
-                get_trace_logger().log("Update Base", f"Skipped base branch update for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "skipped"})
-
-                # Proceed directly to extracting GitHub Actions logs and attempting fixes
-                if failed_checks:
-                    github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
-                    actions.extend(fix_actions)
-                else:
-                    actions.append(f"No specific failed checks found for PR #{pr_number}")
-
+        expected_head = str(pr_data.get("head", {}).get("sha") or "")
+        with current_ci_failure_authority(github_client, repo_name, pr_number, expected_head) as authority:
+            if not authority.allowed:
+                actions.append(f"Deferred local CI repair for PR #{pr_number}: {authority.reason}")
                 return actions
-            else:
-                actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
-                update_actions = _update_with_base_branch(repo_name, pr_data, config)
-                actions.extend(update_actions)
-                if update_actions.quota_deferred:
-                    actions.quota_deferred = True
-                    actions.retry_not_before = update_actions.retry_not_before
+            logger.info(f"Initiating local CI repair for PR #{pr_number}; head={expected_head} failures={authority.failure_identities}")
+            # Branch preparation may reset or clean the worktree, making it
+            # the first effect for a different-checkout repair.
+            prepare_ok = True if already_on_pr_branch else _checkout_pr_branch(repo_name, pr_data, config, perform_checkout=False)
+            if not prepare_ok:
+                actions.append(f"Failed to prepare PR #{pr_number} branch")
+                return actions
 
-                # Step 9: Check for special cases from base branch update
+            with BranchManager(pr_branch_name) as manager:
+                actions.append(f"Checked out PR #{pr_number} branch")
 
-                # Check if LLM determined merge would degrade code quality
-                if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
-                    actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
-                    # Close the PR without merging
-                    try:
-                        client = GitHubClient.get_instance()
-                        close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
-                        client.close_pr(repo_name, pr_number, close_comment)
-                        _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
-                        actions.append(f"Closed PR #{pr_number} without merging")
+                # Step 8: Optionally update with latest base branch commits (configurable)
+                if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
+                    actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
+                    get_trace_logger().log("Update Base", f"Skipped base branch update for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "skipped"})
 
-                        # BranchManager handles return to original branch
-                    except Exception as e:
-                        logger.error(f"Failed to close PR #{pr_number}: {e}")
-                        actions.append(f"Error closing PR #{pr_number}: {e}")
-                    return actions
-
-                # If base branch update required pushing changes, skip to next PR
-                if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
-                    actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
-                    get_trace_logger().log("Update Base", f"Pushed updated branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "pushed"})
-                    return actions
-
-                # Step 10: If no main branch updates were needed, the test failures are due to PR content
-                # Get GitHub Actions error logs and ask Gemini to fix
-                if any("up to date with" in action for action in update_actions):
-                    actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
-                    get_trace_logger().log("Update Base", f"PR #{pr_number} is up to date", item_type="pr", item_number=pr_number, details={"result": "up_to_date"})
-
-                    if not _is_automatic_test_fix_enabled(config, repo_name):
-                        actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping test-failure repair")
-                        return actions
-
-                    # Fix PR issues using GitHub Actions logs first, then local tests
+                    # Proceed directly to extracting GitHub Actions logs and attempting fixes
                     if failed_checks:
-                        # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
-                        github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                        fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                        github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
+                        fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
                         actions.extend(fix_actions)
                     else:
                         actions.append(f"No specific failed checks found for PR #{pr_number}")
+
+                    return actions
                 else:
-                    # If we reach here, some other update action occurred
-                    actions.append(f"PR #{pr_number} processing completed")
+                    actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
+                    update_actions = _update_with_base_branch(repo_name, pr_data, config)
+                    actions.extend(update_actions)
+                    if update_actions.quota_deferred:
+                        actions.quota_deferred = True
+                        actions.retry_not_before = update_actions.retry_not_before
+
+                    # Step 9: Check for special cases from base branch update
+
+                    # Check if LLM determined merge would degrade code quality
+                    if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
+                        actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
+                        # Close the PR without merging
+                        try:
+                            client = GitHubClient.get_instance()
+                            close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
+                            client.close_pr(repo_name, pr_number, close_comment)
+                            _remove_reviewer_sessions_for_closed_pr(repo_name, pr_number)
+                            actions.append(f"Closed PR #{pr_number} without merging")
+
+                            # BranchManager handles return to original branch
+                        except Exception as e:
+                            logger.error(f"Failed to close PR #{pr_number}: {e}")
+                            actions.append(f"Error closing PR #{pr_number}: {e}")
+                        return actions
+
+                    # If base branch update required pushing changes, skip to next PR
+                    if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
+                        actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
+                        get_trace_logger().log("Update Base", f"Pushed updated branch for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"result": "pushed"})
+                        return actions
+
+                    # Step 10: If no main branch updates were needed, the test failures are due to PR content
+                    # Get GitHub Actions error logs and ask Gemini to fix
+                    if any("up to date with" in action for action in update_actions):
+                        actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
+                        get_trace_logger().log("Update Base", f"PR #{pr_number} is up to date", item_type="pr", item_number=pr_number, details={"result": "up_to_date"})
+
+                        if not _is_automatic_test_fix_enabled(config, repo_name):
+                            actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping test-failure repair")
+                            return actions
+
+                        # Fix PR issues using GitHub Actions logs first, then local tests
+                        if failed_checks:
+                            # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
+                            github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
+                            fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                            actions.extend(fix_actions)
+                        else:
+                            actions.append(f"No specific failed checks found for PR #{pr_number}")
+                    else:
+                        # If we reach here, some other update action occurred
+                        actions.append(f"PR #{pr_number} processing completed")
 
     except Exception as e:
         diagnostic = f"Error handling PR merge for PR #{pr_number}: {e}"
@@ -5548,20 +5907,22 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
             actions.append(f"Deferred Jules CI feedback for PR #{pr_number}: graceful shutdown is draining")
             return actions
 
-        # REQ-007/REQ-009 (Issue #2147): this is a PR-repair outbound boundary
-        # that messages an existing Jules session. Guard + durably admit the
-        # outbound mutation before sending it.
-        if not _guard_outbound_jules_send(repo_name, config, session_id):
-            actions.append(f"Blocked Jules CI feedback for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
-            return actions
+        expected_head = str(pr_data.get("head", {}).get("sha") or "")
+        with current_ci_failure_authority(github_client, repo_name, pr_number, expected_head) as authority:
+            if not authority.allowed:
+                actions.append(f"Deferred Jules CI feedback for PR #{pr_number}: {authority.reason}")
+                return actions
+            # The retirement admission and provider mutation are inside the
+            # same invalidation barrier as the final exact-head observation.
+            if not _guard_outbound_jules_send(repo_name, config, session_id):
+                actions.append(f"Blocked Jules CI feedback for PR #{pr_number}: session '{session_id}' " "belongs to a durably retired implementation slot (REQ-009)")
+                return actions
 
-        # Import JulesClient here to avoid circular imports
-        from .jules_client import JulesClient
+            from .jules_client import JulesClient
 
-        # Send the error logs to Jules
-        logger.info(f"Sending CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
-        jules_client = JulesClient()
-        response = jules_client.send_message(session_id, message)
+            logger.info(f"Sending CI failure logs to Jules session '{session_id}' for PR #{pr_number}; " f"head={expected_head} failures={authority.failure_identities}")
+            jules_client = JulesClient()
+            response = jules_client.send_message(session_id, message)
 
         get_trace_logger().log("Jules Feedback", f"Sent CI failure logs to Jules for PR #{pr_number}", item_type="pr", item_number=pr_number, details={"session_id": session_id})
 
@@ -6730,12 +7091,20 @@ def _send_codex_cloud_error_feedback(
         if not new_work_allowed():
             actions.append(f"Deferred Codex Cloud continuation for PR #{pr_number}: graceful shutdown is draining")
             return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+        prompt = None
         if target:
             details = get_prompt_template("codex_cloud.ci_review_repair_details")
             prompt = build_existing_pr_repair_prompt(target, details)
-            resumed = client.continue_if_paused(task_id, prompt=prompt)
-        else:
-            resumed = client.continue_if_paused(task_id)
+        expected_head = str(pr_data.get("head", {}).get("sha") or "")
+        with current_ci_failure_authority(github_client, repo_name, pr_number, expected_head) as authority:
+            if not authority.allowed:
+                actions.append(f"Deferred Codex Cloud continuation for PR #{pr_number}: {authority.reason}")
+                return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+            logger.info(f"Initiating Codex Cloud CI repair for PR #{pr_number}; " f"head={expected_head} failures={authority.failure_identities}")
+            if prompt is not None:
+                resumed = client.continue_if_paused(task_id, prompt=prompt)
+            else:
+                resumed = client.continue_if_paused(task_id)
 
         if resumed:
             get_trace_logger().log(
@@ -7103,6 +7472,7 @@ def _merge_pr(
     config: AutomationConfig,
     github_client: Optional[Any] = None,
     expected_head_sha: Optional[str] = None,
+    route_disposition: Optional[MergeRouteDisposition] = None,
 ) -> bool:
     """Merge a PR through the durable per-effect merge operation (Issue #1939).
 
@@ -7161,6 +7531,30 @@ def _merge_pr(
         except Exception as e:
             logger.error(f"Could not read PR #{pr_number} before merge: {e}")
             return False
+
+        # The ingress classification is not merge authority: selection or
+        # invalidation may change while CI/review work is running.  Re-read the
+        # durable competition immediately inside the final sender and fail
+        # closed unless this exact PR is still the selected artifact.  Legacy
+        # PRs remain governed by the ordinary merge gates.
+        speculative = get_speculative_jules_lifecycle(client)
+        if speculative is not None:
+            issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_info, client)
+            issue_data: Dict[str, Any] = {}
+            if len(issue_numbers) == 1:
+                issue = client.get_issue(repo_name, issue_numbers[0])
+                issue_data = issue if isinstance(issue, dict) else {"state": getattr(issue, "state", None), "body": getattr(issue, "body", None)}
+            authority = speculative.evaluate_merge_authority(repo_name, pr_number, pr_info, issue_data, tuple(issue_numbers))
+            if not authority.allow_ordinary_processing:
+                logger.warning(f"Merge aborted for PR #{pr_number}: speculative Jules " f"authority is {authority.classification.value} ({authority.reason})")
+                _record_pr_stage(
+                    pr_number,
+                    "pr.speculative-jules-merge-authority",
+                    f"pr#{pr_number} speculative Jules merge authority",
+                    Outcome.BLOCKED,
+                    {"classification": authority.classification.value, "reason": authority.reason},
+                )
+                return False
 
         head_sha = expected_head_sha or pr_info.get("head", {}).get("sha") or ""
         if not head_sha:
@@ -7237,11 +7631,15 @@ def _merge_pr(
             identity,
             _try_merge,
             head_sha,
+            route_disposition,
         )
 
     except Exception as e:
         logger.error(f"Error merging PR #{pr_number}: {e}")
         _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"reason": str(e)})
+        if route_disposition is not None:
+            route_disposition.outcome = PRProcessingOutcome.FAILED
+            route_disposition.reason = str(e)
         return False
 
 
@@ -7257,6 +7655,7 @@ def _handle_definitive_merge_rejection(
     identity: Any,
     try_merge: Any,
     head_sha: str,
+    route_disposition: Optional[MergeRouteDisposition] = None,
 ) -> bool:
     """Handle a GitHub-confirmed, cause-specified merge rejection (REQ-007).
 
@@ -7268,6 +7667,14 @@ def _handle_definitive_merge_rejection(
     """
     from .merge_operation_adapter import AdapterOutcomeKind
     from .merge_operation_state import EffectName, EffectState
+
+    # Preserve the durable adapter's cause-specified classification across
+    # the legacy boolean return. A successful retry below still returns True,
+    # but every non-successful exit remains a rejection rather than being
+    # reconstructed as an opaque deferral by the enclosing merge route.
+    if route_disposition is not None:
+        route_disposition.outcome = PRProcessingOutcome.FAILED
+        route_disposition.reason = "Definitive merge rejection"
 
     try:
         pr_info = api.pulls.get(owner, repo, pr_number)
@@ -7292,10 +7699,16 @@ def _handle_definitive_merge_rejection(
                     return _finalize_merge_success(repo_name, pr_number, alt)
             log_action(f"Failed to merge PR #{pr_number} with any currently allowed merge method", False, "Merge API failed")
             _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"examined_head": head_sha, "reason": "no allowed alternate merge method succeeded"})
+            if route_disposition is not None:
+                route_disposition.outcome = PRProcessingOutcome.FAILED
+                route_disposition.reason = "No allowed alternate merge method succeeded"
             return False
 
         log_action(f"Failed to merge PR #{pr_number}", False, "Merge API failed (not conflict)")
         _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"examined_head": head_sha, "reason": "definitive rejection (not a conflict)"})
+        if route_disposition is not None:
+            route_disposition.outcome = PRProcessingOutcome.FAILED
+            route_disposition.reason = "Definitive merge rejection"
         try:
             pr_data = {"number": pr_number, "body": pr_info.get("body", "")}
             _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed")
@@ -7399,6 +7812,9 @@ def _handle_definitive_merge_rejection(
                 return _finalize_merge_success(repo_name, pr_number, alt)
 
     _record_pr_stage(pr_number, "pr.merge-delivery", f"pr#{pr_number} merge delivery", Outcome.FAILED, {"examined_head": new_head_sha, "reason": "merge failed after conflict resolution"})
+    if route_disposition is not None:
+        route_disposition.outcome = PRProcessingOutcome.FAILED
+        route_disposition.reason = "Definitive merge rejection after conflict resolution"
     try:
         pr_data = {"number": pr_number, "body": refreshed_pr.get("body", "")}
         _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution exhausted)")

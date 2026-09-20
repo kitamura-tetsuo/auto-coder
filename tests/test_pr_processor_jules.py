@@ -1,9 +1,11 @@
 """Tests for Jules PR processing functionality in pr_processor.py"""
 
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 
 import pytest
 
+from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.pr_processor import (
     _extract_session_id_candidates,
@@ -14,6 +16,17 @@ from auto_coder.pr_processor import (
     _send_jules_error_feedback,
     _update_jules_pr_body,
 )
+
+
+@pytest.fixture(autouse=True)
+def admitted_ci_repair():
+    """Jules delivery tests exercise behavior after exact-head admission."""
+    authority = CIRepairAuthority(True, "current exact-head CI failure", "test-head")
+    with patch(
+        "auto_coder.pr_processor.current_ci_failure_authority",
+        return_value=nullcontext(authority),
+    ):
+        yield
 
 
 class TestExtractSessionIdFromPrBody:
