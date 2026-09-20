@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from auto_coder.pr_review_cycle import ContractSnapshot, Finding, StrongPolicyIdentity
 from auto_coder.pr_review_execution import ReviewExecutionInput, ReviewMode, ScopeAssessment, build_review_prompt, parse_review_result
 
@@ -36,7 +38,6 @@ def _input(mode: ReviewMode = ReviewMode.STRONG_AUDIT) -> ReviewExecutionInput:
 
 def _identity(expected: ReviewExecutionInput) -> dict:
     return {
-        "mode": expected.mode.value,
         "round_id": expected.round_id,
         "attempt_id": expected.attempt_id,
         "head_sha": expected.head_sha,
@@ -53,6 +54,70 @@ def test_strong_prompt_is_independent_and_role_tagged() -> None:
     assert "current source and tests" in prompt
     assert "Accepted portable findings (empty for independent STRONG_AUDIT):\n[]" in prompt
     assert "continue a prior conversation" in prompt
+
+
+@pytest.mark.parametrize("mode", list(ReviewMode))
+def test_prompt_identity_instructions_produce_parseable_response(mode: ReviewMode) -> None:
+    expected = _input(mode)
+    prompt = build_review_prompt(expected)
+    identity_block = prompt.split("Identity (copy every value exactly into the JSON response):\n", 1)[1].split("Issue identities:", 1)[0]
+    payload = {}
+    for line in identity_block.splitlines():
+        key, separator, value = line.strip().partition("=")
+        if separator:
+            payload[key] = int(value) if key == "finding_set_revision" else value
+    assert "mode" not in payload
+    payload.update(verdict="PASS", findings=[])
+    if mode is ReviewMode.ORDINARY_CLOSURE:
+        payload.update(
+            dispositions=[{"finding_id": "finding-a", "status": "FIXED", "evidence": "Both production paths preserve state."}],
+            scope="BOUNDED",
+            scope_evidence="Only the guard and its regression changed.",
+        )
+    result = parse_review_result(json.dumps(payload), expected, "reviewer/model")
+    assert result.diagnostic == ""
+    assert result.verdict == "PASS"
+    assert result.mode is mode
+
+
+@pytest.mark.parametrize("reported_mode", [None, "STRONG_AUDIT", "ORDINARY_CLOSURE", "unknown"])
+def test_response_mode_cannot_bypass_closure_requirements(reported_mode: str | None) -> None:
+    expected = _input(ReviewMode.ORDINARY_CLOSURE)
+    payload = {**_identity(expected), "verdict": "PASS", "findings": []}
+    if reported_mode is not None:
+        payload["mode"] = reported_mode
+    result = parse_review_result(json.dumps(payload), expected, "reviewer/model")
+    assert result.diagnostic == "Every accepted finding requires exactly one disposition"
+    assert not result.is_complete
+    assert result.mode is ReviewMode.ORDINARY_CLOSURE
+
+
+def test_response_mode_cannot_change_strong_result_role() -> None:
+    expected = _input()
+    payload = {**_identity(expected), "mode": "ORDINARY_CLOSURE", "verdict": "PASS", "findings": []}
+    result = parse_review_result(json.dumps(payload), expected, "reviewer/model")
+    assert result.is_complete
+    assert result.mode is ReviewMode.STRONG_AUDIT
+    assert not result.grants_closure_evidence
+
+
+@pytest.mark.parametrize("regression_gap", [False, True])
+def test_prompt_finding_schema_is_accepted_without_key_or_type_translation(regression_gap: bool) -> None:
+    expected = _input()
+    prompt = build_review_prompt(expected)
+    finding = json.loads(prompt.split("```json\n", 1)[1].split("```", 1)[0])
+    finding["is_regression_gap"] = regression_gap
+    if regression_gap:
+        finding["plausible_incorrect_implementation"] = "Only one deletion path checks the guard."
+        finding["why_tests_admit_it"] = "The test exercises only the guarded path."
+    payload = {**_identity(expected), "verdict": "FINDINGS", "findings": [finding]}
+    result = parse_review_result(json.dumps(payload), expected, "reviewer/model")
+    assert result.diagnostic == ""
+    assert result.verdict == "FINDINGS"
+    assert len(result.findings) == 1
+    assert result.findings[0].finding_id == "stable-finding-id"
+    assert result.findings[0].evidence == "Source locations and concrete behavioral evidence."
+    assert result.findings[0].is_regression_gap is regression_gap
 
 
 def test_strong_parser_preserves_portable_finding_fields() -> None:

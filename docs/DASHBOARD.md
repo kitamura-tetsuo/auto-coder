@@ -200,6 +200,12 @@ in-progress remote work (e.g. a cloud handoff) has finished.
 
 #### Sections
 
+For two-tier PR review, `pr.two-tier-review-effect` confirms publication of the
+authenticated review and its separate finding threads, not implementation or
+merge completion. Strong findings remain open until the review cycle accepts
+their closure. The `github-reviewer-app:threads-v1` destination distinguishes
+thread publication receipts from historical summary-only receipts.
+
 *   **Processing Path**: a Mermaid diagram of the selected execution's
     observed events in publication order. Arrows are labeled "observed
     order" -- they describe recording order only, not an inferred

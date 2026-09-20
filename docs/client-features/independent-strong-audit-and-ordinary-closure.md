@@ -33,6 +33,16 @@ The output parser validates every execution identity and required field. Invalid
 stale, incomplete, contradictory, or unavailable output becomes an explicit
 non-complete diagnostic, never PASS. The result is evidence for the durable
 lifecycle; it cannot publish reviews, close threads, mutate Issues, or merge.
+The prompt specifies the exact portable finding keys and types, including
+string evidence, paired Requirement ID/text arrays, and the additional evidence
+required for regression gaps. Prompt-schema regression tests pass the rendered
+example directly to the production parser without translating model output.
+The caller's `ReviewExecutionInput.mode` selects the response schema and supplies
+the result's role. Model output need not echo `mode`; any returned mode field has
+no authority to select a different schema or bypass closure requirements.
+`tests/test_pr_review_execution.py` covers responses without a mode and attempts
+to override the caller's role. Trace stages, routing, and durable result schemas
+are unchanged: they continue to use the caller-owned role.
 
 Production PR processing consumes `STRONG_PENDING` after an applicable ordinary
 PASS. It atomically claims the durable phase, creates a detached read-only

@@ -53,6 +53,12 @@ logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
+class ExactReviewComment:
+    body: str = ""
+    evidence: str = ""
+
+
+@dataclass(frozen=True)
 class ReviewerAppConfig:
     """Non-secret reviewer App settings and the external private-key location."""
 
@@ -222,6 +228,7 @@ class GitHubAppReviewer:
         head_sha: str,
         body: str,
         authorize_fn: Callable[[], bool],
+        comments: tuple[ExactReviewComment, ...] = (),
     ) -> ReviewPublicationResult:
         """Publish an exact role-bound review body with the App identity.
 
@@ -233,11 +240,28 @@ class GitHubAppReviewer:
             if not authorize_fn():
                 return ReviewPublicationResult(False, "", "Review authority is no longer current")
             token = self._installation_token(repo_name, frozenset({("pull_requests", "write")}))
+            current_pr = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}", token).json()
+            if current_pr.get("head", {}).get("sha") != head_sha:
+                return ReviewPublicationResult(False, "", "Pull request head changed after adversarial validation")
+            anchored = []
+            if comments:
+                changed_files = self._changed_files(repo_name, pr_number, token)
+                for comment in comments:
+                    candidates = [path for path in changed_files if path in comment.evidence]
+                    candidates.extend(path for path in changed_files if path not in candidates)
+                    path = next((path for path in candidates if _first_diff_anchor(changed_files[path]) is not None), None)
+                    if path is None:
+                        raise ValueError("No represented diff line is available for the review thread")
+                    line_match = re.search(re.escape(path) + r":(\d+)", comment.evidence)
+                    line = int(line_match.group(1)) if line_match else None
+                    anchored.append(self._anchored_comment(path, line, "RIGHT", None, comment.body, changed_files))
+            if not authorize_fn():
+                return ReviewPublicationResult(False, "", "Review authority is no longer current")
             response = self._request(
                 "POST",
                 f"/repos/{repo_name}/pulls/{pr_number}/reviews",
                 token,
-                json={"body": body, "event": "COMMENT", "commit_id": head_sha},
+                json={"body": body, "event": "COMMENT", "commit_id": head_sha, **({"comments": anchored} if anchored else {})},
             )
             review = response.json()
             review_id = review.get("id") if isinstance(review, dict) else None
@@ -248,7 +272,7 @@ class GitHubAppReviewer:
             logger.bind(repository=repo_name, target=str(pr_number), phase="two-tier-publication").error("Dedicated reviewer GitHub App could not publish exact review evidence")
             return ReviewPublicationResult(False, "", "Dedicated reviewer GitHub App publication outcome is uncertain")
 
-    def find_exact_pr_review(self, repo_name: str, pr_number: int, head_sha: str, body: str) -> ReviewPublicationResult:
+    def find_exact_pr_review(self, repo_name: str, pr_number: int, head_sha: str, body: str, comments: tuple[ExactReviewComment, ...] = ()) -> ReviewPublicationResult:
         """Reconcile an exact review using authenticated author, head, and body."""
         try:
             identity = self.get_identity()
@@ -270,6 +294,23 @@ class GitHubAppReviewer:
                     login = user.get("login") if isinstance(user, dict) else None
                     commit_id = review.get("commit_id")
                     if identity.matches_login(login) and commit_id == head_sha and review.get("body") == body:
+                        if comments:
+                            published_bodies: list[str] = []
+                            comment_page = 1
+                            while True:
+                                roots = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/reviews/{review['id']}/comments?per_page=100&page={comment_page}", token).json()
+                                if not isinstance(roots, list):
+                                    raise ValueError("GitHub did not return review threads")
+                                for root in roots:
+                                    if not isinstance(root, dict) or not isinstance(root.get("body"), str):
+                                        raise ValueError("GitHub returned an invalid review comment")
+                                    if not root.get("in_reply_to_id"):
+                                        published_bodies.append(root["body"])
+                                if len(roots) < 100:
+                                    break
+                                comment_page += 1
+                            if sorted(published_bodies) != sorted(comment.body for comment in comments):
+                                continue
                         return ReviewPublicationResult(True, str(review.get("id", "")), "")
                 if len(reviews) < 100:
                     return ReviewPublicationResult(False, "", "Exact authenticated review was not found")
@@ -539,16 +580,7 @@ class GitHubAppReviewer:
             gaps_to_publish = unrooted_gaps
 
             if unrooted_findings or unrooted_gaps or (result.unexplained_changes and result.publish_clarification_thread):
-                changed_files: dict[str, object] = {}
-                page = 1
-                while True:
-                    files_response = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/files?per_page=100&page={page}", token).json()
-                    if not isinstance(files_response, list):
-                        raise RuntimeError("GitHub did not return changed files")
-                    changed_files.update({item["filename"]: item.get("patch", "") for item in files_response if isinstance(item, dict) and isinstance(item.get("filename"), str)})
-                    if len(files_response) < 100:
-                        break
-                    page += 1
+                changed_files = self._changed_files(repo_name, pr_number, token)
                 for idx, finding in enumerate(unrooted_findings):
                     bid = unrooted_finding_blockers[idx] if idx < len(unrooted_finding_blockers) else None
                     comments.append(self._finding_comment(finding, changed_files, blocker_id=bid))
@@ -664,6 +696,18 @@ class GitHubAppReviewer:
             # include credential-bearing request details.
             logger.bind(repository=repo_name, target=str(pr_number), phase="publication").error("Dedicated reviewer GitHub App could not publish the adversarial verdict")
             return ReviewPublicationResult(False, event, "Dedicated reviewer GitHub App publication failed")
+
+    def _changed_files(self, repo_name: str, pr_number: int, token: str) -> dict[str, object]:
+        changed_files: dict[str, object] = {}
+        page = 1
+        while True:
+            files_response = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/files?per_page=100&page={page}", token).json()
+            if not isinstance(files_response, list):
+                raise RuntimeError("GitHub did not return changed files")
+            changed_files.update({item["filename"]: item.get("patch", "") for item in files_response if isinstance(item, dict) and isinstance(item.get("filename"), str)})
+            if len(files_response) < 100:
+                return changed_files
+            page += 1
 
     def _published_test_oracle_gap_ids(self, repo_name: str, pr_number: int, token: str) -> set[str]:
         """Return stable gap identities that already have a root review thread."""

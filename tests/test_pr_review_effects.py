@@ -1,7 +1,10 @@
 import json
+from dataclasses import replace
+
+import pytest
 
 from auto_coder import pr_processor
-from auto_coder.github_app_reviewer import ReviewPublicationResult
+from auto_coder.github_app_reviewer import ReviewerAppIdentity, ReviewPublicationResult
 from auto_coder.pr_review_cycle import (
     PUBLICATION_ACKNOWLEDGED,
     ContractSnapshot,
@@ -22,6 +25,7 @@ from auto_coder.pr_review_effects import (
     ReviewEffectRepository,
 )
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
+from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 
 
 def _payload() -> AcceptedReviewPayload:
@@ -29,7 +33,7 @@ def _payload() -> AcceptedReviewPayload:
     policy = StrongPolicyIdentity("strong-route", '{"model":"reviewer"}', "v1")
     finding = Finding(
         "finding-1",
-        "round-1",
+        "claim-1",
         ("#2209/REQ-002",),
         ("Publish every finding.",),
         "An unanchored finding disappears.",
@@ -95,6 +99,62 @@ def test_exact_payload_and_distinct_attempt_identity_are_durable(tmp_path):
     assert repository.operation_identity(payload, "publication", "github-reviewer-app") != repository.operation_identity(different, "publication", "github-reviewer-app")
 
 
+def test_rendered_review_exposes_findings_as_separate_threads():
+    payload = _payload()
+    body = pr_processor._render_two_tier_review(payload)
+    transport = pr_processor._GitHubReviewEffectTransport(None, payload, lambda: True)
+    assert len(transport.comments) == 1
+    visible = transport.comments[0].body
+    assert "### finding-1" in visible
+    assert "auto-coder-two-tier-finding:v1:" in visible
+    assert "1 actionable finding thread(s) are attached" in body.split("<details>", 1)[0]
+    assert "**Requirements:** #2209/REQ-002" in visible
+    assert "**Status:** OPEN" in visible
+    for field in (
+        "counterexample",
+        "expected_behavior",
+        "actual_behavior",
+        "evidence",
+        "affected_boundary",
+        "material_consequence",
+        "focused_regression_scenario",
+        "plausible_incorrect_implementation",
+        "why_tests_admit_it",
+    ):
+        assert getattr(payload.findings[0], field) in visible
+    assert payload.canonical_json() in body
+    assert f"auto-coder-two-tier-review:v1:{payload.identity}" in body
+
+
+def test_rendered_closure_shows_disposition_evidence():
+    original = _payload()
+    finding = replace(original.findings[0], status="FIXED", disposition_evidence="Both paths now enforce the guard.")
+    payload = replace(original, mode="ORDINARY_CLOSURE", verdict="CLOSURE", findings=(finding,))
+    visible = pr_processor._render_two_tier_review(payload).split("<details>", 1)[0]
+    assert "**Status:** FIXED" in visible
+    assert "**Disposition evidence:** Both paths now enforce the guard." in visible
+
+
+@pytest.mark.parametrize("author,recognized", [("reviewer[bot]", True), ("untrusted-user", False)])
+def test_strong_finding_threads_enter_normal_authenticated_revalidation(author, recognized):
+    transport = pr_processor._GitHubReviewEffectTransport(None, _payload(), lambda: True)
+    thread = ReviewThread(
+        id="strong-thread",
+        is_resolved=False,
+        comments=[ReviewThreadComment(database_id=12, body=transport.comments[0].body, author_login=author)],
+    )
+    identity = ReviewerAppIdentity("reviewer[bot]", 123)
+    assert pr_processor.is_authoritative_adversarial_thread(thread, "owner/repo", identity) is recognized
+    state = pr_processor.ClaimedReviewThreadGateState(claimed=(), unresolved=(thread,), blocking_unresolved=(thread,), has_blocking_unresolved=True)
+    updated = pr_processor._allow_older_head_adversarial_threads(state, identity.login)
+    assert updated.has_blocking_unresolved is not recognized
+    assert len(updated.claimed) == int(recognized)
+    if recognized:
+        assert updated.claimed[0].original_finding == transport.comments[0].body
+        assert updated.claimed[0].revalidation_after_head_change is True
+    assert thread.is_resolved is False
+
+
 def test_contention_allows_only_reservation_owner_to_send(tmp_path):
     repository = ReviewEffectRepository("owner/repo", tmp_path / "effects.json")
     payload = _payload()
@@ -153,14 +213,19 @@ def test_stale_authority_rejects_before_mutation_and_positive_rejection_can_retr
     assert retry_transport.sent == 1
 
 
-def test_production_consumer_publishes_exact_accepted_record_and_persists_receipt(tmp_path, monkeypatch):
+@pytest.mark.parametrize("verdict", ["PASS", "FINDINGS"])
+def test_production_consumer_publishes_exact_accepted_record_and_persists_receipt(tmp_path, monkeypatch, verdict):
     monkeypatch.setenv("HOME", str(tmp_path))
     contract = ContractSnapshot(("#2209",), "REQ-001: Preserve the accepted payload.")
     policy = StrongPolicyIdentity("strong-route", "options", "v1")
     cycle = PrReviewCycleRepository("owner/repo", tmp_path / "cycle.json")
     cycle.record_ordinary_pass(42, RoundProvenance("head-a", "base-a"), contract)
     claim = cycle.claim_strong_audit(42, RoundProvenance("head-a", "base-a"), contract, policy)
-    accepted = cycle.record_strong_result(42, claim.claim_id, "PASS", "reviewer/model", [])
+    findings = [replace(_payload().findings[0], origin_round_id=claim.claim_id)] if verdict == "FINDINGS" else []
+    accepted = cycle.record_strong_result(42, claim.claim_id, verdict, "reviewer/model", findings)
+    if findings:
+        with pytest.raises(ValueError, match="complete accepted finding bundle"):
+            AcceptedReviewPayload.strong("owner/repo", 42, accepted, ())
     inputs = pr_processor.TwoTierGateInputs(TwoTierPrGate("owner/repo", cycle), contract, policy, "head-a", "base-a")
     sent_bodies = []
 
@@ -168,13 +233,17 @@ def test_production_consumer_publishes_exact_accepted_record_and_persists_receip
         def __init__(self, config):
             pass
 
-        def publish_exact_pr_review(self, repository, pr_number, head_sha, body, authorize):
+        def publish_exact_pr_review(self, repository, pr_number, head_sha, body, authorize, comments=()):
             assert (repository, pr_number, head_sha) == ("owner/repo", 42, "head-a")
             assert authorize() is True
             sent_bodies.append(body)
+            assert len(comments) == len(findings)
+            if comments:
+                assert "### finding-1" in comments[0].body
+                assert "Production publication payload lacks it." == comments[0].evidence
             return ReviewPublicationResult(True, "987", "")
 
-        def find_exact_pr_review(self, repository, pr_number, head_sha, body):
+        def find_exact_pr_review(self, repository, pr_number, head_sha, body, comments=()):
             raise AssertionError("a new reserved operation must send before reconciliation")
 
     monkeypatch.setattr(pr_processor, "load_reviewer_app_config", lambda repo_name: object())
@@ -187,6 +256,12 @@ def test_production_consumer_publishes_exact_accepted_record_and_persists_receip
     assert len(sent_bodies) == 1
     assert f"auto-coder-two-tier-review:v1:" in sent_bodies[0]
     assert '"requirements_text":"REQ-001: Preserve the accepted payload."' in sent_bodies[0]
+    published_payload = json.loads(sent_bodies[0].split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert published_payload["verdict"] == verdict
+    assert [item["finding_id"] for item in published_payload["findings"]] == (["finding-1"] if verdict == "FINDINGS" else [])
+    if findings:
+        assert published_payload["findings"][0]["origin_round_id"] == claim.claim_id
+        assert published_payload["findings"][0]["focused_regression_scenario"] == "Assert the unanchored provider payload."
     snapshot = cycle.snapshot(42)
     assert snapshot.accepted_strong_round is not None
     assert snapshot.accepted_strong_round.round_id == accepted.round_id

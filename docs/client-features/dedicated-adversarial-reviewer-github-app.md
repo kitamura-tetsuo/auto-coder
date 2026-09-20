@@ -10,6 +10,12 @@ deterministically to `COMMENT`.
 Publication is pinned to the validated head SHA and fails closed without falling
 back to the normal user credential.
 
+Two-tier strong audits use the same App and diff-anchor helper to attach one
+native root review thread per accepted finding in the review submission. Their
+summary remains a distinct COMMENT review, not an ordinary validation verdict.
+Exact publication reconciliation verifies the complete expected thread set as
+well as the author, reviewed head, and summary body before confirming delivery.
+
 For a `NEEDS_FIX` verdict, every actionable finding is submitted atomically as
 its own independently resolvable review thread. Findings name a changed-file
 anchor and include their complete requirement, counterexample, evidence, test

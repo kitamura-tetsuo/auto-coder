@@ -9,6 +9,24 @@ When `[backend_strong_pr_adversarial_validation]` is configured for a PR that is
 eligible for ordinary adversarial validation, an ordinary PASS records convergence
 but does not authorize merge. The independent `STRONG_AUDIT` must run through that
 exclusive route and its authenticated publication must be acknowledged first.
+Publication selects findings by the accepted round's producing claim ID, and
+rejects an incomplete bundle before publishing. The separately assigned accepted
+round ID must not cause retained findings to disappear from the published payload.
+Strong findings are published as separate native review threads, one root comment
+per finding, using the ordinary review publisher's diff-line anchoring helper.
+Cited changed files and lines are preferred; portable findings without a usable
+location retain their full evidence at an available changed-file diff anchor.
+Each thread displays Requirement references, status, affected boundary, scenario,
+expected/actual behavior, evidence, impact, and the regression scenario. The main
+review summarizes the thread count and retains the exact JSON payload. Closure
+reviews display disposition evidence without recreating strong finding threads.
+Publication uses the versioned `github-reviewer-app:threads-v1` effect destination;
+an older summary-only receipt does not confirm thread publication. Reconciliation
+checks all expected comment bodies on the authenticated exact-head review.
+The strong finding marker is recognized by the existing authenticated reviewer
+thread gate, so changed-head revalidation can inspect these roots under the same
+rules as ordinary findings. A matching marker from another author grants no such
+eligibility, and recognition never resolves a thread by itself.
 
 Strong findings remain durable and are verified by `ORDINARY_CLOSURE` using the
 ordinary PR route and the cumulative diff. A bounded closure can authorize the
