@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
@@ -63,7 +63,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .github_app_reviewer import ReviewerAppIdentity, publish_adversarial_review, resolve_reviewer_app_identity
+from .github_app_reviewer import GitHubAppReviewer, ReviewerAppIdentity, load_reviewer_app_config, publish_adversarial_review, resolve_reviewer_app_identity
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .invocation_admission import bind_invocation_target
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
@@ -80,6 +80,7 @@ from .pr_repair_guard import (
 from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot
 from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
 from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongPolicyIdentity
+from .pr_review_effects import CONFIRMED, REJECTED, UNCERTAIN, AcceptedReviewPayload, EffectAttempt, EffectOperation, ReviewEffectExecutor, ReviewEffectRepository
 from .pr_review_execution import ReviewExecutionInput, ReviewMode, ScopeAssessment, execute_review
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
@@ -316,19 +317,13 @@ def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTie
 
 
 def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str, str]:
-    """Run ordinary verification for a retained strong finding bundle.
-
-    Acceptance is fenced by the durable transition version observed before the
-    provider call.  Consequently a concurrent head, contract, policy, finding,
-    or attempt transition makes the late result stale rather than authoritative.
-    """
+    """Run ordinary verification for a retained strong finding bundle."""
     snapshot = inputs.gate.state.snapshot(pr_number)
     strong_round = snapshot.accepted_strong_round
     if snapshot.phase != PHASE_ORDINARY_CLOSURE or strong_round is None or not snapshot.open_findings:
         return False, "ordinary closure is not currently applicable", ""
     if strong_round.base_sha != inputs.base_sha or strong_round.contract_identity != inputs.contract.identity or strong_round.policy_identity != inputs.policy.identity:
         return False, "retained strong evidence is stale for the current base, contract, or policy", ""
-
     try:
         with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
             from .cli_helpers import resolve_adversarial_validation_availability
@@ -383,6 +378,105 @@ def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: Tw
         return True, f"accepted ordinary convergence with {scope} scope; renewed strong audit is required", result.reviewer_provenance
     except Exception as exc:
         return False, f"ordinary closure execution failed: {exc}", ""
+
+
+def _render_two_tier_review(payload: AcceptedReviewPayload) -> str:
+    """Render role-distinguishable evidence while retaining the exact payload."""
+    title = "Strong audit" if payload.mode == "STRONG_AUDIT" else "Ordinary closure"
+    marker = f"<!-- auto-coder-two-tier-review:v1:{payload.identity} -->"
+    return (
+        f"{marker}\n## {title} evidence (attempt {payload.attempt})\n\n"
+        f"Verdict: **{payload.verdict}**  \n"
+        f"Target head: `{payload.target_head}`  \n"
+        f"Round: `{payload.round_id}`  \n\n"
+        "<details><summary>Exact accepted payload</summary>\n\n"
+        f"```json\n{payload.canonical_json()}\n```\n\n</details>"
+    )
+
+
+class _GitHubReviewEffectTransport:
+    """Authenticated GitHub adapter for one exact review publication."""
+
+    def __init__(self, reviewer: GitHubAppReviewer, payload: AcceptedReviewPayload, authorize: Callable[[], bool]):
+        self.reviewer = reviewer
+        self.payload = payload
+        self.authorize = authorize
+        self.body = _render_two_tier_review(payload)
+
+    def send(self, operation: EffectOperation) -> EffectAttempt:
+        result = self.reviewer.publish_exact_pr_review(
+            self.payload.repository,
+            self.payload.pr_number,
+            self.payload.target_head,
+            self.body,
+            self.authorize,
+        )
+        if result.success:
+            return EffectAttempt(CONFIRMED, result.event)
+        if result.reason == "Review authority is no longer current":
+            return EffectAttempt(REJECTED, reason=result.reason)
+        return EffectAttempt(UNCERTAIN, reason=result.reason)
+
+    def reconcile(self, operation: EffectOperation) -> EffectAttempt:
+        result = self.reviewer.find_exact_pr_review(
+            self.payload.repository,
+            self.payload.pr_number,
+            self.payload.target_head,
+            self.body,
+        )
+        if result.success:
+            return EffectAttempt(CONFIRMED, result.event)
+        # A completed authenticated listing positively establishes absence;
+        # an unavailable listing remains uncertain and cannot authorize replay.
+        if result.reason == "Exact authenticated review was not found":
+            return EffectAttempt(REJECTED, reason=result.reason)
+        return EffectAttempt(UNCERTAIN, reason=result.reason)
+
+
+def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
+    """Publish only a current, durably accepted two-tier result and acknowledge it."""
+    snapshot = inputs.gate.state.snapshot(pr_number)
+    strong = snapshot.accepted_strong_round
+    if strong is None or not snapshot.pending_effect:
+        return False, "no accepted review publication is pending"
+    if snapshot.pending_effect == "CLOSURE_PUBLICATION":
+        closure = snapshot.accepted_closure
+        if closure is None:
+            return False, "accepted closure payload is unavailable"
+        payload = AcceptedReviewPayload.closure(repo_name, pr_number, strong, closure, snapshot.findings)
+    else:
+        payload = AcceptedReviewPayload.strong(repo_name, pr_number, strong, snapshot.findings)
+
+    def is_current() -> bool:
+        current = inputs.gate.state.snapshot(pr_number)
+        return bool(
+            not current.closed
+            and current.open_epoch == payload.open_epoch
+            and current.accepted_strong_round is not None
+            and current.accepted_strong_round.round_id == strong.round_id
+            and current.finding_set_revision == payload.finding_set_revision
+            and current.pending_effect == snapshot.pending_effect
+        )
+
+    try:
+        reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name))
+    except Exception:
+        return False, "configured reviewer identity is unavailable; publication was not started"
+    executor = ReviewEffectExecutor(ReviewEffectRepository(repo_name))
+    operation = executor.apply(
+        payload,
+        "review-publication",
+        "github-reviewer-app",
+        _GitHubReviewEffectTransport(reviewer, payload, is_current),
+        is_current,
+    )
+    if operation.status != CONFIRMED:
+        return False, f"publication {operation.status.lower()}: {operation.reason or 'awaiting the reservation owner'}"
+    if payload.mode == "ORDINARY_CLOSURE":
+        inputs.gate.state.acknowledge_closure_publication(pr_number, payload.round_id)
+    else:
+        inputs.gate.state.acknowledge_publication(pr_number, payload.round_id)
+    return True, f"confirmed authenticated {payload.mode} publication receipt {operation.receipt}"
 
 
 @dataclass(frozen=True)
@@ -4049,12 +4143,19 @@ def _handle_pr_merge(
                         reviewer_backend = two_tier_inputs.policy.strong_route
                         stage_id = "pr.strong-audit"
                         stage_label = f"pr#{pr_number} strong audit"
+                    published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, two_tier_inputs)
+                    if published:
+                        published_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
+                        published_round = published_snapshot.accepted_strong_round
+                        if published_round is not None and published_round.verdict == VERDICT_PASS:
+                            two_tier_inputs.gate.state.accept_strong_pass_completion(pr_number, published_round.round_id)
                     strong_diagnostic = two_tier_inputs.gate.diagnostic(
                         pr_number,
                         current_head_sha=two_tier_inputs.head_sha,
                         backend=two_tier_inputs.policy.strong_route,
                     )
                     actions.append(f"Two-tier review for PR #{pr_number}: {reason} " f"(phase={strong_diagnostic.phase}, head={two_tier_inputs.head_sha[:8]}, " f"contract={two_tier_inputs.contract.identity[:12]}, " f"policy={two_tier_inputs.policy.identity[:12]})")
+                    actions.append(f"Two-tier review effect for PR #{pr_number}: {publication_reason}")
                     _record_pr_stage(
                         pr_number,
                         stage_id,
@@ -4072,9 +4173,28 @@ def _handle_pr_merge(
                             "finding_ids": [item.finding_id for item in pending_snapshot.open_findings],
                         },
                     )
-                    # Acceptance is not merge authority. Publication and repair
-                    # consume the durable pending effect in later stages.
-                    return actions
+                    _record_pr_stage(
+                        pr_number,
+                        "pr.two-tier-review-effect",
+                        f"pr#{pr_number} two-tier review effect",
+                        Outcome.COMPLETED if published else Outcome.DEFERRED,
+                        {
+                            "phase": strong_diagnostic.phase,
+                            "effect": "review-publication",
+                            "reason": publication_reason,
+                        },
+                    )
+                    # Acceptance by itself is never merge authority. A confirmed
+                    # exact strong PASS may continue to the ordinary final gate;
+                    # findings and unresolved effects remain blocked here.
+                    if not two_tier_inputs.gate.authorize_merge(
+                        pr_number,
+                        current_head_sha=two_tier_inputs.head_sha,
+                        current_base_sha=two_tier_inputs.base_sha,
+                        current_contract=two_tier_inputs.contract,
+                        current_policy=two_tier_inputs.policy,
+                    ):
+                        return actions
 
             # Own the final read phase even when invoked outside candidate selection.
             with ci_read_phase("pr-final-merge-eligibility"):
