@@ -4101,7 +4101,26 @@ def _handle_pr_merge(
 
                 return actions
             else:
-                actions.append(f"Failed to merge PR #{pr_number}")
+                # A false merge result after green CI is not CI-failure
+                # evidence. It also represents retryable strong-audit and
+                # durable merge-delivery states, so leave recovery to their
+                # existing owners instead of entering a CI repair route.
+                reason = next(
+                    (action for action in reversed(actions) if action.startswith("Skipping merge for PR #")),
+                    f"Merge for PR #{pr_number} was not confirmed; retry is deferred",
+                )
+                actions.append(reason if reason not in actions else f"PR #{pr_number} remains deferred at the merge boundary")
+                if processing_status is not None:
+                    processing_status.error = None
+                    processing_status.outcome = PRProcessingOutcome.DEFERRED
+                _record_pr_stage(
+                    pr_number,
+                    "pr.merge-route",
+                    f"pr#{pr_number} merge route",
+                    Outcome.DEFERRED,
+                    {"reason": reason, "ci_failure": False},
+                )
+                return actions
 
         # Step 4: GitHub Actions failed - handle Jules PR feedback loop
         # Fetch detailed checks only when needed to save API calls

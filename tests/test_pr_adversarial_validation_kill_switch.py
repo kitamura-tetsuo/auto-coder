@@ -550,10 +550,21 @@ class TestAS005NonAdversarialMergeGatesStillApply:
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
 
         config = AutomationConfig(pr_adversarial_validation=False)
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        from auto_coder.automation_config import ProcessedPRResult
+
+        processing_status = ProcessedPRResult(pr_data=pr_data)
+        with (
+            patch("auto_coder.pr_processor.get_detailed_checks_from_history") as detailed_checks,
+            patch("auto_coder.pr_processor._send_codex_cloud_error_feedback") as cloud_feedback,
+        ):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, processing_status)
 
         mock_merge_pr.assert_called_once()
-        assert any("Failed to merge PR #100" in a for a in actions)
+        assert processing_status.outcome.value == "deferred"
+        assert any("not confirmed" in action for action in actions)
+        assert all("GitHub Actions checks failed" not in action for action in actions)
+        detailed_checks.assert_not_called()
+        cloud_feedback.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
