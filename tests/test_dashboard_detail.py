@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.dashboard import init_dashboard
 from src.auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_trace_collector
+from src.auto_coder.review_audit import EvaluationLifecycle, ExecutionMode, ReviewAuditRecord, ReviewAuditStore
 
 
 @pytest.fixture(autouse=True)
@@ -169,3 +170,47 @@ def test_dashboard_main_page_search(mock_ui):
     mock_ui.number.assert_called()
     button_calls = [args[0] for args, _ in mock_ui.button.call_args_list]
     assert "Go" in button_calls
+
+
+@patch("src.auto_coder.dashboard.ui")
+def test_detail_review_timer_exposes_new_audit_row_without_rebuilding_unchanged_content(mock_ui, tmp_path):
+    """REQ-005/006: the mounted detail callback refreshes durable history."""
+    store = ReviewAuditStore(tmp_path / "audit")
+
+    def audit_record(review_id: str, sequence: int) -> ReviewAuditRecord:
+        return ReviewAuditRecord(
+            review_id=review_id,
+            repository="owner/repo",
+            target_type="issue",
+            target_number="42",
+            review_kind="issue_specification",
+            origin="production",
+            process_identity="process",
+            creation_time=f"2026-01-01T00:00:0{sequence}Z",
+            creation_sequence=sequence,
+            reviewed_generation=f"generation-{sequence}",
+            policy_identity="policy",
+            related_issue_membership=None,
+            diagnostic_execution_references=None,
+            lifecycle=EvaluationLifecycle.FINISHED,
+            execution_mode=ExecutionMode.EXECUTED,
+            native_verdict="READY",
+            native_report={"verdict": "READY"},
+            source_review_id=None,
+        )
+
+    assert store.record_evaluation(audit_record("review-1", 1))
+    captured_functions = _capture_pages(mock_ui)
+    with patch("src.auto_coder.dashboard.ReviewAuditStore", return_value=store):
+        init_dashboard(FastAPI(), MagicMock(spec=AutomationEngine), "owner/repo")
+    captured_functions["/detail/{item_type}/{item_number}"](item_type="issue", item_number=42)
+
+    review_callback = mock_ui.timer.call_args_list[-2].args[1]
+    initial_clear_count = mock_ui.column.return_value.clear.call_count
+    review_callback()
+    assert mock_ui.column.return_value.clear.call_count == initial_clear_count
+
+    assert store.record_evaluation(audit_record("review-2", 2))
+    review_callback()
+    link_targets = [args[1] for args, _kwargs in mock_ui.link.call_args_list if len(args) > 1]
+    assert "/detail/issue/42?review_id=review-2" in link_targets

@@ -29,6 +29,7 @@ import auto_coder.review_capture.recorder as review_recorder
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.backend_manager import BackendManager
+from auto_coder.dashboard_reviews import list_row, selection_error
 from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from auto_coder.decomposition_validation_lifecycle import (
     DecompositionIssue,
@@ -179,6 +180,14 @@ class TestAS001ExecutedReadyRoundTrip:
         assert full.record is not None
         assert len(full.record.interactions) == 1
         assert full.record.interactions[0].completion_status == "RETURNED"
+        # Joined production-to-view oracle: the dashboard projection consumes
+        # the row emitted by the real lifecycle/backend capture above, never a
+        # hand-built expected audit row.
+        dashboard_row = list_row(full.record)
+        assert dashboard_row.mode == "EXECUTED"
+        assert dashboard_row.verdict == "READY"
+        assert dashboard_row.detail_path == f"/detail/issue/101?review_id={row.review_id}"
+        assert selection_error(full.record, "issue", 101) is None
 
 
 # ---------------------------------------------------------------------------
