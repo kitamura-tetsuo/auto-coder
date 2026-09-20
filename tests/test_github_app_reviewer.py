@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem, ReviewThreadDisposition, TestOracleGap
-from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
+from auto_coder.github_app_reviewer import ExactReviewComment, GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
 from auto_coder.utils import is_same_github_login
 
 
@@ -81,6 +81,52 @@ def auth_responses(head_sha: str = "sha-a") -> list[httpx.Response]:
         response(200, {"head": {"sha": head_sha}}),
         response(200, {"id": 9}),
     ]
+
+
+def test_exact_review_creates_one_diff_thread_per_finding(tmp_path, monkeypatch):
+    client = ReviewSchemaValidatingClient(auth_responses()[:3] + [response(200, [{"filename": "src/a.py", "patch": "@@ -1 +1,2 @@\n-old\n+new\n+guard"}]), response(201, {"id": 55})])
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    comments = (ExactReviewComment("finding-one", "src/a.py:2"), ExactReviewComment("finding-two", "Unanchored portable finding"))
+    result = reviewer.publish_exact_pr_review("owner/repo", 42, "sha-a", "summary", lambda: True, comments)
+    assert result.success
+    assert result.event == "55"
+    payload = client.calls[-1][2]["json"]
+    assert payload == {
+        "body": "summary",
+        "event": "COMMENT",
+        "commit_id": "sha-a",
+        "comments": [
+            {"path": "src/a.py", "body": "finding-one", "line": 2, "side": "RIGHT"},
+            {"path": "src/a.py", "body": "finding-two", "line": 1, "side": "RIGHT"},
+        ],
+    }
+
+
+def test_exact_review_does_not_publish_on_changed_head(tmp_path, monkeypatch):
+    client = RecordingClient(auth_responses("new-head")[:3])
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    result = reviewer.publish_exact_pr_review("owner/repo", 42, "sha-a", "summary", lambda: True, (ExactReviewComment("finding", "src/a.py:1"),))
+    assert not result.success
+    assert result.reason == "Pull request head changed after adversarial validation"
+    assert not any(method == "POST" and url.endswith("/reviews") for method, url, _ in client.calls)
+
+
+@pytest.mark.parametrize("bodies,confirmed", [(["finding-one", "finding-two"], True), (["finding-one"], False)])
+def test_exact_review_reconciliation_requires_every_finding_thread(tmp_path, monkeypatch, bodies, confirmed):
+    client = RecordingClient(
+        auth_responses()[:2]
+        + [
+            response(200, [{"id": 55, "user": {"login": "reviewer[bot]"}, "commit_id": "sha-a", "body": "summary"}]),
+            response(200, [{"body": body} for body in bodies] + [{"body": "A later reply", "in_reply_to_id": 99}]),
+        ]
+    )
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    monkeypatch.setattr(reviewer, "get_identity", lambda: ReviewerAppIdentity("reviewer[bot]", 4765828))
+    result = reviewer.find_exact_pr_review("owner/repo", 42, "sha-a", "summary", (ExactReviewComment("finding-one"), ExactReviewComment("finding-two")))
+    assert result.success is confirmed
+    assert result.event == ("55" if confirmed else "")
+    assert client.calls[-1][1].endswith("/reviews/55/comments?per_page=100&page=1")
+    assert not any(method == "POST" and url.endswith("/reviews") for method, url, _ in client.calls)
 
 
 def test_loads_existing_user_facing_configuration_shape(tmp_path: Path) -> None:

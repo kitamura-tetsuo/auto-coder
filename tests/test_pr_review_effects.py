@@ -98,11 +98,15 @@ def test_exact_payload_and_distinct_attempt_identity_are_durable(tmp_path):
     assert repository.operation_identity(payload, "publication", "github-reviewer-app") != repository.operation_identity(different, "publication", "github-reviewer-app")
 
 
-def test_rendered_review_exposes_findings_before_collapsed_payload():
+def test_rendered_review_exposes_findings_as_separate_threads():
     payload = _payload()
     body = pr_processor._render_two_tier_review(payload)
-    visible = body.split("<details>", 1)[0]
-    assert "### 1. finding-1" in visible
+    transport = pr_processor._GitHubReviewEffectTransport(None, payload, lambda: True)
+    assert len(transport.comments) == 1
+    visible = transport.comments[0].body
+    assert "### finding-1" in visible
+    assert "auto-coder-two-tier-finding:v1:" in visible
+    assert "1 actionable finding thread(s) are attached" in body.split("<details>", 1)[0]
     assert "**Requirements:** #2209/REQ-002" in visible
     assert "**Status:** OPEN" in visible
     for field in (
@@ -208,13 +212,17 @@ def test_production_consumer_publishes_exact_accepted_record_and_persists_receip
         def __init__(self, config):
             pass
 
-        def publish_exact_pr_review(self, repository, pr_number, head_sha, body, authorize):
+        def publish_exact_pr_review(self, repository, pr_number, head_sha, body, authorize, comments=()):
             assert (repository, pr_number, head_sha) == ("owner/repo", 42, "head-a")
             assert authorize() is True
             sent_bodies.append(body)
+            assert len(comments) == len(findings)
+            if comments:
+                assert "### finding-1" in comments[0].body
+                assert "Production publication payload lacks it." == comments[0].evidence
             return ReviewPublicationResult(True, "987", "")
 
-        def find_exact_pr_review(self, repository, pr_number, head_sha, body):
+        def find_exact_pr_review(self, repository, pr_number, head_sha, body, comments=()):
             raise AssertionError("a new reserved operation must send before reconciliation")
 
     monkeypatch.setattr(pr_processor, "load_reviewer_app_config", lambda repo_name: object())

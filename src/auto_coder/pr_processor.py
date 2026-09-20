@@ -63,7 +63,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .github_app_reviewer import GitHubAppReviewer, ReviewerAppIdentity, load_reviewer_app_config, publish_adversarial_review, resolve_reviewer_app_identity
+from .github_app_reviewer import ExactReviewComment, GitHubAppReviewer, ReviewerAppIdentity, load_reviewer_app_config, publish_adversarial_review, resolve_reviewer_app_identity
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .invocation_admission import bind_invocation_target
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
@@ -77,7 +77,7 @@ from .pr_repair_guard import (
     check_pr_repair_exhaustion,
     publish_exhaustion_comment_deduped,
 )
-from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot
+from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot, Finding
 from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
 from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongPolicyIdentity
 from .pr_review_effects import CONFIRMED, REJECTED, UNCERTAIN, AcceptedReviewPayload, EffectAttempt, EffectOperation, ReviewEffectExecutor, ReviewEffectRepository
@@ -380,29 +380,38 @@ def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: Tw
         return False, f"ordinary closure execution failed: {exc}", ""
 
 
+TWO_TIER_REVIEW_DESTINATION = "github-reviewer-app:threads-v1"
+
+
+def _render_two_tier_finding(finding: Finding) -> str:
+    sections = []
+    sections.append(
+        f"### {finding.finding_id}\n\n"
+        f"**Requirements:** {', '.join(finding.requirement_ids)}  \n"
+        f"**Status:** {finding.status}  \n"
+        f"**Affected boundary:** {finding.affected_boundary}\n\n"
+        f"**Scenario:** {finding.counterexample}\n\n"
+        f"**Expected:** {finding.expected_behavior}\n\n"
+        f"**Actual:** {finding.actual_behavior}\n\n"
+        f"**Evidence:** {finding.evidence}\n\n"
+        f"**Impact:** {finding.material_consequence}\n\n"
+        f"**Regression scenario:** {finding.focused_regression_scenario}\n\n"
+    )
+    if finding.is_regression_gap:
+        sections.append(f"**Incorrect implementation admitted by tests:** {finding.plausible_incorrect_implementation}\n\n" f"**Why tests admit it:** {finding.why_tests_admit_it}\n\n")
+    if finding.disposition_evidence:
+        sections.append(f"**Disposition evidence:** {finding.disposition_evidence}\n\n")
+    return "".join(sections)
+
+
 def _render_two_tier_review(payload: AcceptedReviewPayload) -> str:
-    """Render role-distinguishable evidence while retaining the exact payload."""
+    """Render the review summary; strong findings are separate root threads."""
     title = "Strong audit" if payload.mode == "STRONG_AUDIT" else "Ordinary closure"
     marker = f"<!-- auto-coder-two-tier-review:v1:{payload.identity} -->"
-    sections = []
-    for index, finding in enumerate(payload.findings, start=1):
-        sections.append(
-            f"### {index}. {finding.finding_id}\n\n"
-            f"**Requirements:** {', '.join(finding.requirement_ids)}  \n"
-            f"**Status:** {finding.status}  \n"
-            f"**Affected boundary:** {finding.affected_boundary}\n\n"
-            f"**Scenario:** {finding.counterexample}\n\n"
-            f"**Expected:** {finding.expected_behavior}\n\n"
-            f"**Actual:** {finding.actual_behavior}\n\n"
-            f"**Evidence:** {finding.evidence}\n\n"
-            f"**Impact:** {finding.material_consequence}\n\n"
-            f"**Regression scenario:** {finding.focused_regression_scenario}\n\n"
-        )
-        if finding.is_regression_gap:
-            sections.append(f"**Incorrect implementation admitted by tests:** {finding.plausible_incorrect_implementation}\n\n" f"**Why tests admit it:** {finding.why_tests_admit_it}\n\n")
-        if finding.disposition_evidence:
-            sections.append(f"**Disposition evidence:** {finding.disposition_evidence}\n\n")
-    readable_findings = "".join(sections) if sections else "No findings.\n\n"
+    if payload.mode == "STRONG_AUDIT":
+        readable_findings = f"{len(payload.findings)} actionable finding thread(s) are attached to this review.\n\n" if payload.findings else "No findings.\n\n"
+    else:
+        readable_findings = "".join(_render_two_tier_finding(finding) for finding in payload.findings)
     return (
         f"{marker}\n## {title} evidence (attempt {payload.attempt})\n\n"
         f"Verdict: **{payload.verdict}**  \n"
@@ -422,6 +431,17 @@ class _GitHubReviewEffectTransport:
         self.payload = payload
         self.authorize = authorize
         self.body = _render_two_tier_review(payload)
+        self.comments = (
+            tuple(
+                ExactReviewComment(
+                    body=f"<!-- auto-coder-two-tier-finding:v1:{payload.identity}:{hashlib.sha256(finding.finding_id.encode()).hexdigest()} -->\n" + _render_two_tier_finding(finding),
+                    evidence=finding.evidence,
+                )
+                for finding in payload.findings
+            )
+            if payload.mode == "STRONG_AUDIT"
+            else ()
+        )
 
     def send(self, operation: EffectOperation) -> EffectAttempt:
         result = self.reviewer.publish_exact_pr_review(
@@ -430,6 +450,7 @@ class _GitHubReviewEffectTransport:
             self.payload.target_head,
             self.body,
             self.authorize,
+            comments=self.comments,
         )
         if result.success:
             return EffectAttempt(CONFIRMED, result.event)
@@ -443,6 +464,7 @@ class _GitHubReviewEffectTransport:
             self.payload.pr_number,
             self.payload.target_head,
             self.body,
+            comments=self.comments,
         )
         if result.success:
             return EffectAttempt(CONFIRMED, result.event)
@@ -486,7 +508,7 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
     operation = executor.apply(
         payload,
         "review-publication",
-        "github-reviewer-app",
+        TWO_TIER_REVIEW_DESTINATION,
         _GitHubReviewEffectTransport(reviewer, payload, is_current),
         is_current,
     )

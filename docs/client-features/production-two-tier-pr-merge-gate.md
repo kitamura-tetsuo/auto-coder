@@ -12,10 +12,17 @@ exclusive route and its authenticated publication must be acknowledged first.
 Publication selects findings by the accepted round's producing claim ID, and
 rejects an incomplete bundle before publishing. The separately assigned accepted
 round ID must not cause retained findings to disappear from the published payload.
-The review body displays every finding's Requirement references, status, affected
-boundary, scenario, expected/actual behavior, evidence, impact, and regression
-scenario before the collapsed exact JSON payload. Regression gaps and closure
-dispositions also expose their supporting evidence in the readable body.
+Strong findings are published as separate native review threads, one root comment
+per finding, using the ordinary review publisher's diff-line anchoring helper.
+Cited changed files and lines are preferred; portable findings without a usable
+location retain their full evidence at an available changed-file diff anchor.
+Each thread displays Requirement references, status, affected boundary, scenario,
+expected/actual behavior, evidence, impact, and the regression scenario. The main
+review summarizes the thread count and retains the exact JSON payload. Closure
+reviews display disposition evidence without recreating strong finding threads.
+Publication uses the versioned `github-reviewer-app:threads-v1` effect destination;
+an older summary-only receipt does not confirm thread publication. Reconciliation
+checks all expected comment bodies on the authenticated exact-head review.
 
 Strong findings remain durable and are verified by `ORDINARY_CLOSURE` using the
 ordinary PR route and the cumulative diff. A bounded closure can authorize the

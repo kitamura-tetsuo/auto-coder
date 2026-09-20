@@ -37,6 +37,19 @@ tests/test_pr_review_cycle.py tests/test_two_tier_pr_gate.py` for prompt,
 portable-bundle, identity, disposition-completeness, cumulative-scope, durable
 acceptance, and renewed-audit coverage.
 
+Two-tier finding publication retains the `pr.two-tier-review-effect` schema but
+uses the `github-reviewer-app:threads-v1` effect destination. Confirmation now
+includes each finding's native root review comment; a matching summary alone
+does not establish delivery, and later replies do not substitute for roots.
+`tests/test_github_app_reviewer.py::test_exact_review_creates_one_diff_thread_per_finding`
+verifies the actual nested-review request and ordinary diff-anchor fallback;
+`test_exact_review_reconciliation_requires_every_finding_thread` verifies complete
+versus missing root sets; `test_exact_review_does_not_publish_on_changed_head`
+verifies the pre-publication head fence. Run these with
+`bash scripts/test.sh tests/test_github_app_reviewer.py tests/test_pr_review_effects.py`.
+The existing production effect event and dashboard timeline need no additional
+field or renderer to display the confirmed/deferred result.
+
 GitHub webhook-driven cache eviction and expedited CI watch recheck (PR #2119)
 improve the turnaround time from CI completion to validation launch. Upon webhook intake,
 matching HTTP cache entries in Hishel SQLite storage are evicted, CI observation requests
