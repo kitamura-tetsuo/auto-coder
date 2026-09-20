@@ -8,6 +8,8 @@ import os
 import shlex
 import stat
 import subprocess
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -182,7 +184,7 @@ def test_muse_rejects_configured_prompt_source_before_launch(tmp_path: Path, mon
     assert not launched.exists()
 
 
-def test_muse_commit_is_rejected_and_head_is_restored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_muse_commit_is_rejected_without_rewriting_advanced_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _muse_script(tmp_path, "printf 'bad\\n' > tracked.txt; git add tracked.txt; git commit -m forbidden")
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse")})
@@ -194,7 +196,7 @@ def test_muse_commit_is_rejected_and_head_is_restored(tmp_path: Path, monkeypatc
         _manager(config)._run_llm_cli("implement")
 
     assert _git(repo, "rev-parse", "HEAD") == head
-    assert _git(repo, "status", "--porcelain") == "M tracked.txt"
+    assert (repo / "tracked.txt").read_text() == "bad\n"
 
 
 def test_muse_staging_without_commit_is_rejected_and_unstaged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
@@ -211,7 +213,7 @@ def test_muse_staging_without_commit_is_rejected_and_unstaged(tmp_path: Path, mo
     assert (repo / "tracked.txt").read_text() == "staged-by-muse\n"
 
 
-def test_muse_created_branch_is_rejected_and_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_muse_created_branch_is_rejected_without_speculative_deletion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     original_branch = _git(repo, "branch", "--show-current")
     script = _muse_script(tmp_path, f"git branch muse-temporary; git switch {original_branch}")
@@ -222,7 +224,7 @@ def test_muse_created_branch_is_rejected_and_removed(tmp_path: Path, monkeypatch
     with pytest.raises(RuntimeError, match="Git-state invariant"):
         _manager(config)._run_llm_cli("implement")
 
-    assert _git(repo, "branch", "--list", "muse-temporary") == ""
+    assert _git(repo, "branch", "--list", "muse-temporary") == "muse-temporary"
     assert _git(repo, "branch", "--show-current") == original_branch
 
 
@@ -591,6 +593,81 @@ print("ACTION_SUMMARY: Muse worktree completed")
     assert output == "ACTION_SUMMARY: Muse worktree completed"
     data = json.loads(captured_file.read_text())
     assert Path(data["cwd"]).resolve() == worktree_dir.resolve()
+
+
+def test_muse_recovery_leaves_overlapping_peer_refs_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    main_repo = _repository(tmp_path / "main")
+    target = tmp_path / "target"
+    _git(main_repo, "worktree", "add", "--detach", str(target), "HEAD")
+    _git(main_repo, "branch", "peer")
+    _git(main_repo, "tag", "peer-old-tag")
+    ready = tmp_path / "ready"
+    release = tmp_path / "release"
+    script = tmp_path / "muse-overlap"
+    script.write_text(
+        """#!/usr/bin/env python3
+import os
+import sys
+import time
+from pathlib import Path
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code test")
+    raise SystemExit(0)
+Path(os.environ["MUSE_READY"]).write_text("ready")
+while not Path(os.environ["MUSE_RELEASE"]).exists():
+    time.sleep(0.01)
+Path("tracked.txt").write_text("forbidden no-edit mutation\\n")
+print("ACTION_SUMMARY: must not succeed")
+"""
+    )
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", options_for_noedit=["--no-edit"])})
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    monkeypatch.setenv("MUSE_READY", str(ready))
+    monkeypatch.setenv("MUSE_RELEASE", str(release))
+
+    from src.auto_coder.utils import bind_command_execution_cwd, reset_command_execution_cwd
+
+    manager = _manager(config)
+    manager._is_noedit = True
+    failures: list[BaseException] = []
+
+    def invoke() -> None:
+        token = bind_command_execution_cwd(str(target))
+        try:
+            manager._run_llm_cli("review")
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            reset_command_execution_cwd(token)
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists(), f"Muse executable did not reach its post-snapshot pause: {failures!r}"
+
+    _git(main_repo, "switch", "peer")
+    (main_repo / "peer.txt").write_text("peer change\n")
+    _git(main_repo, "add", "peer.txt")
+    _git(main_repo, "commit", "-m", "peer commit")
+    peer_head = _git(main_repo, "rev-parse", "HEAD")
+    _git(main_repo, "branch", "peer-created")
+    _git(main_repo, "tag", "-d", "peer-old-tag")
+    release.write_text("continue")
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], RuntimeError)
+    assert "Git-state invariant" in str(failures[0])
+    assert _git(main_repo, "rev-parse", "HEAD") == peer_head
+    assert _git(main_repo, "rev-parse", "peer-created") == peer_head
+    assert _git(main_repo, "tag", "--list", "peer-old-tag") == ""
+    assert _git(target, "rev-parse", "HEAD") != peer_head
+    assert (target / "tracked.txt").read_text() == "before\n"
 
 
 def test_muse_stderr_warnings_do_not_pollute_successful_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:

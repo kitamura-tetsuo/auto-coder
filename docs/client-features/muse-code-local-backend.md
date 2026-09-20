@@ -13,3 +13,12 @@ read-only review and adversarial validation backend (`[backend_adversarial_valid
 in no-edit mode, Auto-Coder invokes Muse with sandboxed execution (`--disable-write`,
 `--disable-shell`, `--disable-approval`) and strips dangerous bypass flags, ensuring
 file and command mutations are completely disabled.
+
+Recovery is bound to the worktree and worktree-private Git directory captured
+before the invocation. It never replays the repository-wide ref snapshot:
+unattributed branch, tag, and remote-tracking changes are reported by the
+invariant check but are left untouched. HEAD and index recovery uses only the
+captured worktree's private state, and an attached HEAD is restored only while
+its original branch still points to the captured commit. If that shared branch
+has moved or disappeared, recovery refuses the unsafe write and the invocation
+remains failed.
