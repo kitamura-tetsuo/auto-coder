@@ -9,6 +9,7 @@ proof that a claimed creation did not happen.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import sqlite3
 import threading
@@ -57,12 +58,20 @@ class RetryDispatchRepository:
         self.repository = repository
         self.path = path or Path.home() / ".auto-coder" / repository / "retry_dispatch.db"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
-        self._connection.execute("PRAGMA journal_mode=WAL")
         self._lock = threading.Lock()
-        with self._connection:
-            self._connection.executescript(
-                """
+        # WAL setup and schema migration need serialization of their own:
+        # SQLite's busy handler does not reliably wait when two fresh
+        # connections race to change journal mode.  The advisory lock is only
+        # for construction; normal claims continue to serialize in SQLite.
+        initialization_lock = self.path.with_suffix(f"{self.path.suffix}.init.lock")
+        with open(initialization_lock, "a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            self._connection = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+            self._connection.execute("PRAGMA busy_timeout=30000")
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            with self._connection:
+                self._connection.executescript(
+                    """
                 CREATE TABLE IF NOT EXISTS retry_handoffs (
                     request_id TEXT PRIMARY KEY,
                     repository TEXT NOT NULL,
@@ -86,7 +95,7 @@ class RetryDispatchRepository:
                     ON retry_handoffs(repository, issue_number, numeric_attempt)
                     WHERE numeric_attempt IS NOT NULL;
                 """
-            )
+                )
 
     @staticmethod
     def _validate_authority(authority: ImplementationRetryRequest, repository: str, issue_number: int) -> None:
