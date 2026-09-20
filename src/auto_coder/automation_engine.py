@@ -88,6 +88,7 @@ from .issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
     ContractIdentity,
+    ImplementationRetryRequest,
     IssueStageRoutingStore,
     ReviewRequirement,
     family_review_generation,
@@ -6087,6 +6088,7 @@ class AutomationEngine:
         force_adversarial_validation: bool = False,
         advance_issue_attempt: bool = False,
         manual_retry: bool = False,
+        retry_authority: Optional[ImplementationRetryRequest] = None,
     ) -> CandidateProcessingResult:
         """Process a candidate after its durable owner slot is reserved."""
         result = CandidateProcessingResult(
@@ -6101,6 +6103,11 @@ class AutomationEngine:
         if self.is_draining:
             result.target_outcome = ExplicitTargetOutcome.DEFERRED
             result.actions = ["Deferred - graceful shutdown began before reserved dispatch"]
+            return result
+        if manual_retry and retry_authority is None:
+            result.target_outcome = ExplicitTargetOutcome.DEFERRED
+            result.error = "Explicit retry dispatch requires durable owned retry authority"
+            result.actions = ["Deferred - explicit retry dispatch authority is unavailable"]
             return result
 
         try:
@@ -6232,7 +6239,8 @@ class AutomationEngine:
                             self.github,
                             label_context=should_process,
                             implementation_slots=implementation_slots,
-                            **({"manual_retry": True} if manual_retry else {}),
+                            **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
+                            **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                         )
                     elif jules_mode:
                         # Use Cloud mode (backend_cloud, defaulting to Jules) for issue processing
@@ -6247,14 +6255,15 @@ class AutomationEngine:
                             self.github,
                             label_context=should_process,
                             implementation_slots=implementation_slots,
-                            **({"manual_retry": True} if manual_retry else {}),
+                            **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
+                            **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                         )
 
                     else:
                         # Regular issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode", item_type="issue", item_number=item_number, details={"mode": "local"})
                         _record_issue_stage_result(item_number, "issue.dispatch-route", f"issue#{item_number} dispatch route", Outcome.COMPLETED, {"route": "local"})
-                        result.actions = self._take_issue_actions(repo_name, candidate.data)
+                        result.actions = self._take_issue_actions(repo_name, candidate.data, **({"retry_authority": retry_authority} if retry_authority is not None else {}))  # type: ignore[arg-type]
 
                     # Cloud launchers persist the authoritative provider task in
                     # CloudManager. Mirror that production output into logical
@@ -7083,6 +7092,7 @@ class AutomationEngine:
         repo_name: str,
         issue_data: Dict[str, Any],
         backend_manager: Optional[Any] = None,
+        retry_authority: Optional[ImplementationRetryRequest] = None,
     ) -> List[str]:
         """Take actions on an issue using direct LLM CLI analysis and implementation."""
         from .issue_processor import _take_issue_actions as _take_issue_actions_func
@@ -7094,6 +7104,7 @@ class AutomationEngine:
             self.github,
             backend_manager=backend_manager,
             implementation_slots=self._get_implementation_slots(repo_name),
+            **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
         )
 
     def _apply_issue_actions_directly(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:
