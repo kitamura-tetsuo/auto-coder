@@ -35,6 +35,15 @@ from auto_coder.llm_backend_config import (
     get_automatic_test_fix_from_config,
     get_feature_switch_from_config,
 )
+from auto_coder.pr_processor import (
+    _fix_pr_issues_with_github_actions_testing,
+    _fix_pr_issues_with_local_testing,
+    _fix_pr_issues_with_testing,
+    _is_automatic_test_fix_enabled,
+    process_pull_request,
+)
+from auto_coder.util.gh_cache import GitHubClient
+from auto_coder.util.github_action import GitHubActionsStatusResult
 
 
 @pytest.fixture(autouse=True)
@@ -46,17 +55,6 @@ def current_ci_failure_authority():
         return_value=nullcontext(authority),
     ):
         yield
-
-
-from auto_coder.pr_processor import (
-    _fix_pr_issues_with_github_actions_testing,
-    _fix_pr_issues_with_local_testing,
-    _fix_pr_issues_with_testing,
-    _is_automatic_test_fix_enabled,
-    process_pull_request,
-)
-from auto_coder.util.gh_cache import GitHubClient
-from auto_coder.util.github_action import GitHubActionsStatusResult
 
 
 def _pr_data(
