@@ -30,3 +30,12 @@ The output parser validates every execution identity and required field. Invalid
 stale, incomplete, contradictory, or unavailable output becomes an explicit
 non-complete diagnostic, never PASS. The result is evidence for the durable
 lifecycle; it cannot publish reviews, close threads, mutate Issues, or merge.
+
+Production PR processing consumes `STRONG_PENDING` after an applicable ordinary
+PASS. It atomically claims the durable phase, creates a detached read-only
+worktree at the audited head, resolves only the configured strong route, supplies
+the complete base-to-head diff and Requirements contract, and durably accepts
+the validated portable result. Unavailable, exhausted, inconclusive, failed,
+and contended executions remain pending with diagnostic and retry evidence;
+accepted results remain blocked on their separately owned publication or repair
+effect and therefore do not grant merge authority.

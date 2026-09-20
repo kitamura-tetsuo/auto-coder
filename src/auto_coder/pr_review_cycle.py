@@ -542,6 +542,9 @@ class PrReviewCycleRepository:
         retry_not_before = float(raw_pr.get("retry_not_before", 0.0))
         if retry_not_before > time.time():
             return PHASE_STRONG_PENDING, str(raw_pr.get("attempt_error_reason", "strong audit retry deferred"))
+        attempt_error = str(raw_pr.get("attempt_error_reason", ""))
+        if attempt_error and isinstance(raw_pr.get("ordinary_pass"), dict):
+            return PHASE_STRONG_PENDING, attempt_error
         if isinstance(raw_pr.get("ordinary_pass"), dict):
             return PHASE_STRONG_PENDING, "ordinary PASS recorded; strong audit required"
         return PHASE_ORDINARY_REVIEW, "awaiting an applicable ordinary PASS"
