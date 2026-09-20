@@ -33,6 +33,8 @@ class CandidateTarget:
     head_sha: str = ""
     base_sha: str = ""
     base_ref: str = ""
+    captured_base_sha: str = ""
+    captured_base_ref: str = ""
     issue_oracle_fingerprint: str = ""
     binding_revision: int = 0
     generation_active: bool = False
@@ -87,6 +89,10 @@ def evaluate_candidate(evidence: CandidateAcceptanceEvidence) -> CandidateEvalua
         return CandidateEvaluation(CandidateEvaluationDisposition.PENDING, "candidate authority is not active")
     if not target.provenance_verified or target.provenance_conflicting:
         return CandidateEvaluation(CandidateEvaluationDisposition.PENDING, "PR provenance is unavailable or conflicting")
+    if target.pr_repository.lower() != target.repository.lower():
+        return CandidateEvaluation(CandidateEvaluationDisposition.PENDING, "PR repository does not match the captured repository")
+    if target.base_ref != target.captured_base_ref or target.base_sha != target.captured_base_sha:
+        return CandidateEvaluation(CandidateEvaluationDisposition.PENDING, "PR base does not match the captured base")
     if not target.pr_open or target.pr_draft:
         return CandidateEvaluation(CandidateEvaluationDisposition.PENDING, "PR is not an open, non-draft target")
     if target.effective_diff_files == 0:
@@ -136,6 +142,8 @@ def evaluate_candidate(evidence: CandidateAcceptanceEvidence) -> CandidateEvalua
         base_sha=target.base_sha,
         issue_oracle_fingerprint=target.issue_oracle_fingerprint,
         expected_binding_revision=target.binding_revision,
+        validation_revision=validation.validation_revision,
+        invalidation_revision=evidence.invalidation_revision,
     )
     return CandidateEvaluation(CandidateEvaluationDisposition.PASS, "current independent acceptance established", acceptance)
 
@@ -167,6 +175,8 @@ def select_accepted_candidate(
 def selected_pair_authorized(
     ledger: JulesCompetitionLedger,
     target: CandidateTarget,
+    *,
+    current_invalidation_revision: int,
 ) -> bool:
     """Reestablish immutable selected-pair authority at an outbound boundary."""
     namespace = ledger.get_namespace_snapshot(target.repository, target.issue_number)
@@ -179,6 +189,10 @@ def selected_pair_authorized(
         and generation.winner_pr_number == target.pr_number
         and generation.winner_head_sha == target.head_sha
         and generation.winner_base_sha == target.base_sha
+        and generation.winner_validation_revision is not None
+        and generation.winner_invalidation_revision is not None
+        and current_invalidation_revision <= generation.winner_validation_revision
+        and current_invalidation_revision >= generation.winner_invalidation_revision
         and generation.issue_oracle_fingerprint == target.issue_oracle_fingerprint
         and not namespace.has_pending_reconciliation()
     )

@@ -41,6 +41,8 @@ def _evidence() -> CandidateAcceptanceEvidence:
         head_sha="head-a",
         base_sha="base-a",
         base_ref="main",
+        captured_base_sha="base-a",
+        captured_base_ref="main",
         issue_oracle_fingerprint="requirements-v1",
         binding_revision=1,
         generation_active=True,
@@ -71,6 +73,8 @@ def test_acceptance_requires_positive_current_ci_and_exact_independent_pass() ->
     assert accepted.disposition is CandidateEvaluationDisposition.PASS
     assert accepted.acceptance is not None
     assert accepted.acceptance.head_sha == "head-a"
+    assert accepted.acceptance.validation_revision == 4
+    assert accepted.acceptance.invalidation_revision == 4
 
     empty = replace(_evidence(), ci=replace(_evidence().ci, availability=ObservationAvailability.KNOWN_EMPTY, facts=()))
     assert evaluate_candidate(empty).disposition is CandidateEvaluationDisposition.PENDING
@@ -78,6 +82,23 @@ def test_acceptance_requires_positive_current_ci_and_exact_independent_pass() ->
     assert evaluate_candidate(stale).disposition is CandidateEvaluationDisposition.PENDING
     wrong_oracle = replace(_evidence(), validation=replace(_evidence().validation, issue_oracle_fingerprint="old"))
     assert evaluate_candidate(wrong_oracle).disposition is CandidateEvaluationDisposition.PENDING
+
+
+def test_acceptance_rejects_repository_and_captured_base_mismatches() -> None:
+    wrong_branch = replace(_evidence(), target=replace(_evidence().target, base_ref="release"))
+    branch_result = evaluate_candidate(wrong_branch)
+    assert branch_result.disposition is CandidateEvaluationDisposition.PENDING
+    assert branch_result.acceptance is None
+
+    wrong_base = replace(_evidence(), target=replace(_evidence().target, base_sha="other-base"))
+    base_result = evaluate_candidate(wrong_base)
+    assert base_result.disposition is CandidateEvaluationDisposition.PENDING
+    assert base_result.acceptance is None
+
+    wrong_repository = replace(_evidence(), target=replace(_evidence().target, pr_repository="other/project"))
+    repository_result = evaluate_candidate(wrong_repository)
+    assert repository_result.disposition is CandidateEvaluationDisposition.PENDING
+    assert repository_result.acceptance is None
 
 
 def test_only_definitive_artifact_failures_retire() -> None:
@@ -131,7 +152,12 @@ def test_first_serialized_pass_selects_and_fences_sibling(tmp_path: Path) -> Non
     )
     assert evaluation.disposition is CandidateEvaluationDisposition.PASS
     assert selection is not None and selection.selected
-    assert selected_pair_authorized(ledger, evidence.target)
+    assert selected_pair_authorized(ledger, evidence.target, current_invalidation_revision=4)
+    assert not selected_pair_authorized(ledger, evidence.target, current_invalidation_revision=5)
+    committed = selection.snapshot.get_generation(generation)
+    assert committed is not None
+    assert committed.winner_validation_revision == 4
+    assert committed.winner_invalidation_revision == 4
     sibling = selection.snapshot.get_generation(generation).get_candidate("candidate-b")
     assert sibling is not None and not sibling.is_eligible()
 
@@ -150,5 +176,5 @@ def test_selected_authority_rejects_head_or_oracle_change(tmp_path: Path) -> Non
     evidence = replace(_evidence(), target=replace(_evidence().target, generation_id=created.generation_id))
     _, selection = select_accepted_candidate(ledger, evidence, operation_id="select", expected_epoch=bound.snapshot.epoch)
     assert selection is not None and selection.selected
-    assert not selected_pair_authorized(ledger, replace(evidence.target, head_sha="head-b"))
-    assert not selected_pair_authorized(ledger, replace(evidence.target, issue_oracle_fingerprint="requirements-v2"))
+    assert not selected_pair_authorized(ledger, replace(evidence.target, head_sha="head-b"), current_invalidation_revision=4)
+    assert not selected_pair_authorized(ledger, replace(evidence.target, issue_oracle_fingerprint="requirements-v2"), current_invalidation_revision=4)
