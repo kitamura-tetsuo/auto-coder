@@ -731,8 +731,8 @@ class TestPRProcessorMerge:
     @patch("src.auto_coder.pr_processor._get_allowed_merge_methods")
     def test_merge_pr_skips_conflict_resolution_for_dependabot(self, mock_get_allowed_methods, mock_github_client_class, mock_get_ghapi_client, mock_get_ghapi_client_adapter, tmp_path):
         """Merge conflicts of Dependabot PRs must not trigger conflict resolution."""
-        from src.auto_coder.automation_config import AutomationConfig
-        from src.auto_coder.pr_processor import _merge_pr
+        from src.auto_coder.automation_config import AutomationConfig, PRProcessingOutcome
+        from src.auto_coder.pr_processor import MergeRouteDisposition, _merge_pr
 
         config = AutomationConfig()
         config.MERGE_METHOD = "--squash"
@@ -770,9 +770,12 @@ class TestPRProcessorMerge:
             patch("src.auto_coder.pr_processor._close_linked_issues"),
             patch("src.auto_coder.pr_processor._archive_jules_session"),
         ):
-            result = _merge_pr("owner/repo", 126, {}, config)
+            disposition = MergeRouteDisposition()
+            result = _merge_pr("owner/repo", 126, {}, config, route_disposition=disposition)
 
         assert result is False
+        assert disposition.outcome is PRProcessingOutcome.FAILED
+        assert disposition.reason == "Definitive merge rejection"
         mock_resolve.assert_not_called()
 
 

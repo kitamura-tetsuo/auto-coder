@@ -16,7 +16,7 @@ Covers:
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import ANY, MagicMock, Mock, patch
 
 import pytest
 
@@ -274,6 +274,7 @@ class TestAS001DisabledOnGreenPRSkipsValidatorAndMerges:
             config,
             github_client=client,
             expected_head_sha=head_sha,
+            route_disposition=ANY,
         )
         assert any("Successfully merged PR #100" in a for a in actions)
 
@@ -534,7 +535,7 @@ class TestAS005NonAdversarialMergeGatesStillApply:
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
     @patch("auto_coder.pr_processor._merge_pr", return_value=False)
-    def test_branch_protection_failure_reports_error(
+    def test_legacy_false_merge_result_is_deferred_without_ci_repair(
         self,
         mock_merge_pr,
         mock_checks,
