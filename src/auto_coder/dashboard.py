@@ -438,7 +438,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         banner = ui.label("Loading retained review history...")
         rows_container = ui.column().classes("w-full")
         report_container = ui.column().classes("w-full border-t mt-4 pt-4")
-        state: Dict[str, Any] = {"high_water": None, "before": None, "last_ok": None, "signature": None, "selected": None, "refreshing": False}
+        state: Dict[str, Any] = {"high_water": None, "before": None, "pinned_snapshot": False, "last_ok": None, "signature": None, "selected": None, "refreshing": False}
 
         def select(record: ReviewAuditRecord) -> None:
             state["selected"] = record.review_id
@@ -453,11 +453,12 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 if reset:
                     state["high_water"] = None
                     state["before"] = None
+                    state["pinned_snapshot"] = False
                 size = max(1, min(200, int(page_size.value or 50)))
                 result = review_store.get_recent_history(
                     repo_name,
                     limit=size,
-                    high_water_mark_seq=state["high_water"],
+                    high_water_mark_seq=state["high_water"] if state["pinned_snapshot"] else None,
                     before_seq=state["before"],
                     target_type=target_type.value or None,
                     target_number=str(target_number.value).strip() or None,
@@ -469,8 +470,6 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     banner.classes(replace="text-red-600 font-bold")
                     return
                 state["last_ok"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if state["high_water"] is None and result.records:
-                    state["high_water"] = result.records[0].creation_sequence
                 banner.set_text(f"Local audit snapshot observed {state['last_ok']}.")
                 banner.classes(replace="text-sm text-gray-500")
                 signature = tuple(record_signature(record) for record in result.records)
@@ -487,7 +486,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                                 ui.label(f"Generation: {row.generation}; {row.backend}").classes("text-xs")
                                 ui.button("Inspect here", on_click=lambda current=record: select(current)).props("flat dense")
                         if result.records:
-                            ui.button("Older snapshot page", on_click=lambda: older(result.records[-1].creation_sequence)).props("flat")
+                            ui.button(
+                                "Older snapshot page",
+                                on_click=lambda: older(result.records[-1].creation_sequence, result.records[0].creation_sequence),
+                            ).props("flat")
                     state["rows_signature"] = signature
                 if state["selected"]:
                     selected = review_store.get_evaluation(repo_name, state["selected"])
@@ -496,7 +498,10 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
             finally:
                 state["refreshing"] = False
 
-        def older(before: int) -> None:
+        def older(before: int, high_water: int) -> None:
+            if not state["pinned_snapshot"]:
+                state["high_water"] = high_water
+                state["pinned_snapshot"] = True
             state["before"] = before
             refresh()
 
@@ -559,6 +564,8 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     with review_history_container:
                         if not records:
                             ui.label("No retained reviews for this target; missing history does not prove no review occurred.")
+                        if history.truncated:
+                            ui.label("Target history is truncated to the latest 500 retained reviews; older records are omitted.").classes("text-sm text-amber-600")
                         for record in records:
                             related_label = "related captured parent-set review" if record.target_number != str(item_number) else "target review"
                             ui.link(

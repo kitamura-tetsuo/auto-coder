@@ -24,20 +24,22 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 
 import auto_coder.review_capture.recorder as review_recorder
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.backend_manager import BackendManager
+from auto_coder.dashboard import init_dashboard
 from auto_coder.dashboard_reviews import list_row, selection_error
-from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
+from auto_coder.decomposition_analyzer import DecompositionAnalysisResult, parse_decomposition_analysis_response
 from auto_coder.decomposition_validation_lifecycle import (
     DecompositionIssue,
     DecompositionValidationLifecycle,
 )
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.review_audit import EvaluationLifecycle, ExecutionMode, ReviewAuditStore
-from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
+from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding, parse_specification_analysis_response
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.validation_scheduler import ValidationScheduler
 
@@ -135,14 +137,14 @@ def make_backend_manager(mock_llm_config, response: str = "ok") -> BackendManage
 
 class TestAS001ExecutedReadyRoundTrip:
     def test_executed_individual_ready_is_durable_after_restart(self, temp_audit_db, tmp_path, mock_llm_config):
-        backend = make_backend_manager(mock_llm_config, response='{"verdict":"READY"}')
+        backend = make_backend_manager(mock_llm_config, response='{"verdict":"READY","remediation":"NONE","findings":[]}')
 
         def analyzer(manifest, body):
             # A real backend call is made while the review context is bound
             # (see run_traced_review), so this produces a genuine
             # ReviewInteractionRecord and the wrapper must classify EXECUTED.
-            backend.run_prompt("review this issue")
-            return SpecificationAnalysisResult("READY")
+            response = backend.run_prompt("review this issue")
+            return parse_specification_analysis_response(response, manifest)
 
         lifecycle = SpecificationValidationLifecycle(REPO, "policy", tmp_path / "spec.json", analyzer)
         manifest = build_normative_issue_manifest(101, "Title", OBJECTIVE_A_BODY)
@@ -189,6 +191,29 @@ class TestAS001ExecutedReadyRoundTrip:
         assert dashboard_row.detail_path == f"/detail/issue/101?review_id={row.review_id}"
         assert selection_error(full.record, "issue", 101) is None
 
+        # Drive the mounted detail/deep-link callback with that same emitted
+        # review ID; no successful audit row is seeded for the UI half.
+        mounted_ui = MagicMock()
+        mounted_ui.context.client.request.query_params.get.return_value = row.review_id
+        pages = {}
+
+        def capture_page(path):
+            def decorator(function):
+                pages[path] = function
+                return function
+
+            return decorator
+
+        mounted_ui.page.side_effect = capture_page
+        with patch.dict(init_dashboard.__globals__, {"ui": mounted_ui, "ReviewAuditStore": MagicMock(return_value=restarted)}):
+            init_dashboard(FastAPI(), MagicMock(spec=AutomationEngine), REPO)
+            pages["/detail/{item_type}/{item_number}"](item_type="issue", item_number=101)
+        mounted_ui.link.assert_any_call(
+            "issue_specification: READY · EXECUTED (target review)",
+            f"/detail/issue/101?review_id={row.review_id}",
+        )
+        assert any(f"Review ID: {row.review_id}" == call.args[0] for call in mounted_ui.label.call_args_list)
+
 
 # ---------------------------------------------------------------------------
 # AS-002: a REUSED round-trip with unchanged original timestamps, plus a
@@ -198,7 +223,7 @@ class TestAS001ExecutedReadyRoundTrip:
 
 class TestAS002ReusedRoundTrip:
     def test_reused_decision_links_to_original_executed_review_unchanged(self, temp_audit_db, tmp_path, mock_llm_config):
-        backend = make_backend_manager(mock_llm_config)
+        backend = make_backend_manager(mock_llm_config, response='{"verdict":"READY","remediation":"NONE","findings":[]}')
         calls = {"count": 0}
 
         def analyzer(manifest, body):
@@ -421,11 +446,11 @@ class TestAS003DistinctNonReadyCases:
 
 class TestAS004DecompositionIdentityAndCoalescing:
     def test_decomposition_record_retains_parent_and_both_children(self, temp_audit_db, tmp_path, mock_llm_config):
-        backend = make_backend_manager(mock_llm_config)
+        backend = make_backend_manager(mock_llm_config, response='{"verdict":"READY","remediation":"NONE","findings":[]}')
 
         def analyzer(parent, children):
-            backend.run_prompt("review this decomposition")
-            return DecompositionAnalysisResult("READY")
+            response = backend.run_prompt("review this decomposition")
+            return parse_decomposition_analysis_response(response, parent, children)
 
         lifecycle = DecompositionValidationLifecycle(REPO, "policy", tmp_path / "decomp.json", analyzer)
         parent = {"number": 700, "title": "Parent", "body": "## Objective\nTrack work.\n"}

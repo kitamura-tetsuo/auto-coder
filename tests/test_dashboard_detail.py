@@ -214,3 +214,46 @@ def test_detail_review_timer_exposes_new_audit_row_without_rebuilding_unchanged_
     review_callback()
     link_targets = [args[1] for args, _kwargs in mock_ui.link.call_args_list if len(args) > 1]
     assert "/detail/issue/42?review_id=review-2" in link_targets
+
+
+@patch("src.auto_coder.dashboard.ui")
+def test_repository_history_first_page_refreshes_while_older_page_is_pinned(mock_ui, tmp_path):
+    store = ReviewAuditStore(tmp_path / "audit")
+
+    def audit_record(review_id: str, sequence: int) -> ReviewAuditRecord:
+        item = ReviewAuditRecord(
+            review_id=review_id,
+            repository="owner/repo",
+            target_type="issue",
+            target_number="42",
+            review_kind="issue_specification",
+            origin="production",
+            process_identity="process",
+            creation_time=f"2026-01-01T00:00:{sequence:02d}Z",
+            creation_sequence=sequence,
+            reviewed_generation=f"generation-{sequence}",
+            policy_identity="policy",
+            related_issue_membership=None,
+            diagnostic_execution_references=None,
+            lifecycle=EvaluationLifecycle.FINISHED,
+            execution_mode=ExecutionMode.EXECUTED,
+            native_verdict="READY",
+            native_report={"verdict": "READY"},
+            source_review_id=None,
+        )
+        return item
+
+    assert store.record_evaluation(audit_record("review-10", 10))
+    pages = _capture_pages(mock_ui)
+    with patch("src.auto_coder.dashboard.ReviewAuditStore", return_value=store):
+        init_dashboard(FastAPI(), MagicMock(spec=AutomationEngine), "owner/repo")
+    mock_ui.select.return_value.value = ""
+    mock_ui.input.return_value.value = ""
+    mock_ui.number.return_value.value = 50
+    pages["/reviews"]()
+    refresh_callback = mock_ui.timer.call_args.args[1]
+
+    assert store.record_evaluation(audit_record("review-11", 11))
+    refresh_callback()
+    link_targets = [args[1] for args, _kwargs in mock_ui.link.call_args_list if len(args) > 1]
+    assert "/detail/issue/42?review_id=review-11" in link_targets

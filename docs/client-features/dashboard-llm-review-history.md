@@ -13,6 +13,10 @@ generation and policy identity, native report, backend interactions, requested
 and separately reported model, reuse provenance, and recorded effects. Parent
 decomposition records are related to a child only through captured membership;
 they remain parent-set reviews and link to their captured parent target.
+The repository first page follows newly retained records; navigating to an
+older page pins that page's high-water snapshot. Target detail history reads
+the latest 500 records and explicitly labels the view when older records are
+omitted by that bound.
 
 Review history is historical evidence, not authorization or live state.
 `EXECUTED`, `REUSED`, `LOCAL_ONLY`, and `BYPASSED` retain their distinct
@@ -28,4 +32,3 @@ read the mounted repository's audit root and update client state: they do not
 query GitHub/providers, dispatch or retry reviews, mutate authorization/audit
 state, or accept repository/file paths from the request. Report content is
 rendered as inert text.
-

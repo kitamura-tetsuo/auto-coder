@@ -56,6 +56,7 @@ class StorageHealth(str, Enum):
 class AuditReadResult:
     health: StorageHealth
     records: List[ReviewAuditRecord]
+    truncated: bool = False
 
 
 @dataclasses.dataclass
@@ -707,14 +708,17 @@ class ReviewAuditStore:
                     query += " AND review_kind = ?"
                     params.append(review_kind)
 
-                query += " ORDER BY creation_sequence ASC LIMIT 500"
+                # Read one sentinel row so callers can explicitly identify a
+                # bounded target history instead of presenting it as complete.
+                query += " ORDER BY creation_sequence DESC LIMIT 501"
                 cursor = conn.execute(query, params)
 
+                rows = cursor.fetchall()
                 records = []
-                for row in cursor.fetchall():
+                for row in rows[:500]:
                     rec = self._row_to_evaluation(row)
                     records.append(rec)
-                return AuditReadResult(health=StorageHealth.AVAILABLE, records=records)
+                return AuditReadResult(health=StorageHealth.AVAILABLE, records=records, truncated=len(rows) > 500)
         except Exception as e:
             logger.error(f"Failed to get related evaluations: {e}")
             return AuditReadResult(health=StorageHealth.UNAVAILABLE, records=[])

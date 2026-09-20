@@ -93,3 +93,17 @@ def test_projection_does_not_conflate_requested_and_reported_model():
     assert list_row(item).detail_path == "/detail/issue/42?review_id=review-1"
     assert selection_error(item, "issue", 42) is None
     assert selection_error(item, "issue", 43) == "Review ID is not recorded for this repository and target; no other review was selected."
+
+
+def test_target_history_returns_latest_500_and_reports_truncation(tmp_path):
+    store = ReviewAuditStore(tmp_path)
+    for sequence in range(1, 502):
+        assert store.record_evaluation(record(f"review-{sequence}", "42", sequence))
+
+    result = store.get_related_evaluations("owner/repo", "issue", "42")
+
+    assert result.health is StorageHealth.AVAILABLE
+    assert result.truncated is True
+    assert len(result.records) == 500
+    assert result.records[0].review_id == "review-501"
+    assert result.records[-1].review_id == "review-2"
