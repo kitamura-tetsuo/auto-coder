@@ -1330,8 +1330,16 @@ def test_manual_retry_retained_provider_admission_and_trace(tmp_path, explicit_o
 
     authorized = explicit_only and force and retry
     if authorized:
-        engine._process_single_candidate_reserved.assert_called_once_with("owner/repo", candidate, engine.config, False, manual_retry=True)
-        assert result.actions == ["dispatched"]
+        engine._process_single_candidate_reserved.assert_called_once()
+        call = engine._process_single_candidate_reserved.call_args
+        assert call.args == ("owner/repo", candidate, engine.config, False)
+        assert call.kwargs["manual_retry"] is True
+        authority = call.kwargs["retry_authority"]
+        assert authority.target_number == 1728
+        assert authority.generation == generation
+        assert authority.status == "owned"
+        assert result.actions[0].startswith("Retry accepted for issue #1728: request=")
+        assert result.actions[1] == "dispatched"
     else:
         engine._process_single_candidate_reserved.assert_not_called()
         assert result.actions == ["Deferred - implementation ownership already exists (issue:1728)"]

@@ -287,22 +287,8 @@ async def test_duplicate_wake_never_dispatches_twice_for_the_same_generation(tmp
     await asyncio.gather(worker, return_exceptions=True)
 
 
-def test_duplicate_start_after_completed_execution_stays_suppressed_at_production_boundary(tmp_path, monkeypatch):
-    """REQ-006 at the real admission boundary: once G's execution has
-    finished normally (idle, bound, tombstoned -- not yet released), a
-    duplicate admission for the exact same unchanged generation must not
-    start a second execution.
-
-    ``test_duplicate_wake_never_dispatches_twice_for_the_same_generation``
-    above drives this through ordinary (non-retry) admission, where an
-    earlier, unrelated "implementation ownership already exists" gate
-    (matching ``validation_identity``) already refuses the second wake
-    before ``evaluate_implementation_start`` is ever consulted -- so it does
-    not, by itself, prove this Issue's own adapter decision is correct. This
-    test isolates that decision by using the manual-retry origin (as the
-    REQ-008 test above does) to bypass that earlier gate and reach the
-    adapter directly with the idle-but-bound-and-tombstoned state.
-    """
+def test_explicit_retry_after_completed_execution_starts_distinct_attempt(tmp_path, monkeypatch):
+    """An explicit request is the narrow exception to G's start tombstone."""
     created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     snapshot = _standalone_snapshot(1, created_at)
     config = AutomationConfig(repo_name=REPO)
@@ -325,10 +311,25 @@ def test_duplicate_start_after_completed_execution_stays_suppressed_at_productio
     assert not engine.implementation_slots.has_qualifying_implementation_activity(owner)
 
     candidate = Candidate(type="issue", data=dict(snapshot), priority=0)
-    result = engine._process_single_candidate_unified(REPO, candidate, engine.config, explicit_only=True, force=True, retry=True, origin="explicit-single-target")
+    result = engine._process_single_candidate_unified(
+        REPO,
+        candidate,
+        engine.config,
+        explicit_only=True,
+        force=True,
+        retry=True,
+        retry_request_id="cli-request-1",
+        origin="explicit-single-target",
+    )
 
-    engine._process_single_candidate_reserved.assert_not_called()
-    assert result.actions == ["Skipped - Implementation generation already has a durable production start"]
+    assert result.success
+    reserved = engine._process_single_candidate_reserved.call_args
+    authority = reserved.kwargs["retry_authority"]
+    assert reserved.kwargs["manual_retry"] is True
+    assert authority.request_id == "cli-request-1"
+    assert authority.generation == generation
+    assert authority.status == "owned"
+    assert authority.attempt_id
     assert engine.implementation_slots.active_execution_ids(owner) == ()
     assert engine.implementation_slots.implementation_generation(owner) == generation
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
