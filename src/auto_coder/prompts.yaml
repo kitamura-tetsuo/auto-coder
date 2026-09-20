@@ -638,6 +638,7 @@ pr:
     `dispositions`, `scope`, and non-empty `scope_evidence`. PASS is permitted only
     when no finding remains/newly exists and closure scope is BOUNDED. Never report
     a test as executed unless the supplied evidence proves its execution.
+    The caller owns the review mode; do not include a `mode` field in the response.
 
   adversarial_validation: |-
     You are an expert adversarial software correctness reviewer with deep domain expertise.

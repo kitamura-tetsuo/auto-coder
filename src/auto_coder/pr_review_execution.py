@@ -137,7 +137,6 @@ def parse_review_result(response: str, expected: ReviewExecutionInput, reviewer_
         return _diagnostic(expected, reviewer_provenance, "Reviewer output is not an object")
 
     identities = {
-        "mode": expected.mode.value,
         "round_id": expected.round_id,
         "attempt_id": expected.attempt_id,
         "head_sha": expected.head_sha,
