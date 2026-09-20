@@ -6,7 +6,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.llm_backend_config import get_jules_issue_pr_timeout_hours_from_config, get_jules_wait_timeout_hours_from_config
+from src.auto_coder.llm_backend_config import (
+    get_jules_issue_pr_timeout_hours_from_config,
+    get_jules_speculative_parallelism_from_config,
+    get_jules_wait_timeout_hours_from_config,
+)
 
 
 class TestJulesTimeoutConfig:
@@ -105,3 +109,30 @@ class TestJulesIssuePRTimeoutConfig:
         with patch("os.path.exists", return_value=False):
             config = AutomationConfig()
             assert config.JULES_ISSUE_PR_TIMEOUT_HOURS == 12
+
+
+class TestJulesSpeculativeParallelismConfig:
+    def test_defaults_to_singleton(self):
+        with patch("os.path.exists", return_value=False):
+            assert get_jules_speculative_parallelism_from_config() == 1
+
+    @pytest.mark.parametrize("value", [True, False, 0, -1, 1.5, "3"])
+    def test_rejects_invalid_values_without_coercion(self, tmp_path, value):
+        path = tmp_path / "config.toml"
+        encoded = f'"{value}"' if isinstance(value, str) else str(value).lower()
+        path.write_text(f"[jules]\nspeculative_parallelism = {encoded}\n")
+        with pytest.raises(ValueError, match="positive integer"):
+            get_jules_speculative_parallelism_from_config(str(path))
+
+    def test_repository_override_wins(self, tmp_path, monkeypatch):
+        home = tmp_path / ".auto-coder"
+        repo = home / "owner" / "project"
+        repo.mkdir(parents=True)
+        (home / "config.toml").write_text("[jules]\nspeculative_parallelism = 2\n")
+        (repo / "config.toml").write_text("[jules]\nspeculative_parallelism = 3\n")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert get_jules_speculative_parallelism_from_config(repo_name="owner/project") == 3
+
+    def test_automation_config_exposes_width(self):
+        with patch("src.auto_coder.llm_backend_config.get_jules_speculative_parallelism_from_config", return_value=3):
+            assert AutomationConfig().JULES_SPECULATIVE_PARALLELISM == 3

@@ -240,6 +240,7 @@ class AutomationConfig:
             get_issue_allowlist_from_config,
             get_jules_issue_pr_timeout_hours_from_config,
             get_jules_pr_ci_timeout_hours_from_config,
+            get_jules_speculative_parallelism_from_config,
             get_jules_wait_timeout_hours_from_config,
             get_max_concurrent_implementations_from_config,
             get_pr_allowlist_from_config,
@@ -253,6 +254,7 @@ class AutomationConfig:
         object.__setattr__(self, "JULES_WAIT_TIMEOUT_HOURS", get_jules_wait_timeout_hours_from_config(repo_name=effective_repo))
         object.__setattr__(self, "JULES_PR_CI_TIMEOUT_HOURS", get_jules_pr_ci_timeout_hours_from_config(repo_name=effective_repo))
         object.__setattr__(self, "JULES_ISSUE_PR_TIMEOUT_HOURS", get_jules_issue_pr_timeout_hours_from_config(repo_name=effective_repo))
+        object.__setattr__(self, "JULES_SPECULATIVE_PARALLELISM", get_jules_speculative_parallelism_from_config(repo_name=effective_repo))
         object.__setattr__(self, "GITHUB_ACTION_LOG_MAX_LENGTH", get_github_action_log_max_length_from_config(repo_name=effective_repo))
         implementation_limit = get_max_concurrent_implementations_from_config(repo_name=effective_repo)
         object.__setattr__(self, "MAX_CONCURRENT_IMPLEMENTATIONS", implementation_limit)
@@ -699,6 +701,8 @@ class AutomationConfig:
     # backend_with_high_score backend instead.
     # Configurable via [jules].issue_pr_timeout_hours in config.toml
     JULES_ISSUE_PR_TIMEOUT_HOURS: int = 12
+    # Number of competing Jules sessions belonging to one logical Issue owner.
+    JULES_SPECULATIVE_PARALLELISM: int = 1
 
     # GitHub Action log max length (default: 50000)
     # Configurable via [github_action].max_log_length in config.toml
