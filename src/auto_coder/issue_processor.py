@@ -106,6 +106,7 @@ def _take_issue_actions(
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
+    retry_authority: Optional[ImplementationRetryRequest] = None,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation.
 
@@ -115,6 +116,38 @@ def _take_issue_actions(
     """
     actions = []
     issue_number = issue_data["number"]
+
+    retry_dispatch: Optional[RetryDispatchRepository] = None
+    if retry_authority is not None:
+        if retry_authority.status != "owned" or not retry_authority.ownership_reference:
+            return [f"Deferred local implementation for issue #{issue_number}: retry dispatch authority is unavailable: retry authority has not acquired real implementation ownership"]
+        if backend_manager is None:
+            try:
+                backend_manager = get_llm_backend_manager()
+            except Exception as exc:
+                return [f"Deferred local implementation for issue #{issue_number}: selected backend is unavailable: {exc}"]
+        retry_dispatch = RetryDispatchRepository(repo_name)
+        current_backend = getattr(backend_manager, "_current_backend_name", None)
+        backend_identity = str(getattr(backend_manager, "backend_name", None) or getattr(backend_manager, "name", None) or (current_backend() if callable(current_backend) else None) or "local")
+        try:
+            handoff, may_create = retry_dispatch.claim(
+                retry_authority,
+                "local",
+                backend_identity,
+                {"base_branch": config.MAIN_BRANCH},
+            )
+        except Exception as exc:
+            return [f"Deferred local implementation for issue #{issue_number}: retry dispatch authority is unavailable: {exc}"]
+        if not may_create:
+            if handoff.outcome == "completed" and handoff.diagnostic:
+                try:
+                    checkpoint = json.loads(handoff.diagnostic)
+                    retained_actions = checkpoint.get("actions") if isinstance(checkpoint, dict) else None
+                    if isinstance(retained_actions, list) and all(isinstance(action, str) for action in retained_actions):
+                        return retained_actions
+                except (TypeError, ValueError):
+                    pass
+            return [f"Deferred local implementation for issue #{issue_number}: retry creation is {handoff.outcome}; no replacement invocation was started"]
 
     try:
         get_trace_logger().log("Issue Processing", f"Processing issue #{issue_number}", item_type="issue", item_number=issue_number)
@@ -153,10 +186,22 @@ def _take_issue_actions(
                 implementation_slots=implementation_slots,
             )
         actions.extend(action_results)
+        if retry_dispatch is not None and retry_authority is not None:
+            retry_dispatch.record_outcome(
+                retry_authority.request_id,
+                "completed",
+                external_id=retry_authority.ownership_reference,
+                diagnostic=json.dumps({"actions": actions}, sort_keys=True),
+                tracking_complete=True,
+            )
 
-    except AutoCoderRetryableBackendError:
+    except AutoCoderRetryableBackendError as exc:
+        if retry_dispatch is not None and retry_authority is not None:
+            retry_dispatch.record_outcome(retry_authority.request_id, "indeterminate", diagnostic=str(exc))
         raise
     except Exception as e:
+        if retry_dispatch is not None and retry_authority is not None:
+            retry_dispatch.record_outcome(retry_authority.request_id, "indeterminate", diagnostic=str(e))
         logger.error(f"Error taking actions on issue #{issue_number}: {e}")
         actions.append(f"Error processing issue #{issue_number}: {e}")
 
@@ -170,6 +215,8 @@ def _process_issue_jules_mode(
     github_client: GitHubClient,
     label_context: Optional[LabelManagerContext] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
+    backend_name: str = "jules",
+    retry_authority: Optional[ImplementationRetryRequest] = None,
 ) -> List[str]:
     """Process an issue using Jules API for session-based AI interaction.
 
@@ -194,6 +241,7 @@ def _process_issue_jules_mode(
     issue_number = issue_data["number"]
     issue_title = issue_data.get("title", "Unknown")
     issue_body = issue_data.get("body", "")
+    retry_dispatch: Optional[RetryDispatchRepository] = None
 
     try:
         configured_width = getattr(config, "JULES_SPECULATIVE_PARALLELISM", 1)
@@ -226,7 +274,24 @@ def _process_issue_jules_mode(
             _record_dispatch_stage(issue_number, "issue.dispatch.jules", f"issue#{issue_number} Jules dispatch", Outcome.DEFERRED, {"backend": "jules", "reason": "graceful shutdown is draining"})
             return [f"Deferred Jules session for issue #{issue_number}: graceful shutdown is draining"]
 
-        if width > 1:
+        if retry_authority is not None:
+            retry_dispatch = RetryDispatchRepository(repo_name)
+            handoff, may_create = retry_dispatch.claim(
+                retry_authority,
+                "jules",
+                backend_name,
+                {"base_branch": config.MAIN_BRANCH},
+            )
+            if not may_create:
+                if handoff.outcome in {"accepted", "completed"} and handoff.external_id:
+                    tracked = CloudManager(repo_name).add_session(issue_number, handoff.external_id, provider="jules", backend_name=backend_name)
+                    if not tracked:
+                        return [f"Accepted Jules session '{handoff.external_id}' for issue #{issue_number}, but tracking is incomplete"]
+                    retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+                    return [f"Jules session '{handoff.external_id}' already accepted for retry {retry_authority.attempt_id}; skipped duplicate dispatch"]
+                return [f"Deferred Jules session for issue #{issue_number}: retry creation is {handoff.outcome}; no replacement work was started"]
+
+        if width > 1 and retry_authority is None:
             return _dispatch_jules_competition(
                 repo_name,
                 issue_data,
@@ -246,20 +311,28 @@ def _process_issue_jules_mode(
         session_title = f"{issue_title} (#{issue_number})"
         try:
             session_id = jules_client.start_session(action_prompt, repo_name, base_branch, title=session_title)
-        except Exception:
+        except Exception as exc:
+            if retry_dispatch is not None and retry_authority is not None:
+                retry_dispatch.record_outcome(retry_authority.request_id, "indeterminate", diagnostic=str(exc))
             _record_dispatch_stage(issue_number, "issue.dispatch.jules", f"issue#{issue_number} Jules dispatch", Outcome.FAILED, {"backend": "jules"})
             raise
         _record_dispatch_stage(issue_number, "issue.dispatch.jules", f"issue#{issue_number} Jules dispatch", Outcome.ACCEPTED_HANDOFF, {"backend": "jules", "session_id": session_id})
+        if retry_dispatch is not None and retry_authority is not None:
+            retry_dispatch.record_outcome(retry_authority.request_id, "accepted", external_id=session_id)
 
         # Store session ID in cloud.csv
         cloud_manager = CloudManager(repo_name)
-        success = cloud_manager.add_session(issue_number, session_id, provider="jules")
+        success = cloud_manager.add_session(issue_number, session_id, provider="jules", backend_name=backend_name)
 
         if not success:
+            if retry_dispatch is not None and retry_authority is not None:
+                return [f"Accepted Jules session '{session_id}' for issue #{issue_number}, but tracking is incomplete"]
             logger.warning(f"Failed to save session ID to cloud.csv for issue #{issue_number}")
             actions.append(f"Warning: Could not save session ID for issue #{issue_number}")
         else:
             logger.info(f"Saved session ID '{session_id}' for issue #{issue_number}")
+            if retry_dispatch is not None and retry_authority is not None:
+                retry_dispatch.mark_tracking_complete(retry_authority.request_id)
 
         # Comment on the issue with session ID
         try:
@@ -384,6 +457,7 @@ def _process_issue_claude_routine_mode(
     backend_name: Optional[str] = None,
     label_context: Optional[LabelManagerContext] = None,
     manual_retry: bool = False,
+    retry_authority: Optional[ImplementationRetryRequest] = None,
 ) -> List[str]:
     """Process an issue using Claude Routine for cloud-based AI routine execution.
 
@@ -402,6 +476,9 @@ def _process_issue_claude_routine_mode(
     issue_number = issue_data["number"]
     issue_title = issue_data.get("title", "Unknown")
     issue_body = issue_data.get("body", "")
+    retry_dispatch: Optional[RetryDispatchRepository] = None
+    if manual_retry and retry_authority is None:
+        return [f"Deferred Claude Routine session for issue #{issue_number}: durable retry authority is required"]
 
     try:
         from .claude_routine_client import ClaudeRoutineClient
@@ -429,6 +506,29 @@ def _process_issue_claude_routine_mode(
             _record_dispatch_stage(issue_number, "issue.dispatch.claude-routine", f"issue#{issue_number} Claude Routine dispatch", Outcome.DEFERRED, {"backend": "claude-routine", "reason": "graceful shutdown is draining"})
             return [f"Deferred Claude Routine session for issue #{issue_number}: graceful shutdown is draining"]
 
+        effective_backend = backend_name or "claude-routine"
+        if retry_authority is not None:
+            retry_dispatch = RetryDispatchRepository(repo_name)
+            handoff, may_create = retry_dispatch.claim(
+                retry_authority,
+                "claude-routine",
+                effective_backend,
+                {"base_branch": config.MAIN_BRANCH},
+            )
+            if not may_create:
+                if handoff.outcome in {"accepted", "completed"} and handoff.external_id:
+                    tracked = CloudManager(repo_name).add_session(
+                        issue_number,
+                        handoff.external_id,
+                        provider="claude-routine",
+                        backend_name=effective_backend,
+                    )
+                    if not tracked:
+                        return [f"Accepted Claude Routine session '{handoff.external_id}' for issue #{issue_number}, but tracking is incomplete"]
+                    retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+                    return [f"Claude Routine session '{handoff.external_id}' already accepted for retry {retry_authority.attempt_id}; skipped duplicate dispatch"]
+                return [f"Deferred Claude Routine session for issue #{issue_number}: retry creation is {handoff.outcome}; no replacement work was started"]
+
         logger.info(f"Starting Claude Routine session for issue #{issue_number}")
 
         base_branch = config.MAIN_BRANCH
@@ -437,12 +537,23 @@ def _process_issue_claude_routine_mode(
         try:
             session_id, session_url = routine_client.fire_routine(action_prompt, repo_name=repo_name, base_branch=base_branch, title=session_title)
         except AutoCoderUsageLimitError:
+            if retry_dispatch is not None and retry_authority is not None:
+                retry_dispatch.record_outcome(retry_authority.request_id, "definitely-not-started", diagnostic="usage limit before routine submission")
             _record_dispatch_stage(issue_number, "issue.dispatch.claude-routine", f"issue#{issue_number} Claude Routine dispatch", Outcome.DEFERRED, {"backend": "claude-routine", "reason": "usage limit"})
             raise
-        except Exception:
+        except Exception as exc:
+            if retry_dispatch is not None and retry_authority is not None:
+                retry_dispatch.record_outcome(retry_authority.request_id, "indeterminate", diagnostic=str(exc))
             _record_dispatch_stage(issue_number, "issue.dispatch.claude-routine", f"issue#{issue_number} Claude Routine dispatch", Outcome.FAILED, {"backend": "claude-routine"})
             raise
         _record_dispatch_stage(issue_number, "issue.dispatch.claude-routine", f"issue#{issue_number} Claude Routine dispatch", Outcome.ACCEPTED_HANDOFF, {"backend": "claude-routine", "session_id": session_id})
+        if retry_dispatch is not None and retry_authority is not None:
+            retry_dispatch.record_outcome(
+                retry_authority.request_id,
+                "accepted",
+                external_id=session_id,
+                external_url=session_url,
+            )
 
         cloud_manager = CloudManager(repo_name)
         success = cloud_manager.add_session(
@@ -454,11 +565,15 @@ def _process_issue_claude_routine_mode(
 
         if not success and manual_retry:
             raise RuntimeError(f"New Claude Routine session {session_id} was accepted, but tracking could not be updated")
+        if not success and retry_authority is not None:
+            return [f"Accepted Claude Routine session '{session_id}' for issue #{issue_number}, but tracking is incomplete"]
         if not success:
             logger.warning(f"Failed to save session ID to cloud.csv for issue #{issue_number}")
             actions.append(f"Warning: Could not save session ID for issue #{issue_number}")
         else:
             logger.info(f"Saved session ID '{session_id}' for issue #{issue_number}")
+            if retry_dispatch is not None and retry_authority is not None:
+                retry_dispatch.mark_tracking_complete(retry_authority.request_id)
 
         try:
             comment_body = f"I started a Claude Routine session to work on this issue. Session ID: {session_id}"
@@ -490,7 +605,7 @@ def _process_issue_claude_routine_mode(
     except AutoCoderUsageLimitError:
         raise
     except Exception as e:
-        if manual_retry:
+        if manual_retry or retry_authority is not None:
             raise
         logger.error(f"Error processing issue #{issue_number} in Claude Routine mode: {e}")
         actions.append(f"Error processing issue #{issue_number} in Claude Routine mode: {e}")
@@ -523,6 +638,8 @@ def _process_issue_codex_cloud_mode(
 
     issue_number = issue_data["number"]
     issue_title = issue_data.get("title", "Unknown")
+    if manual_retry and retry_authority is None:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: durable retry authority is required"]
 
     attempt = get_current_attempt(repo_name, issue_number)
     cloud_run_repo = CloudRunRepository(repo_name)
@@ -735,6 +852,7 @@ def _process_issue_high_score_cloud(
     label_context: Optional[LabelManagerContext] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
     manual_retry: bool = False,
+    retry_authority: Optional[ImplementationRetryRequest] = None,
 ) -> List[str]:
     """Process an issue using the backend_with_high_score_cloud configuration with failover support.
 
@@ -749,6 +867,9 @@ def _process_issue_high_score_cloud(
         List of action strings describing what was done
     """
     from .llm_backend_config import get_llm_config
+
+    if manual_retry and retry_authority is None:
+        return [f"Deferred cloud retry for issue #{issue_data['number']}: durable retry authority is required"]
 
     llm_config = get_llm_config(repo_name=repo_name)
     high_score_cloud_order = llm_config.backend_with_high_score_cloud_order
@@ -790,7 +911,8 @@ def _process_issue_high_score_cloud(
                     github_client,
                     backend_name=backend_name,
                     label_context=label_context,
-                    **({"manual_retry": True} if manual_retry else {}),
+                    **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
             elif backend_type == "codex-cloud":
                 return _process_issue_codex_cloud_mode(
@@ -801,6 +923,7 @@ def _process_issue_high_score_cloud(
                     backend_name=backend_name,
                     label_context=label_context,
                     **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
             elif backend_type == "jules":
                 return _process_issue_jules_mode(
@@ -809,14 +932,16 @@ def _process_issue_high_score_cloud(
                     config,
                     github_client,
                     label_context=label_context,
-                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),
+                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),  # type: ignore[arg-type]
+                    **({"backend_name": backend_name} if backend_name != "jules" or retry_authority is not None else {}),  # type: ignore[arg-type]
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
         except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError) as e:
             rejected_submissions += 1
             logger.warning(f"Cloud backend '{backend_name}' rejected submission: {e}. Trying next backend.")
             continue
         except Exception as e:
-            if manual_retry:
+            if manual_retry or retry_authority is not None:
                 raise
             logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
             continue
@@ -837,6 +962,7 @@ def _process_issue_high_score_cloud(
         github_client,
         backend_manager=backend_manager,
         implementation_slots=implementation_slots,
+        **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
     )
 
 
@@ -848,6 +974,7 @@ def _process_issue_cloud_backend(
     label_context: Optional[LabelManagerContext] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
     manual_retry: bool = False,
+    retry_authority: Optional[ImplementationRetryRequest] = None,
 ) -> List[str]:
     """Process an issue using the backend_cloud configuration with failover support.
 
@@ -864,6 +991,9 @@ def _process_issue_cloud_backend(
         List of action strings describing what was done
     """
     from .llm_backend_config import get_llm_config
+
+    if manual_retry and retry_authority is None:
+        return [f"Deferred cloud retry for issue #{issue_data['number']}: durable retry authority is required"]
 
     llm_config = get_llm_config(repo_name=repo_name)
     cloud_order = llm_config.backend_cloud_order
@@ -910,7 +1040,8 @@ def _process_issue_cloud_backend(
                     github_client,
                     backend_name=backend_name,
                     label_context=label_context,
-                    **({"manual_retry": True} if manual_retry else {}),
+                    **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
             elif backend_type == "codex-cloud":
                 return _process_issue_codex_cloud_mode(
@@ -921,6 +1052,7 @@ def _process_issue_cloud_backend(
                     backend_name=backend_name,
                     label_context=label_context,
                     **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
             elif backend_type == "jules":
                 return _process_issue_jules_mode(
@@ -929,14 +1061,16 @@ def _process_issue_cloud_backend(
                     config,
                     github_client,
                     label_context=label_context,
-                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),
+                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),  # type: ignore[arg-type]
+                    **({"backend_name": backend_name} if backend_name != "jules" or retry_authority is not None else {}),  # type: ignore[arg-type]
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
         except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError) as e:
             rejected_submissions += 1
             logger.warning(f"Cloud backend '{backend_name}' rejected submission: {e}. Trying next backend.")
             continue
         except Exception as e:
-            if manual_retry:
+            if manual_retry or retry_authority is not None:
                 raise
             logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
             continue
@@ -957,6 +1091,7 @@ def _process_issue_cloud_backend(
         github_client,
         backend_manager=backend_manager,
         implementation_slots=implementation_slots,
+        **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
     )
 
 

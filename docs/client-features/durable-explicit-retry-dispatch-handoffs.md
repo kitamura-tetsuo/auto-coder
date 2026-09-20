@@ -23,6 +23,13 @@ state without treating any of those states as proof of implementation
 completion.
 
 The journal intentionally rejects credential-shaped route configuration. It
-does not activate a controller or CLI retry path, choose providers, change
-quota or fallback policy, cancel old work, or replace ordinary dispatch
+is consumed at the local, Jules, Claude Routine, and Codex Cloud creation
+boundaries. Ordinary and high-score cloud selectors preserve the exact
+authority while resolving configured aliases; boolean-only retry dispatch is
+refused rather than converted into a new attempt. Replay of accepted remote
+work repairs tracking around the retained receipt, while replay of a completed
+local invocation does not invoke the agent again.
+
+This layer does not activate a controller or CLI retry path, choose providers,
+change quota or fallback policy, cancel old work, or replace ordinary dispatch
 semantics.

@@ -139,18 +139,20 @@ class RetryDispatchRepository:
             self._connection.execute("BEGIN IMMEDIATE")
             existing = self._get_locked(authority.request_id)
             if existing is not None:
-                expected = (self.repository, authority.target_number, authority.attempt_id, authority.generation, route, backend_name, encoded)
-                actual = (existing.repository, existing.issue_number, existing.attempt_id, existing.generation, existing.route, existing.backend_name, existing.route_config)
-                if actual != expected:
+                expected_authority = (self.repository, authority.target_number, authority.attempt_id, authority.generation)
+                actual_authority = (existing.repository, existing.issue_number, existing.attempt_id, existing.generation)
+                if actual_authority != expected_authority:
                     raise RetryDispatchConflict("retry handoff is already bound to different dispatch inputs")
                 if existing.outcome == "definitely-not-started":
                     self._connection.execute(
-                        "UPDATE retry_handoffs SET outcome='claimed', diagnostic=NULL, updated_at=? WHERE request_id=? AND outcome='definitely-not-started'",
-                        (time.time(), authority.request_id),
+                        "UPDATE retry_handoffs SET route=?,backend_name=?,route_config=?,outcome='claimed',diagnostic=NULL,updated_at=? WHERE request_id=? AND outcome='definitely-not-started'",
+                        (route, backend_name, encoded, time.time(), authority.request_id),
                     )
                     refreshed = self._get_locked(authority.request_id)
                     assert refreshed is not None
                     return refreshed, True
+                if (existing.route, existing.backend_name, existing.route_config) != (route, backend_name, encoded):
+                    raise RetryDispatchConflict("retry handoff is already bound to different dispatch inputs")
                 return existing, False
             self._connection.execute(
                 "INSERT INTO retry_handoffs(repository,issue_number,request_id,attempt_id,generation,route,backend_name,creation_id,outcome,route_config,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",

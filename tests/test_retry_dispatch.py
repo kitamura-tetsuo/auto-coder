@@ -50,6 +50,19 @@ def test_only_definitely_not_started_reopens_same_creation(tmp_path):
     assert uncertain.outcome == "indeterminate"
 
 
+def test_definitely_not_started_allows_configured_fallback_with_same_attempt(tmp_path):
+    store = RetryDispatchRepository("owner/repo", tmp_path / "handoffs.db")
+    first, _ = store.claim(authority(), "claude-routine", "routine-alias", {"base_branch": "main"})
+    store.record_outcome("request-1", "definitely-not-started", diagnostic="quota rejected before submission")
+
+    fallback, may_create = store.claim(authority(), "codex-cloud", "codex-alias", {"base_branch": "main"})
+
+    assert may_create is True
+    assert fallback.creation_id == first.creation_id
+    assert fallback.attempt_id == first.attempt_id
+    assert (fallback.route, fallback.backend_name, fallback.outcome) == ("codex-cloud", "codex-alias", "claimed")
+
+
 def test_numeric_attempt_is_allocated_once_above_all_retained_evidence(tmp_path):
     store = RetryDispatchRepository("owner/repo", tmp_path / "handoffs.db")
     store.claim(authority(), "codex-cloud", "codex", {"base_branch": "main"})
