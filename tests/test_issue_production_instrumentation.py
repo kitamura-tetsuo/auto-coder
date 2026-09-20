@@ -373,6 +373,7 @@ class TestDispatchOutcomesAreHonest:
         mock_github_client = Mock()
         mock_config = Mock()
         mock_config.MAIN_BRANCH = "main"
+        mock_config.JULES_SPECULATIVE_PARALLELISM = 1
         issue_data = {"number": 1101, "title": "T", "body": "B"}
 
         with get_trace_collector().start_execution("owner/repo", "issue", 1101, origin="worker"):
@@ -432,6 +433,7 @@ class TestRecorderFailureIsNonInterfering:
             mock_github_client = Mock()
             mock_config = Mock()
             mock_config.MAIN_BRANCH = "main"
+            mock_config.JULES_SPECULATIVE_PARALLELISM = 1
             issue_data = {"number": 1202, "title": "T", "body": "B"}
 
             actions = _process_issue_jules_mode(repo_name="owner/repo", issue_data=issue_data, config=mock_config, github_client=mock_github_client)

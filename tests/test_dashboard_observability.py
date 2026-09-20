@@ -261,6 +261,7 @@ class TestJoinedProductionToView:
 
         mock_config = Mock()
         mock_config.MAIN_BRANCH = "main"
+        mock_config.JULES_SPECULATIVE_PARALLELISM = 1
         with get_trace_collector().start_execution("owner/repo", "issue", 2301, origin="worker"):
             _process_issue_jules_mode(repo_name="owner/repo", issue_data={"number": 2301, "title": "T", "body": "B"}, config=mock_config, github_client=Mock())
 
