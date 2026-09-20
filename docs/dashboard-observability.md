@@ -23,15 +23,17 @@ The startup/hourly Jules maintenance loop now drives pending cleanup without
 introducing a new event shape; completion still requires a confirmed closed or
 merged GitHub state, and denied or ambiguous cleanup emits no false success.
 
-Issue #2101 adds the read-only `STRONG_AUDIT` and `ORDINARY_CLOSURE` reviewer
-execution boundary consumed by the existing two-tier lifecycle. It introduces no
-production dispatch wiring, trace emission, processing origin/outcome, structured
-event schema, or dashboard projection: `pr_review_execution.py` returns validated
-evidence but has no publication or merge authority. The production integration
-that schedules these roles must add the corresponding production-to-view trace
-coverage. Run `bash scripts/test.sh tests/test_pr_review_execution.py` for prompt,
-portable-bundle, identity, disposition-completeness, and cumulative-scope boundary
-coverage.
+Issues #2101 and #2210 add the read-only `STRONG_AUDIT` and `ORDINARY_CLOSURE`
+reviewer execution boundary consumed by the existing two-tier lifecycle. Production
+PR reentry emits the existing stage/result schema as `pr.strong-audit` or
+`pr.ordinary-closure`; ordinary-closure facts include phase/backend, target head and
+base, contract/policy identities, finding revision and IDs, and the accepted or
+deferred reason. No new dashboard projection is needed because these events use the
+existing PR stage timeline, while accepted closure remains distinct from publication
+or merge confirmation. Run `bash scripts/test.sh tests/test_pr_review_execution.py
+tests/test_pr_review_cycle.py tests/test_two_tier_pr_gate.py` for prompt,
+portable-bundle, identity, disposition-completeness, cumulative-scope, durable
+acceptance, and renewed-audit coverage.
 
 GitHub webhook-driven cache eviction and expedited CI watch recheck (PR #2119)
 improve the turnaround time from CI completion to validation launch. Upon webhook intake,

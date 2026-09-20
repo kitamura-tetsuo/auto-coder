@@ -109,7 +109,7 @@ def test_closure_pass_requires_fixed_or_invalid_and_bounded_scope() -> None:
     assert result.dispositions[0].status == "FIXED"
 
 
-def test_closure_unknown_scope_never_normalizes_to_pass() -> None:
+def test_closure_unknown_scope_preserves_convergence_without_granting_closure() -> None:
     expected = _input(ReviewMode.ORDINARY_CLOSURE)
     payload = {
         **_identity(expected),
@@ -120,6 +120,24 @@ def test_closure_unknown_scope_never_normalizes_to_pass() -> None:
         "scope_evidence": "Source evidence exists but semantic impact is unclear.",
     }
     result = parse_review_result(json.dumps(payload), expected, "ordinary/codex/model")
-    assert not result.is_complete
+    assert result.is_complete
     assert not result.grants_closure_evidence
-    assert "scope" in result.diagnostic
+    assert result.scope is ScopeAssessment.UNKNOWN
+    assert result.scope_evidence == "Source evidence exists but semantic impact is unclear."
+
+
+def test_closure_expanded_scope_preserves_convergence_for_renewed_audit() -> None:
+    expected = _input(ReviewMode.ORDINARY_CLOSURE)
+    payload = {
+        **_identity(expected),
+        "verdict": "PASS",
+        "findings": [],
+        "dispositions": [{"finding_id": "finding-a", "status": "INVALID", "evidence": "The cited path is unreachable under REQ-007."}],
+        "scope": "EXPANDED",
+        "scope_evidence": "The cumulative diff also introduces independent durable coordination.",
+    }
+    result = parse_review_result(json.dumps(payload), expected, "ordinary/codex/model")
+    assert result.is_complete
+    assert not result.grants_closure_evidence
+    assert result.verdict == "PASS"
+    assert result.scope is ScopeAssessment.EXPANDED

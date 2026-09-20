@@ -172,8 +172,8 @@ def parse_review_result(response: str, expected: ReviewExecutionInput, reviewer_
     if not isinstance(scope_evidence, str) or not scope_evidence.strip():
         return _diagnostic(expected, reviewer_provenance, "Cumulative scope assessment requires evidence")
     unresolved = any(item.status in {"OPEN", "INCONCLUSIVE"} for item in dispositions)
-    if verdict == "PASS" and (unresolved or scope is not ScopeAssessment.BOUNDED):
-        return _diagnostic(expected, reviewer_provenance, "PASS contradicts dispositions or cumulative scope")
+    if verdict == "PASS" and unresolved:
+        return _diagnostic(expected, reviewer_provenance, "PASS contradicts unresolved finding dispositions")
     new_findings = _parse_findings(raw.get("findings", []), expected.round_id)
     if new_findings is None:
         return _diagnostic(expected, reviewer_provenance, "New ordinary findings are malformed")
