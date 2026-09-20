@@ -284,6 +284,9 @@ def _process_issue_jules_mode(
             )
             if not may_create:
                 if handoff.outcome in {"accepted", "completed"} and handoff.external_id:
+                    if not retry_dispatch.is_latest_accepted(retry_authority.request_id):
+                        retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+                        return [f"Retained historical Jules session '{handoff.external_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
                     tracked = CloudManager(repo_name).add_session(issue_number, handoff.external_id, provider="jules", backend_name=backend_name)
                     if not tracked:
                         return [f"Accepted Jules session '{handoff.external_id}' for issue #{issue_number}, but tracking is incomplete"]
@@ -322,6 +325,9 @@ def _process_issue_jules_mode(
 
         # Store session ID in cloud.csv
         cloud_manager = CloudManager(repo_name)
+        if retry_dispatch is not None and retry_authority is not None and not retry_dispatch.is_latest_accepted(retry_authority.request_id):
+            retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+            return [f"Retained historical Jules session '{session_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
         success = cloud_manager.add_session(issue_number, session_id, provider="jules", backend_name=backend_name)
 
         if not success:
@@ -517,6 +523,9 @@ def _process_issue_claude_routine_mode(
             )
             if not may_create:
                 if handoff.outcome in {"accepted", "completed"} and handoff.external_id:
+                    if not retry_dispatch.is_latest_accepted(retry_authority.request_id):
+                        retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+                        return [f"Retained historical Claude Routine session '{handoff.external_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
                     tracked = CloudManager(repo_name).add_session(
                         issue_number,
                         handoff.external_id,
@@ -556,6 +565,9 @@ def _process_issue_claude_routine_mode(
             )
 
         cloud_manager = CloudManager(repo_name)
+        if retry_dispatch is not None and retry_authority is not None and not retry_dispatch.is_latest_accepted(retry_authority.request_id):
+            retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+            return [f"Retained historical Claude Routine session '{session_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
         success = cloud_manager.add_session(
             issue_number,
             session_id,

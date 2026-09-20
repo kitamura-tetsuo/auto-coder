@@ -15,13 +15,13 @@ from auto_coder.issue_stage_routing import ImplementationRetryRequest
 from auto_coder.retry_dispatch import RetryDispatchRepository
 
 
-def owned_authority(issue_number: int = 41) -> ImplementationRetryRequest:
+def owned_authority(issue_number: int = 41, request_id: str = "request-routes", attempt_id: str = "attempt-routes") -> ImplementationRetryRequest:
     return ImplementationRetryRequest(
-        request_id="request-routes",
+        request_id=request_id,
         repository="owner/repo",
         target_number=issue_number,
         generation="generation-routes",
-        attempt_id="attempt-routes",
+        attempt_id=attempt_id,
         status="owned",
         ownership_reference="invocation-routes",
     )
@@ -151,3 +151,36 @@ def test_boolean_only_retry_cannot_reach_any_selected_provider(selector):
 
     assert result == ["Deferred cloud retry for issue #41: durable retry authority is required"]
     config_read.assert_not_called()
+
+
+@pytest.mark.parametrize("route", ["jules", "claude-routine"])
+def test_stale_retry_replay_does_not_replace_newer_accepted_pointer(route, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    github = MagicMock()
+    config = AutomationConfig()
+    first_authority = owned_authority(request_id="request-1", attempt_id="attempt-1")
+    second_authority = owned_authority(request_id="request-2", attempt_id="attempt-2")
+
+    if route == "jules":
+        client = MagicMock()
+        client.start_session.side_effect = ["session-1", "session-2"]
+        with patch("auto_coder.issue_processor.JulesClient", return_value=client), patch("auto_coder.issue_processor.get_commit_log", return_value=""):
+            _process_issue_jules_mode("owner/repo", issue(), config, github, retry_authority=first_authority)
+            _process_issue_jules_mode("owner/repo", issue(), config, github, retry_authority=second_authority)
+            replay = _process_issue_jules_mode("owner/repo", issue(), config, github, retry_authority=first_authority)
+        create = client.start_session
+    else:
+        client = MagicMock()
+        client.fire_routine.side_effect = [("session-1", "url-1"), ("session-2", "url-2")]
+        with patch("auto_coder.claude_routine_client.ClaudeRoutineClient", return_value=client), patch("auto_coder.issue_processor.get_commit_log", return_value=""):
+            _process_issue_claude_routine_mode("owner/repo", issue(), config, github, retry_authority=first_authority)
+            _process_issue_claude_routine_mode("owner/repo", issue(), config, github, retry_authority=second_authority)
+            replay = _process_issue_claude_routine_mode("owner/repo", issue(), config, github, retry_authority=first_authority)
+        create = client.fire_routine
+
+    assert CloudManager("owner/repo").get_binding(41).task_id == "session-2"
+    assert "historical" in replay[0]
+    assert "newer accepted retry remains current" in replay[0]
+    assert RetryDispatchRepository("owner/repo").get("request-1").external_id == "session-1"
+    assert RetryDispatchRepository("owner/repo").get("request-2").external_id == "session-2"
+    assert create.call_count == 2

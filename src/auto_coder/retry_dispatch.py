@@ -227,6 +227,29 @@ class RetryDispatchRepository:
             ).fetchall()
         return tuple(self._decode(row) for row in rows)
 
+    def is_latest_accepted(self, request_id: str) -> bool:
+        """Return whether this request may project the Issue's current pointer.
+
+        SQLite row identity records claim order independently of completion
+        time.  Once a later claimed request has an accepted receipt, an older
+        request remains history and cannot restore its task as current.
+        """
+        with self._lock:
+            current = self._connection.execute(
+                "SELECT rowid,repository,issue_number,outcome,external_id FROM retry_handoffs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError(f"unknown retry handoff {request_id!r}")
+            row_id, repository, issue_number, outcome, external_id = current
+            if outcome not in {"accepted", "completed"} or not external_id:
+                raise RetryDispatchConflict("only accepted work can update current tracking")
+            newer = self._connection.execute(
+                "SELECT 1 FROM retry_handoffs WHERE repository=? AND issue_number=? AND rowid>? AND outcome IN ('accepted','completed') AND external_id IS NOT NULL LIMIT 1",
+                (repository, issue_number, row_id),
+            ).fetchone()
+            return newer is None
+
     def _require_locked(self, request_id: str) -> RetryHandoff:
         result = self._get_locked(request_id)
         if result is None:
