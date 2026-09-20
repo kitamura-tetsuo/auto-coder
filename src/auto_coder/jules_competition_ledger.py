@@ -873,6 +873,22 @@ class JulesCompetitionLedger:
             finally:
                 conn.close()
 
+    def list_issue_numbers(self, repository: str) -> tuple[int, ...]:
+        """List retained Issue namespaces, including retired generations."""
+        self._check_db_integrity()
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT issue_number FROM namespaces WHERE repository = ? ORDER BY issue_number",
+                    (repository.lower(),),
+                ).fetchall()
+                return tuple(int(row[0]) for row in rows)
+            except sqlite3.DatabaseError as exc:
+                raise JulesCompetitionUnavailableError(f"Jules competition read error: {exc}") from exc
+            finally:
+                conn.close()
+
     def _get_generation_row(self, conn: sqlite3.Connection, key: str, generation_id: str):
         cursor = conn.execute(
             "SELECT generation_id, lifecycle_state, winner_candidate_id, winner_pr_repository, winner_pr_number, " "winner_head_sha, winner_base_sha, merge_outcome, candidate_ids_json, issue_oracle_fingerprint " "FROM generations WHERE generation_id = ? AND namespace_key = ?",
