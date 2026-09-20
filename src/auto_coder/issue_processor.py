@@ -728,7 +728,7 @@ def _process_issue_high_score_cloud(
                     config,
                     github_client,
                     label_context=label_context,
-                    implementation_slots=implementation_slots,
+                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),
                 )
         except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError) as e:
             rejected_submissions += 1
@@ -848,7 +848,7 @@ def _process_issue_cloud_backend(
                     config,
                     github_client,
                     label_context=label_context,
-                    implementation_slots=implementation_slots,
+                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),
                 )
         except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError) as e:
             rejected_submissions += 1
