@@ -104,6 +104,8 @@ class _WorkspaceMode:
 
 @dataclass(frozen=True)
 class _GitState:
+    worktree: Path
+    git_dir: Path
     branch: Optional[str]
     head: str
     status: bytes
@@ -151,13 +153,18 @@ class MuseClient(LLMClientBase):
         return subprocess.run(["git", *args], cwd=cwd or cls._execution_cwd(), capture_output=True, check=False)
 
     def _snapshot(self) -> _GitState:
-        cwd = self._execution_cwd()
+        return self._snapshot_at(self._execution_cwd())
+
+    def _snapshot_at(self, cwd: Path) -> _GitState:
+        """Capture one explicitly bound worktree, independent of later context changes."""
+        cwd = cwd.resolve()
         head = self._git("rev-parse", "HEAD", cwd=cwd)
         if head.returncode != 0:
             raise RuntimeError("Muse backend requires a Git repository with an existing HEAD")
-        branch_result = self._git("symbolic-ref", "--quiet", "--short", "HEAD", cwd=cwd)
+        branch_result = self._git("symbolic-ref", "--quiet", "HEAD", cwd=cwd)
+        git_dir_result = self._git("rev-parse", "--path-format=absolute", "--git-dir", cwd=cwd)
         status = self._git("status", "--porcelain=v2", "--untracked-files=all", cwd=cwd)
-        if status.returncode != 0:
+        if status.returncode != 0 or git_dir_result.returncode != 0:
             raise RuntimeError("Unable to snapshot repository state before Muse execution")
         untracked_files = self._snapshot_files(self._git("ls-files", "--others", "--exclude-standard", "-z", cwd=cwd).stdout, cwd=cwd)
         ignored_files = self._snapshot_files(self._git("ls-files", "--others", "--ignored", "--exclude-standard", "-z", cwd=cwd).stdout, cwd=cwd)
@@ -165,6 +172,8 @@ class MuseClient(LLMClientBase):
         directory_modes = self._snapshot_directory_modes(cwd=cwd)
         refs = self._snapshot_refs(cwd=cwd)
         return _GitState(
+            worktree=cwd.resolve(),
+            git_dir=Path(os.fsdecode(git_dir_result.stdout).strip()).resolve(),
             branch=branch_result.stdout.decode().strip() if branch_result.returncode == 0 else None,
             head=head.stdout.decode().strip(),
             status=status.stdout,
@@ -229,47 +238,41 @@ class MuseClient(LLMClientBase):
             refs.append((ref_name, object_name))
         return tuple(refs)
 
-    def _restore_refs(self, state: _GitState, cwd: Optional[Path] = None) -> None:
-        target_cwd = cwd or self._execution_cwd()
-        expected = dict(state.refs)
-        current = dict(self._snapshot_refs(cwd=target_cwd))
-        for ref_name in current.keys() - expected.keys():
-            if self._git("update-ref", "-d", ref_name, cwd=target_cwd).returncode != 0:
-                raise RuntimeError(f"Auto-Coder could not remove Muse-created ref {ref_name}")
-        for ref_name, object_name in expected.items():
-            if current.get(ref_name) != object_name and self._git("update-ref", ref_name, object_name, cwd=target_cwd).returncode != 0:
-                raise RuntimeError(f"Auto-Coder could not restore Muse-modified ref {ref_name}")
-
-    def _restore_lifecycle(self, state: _GitState, cwd: Optional[Path] = None) -> None:
-        target_cwd = cwd or self._execution_cwd()
+    def _restore_lifecycle(self, state: _GitState) -> None:
+        """Restore only HEAD and index state private to the captured worktree."""
+        target_cwd = state.worktree
+        current_git_dir = self._git("rev-parse", "--path-format=absolute", "--git-dir", cwd=target_cwd)
+        if current_git_dir.returncode != 0 or Path(os.fsdecode(current_git_dir.stdout).strip()).resolve() != state.git_dir:
+            raise RuntimeError(f"Muse recovery refused: original worktree unavailable worktree={target_cwd} git_dir={state.git_dir}")
         if state.branch:
-            restored = self._git("checkout", "-f", state.branch, cwd=target_cwd)
-            if restored.returncode != 0:
-                restored = self._git("checkout", "-B", state.branch, state.head, cwd=target_cwd)
+            current = self._git("rev-parse", "--verify", state.branch, cwd=target_cwd)
+            current_oid = os.fsdecode(current.stdout).strip() if current.returncode == 0 else "<missing>"
+            if current_oid != state.head:
+                raise RuntimeError("Muse recovery skipped unsafe shared-ref repair " f"worktree={target_cwd} ref={state.branch} before={state.head} current={current_oid}: " "invocation ownership and current-state authority are unavailable")
+            restored = self._git("symbolic-ref", "HEAD", state.branch, cwd=target_cwd)
         else:
             restored = self._git("update-ref", "--no-deref", "HEAD", state.head, cwd=target_cwd)
-        reset = self._git("reset", "--mixed", state.head, cwd=target_cwd)
-        if restored.returncode != 0 or reset.returncode != 0:
+        index = self._git("read-tree", state.head, cwd=target_cwd)
+        if restored.returncode != 0 or index.returncode != 0:
             raise RuntimeError("Muse changed Git lifecycle state and Auto-Coder could not restore it")
-        self._restore_refs(state, cwd=target_cwd)
 
-    def _restore_index(self, state: _GitState, cwd: Optional[Path] = None) -> None:
-        target_cwd = cwd or self._execution_cwd()
-        if self._git("reset", "--mixed", state.head, cwd=target_cwd).returncode != 0:
+    def _restore_index(self, state: _GitState) -> None:
+        target_cwd = state.worktree
+        if self._git("read-tree", state.head, cwd=target_cwd).returncode != 0:
             raise RuntimeError("Auto-Coder could not unstage Muse changes")
         if state.staged_patch:
             result = subprocess.run(["git", "apply", "--binary", "--cached"], cwd=target_cwd, input=state.staged_patch, capture_output=True)
             if result.returncode != 0:
                 raise RuntimeError("Auto-Coder could not restore the pre-Muse index")
 
-    def _restore_repository(self, state: _GitState, cwd: Optional[Path] = None) -> None:
+    def _restore_repository(self, state: _GitState) -> None:
         """Restore the exact tracked/index/untracked state captured for no-edit."""
-        target_cwd = cwd or self._execution_cwd()
-        self._restore_lifecycle(state, cwd=target_cwd)
+        target_cwd = state.worktree
+        self._restore_lifecycle(state)
         clean_args = ["clean", "-fdx"]
         for name in sorted(_DISPOSABLE_DIRECTORY_NAMES):
             clean_args.extend(["-e", f"{name}/", "-e", name])
-        if self._git("reset", "--hard", state.head, cwd=target_cwd).returncode != 0 or self._git(*clean_args, cwd=target_cwd).returncode != 0:
+        if self._git("checkout-index", "-a", "-f", cwd=target_cwd).returncode != 0 or self._git(*clean_args, cwd=target_cwd).returncode != 0:
             raise RuntimeError("Muse changed repository state and Auto-Coder could not restore it")
         for patch, cached in ((state.staged_patch, True), (state.unstaged_patch, False)):
             if not patch:
@@ -323,21 +326,32 @@ class MuseClient(LLMClientBase):
         return False
 
     def _assert_invariants(self, before: _GitState, is_noedit: bool, mutation_observed: bool = False) -> None:
-        after = self._snapshot()
+        after = self._snapshot_at(before.worktree)
         lifecycle_changed = (after.branch, after.head) != (before.branch, before.head)
         refs_changed = after.refs != before.refs
         index_changed = after.staged_patch != before.staged_patch
         noedit_changed = is_noedit and (
             after.status != before.status or after.unstaged_patch != before.unstaged_patch or after.untracked_files != before.untracked_files or after.ignored_files != before.ignored_files or after.tracked_modes != before.tracked_modes or after.directory_modes != before.directory_modes
         )
-        if is_noedit and (lifecycle_changed or noedit_changed):
-            self._restore_repository(before)
-        elif lifecycle_changed or refs_changed:
-            self._restore_lifecycle(before)
-            self._restore_index(before)
-        elif index_changed:
-            self._restore_index(before)
+        recovery_error: Optional[RuntimeError] = None
+        try:
+            if is_noedit and (lifecycle_changed or noedit_changed):
+                self._restore_repository(before)
+            elif lifecycle_changed:
+                self._restore_lifecycle(before)
+                self._restore_index(before)
+            elif index_changed:
+                self._restore_index(before)
+        except RuntimeError as exc:
+            recovery_error = exc
         if lifecycle_changed or refs_changed or index_changed or noedit_changed or mutation_observed:
+            ref_diagnostics = []
+            if refs_changed:
+                before_refs = dict(before.refs)
+                after_refs = dict(after.refs)
+                for ref_name in sorted(before_refs.keys() | after_refs.keys()):
+                    if before_refs.get(ref_name) != after_refs.get(ref_name):
+                        ref_diagnostics.append(f"ref={ref_name} before={before_refs.get(ref_name, '<missing>')} " f"observed={after_refs.get(ref_name, '<missing>')} current={after_refs.get(ref_name, '<missing>')} " "recovery=skipped reason=invocation ownership unavailable")
             detail = "Git lifecycle or index" if lifecycle_changed or refs_changed or index_changed else "working tree"
             if mutation_observed:
                 detail = "Git lifecycle command"
@@ -350,7 +364,14 @@ class MuseClient(LLMClientBase):
                 noedit_changed,
                 mutation_observed,
             )
-            raise RuntimeError(f"Muse execution violated the Git-state invariant ({detail} changed)")
+            for diagnostic in ref_diagnostics:
+                logger.warning("Muse shared-ref recovery refused: worktree={} {}", before.worktree, diagnostic)
+            failure = RuntimeError(f"Muse execution violated the Git-state invariant ({detail} changed)")
+            if ref_diagnostics:
+                failure.add_note("Unsafe shared-ref recovery skipped: " + "; ".join(ref_diagnostics))
+            if recovery_error is not None:
+                failure.add_note(f"Recovery failed or was unsafe: {recovery_error}")
+            raise failure
 
     @staticmethod
     def _path_is_within(path: Path, root: Path) -> bool:
