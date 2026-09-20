@@ -101,6 +101,25 @@ def test_response_mode_cannot_change_strong_result_role() -> None:
     assert not result.grants_closure_evidence
 
 
+@pytest.mark.parametrize("regression_gap", [False, True])
+def test_prompt_finding_schema_is_accepted_without_key_or_type_translation(regression_gap: bool) -> None:
+    expected = _input()
+    prompt = build_review_prompt(expected)
+    finding = json.loads(prompt.split("```json\n", 1)[1].split("```", 1)[0])
+    finding["is_regression_gap"] = regression_gap
+    if regression_gap:
+        finding["plausible_incorrect_implementation"] = "Only one deletion path checks the guard."
+        finding["why_tests_admit_it"] = "The test exercises only the guarded path."
+    payload = {**_identity(expected), "verdict": "FINDINGS", "findings": [finding]}
+    result = parse_review_result(json.dumps(payload), expected, "reviewer/model")
+    assert result.diagnostic == ""
+    assert result.verdict == "FINDINGS"
+    assert len(result.findings) == 1
+    assert result.findings[0].finding_id == "stable-finding-id"
+    assert result.findings[0].evidence == "Source locations and concrete behavioral evidence."
+    assert result.findings[0].is_regression_gap is regression_gap
+
+
 def test_strong_parser_preserves_portable_finding_fields() -> None:
     expected = _input()
     payload = {

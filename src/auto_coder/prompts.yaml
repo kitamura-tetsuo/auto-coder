@@ -627,16 +627,50 @@ pr:
     regression scenario. A regression-only gap must also state the plausible
     incorrect implementation and why current tests admit it.
 
+    Each element of `findings` must use exactly this portable JSON structure.
+    Replace the example strings with concrete evidence; all text fields are
+    strings, not arrays or nested objects. `requirement_ids` and
+    `requirement_texts` are non-empty arrays of strings with matching lengths.
+    Copy each complete cited Requirement declaration into `requirement_texts`.
+    Use a unique `finding_id` for each finding. Do not rename these keys.
+    ```json
+    {
+      "finding_id": "stable-finding-id",
+      "requirement_ids": ["#123/REQ-001"],
+      "requirement_texts": ["REQ-001: Complete authoritative Requirement text."],
+      "counterexample": "Given state S, reachable action A violates R.",
+      "expected_behavior": "The required behavior.",
+      "actual_behavior": "The demonstrated incorrect behavior.",
+      "evidence": "Source locations and concrete behavioral evidence.",
+      "affected_boundary": "The affected production boundary.",
+      "material_consequence": "The practical consequence of the violation.",
+      "focused_regression_scenario": "The focused scenario that detects it.",
+      "is_regression_gap": false,
+      "plausible_incorrect_implementation": "",
+      "why_tests_admit_it": ""
+    }
+    ```
+    For a regression-only gap, set `is_regression_gap` to true and supply
+    non-empty `plausible_incorrect_implementation`, `why_tests_admit_it`, and
+    `material_consequence`. PASS requires an empty `findings` array; FINDINGS
+    requires at least one complete finding.
+
     ORDINARY_CLOSURE independently verifies every supplied finding on the current
     head as FIXED, INVALID, OPEN, or INCONCLUSIVE with concrete production-boundary
     evidence. Assess the entire cumulative diff as BOUNDED, EXPANDED, or UNKNOWN;
     BOUNDED permits finding corrections and directly associated regressions only.
     Continue ordinary inspection and return newly demonstrated material findings.
+    Each `dispositions` element must be an object with string fields
+    `finding_id`, `status` (FIXED, INVALID, OPEN, or INCONCLUSIVE), and non-empty
+    `evidence`. Include exactly one disposition for every supplied finding.
 
     Return one JSON object with the identity fields above, `verdict` (PASS,
     FINDINGS, or INCONCLUSIVE), `findings`, and, for ORDINARY_CLOSURE,
     `dispositions`, `scope`, and non-empty `scope_evidence`. PASS is permitted only
-    when no finding remains/newly exists and closure scope is BOUNDED. Never report
+    when no finding remains/newly exists. For ORDINARY_CLOSURE, report scope
+    independently: only BOUNDED scope can authorize closure; EXPANDED or UNKNOWN
+    scope requires a renewed strong audit even when all findings are resolved.
+    Never report
     a test as executed unless the supplied evidence proves its execution.
     The caller owns the review mode; do not include a `mode` field in the response.
 

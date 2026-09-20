@@ -1,4 +1,7 @@
 import json
+from dataclasses import replace
+
+import pytest
 
 from auto_coder import pr_processor
 from auto_coder.github_app_reviewer import ReviewPublicationResult
@@ -29,7 +32,7 @@ def _payload() -> AcceptedReviewPayload:
     policy = StrongPolicyIdentity("strong-route", '{"model":"reviewer"}', "v1")
     finding = Finding(
         "finding-1",
-        "round-1",
+        "claim-1",
         ("#2209/REQ-002",),
         ("Publish every finding.",),
         "An unanchored finding disappears.",
@@ -153,14 +156,19 @@ def test_stale_authority_rejects_before_mutation_and_positive_rejection_can_retr
     assert retry_transport.sent == 1
 
 
-def test_production_consumer_publishes_exact_accepted_record_and_persists_receipt(tmp_path, monkeypatch):
+@pytest.mark.parametrize("verdict", ["PASS", "FINDINGS"])
+def test_production_consumer_publishes_exact_accepted_record_and_persists_receipt(tmp_path, monkeypatch, verdict):
     monkeypatch.setenv("HOME", str(tmp_path))
     contract = ContractSnapshot(("#2209",), "REQ-001: Preserve the accepted payload.")
     policy = StrongPolicyIdentity("strong-route", "options", "v1")
     cycle = PrReviewCycleRepository("owner/repo", tmp_path / "cycle.json")
     cycle.record_ordinary_pass(42, RoundProvenance("head-a", "base-a"), contract)
     claim = cycle.claim_strong_audit(42, RoundProvenance("head-a", "base-a"), contract, policy)
-    accepted = cycle.record_strong_result(42, claim.claim_id, "PASS", "reviewer/model", [])
+    findings = [replace(_payload().findings[0], origin_round_id=claim.claim_id)] if verdict == "FINDINGS" else []
+    accepted = cycle.record_strong_result(42, claim.claim_id, verdict, "reviewer/model", findings)
+    if findings:
+        with pytest.raises(ValueError, match="complete accepted finding bundle"):
+            AcceptedReviewPayload.strong("owner/repo", 42, accepted, ())
     inputs = pr_processor.TwoTierGateInputs(TwoTierPrGate("owner/repo", cycle), contract, policy, "head-a", "base-a")
     sent_bodies = []
 
@@ -187,6 +195,12 @@ def test_production_consumer_publishes_exact_accepted_record_and_persists_receip
     assert len(sent_bodies) == 1
     assert f"auto-coder-two-tier-review:v1:" in sent_bodies[0]
     assert '"requirements_text":"REQ-001: Preserve the accepted payload."' in sent_bodies[0]
+    published_payload = json.loads(sent_bodies[0].split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert published_payload["verdict"] == verdict
+    assert [item["finding_id"] for item in published_payload["findings"]] == (["finding-1"] if verdict == "FINDINGS" else [])
+    if findings:
+        assert published_payload["findings"][0]["origin_round_id"] == claim.claim_id
+        assert published_payload["findings"][0]["focused_regression_scenario"] == "Assert the unanchored provider payload."
     snapshot = cycle.snapshot(42)
     assert snapshot.accepted_strong_round is not None
     assert snapshot.accepted_strong_round.round_id == accepted.round_id

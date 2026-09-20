@@ -9,6 +9,9 @@ When `[backend_strong_pr_adversarial_validation]` is configured for a PR that is
 eligible for ordinary adversarial validation, an ordinary PASS records convergence
 but does not authorize merge. The independent `STRONG_AUDIT` must run through that
 exclusive route and its authenticated publication must be acknowledged first.
+Publication selects findings by the accepted round's producing claim ID, and
+rejects an incomplete bundle before publishing. The separately assigned accepted
+round ID must not cause retained findings to disappear from the published payload.
 
 Strong findings remain durable and are verified by `ORDINARY_CLOSURE` using the
 ordinary PR route and the cumulative diff. A bounded closure can authorize the

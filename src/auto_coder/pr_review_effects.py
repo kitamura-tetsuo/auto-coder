@@ -78,7 +78,9 @@ class AcceptedReviewPayload:
         record: StrongAuditRound,
         findings: tuple[Finding, ...],
     ) -> "AcceptedReviewPayload":
-        selected = tuple(item for item in findings if item.origin_round_id == record.round_id)
+        selected = tuple(item for item in findings if item.origin_round_id == record.claim_id)
+        if {item.finding_id for item in selected} != set(record.finding_ids):
+            raise ValueError("Strong publication requires the complete accepted finding bundle")
         return cls(
             repository,
             pr_number,
