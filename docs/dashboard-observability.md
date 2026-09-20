@@ -972,3 +972,14 @@ remains in `tests/test_issue_review_worker.py`. Production acceptance and
 admission/deferred-state coverage lives in `tests/test_issue_review_service.py`;
 the durable operation status, rather than a trace event, exposes a request
 that cannot currently enter the Review lane.
+
+### Explicit Issue-review rerun management origin
+
+`auto-coder review rerun` is an observability-neutral management origin for the
+existing Review lane: it only resolves authoritative scope, advances durable
+rerun authority, and creates the same retained Review-lane arrival consumed by
+the controller. It does not add an execution stage, run a backend inline, or
+create implementation work. Consequently the existing individual and
+decomposition validation-job trace entries remain the production execution
+oracle; command output is an acceptance receipt and is not review-completion
+telemetry.
