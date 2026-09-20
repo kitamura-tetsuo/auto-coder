@@ -80,10 +80,11 @@ def test_production_ordinary_closure_uses_cumulative_diff_and_accepts_bounded_re
         ) as command,
         patch("auto_coder.pr_processor.execute_review", side_effect=result) as transport,
     ):
-        accepted, reason = _execute_pending_ordinary_closure("owner/repo", 22, inputs)
+        accepted, reason, reviewer_backend = _execute_pending_ordinary_closure("owner/repo", 22, inputs)
 
     assert accepted is True
     assert reason == "accepted bounded ordinary closure from ordinary/model; publication remains pending"
+    assert reviewer_backend == "ordinary/model"
     availability.assert_called_once_with("pr", execution_cwd=str(tmp_path))
     assert command.call_args_list[0].args[0][-2:] == [audited, repaired]
     transport.assert_called_once()

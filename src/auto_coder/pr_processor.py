@@ -315,7 +315,7 @@ def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTie
         return False, f"strong audit execution failed: {exc}"
 
 
-def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
+def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str, str]:
     """Run ordinary verification for a retained strong finding bundle.
 
     Acceptance is fenced by the durable transition version observed before the
@@ -325,9 +325,9 @@ def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: Tw
     snapshot = inputs.gate.state.snapshot(pr_number)
     strong_round = snapshot.accepted_strong_round
     if snapshot.phase != PHASE_ORDINARY_CLOSURE or strong_round is None or not snapshot.open_findings:
-        return False, "ordinary closure is not currently applicable"
+        return False, "ordinary closure is not currently applicable", ""
     if strong_round.base_sha != inputs.base_sha or strong_round.contract_identity != inputs.contract.identity or strong_round.policy_identity != inputs.policy.identity:
-        return False, "retained strong evidence is stale for the current base, contract, or policy"
+        return False, "retained strong evidence is stale for the current base, contract, or policy", ""
 
     try:
         with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
@@ -336,14 +336,14 @@ def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: Tw
             availability = resolve_adversarial_validation_availability("pr", execution_cwd=worktree)
             if availability.backend_manager is None:
                 reason = "ordinary reviewer route is EXHAUSTED" if availability.exhausted else "ordinary reviewer route is UNAVAILABLE"
-                return False, reason
+                return False, reason, ""
             diff = CommandExecutor.run_command(
                 ["git", "diff", "--no-ext-diff", "--binary", strong_round.head_sha, inputs.head_sha],
                 cwd=worktree,
             )
             tracked = CommandExecutor.run_command(["git", "ls-files"], cwd=worktree)
             if not diff.success or not tracked.success:
-                return False, "required cumulative diff or repository evidence is unavailable"
+                return False, "required cumulative diff or repository evidence is unavailable", ""
             review_input = ReviewExecutionInput(
                 mode=ReviewMode.ORDINARY_CLOSURE,
                 round_id=strong_round.round_id,
@@ -360,9 +360,9 @@ def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: Tw
             )
             result = execute_review(review_input, availability.backend_manager, worktree)
         if not result.is_complete:
-            return False, result.diagnostic
+            return False, result.diagnostic, result.reviewer_provenance
         if result.verdict != VERDICT_PASS:
-            return False, f"ordinary verification retained {result.verdict} findings"
+            return False, f"ordinary verification retained {result.verdict} findings", result.reviewer_provenance
         dispositions = [DurableFindingDisposition(item.finding_id, item.status, item.evidence, inputs.head_sha) for item in result.dispositions]
         inputs.gate.state.certify_closure(
             pr_number,
@@ -378,11 +378,11 @@ def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: Tw
             expected_version=snapshot.transition_version,
         )
         if result.scope is ScopeAssessment.BOUNDED:
-            return True, f"accepted bounded ordinary closure from {result.reviewer_provenance}; publication remains pending"
+            return True, f"accepted bounded ordinary closure from {result.reviewer_provenance}; publication remains pending", result.reviewer_provenance
         scope = result.scope.value if result.scope is not None else "UNKNOWN"
-        return True, f"accepted ordinary convergence with {scope} scope; renewed strong audit is required"
+        return True, f"accepted ordinary convergence with {scope} scope; renewed strong audit is required", result.reviewer_provenance
     except Exception as exc:
-        return False, f"ordinary closure execution failed: {exc}"
+        return False, f"ordinary closure execution failed: {exc}", ""
 
 
 @dataclass(frozen=True)
@@ -4041,11 +4041,12 @@ def _handle_pr_merge(
                     )
                     pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
                     if pending_snapshot.phase == PHASE_ORDINARY_CLOSURE and pending_snapshot.open_findings:
-                        accepted, reason = _execute_pending_ordinary_closure(repo_name, pr_number, two_tier_inputs)
+                        accepted, reason, reviewer_backend = _execute_pending_ordinary_closure(repo_name, pr_number, two_tier_inputs)
                         stage_id = "pr.ordinary-closure"
                         stage_label = f"pr#{pr_number} ordinary closure"
                     else:
                         accepted, reason = _execute_pending_strong_audit(repo_name, pr_number, two_tier_inputs)
+                        reviewer_backend = two_tier_inputs.policy.strong_route
                         stage_id = "pr.strong-audit"
                         stage_label = f"pr#{pr_number} strong audit"
                     strong_diagnostic = two_tier_inputs.gate.diagnostic(
@@ -4061,7 +4062,7 @@ def _handle_pr_merge(
                         Outcome.COMPLETED if accepted else Outcome.DEFERRED,
                         {
                             "phase": strong_diagnostic.phase,
-                            "backend": strong_diagnostic.backend,
+                            "backend": reviewer_backend,
                             "head": two_tier_inputs.head_sha,
                             "base": two_tier_inputs.base_sha,
                             "contract_identity": two_tier_inputs.contract.identity,
