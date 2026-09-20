@@ -6,6 +6,7 @@ from auto_coder.jules_candidate_observation import (
     CandidateObservationStore,
     EvidenceStatus,
     JulesCandidateObservationAdapter,
+    LegacySessionBinding,
     ProviderState,
     PullRequestIdentity,
     VerifiedPullRequest,
@@ -46,9 +47,16 @@ class GitHubReader:
         return response
 
 
-def pr(number, head_ref=None, base_ref="main", repository=REPO):
+def pr(
+    number,
+    head_ref=None,
+    base_ref="main",
+    repository=REPO,
+    author="google-labs-jules[bot]",
+):
     return {
         "number": number,
+        "user": {"login": author},
         "head": {
             "repo": {"full_name": repository},
             "ref": head_ref or f"candidate-{number}",
@@ -241,3 +249,76 @@ def test_foreign_or_wrong_base_never_becomes_membership(tmp_path):
     assert observation.evidence_status is EvidenceStatus.INCOMPLETE
     assert observation.artifacts == ()
     assert adapter.classify(REPO, ISSUE, REPO, 11).classification is ArtifactClassification.SUSPECTED
+
+
+def test_same_pr_target_change_is_retained_as_blocking_conflict(tmp_path):
+    ledger, generation = accepted_ledger(tmp_path)
+    sessions = SessionReader(
+        {
+            "session-a": {
+                "name": "sessions/session-a",
+                "sourceContext": {"source": f"sources/github/{REPO}"},
+                "state": "IN_PROGRESS",
+                "outputs": {"pullRequest": f"https://github.com/{REPO}/pull/10"},
+            }
+        }
+    )
+    github = GitHubReader({10: pr(10, head_ref="candidate-a")})
+    store = CandidateObservationStore(tmp_path / "observations.db")
+    adapter = JulesCandidateObservationAdapter(ledger, store, sessions, github)
+    first = adapter.observe_candidate(REPO, ISSUE, generation, "a")
+    assert first.evidence_status is EvidenceStatus.KNOWN
+    github.responses[10] = pr(10, head_ref="different-target")
+
+    second = adapter.observe_candidate(REPO, ISSUE, generation, "a")
+    classified = adapter.classify(REPO, ISSUE, REPO, 10)
+
+    assert second.evidence_status is EvidenceStatus.KNOWN
+    assert classified.classification is ArtifactClassification.BLOCKED
+    assert classified.diagnostics == ("verified PR target changed inconsistently",)
+    assert classified.mutation_allowed is False
+    assert classified.cleanup_allowed is False
+    membership = store.memberships(REPO, ISSUE)[0]
+    assert membership[5] == "candidate-a"
+    assert membership[6] == "head-10"
+
+
+def test_positive_legacy_and_human_evidence_remain_ordinary_with_generation(tmp_path):
+    ledger, _generation = accepted_ledger(tmp_path)
+    sessions = SessionReader(
+        {
+            "legacy-session": {
+                "name": "sessions/legacy-session",
+                "sourceContext": {"source": f"sources/github/{REPO}"},
+                "state": "COMPLETED",
+                "outputs": {"pullRequest": f"https://github.com/{REPO}/pull/20"},
+            }
+        }
+    )
+    github = GitHubReader(
+        {
+            20: pr(20),
+            21: pr(21, author="human-contributor"),
+            22: pr(22),
+        }
+    )
+    adapter = JulesCandidateObservationAdapter(ledger, CandidateObservationStore(tmp_path / "observations.db"), sessions, github)
+    binding = LegacySessionBinding(
+        repository=REPO,
+        provider_id="jules",
+        session_id="legacy-session",
+        binding_id="durable-legacy-binding-1",
+    )
+
+    observed = adapter.observe_legacy_session(binding)
+    legacy = adapter.classify(REPO, ISSUE, REPO, 20)
+    human = adapter.classify(REPO, ISSUE, REPO, 21)
+    unresolved = adapter.classify(REPO, ISSUE, REPO, 22)
+
+    assert [artifact.identity.number for artifact in observed] == [20]
+    assert legacy.classification is ArtifactClassification.LEGACY
+    assert legacy.mutation_allowed is True
+    assert human.classification is ArtifactClassification.LEGACY
+    assert human.mutation_allowed is True
+    assert unresolved.classification is ArtifactClassification.SUSPECTED
+    assert unresolved.mutation_allowed is False

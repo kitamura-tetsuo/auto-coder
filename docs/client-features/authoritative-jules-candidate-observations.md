@@ -18,6 +18,9 @@ distinguishes selected, active-unselected, retired, suspected, legacy, and block
 artifacts. A shared pull request or writable head across candidates is conflicting
 provenance and grants neither adoption nor cleanup authority. Absence from current
 outputs does not erase membership, and unresolved Jules-origin artifacts remain
-suspected while speculative history exists. The adapter never starts or stops a
-session, mutates GitHub, selects a winner, advances attempts, or lists provider
-accounts.
+suspected while speculative history exists. A same-PR target change is retained as
+a conflict rather than overwriting its original provenance. Authenticated output
+from an independently established legacy session, or authoritative non-Jules PR
+authorship, preserves ordinary legacy classification even alongside speculative
+history. The adapter never starts or stops a session, mutates GitHub, selects a
+winner, advances attempts, or lists provider accounts.

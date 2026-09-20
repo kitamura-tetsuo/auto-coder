@@ -97,6 +97,16 @@ class ClassificationResult:
     diagnostics: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class LegacySessionBinding:
+    """Independently established non-speculative Jules session ownership."""
+
+    repository: str = ""
+    provider_id: str = ""
+    session_id: str = ""
+    binding_id: str = ""
+
+
 _KNOWN_STATES = {state.value: state for state in ProviderState if state is not ProviderState.UNKNOWN}
 _PR_URL = re.compile(r"^https://github\.com/([^/]+/[^/]+)/pull/(\d+)(?:[/?#].*)?$")
 
@@ -198,6 +208,16 @@ class CandidateObservationStore:
                     head_repository TEXT NOT NULL, head_ref TEXT NOT NULL, head_sha TEXT NOT NULL,
                     base_repository TEXT NOT NULL, base_ref TEXT NOT NULL, base_sha TEXT NOT NULL,
                     PRIMARY KEY (repository, issue_number, generation_id, candidate_id, pr_repository, pr_number));
+                CREATE TABLE IF NOT EXISTS membership_conflicts (
+                    repository TEXT NOT NULL, issue_number INTEGER NOT NULL,
+                    generation_id TEXT NOT NULL, candidate_id TEXT NOT NULL,
+                    pr_repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
+                    original_target TEXT NOT NULL, conflicting_target TEXT NOT NULL,
+                    PRIMARY KEY (repository, issue_number, generation_id, candidate_id, pr_repository, pr_number));
+                CREATE TABLE IF NOT EXISTS legacy_memberships (
+                    repository TEXT NOT NULL, pr_repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
+                    provider_id TEXT NOT NULL, session_id TEXT NOT NULL, binding_id TEXT NOT NULL,
+                    PRIMARY KEY (repository, pr_repository, pr_number));
                 """
             )
 
@@ -243,26 +263,35 @@ class CandidateObservationStore:
             )
             connection.execute("UPDATE clocks SET accepted_read = ? WHERE scope = ?", (observation.read_id, scope))
             for artifact in observation.artifacts:
+                membership_key = (
+                    observation.repository.lower(),
+                    observation.issue_number,
+                    observation.generation_id,
+                    observation.candidate_id,
+                    artifact.identity.repository.lower(),
+                    artifact.identity.number,
+                )
+                target = (
+                    artifact.head_repository.lower(),
+                    artifact.head_ref,
+                    artifact.head_sha,
+                    artifact.base_repository.lower(),
+                    artifact.base_ref,
+                    artifact.base_sha,
+                )
+                prior = connection.execute(
+                    "SELECT head_repository,head_ref,head_sha,base_repository,base_ref,base_sha " "FROM memberships WHERE repository=? AND issue_number=? AND generation_id=? " "AND candidate_id=? AND pr_repository=? AND pr_number=?",
+                    membership_key,
+                ).fetchone()
+                if prior is not None and tuple(prior) != target:
+                    connection.execute(
+                        "INSERT INTO membership_conflicts VALUES (?, ?, ?, ?, ?, ?, ?, ?) " "ON CONFLICT(repository, issue_number, generation_id, candidate_id, pr_repository, pr_number) " "DO UPDATE SET conflicting_target=excluded.conflicting_target",
+                        (*membership_key, json.dumps(tuple(prior)), json.dumps(target)),
+                    )
+                    continue
                 connection.execute(
-                    "INSERT INTO memberships VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(repository, issue_number, generation_id, candidate_id, pr_repository, pr_number) "
-                    "DO UPDATE SET head_repository=excluded.head_repository, head_ref=excluded.head_ref, "
-                    "head_sha=excluded.head_sha, base_repository=excluded.base_repository, "
-                    "base_ref=excluded.base_ref, base_sha=excluded.base_sha",
-                    (
-                        observation.repository.lower(),
-                        observation.issue_number,
-                        observation.generation_id,
-                        observation.candidate_id,
-                        artifact.identity.repository.lower(),
-                        artifact.identity.number,
-                        artifact.head_repository.lower(),
-                        artifact.head_ref,
-                        artifact.head_sha,
-                        artifact.base_repository.lower(),
-                        artifact.base_ref,
-                        artifact.base_sha,
-                    ),
+                    "INSERT OR IGNORE INTO memberships VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (*membership_key, *target),
                 )
             connection.execute("COMMIT")
             return True
@@ -286,6 +315,51 @@ class CandidateObservationStore:
             return EvidenceStatus(value)
         except (ValueError, TypeError, json.JSONDecodeError):
             return EvidenceStatus.CONFLICTING
+
+    def has_membership_conflict(
+        self,
+        repository: str,
+        issue_number: int,
+        generation_id: str,
+        candidate_id: str,
+        pr_repository: str,
+        pr_number: int,
+    ) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM membership_conflicts WHERE repository=? AND issue_number=? " "AND generation_id=? AND candidate_id=? AND pr_repository=? AND pr_number=?",
+                (
+                    repository.lower(),
+                    issue_number,
+                    generation_id,
+                    candidate_id,
+                    pr_repository.lower(),
+                    pr_number,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def record_legacy_membership(self, binding: LegacySessionBinding, artifact: VerifiedPullRequest) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO legacy_memberships VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    binding.repository.lower(),
+                    artifact.identity.repository.lower(),
+                    artifact.identity.number,
+                    binding.provider_id,
+                    binding.session_id,
+                    binding.binding_id,
+                ),
+            )
+
+    def has_legacy_membership(self, repository: str, pr_repository: str, pr_number: int) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM legacy_memberships WHERE repository=? AND pr_repository=? AND pr_number=?",
+                (repository.lower(), pr_repository.lower(), pr_number),
+            ).fetchone()
+        return row is not None
 
 
 class JulesCandidateObservationAdapter:
@@ -443,7 +517,44 @@ class JulesCandidateObservationAdapter:
         published = self.store.publish(scope, observation)
         return CandidateObservation(**{**asdict(observation), "artifacts": observation.artifacts, "diagnostics": observation.diagnostics, "published": published})
 
-    def _verify_pr(self, identity: PullRequestIdentity, repository: str, requested_base: str) -> Optional[VerifiedPullRequest]:
+    def observe_legacy_session(self, binding: LegacySessionBinding) -> tuple[VerifiedPullRequest, ...]:
+        """Verify and retain PRs from an established non-speculative session.
+
+        The caller-provided binding is authority that the session is legacy; PR
+        text, comments, branch names, and absence from candidate outputs are not.
+        """
+        if binding.provider_id.lower() != "jules" or not binding.binding_id or not binding.session_id or not binding.repository:
+            return ()
+        try:
+            session = self.jules.get_session(binding.session_id)
+        except Exception:
+            return ()
+        returned_name = session.get("name")
+        returned_id = returned_name.rsplit("/", 1)[-1] if isinstance(returned_name, str) else ""
+        source = _mapping(session.get("sourceContext"))
+        if returned_id != binding.session_id.rsplit("/", 1)[-1] or source is None or source.get("source") != f"sources/github/{binding.repository}":
+            return ()
+        identities, malformed = normalize_pull_request_outputs(session.get("outputs", {}))
+        if malformed:
+            return ()
+        verified: list[VerifiedPullRequest] = []
+        for identity in identities:
+            if identity.repository.lower() != binding.repository.lower():
+                return ()
+            artifact = self._verify_pr(identity, binding.repository)
+            if artifact is None:
+                return ()
+            verified.append(artifact)
+        for artifact in verified:
+            self.store.record_legacy_membership(binding, artifact)
+        return tuple(verified)
+
+    def _verify_pr(
+        self,
+        identity: PullRequestIdentity,
+        repository: str,
+        requested_base: Optional[str] = None,
+    ) -> Optional[VerifiedPullRequest]:
         try:
             raw = self.github.get_pull_request_metadata_strict(repository, identity.number)
         except Exception:
@@ -459,7 +570,7 @@ class JulesCandidateObservationAdapter:
         values = (head_repo, base_repo, head_ref, base_ref, head_sha, base_sha)
         if not all(isinstance(value, str) and value for value in values):
             return None
-        if base_repo.lower() != repository.lower() or base_ref != requested_base:
+        if base_repo.lower() != repository.lower() or (requested_base is not None and base_ref != requested_base):
             return None
         return VerifiedPullRequest(
             identity,
@@ -479,7 +590,17 @@ class JulesCandidateObservationAdapter:
         snapshot = self.ledger.get_namespace_snapshot(repository, issue_number)
         rows = [row for row in self.store.memberships(repository, issue_number) if str(row[2]).lower() == pr_repository.lower() and row[3] == pr_number]
         if not rows:
+            if self.store.has_legacy_membership(repository, pr_repository, pr_number):
+                return ClassificationResult(ArtifactClassification.LEGACY, mutation_allowed=True)
             if snapshot.generations:
+                try:
+                    raw_pr = self.github.get_pull_request_metadata_strict(pr_repository, pr_number)
+                except Exception:
+                    raw_pr = {}
+                user = _mapping(raw_pr.get("user")) if isinstance(raw_pr, Mapping) and raw_pr.get("number") == pr_number else None
+                login = user.get("login") if user else None
+                if isinstance(login, str) and not login.lower().startswith("google-labs-jules"):
+                    return ClassificationResult(ArtifactClassification.LEGACY, mutation_allowed=True)
                 return ClassificationResult(diagnostics=("unresolved Jules origin while speculative history exists",))
             return ClassificationResult(ArtifactClassification.LEGACY, mutation_allowed=True)
         owners = {(str(row[0]), str(row[1])) for row in rows}
@@ -489,6 +610,20 @@ class JulesCandidateObservationAdapter:
         if len(owners | head_owners) > 1:
             return ClassificationResult(ArtifactClassification.BLOCKED, diagnostics=("conflicting candidate provenance",))
         generation_id, candidate_id = next(iter(owners))
+        if self.store.has_membership_conflict(
+            repository,
+            issue_number,
+            generation_id,
+            candidate_id,
+            pr_repository,
+            pr_number,
+        ):
+            return ClassificationResult(
+                ArtifactClassification.BLOCKED,
+                candidate_id,
+                generation_id,
+                diagnostics=("verified PR target changed inconsistently",),
+            )
         generation = snapshot.get_generation(generation_id)
         candidate = generation.get_candidate(candidate_id) if generation else None
         if generation is None or candidate is None:
