@@ -384,11 +384,31 @@ def _render_two_tier_review(payload: AcceptedReviewPayload) -> str:
     """Render role-distinguishable evidence while retaining the exact payload."""
     title = "Strong audit" if payload.mode == "STRONG_AUDIT" else "Ordinary closure"
     marker = f"<!-- auto-coder-two-tier-review:v1:{payload.identity} -->"
+    sections = []
+    for index, finding in enumerate(payload.findings, start=1):
+        sections.append(
+            f"### {index}. {finding.finding_id}\n\n"
+            f"**Requirements:** {', '.join(finding.requirement_ids)}  \n"
+            f"**Status:** {finding.status}  \n"
+            f"**Affected boundary:** {finding.affected_boundary}\n\n"
+            f"**Scenario:** {finding.counterexample}\n\n"
+            f"**Expected:** {finding.expected_behavior}\n\n"
+            f"**Actual:** {finding.actual_behavior}\n\n"
+            f"**Evidence:** {finding.evidence}\n\n"
+            f"**Impact:** {finding.material_consequence}\n\n"
+            f"**Regression scenario:** {finding.focused_regression_scenario}\n\n"
+        )
+        if finding.is_regression_gap:
+            sections.append(f"**Incorrect implementation admitted by tests:** {finding.plausible_incorrect_implementation}\n\n" f"**Why tests admit it:** {finding.why_tests_admit_it}\n\n")
+        if finding.disposition_evidence:
+            sections.append(f"**Disposition evidence:** {finding.disposition_evidence}\n\n")
+    readable_findings = "".join(sections) if sections else "No findings.\n\n"
     return (
         f"{marker}\n## {title} evidence (attempt {payload.attempt})\n\n"
         f"Verdict: **{payload.verdict}**  \n"
         f"Target head: `{payload.target_head}`  \n"
         f"Round: `{payload.round_id}`  \n\n"
+        f"{readable_findings}"
         "<details><summary>Exact accepted payload</summary>\n\n"
         f"```json\n{payload.canonical_json()}\n```\n\n</details>"
     )

@@ -12,6 +12,10 @@ exclusive route and its authenticated publication must be acknowledged first.
 Publication selects findings by the accepted round's producing claim ID, and
 rejects an incomplete bundle before publishing. The separately assigned accepted
 round ID must not cause retained findings to disappear from the published payload.
+The review body displays every finding's Requirement references, status, affected
+boundary, scenario, expected/actual behavior, evidence, impact, and regression
+scenario before the collapsed exact JSON payload. Regression gaps and closure
+dispositions also expose their supporting evidence in the readable body.
 
 Strong findings remain durable and are verified by `ORDINARY_CLOSURE` using the
 ordinary PR route and the cumulative diff. A bounded closure can authorize the

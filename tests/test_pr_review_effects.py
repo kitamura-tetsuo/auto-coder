@@ -98,6 +98,38 @@ def test_exact_payload_and_distinct_attempt_identity_are_durable(tmp_path):
     assert repository.operation_identity(payload, "publication", "github-reviewer-app") != repository.operation_identity(different, "publication", "github-reviewer-app")
 
 
+def test_rendered_review_exposes_findings_before_collapsed_payload():
+    payload = _payload()
+    body = pr_processor._render_two_tier_review(payload)
+    visible = body.split("<details>", 1)[0]
+    assert "### 1. finding-1" in visible
+    assert "**Requirements:** #2209/REQ-002" in visible
+    assert "**Status:** OPEN" in visible
+    for field in (
+        "counterexample",
+        "expected_behavior",
+        "actual_behavior",
+        "evidence",
+        "affected_boundary",
+        "material_consequence",
+        "focused_regression_scenario",
+        "plausible_incorrect_implementation",
+        "why_tests_admit_it",
+    ):
+        assert getattr(payload.findings[0], field) in visible
+    assert payload.canonical_json() in body
+    assert f"auto-coder-two-tier-review:v1:{payload.identity}" in body
+
+
+def test_rendered_closure_shows_disposition_evidence():
+    original = _payload()
+    finding = replace(original.findings[0], status="FIXED", disposition_evidence="Both paths now enforce the guard.")
+    payload = replace(original, mode="ORDINARY_CLOSURE", verdict="CLOSURE", findings=(finding,))
+    visible = pr_processor._render_two_tier_review(payload).split("<details>", 1)[0]
+    assert "**Status:** FIXED" in visible
+    assert "**Disposition evidence:** Both paths now enforce the guard." in visible
+
+
 def test_contention_allows_only_reservation_owner_to_send(tmp_path):
     repository = ReviewEffectRepository("owner/repo", tmp_path / "effects.json")
     payload = _payload()
