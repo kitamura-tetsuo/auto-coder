@@ -971,8 +971,22 @@ def test_manual_retry_authorization_reaches_mounted_detail(mock_ui, tmp_path):
     execution = slots.start_execution(owner, generation=generation)
     assert slots.record_provider_session(owner, "old-session")
     slots.finish_execution(owner, execution)
-    engine._process_single_candidate_unified("owner/repo", candidate, engine.config, explicit_only=True, force=True, retry=True, origin="explicit-single-target")
-    engine._process_single_candidate_reserved.assert_called_once_with("owner/repo", candidate, engine.config, False, manual_retry=True)
+    engine._process_single_candidate_unified(
+        "owner/repo",
+        candidate,
+        engine.config,
+        explicit_only=True,
+        force=True,
+        retry=True,
+        retry_request_id="dashboard-retry-request",
+        origin="explicit-single-target",
+    )
+    engine._process_single_candidate_reserved.assert_called_once()
+    dispatch = engine._process_single_candidate_reserved.call_args
+    assert dispatch.args == ("owner/repo", candidate, engine.config, False)
+    assert dispatch.kwargs["manual_retry"] is True
+    authority = dispatch.kwargs["retry_authority"]
+    assert authority.request_id == "dashboard-retry-request"
     events = get_trace_collector().get_snapshot(item_type="issue", item_number=1728).events
     event = next(event for event in events if event.stage_id == "issue.manual-retry")
     assert event.origin == "issue.manual-retry"
@@ -980,6 +994,9 @@ def test_manual_retry_authorization_reaches_mounted_detail(mock_ui, tmp_path):
     assert started.origin == "explicit-single-target"
     assert event.execution_id == started.execution_id
     assert event.outcome == Outcome.COMPLETED.value
+    assert event.facts["request_id"] == authority.request_id
+    assert event.facts["attempt_id"] == authority.attempt_id
+    assert event.facts["generation"] == generation
     _mounted_detail(mock_ui, "issue", 1728)
     older = next(call.kwargs["on_click"] for call in mock_ui.button.call_args_list if call.kwargs.get("icon") == "arrow_downward")
     older()

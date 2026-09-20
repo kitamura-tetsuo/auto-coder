@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Event
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import ANY, MagicMock, Mock, patch
 
 import pytest
 
@@ -391,7 +391,15 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         with patch("auto_coder.llm_backend_config.is_jules_mode_enabled", return_value=False):
             result = engine.process_single("owner/repo", "issue", 100, explicit_only=True, force=True, retry=retry)
 
-        engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, explicit_only=True, force=True, origin="explicit-single-target", retry=retry)
+        expected_kwargs = {
+            "explicit_only": True,
+            "force": True,
+            "origin": "explicit-single-target",
+            "retry": retry,
+        }
+        if retry:
+            expected_kwargs["retry_request_id"] = ANY
+        engine._process_single_candidate_unified.assert_called_once_with("owner/repo", candidate, engine.config, False, **expected_kwargs)
         engine._preflight_explicit_issue_relationships.assert_called_once_with("owner/repo", 100, refresh_all=True)
         assert result["issues_processed"][0]["actions_taken"] == ["started"]
         assert result["target_outcome"] == "success"

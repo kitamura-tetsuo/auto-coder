@@ -183,9 +183,14 @@ with `bash scripts/test.sh tests/test_codex_wham_client.py tests/test_adversaria
 
 Explicit Issue restart (`--only <issue> --force --retry`) keeps the
 `explicit-single-target` origin and emits `issue.manual-retry` after admission,
-with the Issue owner and explicit flag reason. `completed` means retry was
+with the Issue owner, request, attempt, semantic generation, owned phase, and
+explicit flag reason. `completed` means retry ownership was
 authorized, not that a provider accepted it. Existing provider dispatch stages
 report the subsequent handoff or failure. No event schema change is needed.
+The CLI action carries the same request and attempt identities. A historical
+same-generation tombstone remains visible in durable ownership history but no
+longer turns an otherwise authorized new explicit request into a duplicate
+skip; ordinary wakes and invocations without all three flags remain unchanged.
 `tests/test_specification_validation_lifecycle.py::test_manual_retry_retained_provider_admission_and_trace`
 checks the real admission path and emitted authorization for every flag boundary;
 `tests/test_dashboard_observability.py::test_manual_retry_authorization_reaches_mounted_detail`
