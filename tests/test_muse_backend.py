@@ -595,6 +595,97 @@ print("ACTION_SUMMARY: Muse worktree completed")
     assert Path(data["cwd"]).resolve() == worktree_dir.resolve()
 
 
+@pytest.mark.parametrize("attached", [False, True])
+@pytest.mark.parametrize("noedit", [False, True])
+def test_muse_ignores_peer_ref_and_worktree_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _use_real_commands,
+    attached: bool,
+    noedit: bool,
+) -> None:
+    main_repo = _repository(tmp_path / "main")
+    target = tmp_path / "target"
+    if attached:
+        _git(main_repo, "branch", "muse-target")
+        _git(main_repo, "worktree", "add", str(target), "muse-target")
+    else:
+        _git(main_repo, "worktree", "add", "--detach", str(target), "HEAD")
+    _git(main_repo, "tag", "peer-to-delete")
+    ready = tmp_path / "ready"
+    release = tmp_path / "release"
+    script = tmp_path / "muse-overlap-success"
+    script.write_text(
+        """#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+if sys.argv[1:] == ["--version"]:
+    print("Muse Code test")
+    raise SystemExit(0)
+subprocess.run(["git", "status", "--short"], check=True, stdout=subprocess.DEVNULL)
+subprocess.run(["git", "branch", "--list"], check=True, stdout=subprocess.DEVNULL)
+subprocess.run(["git", "worktree", "list", "--porcelain"], check=True, stdout=subprocess.DEVNULL)
+Path(os.environ["MUSE_READY"]).write_text("ready")
+while not Path(os.environ["MUSE_RELEASE"]).exists():
+    time.sleep(0.01)
+print("ACTION_SUMMARY: original invocation completed")
+"""
+    )
+    script.chmod(0o700)
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", options_for_noedit=["--no-edit"])})
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(script))
+    monkeypatch.setenv("MUSE_READY", str(ready))
+    monkeypatch.setenv("MUSE_RELEASE", str(release))
+
+    from src.auto_coder.utils import bind_command_execution_cwd, reset_command_execution_cwd
+
+    manager = _manager(config)
+    manager._is_noedit = noedit
+    outcomes: list[object] = []
+
+    def invoke() -> None:
+        token = bind_command_execution_cwd(str(target))
+        try:
+            outcomes.append(manager._run_llm_cli("review" if noedit else "implement"))
+        except BaseException as exc:
+            outcomes.append(exc)
+        finally:
+            reset_command_execution_cwd(token)
+
+    target_head = _git(target, "rev-parse", "HEAD")
+    target_branch = _git(target, "symbolic-ref", "--quiet", "HEAD") if attached else ""
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ready.exists(), f"Muse executable did not reach its post-snapshot pause: {outcomes!r}"
+
+    (main_repo / "peer.txt").write_text("peer change\n")
+    _git(main_repo, "add", "peer.txt")
+    _git(main_repo, "commit", "-m", "peer commit")
+    peer_head = _git(main_repo, "rev-parse", "HEAD")
+    _git(main_repo, "branch", "peer-created")
+    _git(main_repo, "tag", "-d", "peer-to-delete")
+    peer_worktree = tmp_path / "peer-worktree"
+    _git(main_repo, "worktree", "add", "--detach", str(peer_worktree), "HEAD")
+    _git(main_repo, "worktree", "remove", str(peer_worktree))
+    release.write_text("continue")
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert outcomes == ["ACTION_SUMMARY: original invocation completed"]
+    assert _git(target, "rev-parse", "HEAD") == target_head
+    assert (_git(target, "symbolic-ref", "--quiet", "HEAD") if attached else "") == target_branch
+    assert _git(main_repo, "rev-parse", "peer-created") == peer_head
+    assert _git(main_repo, "tag", "--list", "peer-to-delete") == ""
+    assert not peer_worktree.exists()
+
+
 def test_muse_recovery_leaves_overlapping_peer_refs_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     main_repo = _repository(tmp_path / "main")
     target = tmp_path / "target"
