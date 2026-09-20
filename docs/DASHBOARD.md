@@ -358,3 +358,11 @@ client can recover the true state without triggering another action.
 Publication success itself only ever reports a confirmed GitHub comment
 reference and a "published, awaiting processing" state — never that the
 finding was applied, fixed, or regression-proven.
+### Explicit retry handoff recovery
+
+The durable explicit-retry handoff journal is operational recovery state and
+is not currently rendered as a dashboard page. Existing issue dispatch traces
+remain the dashboard-visible account of provider selection and handoff. In
+particular, a journal claim or accepted receipt must not be presented as
+implementation completion; incomplete or indeterminate creation remains an
+operator diagnostic until its production projection is reconciled.

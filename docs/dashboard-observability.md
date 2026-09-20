@@ -1038,3 +1038,14 @@ adversarial-validation, and speculative-authority stages rather than by a synthe
 with the current classification and denial reason when an artifact loses authority
 after admission. This stage is blocking and never reports Issue completion;
 confirmed merge delivery remains the sole completion trace.
+## Explicit retry dispatch handoff journal
+
+Identity-based explicit retry dispatch adds a durable handoff journal between
+retry ownership and the local/provider creation boundary. The journal is a
+machine-readable recovery authority, not a dashboard event source: it records
+`claimed`, `definitely-not-started`, `accepted`, `indeterminate`, and
+`completed` creation states plus projection completion. Existing dispatch
+stage events continue to describe the same provider calls and outcomes, and no
+event schema, processing origin, stage identifier, or dashboard rendering is
+changed by this child. A later controller integration may add a production
+origin and must add its own production-to-view scenario then.

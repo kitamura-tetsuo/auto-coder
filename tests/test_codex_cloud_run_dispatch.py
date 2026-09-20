@@ -17,6 +17,8 @@ from auto_coder.cloud_run import CloudRun, CloudRunEvent, CloudRunRepository
 from auto_coder.cloud_run_policies import MANUAL_RETRY_REASON, CodexCloudRunPolicy
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.issue_processor import _process_issue_codex_cloud_mode
+from auto_coder.issue_stage_routing import ImplementationRetryRequest
+from auto_coder.retry_dispatch import RetryDispatchRepository
 
 
 def _issue_data(number: int = 100) -> dict:
@@ -163,6 +165,44 @@ class TestCodexCloudDispatchDuplicateProtection:
         repo = CloudRunRepository("owner/repo")
         assert repo.get(issue_number=100, attempt=0).task_id == "task-A"
         assert repo.get(issue_number=100, attempt=1).task_id == "task-B"
+
+    @patch("auto_coder.issue_processor.CloudManager")
+    @patch("auto_coder.codex_cloud_client.CodexCloudClient")
+    def test_owned_retry_replay_reuses_attempt_and_accepted_receipt(self, mock_client_type, mock_cloud_manager_type, tmp_path, monkeypatch):
+        """The production adapter consumes R/A once and reconstructs its receipt."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        mock_cloud_manager_type.return_value.ensure_binding.return_value = True
+        client = mock_client_type.return_value
+        client.environment_id = "env-production"
+        client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-retry", "https://example.test/task-retry")
+        retry = ImplementationRetryRequest(
+            request_id="request-2185",
+            repository="owner/repo",
+            target_number=100,
+            generation="generation-1",
+            attempt_id="attempt-1",
+            status="owned",
+            ownership_reference="execution-1",
+        )
+
+        with (
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=2),
+            patch("auto_coder.issue_processor.increment_attempt", return_value=3) as increment,
+        ):
+            first = _process_issue_codex_cloud_mode("owner/repo", _issue_data(100), AutomationConfig(), MagicMock(), "codex-alias", retry_authority=retry)
+            second = _process_issue_codex_cloud_mode("owner/repo", _issue_data(100), AutomationConfig(), MagicMock(), "codex-alias", retry_authority=retry)
+
+        client.submit_task.assert_called_once()
+        increment.assert_called_once_with("owner/repo", 100, attempt_number=3)
+        assert first == ["Started Codex Cloud task 'task-retry' for issue #100"]
+        assert "already accepted" in second[0]
+        handoff = RetryDispatchRepository("owner/repo").get("request-2185")
+        assert handoff is not None
+        assert handoff.numeric_attempt == 3
+        assert handoff.external_id == "task-retry"
+        assert handoff.tracking_complete is True
+        assert CloudRunRepository("owner/repo").get(100, 3).task_id == "task-retry"
 
     @patch("auto_coder.codex_cloud_client.CodexCloudClient")
     def test_concurrent_production_dispatch_crosses_submission_once(self, mock_client_type, tmp_path, monkeypatch):
