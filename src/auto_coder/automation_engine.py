@@ -2746,6 +2746,21 @@ class AutomationEngine:
         while True:
             try:
                 iteration += 1
+                # This targeted durable consumer runs immediately on startup and
+                # at the 60-second maintenance cadence. It never calls the
+                # account-wide Jules listing used by the separate hourly cycle.
+                from .speculative_jules_lifecycle import consume_due_speculative_work
+
+                await self._run_local_critical(
+                    "speculative Jules competition maintenance",
+                    consume_due_speculative_work,
+                    repo_name,
+                    self.github,
+                    lambda number: self.invalidate_entity(repo_name, "issue", number),
+                    lambda number: self.invalidate_entity(repo_name, "pr", number),
+                )
+                if self.is_draining:
+                    return
                 heartbeat("producer:check-updates", f"iteration {iteration}")
                 # Check updates
                 await self._run_local_critical("update check", check_for_updates_and_restart)

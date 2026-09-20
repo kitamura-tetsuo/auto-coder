@@ -1,10 +1,19 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from auto_coder.automation_config import AutomationConfig, PRProcessingOutcome
 from auto_coder.jules_candidate_observation import ArtifactClassification, ClassificationResult
+from auto_coder.jules_competition_ledger import ObligationKind
 from auto_coder.pr_processor import process_pull_request
-from auto_coder.speculative_jules_lifecycle import CleanupObligation, SpeculativeCleanupStore, SpeculativeJulesLifecycle, configure_speculative_jules_lifecycle
+from auto_coder.speculative_jules_lifecycle import (
+    CleanupObligation,
+    RefreshingSpeculativeClassifier,
+    SpeculativeCleanupStore,
+    SpeculativeJulesLifecycle,
+    configure_speculative_jules_lifecycle,
+    consume_due_speculative_work,
+)
 
 
 class Classifier:
@@ -29,6 +38,45 @@ class Classifier:
 def lifecycle(tmp_path: Path, result: ClassificationResult) -> tuple[SpeculativeJulesLifecycle, Classifier]:
     classifier = Classifier(result)
     return SpeculativeJulesLifecycle(classifier, SpeculativeCleanupStore(tmp_path / "cleanup.db")), classifier
+
+
+def test_targeted_maintenance_refreshes_known_sessions_without_account_listing(tmp_path: Path) -> None:
+    adapter = Mock()
+    candidate = SimpleNamespace(candidate_id="c1", session_id="session-1")
+    generation = SimpleNamespace(generation_id="g1", candidates=(candidate,))
+    ledger = Mock()
+    ledger.list_issue_numbers.return_value = (7,)
+    ledger.get_namespace_snapshot.return_value = SimpleNamespace(generations=(generation,))
+    ledger.list_pending_obligations.return_value = ()
+    classifier = RefreshingSpeculativeClassifier(adapter, ledger)
+    service = SpeculativeJulesLifecycle(classifier, SpeculativeCleanupStore(tmp_path / "cleanup.db"))
+    configure_speculative_jules_lifecycle(service)
+    try:
+        assert consume_due_speculative_work("owner/repo", Mock()) == (1, 0)
+    finally:
+        configure_speculative_jules_lifecycle(None)
+    adapter.observe_candidate.assert_called_once_with("owner/repo", 7, "g1", "c1")
+    adapter.list_sessions.assert_not_called()
+
+
+def test_targeted_maintenance_delivers_durable_aggregate_failure(tmp_path: Path) -> None:
+    adapter = Mock()
+    ledger = Mock()
+    ledger.list_issue_numbers.return_value = (7,)
+    ledger.get_namespace_snapshot.return_value = SimpleNamespace(generations=())
+    obligation = SimpleNamespace(kind=ObligationKind.AGGREGATE_FAILURE, obligation_id="obl-1")
+    ledger.list_pending_obligations.return_value = (obligation,)
+    classifier = RefreshingSpeculativeClassifier(adapter, ledger)
+    service = SpeculativeJulesLifecycle(classifier, SpeculativeCleanupStore(tmp_path / "cleanup.db"))
+    enqueue_issue = Mock()
+    configure_speculative_jules_lifecycle(service)
+    try:
+        assert consume_due_speculative_work("owner/repo", Mock(), enqueue_issue=enqueue_issue) == (0, 0)
+    finally:
+        configure_speculative_jules_lifecycle(None)
+    enqueue_issue.assert_called_once_with(7)
+    ledger.mark_obligation_delivered.assert_called_once_with("obl-1", "production-deliver:obl-1")
+    ledger.acknowledge_obligation.assert_called_once_with("obl-1", "production-ack:obl-1")
 
 
 def test_active_candidate_is_deferred_without_cleanup(tmp_path: Path) -> None:

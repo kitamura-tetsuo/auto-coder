@@ -195,10 +195,10 @@ def _process_issue_jules_mode(
     issue_body = issue_data.get("body", "")
 
     try:
-        configured_width = getattr(config, "JULES_SPECULATIVE_PARALLELISM", 1)
-        # Test/embedding configurations predating this option may be dynamic
-        # attribute proxies. Only the validated concrete integer activates it.
-        width = configured_width if isinstance(configured_width, int) and not isinstance(configured_width, bool) else 1
+        configured_width = vars(config).get("JULES_SPECULATIVE_PARALLELISM", 1)
+        if isinstance(configured_width, bool) or not isinstance(configured_width, int) or configured_width < 1:
+            raise ValueError("[jules].speculative_parallelism must be a positive integer (booleans are not valid)")
+        width = configured_width
 
         # Initialize Jules client
         jules_client = JulesClient()
@@ -310,10 +310,16 @@ def _dispatch_jules_competition(
     from .jules_competition_ledger import CapturedPolicySettings, JulesCompetitionLedger, SpeculativeGenerationBundle
 
     issue_number = int(issue_data["number"])
+    if not config.pr_adversarial_validation:
+        return [f"Deferred Jules competition for issue #{issue_number}: independent PR adversarial validation is disabled"]
+    from .cli_helpers import create_adversarial_validation_backend_manager
+
+    if create_adversarial_validation_backend_manager(validation_kind="pr") is None:
+        return [f"Deferred Jules competition for issue #{issue_number}: no independent PR adversarial validation backend is configured"]
     oracle = str(issue_data.get("body") or "")
     fingerprint = hashlib.sha256(oracle.encode("utf-8")).hexdigest()
     root = Path(os.environ.get("AUTO_CODER_RUNTIME_ROOT", Path.home() / ".auto-coder")) / "state"
-    ledger = JulesCompetitionLedger(root / "jules_competitions.db")
+    ledger = JulesCompetitionLedger()
     snapshot = ledger.get_namespace_snapshot(repo_name, issue_number)
     generation = snapshot.get_active_generation()
     if generation is None:
@@ -344,6 +350,9 @@ def _dispatch_jules_competition(
     adapter = JulesCandidateSubmissionAdapter(ledger, jules_client, root / "jules_candidate_submissions.db")
     results = []
     for candidate_id in generation.candidate_ids:
+        current_generation = ledger.get_namespace_snapshot(repo_name, issue_number).get_generation(generation.generation_id)
+        if not new_work_allowed() or current_generation is None or not current_generation.is_active() or current_generation.has_winner():
+            break
         results.append(adapter.submit(CandidateRequest(repo_name, issue_number, generation.generation_id, candidate_id, f"{repo_name}#{issue_number}", task_payload)))
 
     accepted_sessions = tuple(result.session_id for result in results if result.session_id)

@@ -12,7 +12,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional, Protocol, cast
+from typing import Callable, Mapping, Optional, Protocol, cast
 
 from .jules_candidate_observation import ArtifactClassification, ClassificationResult
 
@@ -283,3 +283,38 @@ def consume_due_speculative_cleanup(github_client: object) -> int:
     if lifecycle is None:
         return 0
     return lifecycle.consume_cleanup(github_client)  # type: ignore[arg-type]
+
+
+def consume_due_speculative_work(
+    repository: str,
+    github_client: object,
+    enqueue_issue: Optional[Callable[[int], None]] = None,
+    enqueue_pr: Optional[Callable[[int], None]] = None,
+) -> tuple[int, int]:
+    """Refresh sessions and deliver durable adoption/failure obligations."""
+    from .jules_competition_ledger import ObligationKind
+
+    lifecycle = get_speculative_jules_lifecycle(github_client)
+    if lifecycle is None or not isinstance(lifecycle.classifier, RefreshingSpeculativeClassifier):
+        return (0, 0)
+    classifier = lifecycle.classifier
+    refreshed = 0
+    for issue_number in classifier.ledger.list_issue_numbers(repository):  # type: ignore[attr-defined]
+        snapshot = classifier.ledger.get_namespace_snapshot(repository, issue_number)  # type: ignore[attr-defined]
+        for generation in snapshot.generations:
+            for candidate in generation.candidates:
+                if candidate.session_id:
+                    classifier.adapter.observe_candidate(repository, issue_number, generation.generation_id, candidate.candidate_id)  # type: ignore[attr-defined]
+                    refreshed += 1
+        for obligation in classifier.ledger.list_pending_obligations(repository, issue_number):  # type: ignore[attr-defined]
+            delivered = False
+            if obligation.kind is ObligationKind.ADOPTION and enqueue_pr is not None:
+                enqueue_pr(obligation.adoption_payload().pr_number)
+                delivered = True
+            elif obligation.kind is ObligationKind.AGGREGATE_FAILURE and enqueue_issue is not None:
+                enqueue_issue(issue_number)
+                delivered = True
+            if delivered:
+                classifier.ledger.mark_obligation_delivered(obligation.obligation_id, f"production-deliver:{obligation.obligation_id}")  # type: ignore[attr-defined]
+                classifier.ledger.acknowledge_obligation(obligation.obligation_id, f"production-ack:{obligation.obligation_id}")  # type: ignore[attr-defined]
+    return refreshed, lifecycle.consume_cleanup(github_client)  # type: ignore[arg-type]
