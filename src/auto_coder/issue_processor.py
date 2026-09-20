@@ -2,10 +2,13 @@
 Issue processing functionality for Auto-Coder automation engine.
 """
 
+import hashlib
 import json
+import os
 import sys
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypedDict, Union, cast
 
 from dateutil import parser
@@ -165,6 +168,7 @@ def _process_issue_jules_mode(
     config: AutomationConfig,
     github_client: GitHubClient,
     label_context: Optional[LabelManagerContext] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Process an issue using Jules API for session-based AI interaction.
 
@@ -191,6 +195,11 @@ def _process_issue_jules_mode(
     issue_body = issue_data.get("body", "")
 
     try:
+        configured_width = getattr(config, "JULES_SPECULATIVE_PARALLELISM", 1)
+        # Test/embedding configurations predating this option may be dynamic
+        # attribute proxies. Only the validated concrete integer activates it.
+        width = configured_width if isinstance(configured_width, int) and not isinstance(configured_width, bool) else 1
+
         # Initialize Jules client
         jules_client = JulesClient()
 
@@ -215,6 +224,17 @@ def _process_issue_jules_mode(
         if not new_work_allowed():
             _record_dispatch_stage(issue_number, "issue.dispatch.jules", f"issue#{issue_number} Jules dispatch", Outcome.DEFERRED, {"backend": "jules", "reason": "graceful shutdown is draining"})
             return [f"Deferred Jules session for issue #{issue_number}: graceful shutdown is draining"]
+
+        if width > 1:
+            return _dispatch_jules_competition(
+                repo_name,
+                issue_data,
+                config,
+                action_prompt,
+                jules_client,
+                label_context,
+                implementation_slots,
+            )
 
         logger.info(f"Starting Jules session for issue #{issue_number}")
 
@@ -269,6 +289,81 @@ def _process_issue_jules_mode(
         actions.append(f"Error processing issue #{issue_number} in Jules mode: {e}")
 
     return actions
+
+
+def _dispatch_jules_competition(
+    repo_name: str,
+    issue_data: Dict[str, Any],
+    config: AutomationConfig,
+    task_payload: str,
+    jules_client: JulesClient,
+    label_context: Optional[LabelManagerContext],
+    implementation_slots: Optional[ImplementationSlotRepository],
+) -> List[str]:
+    """Create or resume one fixed-width Jules competition before any POST.
+
+    This boundary is reached only after the ordinary controller admission gates.
+    Persisting the complete candidate set first makes repeated explicit runs
+    resumptions rather than additional logical attempts.
+    """
+    from .jules_candidate_submission import CandidateRequest, JulesCandidateSubmissionAdapter
+    from .jules_competition_ledger import CapturedPolicySettings, JulesCompetitionLedger, SpeculativeGenerationBundle
+
+    issue_number = int(issue_data["number"])
+    oracle = str(issue_data.get("body") or "")
+    fingerprint = hashlib.sha256(oracle.encode("utf-8")).hexdigest()
+    root = Path(os.environ.get("AUTO_CODER_RUNTIME_ROOT", Path.home() / ".auto-coder")) / "state"
+    ledger = JulesCompetitionLedger(root / "jules_competitions.db")
+    snapshot = ledger.get_namespace_snapshot(repo_name, issue_number)
+    generation = snapshot.get_active_generation()
+    if generation is None:
+        candidate_ids = tuple(f"candidate-{index + 1}" for index in range(config.JULES_SPECULATIVE_PARALLELISM))
+        bundle = SpeculativeGenerationBundle(
+            source_attempt_number=get_current_attempt(repo_name, issue_number),
+            candidate_ids=candidate_ids,
+            issue_oracle_snapshot=oracle,
+            issue_oracle_fingerprint=fingerprint,
+            source_branch=config.MAIN_BRANCH,
+            policy_settings=CapturedPolicySettings(
+                timeout_seconds=config.JULES_ISSUE_PR_TIMEOUT_HOURS * 3600,
+                provider_name="jules",
+                extra_settings=(("pr_ci_timeout_hours", str(config.JULES_PR_CI_TIMEOUT_HOURS)),),
+            ),
+        )
+        admitted = ledger.create_generation(
+            repo_name,
+            issue_number,
+            f"production-admit:{repo_name}:{issue_number}:{fingerprint}",
+            snapshot.epoch,
+            bundle,
+        )
+        generation = admitted.snapshot.get_generation(admitted.generation_id or "") if admitted.admitted else admitted.snapshot.get_active_generation()
+    if generation is None:
+        return [f"Deferred Jules competition for issue #{issue_number}: generation admission unavailable"]
+
+    adapter = JulesCandidateSubmissionAdapter(ledger, jules_client, root / "jules_candidate_submissions.db")
+    results = []
+    for candidate_id in generation.candidate_ids:
+        results.append(adapter.submit(CandidateRequest(repo_name, issue_number, generation.generation_id, candidate_id, f"{repo_name}#{issue_number}", task_payload)))
+
+    accepted_sessions = tuple(result.session_id for result in results if result.session_id)
+    if implementation_slots is not None:
+        owner = ImplementationOwner("issue", issue_number)
+        for session_id in accepted_sessions:
+            if not implementation_slots.record_provider_session(owner, session_id):
+                raise RuntimeError(f"Could not retain Jules candidate ownership for issue #{issue_number}")
+    if label_context:
+        label_context.keep_label()
+    unknown = sum(result.outcome.value == "UNKNOWN" for result in results)
+    exhausted = sum(result.outcome.value == "DEFINITELY_NOT_ACCEPTED" for result in results)
+    get_trace_logger().log(
+        "Jules Competition",
+        f"Dispatched Jules competition for issue #{issue_number}",
+        item_type="issue",
+        item_number=issue_number,
+        details={"generation_id": generation.generation_id, "requested": len(generation.candidate_ids), "accepted": len(accepted_sessions), "unknown": unknown, "exhausted": exhausted},
+    )
+    return [f"Jules competition {generation.generation_id} for issue #{issue_number}: " f"requested={len(generation.candidate_ids)}, accepted={len(accepted_sessions)}, unknown={unknown}, exhausted={exhausted}"]
 
 
 def _process_issue_claude_routine_mode(
@@ -633,6 +728,7 @@ def _process_issue_high_score_cloud(
                     config,
                     github_client,
                     label_context=label_context,
+                    implementation_slots=implementation_slots,
                 )
         except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError) as e:
             rejected_submissions += 1
@@ -752,6 +848,7 @@ def _process_issue_cloud_backend(
                     config,
                     github_client,
                     label_context=label_context,
+                    implementation_slots=implementation_slots,
                 )
         except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError) as e:
             rejected_submissions += 1

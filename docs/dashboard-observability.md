@@ -1,5 +1,12 @@
 # Dashboard observability verification
 
+Production fan-out records a `Jules Competition` trace after the fixed candidate
+set is submitted. Its details expose the durable generation identity and the
+requested, accepted, unknown, and exhausted counts; the action is dispatch
+status and never reports session submission as completed Issue implementation.
+Candidate quarantine, selection, cleanup, and merge-authority events retain the
+existing production-to-view boundaries described below.
+
 Issue #2073 adds a fail-closed `pr.speculative-jules-authority` admission event
 before ordinary PR lifecycle effects. Deferred events carry only the authoritative
 classification and whether durable cleanup is pending; they do not claim remote
