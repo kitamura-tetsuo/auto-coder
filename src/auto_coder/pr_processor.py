@@ -4194,6 +4194,15 @@ def _handle_pr_merge(
                         current_contract=two_tier_inputs.contract,
                         current_policy=two_tier_inputs.policy,
                     ):
+                        # Retain an authoritative due wake for the daemon. A
+                        # quota deadline is preserved exactly; contention and
+                        # pending effects receive a bounded retry so progress
+                        # does not require a new webhook, commit, or restart.
+                        actions.quota_deferred = True
+                        actions.retry_not_before = pending_snapshot.retry_not_before or (time.time() + 60.0)
+                        if processing_status is not None:
+                            processing_status.outcome = PRProcessingOutcome.DEFERRED
+                            processing_status.retry_not_before = actions.retry_not_before
                         return actions
 
             # Own the final read phase even when invoked outside candidate selection.

@@ -948,6 +948,7 @@ class CandidateProcessingResult:
     target_outcome: Optional[ExplicitTargetOutcome] = None
     target_reason: Optional[str] = None
     blocked_cacheable: bool = False
+    retry_not_before: Optional[float] = None
 
 
 class PRProcessingOutcome(str, Enum):
@@ -1015,6 +1016,7 @@ class ProcessedPRResult:
     analysis: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     outcome: PRProcessingOutcome = PRProcessingOutcome.DEFERRED
+    retry_not_before: Optional[float] = None
 
 
 @dataclass

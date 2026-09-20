@@ -3738,6 +3738,25 @@ class AutomationEngine:
                         )
                     decision_completed = (not bool(result.error) or result.blocked_cacheable) and not (candidate.urgent_admission and result.capacity_deferred)
 
+                    if invalidation_claim is not None and candidate.type == "pr" and result.outcome is PRProcessingOutcome.DEFERRED and result.retry_not_before is not None:
+                        retained = await asyncio.to_thread(
+                            self.invalidations.defer,
+                            invalidation_claim,
+                            "two-tier review work remains pending",
+                            result.retry_not_before,
+                            "pr-review-cycle",
+                        )
+                        deferral_committed = True
+                        decision_completed = False
+                        logger.info(
+                            "Retained two-tier PR review wake repository={} pr={} retry_at={}",
+                            repo_name,
+                            item_number,
+                            retained.retry_not_before,
+                        )
+                        if self._invalidation_wake_event is not None:
+                            self._invalidation_wake_event.set()
+
                     if result.error:
                         logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
                         get_trace_logger().log("Worker", f"Worker {worker_id} failed to process {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id, "error": result.error})
@@ -6296,6 +6315,7 @@ class AutomationEngine:
                     if pr_result.error:
                         result.error = pr_result.error
                     result.outcome = pr_result.outcome
+                    result.retry_not_before = pr_result.retry_not_before
                     result.success = pr_result.outcome != PRProcessingOutcome.FAILED
                     result.target_outcome = {
                         PRProcessingOutcome.SUCCESS: ExplicitTargetOutcome.SUCCESS,
