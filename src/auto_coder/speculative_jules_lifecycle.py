@@ -135,6 +135,22 @@ class SpeculativeJulesLifecycle:
         return completed
 
 
+class RefreshingSpeculativeClassifier:
+    """Refresh candidate sessions before making an ingress authority decision."""
+
+    def __init__(self, adapter: object, ledger: object):
+        self.adapter = adapter
+        self.ledger = ledger
+
+    def classify(self, repository: str, issue_number: int, pr_repository: str, pr_number: int) -> ClassificationResult:
+        snapshot = self.ledger.get_namespace_snapshot(repository, issue_number)  # type: ignore[attr-defined]
+        for generation in snapshot.generations:
+            for candidate in generation.candidates:
+                if candidate.session_id:
+                    self.adapter.observe_candidate(repository, issue_number, generation.generation_id, candidate.candidate_id)  # type: ignore[attr-defined]
+        return self.adapter.classify(repository, issue_number, pr_repository, pr_number)  # type: ignore[no-any-return,attr-defined]
+
+
 _lifecycle: Optional[SpeculativeJulesLifecycle] = None
 
 
@@ -144,7 +160,26 @@ def configure_speculative_jules_lifecycle(lifecycle: Optional[SpeculativeJulesLi
     _lifecycle = lifecycle
 
 
-def get_speculative_jules_lifecycle() -> Optional[SpeculativeJulesLifecycle]:
+def get_speculative_jules_lifecycle(github_client: Optional[object] = None) -> Optional[SpeculativeJulesLifecycle]:
+    """Return configured authority, lazily creating the production adapter."""
+    global _lifecycle
+    if _lifecycle is None and github_client is not None:
+        from .jules_candidate_observation import CandidateObservationStore, JulesCandidateObservationAdapter
+        from .jules_client import JulesClient
+        from .jules_competition_ledger import JulesCompetitionLedger
+
+        root = Path(os.environ.get("AUTO_CODER_RUNTIME_ROOT", Path.home() / ".auto-coder")) / "state"
+        ledger = JulesCompetitionLedger()
+        adapter = JulesCandidateObservationAdapter(
+            ledger,
+            CandidateObservationStore(root / "jules_candidate_observations.db"),
+            JulesClient(),
+            github_client,  # type: ignore[arg-type]
+        )
+        _lifecycle = SpeculativeJulesLifecycle(
+            RefreshingSpeculativeClassifier(adapter, ledger),
+            SpeculativeCleanupStore(default_cleanup_path()),
+        )
     return _lifecycle
 
 

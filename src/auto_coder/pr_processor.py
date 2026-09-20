@@ -891,7 +891,7 @@ def process_pull_request(
         # cleanup, labels, CI, repair, fallback, merge, or provider continuation.
         # ``--force`` therefore cannot turn a loser or an uncertain artifact into
         # ordinary work (Issue #2073, REQ-001/REQ-004).
-        speculative = get_speculative_jules_lifecycle()
+        speculative = get_speculative_jules_lifecycle(github_client)
         if speculative is not None:
             issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
             if issue_numbers:
