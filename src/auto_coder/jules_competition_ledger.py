@@ -31,7 +31,7 @@ from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
-SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +156,8 @@ class AcceptanceRecord:
     base_sha: str = ""
     issue_oracle_fingerprint: str = ""
     expected_binding_revision: int = 0
+    validation_revision: int = 0
+    invalidation_revision: int = 0
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,8 @@ class AdoptionObligationPayload:
     pr_number: int = 0
     head_sha: str = ""
     base_sha: str = ""
+    validation_revision: int = 0
+    invalidation_revision: int = 0
 
 
 @dataclass(frozen=True)
@@ -245,6 +249,8 @@ class GenerationSnapshot:
     winner_pr_number: Optional[int] = None
     winner_head_sha: Optional[str] = None
     winner_base_sha: Optional[str] = None
+    winner_validation_revision: Optional[int] = None
+    winner_invalidation_revision: Optional[int] = None
     merge_outcome: MergeOutcome = MergeOutcome.UNKNOWN
     aggregate_failure_reason: Optional[str] = None
     candidates: tuple[CandidateSnapshot, ...] = ()
@@ -535,6 +541,8 @@ class JulesCompetitionLedger:
                     winner_pr_number INTEGER,
                     winner_head_sha TEXT,
                     winner_base_sha TEXT,
+                    winner_validation_revision INTEGER,
+                    winner_invalidation_revision INTEGER,
                     merge_outcome TEXT NOT NULL DEFAULT 'UNKNOWN',
                     aggregate_failure_reason TEXT,
                     admission_epoch INTEGER NOT NULL,
@@ -543,6 +551,12 @@ class JulesCompetitionLedger:
                 )
                 """
             )
+            generation_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(generations)").fetchall()}
+            if "winner_validation_revision" not in generation_columns:
+                conn.execute("ALTER TABLE generations ADD COLUMN winner_validation_revision INTEGER")
+            if "winner_invalidation_revision" not in generation_columns:
+                conn.execute("ALTER TABLE generations ADD COLUMN winner_invalidation_revision INTEGER")
+            conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(SUPPORTED_SCHEMA_VERSION),))
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS candidates (
@@ -720,7 +734,7 @@ class JulesCompetitionLedger:
                     "SELECT generation_id, source_attempt_number, candidate_count, candidate_ids_json, issue_oracle_snapshot, "
                     "issue_oracle_fingerprint, source_branch, policy_settings_json, lifecycle_state, retirement_reason, "
                     "retirement_source, winner_candidate_id, winner_pr_repository, winner_pr_number, winner_head_sha, "
-                    "winner_base_sha, merge_outcome, aggregate_failure_reason, created_at, updated_at "
+                    "winner_base_sha, winner_validation_revision, winner_invalidation_revision, merge_outcome, aggregate_failure_reason, created_at, updated_at "
                     "FROM generations WHERE namespace_key = ? ORDER BY admission_epoch ASC, generation_id ASC",
                     (key,),
                 )
@@ -785,6 +799,8 @@ class JulesCompetitionLedger:
                     winner_pr_number,
                     winner_head_sha,
                     winner_base_sha,
+                    winner_validation_revision,
+                    winner_invalidation_revision,
                     merge_outcome,
                     aggregate_failure_reason,
                     g_created,
@@ -814,6 +830,8 @@ class JulesCompetitionLedger:
                             winner_pr_number=winner_pr_number,
                             winner_head_sha=winner_head_sha,
                             winner_base_sha=winner_base_sha,
+                            winner_validation_revision=winner_validation_revision,
+                            winner_invalidation_revision=winner_invalidation_revision,
                             merge_outcome=MergeOutcome(merge_outcome),
                             aggregate_failure_reason=aggregate_failure_reason,
                             candidates=tuple(candidates_by_generation.get(gen_id, ())),
@@ -1326,6 +1344,8 @@ class JulesCompetitionLedger:
                 "base_sha": acceptance.base_sha,
                 "issue_oracle_fingerprint": acceptance.issue_oracle_fingerprint,
                 "expected_binding_revision": acceptance.expected_binding_revision,
+                "validation_revision": acceptance.validation_revision,
+                "invalidation_revision": acceptance.invalidation_revision,
             },
         }
         payload_hash = self._hash_payload(payload_dict)
@@ -1376,6 +1396,12 @@ class JulesCompetitionLedger:
                 if existing_winner is not None:
                     if not (existing_winner == candidate_id and existing_winner_pr_repo == acceptance.pr_repository and existing_winner_pr_number == acceptance.pr_number and existing_winner_head == acceptance.head_sha and existing_winner_base == acceptance.base_sha):
                         return deny(f"Generation {generation_id!r} already has a different selected winner: {existing_winner!r}")
+                    revision_row = conn.execute(
+                        "SELECT winner_validation_revision, winner_invalidation_revision FROM generations WHERE generation_id = ?",
+                        (generation_id,),
+                    ).fetchone()
+                    if revision_row != (acceptance.validation_revision, acceptance.invalidation_revision):
+                        return deny("Acceptance record revisions do not match the committed winner")
 
                 if GenerationLifecycleState(lifecycle) != GenerationLifecycleState.ACTIVE:
                     return deny(f"Generation {generation_id!r} is not active (state {lifecycle})")
@@ -1400,6 +1426,10 @@ class JulesCompetitionLedger:
 
                 if acceptance.issue_oracle_fingerprint != generation_oracle_fingerprint:
                     return deny("Acceptance record's Issue-oracle fingerprint does not match the generation's dispatched snapshot")
+                if acceptance.validation_revision <= 0 or acceptance.invalidation_revision < 0:
+                    return deny("Acceptance record revisions are invalid")
+                if acceptance.invalidation_revision > acceptance.validation_revision:
+                    return deny("Acceptance record is superseded by newer invalidation evidence")
 
                 cursor = conn.execute(
                     "SELECT pr_repository, pr_number, head_sha, base_sha, revision, retired FROM candidate_bindings " "WHERE generation_id = ? AND candidate_id = ? ORDER BY revision DESC LIMIT 1",
@@ -1430,8 +1460,8 @@ class JulesCompetitionLedger:
 
                 # All checks passed: commit this selection and retire everyone else.
                 conn.execute(
-                    "UPDATE generations SET winner_candidate_id = ?, winner_pr_repository = ?, winner_pr_number = ?, winner_head_sha = ?, winner_base_sha = ?, updated_at = ? WHERE generation_id = ?",
-                    (candidate_id, acceptance.pr_repository, acceptance.pr_number, acceptance.head_sha, acceptance.base_sha, now, generation_id),
+                    "UPDATE generations SET winner_candidate_id = ?, winner_pr_repository = ?, winner_pr_number = ?, winner_head_sha = ?, winner_base_sha = ?, winner_validation_revision = ?, winner_invalidation_revision = ?, updated_at = ? WHERE generation_id = ?",
+                    (candidate_id, acceptance.pr_repository, acceptance.pr_number, acceptance.head_sha, acceptance.base_sha, acceptance.validation_revision, acceptance.invalidation_revision, now, generation_id),
                 )
 
                 cursor = conn.execute("SELECT candidate_id, provider_id, session_id FROM candidates WHERE generation_id = ? AND candidate_id != ?", (generation_id, candidate_id))
@@ -1467,6 +1497,8 @@ class JulesCompetitionLedger:
                         "pr_number": acceptance.pr_number,
                         "head_sha": acceptance.head_sha,
                         "base_sha": acceptance.base_sha,
+                        "validation_revision": acceptance.validation_revision,
+                        "invalidation_revision": acceptance.invalidation_revision,
                     }
                 )
                 conn.execute(

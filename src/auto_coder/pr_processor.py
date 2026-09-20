@@ -7202,6 +7202,30 @@ def _merge_pr(
             logger.error(f"Could not read PR #{pr_number} before merge: {e}")
             return False
 
+        # The ingress classification is not merge authority: selection or
+        # invalidation may change while CI/review work is running.  Re-read the
+        # durable competition immediately inside the final sender and fail
+        # closed unless this exact PR is still the selected artifact.  Legacy
+        # PRs remain governed by the ordinary merge gates.
+        speculative = get_speculative_jules_lifecycle(client)
+        if speculative is not None:
+            issue_numbers = _resolve_pr_issue_numbers(repo_name, pr_info, client)
+            issue_data: Dict[str, Any] = {}
+            if len(issue_numbers) == 1:
+                issue = client.get_issue(repo_name, issue_numbers[0])
+                issue_data = issue if isinstance(issue, dict) else {"state": getattr(issue, "state", None), "body": getattr(issue, "body", None)}
+            authority = speculative.evaluate_merge_authority(repo_name, pr_number, pr_info, issue_data, tuple(issue_numbers))
+            if not authority.allow_ordinary_processing:
+                logger.warning(f"Merge aborted for PR #{pr_number}: speculative Jules " f"authority is {authority.classification.value} ({authority.reason})")
+                _record_pr_stage(
+                    pr_number,
+                    "pr.speculative-jules-merge-authority",
+                    f"pr#{pr_number} speculative Jules merge authority",
+                    Outcome.BLOCKED,
+                    {"classification": authority.classification.value, "reason": authority.reason},
+                )
+                return False
+
         head_sha = expected_head_sha or pr_info.get("head", {}).get("sha") or ""
         if not head_sha:
             logger.error(f"No head SHA available for PR #{pr_number}; aborting merge")

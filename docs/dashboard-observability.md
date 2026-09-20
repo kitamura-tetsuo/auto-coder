@@ -1008,8 +1008,7 @@ The `claude-followup-quota-recovery` daemon task services due waits without an
 external event. Recovery uses the ordinary PR execution path, so its refreshed
 evaluation and eventual delivery or successor deferral remain visible in the
 existing PR stage trace rather than introducing a parallel success signal.
-
-## CI repair initiation authority
+# CI repair initiation authority
 
 CI-triggered Codex Cloud and Jules repair delegation now emits the existing
 `pr.repair-delegation` stage only after a fresh exact-head admission at the
@@ -1017,3 +1016,12 @@ provider boundary. Refused admissions remain failed/deferred actions with the
 specific current-evidence reason and do not emit an accepted-handoff outcome or
 a provider receipt. Initiation logs include the bound PR head and qualifying
 failure identities; no structured event schema or dashboard field changed.
+
+# Jules candidate selection and final merge fencing
+
+Speculative candidate evaluation is intentionally represented by existing CI,
+adversarial-validation, and speculative-authority stages rather than by a synthetic
+"winner" success. The final sender emits `pr.speculative-jules-merge-authority`
+with the current classification and denial reason when an artifact loses authority
+after admission. This stage is blocking and never reports Issue completion;
+confirmed merge delivery remains the sole completion trace.
