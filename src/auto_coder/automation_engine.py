@@ -77,6 +77,7 @@ from .implementation_slots import (
 from .invocation_admission import GateSnapshot, GateState, InvocationAdmissionGate, install_invocation_gate, reset_invocation_gate
 from .issue_admission_cache import IssueAdmissionCache
 from .issue_context import extract_associated_issue_numbers, get_linked_issues_context
+from .issue_implementation_worker import ImplementationLaneOutcome, IssueImplementationWorker
 from .issue_processor import create_feature_issues
 from .issue_review_rerun import IssueReviewRerunOperation, ReviewSubject, SubjectRerunStatus
 from .issue_review_service import (
@@ -92,6 +93,7 @@ from .issue_stage_routing import (
     ContractIdentity,
     ImplementationRetryRequest,
     IssueStageRoutingStore,
+    PendingLaneItem,
     ReviewRequirement,
     family_review_generation,
     implementation_classification,
@@ -819,6 +821,7 @@ class AutomationEngine:
         self.review_adjudications = ReviewAdjudicationService(self.github, AdjudicationContextStore(adjudication_path))
         routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
         self.issue_stage_routing = IssueStageRoutingStore(routing_path)
+        self._lane_context = threading.local()
         self.issue_admission_cache = IssueAdmissionCache()
         self.dependency_observations = DependencyObservationCache()
         self._invalidation_drain_lock = asyncio.Lock()
@@ -3146,6 +3149,52 @@ class AutomationEngine:
         """
         return self._get_review_service(repo_name).pump(origin, max_items)
 
+    def pump_issue_implementation_lane(
+        self,
+        repo_name: str,
+        origin: str = "implementation-lane-pump",
+        max_items: int = 8,
+    ) -> list[ImplementationLaneOutcome]:
+        """Consume durable implementation work in priority/FIFO order.
+
+        Routing refresh is deliberately the worker's only review-facing
+        operation: it reads durable decisions while semantic execution remains
+        exclusively owned by :meth:`pump_issue_review_lane`.
+        """
+        worker = IssueImplementationWorker(self.issue_stage_routing)
+        outcomes: list[ImplementationLaneOutcome] = []
+
+        def refresh(item: PendingLaneItem) -> Optional[PendingLaneItem]:
+            self._refresh_issue_stage_routing(repo_name, item.target_number)
+            return self.issue_stage_routing.get(repo_name, IMPLEMENTATION_STAGE, item.target_number)
+
+        def dispatch(item: PendingLaneItem) -> str:
+            snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, item.target_number)
+            if not isinstance(snapshot, dict) or snapshot.get("number") != item.target_number:
+                return "stale"
+            self._lane_context.implementation = True
+            try:
+                result = self._process_single_candidate_unified(
+                    repo_name,
+                    Candidate("issue", snapshot, item.priority),
+                    self.config,
+                    origin=origin,
+                )
+            finally:
+                self._lane_context.implementation = False
+            if self.issue_stage_routing.is_implementation_owned(repo_name, item.target_number, item.generation):
+                return "owned"
+            if result.target_outcome in {ExplicitTargetOutcome.SKIPPED, ExplicitTargetOutcome.BLOCKED}:
+                return "stale"
+            return "deferred"
+
+        for _ in range(max(0, max_items)):
+            outcome = worker.run_one(repo_name, refresh=refresh, dispatch=dispatch)
+            if outcome is None:
+                break
+            outcomes.append(outcome)
+        return outcomes
+
     def accept_issue_review_rerun(self, request_id: str, subjects: Sequence[ReviewSubject]) -> tuple[SubjectRerunStatus, ...]:
         """Accept a rerun and materialize its current Review-lane admission.
 
@@ -3387,6 +3436,10 @@ class AutomationEngine:
         """
         validator = self._get_specification_validator(repo_name)
         identity = validator.identity(issue_number, title, body, relationship_context)
+        if getattr(self._lane_context, "implementation", False):
+            # This lane only consumes previously persisted authority. Missing
+            # evidence remains routed to Review by the authoritative refresh.
+            return validator.store.get(identity), False
         outcome = self._get_review_service(repo_name).pump_target(issue_number, origin, snapshot)
         if outcome is not None:
             decision = outcome.decisions.get(identity.key)
@@ -5643,8 +5696,30 @@ class AutomationEngine:
                     result.actions = ["Rejected - child is durably reissue-required"]
                     result.blocked_cacheable = True
                     return result
-                decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config, scheduler=self.review_scheduler)
-                decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
+                if getattr(self._lane_context, "implementation", False):
+                    decomposition_decision = decomposition_validator.store.get(decomposition_validator.identity(*authoritative_set)) if decomposition_enabled else None
+                    eager_child_decisions = {}
+                    if spec_validation_enabled:
+                        for child in authoritative_set[1]:
+                            child_number = int(child["number"])
+                            relationship = self._child_review_context(*authoritative_set, child_number)
+                            child_identity = individual_validator.identity(
+                                child_number,
+                                str(child.get("title") or ""),
+                                str(child.get("body") or ""),
+                                relationship,
+                            )
+                            stored = individual_validator.store.get(child_identity)
+                            if stored is not None:
+                                eager_child_decisions[child_number] = stored
+                    if (decomposition_enabled and decomposition_decision is None) or (spec_validation_enabled and len(eager_child_decisions) != len(authoritative_set[1])):
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.actions = ["Deferred - exact current review evidence is unavailable"]
+                        result.refill_retry_required = True
+                        return result
+                else:
+                    decomposition_job, eager_child_jobs = self._schedule_parent_validations(repo_name, authoritative_set, config, scheduler=self.review_scheduler)
+                    decomposition_decision, eager_child_decisions = self._join_parent_validations(decomposition_job, eager_child_jobs)
                 if decomposition_enabled and decomposition_decision is not None:
                     if decomposition_decision.verdict == "ERROR":
                         result.error = "Decomposition validation failed; parent readiness was preserved for retry"
@@ -5749,9 +5824,7 @@ class AutomationEngine:
                 return result
             if spec_validation_enabled:
                 if inherited_ready:
-                    # This job was submitted alongside decomposition validation, so
-                    # READY completion order cannot bypass either authorization gate.
-                    decision = eager_child_jobs[item_number].result()
+                    decision = eager_child_decisions[item_number]
                 else:
                     # The Review lane owns semantic execution; this gate
                     # observes the durable decision instead of submitting a
