@@ -69,9 +69,13 @@ existing PR stage timeline, while accepted closure remains distinct from publica
 or merge confirmation. Durable retry wakes reuse those stage identities and facts;
 their invalidation deadline is scheduling state, not a new dashboard event schema.
 Run `bash scripts/test.sh tests/test_pr_review_execution.py
-tests/test_pr_review_cycle.py tests/test_two_tier_pr_gate.py` for prompt,
+tests/test_pr_review_cycle.py tests/test_two_tier_pr_gate.py
+tests/test_strong_audit_producer.py` for prompt,
 portable-bundle, identity, disposition-completeness, cumulative-scope, durable
-acceptance, and renewed-audit coverage.
+acceptance, renewed-audit coverage, and configured quota-strategy admission at
+the production strong-audit origin. The quota-strategy correction changes only
+whether the existing `pr.strong-audit` stage proceeds or records its existing
+EXHAUSTED deferral; it adds no trace field, stage, schema, or dashboard renderer.
 
 Two-tier finding publication retains the `pr.two-tier-review-effect` schema but
 uses the `github-reviewer-app:threads-v1` effect destination. Confirmation now

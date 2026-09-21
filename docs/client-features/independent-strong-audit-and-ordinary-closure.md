@@ -53,6 +53,14 @@ and contended executions remain pending with diagnostic and retry evidence;
 accepted results remain blocked on their separately owned publication or repair
 effect and therefore do not grant merge authority.
 
+Availability resolution applies the loaded `quota_selection.strategy` at its
+initial candidate-classification boundary, consistently for issue, ordinary PR,
+and strong PR routes. Consequently, `burst` keeps a Codex reviewer runnable while
+weekly quota remains positive even below the surplus reserve, whereas zero quota
+under `burst` and below-reserve quota under `surplus` remain exhausted. Unknown
+quota and non-quota construction failures retain their existing unavailable,
+non-exhausted behavior, and a strong route never borrows an ordinary fallback.
+
 When accepted strong findings survive into a later ordinary-pass head,
 production processing instead runs `ORDINARY_CLOSURE` through the ordinary PR
 route. The invocation receives the retained finding payloads and revision, the

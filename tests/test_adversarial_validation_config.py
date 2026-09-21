@@ -13,6 +13,7 @@ from auto_coder.cli_helpers import (
     create_adversarial_validation_backend_manager,
     resolve_adversarial_validation_availability,
 )
+from auto_coder.codex_usage_checker import CodexWeeklyUsage
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.quota_selector import BackendQuotaEvaluation
 
@@ -213,3 +214,40 @@ class TestAdversarialValidationConfiguration:
         assert count_adversarial_validation_comments(comments) == 2
         assert count_adversarial_validation_comments([]) == 0
         assert count_adversarial_validation_comments(None) == 0
+
+
+@pytest.mark.parametrize("validation_kind", ["issue", "pr", "strong_pr"])
+def test_loaded_burst_strategy_is_used_by_every_availability_route(validation_kind):
+    config = LLMBackendConfiguration.load_from_dict(
+        {
+            "quota_selection": {"strategy": "burst"},
+            "backend_issue_adversarial_validation": {"order": ["codex-reviewer"]},
+            "backend_pr_adversarial_validation": {"order": ["codex-reviewer"]},
+            "backend_strong_pr_adversarial_validation": {"order": ["codex-reviewer"]},
+            "backends": {
+                "codex-reviewer": {
+                    "backend_type": "codex",
+                    "model": "gpt-5",
+                    "enabled": True,
+                }
+            },
+        }
+    )
+    usage = CodexWeeklyUsage(
+        remaining_percent=12.0,
+        reset_at=datetime.now(timezone.utc) + timedelta(days=2),
+        days_until_reset=2,
+        minimum_remaining_percent=15.0,
+    )
+    manager = MagicMock()
+
+    with (
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=config),
+        patch("auto_coder.codex_usage_checker.get_codex_weekly_usage", return_value=usage),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+    ):
+        availability = resolve_adversarial_validation_availability(validation_kind)
+
+    assert availability.backend_manager is manager
+    assert availability.exhausted is False
+    assert availability.retry_not_before_epoch is None
