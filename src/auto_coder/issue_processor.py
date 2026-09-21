@@ -1202,11 +1202,10 @@ def _process_issue_high_score_cloud(
             logger.warning(f"Cloud backend '{backend_name}' rejected submission: {e}. Trying next backend.")
             continue
         except Exception as e:
-            # Once a request may have crossed a provider boundary, an ordinary
-            # exception is not evidence that nothing started.  Only the explicit
-            # pre-submission rejection exceptions above authorize fallback.
-            logger.warning(f"Cloud backend '{backend_name}' failed with an indeterminate submission: {e}")
-            raise
+            if manual_retry or retry_authority is not None:
+                raise
+            logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
+            continue
 
     if candidates and rejected_submissions == len(candidates):
         raise CloudSubmissionNotStartedError("All configured high-score Cloud backends rejected submission before remote work started")
@@ -1332,10 +1331,11 @@ def _process_issue_cloud_backend(
             logger.warning(f"Cloud backend '{backend_name}' rejected submission: {e}. Trying next backend.")
             continue
         except Exception as e:
-            if manual_retry or retry_authority is not None:
-                raise
-            logger.warning(f"Cloud backend '{backend_name}' failed: {e}. Trying next backend.")
-            continue
+            # Once a request may have crossed a provider boundary, an ordinary
+            # exception is not evidence that nothing started. Only the explicit
+            # pre-submission rejection exceptions above authorize fallback.
+            logger.warning(f"Cloud backend '{backend_name}' failed with an indeterminate submission: {e}")
+            raise
 
     if candidates and rejected_submissions == len(candidates):
         raise CloudSubmissionNotStartedError("All configured Cloud backends rejected submission before remote work started")
