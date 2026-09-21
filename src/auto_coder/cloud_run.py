@@ -273,6 +273,20 @@ class CloudRunRepository:
                 old_raw = data.get(key)
                 if old_raw is not None:
                     old = CloudRun.from_dict(old_raw)
+                    if not old.task_id and old.submission_outcome == "indeterminate":
+                        if (old.provider, old.backend_name, old.environment_id, old.base_branch) != (
+                            run.provider,
+                            run.backend_name,
+                            run.environment_id,
+                            run.base_branch,
+                        ):
+                            raise ValueError("Contradictory accepted cloud run provenance")
+                        old.task_id = run.task_id
+                        old.task_url = run.task_url
+                        old.submission_outcome = "accepted"
+                        data[key] = old.to_dict()
+                        self._write_all(data)
+                        return old
                     if (old.provider, old.task_id, old.backend_name) != (run.provider, run.task_id, run.backend_name):
                         raise ValueError("Contradictory accepted cloud run")
                     return old

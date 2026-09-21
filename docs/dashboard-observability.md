@@ -1128,6 +1128,11 @@ checks are additionally covered by
 `test_unreadable_or_mismatched_durable_authority_prevents_creation`,
 `test_binding_installed_after_admission_is_not_treated_as_predecessor`, and
 `test_acceptance_and_cross_provider_promotion_share_one_stale_writer_fence`.
+Accepted-run write recovery, migrated matching-pointer confirmation, recognized
+earlier-winner replacement, and fenced projection acknowledgement remain
+observability-neutral extensions of this same boundary. They introduce no new
+trace event or dashboard outcome; their durable disposition regressions live in
+`tests/test_codex_retry_promotion.py`.
 
 Issue #2023 adds the separate `/dashboard/adjudication/pr/<number>` operator
 surface. Its authoritative observations come from
@@ -1146,4 +1151,3 @@ rationale-preserving authoritative refresh, and reload recovery of an uncertain
 publication ID without another draft or submit. Run them with
 `bash scripts/test.sh tests/test_dashboard_adjudication_browser.py` in a
 Playwright-provisioned environment.
-

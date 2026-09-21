@@ -5,9 +5,9 @@ from unittest.mock import MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
-from auto_coder.cloud_run import CloudRunRepository
+from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
-from auto_coder.issue_processor import _process_issue_codex_cloud_mode
+from auto_coder.issue_processor import _acknowledge_retry_projection, _process_issue_codex_cloud_mode
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.retry_dispatch import RetryDispatchRepository
 
@@ -117,9 +117,9 @@ def test_unrecognized_conflict_retains_accepted_receipt_as_incomplete(mock_clien
 
     original_promote = CloudManager.promote_retry_binding
 
-    def replace_before_promotion(self, issue_number, binding, predecessor, may_promote):
+    def replace_before_promotion(self, issue_number, binding, predecessor, may_promote, *args):
         self.add_session(issue_number, "unknown-racer", provider="claude-routine", backend_name="claude")
-        return original_promote(self, issue_number, binding, predecessor, may_promote)
+        return original_promote(self, issue_number, binding, predecessor, may_promote, *args)
 
     with patch.object(CloudManager, "promote_retry_binding", replace_before_promotion):
         result = _dispatch(_authority())
@@ -204,6 +204,96 @@ def test_claimed_retry_recovers_receipt_from_matching_accepted_run(mock_client_t
         "task-recovered",
         "accepted-current",
     )
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_run_write_failure_retains_receipt_and_repairs_without_resubmission(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    client = mock_client_type.return_value
+    client.environment_id = "environment-retained"
+    client.submit_task.return_value = CodexSubmissionResult(
+        CodexSubmissionOutcome.ACCEPTED,
+        "task-after-run-failure",
+        "https://example.test/task-after-run-failure",
+    )
+    original = CloudRunRepository.update_claim
+    failed = False
+
+    def fail_once(self, run):
+        nonlocal failed
+        if run.submission_outcome == "accepted" and not failed:
+            failed = True
+            raise OSError("run store unavailable")
+        return original(self, run)
+
+    with patch.object(CloudRunRepository, "update_claim", fail_once):
+        first = _dispatch(authority)
+    replay = _dispatch(authority)
+
+    assert "tracking is incomplete" in first[0]
+    assert "already accepted" in replay[0]
+    client.submit_task.assert_called_once()
+    run = CloudRunRepository("owner/repo").get(2223, 5)
+    assert run is not None
+    assert (run.task_id, run.environment_id, run.submission_outcome) == (
+        "task-after-run-failure",
+        "environment-retained",
+        "accepted",
+    )
+    handoff = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert handoff is not None
+    assert (handoff.external_id, handoff.environment_id, handoff.projection_disposition) == (
+        "task-after-run-failure",
+        "environment-retained",
+        "accepted-current",
+    )
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_legacy_accepted_retry_confirms_matching_current_projection(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    routing_path = Path.home() / ".auto-coder" / "issue-stage-routing.sqlite3"
+    with sqlite3.connect(routing_path) as connection:
+        connection.execute(
+            "UPDATE implementation_retry_requests SET predecessor_captured=0,predecessor_provider=NULL,predecessor_task_id=NULL,predecessor_backend_name=NULL WHERE request_id=?",
+            (authority.request_id,),
+        )
+    authority = IssueStageRoutingStore(routing_path).retry_request(authority.request_id)
+    assert authority is not None
+    dispatch = RetryDispatchRepository("owner/repo")
+    dispatch.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    handoff = dispatch.allocate_numeric_attempt(authority.request_id, [4])
+    assert handoff.numeric_attempt == 5
+    dispatch.record_outcome(
+        authority.request_id,
+        "accepted",
+        external_id="legacy-task",
+        external_url="https://example.test/legacy-task",
+    )
+    CloudRunRepository("owner/repo").save(
+        CloudRun(
+            "owner/repo",
+            2223,
+            5,
+            "codex-cloud",
+            task_id="legacy-task",
+            backend_name="codex-alias",
+            environment_id="legacy-environment",
+            base_branch="main",
+            task_url="https://example.test/legacy-task",
+        )
+    )
+    assert CloudManager("owner/repo").add_session(2223, "legacy-task", "codex-cloud", "codex-alias")
+
+    result = _dispatch(authority)
+
+    mock_client_type.assert_not_called()
+    assert "already accepted" in result[0]
+    retained = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert retained is not None
+    assert retained.projection_disposition == "accepted-current"
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")
@@ -297,8 +387,9 @@ def test_acceptance_and_cross_provider_promotion_share_one_stale_writer_fence(tm
             disposition = manager.promote_retry_binding(
                 2223,
                 CloudTaskBinding("codex-cloud", "codex-task", "codex-cloud"),
-                CloudTaskBinding("claude-routine", "claude-task", "claude-routine"),
+                predecessor,
                 lambda: store.is_latest_accepted(second.request_id),
+                (CloudTaskBinding("claude-routine", "claude-task", "claude-routine"),),
             )
             store.mark_prior_accepted_historical(second.request_id)
             return disposition
@@ -310,3 +401,18 @@ def test_acceptance_and_cross_provider_promotion_share_one_stale_writer_fence(tm
 
     assert manager.read_bindings_strict()["2223"].task_id == "codex-task"
     assert store.get(first.request_id).projection_disposition == "accepted-historical"
+
+    assert (
+        _acknowledge_retry_projection(
+            manager,
+            store,
+            first.request_id,
+            2223,
+            CloudTaskBinding("claude-routine", "claude-task", "claude-routine"),
+        )
+        == "historical"
+    )
+    assert store.get(first.request_id).projection_disposition == "accepted-historical"
+
+
+import sqlite3

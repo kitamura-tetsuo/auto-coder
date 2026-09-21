@@ -21,7 +21,9 @@ from typing import Mapping, Optional
 
 from .issue_stage_routing import ImplementationRetryRequest
 
-HANDOFF_COLUMNS = "repository,issue_number,request_id,attempt_id,generation,route,backend_name," "creation_id,outcome,route_config,numeric_attempt,external_id,external_url," "diagnostic,tracking_complete,predecessor_provider,predecessor_task_id," "predecessor_backend_name,projection_disposition"
+HANDOFF_COLUMNS = (
+    "repository,issue_number,request_id,attempt_id,generation,route,backend_name," "creation_id,outcome,route_config,numeric_attempt,external_id,external_url," "diagnostic,tracking_complete,predecessor_provider,predecessor_task_id," "predecessor_backend_name,projection_disposition,environment_id"
+)
 
 
 class RetryDispatchConflict(RuntimeError):
@@ -49,6 +51,7 @@ class RetryHandoff:
     predecessor_task_id: Optional[str] = None
     predecessor_backend_name: Optional[str] = None
     projection_disposition: str = "pending"
+    environment_id: Optional[str] = None
 
     @property
     def suppresses_creation(self) -> bool:
@@ -108,6 +111,7 @@ class RetryDispatchRepository:
                     ("predecessor_task_id", "TEXT"),
                     ("predecessor_backend_name", "TEXT"),
                     ("projection_disposition", "TEXT NOT NULL DEFAULT 'pending'"),
+                    ("environment_id", "TEXT"),
                 ):
                     if name not in columns:
                         self._connection.execute(f"ALTER TABLE retry_handoffs ADD COLUMN {name} {declaration}")
@@ -224,6 +228,7 @@ class RetryDispatchRepository:
         external_url: Optional[str] = None,
         diagnostic: Optional[str] = None,
         tracking_complete: bool = False,
+        environment_id: Optional[str] = None,
     ) -> RetryHandoff:
         if outcome not in {"definitely-not-started", "accepted", "indeterminate", "completed"}:
             raise ValueError("invalid retry dispatch outcome")
@@ -239,8 +244,8 @@ class RetryDispatchRepository:
                     if outcome == "definitely-not-started":
                         raise RetryDispatchConflict("accepted work cannot become unsent")
                 self._connection.execute(
-                    "UPDATE retry_handoffs SET outcome=?,external_id=COALESCE(?,external_id),external_url=COALESCE(?,external_url),diagnostic=?,tracking_complete=?,updated_at=? WHERE request_id=?",
-                    (outcome, external_id, external_url, diagnostic, int(tracking_complete), time.time(), request_id),
+                    "UPDATE retry_handoffs SET outcome=?,external_id=COALESCE(?,external_id),external_url=COALESCE(?,external_url),environment_id=COALESCE(?,environment_id),diagnostic=?,tracking_complete=?,updated_at=? WHERE request_id=?",
+                    (outcome, external_id, external_url, environment_id, diagnostic, int(tracking_complete), time.time(), request_id),
                 )
                 return self._require_locked(request_id)
         finally:
@@ -322,6 +327,22 @@ class RetryDispatchRepository:
             ).fetchone()
             return newer is None
 
+    def accepted_predecessors(self, request_id: str) -> tuple[tuple[str, str, str], ...]:
+        """Return older accepted tasks that may have won before this request."""
+        with self._lock:
+            current = self._connection.execute(
+                "SELECT rowid,repository,issue_number FROM retry_handoffs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError(f"unknown retry handoff {request_id!r}")
+            row_id, repository, issue_number = current
+            rows = self._connection.execute(
+                "SELECT route,external_id,backend_name FROM retry_handoffs WHERE repository=? AND issue_number=? AND rowid<? AND outcome IN ('accepted','completed') AND external_id IS NOT NULL ORDER BY rowid DESC",
+                (repository, issue_number, row_id),
+            ).fetchall()
+            return tuple((str(route), str(task_id), str(backend)) for route, task_id, backend in rows)
+
     def _require_locked(self, request_id: str) -> RetryHandoff:
         result = self._get_locked(request_id)
         if result is None:
@@ -363,4 +384,5 @@ class RetryDispatchRepository:
             predecessor_task_id=str(row[16]) if row[16] is not None else None,
             predecessor_backend_name=str(row[17]) if row[17] is not None else None,
             projection_disposition=str(row[18]),
+            environment_id=str(row[19]) if row[19] is not None else None,
         )

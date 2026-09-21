@@ -167,6 +167,8 @@ class CloudManager:
         binding: CloudTaskBinding,
         predecessor: Optional[CloudTaskBinding],
         may_promote: Callable[[], bool],
+        recognized_predecessors: Tuple[CloudTaskBinding, ...] = (),
+        allow_missing: bool = True,
     ) -> str:
         """Replace only the retry's attributed predecessor under one fence."""
         with self._lock:
@@ -179,11 +181,32 @@ class CloudManager:
                     return "historical"
                 if current == binding:
                     return "current"
-                if current is not None and current != predecessor:
+                if current is None and not allow_missing:
+                    raise ValueError(f"Retry predecessor attribution is unavailable for issue #{issue_number}")
+                if current is not None and current != predecessor and current not in recognized_predecessors:
                     raise ValueError(f"Contradictory cloud ownership for issue #{issue_number}")
                 sessions[key] = binding
                 if not self._write_bindings(sessions):
                     raise OSError("cloud.csv write failed")
+                return "current"
+            finally:
+                lock_file.close()
+
+    def confirm_retry_binding(
+        self,
+        issue_number: int,
+        binding: CloudTaskBinding,
+        may_confirm: Callable[[], bool],
+        mark_current: Callable[[], object],
+    ) -> str:
+        """Acknowledge current tracking without a post-fence stale window."""
+        with self._lock:
+            lock_file = self._file_lock()
+            try:
+                current = self.read_bindings_strict().get(str(issue_number))
+                if current != binding or not may_confirm():
+                    return "historical"
+                mark_current()
                 return "current"
             finally:
                 lock_file.close()

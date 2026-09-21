@@ -173,6 +173,8 @@ class TestCodexCloudDispatchDuplicateProtection:
         """The production adapter consumes R/A once and reconstructs its receipt."""
         monkeypatch.setenv("HOME", str(tmp_path))
         mock_cloud_manager_type.return_value.ensure_binding.return_value = True
+        mock_cloud_manager_type.return_value.promote_retry_binding.return_value = "current"
+        mock_cloud_manager_type.return_value.confirm_retry_binding.side_effect = lambda issue, binding, may_confirm, mark_current: (mark_current(), "current")[1]
         client = mock_client_type.return_value
         client.environment_id = "env-production"
         client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-retry", "https://example.test/task-retry")

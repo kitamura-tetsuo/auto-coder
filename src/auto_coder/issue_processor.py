@@ -83,8 +83,6 @@ def _durable_retry_authority(
 def _retry_predecessor(authority: ImplementationRetryRequest) -> Optional["CloudTaskBinding"]:
     from .cloud_manager import CloudTaskBinding
 
-    if not authority.predecessor_captured:
-        raise ValueError("retry predecessor attribution is unavailable")
     if authority.predecessor_provider and authority.predecessor_task_id:
         return CloudTaskBinding(
             authority.predecessor_provider,
@@ -92,6 +90,28 @@ def _retry_predecessor(authority: ImplementationRetryRequest) -> Optional["Cloud
             authority.predecessor_backend_name or "",
         )
     return None
+
+
+def _recognized_retry_predecessors(dispatch: RetryDispatchRepository, request_id: str) -> tuple[CloudTaskBinding, ...]:
+    return tuple(CloudTaskBinding(provider, task_id, backend) for provider, task_id, backend in dispatch.accepted_predecessors(request_id))
+
+
+def _acknowledge_retry_projection(
+    manager: CloudManager,
+    dispatch: RetryDispatchRepository,
+    request_id: str,
+    issue_number: int,
+    binding: CloudTaskBinding,
+) -> str:
+    disposition = manager.confirm_retry_binding(
+        issue_number,
+        binding,
+        lambda: dispatch.is_latest_accepted(request_id),
+        lambda: dispatch.mark_tracking_complete(request_id),
+    )
+    if disposition == "historical":
+        dispatch.mark_historical(request_id, "a later accepted retry owns the current pointer")
+    return disposition
 
 
 def generate_work_branch_name(issue_number: int, attempt: int) -> str:
@@ -339,12 +359,24 @@ def _process_issue_jules_mode(
                         CloudTaskBinding("jules", handoff.external_id, handoff.backend_name),
                         predecessor_binding,
                         lambda: retry_dispatch.is_latest_accepted(retry_authority.request_id),
+                        _recognized_retry_predecessors(retry_dispatch, retry_authority.request_id),
+                        retry_authority.predecessor_captured,
                     )
                     if disposition == "historical":
                         retry_dispatch.mark_historical(retry_authority.request_id, "a later accepted retry owns the current pointer")
                         return [f"Retained historical Jules session '{handoff.external_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
                     retry_dispatch.mark_prior_accepted_historical(retry_authority.request_id)
-                    retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+                    if (
+                        _acknowledge_retry_projection(
+                            CloudManager(repo_name),
+                            retry_dispatch,
+                            retry_authority.request_id,
+                            issue_number,
+                            CloudTaskBinding("jules", handoff.external_id, handoff.backend_name),
+                        )
+                        == "historical"
+                    ):
+                        return [f"Retained historical Jules session '{handoff.external_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
                     return [f"Jules session '{handoff.external_id}' already accepted for retry {retry_authority.attempt_id}; skipped duplicate dispatch"]
                 return [f"Deferred Jules session for issue #{issue_number}: retry creation is {handoff.outcome}; no replacement work was started"]
 
@@ -385,6 +417,8 @@ def _process_issue_jules_mode(
                 CloudTaskBinding("jules", session_id, backend_name),
                 _retry_predecessor(retry_authority),
                 lambda: retry_dispatch.is_latest_accepted(retry_authority.request_id),
+                _recognized_retry_predecessors(retry_dispatch, retry_authority.request_id),
+                retry_authority.predecessor_captured,
             )
             if disposition == "historical":
                 retry_dispatch.mark_historical(retry_authority.request_id, "a later accepted retry owns the current pointer")
@@ -402,7 +436,17 @@ def _process_issue_jules_mode(
             logger.info(f"Saved session ID '{session_id}' for issue #{issue_number}")
             if retry_dispatch is not None and retry_authority is not None:
                 retry_dispatch.mark_prior_accepted_historical(retry_authority.request_id)
-                retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+                if (
+                    _acknowledge_retry_projection(
+                        cloud_manager,
+                        retry_dispatch,
+                        retry_authority.request_id,
+                        issue_number,
+                        CloudTaskBinding("jules", session_id, backend_name),
+                    )
+                    == "historical"
+                ):
+                    return [f"Retained historical Jules session '{session_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
 
         # Comment on the issue with session ID
         try:
@@ -595,12 +639,24 @@ def _process_issue_claude_routine_mode(
                         CloudTaskBinding("claude-routine", handoff.external_id, handoff.backend_name),
                         predecessor_binding,
                         lambda: retry_dispatch.is_latest_accepted(retry_authority.request_id),
+                        _recognized_retry_predecessors(retry_dispatch, retry_authority.request_id),
+                        retry_authority.predecessor_captured,
                     )
                     if disposition == "historical":
                         retry_dispatch.mark_historical(retry_authority.request_id, "a later accepted retry owns the current pointer")
                         return [f"Retained historical Claude Routine session '{handoff.external_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
                     retry_dispatch.mark_prior_accepted_historical(retry_authority.request_id)
-                    retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+                    if (
+                        _acknowledge_retry_projection(
+                            CloudManager(repo_name),
+                            retry_dispatch,
+                            retry_authority.request_id,
+                            issue_number,
+                            CloudTaskBinding("claude-routine", handoff.external_id, handoff.backend_name),
+                        )
+                        == "historical"
+                    ):
+                        return [f"Retained historical Claude Routine session '{handoff.external_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
                     return [f"Claude Routine session '{handoff.external_id}' already accepted for retry {retry_authority.attempt_id}; skipped duplicate dispatch"]
                 return [f"Deferred Claude Routine session for issue #{issue_number}: retry creation is {handoff.outcome}; no replacement work was started"]
 
@@ -637,6 +693,8 @@ def _process_issue_claude_routine_mode(
                 CloudTaskBinding("claude-routine", session_id, effective_backend),
                 _retry_predecessor(retry_authority),
                 lambda: retry_dispatch.is_latest_accepted(retry_authority.request_id),
+                _recognized_retry_predecessors(retry_dispatch, retry_authority.request_id),
+                retry_authority.predecessor_captured,
             )
             if disposition == "historical":
                 retry_dispatch.mark_historical(retry_authority.request_id, "a later accepted retry owns the current pointer")
@@ -661,7 +719,17 @@ def _process_issue_claude_routine_mode(
             logger.info(f"Saved session ID '{session_id}' for issue #{issue_number}")
             if retry_dispatch is not None and retry_authority is not None:
                 retry_dispatch.mark_prior_accepted_historical(retry_authority.request_id)
-                retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+                if (
+                    _acknowledge_retry_projection(
+                        cloud_manager,
+                        retry_dispatch,
+                        retry_authority.request_id,
+                        issue_number,
+                        CloudTaskBinding("claude-routine", session_id, effective_backend),
+                    )
+                    == "historical"
+                ):
+                    return [f"Retained historical Claude Routine session '{session_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
 
         try:
             comment_body = f"I started a Claude Routine session to work on this issue. Session ID: {session_id}"
@@ -776,6 +844,7 @@ def _process_issue_codex_cloud_mode(
                     provider="codex-cloud",
                     task_id=retry_handoff.external_id,
                     backend_name=retry_handoff.backend_name,
+                    environment_id=retry_handoff.environment_id or "",
                     base_branch=str(retained_config.get("base_branch", "")),
                     submission_outcome="accepted",
                     task_url=retry_handoff.external_url or "",
@@ -789,12 +858,24 @@ def _process_issue_codex_cloud_mode(
                         binding,
                         predecessor_binding,
                         lambda: retry_dispatch.is_latest_accepted(retry_authority.request_id),
+                        _recognized_retry_predecessors(retry_dispatch, retry_authority.request_id),
+                        retry_authority.predecessor_captured,
                     )
                     if disposition == "historical":
                         retry_dispatch.mark_historical(retry_authority.request_id, "a later accepted retry owns the current pointer")
                         return [f"Retained historical Codex Cloud task '{retry_handoff.external_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
                     retry_dispatch.mark_prior_accepted_historical(retry_authority.request_id)
-                    retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+                    if (
+                        _acknowledge_retry_projection(
+                            cloud_manager,
+                            retry_dispatch,
+                            retry_authority.request_id,
+                            issue_number,
+                            binding,
+                        )
+                        == "historical"
+                    ):
+                        return [f"Retained historical Codex Cloud task '{retry_handoff.external_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
                 except Exception as exc:
                     retry_dispatch.mark_tracking_incomplete(retry_authority.request_id, str(exc))
                     return [f"Accepted Codex Cloud task '{retry_handoff.external_id}' for issue #{issue_number}, but tracking is incomplete: {exc}"]
@@ -901,6 +982,19 @@ def _process_issue_codex_cloud_mode(
     try:
         cloud_run_repo.update_claim(claim)
     except Exception as exc:
+        if submission.outcome is CodexSubmissionOutcome.ACCEPTED and retry_dispatch is not None and retry_authority is not None:
+            try:
+                retry_dispatch.record_outcome(
+                    retry_authority.request_id,
+                    "accepted",
+                    external_id=submission.task_id,
+                    external_url=submission.task_url,
+                    environment_id=claim.environment_id,
+                    diagnostic=f"CloudRun projection failed: {exc}",
+                )
+            except Exception as receipt_exc:
+                return [f"Accepted Codex Cloud task '{submission.task_id}' for issue #{issue_number}, but its run and retry receipt could not be persisted: {receipt_exc}"]
+            return [f"Accepted Codex Cloud task '{submission.task_id}' for issue #{issue_number}, but tracking is incomplete: {exc}"]
         return [f"Deferred Codex Cloud task for issue #{issue_number}: submission outcome could not be persisted and is indeterminate: {exc}"]
     if submission.outcome is CodexSubmissionOutcome.DEFINITELY_NOT_SUBMITTED:
         if retry_dispatch is not None and retry_authority is not None:
@@ -922,6 +1016,7 @@ def _process_issue_codex_cloud_mode(
                 "accepted",
                 external_id=task_id,
                 external_url=submission.task_url,
+                environment_id=claim.environment_id,
             )
         except Exception as exc:
             return [f"Accepted Codex Cloud task '{task_id}' for issue #{issue_number}, but its retry receipt could not be persisted and is indeterminate: {exc}"]
@@ -942,6 +1037,8 @@ def _process_issue_codex_cloud_mode(
                 binding,
                 predecessor_binding,
                 lambda: retry_dispatch.is_latest_accepted(retry_authority.request_id),
+                _recognized_retry_predecessors(retry_dispatch, retry_authority.request_id),
+                retry_authority.predecessor_captured,
             )
             if disposition == "historical":
                 retry_dispatch.mark_historical(retry_authority.request_id, "a later accepted retry owns the current pointer")
@@ -958,7 +1055,17 @@ def _process_issue_codex_cloud_mode(
 
     if retry_dispatch is not None and retry_authority is not None:
         retry_dispatch.mark_prior_accepted_historical(retry_authority.request_id)
-        retry_dispatch.mark_tracking_complete(retry_authority.request_id)
+        if (
+            _acknowledge_retry_projection(
+                cloud_manager,
+                retry_dispatch,
+                retry_authority.request_id,
+                issue_number,
+                binding,
+            )
+            == "historical"
+        ):
+            return [f"Retained historical Codex Cloud task '{task_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
 
     task_url = submission.task_url
     comment = f"I started a Codex Cloud task to work on this issue. Task ID: {task_id}"

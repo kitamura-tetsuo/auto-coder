@@ -51,6 +51,17 @@ later accepted cross-provider handoff cannot be overwritten by an older writer.
 If Codex acceptance reached the CloudRun journal before the retry receipt, replay
 recovers that exact receipt from the matching attempt and completes projection
 without another provider submission or numeric allocation.
+Conversely, if the retry receipt is writable but the accepted CloudRun update
+fails, the receipt retains the task and execution environment so replay can
+upgrade the indeterminate run claim without resubmission. Migrated accepted
+requests that predate predecessor capture may confirm an already-matching
+current pointer, but cannot replace a missing or different pointer.
+
+A later accepted request may replace an earlier accepted winner derived from
+the same Issue history even when both originally captured the same predecessor.
+Projection acknowledgement rechecks both latest-accepted order and the exact
+current pointer under the coordination fence, so a delayed acknowledgement
+cannot restore a superseded receipt to `accepted-current`.
 
 This layer does not activate a controller or CLI retry path, choose providers,
 change quota or fallback policy, cancel old work, or replace ordinary dispatch
