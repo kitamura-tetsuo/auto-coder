@@ -6640,7 +6640,36 @@ class AutomationEngine:
         dispatch = RetryDispatchRepository(repo_name)
         handoff = dispatch.get(request_id)
         if handoff is None:
-            return ExplicitTargetOutcome.FAILED, f"retry request {request_id} has no durable dispatch receipt"
+            from .issue_stage_routing import IssueStageRoutingStore
+
+            routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
+            authority = IssueStageRoutingStore(routing_path).retry_request(request_id)
+            if authority is None or authority.repository != repo_name or authority.status != "owned" or not authority.ownership_reference:
+                return ExplicitTargetOutcome.FAILED, f"retry request {request_id} has no durable dispatch receipt or owned recovery authority"
+            manager = CloudManager(repo_name)
+            binding = manager.read_bindings_strict().get(str(authority.target_number))
+            matching_runs = [
+                run
+                for run in CloudRunRepository(repo_name).list_for_issue(authority.target_number)
+                if binding is not None and run.provider == "codex-cloud" and run.submission_outcome == "accepted" and run.task_id == binding.task_id and run.backend_name == binding.backend_name and run.environment_id and run.base_branch
+            ]
+            if len(matching_runs) != 1:
+                self._schedule_codex_retry_handoff(repo_name, request_id, authority.target_number)
+                return ExplicitTargetOutcome.DEFERRED, f"retry request {request_id} has no durable dispatch receipt and matching accepted CloudRun provenance is unavailable or contradictory"
+            recovered_run = matching_runs[0]
+            try:
+                handoff = dispatch.recover_accepted_receipt(
+                    authority,
+                    numeric_attempt=recovered_run.attempt,
+                    backend_name=recovered_run.backend_name,
+                    task_id=recovered_run.task_id,
+                    task_url=recovered_run.task_url,
+                    environment_id=recovered_run.environment_id,
+                    base_branch=recovered_run.base_branch,
+                )
+            except Exception as exc:
+                self._schedule_codex_retry_handoff(repo_name, request_id, authority.target_number)
+                return ExplicitTargetOutcome.DEFERRED, f"retry request {request_id} accepted receipt recovery is incomplete: {exc}"
         identity = f"R={handoff.request_id} A={handoff.attempt_id} N={handoff.numeric_attempt or 'unassigned'}"
         if handoff.outcome == "definitely-not-started":
             return ExplicitTargetOutcome.DEFERRED, f"{identity} phase=definitely-not-started; provider refused before acceptance"
@@ -6657,6 +6686,7 @@ class AutomationEngine:
         if run is None or run.provider != "codex-cloud" or run.task_id != handoff.external_id or run.backend_name != handoff.backend_name or run.submission_outcome != "accepted":
             reason = f"{task_identity} phase=accepted-tracking-incomplete; matching accepted CloudRun is unavailable or contradictory"
             dispatch.mark_tracking_incomplete(request_id, reason)
+            self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
             return ExplicitTargetOutcome.DEFERRED, reason
 
         expected = CloudTaskBinding("codex-cloud", handoff.external_id, handoff.backend_name)

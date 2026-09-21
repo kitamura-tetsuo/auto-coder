@@ -4,10 +4,11 @@ from threading import Event
 from unittest.mock import MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig, ExplicitTargetOutcome
-from auto_coder.automation_engine import AutomationEngine
+from auto_coder.automation_engine import CODEX_RETRY_HANDOFF_EFFECT, AutomationEngine, _CodexRetryHandoffStageHandler
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
+from auto_coder.github_pending_work import PendingWorkStore
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_processor import _acknowledge_retry_projection, _process_issue_codex_cloud_mode
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
@@ -98,6 +99,98 @@ def test_controller_defers_legacy_provider_ack_without_slot_and_keeps_it_discove
     assert [item.request_id for item in unfinished] == [authority.request_id]
     assert unfinished[0].tracking_complete is True
     assert unfinished[0].handoff_complete is False
+
+
+def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    run = CloudRun(
+        "owner/repo",
+        2223,
+        5,
+        "codex-cloud",
+        task_id="task-recovered",
+        backend_name="codex-original",
+        environment_id="environment-original",
+        base_branch="original-base",
+        submission_outcome="accepted",
+        task_url="https://example.test/tasks/task-recovered",
+    )
+    CloudRunRepository("owner/repo").save(run)
+    assert CloudManager("owner/repo").add_session(2223, run.task_id, run.provider, run.backend_name)
+    slots = ImplementationSlotRepository("owner/repo", 2)
+    assert slots.reserve(ImplementationOwner("issue", 2223))
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+    engine.implementation_slots = slots
+
+    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+
+    assert outcome is ExplicitTargetOutcome.SUCCESS
+    assert "R=request-1" in reason
+    recovered = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert recovered is not None
+    assert (
+        recovered.request_id,
+        recovered.attempt_id,
+        recovered.generation,
+        recovered.numeric_attempt,
+        recovered.external_id,
+        recovered.backend_name,
+        recovered.environment_id,
+        recovered.creation_id,
+        recovered.handoff_complete,
+    ) == (
+        authority.request_id,
+        authority.attempt_id,
+        authority.generation,
+        5,
+        run.task_id,
+        run.backend_name,
+        run.environment_id,
+        authority.ownership_reference,
+        True,
+    )
+
+
+def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    store = RetryDispatchRepository("owner/repo")
+    store.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    store.allocate_numeric_attempt(authority.request_id, [4])
+    store.record_outcome(authority.request_id, "accepted", external_id="task-live")
+    slots = ImplementationSlotRepository("owner/repo", 2)
+    assert slots.reserve(ImplementationOwner("issue", 2223))
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+    engine.implementation_slots = slots
+    pending = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: pending)
+
+    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+
+    assert outcome is ExplicitTargetOutcome.DEFERRED
+    assert "matching accepted CloudRun is unavailable" in reason
+    obligations = pending.all_pending()
+    assert len(obligations) == 1
+    assert obligations[0].unfinished_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
+    run = CloudRun(
+        "owner/repo",
+        2223,
+        5,
+        "codex-cloud",
+        task_id="task-live",
+        backend_name="codex-alias",
+        environment_id="environment-original",
+        base_branch="main",
+        submission_outcome="accepted",
+    )
+    CloudRunRepository("owner/repo").save(run)
+    assert CloudManager("owner/repo").add_session(2223, run.task_id, run.provider, run.backend_name)
+
+    stage_result = _CodexRetryHandoffStageHandler(engine, "owner/repo").dispatch(obligations[0])
+
+    assert stage_result.completed_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
+    assert RetryDispatchRepository("owner/repo").get(authority.request_id).handoff_complete is True
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")

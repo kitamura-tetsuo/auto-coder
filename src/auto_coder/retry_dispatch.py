@@ -260,6 +260,64 @@ class RetryDispatchRepository:
             if coordination is not None:
                 coordination.close()
 
+    def recover_accepted_receipt(
+        self,
+        authority: ImplementationRetryRequest,
+        *,
+        numeric_attempt: int,
+        backend_name: str,
+        task_id: str,
+        task_url: str,
+        environment_id: str,
+        base_branch: str,
+    ) -> RetryHandoff:
+        """Rebuild a lost receipt from an owned request and its accepted run.
+
+        This is deliberately an insert-only recovery boundary. The existing
+        ownership reference is reused as the creation identity; no request,
+        attempt, or provider creation authority is allocated here.
+        """
+        self._validate_authority(authority, self.repository, authority.target_number)
+        if numeric_attempt < 0 or not backend_name or not task_id:
+            raise ValueError("accepted CloudRun identity is incomplete")
+        encoded = self._safe_config({"base_branch": base_branch})
+        with self._lock, self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            existing = self._get_locked(authority.request_id)
+            if existing is not None:
+                return existing
+            self._connection.execute(
+                "INSERT INTO retry_handoffs("
+                "repository,issue_number,request_id,attempt_id,generation,route,backend_name,"
+                "creation_id,outcome,route_config,numeric_attempt,external_id,external_url,diagnostic,"
+                "tracking_complete,updated_at,predecessor_provider,predecessor_task_id,"
+                "predecessor_backend_name,projection_disposition,environment_id,handoff_complete) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,0)",
+                (
+                    self.repository,
+                    authority.target_number,
+                    authority.request_id,
+                    authority.attempt_id,
+                    authority.generation,
+                    "codex-cloud",
+                    backend_name,
+                    authority.ownership_reference,
+                    "accepted",
+                    encoded,
+                    numeric_attempt,
+                    task_id,
+                    task_url or None,
+                    "accepted receipt recovered from matching durable CloudRun and owned request",
+                    time.time(),
+                    authority.predecessor_provider,
+                    authority.predecessor_task_id,
+                    authority.predecessor_backend_name,
+                    "accepted-tracking-incomplete",
+                    environment_id or None,
+                ),
+            )
+            return self._require_locked(authority.request_id)
+
     def mark_tracking_complete(self, request_id: str) -> RetryHandoff:
         with self._lock, self._connection:
             current = self._require_locked(request_id)
