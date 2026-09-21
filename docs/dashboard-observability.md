@@ -1179,3 +1179,13 @@ visible without implying provider execution or implementation completion.
 
 Run `bash scripts/test.sh tests/test_retry_handoff_recovery.py` to exercise the
 receipt discovery and production projection boundary used by this stage.
+
+## Codex PR attribution observability boundary
+
+Codex PR-origin attribution is local bookkeeping evaluated during existing PR
+processing; it does not add an admission decision, provider call, or dashboard
+stage. Its `VERIFIED`, `UNRESOLVED`, `UNAVAILABLE`, and `CONFLICT` dispositions
+are consumed by provider-effect routing and are deliberately not presented as
+task-lifecycle outcomes. The existing PR processing stage remains the runnable
+dashboard observation boundary; attribution-specific diagnostics stay in the
+durable attribution registry until a dedicated operator surface is introduced.

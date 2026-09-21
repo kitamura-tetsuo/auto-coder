@@ -155,6 +155,8 @@ class CodexObservationService:
             return result
 
     def _observe_pr(self, binding: ObservationBinding) -> PullRequestEvidence:
+        from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin
+
         timeline = self.github.get_issue_timeline_strict(binding.repository, binding.issue_number)
         open_prs = self.github.get_open_pull_requests_strict(binding.repository)
         current = self.runs.get(binding.issue_number, binding.attempt)
@@ -178,19 +180,16 @@ class CodexObservationService:
         ambiguous = False
         for number in sorted(candidates):
             pr = self.github.get_pull_request_metadata_strict(binding.repository, number)
-            match, conflict = self._matches(pr, binding, all_runs, number in native)
-            if conflict:
+            attribution = resolve_codex_pr_origin(binding.repository, pr, self.runs, CodexPrAttributionRepository(binding.repository))
+            if attribution.disposition is AttributionDisposition.VERIFIED and attribution.origin is not None:
+                if attribution.origin.task_id == binding.task_id:
+                    state = str(pr.get("state", "")).lower()
+                    presence = PullRequestPresence.PR_PRESENT if state == "open" else PullRequestPresence.PREVIOUSLY_PUBLISHED
+                    return PullRequestEvidence(presence, number, str(pr.get("html_url", "")))
                 continue
-            state = str(pr.get("state", "")).lower()
-            exact_task = f"https://chatgpt.com/codex/tasks/{binding.task_id}" in str(pr.get("body") or "")
-            exact_run = number in current.pull_request_numbers
-            if match and state != "open" and not (exact_task or exact_run):
+            if attribution.disposition in {AttributionDisposition.CONFLICT, AttributionDisposition.UNAVAILABLE}:
                 ambiguous = True
-                continue
-            if match:
-                presence = PullRequestPresence.PR_PRESENT if state == "open" else PullRequestPresence.PREVIOUSLY_PUBLISHED
-                return PullRequestEvidence(presence, number, str(pr.get("html_url", "")))
-            if state_relevant(pr, binding.issue_number, binding.repository) and number not in known:
+            elif state_relevant(pr, binding.issue_number, binding.repository):
                 ambiguous = True
         if ambiguous:
             return PullRequestEvidence(PullRequestPresence.AMBIGUOUS)
