@@ -169,7 +169,8 @@ def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(tmp_path, mon
     outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
 
     assert outcome is ExplicitTargetOutcome.DEFERRED
-    assert "matching accepted CloudRun is unavailable" in reason
+    assert "boundary=cloud-run" in reason
+    assert "retained environment/base provenance is incomplete" in reason
     obligations = pending.all_pending()
     assert len(obligations) == 1
     assert obligations[0].unfinished_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
@@ -191,6 +192,62 @@ def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(tmp_path, mon
 
     assert stage_result.completed_effects == (CODEX_RETRY_HANDOFF_EFFECT,)
     assert RetryDispatchRepository("owner/repo").get(authority.request_id).handoff_complete is True
+
+
+def test_daemon_reconstructs_run_and_promotes_captured_legacy_predecessor(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    manager = CloudManager("owner/repo")
+    assert manager.add_session(2223, "jules-predecessor", "jules", "")
+    authority = _authority()
+    store = RetryDispatchRepository("owner/repo")
+    store.claim(
+        authority,
+        "codex-cloud",
+        "codex-alias",
+        {
+            "base_branch": "original-base",
+            "publication_head_repository": "owner/repo",
+            "publication_head_ref": "issue-2223-attempt-5-codex-cloud",
+        },
+        predecessor=("jules", "jules-predecessor", ""),
+    )
+    store.allocate_numeric_attempt(authority.request_id, [4])
+    store.record_outcome(
+        authority.request_id,
+        "accepted",
+        external_id="task-daemon-repaired",
+        external_url="https://example.test/tasks/task-daemon-repaired",
+        environment_id="original-environment",
+    )
+    slots = ImplementationSlotRepository("owner/repo", 2)
+    assert slots.reserve(ImplementationOwner("issue", 2223))
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+    engine.implementation_slots = slots
+
+    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+
+    assert outcome is ExplicitTargetOutcome.SUCCESS
+    assert "phase=accepted-current" in reason
+    assert manager.read_bindings_strict()["2223"] == CloudTaskBinding("codex-cloud", "task-daemon-repaired", "codex-alias")
+    run = CloudRunRepository("owner/repo").get(2223, 5)
+    assert run is not None
+    assert (
+        run.task_id,
+        run.environment_id,
+        run.base_branch,
+        run.task_url,
+        run.launch_identity,
+        run.publication_head_repository,
+        run.publication_head_ref,
+    ) == (
+        "task-daemon-repaired",
+        "original-environment",
+        "original-base",
+        "https://example.test/tasks/task-daemon-repaired",
+        authority.request_id,
+        "owner/repo",
+        "issue-2223-attempt-5-codex-cloud",
+    )
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")
