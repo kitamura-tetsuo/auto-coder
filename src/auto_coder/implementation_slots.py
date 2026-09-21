@@ -1072,6 +1072,95 @@ class ImplementationSlotRepository:
                 self._write(owners)
         return True
 
+    def restore_accepted_retry_session(
+        self,
+        owner: ImplementationOwner,
+        *,
+        request_id: str,
+        attempt_id: str,
+        generation: str,
+        acquisition_reference: str,
+        session_id: str,
+    ) -> str:
+        """Restore bookkeeping for accepted work without admitting new work.
+
+        The retained retry authority is deliberately more specific than an
+        Issue number.  This operation neither checks capacity nor creates an
+        execution: it only reconstructs the logical owner which the accepted
+        provider responsibility already consumes.  The caller must hold
+        :meth:`serialize` so pointer, retirement, and acknowledgement checks
+        can share the same owner fence.
+
+        Returns ``restored``, ``existing``, ``retired``, or ``conflict``.
+        Unreadable state raises rather than being interpreted as absence.
+        """
+        identities = (request_id, attempt_id, generation, acquisition_reference, session_id)
+        if any(not isinstance(value, str) or not value.strip() for value in identities):
+            raise ValueError("accepted retry restoration identities must be non-empty strings")
+        with self._state_lock():
+            owners = self._read()
+            retired = self._read_retired()
+            for value in retired.values():
+                if not isinstance(value, dict):
+                    raise ImplementationSlotUnavailable("Cannot safely parse retired record")
+                sessions = value.get("provider_sessions", [])
+                if not isinstance(sessions, list) or any(not isinstance(item, str) for item in sessions):
+                    raise ImplementationSlotUnavailable("Cannot safely parse retired provider membership")
+                if value.get("kind") == owner.kind and value.get("number") == owner.number and value.get("generation") == generation and session_id in sessions:
+                    return "retired"
+
+            record = owners.get(owner.key)
+            restored = record is None
+            if record is None:
+                record = {
+                    "kind": owner.kind,
+                    "number": owner.number,
+                    "incarnation": uuid.uuid4().hex,
+                    "activity_revision": 1,
+                    "implementation_prs": [],
+                    "provider_sessions": [],
+                    "executions": [],
+                    "emergency": False,
+                    "implementation_generation": generation,
+                }
+                owners[owner.key] = record
+            else:
+                existing_generation = record.get("implementation_generation")
+                if existing_generation is None:
+                    retained = record.get("executions") or record.get("provider_sessions") or record.get("implementation_prs")
+                    retry_matches = record.get("retry_request_id") == request_id and record.get("implementation_attempt_id") == attempt_id
+                    if retained and not retry_matches:
+                        return "conflict"
+                    record["implementation_generation"] = generation
+                elif not isinstance(existing_generation, str) or existing_generation != generation:
+                    return "conflict"
+
+            sessions = record.setdefault("provider_sessions", [])
+            if not isinstance(sessions, list) or any(not isinstance(item, str) for item in sessions):
+                raise ImplementationSlotUnavailable("Cannot safely parse provider implementation membership")
+            restorations = record.setdefault("accepted_retry_handoffs", [])
+            if not isinstance(restorations, list) or any(not isinstance(item, dict) for item in restorations):
+                raise ImplementationSlotUnavailable("Cannot safely parse accepted retry ownership")
+            evidence = {
+                "request_id": request_id,
+                "attempt_id": attempt_id,
+                "generation": generation,
+                "acquisition_reference": acquisition_reference,
+                "session_id": session_id,
+            }
+            changed = False
+            if evidence not in restorations:
+                restorations.append(evidence)
+                changed = True
+            if session_id not in sessions:
+                sessions.append(session_id)
+                changed = True
+            if changed:
+                if not restored:
+                    self._increment_activity_revision(record)
+                self._write(owners)
+            return "restored" if restored else "existing"
+
     def admit_outbound_provider_activity(self, owner: ImplementationOwner, session_id: str) -> bool:
         """Durably admit new implementation-mutating provider responsibility (Issue #2147, REQ-007).
 

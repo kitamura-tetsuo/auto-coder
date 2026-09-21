@@ -6692,10 +6692,7 @@ class AutomationEngine:
             dispatch.mark_tracking_incomplete(request_id, reason)
             self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
             return ExplicitTargetOutcome.DEFERRED, reason
-        if authority.status == "invalidated":
-            dispatch.mark_historical(request_id, "retry authority was durably invalidated")
-            return ExplicitTargetOutcome.SKIPPED, f"{identity} phase=accepted-historical; retry authority was durably invalidated"
-        if authority.status != "owned" or not authority.ownership_reference:
+        if authority.status not in {"owned", "invalidated"} or not authority.ownership_reference:
             reason = f"{identity} phase=accepted-tracking-incomplete; durable implementation ownership is unavailable"
             dispatch.mark_tracking_incomplete(request_id, reason)
             self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
@@ -6707,9 +6704,42 @@ class AutomationEngine:
         if handoff.route != "codex-cloud" or handoff.outcome not in {"accepted", "completed"} or not handoff.external_id or handoff.numeric_attempt is None:
             return ExplicitTargetOutcome.FAILED, f"{identity} has an invalid durable retry disposition"
         task_identity = f"{identity} T=codex-cloud/{handoff.external_id}/{handoff.backend_name}"
-        if handoff.projection_disposition == "accepted-historical" or not dispatch.is_latest_accepted(request_id):
-            dispatch.mark_historical(request_id, "a later accepted retry owns the current pointer")
-            return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; newer accepted work remains current"
+
+        # Logical ownership is recovered before provider projection.  This is
+        # accounting for an already accepted responsibility, not permission to
+        # execute again, so capacity and provider quota are intentionally not
+        # consulted.  The owner fence also prevents retirement or a competing
+        # retry from observing a half-restored incarnation.
+        slots = self._get_implementation_slots(repo_name)
+        owner = ImplementationOwner("issue", handoff.issue_number)
+        historical_reason = None
+        if authority.status == "invalidated":
+            historical_reason = "retry authority was durably invalidated"
+        elif handoff.projection_disposition == "accepted-historical" or not dispatch.is_latest_accepted(request_id):
+            historical_reason = "a later accepted retry owns the current pointer"
+        try:
+            with slots.serialize(owner):
+                restoration = slots.restore_accepted_retry_session(
+                    owner,
+                    request_id=handoff.request_id,
+                    attempt_id=handoff.attempt_id,
+                    generation=handoff.generation,
+                    acquisition_reference=authority.ownership_reference,
+                    session_id=handoff.external_id,
+                )
+                if restoration == "retired":
+                    dispatch.mark_historical(request_id, "accepted ownership is retained in exact retired history")
+                    return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; ownership is validly retired"
+                if restoration == "conflict":
+                    raise RuntimeError("logical owner belongs to an incompatible or unattributable generation")
+                if historical_reason is not None:
+                    dispatch.mark_historical(request_id, historical_reason)
+                    return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; {historical_reason}"
+        except Exception as exc:
+            reason = f"{task_identity} phase=accepted-tracking-incomplete boundary=owner-reconstruction; {exc}"
+            dispatch.mark_tracking_incomplete(request_id, reason)
+            self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
+            return ExplicitTargetOutcome.DEFERRED, reason
 
         run_repository = CloudRunRepository(repo_name)
         try:
@@ -6748,10 +6778,21 @@ class AutomationEngine:
 
         expected = CloudTaskBinding("codex-cloud", handoff.external_id, handoff.backend_name)
         manager = CloudManager(repo_name)
-        slots = self._get_implementation_slots(repo_name)
-        owner = ImplementationOwner("issue", handoff.issue_number)
         try:
             with slots.serialize(owner):
+                restoration = slots.restore_accepted_retry_session(
+                    owner,
+                    request_id=handoff.request_id,
+                    attempt_id=handoff.attempt_id,
+                    generation=handoff.generation,
+                    acquisition_reference=authority.ownership_reference,
+                    session_id=handoff.external_id,
+                )
+                if restoration == "retired":
+                    dispatch.mark_historical(request_id, "accepted ownership is retained in exact retired history")
+                    return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; ownership is validly retired"
+                if restoration == "conflict":
+                    raise RuntimeError("logical owner changed to an incompatible or unattributable generation")
                 if not dispatch.is_latest_accepted(request_id):
                     dispatch.mark_historical(request_id, "a later accepted retry owns the current pointer")
                     return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; newer accepted work won confirmation"

@@ -78,7 +78,7 @@ def test_controller_confirms_accepted_receipt_only_after_slot_membership(tmp_pat
     assert confirmed.handoff_complete is True
 
 
-def test_controller_defers_legacy_provider_ack_without_slot_and_keeps_it_discoverable(tmp_path, monkeypatch):
+def test_controller_reconstructs_missing_owner_without_starting_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     authority = _authority()
     store = RetryDispatchRepository("owner/repo")
@@ -92,13 +92,50 @@ def test_controller_defers_legacy_provider_ack_without_slot_and_keeps_it_discove
     engine.implementation_slots = ImplementationSlotRepository("owner/repo", 2)
 
     outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    replay_outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
 
-    assert outcome is ExplicitTargetOutcome.DEFERRED
-    assert "logical implementation slot is unavailable" in reason
+    assert outcome is ExplicitTargetOutcome.SUCCESS
+    assert replay_outcome is ExplicitTargetOutcome.SUCCESS
+    assert "phase=accepted-current" in reason
+    owner = ImplementationOwner("issue", 2223)
+    snapshot = engine.implementation_slots.snapshot()
+    restored = next(item for item in snapshot.owners if item.owner == owner)
+    assert restored.provider_sessions == ("task-unjoined",)
+    assert restored.executions == ()
+    assert snapshot.normal_usage == 1
+    assert snapshot.normal_available == 1
     unfinished = RetryDispatchRepository("owner/repo").list_unfinished_accepted()
-    assert [item.request_id for item in unfinished] == [authority.request_id]
-    assert unfinished[0].tracking_complete is True
-    assert unfinished[0].handoff_complete is False
+    assert unfinished == ()
+    completed = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert completed is not None
+    assert completed.tracking_complete is True
+    assert completed.handoff_complete is True
+
+
+def test_missing_owner_recovery_counts_over_limit_and_preserves_existing_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    store = RetryDispatchRepository("owner/repo")
+    store.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    store.allocate_numeric_attempt(authority.request_id, [4])
+    store.record_outcome(authority.request_id, "accepted", external_id="task-over-limit", tracking_complete=True)
+    store.mark_tracking_complete(authority.request_id)
+    CloudRunRepository("owner/repo").save(CloudRun("owner/repo", 2223, 5, "codex-cloud", task_id="task-over-limit", backend_name="codex-alias"))
+    assert CloudManager("owner/repo").add_session(2223, "task-over-limit", "codex-cloud", "codex-alias")
+    slots = ImplementationSlotRepository("owner/repo", 1)
+    unrelated = ImplementationOwner("issue", 99)
+    assert slots.reserve(unrelated)
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+    engine.implementation_slots = slots
+
+    outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+
+    assert outcome is ExplicitTargetOutcome.SUCCESS
+    snapshot = slots.snapshot()
+    assert {item.owner for item in snapshot.owners} == {unrelated, ImplementationOwner("issue", 2223)}
+    assert snapshot.normal_usage == 2
+    assert snapshot.normal_available == 0
+    assert slots.active_execution_ids(ImplementationOwner("issue", 2223)) == ()
 
 
 def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run(tmp_path, monkeypatch):

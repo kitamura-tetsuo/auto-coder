@@ -84,6 +84,17 @@ This daemon path therefore makes progress after restart or transient storage
 failure without requiring adapter replay, while preserving concurrent PR
 associations and newer accepted ownership.
 
+The same consumer reconstructs a missing logical owner from the joined owned
+request and immutable accepted receipt. Reconstruction records the original
+request, logical attempt, generation, acquisition reference, and provider task
+without creating a local execution or passing through fresh-start capacity.
+It is idempotent, counts as normal capacity when no retained classification is
+available, and may therefore truthfully expose usage above the configured
+limit. Exact retired task-and-generation history settles as historical before
+pointer promotion; unreadable history or an incompatible live owner remains
+deferred. Older accepted retries retain membership in a compatible owner even
+though they cannot regain current-pointer authority.
+
 This recovery does not choose providers, change creation quota or fallback
 policy, cancel old work, imply provider execution completed, or replace
 ordinary non-retry dispatch semantics. A separate operator retry remains new

@@ -1177,7 +1177,7 @@ structured trace fields or dashboard view are added. Joined-boundary and
 legacy provider-only checkpoint regressions are
 `tests/test_codex_retry_promotion.py::test_controller_confirms_accepted_receipt_only_after_slot_membership`
 and
-`test_controller_defers_legacy_provider_ack_without_slot_and_keeps_it_discoverable`.
+`test_controller_reconstructs_missing_owner_without_starting_execution`.
 The same pending-work consumer now performs non-creating run reconstruction and
 conditional predecessor promotion before acknowledgement. This remains
 observability-neutral because it changes durable local projection state without
@@ -1187,6 +1187,11 @@ mutation regression is
 `test_daemon_reconstructs_run_and_promotes_captured_legacy_predecessor`, while
 `test_run_mismatch_schedules_live_handoff_and_next_turn_repairs` covers retained
 deferred discovery when provenance is initially unavailable.
+Missing-owner reconstruction and over-limit capacity accounting remain
+observability-neutral for the same reason: they repair durable ownership and
+the existing handoff checkpoint without introducing a trace stage, outcome, or
+dashboard field. `test_missing_owner_recovery_counts_over_limit_and_preserves_existing_owner`
+guards that production accounting boundary.
 
 Issue #2023 adds the separate `/dashboard/adjudication/pr/<number>` operator
 surface. Its authoritative observations come from
