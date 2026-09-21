@@ -1,0 +1,201 @@
+"""Regression coverage for provider-neutral durable Issue dispatch admission."""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+
+from auto_coder.cloud_manager import CloudManager
+from auto_coder.cloud_run import CloudRun, CloudRunRepository
+from auto_coder.issue_dispatch import (
+    AdapterOutcome,
+    CandidateHandoff,
+    DispatchOutcome,
+    IssueAttemptIdentity,
+    IssueDispatchGuard,
+)
+
+
+def _identity(repository: str = "owner/repo", attempt: str = "attempt-one") -> IssueAttemptIdentity:
+    owner, name = repository.split("/", 1)
+    return IssueAttemptIdentity(owner, name, 2077, attempt)
+
+
+def _guard(tmp_path: Path, repository: str = "owner/repo") -> IssueDispatchGuard:
+    safe_name = repository.replace("/", "-")
+    return IssueDispatchGuard(
+        tmp_path / f"{safe_name}.sqlite3",
+        cloud_run_repository_factory=lambda repo: CloudRunRepository(repo, tmp_path / f"{repo.replace('/', '-')}-runs.json"),
+        cloud_manager_factory=lambda repo: CloudManager(repo, tmp_path / f"{repo.replace('/', '-')}-cloud.csv"),
+    )
+
+
+def test_contested_remote_claim_blocks_remote_local_and_restart(tmp_path):
+    """AC-001: the durable reservation is visible during the external call."""
+    identity = _identity()
+    first_guard = _guard(tmp_path)
+    callback_entered = threading.Event()
+    allow_callback_return = threading.Event()
+    callback_count = 0
+
+    def submit() -> AdapterOutcome:
+        nonlocal callback_count
+        callback_count += 1
+        callback_entered.set()
+        assert allow_callback_return.wait(timeout=5)
+        return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, "provider-task-1")
+
+    holder: list[object] = []
+    thread = threading.Thread(target=lambda: holder.append(first_guard.dispatch_remote(identity, CandidateHandoff("cloud-a", "provider-a"), submit)))
+    thread.start()
+    assert callback_entered.wait(timeout=5)
+
+    second_guard = _guard(tmp_path)
+    competing = second_guard.dispatch_remote(
+        identity,
+        CandidateHandoff("cloud-b", "provider-b"),
+        lambda: (_ for _ in ()).throw(AssertionError("second remote callback must not run")),
+    )
+    local = second_guard.reserve(identity, CandidateHandoff("local", "local"))
+    restarted = _guard(tmp_path).inspect(identity)
+    assert competing.admitted is False
+    assert local.admitted is False
+    assert restarted is not None
+    assert restarted.outcome == DispatchOutcome.INDETERMINATE
+    assert callback_count == 1
+
+    allow_callback_return.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert holder[0].outcome == DispatchOutcome.REMOTE_ACCEPTED
+
+
+def test_confirmed_not_started_releases_with_new_incarnation_and_stale_result_is_ignored(tmp_path):
+    """AC-002: only a durable negative outcome releases, and old authority stays stale."""
+    guard = _guard(tmp_path)
+    identity = _identity()
+    old_claim = guard.reserve(identity, CandidateHandoff("cloud-a", "provider-a"))
+    released = guard.finalize(old_claim, AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic="provider confirmed no task"))
+    assert released.outcome == DispatchOutcome.NOT_STARTED
+    assert guard.inspect(identity) is None
+
+    new_claim = guard.reserve(identity, CandidateHandoff("cloud-b", "provider-b"))
+    assert new_claim.admitted is True
+    assert new_claim.claim_incarnation != old_claim.claim_incarnation
+    stale = guard.finalize(old_claim, AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, "late-task"))
+    assert stale.outcome == DispatchOutcome.DEFERRED
+    persisted = _guard(tmp_path).inspect(identity)
+    assert persisted is not None
+    assert persisted.claim_incarnation == new_claim.claim_incarnation
+    assert persisted.provider_reference == ""
+
+
+def test_accepted_secondary_failure_is_durable_and_suppresses_every_candidate(tmp_path):
+    """AC-003: tracking failure does not erase accepted provider ownership."""
+    identity = _identity()
+    result = _guard(tmp_path).dispatch_remote(
+        identity,
+        CandidateHandoff("named-backend", "provider-a"),
+        lambda: AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, "task-accepted"),
+        publish_tracking=lambda _result: False,
+    )
+    assert result.outcome == DispatchOutcome.REMOTE_ACCEPTED
+    assert result.tracking_complete is False
+    assert result.provider_reference == "task-accepted"
+
+    restarted = _guard(tmp_path)
+    persisted = restarted.inspect(identity)
+    assert persisted is not None
+    assert persisted.outcome == DispatchOutcome.REMOTE_ACCEPTED
+    assert persisted.tracking_complete is False
+    assert persisted.backend_name == "named-backend"
+    assert persisted.provider == "provider-a"
+    assert restarted.reserve(identity, CandidateHandoff("local", "local")).admitted is False
+
+
+def test_crash_empty_observation_and_configuration_change_preserve_uncertainty(tmp_path):
+    """AC-004: a reservation without finalization never manufactures rejection."""
+    identity = _identity()
+    claim = _guard(tmp_path).reserve(identity, CandidateHandoff("cloud-old", "provider-a"))
+    assert claim.admitted is True
+
+    first_restart = _guard(tmp_path).inspect(identity)
+    second_restart = _guard(tmp_path).inspect(identity)
+    local = _guard(tmp_path).reserve(identity, CandidateHandoff("preferred-local", "local"))
+    assert first_restart is not None and first_restart.outcome == DispatchOutcome.INDETERMINATE
+    assert second_restart is not None and second_restart.provider_reference == ""
+    assert local.admitted is False
+    assert local.backend_name == "cloud-old"
+
+
+def test_storage_failures_fail_closed_before_submission_and_after_observation(tmp_path, monkeypatch):
+    """AC-005: callback counts and actual persisted state prove fail-closed behavior."""
+    broken_guard = IssueDispatchGuard(tmp_path)  # a directory cannot be opened as SQLite
+    calls = 0
+
+    def should_not_run() -> AdapterOutcome:
+        nonlocal calls
+        calls += 1
+        return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, "impossible")
+
+    before = broken_guard.dispatch_remote(_identity(), CandidateHandoff("cloud", "provider"), should_not_run)
+    assert before.outcome == DispatchOutcome.DEFERRED
+    assert calls == 0
+
+    guard = _guard(tmp_path)
+    identity = _identity(attempt="post-call")
+    claim = guard.reserve(identity, CandidateHandoff("cloud", "provider"))
+    monkeypatch.setattr(guard, "_connect", lambda: (_ for _ in ()).throw(OSError("disk unavailable")))
+    after = guard.finalize(claim, AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, "possibly-created"))
+    assert after.outcome == DispatchOutcome.DEFERRED
+    persisted = _guard(tmp_path).inspect(identity)
+    assert persisted is not None
+    assert persisted.outcome == DispatchOutcome.INDETERMINATE
+    assert _guard(tmp_path).reserve(identity, CandidateHandoff("other", "other")).admitted is False
+
+
+def test_legacy_production_writers_suppress_conflict_and_preserve_attempt_isolation(tmp_path):
+    """AC-006: CloudRun/cloud.csv evidence migrates without invented ownership."""
+    run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
+    manager = CloudManager("owner/repo", tmp_path / "owner-repo-cloud.csv")
+    assert run_store.save(CloudRun("owner/repo", 2077, 7, "provider-a", "task-a", "backend-a"))
+    assert manager.add_session(2077, "task-a", "provider-a", "backend-a")
+
+    guard = _guard(tmp_path)
+    legacy = guard.inspect(_identity(attempt="7"))
+    assert legacy is not None
+    assert legacy.outcome == DispatchOutcome.REMOTE_ACCEPTED
+    assert legacy.provider_reference == "task-a"
+
+    new_attempt = guard.reserve(_identity(attempt="caller-authorized-new"), CandidateHandoff("new", "provider-b"))
+    assert new_attempt.outcome == DispatchOutcome.DEFERRED
+    assert "no unambiguous attempt association" in new_attempt.diagnostic
+    authorized = guard.reserve(
+        _identity(attempt="explicitly-authorized"),
+        CandidateHandoff("new", "provider-b"),
+        authorize_new_attempt=True,
+    )
+    assert authorized.admitted is True
+    retained_binding = guard.get_legacy_issue_ownership("owner", "repo", 2077)
+    assert retained_binding is not None
+    assert retained_binding.provider_reference == "task-a"
+    assert guard.inspect(_identity(attempt="7")).provider_reference == "task-a"
+
+    other_repository = _guard(tmp_path, "other/repo")
+    independent = other_repository.reserve(_identity("other/repo", "7"), CandidateHandoff("new", "provider-b"))
+    assert independent.admitted is True
+
+
+def test_legacy_pending_and_contradictory_binding_remain_suppressing(tmp_path):
+    run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
+    manager = CloudManager("owner/repo", tmp_path / "owner-repo-cloud.csv")
+    assert run_store.save(CloudRun("owner/repo", 2077, 3, "provider-a", "", "backend-a", submission_outcome="indeterminate"))
+    pending = _guard(tmp_path).inspect(_identity(attempt="3"))
+    assert pending is not None and pending.outcome == DispatchOutcome.INDETERMINATE
+
+    assert manager.add_session(2077, "different-task", "provider-a", "backend-a")
+    assert run_store.save(CloudRun("owner/repo", 2077, 4, "provider-a", "original-task", "backend-a"))
+    conflict = _guard(tmp_path).inspect(_identity(attempt="4"))
+    assert conflict is not None
+    assert conflict.outcome == DispatchOutcome.DEFERRED
+    assert "contradict" in conflict.diagnostic
