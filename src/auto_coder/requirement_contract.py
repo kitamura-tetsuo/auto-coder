@@ -129,7 +129,7 @@ _EXPLICIT_TEST_DELIVERABLE_PATTERNS = (
     re.compile(r"\b(?:negative-control|negative control)\b", re.IGNORECASE),
     re.compile(r"\b(?:regression deliverable|test deliverable)\b", re.IGNORECASE),
     re.compile(
-        r"\b(?:include|add|provide|write|deliver|implement)\b[^.;]*?\b(?:regression test|unit test|integration test|e2e test|end-to-end test|test suite|negative-control)\b",
+        r"\b(?:include|add|provide|write|deliver|implement|maintain)\b[^.;]*?\b(?:regressions?|tests?|test suite|negative-control)\b",
         re.IGNORECASE,
     ),
 )
@@ -148,6 +148,8 @@ def is_explicit_test_deliverable(requirement_text: str) -> bool:
     """
     normalized = requirement_text.strip()
     if not normalized:
+        return False
+    if re.search(r"\b(?:do not|must not|shall not|should not)\s+(?:add|include|provide|write|implement|maintain)\b[^.;]*?\b(?:regressions?|tests?)\b", normalized, re.IGNORECASE):
         return False
     if _DOCUMENTATION_ONLY_COVERAGE_PATTERN.search(normalized) and not any(phrase in normalized.lower() for phrase in ("include a regression", "add a regression", "negative-control regression")):
         return False
