@@ -6,7 +6,7 @@ from auto_coder.automation_config import AutomationConfig
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_pr_attribution import CodexPrAttributionRepository
-from auto_coder.pr_processor import _resolve_cloud_task_origin, _send_codex_cloud_error_feedback
+from auto_coder.pr_processor import _record_codex_pr_attribution, _resolve_cloud_task_origin, _send_codex_cloud_error_feedback
 
 
 def _accepted_run(task_id: str = "task_e_Verified") -> CloudRun:
@@ -54,6 +54,30 @@ def test_verified_pr_publication_overrides_stale_issue_binding(tmp_path, monkeyp
     )
     client_type.assert_called_once_with(backend_name="codex-alias", repo_name="owner/repo")
     assert CloudManager("owner/repo").get_binding(2232) == CloudTaskBinding("jules", "old-jules", "jules")
+
+
+def test_direct_jules_pr_origin_survives_later_codex_issue_work(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    CloudRunRepository("owner/repo").save(_accepted_run("task_e_Later"))
+    manager = CloudManager("owner/repo")
+    assert manager.ensure_binding(88, CloudTaskBinding("jules", "original-jules", "jules"))
+    data = _pr()
+    data["head"] = {"ref": "jules/original", "sha": "old-head", "repo": {"full_name": "owner/repo"}}
+    jules_client = MagicMock()
+
+    _record_codex_pr_attribution("owner/repo", data)
+    with patch("auto_coder.cloud_task_engine.CloudTaskEngine.get_client_for_provider", return_value=jules_client) as get_client:
+        resolution = _resolve_cloud_task_origin("owner/repo", data)
+
+    assert data["_codex_pr_attribution_required"] is True
+    assert resolution.reason == ""
+    assert resolution.origin is not None
+    assert (resolution.origin.provider, resolution.origin.task_id, resolution.origin.client) == (
+        "jules",
+        "original-jules",
+        jules_client,
+    )
+    get_client.assert_called_once_with("jules", "owner/repo")
 
 
 def test_unverified_codex_indicator_blocks_ci_transport(tmp_path, monkeypatch):

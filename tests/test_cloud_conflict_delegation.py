@@ -1,5 +1,6 @@
 """Tests for delegating merge-conflict repair to originating cloud sessions."""
 
+import json
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
 from src.auto_coder.issue_processor import _process_issue_claude_routine_mode
 from src.auto_coder.llm_backend_config import BackendConfig
 from src.auto_coder.pr_processor import (
+    CloudConflictDeliveryRecord,
     _delegate_cloud_merge_conflict_repair,
     _delegate_cloud_merge_conflict_repair_result,
     _delegate_cloud_review_thread_repair,
@@ -183,6 +185,31 @@ def test_delegation_uses_existing_task_and_actual_pr_branches(tmp_path) -> None:
     assert "Do not create a new branch." in message
     assert "Do not create a new pull request." in message
     assert "Do not replace or close the existing pull request." in message
+
+
+def test_confirmed_delivery_for_old_recipient_does_not_suppress_verified_recipient(tmp_path) -> None:
+    client = FollowupClient()
+    state_path = tmp_path / "repairs.json"
+    old_fingerprint = "owner/repo#1589:H1:B1"
+    _record_cloud_conflict_deliveries(
+        state_path,
+        {old_fingerprint: CloudConflictDeliveryRecord("old-jules", "confirmed")},
+    )
+
+    with (
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_e_verified")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
+    ):
+        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
+
+    assert result.delegated is True
+    assert client.messages and client.messages[0][0] == "task_e_verified"
+    retained = json.loads(state_path.read_text(encoding="utf-8"))
+    assert retained[old_fingerprint] == {"status": "confirmed", "task_id": "old-jules"}
+    assert retained["owner/repo#1589:H1:B1:task_e_verified"] == {
+        "status": "confirmed",
+        "task_id": "task_e_verified",
+    }
 
 
 def test_production_conflict_path_reports_confirmed_followup_in_actions_and_pr(tmp_path) -> None:

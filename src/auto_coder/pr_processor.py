@@ -6441,6 +6441,33 @@ def _resolve_cloud_task_origin(
 ) -> CloudTaskOriginResolution:
     """Resolve exactly one durable provider/session association for a PR."""
     pr_number = int(pr_data["number"])
+    manager = CloudManager(repo_name)
+    direct_binding = manager.get_binding(pr_number)
+    if direct_binding is not None and direct_binding.provider != "codex-cloud":
+        from .cloud_task_engine import CloudTaskEngine
+
+        try:
+            engine = CloudTaskEngine()
+            if direct_binding.provider == "claude-routine":
+                client = engine.get_client_for_provider(
+                    direct_binding.provider,
+                    repo_name,
+                    backend_name=direct_binding.backend_name or "claude-routine",
+                )
+            else:
+                client = engine.get_client_for_provider(direct_binding.provider, repo_name)
+        except Exception as exc:
+            logger.error(f"Failed to initialize direct PR cloud provider '{direct_binding.provider}' for PR #{pr_number}: {exc}")
+            return CloudTaskOriginResolution(reason=f"cloud provider '{direct_binding.provider}' is unavailable: {exc}")
+        if client is None:
+            return CloudTaskOriginResolution(reason=f"cloud provider '{direct_binding.provider}' is unavailable")
+        return CloudTaskOriginResolution(
+            origin=CloudTaskOrigin(
+                provider=direct_binding.provider,
+                task_id=direct_binding.task_id,
+                client=client,
+            )
+        )
     # Codex-associated PRs are exceptional: an Issue's current cloud binding is
     # only a projection and can point at an older Jules session or a later retry.
     # Resolve the publication-owned PR binding before consulting that projection.
@@ -6472,9 +6499,7 @@ def _resolve_cloud_task_origin(
         if pr_data.get("_codex_pr_attribution_required"):
             return CloudTaskOriginResolution(reason=f"Codex PR attribution is UNAVAILABLE: {type(exc).__name__}")
 
-    manager = CloudManager(repo_name)
     bindings = []
-    direct_binding = manager.get_binding(pr_number)
     if direct_binding:
         bindings.append(direct_binding)
     else:
@@ -7068,7 +7093,7 @@ def _delegate_cloud_merge_conflict_repair_result(
         logger.warning(f"PR #{pr_number} lacks complete head/base metadata; cannot delegate conflict repair")
         return CloudConflictDelegationResult(reason="the PR head/base metadata required for repair is unavailable")
 
-    fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}"
+    fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}:{task_id}"
     retained_wait = get_claude_followup_wait_store().get(repo_name, task_id, "merge-conflict-repair", fingerprint)
     if retained_wait and (retained_wait.certainty is DeliveryCertainty.INDETERMINATE or retained_wait.retry_not_before > time.time()):
         return CloudConflictDelegationResult(
