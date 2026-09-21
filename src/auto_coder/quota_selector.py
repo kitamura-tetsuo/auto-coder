@@ -314,11 +314,17 @@ def rank_high_score_backends_by_quota(
     Returns:
         List of ranked eligible backend names.
     """
+    strategy = resolve_quota_selection_strategy(config)
+    return _rank_backends(candidate_backends, config, now, consumption_curve, quota_period_seconds, strategy)
+
+
+def resolve_quota_selection_strategy(config: Optional[object]) -> str:
+    """Resolve and validate the quota strategy shared by admission boundaries."""
     configured_strategy = getattr(config, "quota_selection_strategy", None) if config is not None else None
     strategy = configured_strategy if isinstance(configured_strategy, str) else "surplus"
     if strategy not in ("surplus", "burst"):
         raise ValueError(f"Unsupported quota selection strategy: {strategy}")
-    return _rank_backends(candidate_backends, config, now, consumption_curve, quota_period_seconds, strategy)
+    return strategy
 
 
 def _rank_backends(

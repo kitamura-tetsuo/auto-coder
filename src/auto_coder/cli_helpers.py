@@ -1142,9 +1142,10 @@ def resolve_adversarial_validation_availability(validation_kind: Optional[str] =
     if not otherwise_valid:
         return AdversarialValidationAvailability()
 
-    from .quota_selector import evaluate_backend_quota
+    from .quota_selector import evaluate_backend_quota, resolve_quota_selection_strategy
 
-    evaluations = [evaluate_backend_quota(backend_name=b, config=config) for b in otherwise_valid]
+    quota_strategy = resolve_quota_selection_strategy(config)
+    evaluations = [evaluate_backend_quota(backend_name=b, config=config, strategy=quota_strategy) for b in otherwise_valid]
     quota_eligible = [evaluation.backend_name for evaluation in evaluations if evaluation.is_eligible]
 
     if not quota_eligible:
