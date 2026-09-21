@@ -4209,7 +4209,20 @@ def _handle_pr_merge(
                         two_tier_inputs.contract,
                     )
                     pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
-                    if pending_snapshot.phase == PHASE_ORDINARY_CLOSURE and pending_snapshot.open_findings:
+                    reusable_completion = two_tier_inputs.gate.reusable_completion(
+                        pr_number,
+                        current_head_sha=two_tier_inputs.head_sha,
+                        current_base_sha=two_tier_inputs.base_sha,
+                        current_contract=two_tier_inputs.contract,
+                        current_policy=two_tier_inputs.policy,
+                    )
+                    if reusable_completion is not None:
+                        accepted = True
+                        reason = f"reused existing {reusable_completion.basis} completion"
+                        reviewer_backend = two_tier_inputs.policy.strong_route
+                        stage_id = "pr.strong-audit"
+                        stage_label = f"pr#{pr_number} strong audit"
+                    elif pending_snapshot.phase == PHASE_ORDINARY_CLOSURE and pending_snapshot.open_findings:
                         accepted, reason, reviewer_backend = _execute_pending_ordinary_closure(repo_name, pr_number, two_tier_inputs)
                         stage_id = "pr.ordinary-closure"
                         stage_label = f"pr#{pr_number} ordinary closure"
@@ -4218,8 +4231,25 @@ def _handle_pr_merge(
                         reviewer_backend = two_tier_inputs.policy.strong_route
                         stage_id = "pr.strong-audit"
                         stage_label = f"pr#{pr_number} strong audit"
+                        # A competing controller can complete the exact target
+                        # after our preliminary snapshot but before durable
+                        # claim admission. Observe that fenced rejection as
+                        # reuse, not as a newly deferred audit.
+                        reusable_completion = two_tier_inputs.gate.reusable_completion(
+                            pr_number,
+                            current_head_sha=two_tier_inputs.head_sha,
+                            current_base_sha=two_tier_inputs.base_sha,
+                            current_contract=two_tier_inputs.contract,
+                            current_policy=two_tier_inputs.policy,
+                        )
+                        if reusable_completion is not None:
+                            accepted = True
+                            reason = f"reused existing {reusable_completion.basis} completion"
                     published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, two_tier_inputs)
-                    if published:
+                    if reusable_completion is not None:
+                        published = True
+                        publication_reason = f"no publication required; reused {reusable_completion.basis} completion"
+                    if published and reusable_completion is None:
                         published_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
                         published_round = published_snapshot.accepted_strong_round
                         if published_round is not None and published_round.verdict == VERDICT_PASS:

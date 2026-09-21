@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from .pr_review_cycle import (
+    CompletionRecord,
     ContractSnapshot,
     PrReviewCycleRepository,
     RoundProvenance,
@@ -59,18 +60,43 @@ class TwoTierPrGate:
         current_policy: StrongPolicyIdentity,
     ) -> bool:
         """Confirm all snapshot identities immediately before a merge mutation."""
+        return (
+            self.reusable_completion(
+                pr_number,
+                current_head_sha=current_head_sha,
+                current_base_sha=current_base_sha,
+                current_contract=current_contract,
+                current_policy=current_policy,
+            )
+            is not None
+        )
+
+    def reusable_completion(
+        self,
+        pr_number: int,
+        *,
+        current_head_sha: str,
+        current_base_sha: str,
+        current_contract: ContractSnapshot,
+        current_policy: StrongPolicyIdentity,
+    ) -> Optional[CompletionRecord]:
+        """Return completion that satisfies the current strong-audit target."""
         snapshot = self.state.snapshot(pr_number)
         completion = snapshot.completion
-        return bool(
+        if not (
             completion
             and not snapshot.closed
             and snapshot.active_claim is None
+            and not snapshot.requires_new_strong_round
+            and completion.open_epoch == snapshot.open_epoch
             and completion.head_sha == current_head_sha
             and completion.base_sha == current_base_sha
             and completion.contract_identity == current_contract.identity
             and completion.policy_identity == current_policy.identity
             and not snapshot.open_findings
-        )
+        ):
+            return None
+        return completion
 
     def diagnostic(self, pr_number: int, *, current_head_sha: str, backend: str) -> TwoTierGateDiagnostic:
         snapshot = self.state.snapshot(pr_number)

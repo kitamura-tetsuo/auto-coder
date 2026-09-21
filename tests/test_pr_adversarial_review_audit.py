@@ -35,9 +35,20 @@ from auto_coder.dashboard_reviews import list_row
 from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
-from auto_coder.pr_processor import _handle_pr_merge
+from auto_coder.pr_processor import TwoTierGateInputs, _handle_pr_merge
+from auto_coder.pr_review_cycle import (
+    VERDICT_FINDINGS,
+    ContractSnapshot,
+    Finding,
+    FindingDisposition,
+    NotApplicableError,
+    PrReviewCycleRepository,
+    RoundProvenance,
+    StrongPolicyIdentity,
+)
 from auto_coder.review_audit import EvaluationLifecycle, ExecutionMode, ReviewAuditStore
 from auto_coder.review_capture import recorder as review_recorder
+from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.util.github_action import GitHubActionsStatusResult
 
 REPO_NAME = "owner/repo"
@@ -882,6 +893,128 @@ class TestReq013PairedComparison:
         assert reviewer.calls == ["fresh"]
         assert any("Successfully merged" in a for a in actions)
         assert any("Published APPROVE adversarial review" in a for a in actions)
+
+
+def _two_tier_reprocessing_setup(monkeypatch, tmp_path, gate, inputs, head_sha):
+    client = _build_github_client(head_sha)
+    pr_data = _build_pr_data(head_sha)
+    config = _build_config()
+    config.MAX_ADVERSARIAL_VALIDATIONS = 0
+    _apply_standard_merge_gates(monkeypatch, mergeable=True, merge_result=False)
+    monkeypatch.setattr("auto_coder.pr_processor._get_adversarial_validation_eligibility", lambda *a, **k: MagicMock(is_applicable=True, lookup_error=""))
+    monkeypatch.setattr("auto_coder.pr_processor._get_published_adversarial_validation_status", lambda *a, **k: ("PASS", None))
+    monkeypatch.setattr("auto_coder.pr_processor._adversarial_validation_exhaustion_retry_due", lambda *a, **k: (False, None))
+    monkeypatch.setattr("auto_coder.pr_processor._two_tier_gate_inputs", lambda *a, **k: inputs)
+    monkeypatch.setattr("auto_coder.pr_processor._consume_pending_two_tier_publication", lambda *a, **k: (False, "no pending effect"))
+    return client, pr_data, config
+
+
+def _closure_completion(gate, contract, policy, *, pr_number, base, audited, repaired):
+    gate.ordinary_pass(pr_number, audited, base, contract)
+    claim = gate.state.claim_strong_audit(pr_number, RoundProvenance(audited, base), contract, policy)
+    finding = Finding(
+        finding_id="finding-a",
+        origin_round_id=claim.claim_id,
+        requirement_ids=("#0/REQ-002",),
+        requirement_texts=("Reuse bounded closure completion.",),
+        counterexample="A duplicate strong audit runs at the repair head.",
+        expected_behavior="The accepted closure is reused.",
+        actual_behavior="A new claim replaces it.",
+        evidence="src/auto_coder/pr_processor.py",
+        affected_boundary="two-tier completion reuse",
+        focused_regression_scenario="Reprocess the certified repair head.",
+    )
+    strong_round = gate.state.record_strong_result(pr_number, claim.claim_id, VERDICT_FINDINGS, "strong/model", [finding])
+    gate.state.acknowledge_publication(pr_number, strong_round.round_id)
+    gate.ordinary_pass(pr_number, repaired, base, contract)
+    closure = gate.state.certify_closure(
+        pr_number,
+        RoundProvenance(repaired, base),
+        contract,
+        policy,
+        strong_round.round_id,
+        strong_round.finding_set_revision,
+        [FindingDisposition("finding-a", "FIXED", "Regression proves the repair.", repaired)],
+        True,
+        "The cumulative diff contains only the tracked repair and regression.",
+    )
+    return strong_round, gate.state.acknowledge_closure_publication(pr_number, closure.accepted_closure.closure_id)
+
+
+def test_production_reentry_reuses_bounded_closure_after_reconstruction(tmp_path, monkeypatch, audit_store):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    contract = ContractSnapshot(("#0",), "Issue #0 REQ-002: Reuse bounded closure completion.")
+    policy = StrongPolicyIdentity("strong", "model=strong", "v1")
+    base, audited, repaired = "b" * 40, "a" * 40, "c" * 40
+    gate = TwoTierPrGate(REPO_NAME)
+    strong_round, completed = _closure_completion(gate, contract, policy, pr_number=PR_NUMBER, base=base, audited=audited, repaired=repaired)
+    reconstructed = TwoTierPrGate(REPO_NAME)
+    inputs = TwoTierGateInputs(reconstructed, contract, policy, repaired, base)
+    client, pr_data, config = _two_tier_reprocessing_setup(monkeypatch, tmp_path, reconstructed, inputs, repaired)
+    strong_execution = MagicMock(side_effect=AssertionError("reused closure must not execute a strong audit"))
+    monkeypatch.setattr("auto_coder.pr_processor._execute_pending_strong_audit", strong_execution)
+
+    actions = _handle_pr_merge(client, REPO_NAME, pr_data, config, {})
+
+    strong_execution.assert_not_called()
+    after = reconstructed.state.snapshot(PR_NUMBER)
+    assert after.completion == completed.completion
+    assert after.completion.basis == "ORDINARY_CLOSURE"
+    assert after.accepted_strong_round.round_id == strong_round.round_id
+    assert after.accepted_strong_round.head_sha == audited
+    assert after.accepted_closure.head_sha == repaired
+    assert [(item.finding_id, item.status, item.disposition_head_sha) for item in after.findings] == [("finding-a", "FIXED", repaired)]
+    assert any("reused existing ORDINARY_CLOSURE completion" in action for action in actions)
+
+
+def test_production_recheck_reuses_completion_won_after_preliminary_read(tmp_path, monkeypatch, audit_store):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    contract = ContractSnapshot(("#0",), "Issue #0 REQ-004: Fence delayed claims.")
+    policy = StrongPolicyIdentity("strong", "model=strong", "v1")
+    base, head = "b" * 40, "a" * 40
+    gate_b = TwoTierPrGate(REPO_NAME)
+    gate_b.ordinary_pass(PR_NUMBER, head, base, contract)
+    inputs = TwoTierGateInputs(gate_b, contract, policy, head, base)
+    client, pr_data, config = _two_tier_reprocessing_setup(monkeypatch, tmp_path, gate_b, inputs, head)
+    preliminary_read = threading.Event()
+    allow_b = threading.Event()
+    original_reusable = gate_b.reusable_completion
+    calls = {"count": 0}
+
+    def paused_reusable(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            assert original_reusable(*args, **kwargs) is None
+            preliminary_read.set()
+            assert allow_b.wait(timeout=5)
+            return None
+        return original_reusable(*args, **kwargs)
+
+    monkeypatch.setattr(gate_b, "reusable_completion", paused_reusable)
+    model = MagicMock(side_effect=AssertionError("the delayed claimant must not invoke the model"))
+    monkeypatch.setattr("auto_coder.pr_processor.execute_review", model)
+    outcomes = []
+    worker = threading.Thread(target=lambda: outcomes.append(_handle_pr_merge(client, REPO_NAME, pr_data, config, {})))
+    worker.start()
+    assert preliminary_read.wait(timeout=5)
+
+    gate_a = TwoTierPrGate(REPO_NAME)
+    claim = gate_a.state.claim_strong_audit(PR_NUMBER, RoundProvenance(head, base), contract, policy)
+    accepted = gate_a.state.record_strong_result(PR_NUMBER, claim.claim_id, "PASS", "strong/model")
+    gate_a.state.acknowledge_publication(PR_NUMBER, accepted.round_id)
+    completed = gate_a.state.accept_strong_pass_completion(PR_NUMBER, accepted.round_id)
+    allow_b.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    model.assert_not_called()
+    assert len(outcomes) == 1
+    assert any("reused existing STRONG_PASS completion" in action for action in outcomes[0])
+    after = gate_b.state.snapshot(PR_NUMBER)
+    assert after.completion == completed.completion
+    assert after.active_claim is None
+    with pytest.raises(NotApplicableError, match="completion already exists"):
+        gate_b.state.claim_strong_audit(PR_NUMBER, RoundProvenance(head, base), contract, policy)
 
 
 # ---------------------------------------------------------------------------

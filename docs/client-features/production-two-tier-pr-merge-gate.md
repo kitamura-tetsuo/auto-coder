@@ -46,3 +46,11 @@ backend, audited/current heads, wait reason, finding IDs, and whether completion
 direct strong PASS or bounded ordinary closure. Closure establishes only that the
 known contract and findings were verified; it does not prove that no unknown defect
 exists.
+
+Reprocessing an unchanged target reuses either applicable completion basis and
+continues through the independent final merge checks without claiming or invoking
+another strong audit. Claim admission repeats the exact head, base, Requirements,
+policy, open-incarnation, findings, and renewed-round checks while holding the
+durable transition fence, so a stale participant cannot overwrite completion made
+by another controller. A changed identity remains eligible for a renewed audit;
+the persisted `COMPLETE` phase alone never suppresses new work.
