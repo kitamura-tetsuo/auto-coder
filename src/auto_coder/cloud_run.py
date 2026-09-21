@@ -68,6 +68,9 @@ class CloudRun:
     submission_outcome: str = "accepted"
     task_url: str = ""
     pull_request_numbers: List[int] = field(default_factory=list)
+    launch_identity: str = ""
+    publication_head_repository: str = ""
+    publication_head_ref: str = ""
 
     def add_pull_request(self, pr_number: int) -> None:
         """Associate a pull request with this run, preserving prior associations."""
@@ -87,6 +90,9 @@ class CloudRun:
             "submission_outcome": self.submission_outcome,
             "task_url": self.task_url,
             "pull_request_numbers": list(self.pull_request_numbers),
+            "launch_identity": self.launch_identity,
+            "publication_head_repository": self.publication_head_repository,
+            "publication_head_ref": self.publication_head_ref,
         }
 
     @staticmethod
@@ -103,6 +109,9 @@ class CloudRun:
             submission_outcome=str(data.get("submission_outcome", "accepted")),
             task_url=str(data.get("task_url", "")),
             pull_request_numbers=_parse_stored_int_list(data.get("pull_request_numbers", []), "pull_request_numbers"),
+            launch_identity=str(data.get("launch_identity", "")),
+            publication_head_repository=str(data.get("publication_head_repository", "")),
+            publication_head_ref=str(data.get("publication_head_ref", "")),
         )
 
 

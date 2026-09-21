@@ -73,6 +73,9 @@ def test_initial_dispatch_renders_and_transports_complete_provider_prompt(tmp_pa
     assert "Issue attempt 4" in prompt
     assert backend_name in prompt
     assert "Actual base branch: release/次" in prompt
+    assert "Required publication head repository: owner/repo" in prompt
+    assert "Required publication head ref: issue-1865-attempt-4-codex-cloud" in prompt
+    assert "push the exact remote head ref `issue-1865-attempt-4-codex-cloud`" in prompt
     assert "Parent capability is context, not child scope." in prompt
     assert "Linked #1864 is supplied context only." in prompt
     assert "complete and untruncated" in prompt

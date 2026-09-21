@@ -84,11 +84,24 @@ def test_keywords_old_turn_and_contradiction_do_not_complete(tmp_path):
 def test_empty_local_metadata_still_finds_open_pr_by_closing_reference(tmp_path):
     pr = {"number": 44, "state": "open", "body": "Fixes #1863", "html_url": "https://github.com/owner/repo/pull/44"}
     result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
-    assert result.pull_request == result.pull_request.__class__(PullRequestPresence.PR_PRESENT, 44, pr["html_url"])
+    assert result.pull_request.presence is PullRequestPresence.AMBIGUOUS
+
+
+def test_attribution_unavailable_never_becomes_task_publication(tmp_path):
+    from auto_coder.codex_pr_attribution import AttributionDisposition, AttributionResult
+
+    pr = {"number": 46, "state": "open", "body": "Closes #1863", "html_url": "https://github.com/owner/repo/pull/46"}
+    with patch(
+        "auto_coder.codex_pr_attribution.resolve_codex_pr_origin",
+        return_value=AttributionResult(AttributionDisposition.UNAVAILABLE, boundary="store unavailable"),
+    ):
+        result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
+    assert result.pull_request.presence is PullRequestPresence.AMBIGUOUS
+    assert result.pull_request.number is None
 
 
 def test_canonical_task_url_and_closed_publication(tmp_path):
-    pr = {"number": 45, "state": "closed", "merged": True, "body": f"Work from https://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
+    pr = {"number": 45, "state": "closed", "merged": True, "body": f"Fixes #1863\nhttps://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
     result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
     assert result.pull_request.presence is PullRequestPresence.PREVIOUSLY_PUBLISHED
 

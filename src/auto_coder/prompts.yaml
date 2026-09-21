@@ -2249,6 +2249,8 @@ codex_cloud:
 
     Target repository: $repo_name
     Actual base branch: $base_branch
+    Required publication head repository: $publication_head_repository
+    Required publication head ref: $publication_head_ref
     Source Issue: #$issue_number
     Canonical source Issue URL: $issue_url
     Current source Issue title:
@@ -2286,7 +2288,7 @@ codex_cloud:
     - Run the appropriate validation and tests. Preserve the intended changes and commit them before publication.
 
     REQUIRED GITHUB PR PUBLICATION:
-    - Using an available authorized publishing capability in the Codex Cloud environment, push a task- or Issue-attempt-specific remote head branch and publish a GitHub pull request targeting the actual base branch `$base_branch` in `$repo_name`.
+    - Using an available authorized publishing capability in the Codex Cloud environment, push the exact remote head ref `$publication_head_ref` to `$publication_head_repository` and publish a GitHub pull request targeting the actual base branch `$base_branch` in `$repo_name`.
     - The remote head branch must be unique to source Issue #$issue_number attempt $issue_attempt. Never publish through the shared/transient remote branch named `work`, overwrite another task's branch, or force-push unrelated work.
     - Before creating a PR, check whether an appropriate PR for this Issue and implementation already exists. If so, update and verify that PR rather than creating a duplicate.
     - Include an explicit closing reference for the exact source Issue (for example, `Closes #$issue_number`) in the PR body.

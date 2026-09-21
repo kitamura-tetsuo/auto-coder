@@ -1164,3 +1164,12 @@ rationale-preserving authoritative refresh, and reload recovery of an uncertain
 publication ID without another draft or submit. Run them with
 `bash scripts/test.sh tests/test_dashboard_adjudication_browser.py` in a
 Playwright-provisioned environment.
+## Codex PR attribution observability boundary
+
+Codex PR-origin attribution is local bookkeeping evaluated during existing PR
+processing; it does not add an admission decision, provider call, or dashboard
+stage. Its `VERIFIED`, `UNRESOLVED`, `UNAVAILABLE`, and `CONFLICT` dispositions
+are consumed by provider-effect routing and are deliberately not presented as
+task-lifecycle outcomes. The existing PR processing stage remains the runnable
+dashboard observation boundary; attribution-specific diagnostics stay in the
+durable attribution registry until a dedicated operator surface is introduced.

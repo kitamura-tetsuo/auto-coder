@@ -200,7 +200,13 @@ class TestCodexCloudDispatchDuplicateProtection:
         assert handoff.numeric_attempt == 3
         assert handoff.external_id == "task-retry"
         assert handoff.tracking_complete is True
-        assert CloudRunRepository("owner/repo").get(100, 3).task_id == "task-retry"
+        run = CloudRunRepository("owner/repo").get(100, 3)
+        assert run is not None
+        assert (run.task_id, run.publication_head_repository, run.publication_head_ref) == (
+            "task-retry",
+            "owner/repo",
+            "issue-100-attempt-3-codex-cloud",
+        )
 
     @patch("auto_coder.codex_cloud_client.CodexCloudClient")
     def test_concurrent_production_dispatch_crosses_submission_once(self, mock_client_type, tmp_path, monkeypatch):
