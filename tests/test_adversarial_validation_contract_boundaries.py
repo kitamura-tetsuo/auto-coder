@@ -471,6 +471,8 @@ def test_is_explicit_test_deliverable_classification() -> None:
     assert is_explicit_test_deliverable("Include a negative-control regression test verifying invalid anchors are rejected.") is True
     assert is_explicit_test_deliverable("Add a regression test deliverable for the cache eviction path.") is True
     assert is_explicit_test_deliverable("Provide an integration test suite for cross-component calls.") is True
+    assert is_explicit_test_deliverable("Add deterministic production-boundary regressions for routing.") is True
+    assert is_explicit_test_deliverable("The change must include automated tests that exercise reload.") is True
 
     # Runtime behavior without explicit test deliverable
     assert is_explicit_test_deliverable("Validate review anchors and reject invalid review anchors.") is False
@@ -480,6 +482,86 @@ def test_is_explicit_test_deliverable_classification() -> None:
     # Documentation updates describing coverage
     assert is_explicit_test_deliverable("Document accurate behavior and coverage in docs/client-features/.") is False
     assert is_explicit_test_deliverable("Update docs/client-features/test.md to describe test coverage.") is False
+    assert is_explicit_test_deliverable("Do not add unrelated regression tests.") is False
+
+
+def test_gap_only_explicit_deliverable_is_promoted_with_identity() -> None:
+    """A demonstrated gap-only response becomes one deliverable finding."""
+    requirement = IssueRequirement("REQ-011", "Add deterministic production-boundary regressions for persisted routing.")
+    context = AdversarialValidationContext(all_changed_files=["tests/test_routing.py"], issue_requirements=[requirement])
+    gap = _make_gap(
+        requirement_id="REQ-011",
+        boundary="Router.reload",
+        invariant="Production routing after reload has no committed regression test",
+        anchor_path="tests/test_routing.py",
+    )
+    result = AdversarialValidationResult(
+        result="NEEDS_TESTS",
+        summary="Missing coverage",
+        test_oracle_gaps=[gap],
+        requirement_coverage=[RequirementCoverageEntry("REQ-011", "VERIFIED", "Runtime behavior appears correct")],
+    )
+
+    normalized = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert normalized.result == "NEEDS_FIX"
+    assert normalized.test_oracle_gaps == []
+    assert len(normalized.findings) == 1
+    assert normalized.findings[0].finding_identity == gap.gap_id
+    assert normalized.findings[0].correction_identity == gap.gap_id
+    assert normalized.findings[0].requirement_text == requirement.text
+    assert normalized.requirement_coverage[0].status == "VIOLATED"
+
+
+def test_distinct_explicit_deliverables_sharing_requirement_survive() -> None:
+    """Requirement-ID overlap does not erase a separate missing boundary test."""
+    requirement = IssueRequirement("REQ-011", "Add production-boundary regressions for boundary A and boundary B.")
+    context = AdversarialValidationContext(all_changed_files=["tests/test_boundaries.py"], issue_requirements=[requirement])
+    finding = _make_finding(
+        requirement_id="REQ-011",
+        actual_behavior="Boundary A regression is missing",
+        required_behavior="Add the boundary A regression",
+        counterexample="No test invokes boundary A",
+        anchor_path="tests/test_boundaries.py",
+        finding_identity="missing-a",
+        correction_identity="add-a",
+    )
+    gap_b = _make_gap(
+        requirement_id="REQ-011",
+        boundary="BoundaryB.reload",
+        invariant="Boundary B regression is missing",
+        anchor_path="tests/test_boundaries.py",
+    )
+    result = AdversarialValidationResult(
+        result="NEEDS_FIX",
+        findings=[finding],
+        test_oracle_gaps=[gap_b],
+        requirement_coverage=[RequirementCoverageEntry("REQ-011", "VIOLATED", "Both regressions absent")],
+    )
+
+    normalized = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert {item.correction_identity for item in normalized.findings} == {"add-a", gap_b.gap_id}
+    assert normalized.test_oracle_gaps == []
+
+
+def test_unavailable_explicit_deliverable_evidence_is_not_promoted() -> None:
+    """An inability to inspect tests does not fabricate a deliverable absence."""
+    requirement = IssueRequirement("REQ-011", "Add a production-boundary regression for reload.")
+    context = AdversarialValidationContext(all_changed_files=["tests/test_reload.py"], issue_requirements=[requirement])
+    gap = _make_gap(requirement_id="REQ-011", boundary="reload", invariant="Could not inspect whether the reload test exists", anchor_path="tests/test_reload.py")
+    gap.why_tests_still_pass = "Evidence unavailable because committed tests could not be inspected"
+    result = AdversarialValidationResult(
+        result="NEEDS_TESTS",
+        test_oracle_gaps=[gap],
+        requirement_coverage=[RequirementCoverageEntry("REQ-011", "UNVERIFIED", "Tests unavailable")],
+    )
+
+    normalized = _apply_coverage_and_verdict_precedence(result, context)
+
+    assert normalized.findings == []
+    assert normalized.requirement_coverage[0].status == "UNVERIFIED"
+    assert normalized.result != "PASS"
 
 
 def test_advisory_semantic_pr_validation_contract_evaluation() -> None:
@@ -498,6 +580,9 @@ def test_advisory_semantic_pr_validation_contract_evaluation() -> None:
     # Initial review prompt
     assert "explicit Requirements manifest as the absolute authoritative source" in initial_review_prompt
     assert "Accept equivalent test techniques" in initial_review_prompt
+    assert "Add ... regressions" in rendered_system_prompt
+    assert "must include ... tests" in rendered_system_prompt
+    assert "tests could not be inspected" in rendered_system_prompt
 
     # Fix prompt
     assert "Specification gaps in the report are non-actionable metadata" in fix_prompt

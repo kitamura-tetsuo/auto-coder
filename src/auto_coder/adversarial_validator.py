@@ -2982,6 +2982,49 @@ def _is_missing_test_finding(finding: AdversarialValidationFinding) -> bool:
     return any(cue in target_text for cue in missing_test_cues)
 
 
+def _gap_establishes_missing_deliverable(gap: TestOracleGap) -> bool:
+    """Return whether a TOG's evidence asserts an observed absent test artifact."""
+    evidence = " ".join((gap.invariant, gap.why_tests_still_pass, gap.material_consequence, gap.focused_regression_scenario, gap.resolution_evidence)).casefold()
+    unavailable = ("could not inspect", "unable to inspect", "evidence unavailable", "not inspected", "unknown whether")
+    absence = ("missing", "no committed test", "no test", "tests do not", "tests only", "tests pass without", "lacks", "not covered", "does not cover", "absent")
+    return not any(cue in evidence for cue in unavailable) and any(cue in evidence for cue in absence)
+
+
+def _deliverable_finding_from_gap(gap: TestOracleGap, requirement_text: str) -> AdversarialValidationFinding:
+    """Promote an evidenced explicit test obligation while retaining its identity."""
+    return AdversarialValidationFinding(
+        requirement_id=gap.requirement_id,
+        finding_identity=gap.gap_id,
+        correction_identity=gap.gap_id,
+        violated_requirement=requirement_text,
+        requirement_text=requirement_text,
+        reachability=gap.authoritative_boundary,
+        required_behavior=requirement_text,
+        actual_behavior=f"The explicitly required regression deliverable is absent: {gap.invariant}",
+        evidence=gap.why_tests_still_pass,
+        counterexample=(f"At {gap.authoritative_boundary}, the requirement mandates a committed regression deliverable, " f"but current tests omit it: {gap.invariant}. {gap.why_tests_still_pass}"),
+        test_gap=gap.why_tests_still_pass,
+        suggested_regression_scenario=gap.focused_regression_scenario,
+        anchor_path=gap.anchor_path,
+        anchor_line=gap.anchor_line,
+        anchor_side=gap.anchor_side,
+        anchor_start_line=gap.anchor_start_line,
+    )
+
+
+def _same_test_correction(finding: AdversarialValidationFinding, gap: TestOracleGap) -> bool:
+    """Match duplicate category encodings without collapsing by requirement ID."""
+    if gap.requirement_id not in finding.all_requirement_ids:
+        return False
+    if gap.gap_id in {finding.finding_identity, finding.correction_identity}:
+        return True
+    finding_scope = " ".join((finding.reachability, finding.required_behavior, finding.actual_behavior, finding.suggested_regression_scenario)).casefold()
+    gap_scope = " ".join((gap.authoritative_boundary, gap.invariant, gap.focused_regression_scenario)).casefold()
+    significant = lambda value: {word for word in re.findall(r"[a-z0-9_]+", value) if len(word) > 3}
+    shared = significant(finding_scope) & significant(gap_scope)
+    return bool(shared) and (gap.authoritative_boundary.casefold() in finding_scope or len(shared) >= 4)
+
+
 def _normalize_findings_and_gaps(
     result: AdversarialValidationResult,
     context: AdversarialValidationContext,
@@ -3055,15 +3098,28 @@ def _normalize_findings_and_gaps(
     else:
         retained_findings = unknown_findings
 
-    # 4. Category deduplication between findings and test-oracle gaps
+    # 4. Promote evidenced gap-only reports for affirmative test deliverables.
+    promoted_gap_ids: set[str] = set()
+    for oracle_gap in result.test_oracle_gaps:
+        requirement_text = req_text_by_id.get(oracle_gap.requirement_id, "")
+        if oracle_gap.status == "OPEN" and is_explicit_test_deliverable(requirement_text) and _gap_establishes_missing_deliverable(oracle_gap):
+            if not any(_same_test_correction(finding, oracle_gap) for finding in retained_findings):
+                retained_findings.append(_deliverable_finding_from_gap(oracle_gap, requirement_text))
+            promoted_gap_ids.add(oracle_gap.gap_id)
+            for entry in result.requirement_coverage:
+                if entry.requirement_id == oracle_gap.requirement_id:
+                    entry.status = "VIOLATED"
+                    entry.evidence = f"Explicit regression deliverable absent: {oracle_gap.invariant}"
+
+    # 5. Category deduplication between findings and test-oracle gaps
     final_findings: List[AdversarialValidationFinding] = []
-    retained_gaps: List[TestOracleGap] = list(result.test_oracle_gaps)
+    retained_gaps: List[TestOracleGap] = [gap for gap in result.test_oracle_gaps if gap.gap_id not in promoted_gap_ids]
 
     for finding in retained_findings:
         is_deliverable = any(is_explicit_test_deliverable(req_text_by_id.get(rid, "")) for rid in finding.all_requirement_ids if rid in expected_requirement_ids)
         if is_deliverable:
             final_findings.append(finding)
-            retained_gaps = [gap for gap in retained_gaps if gap.requirement_id not in finding.all_requirement_ids]
+            retained_gaps = [gap for gap in retained_gaps if not _same_test_correction(finding, gap)]
         else:
             if _is_missing_test_finding(finding):
                 has_matching_gap = any(gap.requirement_id in finding.all_requirement_ids for gap in retained_gaps)

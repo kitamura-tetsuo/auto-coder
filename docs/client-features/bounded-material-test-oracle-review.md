@@ -74,3 +74,10 @@ solely as a material test-oracle gap. Equivalent test techniques that assert the
 required behavioral invariant across the boundary are accepted even when they
 differ from illustrated Acceptance Scenarios; superficial tests that merely assert
 source text or pass empty inputs without exercising the production path are rejected.
+
+This classification is normalized after parsing as well as requested from the
+reviewer. A gap-only response that demonstrates an absent affirmative test
+deliverable is promoted to an implementation finding, marks its requirement
+violated, and yields `NEEDS_FIX`. The former gap identity remains the correction
+identity, while independently actionable test obligations under the same
+requirement remain separate; requirement-ID overlap alone never deduplicates them.
