@@ -154,6 +154,38 @@ def test_storage_failures_fail_closed_before_submission_and_after_observation(tm
     assert _guard(tmp_path).reserve(identity, CandidateHandoff("other", "other")).admitted is False
 
 
+def test_failed_confirmed_release_remains_durably_suppressing(tmp_path, monkeypatch):
+    """A failed NOT_STARTED release never authorizes a fallback callback."""
+    identity = _identity(attempt="failed-release")
+    guard = _guard(tmp_path)
+    claim = guard.reserve(identity, CandidateHandoff("cloud", "provider"))
+    assert claim.admitted is True
+    assert (tmp_path / "owner-repo.sqlite3").is_file()
+
+    monkeypatch.setattr(guard, "_connect", lambda: (_ for _ in ()).throw(OSError("release write unavailable")))
+    release = guard.finalize(claim, AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic="provider confirmed absent"))
+    assert release.outcome == DispatchOutcome.DEFERRED
+    assert release.tracking_complete is False
+    assert "ownership finalization failed" in release.diagnostic
+
+    fallback_calls = 0
+
+    def fallback() -> AdapterOutcome:
+        nonlocal fallback_calls
+        fallback_calls += 1
+        return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, "replacement-task")
+
+    restarted = _guard(tmp_path)
+    persisted = restarted.inspect(identity)
+    fallback_result = restarted.dispatch_remote(identity, CandidateHandoff("fallback", "other-provider"), fallback)
+    assert persisted is not None
+    assert persisted.outcome == DispatchOutcome.INDETERMINATE
+    assert persisted.claim_incarnation == claim.claim_incarnation
+    assert fallback_result.admitted is False
+    assert fallback_result.outcome == DispatchOutcome.INDETERMINATE
+    assert fallback_calls == 0
+
+
 def test_legacy_production_writers_suppress_conflict_and_preserve_attempt_isolation(tmp_path):
     """AC-006: CloudRun/cloud.csv evidence migrates without invented ownership."""
     run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
