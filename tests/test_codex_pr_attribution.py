@@ -192,18 +192,27 @@ def test_real_pr_processing_verifies_url_free_intent_without_retargeting_jules(t
     class FreshMetadataClient:
         def __init__(self) -> None:
             self.strict_reads = 0
+            self.live = metadata
+            self.update_attempts = []
+            self.write_error = None
+            self.apply_before_error = False
 
         def get_pull_request_metadata_strict(self, repo_name: str, pr_number: int) -> dict[str, object]:
             assert (repo_name, pr_number) == (repository, 2237)
             self.strict_reads += 1
-            return metadata
+            return self.live
+
+        def get_repository(self, repo_name: str):
+            assert repo_name == repository
+            return ProjectionRepository(self)
 
     github = FreshMetadataClient()
     closed = MagicMock(closed=True, actions=[], issue_numbers=())
     with patch("auto_coder.pr_processor._close_empty_pr", return_value=closed):
         process_pull_request(github, AutomationConfig(), repository, {"number": 2237})
 
-    assert github.strict_reads == 1
+    assert github.strict_reads == 2
+    assert github.update_attempts == ["Closes #2229\n\nhttps://chatgpt.com/codex/tasks/task_e_Published"]
     established = CodexPrAttributionRepository(repository).get(2237)
     assert established.disposition is AttributionDisposition.VERIFIED
     assert established.origin is not None
@@ -216,3 +225,120 @@ def test_real_pr_processing_verifies_url_free_intent_without_retargeting_jules(t
     assert established.origin.evidence == "retained-publication-intent+closing-reference"
     assert established.consistency_token == "1"
     assert manager.get_binding(2229) == legacy
+
+
+class ProjectionPull:
+    def __init__(self, client):
+        self.client = client
+
+    def edit(self, *, body):
+        self.client.update_attempts.append(body)
+        if self.client.write_error is not None:
+            if self.client.apply_before_error:
+                self.client.live["body"] = body
+            raise self.client.write_error
+        self.client.live["body"] = body
+        return {"body": body}
+
+
+class ProjectionRepository:
+    def __init__(self, client):
+        self.client = client
+
+    def get_pull(self, number):
+        assert number == self.client.live["number"]
+        return ProjectionPull(self.client)
+
+
+class ProjectionGitHub:
+    def __init__(self, live):
+        self.live = live
+        self.reads = 0
+        self.update_attempts = []
+        self.write_error = None
+        self.apply_before_error = False
+
+    def get_pull_request_metadata_strict(self, repository, number):
+        assert (repository, number) == ("owner/repo", self.live["number"])
+        self.reads += 1
+        return {**self.live, "head": dict(self.live["head"])}
+
+    def get_repository(self, repository):
+        assert repository == "owner/repo"
+        return ProjectionRepository(self)
+
+
+def _projection_metadata(body="Summary\n\nTesting\n\nCloses #2230"):
+    return {
+        "number": 77,
+        "body": body,
+        "head": {"ref": "issue-2230-attempt-0-codex-cloud", "repo": {"full_name": "owner/repo"}},
+    }
+
+
+def _prepare_projection(tmp_path, monkeypatch):
+    monkeypatch.setattr("auto_coder.cloud_run.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("auto_coder.codex_pr_attribution.Path.home", lambda: tmp_path)
+    run = accepted_run(2230, 0, "task_e_Projected77", "issue-2230-attempt-0-codex-cloud")
+    CloudRunRepository("owner/repo").save(run)
+
+
+def test_verified_projection_uses_fresh_body_and_is_idempotent(tmp_path, monkeypatch):
+    """REQ-001/002/003: only the exact durable origin reaches a fresh PR body."""
+    from auto_coder.pr_processor import _link_codex_cloud_pr_to_issue
+
+    _prepare_projection(tmp_path, monkeypatch)
+    stale = _projection_metadata("Old summary\n\nCloses #2230")
+    github = ProjectionGitHub(_projection_metadata("Author's new summary\n\nTesting retained\n\nCloses #2230"))
+
+    first = _link_codex_cloud_pr_to_issue("owner/repo", stale, github)
+    expected = "Author's new summary\n\nTesting retained\n\nCloses #2230\n\nhttps://chatgpt.com/codex/tasks/task_e_Projected77"
+    assert (first.status, first.confirmed, first.confirmed_body) == ("updated", True, expected)
+    assert github.live["body"] == expected
+    assert stale["body"] == expected
+    assert github.update_attempts == [expected]
+
+    github.live["body"] = "Author edit\n\nCloses #2230\n\n[task](https://chat.openai.com/codex/cloud/tasks/task_e_Projected77/?view=1#turn)"
+    second = _link_codex_cloud_pr_to_issue("owner/repo", stale, github)
+    assert second.status == "present"
+    assert stale["body"] == github.live["body"]
+    assert github.update_attempts == [expected]
+
+
+def test_projection_failure_and_ambiguous_write_recover_after_restart(tmp_path, monkeypatch):
+    """REQ-004/005: failed publication is not success and durable ownership retries."""
+    from auto_coder.pr_processor import _link_codex_cloud_pr_to_issue
+
+    _prepare_projection(tmp_path, monkeypatch)
+    original = _projection_metadata()
+    github = ProjectionGitHub(original)
+    github.write_error = RuntimeError("response lost")
+    github.apply_before_error = True
+
+    failed = _link_codex_cloud_pr_to_issue("owner/repo", dict(original), github)
+    assert failed.status == "failed"
+    assert not failed.confirmed
+    assert len(github.update_attempts) == 1
+
+    reconstructed = ProjectionGitHub(dict(github.live))
+    recovered = _link_codex_cloud_pr_to_issue("owner/repo", {"number": 77, "body": "stale"}, reconstructed)
+    assert recovered.status == "present"
+    assert reconstructed.update_attempts == []
+    origin = CodexPrAttributionRepository("owner/repo").get(77).origin
+    assert origin is not None
+    assert (origin.task_id, origin.attempt) == ("task_e_Projected77", 0)
+
+
+def test_projection_without_verified_origin_never_guesses_from_issue_state(tmp_path, monkeypatch):
+    """REQ-001/005: current pointers and manual URLs cannot create PR ownership."""
+    from auto_coder.pr_processor import _link_codex_cloud_pr_to_issue
+
+    monkeypatch.setattr("auto_coder.cloud_run.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("auto_coder.codex_pr_attribution.Path.home", lambda: tmp_path)
+    live = _projection_metadata("Closes #2230\n\nhttps://example.com/codex/tasks/task_e_Manual")
+    github = ProjectionGitHub(live)
+
+    result = _link_codex_cloud_pr_to_issue("owner/repo", dict(live), github)
+    assert result.status == "deferred"
+    assert "UNRESOLVED" in result.diagnostic
+    assert github.update_attempts == []

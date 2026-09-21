@@ -54,6 +54,7 @@ from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
 from .ci_repair_authority import current_ci_failure_authority
 from .claude_followup_waits import ClaudeFollowupHoldActive, get_claude_followup_wait_store, wait_from_error
 from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
+from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin, task_ids_from_text
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
 from .entity_invalidation import DurableInvalidationQueue
@@ -1225,12 +1226,15 @@ def process_pull_request(
             _record_pr_stage(pr_number, "pr.unsafe-branch-recovery", f"pr#{pr_number} unsafe-branch recovery", Outcome.COMPLETED, {"effect": "closed", "reissue_delivered": unsafe_branch_result.reissue_delivered})
             return processed_pr
 
+        projection = _link_codex_cloud_pr_to_issue(repo_name, pr_data, github_client)
+        projection_action = _codex_projection_action(projection)
+
         # Close PRs with zero effective diff before any further processing.
         # This runs before the @auto-coder label check so empty PRs left from earlier
         # runs are closed and their source issues retried immediately.
         empty_pr_result = _close_empty_pr(github_client, repo_name, pr_data, config)
         if empty_pr_result.closed:
-            processed_pr.actions_taken = empty_pr_result.actions
+            processed_pr.actions_taken = [*([projection_action] if projection_action else []), *empty_pr_result.actions]
             processed_pr.priority = "close"
             _record_pr_stage(pr_number, "pr.empty-pr-recovery", f"pr#{pr_number} empty-PR recovery", Outcome.COMPLETED, {"effect": "closed", "issue_numbers": list(empty_pr_result.issue_numbers)})
             return processed_pr
@@ -1241,7 +1245,7 @@ def process_pull_request(
         # label would leave the PR open forever.
         stale_jules_result = _close_stale_jules_pr(github_client, repo_name, pr_data, config)
         if stale_jules_result.closed:
-            processed_pr.actions_taken = stale_jules_result.actions
+            processed_pr.actions_taken = [*([projection_action] if projection_action else []), *stale_jules_result.actions]
             processed_pr.priority = "close"
             _record_pr_stage(pr_number, "pr.stale-jules-recovery", f"pr#{pr_number} stale-Jules recovery", Outcome.COMPLETED, {"effect": "closed", "issue_numbers": list(stale_jules_result.issue_numbers)})
             return processed_pr
@@ -1259,7 +1263,7 @@ def process_pull_request(
                 logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
                 get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - already processed", item_type="pr", item_number=pr_number, details={"skip_reason": "already_processed"})
                 _record_pr_stage(pr_number, "pr.admission", f"pr#{pr_number} admission", Outcome.SKIPPED, {"reason": "already_processed"})
-                processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
+                processed_pr.actions_taken = [*([projection_action] if projection_action else []), "Skipped - already being processed (@auto-coder label present)"]
                 return processed_pr
 
         # Check if we should skip this PR because it's waiting for Jules
@@ -1267,7 +1271,7 @@ def process_pull_request(
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
             get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
             _record_pr_stage(pr_number, "pr.provider-ownership-wait", f"pr#{pr_number} provider-ownership wait", Outcome.DEFERRED, {"provider": "jules"})
-            processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
+            processed_pr.actions_taken = [*([projection_action] if projection_action else []), "Skipped - waiting for Jules to fix CI failures"]
             return processed_pr
 
         # Process Jules PRs to detect session IDs and update PR body
@@ -1283,17 +1287,11 @@ def process_pull_request(
             logger.error(f"Error in Jules PR processing for PR #{pr_number}: {e}")
             # Continue with normal processing even if Jules processing fails
 
-        # Process Codex Cloud PRs to append Codex Cloud URL if linked issue was processed by Codex Cloud
-        try:
-            _link_codex_cloud_pr_to_issue(repo_name, pr_data, github_client)
-        except Exception as e:
-            logger.error(f"Error in Codex Cloud PR processing for PR #{pr_number}: {e}")
-
         # Check if we should skip this PR because it's waiting for Jules
         if _should_skip_waiting_for_jules(github_client, repo_name, pr_data, config):
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
             get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
-            processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
+            processed_pr.actions_taken = [*([projection_action] if projection_action else []), "Skipped - waiting for Jules to fix CI failures"]
             return processed_pr
 
         # Extract PR information
@@ -1335,8 +1333,9 @@ def process_pull_request(
                     config,
                     force_adversarial_validation=force_adversarial_validation,
                     adversarial_validation_scheduler=adversarial_validation_scheduler,
+                    project_codex_task=False,
                 )
-                processed_pr.actions_taken = processed_pr_result.actions_taken
+                processed_pr.actions_taken = [*([projection_action] if projection_action else []), *processed_pr_result.actions_taken]
                 processed_pr.priority = processed_pr_result.priority
                 processed_pr.analysis = processed_pr_result.analysis
                 processed_pr.outcome = processed_pr_result.outcome
@@ -2450,6 +2449,8 @@ def _process_pr_for_merge(
         processed_pr.priority = "close"
         return processed_pr
 
+    projection_action = _codex_projection_action(_link_codex_cloud_pr_to_issue(repo_name, pr_data, github_client))
+
     # Use LabelManager context manager to handle @auto-coder label automatically
     with LabelManager(
         github_client,
@@ -2460,10 +2461,10 @@ def _process_pr_for_merge(
         known_labels=pr_data.get("labels"),
     ) as should_process:
         if not should_process:
-            processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
+            processed_pr.actions_taken = [*([projection_action] if projection_action else []), "Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        processed_pr.actions_taken = _handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)
+        processed_pr.actions_taken = [*([projection_action] if projection_action else []), *_handle_pr_merge(github_client, repo_name, pr_data, config, {}, processed_pr)]
         if any("Successfully merged" in action for action in processed_pr.actions_taken):
             should_process.keep_label()
         return processed_pr
@@ -2477,6 +2478,7 @@ def _process_pr_for_fixes(
     *,
     force_adversarial_validation: bool = False,
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
+    project_codex_task: bool = True,
 ) -> ProcessedPRResult:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
     processed_pr = ProcessedPRResult(
@@ -2498,10 +2500,12 @@ def _process_pr_for_fixes(
         processed_pr.priority = "close"
         return processed_pr
 
+    projection_action = _codex_projection_action(_link_codex_cloud_pr_to_issue(repo_name, pr_data, github_client)) if project_codex_task else ""
+
     # Use LabelManager context manager to handle @auto-coder label automatically
     with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config) as should_process:
         if not should_process:
-            processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
+            processed_pr.actions_taken = [action for action in (projection_action, "Skipped - already being processed (@auto-coder label present)") if action]
             return processed_pr
 
         # Use the existing PR actions logic for fixing issues
@@ -2517,7 +2521,7 @@ def _process_pr_for_fixes(
                     force_adversarial_validation=force_adversarial_validation,
                     adversarial_validation_scheduler=adversarial_validation_scheduler,
                 )
-                processed_pr.actions_taken = actions
+                processed_pr.actions_taken = [*([projection_action] if projection_action else []), *actions]
                 processed_pr.error = processing_status.error
                 processed_pr.outcome = processing_status.outcome
                 # Retain label on successful merge
@@ -5418,13 +5422,36 @@ def _find_codex_cloud_task_for_issue(
         return None
 
 
+@dataclass(frozen=True)
+class CodexTaskProjectionResult:
+    """Observed outcome of projecting a durable Codex origin into a PR body."""
+
+    status: str
+    diagnostic: str
+    confirmed_body: Optional[str] = None
+
+    @property
+    def confirmed(self) -> bool:
+        return self.status in {"present", "updated"}
+
+
+def _codex_projection_action(result: object) -> str:
+    """Expose only applicable projection outcomes in general PR actions."""
+    if isinstance(result, CodexTaskProjectionResult) and result.status in {
+        "present",
+        "updated",
+        "failed",
+    }:
+        return result.diagnostic
+    return ""
+
+
 def _link_codex_cloud_pr_to_issue(
     repo_name: str,
     pr_data: Dict[str, Any],
     github_client: Any,
-) -> bool:
-    """If PR body contains 'Closes #xxx' and issue #xxx was processed by Codex Cloud,
-    append the Codex Cloud URL to the PR body.
+) -> CodexTaskProjectionResult:
+    """Project a verified PR-specific Codex origin into the live GitHub body.
 
     Args:
         repo_name: Repository name (owner/repo)
@@ -5432,39 +5459,49 @@ def _link_codex_cloud_pr_to_issue(
         github_client: GitHub client instance
 
     Returns:
-        True if updated or no update needed, False on error
+        A result that distinguishes confirmed publication from deferral/failure.
     """
+    pr_number = pr_data.get("number")
+    if not isinstance(pr_number, int):
+        return CodexTaskProjectionResult("deferred", "Codex task projection deferred: PR number is unavailable")
+
     try:
-        pr_number = pr_data.get("number")
-        pr_body = pr_data.get("body", "") or ""
+        strict_getter = getattr(type(github_client), "get_pull_request_metadata_strict", None)
+        if not callable(strict_getter):
+            return CodexTaskProjectionResult("unavailable", "Codex task projection unavailable: authoritative PR body reader is not supported")
+        authoritative = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
+        if not isinstance(authoritative, dict) or authoritative.get("number") != pr_number or not isinstance(authoritative.get("body"), (str, type(None))):
+            return CodexTaskProjectionResult("unavailable", "Codex task projection unavailable: authoritative PR body is malformed")
 
-        # Extract linked issues from PR body using linking keywords (close, closes, fix, etc.)
-        linked_issues = extract_linked_issues_from_pr_body(pr_body)
-        if not linked_issues:
-            # Also check direct regex for Closes #xxx just in case
-            matches = re.findall(r"\b(?:close|closes|closed|closing|fix|fixes|fixed|resolve|resolves|resolved)\s*#(\d+)", pr_body, re.IGNORECASE)
-            linked_issues = [int(m) for m in matches]
+        from .cloud_run import CloudRunRepository
 
-        if not linked_issues:
-            return True
+        bindings = CodexPrAttributionRepository(repo_name)
+        attribution = resolve_codex_pr_origin(repo_name, authoritative, CloudRunRepository(repo_name), bindings)
+        origin = attribution.origin
+        if attribution.disposition is not AttributionDisposition.VERIFIED or origin is None or origin.repository != repo_name or origin.pr_number != pr_number or origin.provider != "codex-cloud":
+            return CodexTaskProjectionResult(
+                "deferred",
+                f"Codex task projection deferred: attribution is {attribution.disposition.value} ({attribution.boundary})",
+            )
 
-        urls_to_append: List[str] = []
-        for issue_number in linked_issues:
-            codex_url = _find_codex_cloud_task_for_issue(repo_name, issue_number, github_client)
-            if codex_url and codex_url not in pr_body and codex_url not in urls_to_append:
-                urls_to_append.append(codex_url)
+        pr_body = authoritative.get("body") or ""
+        if origin.task_id in task_ids_from_text(pr_body):
+            pr_data.update(authoritative)
+            return CodexTaskProjectionResult("present", f"Confirmed Codex task link for PR #{pr_number} is already present", pr_body)
 
-        if not urls_to_append:
-            return True
+        # Re-read the durable binding at update admission. This prevents a
+        # locally observed conflict or revision change from being ignored after
+        # the authoritative body read above.
+        admitted = bindings.get(pr_number)
+        if admitted != attribution:
+            return CodexTaskProjectionResult("deferred", "Codex task projection deferred: attribution changed before update admission")
 
-        # Append URLs to PR body
+        codex_url = f"https://chatgpt.com/codex/tasks/{origin.task_id}"
         separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
-        new_body = f"{pr_body}{separator}" + "\n\n".join(urls_to_append)
+        new_body = f"{pr_body}{separator}{codex_url}"
 
         # Update PR body on GitHub
         try:
-            from auto_coder.util.gh_cache import GitHubClient, get_ghapi_client
-
             token = getattr(github_client, "token", None)
             if isinstance(token, str):
                 api = get_ghapi_client(token)
@@ -5483,17 +5520,18 @@ def _link_codex_cloud_pr_to_issue(
                 validate_issue_references(new_body, github_client, repo_name)
                 api.pulls.update(owner, repo_split, pr_number, body=new_body)
 
+            pr_data.update(authoritative)
             pr_data["body"] = new_body
-            logger.info(f"Updated PR #{pr_number} body to include Codex Cloud URL(s): {', '.join(urls_to_append)}")
-            log_action(f"Updated PR #{pr_number} body with Codex Cloud URL(s)")
-            return True
+            logger.info(f"Updated PR #{pr_number} body to include verified Codex Cloud URL: {codex_url}")
+            log_action(f"Updated PR #{pr_number} body with verified Codex Cloud URL")
+            return CodexTaskProjectionResult("updated", f"Confirmed Codex task link update for PR #{pr_number}", new_body)
         except Exception as e:
             logger.error(f"Failed to update PR #{pr_number} body with Codex Cloud URL: {e}")
-            return False
+            return CodexTaskProjectionResult("failed", f"Codex task projection failed: {type(e).__name__}: {e}")
 
     except Exception as e:
         logger.error(f"Error linking Codex Cloud PR #{pr_data.get('number')}: {e}")
-        return False
+        return CodexTaskProjectionResult("unavailable", f"Codex task projection unavailable: {type(e).__name__}: {e}")
 
 
 def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
