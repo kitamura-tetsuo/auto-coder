@@ -14,6 +14,10 @@ replacement work. Only authoritative evidence that creation definitely did
 not start reopens the same creation identity. Accepted receipts are immutable;
 tracking completion is recorded separately so missing CloudRun, cloud.csv, or
 slot projections can be repaired around the same task without resubmission.
+The machine-readable record distinguishes `accepted-current`,
+`accepted-tracking-incomplete`, and `accepted-historical` projection
+dispositions and retains the exact binding that was current when creation was
+claimed.
 
 Routes that use numeric Issue attempts allocate the number once, above both
 current authoritative evidence and every retained allocation for that Issue.
@@ -29,6 +33,13 @@ authority while resolving configured aliases; boolean-only retry dispatch is
 refused rather than converted into a new attempt. Replay of accepted remote
 work repairs tracking around the retained receipt, while replay of a completed
 local invocation does not invoke the agent again.
+
+Codex Cloud retry acceptance conditionally promotes that retained predecessor.
+The accepted-receipt commit, later-accepted check, and current-pointer write use
+one cross-process coordination fence. Consequently, an unknown owner is never
+overwritten and an older accepted repair cannot win after a later accepted
+handoff. The prior binding remains in the handoff history; replacement does not
+cancel or fabricate provider liveness.
 
 This layer does not activate a controller or CLI retry path, choose providers,
 change quota or fallback policy, cancel old work, or replace ordinary dispatch

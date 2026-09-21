@@ -661,11 +661,16 @@ def _process_issue_codex_cloud_mode(
     if retry_authority is not None:
         retry_dispatch = RetryDispatchRepository(repo_name)
         try:
+            initial_binding = cloud_manager.read_bindings_strict().get(str(issue_number))
+            predecessor = None
+            if isinstance(initial_binding, CloudTaskBinding):
+                predecessor = (initial_binding.provider, initial_binding.task_id, initial_binding.backend_name)
             retry_handoff, may_create = retry_dispatch.claim(
                 retry_authority,
                 "codex-cloud",
                 backend_name,
                 {"base_branch": config.MAIN_BRANCH},
+                predecessor=predecessor,
             )
             retry_handoff = retry_dispatch.allocate_numeric_attempt(
                 retry_authority.request_id,
@@ -679,6 +684,7 @@ def _process_issue_codex_cloud_mode(
 
         if not may_create:
             if retry_handoff.outcome in {"accepted", "completed"} and retry_handoff.external_id:
+                retained_config = json.loads(retry_handoff.route_config)
                 recovered = CloudRun(
                     repo_name=repo_name,
                     issue_number=issue_number,
@@ -686,17 +692,39 @@ def _process_issue_codex_cloud_mode(
                     provider="codex-cloud",
                     task_id=retry_handoff.external_id,
                     backend_name=retry_handoff.backend_name,
-                    base_branch=config.MAIN_BRANCH,
+                    base_branch=str(retained_config.get("base_branch", "")),
                     submission_outcome="accepted",
                     task_url=retry_handoff.external_url or "",
                 )
                 try:
-                    cloud_run_repo.save(recovered)
+                    cloud_run_repo.repair_accepted(recovered)
                     binding = CloudTaskBinding("codex-cloud", retry_handoff.external_id, retry_handoff.backend_name)
-                    if not cloud_manager.ensure_binding(issue_number, binding):
-                        raise OSError("cloud.csv write failed")
+                    predecessor_binding = (
+                        CloudTaskBinding(
+                            retry_handoff.predecessor_provider,
+                            retry_handoff.predecessor_task_id,
+                            retry_handoff.predecessor_backend_name or "",
+                        )
+                        if retry_handoff.predecessor_provider and retry_handoff.predecessor_task_id
+                        else None
+                    )
+                    if predecessor_binding is None:
+                        current = cloud_manager.read_bindings_strict().get(str(issue_number))
+                        retained = cloud_run_repo.list_for_issue(issue_number)
+                        if current is not None and any((run.provider, run.task_id, run.backend_name) == (current.provider, current.task_id, current.backend_name) for run in retained if run.attempt != attempt):
+                            predecessor_binding = current
+                    disposition = cloud_manager.promote_retry_binding(
+                        issue_number,
+                        binding,
+                        predecessor_binding,
+                        lambda: retry_dispatch.is_latest_accepted(retry_authority.request_id),
+                    )
+                    if disposition == "historical":
+                        retry_dispatch.mark_historical(retry_authority.request_id, "a later accepted retry owns the current pointer")
+                        return [f"Retained historical Codex Cloud task '{retry_handoff.external_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
                     retry_dispatch.mark_tracking_complete(retry_authority.request_id)
                 except Exception as exc:
+                    retry_dispatch.mark_tracking_incomplete(retry_authority.request_id, str(exc))
                     return [f"Accepted Codex Cloud task '{retry_handoff.external_id}' for issue #{issue_number}, but tracking is incomplete: {exc}"]
                 return [f"Codex Cloud task '{retry_handoff.external_id}' already accepted for retry {retry_authority.attempt_id}; skipped duplicate dispatch"]
             return [f"Deferred Codex Cloud task for issue #{issue_number}: retry creation is {retry_handoff.outcome}; no replacement work was started"]
@@ -738,7 +766,7 @@ def _process_issue_codex_cloud_mode(
             label_context.keep_label()
         _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.SKIPPED, {"backend": "codex-cloud", "task_id": existing_run.task_id, "reason": "duplicate dispatch"})
         return [f"Codex Cloud task '{existing_run.task_id}' already running for issue #{issue_number} attempt {attempt}; skipped duplicate dispatch"]
-    if csv_binding is not None and not manual_retry:
+    if csv_binding is not None and not manual_retry and retry_authority is None:
         return [f"Deferred Codex Cloud task for issue #{issue_number}: legacy cloud.csv ownership has no authoritative Issue attempt; operator attention required"]
 
     # Extract issue labels, excluding the retired "@auto-coder" legacy label
@@ -827,10 +855,32 @@ def _process_issue_codex_cloud_mode(
             return [f"Accepted Codex Cloud task '{task_id}' for issue #{issue_number}, but its retry receipt could not be persisted and is indeterminate: {exc}"]
     try:
         binding = CloudTaskBinding("codex-cloud", task_id, backend_name)
-        saved = cloud_manager.add_session(issue_number, task_id, provider="codex-cloud", backend_name=backend_name) if manual_retry and retry_authority is None else cloud_manager.ensure_binding(issue_number, binding)
-        if not saved:
-            raise OSError("cloud.csv write failed")
+        if retry_dispatch is not None and retry_authority is not None and retry_handoff is not None:
+            predecessor_binding = (
+                CloudTaskBinding(
+                    retry_handoff.predecessor_provider,
+                    retry_handoff.predecessor_task_id,
+                    retry_handoff.predecessor_backend_name or "",
+                )
+                if retry_handoff.predecessor_provider and retry_handoff.predecessor_task_id
+                else None
+            )
+            disposition = cloud_manager.promote_retry_binding(
+                issue_number,
+                binding,
+                predecessor_binding,
+                lambda: retry_dispatch.is_latest_accepted(retry_authority.request_id),
+            )
+            if disposition == "historical":
+                retry_dispatch.mark_historical(retry_authority.request_id, "a later accepted retry owns the current pointer")
+                return [f"Retained historical Codex Cloud task '{task_id}' for retry {retry_authority.attempt_id}; a newer accepted retry remains current"]
+        else:
+            saved = cloud_manager.add_session(issue_number, task_id, provider="codex-cloud", backend_name=backend_name) if manual_retry else cloud_manager.ensure_binding(issue_number, binding)
+            if not saved:
+                raise OSError("cloud.csv write failed")
     except Exception as exc:
+        if retry_dispatch is not None and retry_authority is not None:
+            retry_dispatch.mark_tracking_incomplete(retry_authority.request_id, str(exc))
         _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.ACCEPTED_HANDOFF, {"backend": "codex-cloud", "task_id": task_id, "tracking_incomplete": True})
         return [f"Accepted Codex Cloud task '{task_id}' for issue #{issue_number}, but tracking is incomplete: {exc}"]
 

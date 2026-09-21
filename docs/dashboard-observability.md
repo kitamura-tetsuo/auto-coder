@@ -1110,5 +1110,12 @@ machine-readable recovery authority, not a dashboard event source: it records
 `completed` creation states plus projection completion. Existing dispatch
 stage events continue to describe the same provider calls and outcomes, and no
 event schema, processing origin, stage identifier, or dashboard rendering is
-changed by this child. A later controller integration may add a production
-origin and must add its own production-to-view scenario then.
+changed by retry predecessor promotion. The durable query surface now separates
+`accepted-current`, `accepted-tracking-incomplete`, and `accepted-historical`;
+these are tracking dispositions rather than new execution-trace outcomes. The
+production adapter checks are
+`tests/test_codex_retry_promotion.py::test_owned_retry_promotes_attributed_predecessor_and_replay_preserves_run`,
+`test_older_accepted_retry_is_retained_as_historical_when_later_receipt_exists`,
+and `test_unrecognized_conflict_retains_accepted_receipt_as_incomplete`. A later
+controller integration may add a production origin and must add its own
+production-to-view scenario then.

@@ -21,6 +21,8 @@ from typing import Mapping, Optional
 
 from .issue_stage_routing import ImplementationRetryRequest
 
+HANDOFF_COLUMNS = "repository,issue_number,request_id,attempt_id,generation,route,backend_name," "creation_id,outcome,route_config,numeric_attempt,external_id,external_url," "diagnostic,tracking_complete,predecessor_provider,predecessor_task_id," "predecessor_backend_name,projection_disposition"
+
 
 class RetryDispatchConflict(RuntimeError):
     """Raised when durable dispatch identity contradicts the requested use."""
@@ -43,6 +45,10 @@ class RetryHandoff:
     external_url: Optional[str] = None
     diagnostic: Optional[str] = None
     tracking_complete: bool = False
+    predecessor_provider: Optional[str] = None
+    predecessor_task_id: Optional[str] = None
+    predecessor_backend_name: Optional[str] = None
+    projection_disposition: str = "pending"
 
     @property
     def suppresses_creation(self) -> bool:
@@ -96,6 +102,25 @@ class RetryDispatchRepository:
                     WHERE numeric_attempt IS NOT NULL;
                 """
                 )
+                columns = {row[1] for row in self._connection.execute("PRAGMA table_info(retry_handoffs)")}
+                for name, declaration in (
+                    ("predecessor_provider", "TEXT"),
+                    ("predecessor_task_id", "TEXT"),
+                    ("predecessor_backend_name", "TEXT"),
+                    ("projection_disposition", "TEXT NOT NULL DEFAULT 'pending'"),
+                ):
+                    if name not in columns:
+                        self._connection.execute(f"ALTER TABLE retry_handoffs ADD COLUMN {name} {declaration}")
+
+    def _coordination_lock(self):
+        lock_path = self.path.parent / "cloud.csv.lock"
+        lock_file = open(lock_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            lock_file.close()
+            raise
+        return lock_file
 
     @staticmethod
     def _validate_authority(authority: ImplementationRetryRequest, repository: str, issue_number: int) -> None:
@@ -124,6 +149,7 @@ class RetryDispatchRepository:
         route: str,
         backend_name: str,
         route_config: Mapping[str, str],
+        predecessor: Optional[tuple[str, str, str]] = None,
     ) -> tuple[RetryHandoff, bool]:
         """Claim the external creation before calling a process/provider.
 
@@ -151,6 +177,10 @@ class RetryDispatchRepository:
                     refreshed = self._get_locked(authority.request_id)
                     assert refreshed is not None
                     return refreshed, True
+                if existing.outcome in {"accepted", "completed"}:
+                    # Replay follows the immutable accepted receipt and its
+                    # recorded route, not subsequently changed configuration.
+                    return existing, False
                 if (existing.route, existing.backend_name, existing.route_config) != (route, backend_name, encoded):
                     raise RetryDispatchConflict("retry handoff is already bound to different dispatch inputs")
                 return existing, False
@@ -158,6 +188,11 @@ class RetryDispatchRepository:
                 "INSERT INTO retry_handoffs(repository,issue_number,request_id,attempt_id,generation,route,backend_name,creation_id,outcome,route_config,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (self.repository, authority.target_number, authority.request_id, authority.attempt_id, authority.generation, route, backend_name, uuid.uuid4().hex, "claimed", encoded, time.time()),
             )
+            if predecessor is not None:
+                self._connection.execute(
+                    "UPDATE retry_handoffs SET predecessor_provider=?,predecessor_task_id=?,predecessor_backend_name=? WHERE request_id=?",
+                    (*predecessor, authority.request_id),
+                )
             created = self._get_locked(authority.request_id)
             assert created is not None
             return created, True
@@ -194,25 +229,47 @@ class RetryDispatchRepository:
             raise ValueError("invalid retry dispatch outcome")
         if outcome in {"accepted", "completed"} and not external_id:
             raise ValueError("accepted work requires an external identity")
-        with self._lock, self._connection:
-            current = self._require_locked(request_id)
-            if current.outcome in {"accepted", "completed"}:
-                if (current.external_id, current.external_url) != (external_id or current.external_id, external_url or current.external_url):
-                    raise RetryDispatchConflict("accepted retry receipt is immutable")
-                if outcome == "definitely-not-started":
-                    raise RetryDispatchConflict("accepted work cannot become unsent")
-            self._connection.execute(
-                "UPDATE retry_handoffs SET outcome=?,external_id=COALESCE(?,external_id),external_url=COALESCE(?,external_url),diagnostic=?,tracking_complete=?,updated_at=? WHERE request_id=?",
-                (outcome, external_id, external_url, diagnostic, int(tracking_complete), time.time(), request_id),
-            )
-            return self._require_locked(request_id)
+        coordination = self._coordination_lock() if outcome in {"accepted", "completed"} else None
+        try:
+            with self._lock, self._connection:
+                current = self._require_locked(request_id)
+                if current.outcome in {"accepted", "completed"}:
+                    if (current.external_id, current.external_url) != (external_id or current.external_id, external_url or current.external_url):
+                        raise RetryDispatchConflict("accepted retry receipt is immutable")
+                    if outcome == "definitely-not-started":
+                        raise RetryDispatchConflict("accepted work cannot become unsent")
+                self._connection.execute(
+                    "UPDATE retry_handoffs SET outcome=?,external_id=COALESCE(?,external_id),external_url=COALESCE(?,external_url),diagnostic=?,tracking_complete=?,updated_at=? WHERE request_id=?",
+                    (outcome, external_id, external_url, diagnostic, int(tracking_complete), time.time(), request_id),
+                )
+                return self._require_locked(request_id)
+        finally:
+            if coordination is not None:
+                coordination.close()
 
     def mark_tracking_complete(self, request_id: str) -> RetryHandoff:
         with self._lock, self._connection:
             current = self._require_locked(request_id)
             if current.outcome not in {"accepted", "completed"} or not current.external_id:
                 raise RetryDispatchConflict("only accepted work can complete tracking")
-            self._connection.execute("UPDATE retry_handoffs SET tracking_complete=1,updated_at=? WHERE request_id=?", (time.time(), request_id))
+            self._connection.execute("UPDATE retry_handoffs SET tracking_complete=1,projection_disposition='accepted-current',updated_at=? WHERE request_id=?", (time.time(), request_id))
+            return self._require_locked(request_id)
+
+    def mark_historical(self, request_id: str, diagnostic: str) -> RetryHandoff:
+        """Retain an accepted receipt that no longer owns the current pointer."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE retry_handoffs SET projection_disposition='accepted-historical',diagnostic=?,updated_at=? WHERE request_id=?",
+                (diagnostic, time.time(), request_id),
+            )
+            return self._require_locked(request_id)
+
+    def mark_tracking_incomplete(self, request_id: str, diagnostic: str) -> RetryHandoff:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE retry_handoffs SET projection_disposition='accepted-tracking-incomplete',diagnostic=?,updated_at=? WHERE request_id=?",
+                (diagnostic, time.time(), request_id),
+            )
             return self._require_locked(request_id)
 
     def get(self, request_id: str) -> Optional[RetryHandoff]:
@@ -222,7 +279,7 @@ class RetryDispatchRepository:
     def list_for_issue(self, issue_number: int) -> tuple[RetryHandoff, ...]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT repository,issue_number,request_id,attempt_id,generation,route,backend_name,creation_id,outcome,route_config,numeric_attempt,external_id,external_url,diagnostic,tracking_complete FROM retry_handoffs WHERE repository=? AND issue_number=? ORDER BY updated_at,request_id",
+                f"SELECT {HANDOFF_COLUMNS} FROM retry_handoffs " "WHERE repository=? AND issue_number=? ORDER BY rowid",
                 (self.repository, issue_number),
             ).fetchall()
         return tuple(self._decode(row) for row in rows)
@@ -258,7 +315,7 @@ class RetryDispatchRepository:
 
     def _get_locked(self, request_id: str) -> Optional[RetryHandoff]:
         row = self._connection.execute(
-            "SELECT repository,issue_number,request_id,attempt_id,generation,route,backend_name,creation_id,outcome,route_config,numeric_attempt,external_id,external_url,diagnostic,tracking_complete FROM retry_handoffs WHERE request_id=?",
+            f"SELECT {HANDOFF_COLUMNS} FROM retry_handoffs WHERE request_id=?",
             (request_id,),
         ).fetchone()
         return self._decode(row) if row is not None else None
@@ -287,4 +344,8 @@ class RetryDispatchRepository:
             external_url=str(row[12]) if row[12] is not None else None,
             diagnostic=str(row[13]) if row[13] is not None else None,
             tracking_complete=bool(row[14]),
+            predecessor_provider=str(row[15]) if row[15] is not None else None,
+            predecessor_task_id=str(row[16]) if row[16] is not None else None,
+            predecessor_backend_name=str(row[17]) if row[17] is not None else None,
+            projection_disposition=str(row[18]),
         )
