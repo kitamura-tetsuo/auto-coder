@@ -834,6 +834,8 @@ pr:
     }
     ```
 
+    RECORDED GAP REFERENCES: For an entry already present in the Persisted Material Test-Oracle Gap Registry, return only its exact `gap_id`, `status`, and `resolution_evidence` (the latter is required for RESOLVED or INVALID). You may also include its exact `requirement_id`, but do not reproduce, recalculate, paraphrase, or replace its recorded boundary, invariant, or requested regression scope. The persisted record owns that identity and scope. Use the full schema only to propose a genuinely new OPEN discovery.
+
     If every material changed file and Issue requirement is sufficiently covered and no concrete specification violation is identified, return:
     ```json
     {
@@ -1034,6 +1036,9 @@ pr:
     Prior adjudication:
     $prior_adjudication
 
+    Canonical recorded test-oracle gaps (reference existing entries by `gap_id`; do not reproduce their scope):
+    $prior_test_oracle_gaps
+
     Controller-retrieved authoritative per-path results:
     $controller_retrievals
 
@@ -1065,6 +1070,9 @@ pr:
 
     Original suspected findings / counterexamples:
     $original_findings
+
+    Canonical recorded test-oracle gaps (reference existing entries by `gap_id`; do not reproduce their scope):
+    $prior_test_oracle_gaps
 
     Context:
     Repository: $repo_name

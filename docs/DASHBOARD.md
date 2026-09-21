@@ -54,6 +54,13 @@ to show `Cloud Task Adversarial Feedback` only when the corresponding follow-up 
 successfully accepted; a repeated turn, an unfinished turn, or an unrelated PR head
 change produces no new successful-delivery event.
 
+Adversarial rereviews resolve material test-oracle-gap updates against the
+persisted PR-scoped gap registry. Compact ID/status/evidence responses and legacy
+descriptive echoes therefore project the same canonical scope, while unknown or
+conflicting references remain non-authorizing parse diagnostics. This changes no
+dashboard event schema: the existing `pr.adversarial-validation` result and parse
+diagnostic remain the displayed production signals.
+
 The Auto-Coder Dashboard provides a real-time visualization of the automation engine's activities, including the queue status, active workers, and detailed logs for processed items (Issues and Pull Requests).
 
 Issue and PR processing use separate worker pools, with one worker per pool by
