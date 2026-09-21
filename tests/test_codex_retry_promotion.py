@@ -3,10 +3,12 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, patch
 
-from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_config import AutomationConfig, ExplicitTargetOutcome
+from auto_coder.automation_engine import AutomationEngine
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_processor import _acknowledge_retry_projection, _process_issue_codex_cloud_mode
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.retry_dispatch import RetryDispatchRepository
@@ -45,6 +47,57 @@ def _dispatch(authority: ImplementationRetryRequest, backend: str = "codex-alias
             backend,
             retry_authority=authority,
         )
+
+
+def test_controller_confirms_accepted_receipt_only_after_slot_membership(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    store = RetryDispatchRepository("owner/repo")
+    store.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    handoff = store.allocate_numeric_attempt(authority.request_id, [4])
+    assert handoff.numeric_attempt == 5
+    store.record_outcome(authority.request_id, "accepted", external_id="task-joined", tracking_complete=True)
+    store.mark_tracking_complete(authority.request_id)
+    CloudRunRepository("owner/repo").save(CloudRun("owner/repo", 2223, 5, "codex-cloud", task_id="task-joined", backend_name="codex-alias"))
+    assert CloudManager("owner/repo").add_session(2223, "task-joined", "codex-cloud", "codex-alias")
+    slots = ImplementationSlotRepository("owner/repo", 2)
+    assert slots.reserve(ImplementationOwner("issue", 2223))
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+    engine.implementation_slots = slots
+
+    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+    replay_outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+
+    assert outcome is ExplicitTargetOutcome.SUCCESS
+    assert replay_outcome is ExplicitTargetOutcome.SUCCESS
+    assert "phase=accepted-current" in reason
+    assert slots.has_provider_sessions(ImplementationOwner("issue", 2223))
+    confirmed = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert confirmed is not None
+    assert confirmed.handoff_complete is True
+
+
+def test_controller_defers_legacy_provider_ack_without_slot_and_keeps_it_discoverable(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    store = RetryDispatchRepository("owner/repo")
+    store.claim(authority, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    store.allocate_numeric_attempt(authority.request_id, [4])
+    store.record_outcome(authority.request_id, "accepted", external_id="task-unjoined", tracking_complete=True)
+    store.mark_tracking_complete(authority.request_id)
+    CloudRunRepository("owner/repo").save(CloudRun("owner/repo", 2223, 5, "codex-cloud", task_id="task-unjoined", backend_name="codex-alias"))
+    assert CloudManager("owner/repo").add_session(2223, "task-unjoined", "codex-cloud", "codex-alias")
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 2)
+
+    outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+
+    assert outcome is ExplicitTargetOutcome.DEFERRED
+    assert "logical implementation slot is unavailable" in reason
+    unfinished = RetryDispatchRepository("owner/repo").list_unfinished_accepted()
+    assert [item.request_id for item in unfinished] == [authority.request_id]
+    assert unfinished[0].tracking_complete is True
+    assert unfinished[0].handoff_complete is False
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")

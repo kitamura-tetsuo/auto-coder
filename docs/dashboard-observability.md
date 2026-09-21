@@ -1147,6 +1147,19 @@ observability-neutral extensions of this same boundary. They introduce no new
 trace event or dashboard outcome; their durable disposition regressions live in
 `tests/test_codex_retry_promotion.py`.
 
+The enclosing controller now distinguishes provider tracking from joined
+handoff completion and registers unfinished accepted Codex receipts under the
+`codex-retry-handoff` pending-work stage. This changes durable resumption and
+explicit-result classification but is dashboard-observability-neutral: the
+existing explicit execution scope receives the authoritative SUCCESS,
+DEFERRED, SKIPPED, or FAILED result, while pending work is already exposed by
+daemon status and is not rendered as provider or implementation success. No
+structured trace fields or dashboard view are added. Joined-boundary and
+legacy provider-only checkpoint regressions are
+`tests/test_codex_retry_promotion.py::test_controller_confirms_accepted_receipt_only_after_slot_membership`
+and
+`test_controller_defers_legacy_provider_ack_without_slot_and_keeps_it_discoverable`.
+
 Issue #2023 adds the separate `/dashboard/adjudication/pr/<number>` operator
 surface. Its authoritative observations come from
 `AutomationEngine.get_review_adjudication_snapshots`, publication receipts come
