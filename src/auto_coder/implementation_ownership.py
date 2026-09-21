@@ -198,6 +198,15 @@ def acquire_explicit_retry(
         request = routing.claim_retry_acquisition(request_id, repository, target_number, generation)
         if request.status in {"owned", "invalidated"}:
             return request
+        from .cloud_manager import CloudManager
+
+        predecessor = CloudManager(repository).read_bindings_strict().get(str(target_number))
+        request = routing.capture_retry_predecessor(
+            request_id,
+            predecessor.provider if predecessor is not None else None,
+            predecessor.task_id if predecessor is not None else None,
+            predecessor.backend_name if predecessor is not None else None,
+        )
         recovered = slots.retry_acquisition_reference(owner, request.request_id, request.attempt_id, request.generation)
         if recovered is not None:
             return routing.mark_retry_owned(request_id, recovered)

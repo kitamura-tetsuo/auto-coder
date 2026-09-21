@@ -259,6 +259,45 @@ class CloudRunRepository:
                 logger.info(f"Persisted cloud run for issue #{run.issue_number} attempt {run.attempt} " f"(provider={run.provider}, task_id={run.task_id})")
             return success
 
+    def repair_accepted(self, run: CloudRun) -> CloudRun:
+        """Create an accepted projection or non-destructively confirm it.
+
+        Replay data is intentionally not allowed to replace configuration or
+        monitoring fields already written by the original dispatch.
+        """
+        with self._lock:
+            lock_file = self._file_lock()
+            try:
+                data = self._read_all()
+                key = _run_key(run.issue_number, run.attempt)
+                old_raw = data.get(key)
+                if old_raw is not None:
+                    old = CloudRun.from_dict(old_raw)
+                    if not old.task_id and old.submission_outcome == "indeterminate":
+                        if (old.provider, old.backend_name, old.environment_id, old.base_branch) != (
+                            run.provider,
+                            run.backend_name,
+                            run.environment_id,
+                            run.base_branch,
+                        ):
+                            raise ValueError("Contradictory accepted cloud run provenance")
+                        old.task_id = run.task_id
+                        old.task_url = run.task_url
+                        old.submission_outcome = "accepted"
+                        data[key] = old.to_dict()
+                        self._write_all(data)
+                        return old
+                    if (old.provider, old.task_id, old.backend_name) != (run.provider, run.task_id, run.backend_name):
+                        raise ValueError("Contradictory accepted cloud run")
+                    return old
+                if not run.task_id or not run.backend_name or not run.environment_id or not run.base_branch:
+                    raise ValueError("Accepted cloud run provenance is incomplete")
+                data[key] = run.to_dict()
+                self._write_all(data)
+                return run
+            finally:
+                lock_file.close()
+
     def get(self, issue_number: int, attempt: int) -> Optional[CloudRun]:
         """Load a cloud run for the given issue/attempt, if any."""
         with self._lock:
@@ -297,16 +336,20 @@ class CloudRunRepository:
         given issue/attempt.
         """
         with self._lock:
-            data = self._read_all()
-            key = _run_key(issue_number, attempt)
-            raw = data.get(key)
-            if raw is None:
-                return None
-            run = CloudRun.from_dict(raw)
-            run.add_pull_request(pr_number)
-            data[key] = run.to_dict()
-            self._write_all(data)
-            return run
+            lock_file = self._file_lock()
+            try:
+                data = self._read_all()
+                key = _run_key(issue_number, attempt)
+                raw = data.get(key)
+                if raw is None:
+                    return None
+                run = CloudRun.from_dict(raw)
+                run.add_pull_request(pr_number)
+                data[key] = run.to_dict()
+                self._write_all(data)
+                return run
+            finally:
+                lock_file.close()
 
 
 @dataclass
