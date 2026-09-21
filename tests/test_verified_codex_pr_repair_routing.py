@@ -60,6 +60,7 @@ def test_unverified_codex_indicator_blocks_ci_transport(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     data = _pr()
     data["body"] = "Closes #2232\nhttps://chatgpt.com/codex/tasks/task_e_Unproven"
+    data["_codex_pr_attribution_required"] = True
 
     with patch("auto_coder.codex_cloud_client.CodexCloudClient.continue_if_paused") as transport:
         result = _send_codex_cloud_error_feedback("owner/repo", data, [{"name": "tests"}], AutomationConfig(), MagicMock())

@@ -1146,12 +1146,17 @@ def _record_codex_pr_attribution(repo_name: str, pr_data: Dict[str, Any]) -> Non
         from .cloud_run import CloudRunRepository
         from .codex_pr_attribution import CodexPrAttributionRepository, resolve_codex_pr_origin
 
+        runs = CloudRunRepository(repo_name)
         result = resolve_codex_pr_origin(
             repo_name,
             pr_data,
-            CloudRunRepository(repo_name),
+            runs,
             CodexPrAttributionRepository(repo_name),
         )
+        linked_issues = _resolve_pr_issue_numbers(repo_name, pr_data, None)
+        has_accepted_codex_work = any(run.provider == "codex-cloud" and run.submission_outcome == "accepted" for issue_number in linked_issues for run in runs.list_for_issue(issue_number))
+        if _is_codex_pr(pr_data) or has_accepted_codex_work or result.origin is not None:
+            pr_data["_codex_pr_attribution_required"] = True
         if result.origin is not None:
             pr_data["_verified_codex_pr_origin"] = result.origin.task_id
         logger.debug(f"Codex PR attribution for #{pr_data.get('number')}: {result.disposition.value} ({result.boundary})")
@@ -6441,14 +6446,12 @@ def _resolve_cloud_task_origin(
     # Resolve the publication-owned PR binding before consulting that projection.
     try:
         from .cloud_run import CloudRunRepository
-        from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin, task_ids_from_text
+        from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin
 
         runs = CloudRunRepository(repo_name)
         attribution_registry = CodexPrAttributionRepository(repo_name)
         attribution = resolve_codex_pr_origin(repo_name, pr_data, runs, attribution_registry)
-        linked = _resolve_pr_issue_numbers(repo_name, pr_data, github_client)
-        codex_runs = [run for issue in linked for run in runs.list_for_issue(issue) if run.provider == "codex-cloud" and run.submission_outcome == "accepted"]
-        in_scope = bool(attribution.origin or pr_data.get("_verified_codex_pr_origin") or task_ids_from_text(pr_data.get("body")) or pr_data.get("_codex_task_id") or _is_codex_pr(pr_data) or codex_runs)
+        in_scope = bool(attribution.origin or pr_data.get("_codex_pr_attribution_required"))
         if in_scope:
             if attribution.disposition is not AttributionDisposition.VERIFIED or attribution.origin is None:
                 boundary = attribution.boundary or "positive PR publication attribution is missing"
@@ -6466,7 +6469,7 @@ def _resolve_cloud_task_origin(
                 )
             )
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-        if _is_codex_pr(pr_data) or pr_data.get("_codex_task_id"):
+        if pr_data.get("_codex_pr_attribution_required"):
             return CloudTaskOriginResolution(reason=f"Codex PR attribution is UNAVAILABLE: {type(exc).__name__}")
 
     manager = CloudManager(repo_name)
@@ -7222,9 +7225,18 @@ def _send_codex_cloud_error_feedback(
     try:
         resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
         if resolution.origin is None:
-            actions.append(f"Cannot resume Codex Cloud task for PR #{pr_number}: {resolution.reason}")
-            return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
-        selected_origin = resolution.origin
+            if pr_data.get("_codex_pr_attribution_required"):
+                actions.append(f"Cannot resume Codex Cloud task for PR #{pr_number}: {resolution.reason}")
+                return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+            task_id = _resolve_codex_cloud_task_id(repo_name, pr_data, github_client)
+            if not task_id:
+                actions.append(f"Cannot resume Codex Cloud task for PR #{pr_number}: no valid Codex task ID found")
+                return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+            from .codex_cloud_client import CodexCloudClient
+
+            selected_origin = CloudTaskOrigin("codex-cloud", task_id, CodexCloudClient(repo_name=repo_name))
+        else:
+            selected_origin = resolution.origin
         if selected_origin.provider != "codex-cloud":
             actions.append(f"Cannot resume Codex Cloud task for PR #{pr_number}: verified provider is '{selected_origin.provider}'")
             return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
