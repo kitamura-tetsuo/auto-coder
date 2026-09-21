@@ -76,6 +76,14 @@ backend, environment, and base provenance; it performs no provider creation,
 attempt allocation, route selection, or Issue review. A superseded or retired
 receipt remains historical instead of becoming current again.
 
+The pending-work consumer performs the repair itself: it reconstructs a
+missing accepted run from retained launch provenance and conditionally promotes
+only the predecessor captured by the retry admission record (or an earlier
+accepted retry). Missing provenance and unrecognized bindings remain pending.
+This daemon path therefore makes progress after restart or transient storage
+failure without requiring adapter replay, while preserving concurrent PR
+associations and newer accepted ownership.
+
 This recovery does not choose providers, change creation quota or fallback
 policy, cancel old work, imply provider execution completed, or replace
 ordinary non-retry dispatch semantics. A separate operator retry remains new

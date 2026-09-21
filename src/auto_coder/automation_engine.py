@@ -6632,18 +6632,22 @@ class AutomationEngine:
         self.pending_work_scheduler.wake()
 
     def _complete_codex_retry_handoff(self, repo_name: str, request_id: str) -> tuple[ExplicitTargetOutcome, str]:
-        """Confirm one exact accepted receipt across run, pointer, and slot state."""
+        """Repair and confirm one accepted receipt across its durable projections."""
         from .cloud_manager import CloudManager, CloudTaskBinding
-        from .cloud_run import CloudRunRepository
+        from .cloud_run import CloudRun, CloudRunRepository
+        from .issue_stage_routing import IssueStageRoutingStore
         from .retry_dispatch import RetryDispatchRepository
 
         dispatch = RetryDispatchRepository(repo_name)
         handoff = dispatch.get(request_id)
-        if handoff is None:
-            from .issue_stage_routing import IssueStageRoutingStore
-
-            routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
+        routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
+        try:
             authority = IssueStageRoutingStore(routing_path).retry_request(request_id)
+        except Exception as exc:
+            if handoff is not None:
+                self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
+            return ExplicitTargetOutcome.DEFERRED, f"retry request {request_id} authority evidence is unreadable: {exc}"
+        if handoff is None:
             if authority is None or authority.repository != repo_name or authority.status != "owned" or not authority.ownership_reference:
                 return ExplicitTargetOutcome.FAILED, f"retry request {request_id} has no durable dispatch receipt or owned recovery authority"
             manager = CloudManager(repo_name)
@@ -6670,21 +6674,74 @@ class AutomationEngine:
             except Exception as exc:
                 self._schedule_codex_retry_handoff(repo_name, request_id, authority.target_number)
                 return ExplicitTargetOutcome.DEFERRED, f"retry request {request_id} accepted receipt recovery is incomplete: {exc}"
-        identity = f"R={handoff.request_id} A={handoff.attempt_id} N={handoff.numeric_attempt or 'unassigned'}"
+        identity = f"repo={repo_name} issue={handoff.issue_number} R={handoff.request_id} A={handoff.attempt_id} G={handoff.generation} N={handoff.numeric_attempt if handoff.numeric_attempt is not None else 'unassigned'}"
+        if authority is None or (
+            authority.repository,
+            authority.target_number,
+            authority.request_id,
+            authority.attempt_id,
+            authority.generation,
+        ) != (
+            handoff.repository,
+            handoff.issue_number,
+            handoff.request_id,
+            handoff.attempt_id,
+            handoff.generation,
+        ):
+            reason = f"{identity} phase=accepted-tracking-incomplete; durable request attribution is missing or contradictory"
+            dispatch.mark_tracking_incomplete(request_id, reason)
+            self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
+            return ExplicitTargetOutcome.DEFERRED, reason
+        if authority.status == "invalidated":
+            dispatch.mark_historical(request_id, "retry authority was durably invalidated")
+            return ExplicitTargetOutcome.SKIPPED, f"{identity} phase=accepted-historical; retry authority was durably invalidated"
+        if authority.status != "owned" or not authority.ownership_reference:
+            reason = f"{identity} phase=accepted-tracking-incomplete; durable implementation ownership is unavailable"
+            dispatch.mark_tracking_incomplete(request_id, reason)
+            self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
+            return ExplicitTargetOutcome.DEFERRED, reason
         if handoff.outcome == "definitely-not-started":
             return ExplicitTargetOutcome.DEFERRED, f"{identity} phase=definitely-not-started; provider refused before acceptance"
         if handoff.outcome in {"claimed", "indeterminate"}:
             return ExplicitTargetOutcome.DEFERRED, f"{identity} phase=indeterminate-creation; reconciliation or operator attention is required"
-        if handoff.outcome not in {"accepted", "completed"} or not handoff.external_id or handoff.numeric_attempt is None:
+        if handoff.route != "codex-cloud" or handoff.outcome not in {"accepted", "completed"} or not handoff.external_id or handoff.numeric_attempt is None:
             return ExplicitTargetOutcome.FAILED, f"{identity} has an invalid durable retry disposition"
-        task_identity = f"{identity} T={handoff.external_id}"
+        task_identity = f"{identity} T=codex-cloud/{handoff.external_id}/{handoff.backend_name}"
         if handoff.projection_disposition == "accepted-historical" or not dispatch.is_latest_accepted(request_id):
             dispatch.mark_historical(request_id, "a later accepted retry owns the current pointer")
             return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; newer accepted work remains current"
 
-        run = CloudRunRepository(repo_name).get(handoff.issue_number, handoff.numeric_attempt)
-        if run is None or run.provider != "codex-cloud" or run.task_id != handoff.external_id or run.backend_name != handoff.backend_name or run.submission_outcome != "accepted":
-            reason = f"{task_identity} phase=accepted-tracking-incomplete; matching accepted CloudRun is unavailable or contradictory"
+        run_repository = CloudRunRepository(repo_name)
+        try:
+            run = run_repository.get(handoff.issue_number, handoff.numeric_attempt)
+            if run is None:
+                retained_config = json.loads(handoff.route_config)
+                if not isinstance(retained_config, dict):
+                    raise ValueError("retained launch provenance is not an object")
+                base_branch = retained_config.get("base_branch")
+                if not isinstance(base_branch, str) or not base_branch or not handoff.environment_id:
+                    raise ValueError("retained environment/base provenance is incomplete")
+                run = run_repository.repair_accepted(
+                    CloudRun(
+                        repo_name=repo_name,
+                        issue_number=handoff.issue_number,
+                        attempt=handoff.numeric_attempt,
+                        provider="codex-cloud",
+                        task_id=handoff.external_id,
+                        backend_name=handoff.backend_name,
+                        environment_id=handoff.environment_id,
+                        base_branch=base_branch,
+                        submission_outcome="accepted",
+                        task_url=handoff.external_url or "",
+                        launch_identity=handoff.request_id,
+                        publication_head_repository=str(retained_config.get("publication_head_repository", "")),
+                        publication_head_ref=str(retained_config.get("publication_head_ref", "")),
+                    )
+                )
+            if (run.provider, run.task_id, run.backend_name, run.submission_outcome) != ("codex-cloud", handoff.external_id, handoff.backend_name, "accepted"):
+                raise ValueError("matching accepted CloudRun is contradictory")
+        except Exception as exc:
+            reason = f"{task_identity} phase=accepted-tracking-incomplete boundary=cloud-run; {exc}"
             dispatch.mark_tracking_incomplete(request_id, reason)
             self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
             return ExplicitTargetOutcome.DEFERRED, reason
@@ -6698,23 +6755,41 @@ class AutomationEngine:
                 if not dispatch.is_latest_accepted(request_id):
                     dispatch.mark_historical(request_id, "a later accepted retry owns the current pointer")
                     return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; newer accepted work won confirmation"
-                actual = manager.read_bindings_strict().get(str(handoff.issue_number))
-                if actual != expected:
-                    raise RuntimeError(f"current binding is {actual!r}, expected {expected!r}")
+                predecessor = None
+                if handoff.predecessor_provider is not None and handoff.predecessor_task_id is not None and handoff.predecessor_backend_name is not None:
+                    predecessor = CloudTaskBinding(handoff.predecessor_provider, handoff.predecessor_task_id, handoff.predecessor_backend_name)
+                elif authority.predecessor_captured and authority.predecessor_provider is not None and authority.predecessor_task_id is not None and authority.predecessor_backend_name is not None:
+                    predecessor = CloudTaskBinding(authority.predecessor_provider, authority.predecessor_task_id, authority.predecessor_backend_name)
+                recognized = tuple(CloudTaskBinding(*item) for item in dispatch.accepted_predecessors(request_id))
+                disposition = manager.promote_retry_binding(
+                    handoff.issue_number,
+                    expected,
+                    predecessor,
+                    lambda: dispatch.is_latest_accepted(request_id),
+                    recognized,
+                    authority.predecessor_captured,
+                )
+                if disposition == "historical":
+                    dispatch.mark_historical(request_id, "a later accepted retry owns the current pointer")
+                    return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; newer accepted work won projection"
+                dispatch.mark_prior_accepted_historical(request_id)
                 if not slots.record_provider_session(owner, handoff.external_id):
                     if slots.has_retired_session(handoff.external_id):
                         dispatch.mark_historical(request_id, "accepted ownership is retained in retired history")
                         return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; ownership is validly retired"
                     raise RuntimeError("logical implementation slot is unavailable")
-                # Recheck after the slot write so a stale consumer cannot
-                # acknowledge itself current across a later acceptance.
                 if not dispatch.is_latest_accepted(request_id) or manager.read_bindings_strict().get(str(handoff.issue_number)) != expected:
                     raise RuntimeError("current ownership changed during slot confirmation")
                 if not handoff.tracking_complete:
                     dispatch.mark_tracking_complete(request_id)
                 dispatch.mark_handoff_complete(request_id)
         except Exception as exc:
-            reason = f"{task_identity} phase=accepted-tracking-incomplete; {exc}"
+            actual = None
+            try:
+                actual = manager.read_bindings_strict().get(str(handoff.issue_number))
+            except Exception:
+                pass
+            reason = f"{task_identity} phase=accepted-tracking-incomplete boundary=pointer-or-owner; actual={actual!r} expected={expected!r}; {exc}"
             dispatch.mark_tracking_incomplete(request_id, reason)
             self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
             return ExplicitTargetOutcome.DEFERRED, reason
