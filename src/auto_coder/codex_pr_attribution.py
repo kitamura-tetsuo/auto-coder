@@ -175,7 +175,7 @@ def resolve_codex_pr_origin(repository: str, pr: dict[str, object], runs: CloudR
     if not isinstance(number, int):
         return AttributionResult(AttributionDisposition.UNAVAILABLE, boundary="authoritative PR number is unavailable")
     existing = bindings.get(number)
-    if existing.disposition is not AttributionDisposition.UNRESOLVED:
+    if existing.disposition in {AttributionDisposition.UNAVAILABLE, AttributionDisposition.CONFLICT}:
         return existing
     try:
         accepted = [run for run in runs.list_all() if run.provider == "codex-cloud" and run.submission_outcome == "accepted" and run.task_id]
@@ -200,11 +200,18 @@ def resolve_codex_pr_origin(repository: str, pr: dict[str, object], runs: CloudR
             candidates.append((run, "authoritative-pr-task-url+closing-reference"))
         elif run.publication_head_repository == head_repo and run.publication_head_ref == head_ref and head_repo == repository:
             candidates.append((run, "retained-publication-intent+closing-reference"))
-    unique = {(run.task_id, run.issue_number): (run, evidence) for run, evidence in candidates}
+    unique = {(run.task_id, run.issue_number, run.backend_name, run.attempt, run.launch_identity): (run, evidence) for run, evidence in candidates}
     if len(url_ids) > 1 or len(unique) > 1:
         return AttributionResult(AttributionDisposition.CONFLICT, boundary="incompatible qualifying accepted-task origins")
     if not unique:
-        return AttributionResult(AttributionDisposition.UNRESOLVED, boundary="no coherent accepted task and qualifying PR publication proof")
+        return existing if existing.disposition is AttributionDisposition.VERIFIED else AttributionResult(AttributionDisposition.UNRESOLVED, boundary="no coherent accepted task and qualifying PR publication proof")
     run, evidence = next(iter(unique.values()))
     origin = CodexPrOrigin(repository, number, run.issue_number, run.provider, run.task_id, run.backend_name, run.attempt, run.launch_identity, evidence, 0)
+    if existing.disposition is AttributionDisposition.VERIFIED and existing.origin is not None:
+        established = existing.origin
+        candidate_identity = (origin.issue_number, origin.provider, origin.task_id, origin.backend_name, origin.attempt, origin.launch_identity)
+        established_identity = (established.issue_number, established.provider, established.task_id, established.backend_name, established.attempt, established.launch_identity)
+        if candidate_identity != established_identity:
+            return AttributionResult(AttributionDisposition.CONFLICT, established, "fresh qualifying proof conflicts with the verified PR origin", existing.consistency_token)
+        return existing
     return bindings.establish(origin)

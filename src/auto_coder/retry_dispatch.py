@@ -151,7 +151,10 @@ class RetryDispatchRepository:
                     refreshed = self._get_locked(authority.request_id)
                     assert refreshed is not None
                     return refreshed, True
-                if (existing.route, existing.backend_name, existing.route_config) != (route, backend_name, encoded):
+                existing_config = json.loads(existing.route_config)
+                requested_config = json.loads(encoded)
+                config_matches = all(existing_config.get(key) == value for key, value in requested_config.items())
+                if (existing.route, existing.backend_name) != (route, backend_name) or not config_matches:
                     raise RetryDispatchConflict("retry handoff is already bound to different dispatch inputs")
                 return existing, False
             self._connection.execute(
@@ -178,6 +181,19 @@ class RetryDispatchRepository:
             retained = [int(row[0]) for row in rows]
             allocated = max(observed_attempts + retained) + 1
             self._connection.execute("UPDATE retry_handoffs SET numeric_attempt=?,updated_at=? WHERE request_id=?", (allocated, time.time(), request_id))
+            return self._require_locked(request_id)
+
+    def bind_route_config(self, request_id: str, route_config: Mapping[str, str]) -> RetryHandoff:
+        """Bind final pre-submission launch intent while a claim is unaccepted."""
+        encoded = self._safe_config(route_config)
+        with self._lock, self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            handoff = self._require_locked(request_id)
+            if handoff.outcome != "claimed":
+                if handoff.route_config != encoded:
+                    raise RetryDispatchConflict("accepted retry launch configuration is immutable")
+                return handoff
+            self._connection.execute("UPDATE retry_handoffs SET route_config=?,updated_at=? WHERE request_id=?", (encoded, time.time(), request_id))
             return self._require_locked(request_id)
 
     def record_outcome(

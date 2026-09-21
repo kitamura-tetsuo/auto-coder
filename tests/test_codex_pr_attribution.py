@@ -52,7 +52,7 @@ def test_url_free_exact_publication_intent_establishes_durable_origin(tmp_path):
     assert CodexPrAttributionRepository("owner/repo", tmp_path / "bindings.json").get(31) == result
 
 
-def test_historical_binding_is_immutable_when_current_attempt_advances(tmp_path):
+def test_historical_binding_exposes_new_qualifying_conflict_without_rebinding(tmp_path):
     runs = CloudRunRepository("owner/repo", tmp_path / "runs.json")
     bindings = CodexPrAttributionRepository("owner/repo", tmp_path / "bindings.json")
     first = accepted_run(7, 1, "task_e_First", "issue-7-attempt-1-codex-cloud")
@@ -62,8 +62,11 @@ def test_historical_binding_is_immutable_when_current_attempt_advances(tmp_path)
     runs.save(second)
     changed_metadata = pr(40, 7, second.publication_head_ref, "https://chatgpt.com/codex/tasks/task_e_Second")
     replay = resolve_codex_pr_origin("owner/repo", changed_metadata, runs, bindings)
-    assert replay == original
+    assert replay.disposition is AttributionDisposition.CONFLICT
     assert replay.origin is not None and replay.origin.task_id == "task_e_First"
+    assert bindings.get(40) == original
+    removed_proof = resolve_codex_pr_origin("owner/repo", pr(40, 7, "unrelated-head"), runs, bindings)
+    assert removed_proof == original
 
 
 def test_weak_evidence_stays_unresolved_and_conflicting_proof_is_explicit(tmp_path):
@@ -123,12 +126,31 @@ def test_initial_dispatch_persists_intent_before_submit_and_recovers_accepted_re
     assert recovered == ["Codex Cloud task 'task_e_Accepted' already accepted for retry attempt-1; skipped duplicate dispatch"]
     run = CloudRunRepository("owner/repo").get(2229, 3)
     assert run is not None
-    assert (run.task_id, run.launch_identity, run.publication_head_repository, run.publication_head_ref) == (
-        "task_e_Accepted",
-        retry.request_id,
+    assert (run.task_id, run.launch_identity, run.publication_head_repository, run.publication_head_ref) == ("task_e_Accepted", retry.request_id, "", "")
+    unresolved = resolve_codex_pr_origin(
         "owner/repo",
-        "issue-2229-attempt-3-codex-cloud",
+        pr(60, 2229, "issue-2229-attempt-3-codex-cloud"),
+        CloudRunRepository("owner/repo"),
+        CodexPrAttributionRepository("owner/repo"),
     )
+    assert unresolved.disposition is AttributionDisposition.UNRESOLVED
+
+
+def test_duplicate_accepted_task_id_with_conflicting_launches_is_conflict(tmp_path):
+    for reverse in (False, True):
+        suffix = "reverse" if reverse else "forward"
+        runs = CloudRunRepository("owner/repo", tmp_path / f"runs-{suffix}.json")
+        bindings = CodexPrAttributionRepository("owner/repo", tmp_path / f"bindings-{suffix}.json")
+        candidates = [
+            accepted_run(12, 1, "task_e_Duplicate", "head-one"),
+            replace(accepted_run(12, 2, "task_e_Duplicate", "head-two"), backend_name="other-backend"),
+        ]
+        for run in reversed(candidates) if reverse else candidates:
+            runs.save(run)
+        metadata = pr(61, 12, "unrelated", "https://chatgpt.com/codex/tasks/task_e_Duplicate")
+        result = resolve_codex_pr_origin("owner/repo", metadata, runs, bindings)
+        assert result.disposition is AttributionDisposition.CONFLICT
+        assert bindings.get(61).disposition is AttributionDisposition.UNRESOLVED
 
 
 def test_real_pr_processing_verifies_url_free_intent_without_retargeting_jules(tmp_path, monkeypatch):

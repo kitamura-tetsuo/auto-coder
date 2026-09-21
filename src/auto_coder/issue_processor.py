@@ -674,11 +674,21 @@ def _process_issue_codex_cloud_mode(
             allocated_attempt = retry_handoff.numeric_attempt
             assert allocated_attempt is not None
             attempt = allocated_attempt
+            if may_create:
+                retry_handoff = retry_dispatch.bind_route_config(
+                    retry_authority.request_id,
+                    {
+                        "base_branch": config.MAIN_BRANCH,
+                        "publication_head_repository": repo_name,
+                        "publication_head_ref": f"issue-{issue_number}-attempt-{attempt}-codex-cloud",
+                    },
+                )
         except Exception as exc:
             return [f"Deferred Codex Cloud task for issue #{issue_number}: retry dispatch authority is unavailable: {exc}"]
 
         if not may_create:
             if retry_handoff.outcome in {"accepted", "completed"} and retry_handoff.external_id:
+                retained_route = json.loads(retry_handoff.route_config)
                 recovered = CloudRun(
                     repo_name=repo_name,
                     issue_number=issue_number,
@@ -690,8 +700,8 @@ def _process_issue_codex_cloud_mode(
                     submission_outcome="accepted",
                     task_url=retry_handoff.external_url or "",
                     launch_identity=retry_authority.request_id,
-                    publication_head_repository=repo_name,
-                    publication_head_ref=f"issue-{issue_number}-attempt-{attempt}-codex-cloud",
+                    publication_head_repository=str(retained_route.get("publication_head_repository", "")),
+                    publication_head_ref=str(retained_route.get("publication_head_ref", "")),
                 )
                 try:
                     cloud_run_repo.save(recovered)

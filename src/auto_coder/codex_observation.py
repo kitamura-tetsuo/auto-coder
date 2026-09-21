@@ -187,19 +187,9 @@ class CodexObservationService:
                     presence = PullRequestPresence.PR_PRESENT if state == "open" else PullRequestPresence.PREVIOUSLY_PUBLISHED
                     return PullRequestEvidence(presence, number, str(pr.get("html_url", "")))
                 continue
-            match, conflict = self._matches(pr, binding, all_runs, number in native)
-            if conflict:
-                continue
-            state = str(pr.get("state", "")).lower()
-            exact_task = f"https://chatgpt.com/codex/tasks/{binding.task_id}" in str(pr.get("body") or "")
-            exact_run = number in current.pull_request_numbers
-            if match and state != "open" and not (exact_task or exact_run):
+            if attribution.disposition in {AttributionDisposition.CONFLICT, AttributionDisposition.UNAVAILABLE}:
                 ambiguous = True
-                continue
-            if match:
-                presence = PullRequestPresence.PR_PRESENT if state == "open" else PullRequestPresence.PREVIOUSLY_PUBLISHED
-                return PullRequestEvidence(presence, number, str(pr.get("html_url", "")))
-            if state_relevant(pr, binding.issue_number, binding.repository) and number not in known:
+            elif state_relevant(pr, binding.issue_number, binding.repository):
                 ambiguous = True
         if ambiguous:
             return PullRequestEvidence(PullRequestPresence.AMBIGUOUS)
