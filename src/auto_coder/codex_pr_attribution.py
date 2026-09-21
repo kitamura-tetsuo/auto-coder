@@ -119,16 +119,18 @@ class CodexPrAttributionRepository:
             if not isinstance(raw, dict):
                 raise ValueError("invalid binding")
             return AttributionResult(AttributionDisposition.VERIFIED, CodexPrOrigin(**raw), consistency_token=token)
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        except OSError as exc:
             return AttributionResult(AttributionDisposition.UNAVAILABLE, boundary=f"attribution read failed: {type(exc).__name__}")
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            return AttributionResult(AttributionDisposition.CONFLICT, boundary=f"attribution record is corrupt: {type(exc).__name__}")
 
     def establish(self, candidate: CodexPrOrigin) -> AttributionResult:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
-            ensure_lock_directory(self.lock_path)
-            with open(self.lock_path, "a+", encoding="utf-8") as locked:
-                fcntl.flock(locked.fileno(), fcntl.LOCK_EX)
-                try:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                ensure_lock_directory(self.lock_path)
+                with open(self.lock_path, "a+", encoding="utf-8") as locked:
+                    fcntl.flock(locked.fileno(), fcntl.LOCK_EX)
                     value = self._read()
                     bindings = value["bindings"]
                     assert isinstance(bindings, dict)
@@ -137,7 +139,9 @@ class CodexPrAttributionRepository:
                         if not isinstance(raw, dict):
                             raise ValueError("invalid binding")
                         current = CodexPrOrigin(**raw)
-                        if current.task_id != candidate.task_id or current.issue_number != candidate.issue_number:
+                        current_identity = (current.repository, current.pr_number, current.issue_number, current.provider, current.task_id, current.backend_name, current.attempt, current.launch_identity)
+                        candidate_identity = (candidate.repository, candidate.pr_number, candidate.issue_number, candidate.provider, candidate.task_id, candidate.backend_name, candidate.attempt, candidate.launch_identity)
+                        if current_identity != candidate_identity:
                             return AttributionResult(AttributionDisposition.CONFLICT, current, "PR already has an incompatible verified origin", str(value["revision"]))
                         return AttributionResult(AttributionDisposition.VERIFIED, current, consistency_token=str(value["revision"]))
                     stored_revision = value["revision"]
@@ -153,9 +157,16 @@ class CodexPrAttributionRepository:
                         stream.flush()
                         os.fsync(stream.fileno())
                     os.replace(temporary, self.path)
+                    directory_fd = os.open(str(self.path.parent), os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
                     return AttributionResult(AttributionDisposition.VERIFIED, committed, consistency_token=str(revision))
-                except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-                    return AttributionResult(AttributionDisposition.UNAVAILABLE, boundary=f"attribution write failed: {type(exc).__name__}")
+        except OSError as exc:
+            return AttributionResult(AttributionDisposition.UNAVAILABLE, boundary=f"attribution write failed: {type(exc).__name__}")
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            return AttributionResult(AttributionDisposition.CONFLICT, boundary=f"attribution record is corrupt: {type(exc).__name__}")
 
 
 def resolve_codex_pr_origin(repository: str, pr: dict[str, object], runs: CloudRunRepository, bindings: CodexPrAttributionRepository) -> AttributionResult:

@@ -1139,6 +1139,25 @@ def _get_review_thread_gate_state(
         return ReviewThreadGateState(lookup_error=str(e))
 
 
+def _record_codex_pr_attribution(repo_name: str, pr_data: Dict[str, Any]) -> None:
+    """Reevaluate PR attribution without authorizing any provider effect."""
+    try:
+        from .cloud_run import CloudRunRepository
+        from .codex_pr_attribution import CodexPrAttributionRepository, resolve_codex_pr_origin
+
+        result = resolve_codex_pr_origin(
+            repo_name,
+            pr_data,
+            CloudRunRepository(repo_name),
+            CodexPrAttributionRepository(repo_name),
+        )
+        logger.debug(f"Codex PR attribution for #{pr_data.get('number')}: {result.disposition.value} ({result.boundary})")
+    except Exception as exc:
+        # Attribution is bookkeeping only. Its unavailable result must not
+        # alter PR admission, provider routing, or unrelated processing.
+        logger.warning(f"Codex PR attribution unavailable for #{pr_data.get('number')}: {type(exc).__name__}")
+
+
 def process_pull_request(
     github_client: Any,
     config: AutomationConfig,
@@ -1199,6 +1218,7 @@ def process_pull_request(
             return processed_pr
         pr_data = unsafe_branch_result.authoritative_pr_data or pr_data
         processed_pr.pr_data = pr_data
+        _record_codex_pr_attribution(repo_name, pr_data)
         if unsafe_branch_result.closed:
             processed_pr.actions_taken = unsafe_branch_result.actions
             processed_pr.priority = "close"
@@ -6010,28 +6030,6 @@ def _resolve_codex_cloud_task_id(
     github_client: Optional[Any] = None,
 ) -> Optional[str]:
     """Resolve the Codex Cloud task associated with a pull request."""
-    pr_number = pr_data.get("number")
-    if isinstance(pr_number, int):
-        try:
-            from .cloud_run import CloudRunRepository
-            from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin
-
-            authoritative = pr_data
-            if github_client is not None:
-                authoritative = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
-            attribution = resolve_codex_pr_origin(
-                repo_name,
-                authoritative,
-                CloudRunRepository(repo_name),
-                CodexPrAttributionRepository(repo_name),
-            )
-            if attribution.disposition is AttributionDisposition.VERIFIED and attribution.origin is not None:
-                return attribution.origin.task_id
-            # A PR-specific lookup must fail closed. Issue comments/current
-            # pointers are discovery hints, never publication provenance.
-            return None
-        except (AttributeError, OSError, TypeError, ValueError):
-            return None
     pr_body = pr_data.get("body", "") or ""
 
     task_id = extract_codex_cloud_task_id(pr_data.get("_codex_task_id"))

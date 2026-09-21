@@ -155,6 +155,8 @@ class CodexObservationService:
             return result
 
     def _observe_pr(self, binding: ObservationBinding) -> PullRequestEvidence:
+        from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin
+
         timeline = self.github.get_issue_timeline_strict(binding.repository, binding.issue_number)
         open_prs = self.github.get_open_pull_requests_strict(binding.repository)
         current = self.runs.get(binding.issue_number, binding.attempt)
@@ -178,6 +180,13 @@ class CodexObservationService:
         ambiguous = False
         for number in sorted(candidates):
             pr = self.github.get_pull_request_metadata_strict(binding.repository, number)
+            attribution = resolve_codex_pr_origin(binding.repository, pr, self.runs, CodexPrAttributionRepository(binding.repository))
+            if attribution.disposition is AttributionDisposition.VERIFIED and attribution.origin is not None:
+                if attribution.origin.task_id == binding.task_id:
+                    state = str(pr.get("state", "")).lower()
+                    presence = PullRequestPresence.PR_PRESENT if state == "open" else PullRequestPresence.PREVIOUSLY_PUBLISHED
+                    return PullRequestEvidence(presence, number, str(pr.get("html_url", "")))
+                continue
             match, conflict = self._matches(pr, binding, all_runs, number in native)
             if conflict:
                 continue
