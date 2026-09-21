@@ -415,3 +415,21 @@ remain the dashboard-visible account of provider selection and handoff. In
 particular, a journal claim or accepted receipt must not be presented as
 implementation completion; incomplete or indeterminate creation remains an
 operator diagnostic until its production projection is reconciled.
+
+### GitHub Review Adjudication
+
+A PR detail page links to a separate **GitHub Review Adjudication** page at
+`/dashboard/adjudication/pr/<pr-number>`. Unlike the local diagnostic timeline,
+this opt-in page reads authoritative GitHub-backed review contexts and can publish
+an append-only adjudication after operator authentication, preview, and explicit
+confirmation. It never treats publication or downstream delivery as proof that
+code was fixed, tests passed, or the PR was approved. Issue detail pages remain
+read-only and have no adjudication link.
+
+Enable the page's authoring service with a valid `[dashboard_adjudication]`
+configuration and repository-effective `[github].review_adjudicator_allowlist`.
+The browser receives neither the GitHub token nor its path. Authentication proves
+knowledge of the configured account-scoped operator secret; it is not proof of a
+particular human's physical presence. Sessions are repository-scoped, expire
+within 30 minutes, and are invalidated by logout, restart, secret changes, or
+disablement.

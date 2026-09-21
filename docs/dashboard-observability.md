@@ -1128,3 +1128,22 @@ checks are additionally covered by
 `test_unreadable_or_mismatched_durable_authority_prevents_creation`,
 `test_binding_installed_after_admission_is_not_treated_as_predecessor`, and
 `test_acceptance_and_cross_provider_promotion_share_one_stale_writer_fence`.
+
+Issue #2023 adds the separate `/dashboard/adjudication/pr/<number>` operator
+surface. Its authoritative observations come from
+`AutomationEngine.get_review_adjudication_snapshots`, publication receipts come
+from the authenticated publication journal, and delivery/retirement state comes
+from `AdjudicationEffectStore`; these are displayed independently and never
+collapsed into PASS, approval, or implementation success. Existing PR and Issue
+diagnostic pages retain their process-local trace source and perform no GitHub
+query. `tests/test_dashboard_adjudication.py` joins the production reader,
+authenticated session, common renderer, GitHub reply adapter, receipt recovery,
+and durable effect projection.
+The mounted client-state regressions in
+`tests/test_dashboard_adjudication_browser.py` additionally drive a real
+headless browser through conflict provenance links, preview/edit races,
+rationale-preserving authoritative refresh, and reload recovery of an uncertain
+publication ID without another draft or submit. Run them with
+`bash scripts/test.sh tests/test_dashboard_adjudication_browser.py` in a
+Playwright-provisioned environment.
+

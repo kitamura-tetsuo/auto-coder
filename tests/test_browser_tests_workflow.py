@@ -81,6 +81,7 @@ def test_pr_tests_and_browser_tests_have_no_cross_workflow_dependency():
 
 
 REAL_BROWSER_MODULES = (
+    "tests/test_dashboard_adjudication_browser.py",
     "tests/test_dashboard_detail_scroll_stability.py",
     "tests/test_dashboard_slots_scroll_stability.py",
 )

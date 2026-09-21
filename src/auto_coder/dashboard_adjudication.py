@@ -28,6 +28,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
@@ -42,6 +43,11 @@ from .llm_backend_config import (
 )
 from .logger_config import get_logger
 from .review_adjudication import Decision, render_decision
+from .review_adjudication_orchestrator import (
+    ADJUDICATION_EFFECTS_DB_ENV,
+    DEFAULT_ADJUDICATION_EFFECTS_DB_PATH,
+    AdjudicationEffectStore,
+)
 from .util.gh_cache import get_ghapi_client
 
 logger = get_logger(__name__)
@@ -194,6 +200,9 @@ class _LoginRequest(BaseModel):
 class _DraftRequest(BaseModel):
     pr_number: int
     context_id: str
+    verdict: str = "UNDECIDED"
+    directive: str = "NONE"
+    rationale: str = "Replace with the adjudicator rationale."
 
 
 class _SubmitRequest(BaseModel):
@@ -250,6 +259,8 @@ class AdjudicationWriteService:
         self.sessions = DashboardAdjudicationSessionStore()
         journal_path = Path(os.environ.get("AUTO_CODER_DASHBOARD_ADJUDICATION_JOURNAL_DB", "~/.auto-coder/dashboard-adjudication-journal.sqlite3")).expanduser()
         self.journal = AdjudicationPublicationJournal(journal_path)
+        effects_path = Path(os.environ.get(ADJUDICATION_EFFECTS_DB_ENV, DEFAULT_ADJUDICATION_EFFECTS_DB_PATH)).expanduser()
+        self.effects = AdjudicationEffectStore(effects_path)
         self.router = APIRouter()
         self._register_routes()
 
@@ -262,8 +273,18 @@ class AdjudicationWriteService:
         return config
 
     def _require_origin(self, request: Request, config: DashboardAdjudicationConfig) -> None:
+        """Require browser provenance for both mutations and same-origin reads.
+
+        Browsers send ``Origin`` for the JSON POSTs but normally omit it for
+        same-origin GETs.  Those GETs carry ``Referer`` instead, so validate
+        its origin without requiring its path to equal the configured origin.
+        """
         origin = request.headers.get("origin")
-        if not origin or origin != config.allowed_origin:
+        if origin is None:
+            referer = request.headers.get("referer", "")
+            parsed = urlparse(referer)
+            origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else None
+        if origin != config.allowed_origin:
             raise AdjudicationAuthorizationError(status_code=403, detail="request origin is not the configured allowed_origin")
 
     def _require_session(self, request: Request, config: DashboardAdjudicationConfig) -> _SessionRecord:
@@ -307,6 +328,16 @@ class AdjudicationWriteService:
     def _register_routes(self) -> None:
         router = self.router
 
+        @router.get("/availability")
+        async def availability():
+            """Expose setup state without exposing paths, credentials, or write authority."""
+            config = self._config()
+            return {
+                "repository": self.repo_name,
+                "configured": config.enabled,
+                "diagnostic": config.diagnostic or ("ready for operator authentication" if config.enabled else "authoring is disabled"),
+            }
+
         @router.post("/login")
         async def login(request: Request, response: Response, payload: _LoginRequest):
             config = self._config()
@@ -340,15 +371,61 @@ class AdjudicationWriteService:
             response.delete_cookie(SESSION_COOKIE, path="/")
             return {"status": "logged-out"}
 
+        @router.get("/session")
+        async def session(request: Request):
+            config, record = self._authorize_read(request)
+            try:
+                github_token = Path(os.path.expanduser(config.github_token_file)).read_text().strip()
+                api = get_ghapi_client(github_token)
+                user = api.users.get_authenticated()
+                publisher_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+                publisher_login = user.get("login") if isinstance(user, dict) else getattr(user, "login", None)
+            except Exception as exc:
+                logger.warning(f"repository={self.repo_name} dashboard_adjudication publisher identity unavailable: {type(exc).__name__}")
+                raise HTTPException(status_code=502, detail="publishing account identity is unavailable") from exc
+            try:
+                allowlist = get_review_adjudicator_allowlist_from_config(repo_name=self.repo_name)
+                valid_allowlist = isinstance(allowlist, list) and bool(allowlist) and all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in allowlist)
+            except ValueError:
+                allowlist = None
+                valid_allowlist = False
+            authorized = valid_allowlist and isinstance(publisher_id, int) and publisher_id in (allowlist or [])
+            return {
+                "repository": self.repo_name,
+                "publisher": {"id": publisher_id, "login": publisher_login},
+                "configuration_valid": True,
+                "authorization_valid": authorized,
+                "authorization_reason": "authorized" if authorized else "publishing account is not in the effective repository adjudicator allowlist",
+                "expires_at": record.expires_at,
+            }
+
         @router.get("/context/{pr_number}")
         async def read_context(request: Request, pr_number: int):
             self._authorize_read(request)
             snapshots = self.engine.get_review_adjudication_snapshots(self.repo_name, pr_number)
             findings = []
+            effects = {item.context_id: item for item in self.effects.rows_for_pr(self.repo_name, pr_number)}
             for snapshot in snapshots:
                 if snapshot.context is None:
                     continue
                 context = snapshot.context
+                effect = effects.get(context.context_id)
+                decisions = []
+                for record in sorted(context.decisions.values(), key=lambda item: (item.source.created_at, item.source.comment_id)):
+                    decisions.append(
+                        {
+                            "decision_id": record.decision.decision_id,
+                            "verdict": record.decision.verdict,
+                            "directive": record.decision.directive,
+                            "rationale": record.decision.rationale,
+                            "actor_id": record.source.author_id,
+                            "actor_url": f"https://api.github.com/user/{record.source.author_id}",
+                            "comment_id": record.source.comment_id,
+                            "created_at": record.source.created_at,
+                            "supersedes": list(record.decision.supersedes),
+                            "comment_url": f"https://github.com/{self.repo_name}/pull/{pr_number}#discussion_r{record.source.comment_id}",
+                        }
+                    )
                 findings.append(
                     {
                         "context_id": context.context_id,
@@ -357,10 +434,27 @@ class AdjudicationWriteService:
                         "base_sha": context.base_sha,
                         "base_ref": context.base_ref,
                         "contract_digest": context.contract_digest,
+                        "contracts": [
+                            {
+                                "issue_number": item.issue_number,
+                                "requirements": [{"id": requirement.id, "text": requirement.text} for requirement in item.requirements],
+                            }
+                            for item in context.contracts
+                        ],
                         "contributing_issues": [item.issue_number for item in context.contracts],
                         "status": snapshot.result.status.value,
+                        "reason": snapshot.result.reason,
                         "tips": list(snapshot.result.tips),
                         "retired_reason": context.retired_reason,
+                        "raw_finding": snapshot.raw_finding,
+                        "observation_revision": snapshot.observation_revision,
+                        "actual_actor_id": snapshot.result.actual_actor_id,
+                        "source_comment_id": snapshot.result.source_comment_id,
+                        "active_decision_id": snapshot.result.decision_id,
+                        "active_verdict": snapshot.result.verdict,
+                        "active_directive": snapshot.result.directive,
+                        "decisions": decisions,
+                        "processing": ({"decision_id": effect.decision_id, "verdict": effect.verdict, "status": effect.status} if effect is not None else None),
                     }
                 )
             return {"pr_number": pr_number, "findings": findings}
@@ -368,6 +462,10 @@ class AdjudicationWriteService:
         @router.post("/draft")
         async def draft(request: Request, payload: _DraftRequest):
             self._authorize_read(request)
+            if (payload.verdict, payload.directive) not in _ALLOWED_PAIRS:
+                raise HTTPException(status_code=400, detail="unsupported verdict/directive pair")
+            if not payload.rationale.strip():
+                raise HTTPException(status_code=400, detail="rationale must be nonblank")
             snapshot = self._snapshot_for_context(payload.pr_number, payload.context_id)
             if snapshot is None or snapshot.context is None:
                 raise HTTPException(status_code=404, detail="no applicable review context found")
@@ -379,10 +477,10 @@ class AdjudicationWriteService:
                 context_id=context.context_id,
                 head_sha=context.head_sha,
                 contract_digest=context.contract_digest,
-                verdict="UNDECIDED",
-                directive="NONE",
+                verdict=payload.verdict,
+                directive=payload.directive,
                 supersedes=tuple(tips),
-                rationale="Replace with the adjudicator rationale.",
+                rationale=payload.rationale,
                 source="dashboard",
             )
             return {
