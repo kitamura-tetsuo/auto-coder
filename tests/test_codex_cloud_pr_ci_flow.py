@@ -11,6 +11,7 @@ import pytest
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.ci_repair_authority import CIRepairAuthority
 from auto_coder.cloud_manager import CloudManager
+from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.pr_processor import (
     CodexCloudFeedbackResult,
     _send_codex_cloud_error_feedback,
@@ -325,18 +326,33 @@ class TestCodexCloudPRCIFlow:
         branch_manager.assert_not_called()
         local_repair.assert_not_called()
 
-    def test_failed_codex_cloud_delivery_remains_retryable_without_local_repair(self, config, mock_github_client):
+    def test_failed_codex_cloud_delivery_remains_retryable_without_local_repair(self, config, mock_github_client, tmp_path, monkeypatch):
         """A rejected continuation is explicit and never reported as cloud-handled."""
         from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 
         config.CHECK_LABELS = False
+        monkeypatch.setenv("HOME", str(tmp_path))
+        CloudRunRepository("owner/repo").save(
+            CloudRun(
+                "owner/repo",
+                202,
+                0,
+                "codex-cloud",
+                task_id="task_e_pr202",
+                backend_name="codex-cloud",
+                submission_outcome="accepted",
+                launch_identity="request-202-0",
+                publication_head_repository="owner/repo",
+                publication_head_ref="feature-branch",
+            )
+        )
         pr_data = {
             "number": 202,
             "title": "Implement cloud feature",
-            "body": "https://chatgpt.com/codex/tasks/task_e_pr202",
+            "body": "Closes #202\nhttps://chatgpt.com/codex/tasks/task_e_pr202",
             "state": "open",
             "user": {"login": "octocat"},
-            "head": {"ref": "feature-branch", "sha": "abcdef123456"},
+            "head": {"ref": "feature-branch", "sha": "abcdef123456", "repo": {"full_name": "owner/repo"}},
             "base": {"ref": "main"},
             "mergeable": True,
             "draft": False,

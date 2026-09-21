@@ -1093,6 +1093,14 @@ specific current-evidence reason and do not emit an accepted-handoff outcome or
 a provider receipt. Initiation logs include the bound PR head and qualifying
 failure identities; no structured event schema or dashboard field changed.
 
+Codex-associated repairs additionally revalidate the durable PR publication
+origin immediately before provider transport. Attribution failures remain
+deferred/failed actions and do not emit the existing accepted delivery events;
+confirmed deliveries continue to identify the admitted provider and task. This
+is observability-neutral for the dashboard schema: no event or field was added,
+and URL annotation remains outside the delivery oracle. The runnable routing and
+zero-send regressions are in `tests/test_verified_codex_pr_repair_routing.py`.
+
 # Jules candidate selection and final merge fencing
 
 Speculative candidate evaluation is intentionally represented by existing CI,
