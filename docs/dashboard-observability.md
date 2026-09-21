@@ -1,5 +1,17 @@
 # Dashboard observability verification
 
+Issue #2077 adds `IssueDispatchGuard`, a provider-neutral durable handoff
+boundary, without wiring it into ordinary Issue processing yet. It therefore
+introduces no new processing origin, execution-trace stage, structured event
+field, or dashboard projection in this stage. Its outcomes are returned as
+machine-readable `DispatchResult` values and its persistent SQLite records are
+admission authority, not dashboard history. `tests/test_issue_dispatch.py`
+drives the real reservation, callback, restart, legacy CloudRun/`cloud.csv`,
+conflict, and persistence-failure boundaries. The subsequent adapter/integration
+stage must emit and test the production-to-view trace when it makes this guard
+reachable from ordinary dispatch. Run `bash scripts/test.sh
+tests/test_issue_dispatch.py` for this intentionally pre-integration boundary.
+
 Issue #2002 mounts the read-only repository dependency-rescan projection at
 `/dashboard/jobs/dependency-rescan`. It consumes only the shared
 `RepoJobTraceCollector` snapshot produced by the real webhook/durable-worker
