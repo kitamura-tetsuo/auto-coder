@@ -39,6 +39,8 @@ This feature is controlled by the `ENABLE_MERGEABILITY_REMEDIATION` configuratio
 - `SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL` (default: true) - Controls base branch updates during fix flows
 
 See [docs/client-features/](docs/client-features/README.md) for complete technical documentation.
+Operators can use the [ChatGPT-assisted review-adjudication guide](docs/review-adjudication.md)
+to publish an explicitly authorized decision without a local CLI.
 
 ### 📊 Logging and Monitoring
 - **Real-time Dashboard**: Visualize queue status and active workers at `http://localhost:8000/dashboard/`. See [docs/DASHBOARD.md](docs/DASHBOARD.md) for details.

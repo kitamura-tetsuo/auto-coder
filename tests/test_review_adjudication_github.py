@@ -23,6 +23,10 @@ def _thread() -> ReviewThread:
     return ReviewThread(id="T1", comments=[ReviewThreadComment(10, "finding", "bot", 7, "Bot", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")])
 
 
+def _publication_arguments(ledger):
+    return [8], ledger.current(None, None, "authoritative thread reconciled"), "observation-1"
+
+
 def test_context_registration_is_restart_safe_and_singleton(tmp_path: Path) -> None:
     contracts = build_issue_contracts([IssueEvidence(90, 9, "title", BODY)])
     binding = PullRequestBinding(3, "o/r", 4, "a" * 40, "b" * 40, "main")
@@ -57,11 +61,11 @@ def test_ambiguous_publication_is_verified_before_retry(tmp_path: Path) -> None:
             raise TimeoutError
 
     client = Client()
-    assert publish_context(client, store, ledger, _thread()) == "unknown"
+    assert publish_context(client, store, ledger, _thread(), *_publication_arguments(ledger)) == "unknown"
     saved = store.publication(context.context_id)[1]
     observed = _thread()
     observed.comments.append(ReviewThreadComment(12, saved))
-    assert publish_context(client, store, ledger, observed) == "confirmed"
+    assert publish_context(client, store, ledger, observed, *_publication_arguments(ledger)) == "confirmed"
     assert client.calls == 1
 
 
@@ -74,8 +78,8 @@ def test_publication_definite_refusal_remains_retryable(tmp_path: Path) -> None:
     request = httpx.Request("POST", "https://api.github.test/reply")
     client.reply_to_review_thread.side_effect = httpx.HTTPStatusError("refused", request=request, response=httpx.Response(422, request=request))
 
-    assert publish_context(client, store, ledger, _thread()) == "definitely-not-sent"
-    assert publish_context(client, store, ledger, _thread()) == "definitely-not-sent"
+    assert publish_context(client, store, ledger, _thread(), *_publication_arguments(ledger)) == "definitely-not-sent"
+    assert publish_context(client, store, ledger, _thread(), *_publication_arguments(ledger)) == "definitely-not-sent"
     assert client.reply_to_review_thread.call_count == 2
 
 
@@ -85,7 +89,8 @@ def test_restart_confirms_interrupted_pending_publication_without_post(tmp_path:
     path = tmp_path / "state.sqlite"
     first_store = AdjudicationContextStore(path)
     first_store.register(context, "r1")
-    body = render_context_projection(context, ())
+    result = AdjudicationContextStore(tmp_path / "render.sqlite").register(context, "r1").current(None, None, "authoritative thread reconciled")
+    body = render_context_projection(context, (), [8], result, "observation-1")
     first_store.set_publication(context.context_id, "pending", body)
     observed = _thread()
     observed.comments.append(ReviewThreadComment(12, body))
@@ -162,7 +167,9 @@ def test_engine_targeted_refresh_uses_authoritative_contracts_and_publishes(tmp_
         repeated = engine.refresh_review_adjudications("o/r", {"number": 4})
     assert repeated[0].context is not None
     assert repeated[0].context.context_id == context_id
-    github.reply_to_review_thread.assert_called_once()
+    assert github.reply_to_review_thread.call_count == 3
+    assert "Reader lifecycle result: `SOURCE_UNAVAILABLE`" in github.reply_to_review_thread.call_args_list[1].args[3]
+    assert github.reply_to_review_thread.call_args.args[3] == published_body
 
     # The durable reverse association makes an edit to the second contract
     # wake the same PR even though its head did not change.
@@ -419,3 +426,29 @@ def test_observed_contract_change_retires_before_thread_failure(tmp_path: Path, 
     replacement = ReviewAdjudicationService(github, AdjudicationContextStore(path)).refresh("o/r", 4, pr, [9], [7], [8])[0]
     assert replacement.context is not None
     assert replacement.context.context_id != original_id
+
+
+def test_revocation_is_published_before_restored_authority_and_failed_issue_read(tmp_path: Path) -> None:
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    github.get_pr_review_threads_strict.return_value = [_thread()]
+    service = ReviewAdjudicationService(github, AdjudicationContextStore(tmp_path / "state.sqlite"))
+    pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
+    original = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert original.context is not None
+    positive_projection = github.reply_to_review_thread.call_args.args[3]
+
+    service.apply_authorization_policy("o/r", 4, [], [8])
+
+    retirement_projection = github.reply_to_review_thread.call_args.args[3]
+    assert retirement_projection != positive_projection
+    assert f"Context ID: `{original.context.context_id}`" in retirement_projection
+    assert "Reader lifecycle result: `INVALID`" in retirement_projection
+    assert "Permanently retired: `yes`" in retirement_projection
+    assert "authorizes no adjudication write" in retirement_projection
+
+    github.get_issue_dispatch_snapshot_strict.side_effect = PermissionError("403")
+    with pytest.raises(PermissionError, match="403"):
+        service.refresh("o/r", 4, pr, [9], [7], [8])
+
+    assert github.reply_to_review_thread.call_args.args[3] == retirement_projection

@@ -206,7 +206,9 @@ def test_revoked_adjudicator_authorization_blocks_a_previously_applicable_overru
         actions, force_revalidation = _apply_review_adjudication_effects(REPO, PR_NUMBER, _pr_data(), github_client)
 
     assert not any("Retired an overruled finding" in action for action in actions)
-    github_client.reply_to_review_thread.assert_not_called()
+    github_client.reply_to_review_thread.assert_called_once()
+    assert "Reader lifecycle result: `INVALID`" in github_client.reply_to_review_thread.call_args.args[3]
+    assert "Permanently retired: `yes`" in github_client.reply_to_review_thread.call_args.args[3]
     github_client.resolve_review_thread.assert_not_called()
     reloaded = registry.get(REPO, PR_NUMBER, "codex", "codex", "strong")
     assert reloaded is not None

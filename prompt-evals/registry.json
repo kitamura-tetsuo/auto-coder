@@ -2,6 +2,18 @@
   "schema_version": 1,
   "targets": [
     {
+      "id": "chatgpt-review-adjudication",
+      "prompt_dependencies": [
+        {
+          "path": "docs/prompts/review-adjudication-chatgpt.md"
+        }
+      ],
+      "config": "prompt-evals/targets/chatgpt-review-adjudication/promptfooconfig.yaml",
+      "cases": [
+        "prompt-evals/targets/chatgpt-review-adjudication/cases/*.yaml"
+      ]
+    },
+    {
       "id": "individual-objective-scope",
       "prompt_dependencies": [
         {

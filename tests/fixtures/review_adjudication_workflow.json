@@ -1,0 +1,28 @@
+{
+  "repository": "octo/example",
+  "repository_id": 314,
+  "pr_number": 27,
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "base_ref": "main",
+  "root": {
+    "thread_id": "PRRT_fixture",
+    "comment_id": 901,
+    "author_id": 71,
+    "body": "REQ-001 is violated: both the success claim and retirement scope are wrong.",
+    "created_at": "2026-09-01T00:00:00Z",
+    "updated_at": "2026-09-01T00:00:00Z"
+  },
+  "adjudicator_id": 82,
+  "issue": {
+    "id": 20210,
+    "number": 2021,
+    "title": "Fixture contract",
+    "body": "## Objective\n\nKeep adjudication bounded.\n\n## Requirements\n\nREQ-001: Preserve bounded outcomes.\n"
+  },
+  "cases": [
+    {"verdict": "UPHOLD", "directive": "FIX", "effect": "repair"},
+    {"verdict": "OVERRULE", "directive": "NO_CHANGE", "effect": "retire-root-only"},
+    {"verdict": "UNDECIDED", "directive": "NONE", "effect": "none"}
+  ]
+}
