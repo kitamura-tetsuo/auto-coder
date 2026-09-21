@@ -689,6 +689,9 @@ def _process_issue_codex_cloud_mode(
                     base_branch=config.MAIN_BRANCH,
                     submission_outcome="accepted",
                     task_url=retry_handoff.external_url or "",
+                    launch_identity=retry_authority.request_id,
+                    publication_head_repository=repo_name,
+                    publication_head_ref=f"issue-{issue_number}-attempt-{attempt}-codex-cloud",
                 )
                 try:
                     cloud_run_repo.save(recovered)
@@ -744,6 +747,8 @@ def _process_issue_codex_cloud_mode(
     # Extract issue labels, excluding the retired "@auto-coder" legacy label
     # so it never reaches the LLM prompt (FTR-1792).
     issue_labels = filter_legacy_auto_coder_label(issue_data.get("labels", []))
+    launch_identity = retry_authority.request_id if retry_authority is not None else f"{repo_name}#{issue_number}:attempt:{attempt}"
+    publication_head_ref = f"issue-{issue_number}-attempt-{attempt}-codex-cloud"
     prompt = render_prompt(
         "codex_cloud.initial_issue_implementation",
         repo_name=repo_name,
@@ -757,6 +762,8 @@ def _process_issue_codex_cloud_mode(
         issue_attempt=attempt,
         backend_name=backend_name,
         base_branch=config.MAIN_BRANCH,
+        publication_head_repository=repo_name,
+        publication_head_ref=publication_head_ref,
         commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
         parent_issue_number=issue_data.get("parent_issue_number"),
         parent_issue_title=issue_data.get("parent_issue_title", ""),
@@ -777,6 +784,9 @@ def _process_issue_codex_cloud_mode(
         environment_id=client.environment_id if isinstance(client.environment_id, str) else "",
         base_branch=config.MAIN_BRANCH,
         submission_outcome="indeterminate",
+        launch_identity=launch_identity,
+        publication_head_repository=repo_name,
+        publication_head_ref=publication_head_ref,
     )
     try:
         claim, acquired = cloud_run_repo.acquire_submission_claim(claim)

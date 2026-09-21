@@ -6010,6 +6010,28 @@ def _resolve_codex_cloud_task_id(
     github_client: Optional[Any] = None,
 ) -> Optional[str]:
     """Resolve the Codex Cloud task associated with a pull request."""
+    pr_number = pr_data.get("number")
+    if isinstance(pr_number, int):
+        try:
+            from .cloud_run import CloudRunRepository
+            from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin
+
+            authoritative = pr_data
+            if github_client is not None:
+                authoritative = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
+            attribution = resolve_codex_pr_origin(
+                repo_name,
+                authoritative,
+                CloudRunRepository(repo_name),
+                CodexPrAttributionRepository(repo_name),
+            )
+            if attribution.disposition is AttributionDisposition.VERIFIED and attribution.origin is not None:
+                return attribution.origin.task_id
+            # A PR-specific lookup must fail closed. Issue comments/current
+            # pointers are discovery hints, never publication provenance.
+            return None
+        except (AttributeError, OSError, TypeError, ValueError):
+            return None
     pr_body = pr_data.get("body", "") or ""
 
     task_id = extract_codex_cloud_task_id(pr_data.get("_codex_task_id"))
