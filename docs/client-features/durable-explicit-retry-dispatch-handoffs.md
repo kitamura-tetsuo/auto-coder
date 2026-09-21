@@ -41,6 +41,17 @@ overwritten and an older accepted repair cannot win after a later accepted
 handoff. The prior binding remains in the handoff history; replacement does not
 cancel or fabricate provider liveness.
 
+The provider creation boundary reloads Codex retry authority from the durable
+request store and requires the repository, Issue, generation, logical attempt,
+owned state, and ownership reference to match the supplied handoff. Provider
+predecessor attribution is captured durably when implementation ownership is
+acquired, before later pointer updates can race with dispatch. Jules and Claude
+Routine retry writers use the same conditional promotion fence as Codex, so a
+later accepted cross-provider handoff cannot be overwritten by an older writer.
+If Codex acceptance reached the CloudRun journal before the retry receipt, replay
+recovers that exact receipt from the matching attempt and completes projection
+without another provider submission or numeric allocation.
+
 This layer does not activate a controller or CLI retry path, choose providers,
 change quota or fallback policy, cancel old work, or replace ordinary dispatch
 semantics.

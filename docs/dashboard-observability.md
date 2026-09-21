@@ -1119,3 +1119,12 @@ production adapter checks are
 and `test_unrecognized_conflict_retains_accepted_receipt_as_incomplete`. A later
 controller integration may add a production origin and must add its own
 production-to-view scenario then.
+Durable-authority revalidation, accepted-CloudRun receipt recovery, and the
+shared Jules/Claude/Codex promotion fence retain those existing dispatch event
+schemas and outcomes; they change whether a provider call or pointer projection
+is authorized, not the dashboard representation. Their production-boundary
+checks are additionally covered by
+`tests/test_codex_retry_promotion.py::test_claimed_retry_recovers_receipt_from_matching_accepted_run`,
+`test_unreadable_or_mismatched_durable_authority_prevents_creation`,
+`test_binding_installed_after_admission_is_not_treated_as_predecessor`, and
+`test_acceptance_and_cross_provider_promotion_share_one_stale_writer_fence`.

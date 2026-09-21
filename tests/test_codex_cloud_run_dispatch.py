@@ -10,6 +10,7 @@ These tests cover the acceptance scenarios from the issue:
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig
@@ -17,7 +18,7 @@ from auto_coder.cloud_run import CloudRun, CloudRunEvent, CloudRunRepository
 from auto_coder.cloud_run_policies import MANUAL_RETRY_REASON, CodexCloudRunPolicy
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.issue_processor import _process_issue_codex_cloud_mode
-from auto_coder.issue_stage_routing import ImplementationRetryRequest
+from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.retry_dispatch import RetryDispatchRepository
 
 
@@ -175,15 +176,10 @@ class TestCodexCloudDispatchDuplicateProtection:
         client = mock_client_type.return_value
         client.environment_id = "env-production"
         client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-retry", "https://example.test/task-retry")
-        retry = ImplementationRetryRequest(
-            request_id="request-2185",
-            repository="owner/repo",
-            target_number=100,
-            generation="generation-1",
-            attempt_id="attempt-1",
-            status="owned",
-            ownership_reference="execution-1",
-        )
+        routing = IssueStageRoutingStore(Path.home() / ".auto-coder" / "issue-stage-routing.sqlite3")
+        routing.accept_retry_request("request-2185", "owner/repo", 100, "generation-1")
+        routing.capture_retry_predecessor("request-2185", None, None, None)
+        retry = routing.mark_retry_owned("request-2185", "execution-1")
 
         with (
             patch("auto_coder.issue_processor.get_commit_log", return_value=""),

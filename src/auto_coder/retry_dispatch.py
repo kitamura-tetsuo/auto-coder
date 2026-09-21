@@ -272,6 +272,21 @@ class RetryDispatchRepository:
             )
             return self._require_locked(request_id)
 
+    def mark_prior_accepted_historical(self, request_id: str) -> None:
+        """Classify every older accepted receipt superseded by this request."""
+        with self._lock, self._connection:
+            current = self._connection.execute(
+                "SELECT rowid,repository,issue_number FROM retry_handoffs WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError(f"unknown retry handoff {request_id!r}")
+            row_id, repository, issue_number = current
+            self._connection.execute(
+                "UPDATE retry_handoffs SET projection_disposition='accepted-historical',diagnostic='a later accepted retry owns the current pointer',updated_at=? " "WHERE repository=? AND issue_number=? AND rowid<? AND outcome IN ('accepted','completed')",
+                (time.time(), repository, issue_number, row_id),
+            )
+
     def get(self, request_id: str) -> Optional[RetryHandoff]:
         with self._lock:
             return self._get_locked(request_id)

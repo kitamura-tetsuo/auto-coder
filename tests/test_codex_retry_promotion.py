@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig
@@ -5,20 +8,25 @@ from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.cloud_run import CloudRunRepository
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.issue_processor import _process_issue_codex_cloud_mode
-from auto_coder.issue_stage_routing import ImplementationRetryRequest
+from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.retry_dispatch import RetryDispatchRepository
 
 
 def _authority(request_id: str = "request-1", attempt_id: str = "logical-1") -> ImplementationRetryRequest:
-    return ImplementationRetryRequest(
-        request_id=request_id,
-        repository="owner/repo",
-        target_number=2223,
-        generation="generation-7",
-        attempt_id=attempt_id,
-        status="owned",
-        ownership_reference=f"execution-{request_id}",
+    del attempt_id
+    routing = IssueStageRoutingStore(Path.home() / ".auto-coder" / "issue-stage-routing.sqlite3")
+    existing = routing.retry_request(request_id)
+    if existing is not None:
+        return existing
+    routing.accept_retry_request(request_id, "owner/repo", 2223, "generation-7")
+    predecessor = CloudManager("owner/repo").read_bindings_strict().get("2223")
+    routing.capture_retry_predecessor(
+        request_id,
+        predecessor.provider if predecessor else None,
+        predecessor.task_id if predecessor else None,
+        predecessor.backend_name if predecessor else None,
     )
+    return routing.mark_retry_owned(request_id, f"execution-{request_id}")
 
 
 def _dispatch(authority: ImplementationRetryRequest, backend: str = "codex-alias", branch: str = "main") -> list[str]:
@@ -163,3 +171,142 @@ def test_absent_run_without_retained_environment_stays_incomplete(mock_client_ty
     assert retained is not None
     assert retained.external_id == "task-retained"
     assert retained.projection_disposition == "accepted-tracking-incomplete"
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_claimed_retry_recovers_receipt_from_matching_accepted_run(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = mock_client_type.return_value
+    client.environment_id = "environment-retained"
+    client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-recovered")
+    authority = _authority()
+    original = RetryDispatchRepository.record_outcome
+    failed = False
+
+    def fail_first_receipt(self, request_id, outcome, **kwargs):
+        nonlocal failed
+        if outcome == "accepted" and not failed:
+            failed = True
+            raise OSError("receipt journal unavailable")
+        return original(self, request_id, outcome, **kwargs)
+
+    with patch.object(RetryDispatchRepository, "record_outcome", fail_first_receipt):
+        first = _dispatch(authority)
+    replay = _dispatch(authority)
+
+    assert "receipt could not be persisted" in first[0]
+    assert "already accepted" in replay[0]
+    client.submit_task.assert_called_once()
+    retained = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert retained is not None
+    assert (retained.outcome, retained.external_id, retained.projection_disposition) == (
+        "accepted",
+        "task-recovered",
+        "accepted-current",
+    )
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_unreadable_or_mismatched_durable_authority_prevents_creation(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    with patch.object(IssueStageRoutingStore, "retry_request", side_effect=OSError("authority store unreadable")):
+        unreadable = _dispatch(authority)
+
+    with (
+        patch("auto_coder.issue_processor.get_current_attempt", return_value=4),
+        patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+    ):
+        mismatched = _process_issue_codex_cloud_mode(
+            "owner/repo",
+            {"number": 2224, "title": "Wrong target", "body": "", "labels": []},
+            AutomationConfig(),
+            MagicMock(),
+            "codex-alias",
+            retry_authority=authority,
+        )
+
+    mock_client_type.assert_not_called()
+    assert "authority store unreadable" in unreadable[0]
+    assert "does not match owned dispatch authority" in mismatched[0]
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_binding_installed_after_admission_is_not_treated_as_predecessor(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    manager = CloudManager("owner/repo")
+    assert manager.add_session(2223, "predecessor", provider="jules", backend_name="jules")
+    authority = _authority()
+    assert manager.add_session(2223, "unrelated", provider="claude-routine", backend_name="claude")
+    client = mock_client_type.return_value
+    client.environment_id = "environment"
+    client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task-new")
+
+    result = _dispatch(authority)
+
+    assert "tracking is incomplete" in result[0]
+    assert manager.read_bindings_strict()["2223"].task_id == "unrelated"
+    retained = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert retained is not None
+    assert retained.projection_disposition == "accepted-tracking-incomplete"
+
+
+def test_acceptance_and_cross_provider_promotion_share_one_stale_writer_fence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    manager = CloudManager("owner/repo")
+    predecessor = CloudTaskBinding("jules", "predecessor", "jules")
+    assert manager.add_session(2223, predecessor.task_id, predecessor.provider, predecessor.backend_name)
+    first = _authority("request-1")
+    second = _authority("request-2")
+    store = RetryDispatchRepository("owner/repo")
+    for authority, route in (
+        (first, "claude-routine"),
+        (second, "codex-cloud"),
+    ):
+        store.claim(
+            authority,
+            route,
+            route,
+            {"base_branch": "main"},
+            predecessor=(predecessor.provider, predecessor.task_id, predecessor.backend_name),
+        )
+    store.record_outcome(first.request_id, "accepted", external_id="claude-task")
+
+    reached_check = Event()
+    release_check = Event()
+
+    def older_promotion() -> str:
+        def checked() -> bool:
+            reached_check.set()
+            release_check.wait(timeout=5)
+            return store.is_latest_accepted(first.request_id)
+
+        return manager.promote_retry_binding(
+            2223,
+            CloudTaskBinding("claude-routine", "claude-task", "claude-routine"),
+            predecessor,
+            checked,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        older = pool.submit(older_promotion)
+        assert reached_check.wait(timeout=5)
+
+        def accept_and_promote_newer() -> str:
+            store.record_outcome(second.request_id, "accepted", external_id="codex-task")
+            disposition = manager.promote_retry_binding(
+                2223,
+                CloudTaskBinding("codex-cloud", "codex-task", "codex-cloud"),
+                CloudTaskBinding("claude-routine", "claude-task", "claude-routine"),
+                lambda: store.is_latest_accepted(second.request_id),
+            )
+            store.mark_prior_accepted_historical(second.request_id)
+            return disposition
+
+        newer = pool.submit(accept_and_promote_newer)
+        release_check.set()
+        assert older.result(timeout=5) == "current"
+        assert newer.result(timeout=5) == "current"
+
+    assert manager.read_bindings_strict()["2223"].task_id == "codex-task"
+    assert store.get(first.request_id).projection_disposition == "accepted-historical"

@@ -117,6 +117,10 @@ class ImplementationRetryRequest:
     status: str
     ownership_reference: Optional[str] = None
     refusal: Optional[str] = None
+    predecessor_captured: bool = False
+    predecessor_provider: Optional[str] = None
+    predecessor_task_id: Optional[str] = None
+    predecessor_backend_name: Optional[str] = None
 
 
 class RetryRequestConflict(ValueError):
@@ -230,6 +234,15 @@ class IssueStageRoutingStore:
                 # row was standalone or belonged to a now-changed family.
                 # Fail closed and let startup authority reconstruct it.
                 self._connection.execute("DELETE FROM issue_lane_arrivals WHERE stage='implementation'")
+            retry_columns = {row[1] for row in self._connection.execute("PRAGMA table_info(implementation_retry_requests)")}
+            for name, declaration in (
+                ("predecessor_captured", "INTEGER NOT NULL DEFAULT 0"),
+                ("predecessor_provider", "TEXT"),
+                ("predecessor_task_id", "TEXT"),
+                ("predecessor_backend_name", "TEXT"),
+            ):
+                if name not in retry_columns:
+                    self._connection.execute(f"ALTER TABLE implementation_retry_requests ADD COLUMN {name} {declaration}")
 
     def accept_retry_request(
         self,
@@ -272,6 +285,34 @@ class IssueStageRoutingStore:
         with self._lock:
             return self._retry_locked(request_id)
 
+    def capture_retry_predecessor(
+        self,
+        request_id: str,
+        provider: Optional[str],
+        task_id: Optional[str],
+        backend_name: Optional[str],
+    ) -> ImplementationRetryRequest:
+        """Bind the current provider owner to retry admission exactly once."""
+        if (provider is None) != (task_id is None):
+            raise ValueError("predecessor provider and task must be supplied together")
+        with self._lock, self._connection:
+            current = self._retry_locked(request_id)
+            if current is None:
+                raise ValueError(f"unknown retry request {request_id!r}")
+            candidate = (provider, task_id, backend_name)
+            retained = (current.predecessor_provider, current.predecessor_task_id, current.predecessor_backend_name)
+            if current.predecessor_captured:
+                if retained != candidate:
+                    raise RetryRequestConflict("retry predecessor is immutable")
+                return current
+            if current.status != "pending":
+                raise RetryRequestConflict("retry predecessor was not captured before ownership")
+            self._connection.execute(
+                "UPDATE implementation_retry_requests SET predecessor_captured=1,predecessor_provider=?,predecessor_task_id=?,predecessor_backend_name=?,updated_at=? WHERE request_id=?",
+                (provider, task_id, backend_name, time.time(), request_id),
+            )
+            return self._require_retry_locked(request_id, current.repository, current.target_number, current.generation)
+
     def retry_requests(self, repository: Optional[str] = None, target_number: Optional[int] = None) -> tuple[ImplementationRetryRequest, ...]:
         """Enumerate durable retry authority for recovery and diagnostics."""
         clauses: list[str] = []
@@ -285,7 +326,7 @@ class IssueStageRoutingStore:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._lock:
             rows = self._connection.execute(
-                "SELECT request_id,repository,target_number,generation,attempt_id,status,ownership_reference,refusal FROM implementation_retry_requests" + where + " ORDER BY created_at,request_id",
+                "SELECT request_id,repository,target_number,generation,attempt_id,status,ownership_reference,refusal,predecessor_captured,predecessor_provider,predecessor_task_id,predecessor_backend_name FROM implementation_retry_requests" + where + " ORDER BY created_at,request_id",
                 values,
             ).fetchall()
         return tuple(self._decode_retry(row) for row in rows)
@@ -364,14 +405,14 @@ class IssueStageRoutingStore:
 
     def _retry_locked(self, request_id: str) -> Optional[ImplementationRetryRequest]:
         row = self._connection.execute(
-            "SELECT request_id,repository,target_number,generation,attempt_id,status,ownership_reference,refusal FROM implementation_retry_requests WHERE request_id=?",
+            "SELECT request_id,repository,target_number,generation,attempt_id,status,ownership_reference,refusal,predecessor_captured,predecessor_provider,predecessor_task_id,predecessor_backend_name FROM implementation_retry_requests WHERE request_id=?",
             (request_id,),
         ).fetchone()
         return self._decode_retry(row) if row is not None else None
 
     @staticmethod
     def _decode_retry(row: tuple[object, ...]) -> ImplementationRetryRequest:
-        request_id, repository, target_number, generation, attempt_id, status, reference, refusal = row
+        request_id, repository, target_number, generation, attempt_id, status, reference, refusal, predecessor_captured, predecessor_provider, predecessor_task_id, predecessor_backend_name = row
         if (
             not isinstance(request_id, str)
             or not request_id
@@ -390,7 +431,20 @@ class IssueStageRoutingStore:
             or (refusal is not None and not isinstance(refusal, str))
         ):
             raise ValueError("invalid durable implementation retry request")
-        return ImplementationRetryRequest(request_id, repository, target_number, generation, attempt_id, status, reference, refusal)
+        return ImplementationRetryRequest(
+            request_id,
+            repository,
+            target_number,
+            generation,
+            attempt_id,
+            status,
+            reference,
+            refusal,
+            bool(predecessor_captured),
+            str(predecessor_provider) if predecessor_provider is not None else None,
+            str(predecessor_task_id) if predecessor_task_id is not None else None,
+            str(predecessor_backend_name) if predecessor_backend_name is not None else None,
+        )
 
     def reconcile(self, classification: LaneClassification, now: Optional[float] = None) -> Optional[PendingLaneItem]:
         """Atomically replace superseded work or update priority/work in place."""
