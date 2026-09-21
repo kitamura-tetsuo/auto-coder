@@ -1101,6 +1101,19 @@ adversarial-validation, and speculative-authority stages rather than by a synthe
 with the current classification and denial reason when an artifact loses authority
 after admission. This stage is blocking and never reports Issue completion;
 confirmed merge delivery remains the sole completion trace.
+
+# Issue Implementation worker lane
+
+The dedicated Issue Implementation lane changes admission ordering and durable
+resumption, but is observability-neutral at the production-to-view boundary.
+It enters the existing Issue execution scope and continues to emit the same
+readiness, dependency, ownership, provider-selection, and dispatch stages; the
+durable lane arrival and its two authoritative refreshes are scheduling
+authority rather than a second implementation outcome. The dashboard must
+therefore keep treating the existing production ownership/dispatch stages as
+the success oracle and must not infer a start merely from a pending or claimed
+Implementation-lane row.
+
 ## Explicit retry dispatch handoff journal
 
 Identity-based explicit retry dispatch adds a durable handoff journal between
