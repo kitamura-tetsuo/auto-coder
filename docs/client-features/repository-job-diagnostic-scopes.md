@@ -84,6 +84,17 @@ detail view), and it does not change the durable queue's `dependency:1`
 token, invalidation generation, or lifecycle, consistent with
 `docs/dashboard-observability.md`'s existing distinction between the durable
 queue's coalescing generation and a diagnostic execution identity.
+Issue #2002 consumes this boundary in the dedicated, read-only
+`/dashboard/jobs/dependency-rescan` page. The overview and dependency worker/
+queue rows link to that repository-scoped job rather than manufacturing a
+GitHub `Dependency #1`. The legacy `/dashboard/detail/dependency/1` path is the
+only compatibility alias; other kinds and numbers remain invalid. The page
+refreshes local snapshots every second, keeps intake/pending observations
+separate from attempts, follows newest start sequence or pins an exact execution
+identity, and preserves stale/evicted/truncated uncertainty. Recorded totals and
+durable handoff dispositions are rendered as supplied; target references link to
+ordinary Issue details without importing their results or reevaluating a graph.
+
 `tests/test_dependency_rescan_repo_job_trace.py` is the production-path
 regression suite for this wiring: real `/hooks/github` deliveries through
 `create_app`, the real durable queue, and the real worker loop, reading the

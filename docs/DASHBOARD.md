@@ -121,6 +121,37 @@ The main dashboard view provides an overview of the current system state:
     own one-second timer, independently of the rest of the page. See
     [Implementation Slots panel](#implementation-slots-panel) below.
 *   **Queue**: Lists pending items in the processing queue. The table shows the item type, number, priority, and title.
+*   **Dependency Rescan**: Opens the repository-scoped, read-only job view at
+    `/dashboard/jobs/dependency-rescan`. The overview keeps this entry available
+    when only retained history, a failure, or pending evidence exists. The
+    durable queue's historical `dependency:1` token is displayed as an internal
+    job and never as GitHub Dependency #1; the legacy
+    `/dashboard/detail/dependency/1` URL redirects to the job view.
+
+### Dependency-rescan job view
+
+The view refreshes the local `RepoJobTraceCollector` snapshot every second and
+never polls GitHub, executes a scan, dispatches an Issue, retries work, or changes
+queue ownership. Intake, queued, and recovered-pending observations remain
+separate from actual scan attempts. Attempt history is ordered by original start
+sequence; following selects the newest attempt, while selecting an attempt pins
+its opaque execution identity. An evicted pin is reported as unavailable rather
+than silently replaced.
+
+Displayed discovered and handoff totals are the producer's recorded aggregates,
+not counts reconstructed from visible rows. `new_pending`, `coalesced`, and
+`followup_required` are durable-invalidation dispositions. A completed rescan
+means that discovery, durable handoffs, and the job's own claim acknowledgement
+were confirmed; it does not say that a target Issue ran, became eligible, passed
+review, or completed implementation. Target references link to ordinary Issue
+details only. Missing values remain unavailable, clipped references get an
+explicit partial-list marker, and scheduled wakes are not presented as
+authoritative eligibility deadlines.
+
+Repository-job history is bounded and process-local. Restart can expose newly
+recovered pending work but cannot reconstruct the previous process's attempts or
+triggers. Snapshot-read failure preserves the last display as stale rather than
+showing a fresh empty or successful state.
 
 #### Implementation Slots panel
 
