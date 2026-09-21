@@ -62,7 +62,7 @@ sequenceDiagram
 
 The slot's retry-acquisition reference recovers the gap between slot persistence and `mark_retry_owned`; the retry request is not treated as consumed merely because a caller started to handle it. Existing generation tombstones remain historical. `bypass_capacity=explicit_only` is passed, but the slot start can still refuse execution contention or hierarchy admission. No reset/delete of old provider records is part of T1. [Explicit entry][explicit] [Admission fork][admission] [Ownership acquisition][ownership]
 
-The diagram's final bind refusal represents the following code ordering: the engine attempts `record_validation_identity`; on failure it finishes the execution and returns. The helper's replay branch for a retained owned request does not by itself prove a new provider task was accepted. The reserved cloud retry boundary also checks that the current binding differs from the one read before dispatch; failure there can coexist with an already accepted remote task. [Reserved return checks][reserved]
+The diagram's final bind refusal represents the following code ordering: the engine attempts `record_validation_identity`; on failure it finishes the execution and returns. The helper's replay branch for a retained owned request does not by itself prove a new provider task was accepted. For Codex, the reserved boundary consumes the exact request-scoped receipt and confirms its CloudRun, current binding, and logical-slot membership; it does not infer acceptance from a changed binding.
 
 ## T2. Reentry for the same owned request does not mean another create
 
@@ -97,6 +97,7 @@ sequenceDiagram
         D-->>H: may_create=false
         H-->>H: Defer without replacement invocation
     end
+    H->>D: Controller acknowledges joined run/pointer/slot bookkeeping
 ```
 
 The journal validates repository, Issue, request, attempt and generation. A suppressing record also binds route/backend/configuration; incompatible reentry raises conflict rather than silently switching providers. Only `definitely-not-started` permits reacquisition and can update the route while preserving the creation ID. Accepted receipts cannot be changed into “unsent.” [Journal][journal]
@@ -108,6 +109,16 @@ Provider-specific details remain different:
 | Local | Claims before the local helper; a returned helper result is saved as completed with actions and the ownership reference. This is not proof that a PR exists or tests passed. Escaping errors can record indeterminate. |
 | Jules / Claude Routine | Record accepted session identity before tracking. Their `is_latest_accepted` guard prevents older accepted requests from replacing a later accepted current pointer. Jules retry does not enter speculative fan-out. |
 | Codex Cloud | Allocates one numeric attempt above observed attempts, projects it through attempt machinery, and additionally uses the CloudRun claim. An accepted retry receipt can reconstruct the run and binding; `ensure_binding` can still refuse contradictory tracking. |
+
+Codex provider tracking is not the enclosing controller checkpoint. An
+accepted receipt remains discoverable until the exact CloudRun and current
+binding are confirmed and its task is durably present in the Issue's logical
+slot (or retained retirement history). The daemon registers these records in
+normal pending work at startup and retries only this local bookkeeping. This
+recovery retains the original provenance and neither calls the provider nor
+allocates a request or numeric attempt. Contention leaves the obligation due
+for a later turn in the same daemon; a newer accepted claim makes an older
+receipt historical.
 
 These are not one universal exactly-once protocol. The replay diagram concerns the same `R`; it does not suppress every later operator-authorized `R2`. Claims surviving a pre-send crash can intentionally leave creation unresolved rather than authorize an unsafe resend. [Local retry wrapper][local] [Session and Codex retry paths][launchers]
 
