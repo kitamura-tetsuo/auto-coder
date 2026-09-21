@@ -6,11 +6,12 @@ by storing issue number, provider, and session ID mappings in CSV files.
 """
 
 import csv
+import fcntl
 import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 from .logger_config import get_logger
 
@@ -73,6 +74,18 @@ class CloudManager:
         else:
             auto_coder_dir = Path.home() / ".auto-coder" / repo_name
             self.cloud_file_path = auto_coder_dir / "cloud.csv"
+        self.coordination_lock_path = self.cloud_file_path.with_suffix(".csv.lock")
+
+    def _file_lock(self):
+        """Lock all cross-process reads and updates of the current pointer."""
+        self._ensure_cloud_dir()
+        lock_file = open(self.coordination_lock_path, "a+", encoding="utf-8")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            lock_file.close()
+            raise
+        return lock_file
 
     def _ensure_cloud_dir(self) -> None:
         """Ensure the cloud directory exists."""
@@ -134,15 +147,69 @@ class CloudManager:
     def ensure_binding(self, issue_number: int, binding: CloudTaskBinding) -> bool:
         """Create a missing projection, refusing to overwrite another owner."""
         with self._lock:
-            sessions = self.read_bindings_strict()
-            key = str(issue_number)
-            current = sessions.get(key)
-            if current is not None and current != binding:
-                raise ValueError(f"Contradictory cloud ownership for issue #{issue_number}")
-            if current == binding:
-                return True
-            sessions[key] = binding
-            return self._write_bindings(sessions)
+            lock_file = self._file_lock()
+            try:
+                sessions = self.read_bindings_strict()
+                key = str(issue_number)
+                current = sessions.get(key)
+                if current is not None and current != binding:
+                    raise ValueError(f"Contradictory cloud ownership for issue #{issue_number}")
+                if current == binding:
+                    return True
+                sessions[key] = binding
+                return self._write_bindings(sessions)
+            finally:
+                lock_file.close()
+
+    def promote_retry_binding(
+        self,
+        issue_number: int,
+        binding: CloudTaskBinding,
+        predecessor: Optional[CloudTaskBinding],
+        may_promote: Callable[[], bool],
+        recognized_predecessors: Tuple[CloudTaskBinding, ...] = (),
+        allow_missing: bool = True,
+    ) -> str:
+        """Replace only the retry's attributed predecessor under one fence."""
+        with self._lock:
+            lock_file = self._file_lock()
+            try:
+                sessions = self.read_bindings_strict()
+                key = str(issue_number)
+                current = sessions.get(key)
+                if not may_promote():
+                    return "historical"
+                if current == binding:
+                    return "current"
+                if current is None and not allow_missing:
+                    raise ValueError(f"Retry predecessor attribution is unavailable for issue #{issue_number}")
+                if current is not None and current != predecessor and current not in recognized_predecessors:
+                    raise ValueError(f"Contradictory cloud ownership for issue #{issue_number}")
+                sessions[key] = binding
+                if not self._write_bindings(sessions):
+                    raise OSError("cloud.csv write failed")
+                return "current"
+            finally:
+                lock_file.close()
+
+    def confirm_retry_binding(
+        self,
+        issue_number: int,
+        binding: CloudTaskBinding,
+        may_confirm: Callable[[], bool],
+        mark_current: Callable[[], object],
+    ) -> str:
+        """Acknowledge current tracking without a post-fence stale window."""
+        with self._lock:
+            lock_file = self._file_lock()
+            try:
+                current = self.read_bindings_strict().get(str(issue_number))
+                if current != binding or not may_confirm():
+                    return "historical"
+                mark_current()
+                return "current"
+            finally:
+                lock_file.close()
 
     def _read_sessions(self) -> Dict[str, str]:
         """Read the historical session-id view used by lifecycle callers."""
@@ -161,11 +228,8 @@ class CloudManager:
         self._ensure_cloud_dir()
 
         try:
-            # Secure file opening with restricted permissions (600)
-            fd = os.open(str(self.cloud_file_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-
-            # Ensure permissions are correct even if file already existed
-            os.chmod(self.cloud_file_path, 0o600)
+            temporary = self.cloud_file_path.with_suffix(f".csv.{os.getpid()}.{threading.get_ident()}.tmp")
+            fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 
             with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -182,6 +246,16 @@ class CloudManager:
                             "session_id": binding.task_id,
                         }
                     )
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(temporary, self.cloud_file_path)
+            os.chmod(self.cloud_file_path, 0o600)
+            directory_fd = os.open(str(self.cloud_file_path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
 
             logger.debug(f"Successfully wrote {len(sessions)} sessions to {self.cloud_file_path}")
             return True
@@ -214,6 +288,7 @@ class CloudManager:
             True if session was added successfully, False otherwise
         """
         with self._lock:
+            lock_file = self._file_lock()
             try:
                 # Read existing sessions
                 sessions = self._read_bindings()
@@ -232,6 +307,8 @@ class CloudManager:
             except Exception as e:
                 logger.error(f"Failed to add session for issue #{issue_number}: {e}")
                 return False
+            finally:
+                lock_file.close()
 
     def get_binding(self, issue_number: int) -> Optional[CloudTaskBinding]:
         """Return provider ownership, or ``None`` for unsafe legacy rows."""

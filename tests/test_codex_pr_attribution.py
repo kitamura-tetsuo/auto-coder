@@ -95,7 +95,16 @@ def test_initial_dispatch_persists_intent_before_submit_and_recovers_accepted_re
     """REQ-002: the real dispatch boundary never submits before durable intent."""
     monkeypatch.setenv("HOME", str(tmp_path))
     issue = {"number": 2229, "title": "Attribute PR", "body": "Implement it", "labels": []}
-    retry = ImplementationRetryRequest("request-2229", "owner/repo", 2229, "generation-1", "attempt-1", "owned", "execution-1")
+    retry = ImplementationRetryRequest(
+        "request-2229",
+        "owner/repo",
+        2229,
+        "generation-1",
+        "attempt-1",
+        "owned",
+        "execution-1",
+        predecessor_captured=True,
+    )
 
     with (
         patch("auto_coder.codex_cloud_client.CodexCloudClient") as client_type,
@@ -113,12 +122,19 @@ def test_initial_dispatch_persists_intent_before_submit_and_recovers_accepted_re
     receipts.claim(retry, "codex-cloud", "codex-alias", {"base_branch": "main"})
     receipt = receipts.allocate_numeric_attempt(retry.request_id, [2])
     assert receipt.numeric_attempt == 3
-    receipts.record_outcome(retry.request_id, "accepted", external_id="task_e_Accepted", external_url="https://chatgpt.com/codex/tasks/task_e_Accepted")
+    receipts.record_outcome(
+        retry.request_id,
+        "accepted",
+        external_id="task_e_Accepted",
+        external_url="https://chatgpt.com/codex/tasks/task_e_Accepted",
+        environment_id="environment-retained",
+    )
 
     with (
         patch("auto_coder.codex_cloud_client.CodexCloudClient") as replay_client_type,
         patch("auto_coder.issue_processor.get_current_attempt", return_value=2),
         patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+        patch("auto_coder.issue_processor._durable_retry_authority", return_value=retry),
     ):
         recovered = _process_issue_codex_cloud_mode("owner/repo", issue, AutomationConfig(), MagicMock(), "codex-alias", retry_authority=retry)
 

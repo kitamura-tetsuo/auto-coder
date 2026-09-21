@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,20 +12,25 @@ from auto_coder.issue_processor import (
     _process_issue_jules_mode,
     _take_issue_actions,
 )
-from auto_coder.issue_stage_routing import ImplementationRetryRequest
+from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.retry_dispatch import RetryDispatchRepository
 
 
 def owned_authority(issue_number: int = 41, request_id: str = "request-routes", attempt_id: str = "attempt-routes") -> ImplementationRetryRequest:
-    return ImplementationRetryRequest(
-        request_id=request_id,
-        repository="owner/repo",
-        target_number=issue_number,
-        generation="generation-routes",
-        attempt_id=attempt_id,
-        status="owned",
-        ownership_reference="invocation-routes",
+    del attempt_id
+    routing = IssueStageRoutingStore(Path.home() / ".auto-coder" / "issue-stage-routing.sqlite3")
+    existing = routing.retry_request(request_id)
+    if existing is not None:
+        return existing
+    routing.accept_retry_request(request_id, "owner/repo", issue_number, "generation-routes")
+    predecessor = CloudManager("owner/repo").read_bindings_strict().get(str(issue_number))
+    routing.capture_retry_predecessor(
+        request_id,
+        predecessor.provider if predecessor else None,
+        predecessor.task_id if predecessor else None,
+        predecessor.backend_name if predecessor else None,
     )
+    return routing.mark_retry_owned(request_id, f"invocation-{request_id}")
 
 
 def issue() -> dict:
@@ -52,7 +58,7 @@ def test_local_retry_claims_before_real_invocation_and_completed_replay_does_not
         "local",
         "local-alias",
         "completed",
-        "invocation-routes",
+        "invocation-request-routes",
     )
 
 
@@ -159,13 +165,12 @@ def test_stale_retry_replay_does_not_replace_newer_accepted_pointer(route, tmp_p
     github = MagicMock()
     config = AutomationConfig()
     first_authority = owned_authority(request_id="request-1", attempt_id="attempt-1")
-    second_authority = owned_authority(request_id="request-2", attempt_id="attempt-2")
-
     if route == "jules":
         client = MagicMock()
         client.start_session.side_effect = ["session-1", "session-2"]
         with patch("auto_coder.issue_processor.JulesClient", return_value=client), patch("auto_coder.issue_processor.get_commit_log", return_value=""):
             _process_issue_jules_mode("owner/repo", issue(), config, github, retry_authority=first_authority)
+            second_authority = owned_authority(request_id="request-2", attempt_id="attempt-2")
             _process_issue_jules_mode("owner/repo", issue(), config, github, retry_authority=second_authority)
             replay = _process_issue_jules_mode("owner/repo", issue(), config, github, retry_authority=first_authority)
         create = client.start_session
@@ -174,6 +179,7 @@ def test_stale_retry_replay_does_not_replace_newer_accepted_pointer(route, tmp_p
         client.fire_routine.side_effect = [("session-1", "url-1"), ("session-2", "url-2")]
         with patch("auto_coder.claude_routine_client.ClaudeRoutineClient", return_value=client), patch("auto_coder.issue_processor.get_commit_log", return_value=""):
             _process_issue_claude_routine_mode("owner/repo", issue(), config, github, retry_authority=first_authority)
+            second_authority = owned_authority(request_id="request-2", attempt_id="attempt-2")
             _process_issue_claude_routine_mode("owner/repo", issue(), config, github, retry_authority=second_authority)
             replay = _process_issue_claude_routine_mode("owner/repo", issue(), config, github, retry_authority=first_authority)
         create = client.fire_routine
