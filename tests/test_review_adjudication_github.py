@@ -167,7 +167,9 @@ def test_engine_targeted_refresh_uses_authoritative_contracts_and_publishes(tmp_
         repeated = engine.refresh_review_adjudications("o/r", {"number": 4})
     assert repeated[0].context is not None
     assert repeated[0].context.context_id == context_id
-    github.reply_to_review_thread.assert_called_once()
+    assert github.reply_to_review_thread.call_count == 3
+    assert "Reader lifecycle result: `SOURCE_UNAVAILABLE`" in github.reply_to_review_thread.call_args_list[1].args[3]
+    assert github.reply_to_review_thread.call_args.args[3] == published_body
 
     # The durable reverse association makes an edit to the second contract
     # wake the same PR even though its head did not change.
@@ -424,3 +426,29 @@ def test_observed_contract_change_retires_before_thread_failure(tmp_path: Path, 
     replacement = ReviewAdjudicationService(github, AdjudicationContextStore(path)).refresh("o/r", 4, pr, [9], [7], [8])[0]
     assert replacement.context is not None
     assert replacement.context.context_id != original_id
+
+
+def test_revocation_is_published_before_restored_authority_and_failed_issue_read(tmp_path: Path) -> None:
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.return_value = {"id": 90, "number": 9, "title": "one", "body": BODY}
+    github.get_pr_review_threads_strict.return_value = [_thread()]
+    service = ReviewAdjudicationService(github, AdjudicationContextStore(tmp_path / "state.sqlite"))
+    pr = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main", "repo": {"id": 3}}}
+    original = service.refresh("o/r", 4, pr, [9], [7], [8])[0]
+    assert original.context is not None
+    positive_projection = github.reply_to_review_thread.call_args.args[3]
+
+    service.apply_authorization_policy("o/r", 4, [], [8])
+
+    retirement_projection = github.reply_to_review_thread.call_args.args[3]
+    assert retirement_projection != positive_projection
+    assert f"Context ID: `{original.context.context_id}`" in retirement_projection
+    assert "Reader lifecycle result: `INVALID`" in retirement_projection
+    assert "Permanently retired: `yes`" in retirement_projection
+    assert "authorizes no adjudication write" in retirement_projection
+
+    github.get_issue_dispatch_snapshot_strict.side_effect = PermissionError("403")
+    with pytest.raises(PermissionError, match="403"):
+        service.refresh("o/r", 4, pr, [9], [7], [8])
+
+    assert github.reply_to_review_thread.call_args.args[3] == retirement_projection

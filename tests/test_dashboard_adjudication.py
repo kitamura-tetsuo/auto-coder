@@ -177,9 +177,11 @@ def test_draft_and_submit_confirm_publication_and_trigger_reconciliation(tmp_pat
     body = submit.json()
     assert body["status"] == "published-awaiting-processing"
     assert body["github_comment_id"] == 9001
-    # The writer uses the dedicated credential's direct API call, never the
-    # controller's own reply_to_review_thread helper.
-    assert engine.github.reply_to_review_thread.call_count == initial_reply_calls
+    # The writer uses the dedicated credential's direct API call. The only
+    # controller reply is the fail-closed lifecycle projection emitted while
+    # the resulting invalidation awaits a fresh authoritative read.
+    assert engine.github.reply_to_review_thread.call_count == initial_reply_calls + 1
+    assert "Reader lifecycle result: `SOURCE_UNAVAILABLE`" in engine.github.reply_to_review_thread.call_args.args[3]
 
     status = client.get(f"/dashboard-adjudication/status/{draft_body['decision_id']}", headers={"origin": ORIGIN})
     assert status.json()["state"] == "confirmed-published"

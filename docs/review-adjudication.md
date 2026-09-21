@@ -30,7 +30,10 @@ conversation.
 The connected numeric account ID must be listed by the current projection.
 `SOURCE_UNAVAILABLE`, absent or incomplete evidence, and unknown status are
 no-send conditions. `STALE`, `REVOKED`, or `INVALID` permanently rejects that
-context. Restoring matching values does not revive it; wait for a new context.
+context. The reader appends these lifecycle changes to the same root thread as
+non-authorizing status projections, so a GitHub-only writer does not rely on an
+older positive projection. Restoring matching values does not revive a retired
+context; wait for a new context.
 
 ## Decisions and publication safety
 
@@ -66,4 +69,3 @@ They do not prove that a model made the correct semantic choice. The separate
 advisory prompt evaluations cover explicit delegation, analysis-only requests,
 complete-root uphold and overrule, partial delegation, unresolved contract
 conflicts, and malicious quoted instructions.
-

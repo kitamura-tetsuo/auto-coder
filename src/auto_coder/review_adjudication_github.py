@@ -372,6 +372,43 @@ def render_context_projection(
     )
 
 
+def render_lifecycle_projection(context: ReviewContext, result: AdjudicationResult, observation_revision: str) -> str:
+    """Render a GitHub-readable, non-authorizing lifecycle observation."""
+    retired = context.retired_reason is not None
+    return (
+        f"{CONTEXT_MARKER}\nContext ID: `{context.context_id}`\n"
+        f"Target: `{context.repository}` PR #{context.pr_number}, thread `{context.thread_id}`, root `{context.root_comment_id}`\n"
+        f"Reader lifecycle result: `{result.status.value}` ({result.reason})\n"
+        f"Observation revision: `{observation_revision}`\n"
+        f"Permanently retired: `{'yes' if retired else 'no'}`\n\n"
+        "This lifecycle update is not a decision template and authorizes no adjudication write."
+    )
+
+
+def publish_lifecycle_projection(github_client: object, store: AdjudicationContextStore, ledger: AdjudicationLedger, result: AdjudicationResult, observation_revision: str) -> str:
+    """Append a fail-closed lifecycle update without blindly retrying ambiguity."""
+    body = render_lifecycle_projection(ledger.context, result, observation_revision)
+    state, saved_body = store.publication(ledger.context.context_id)
+    if saved_body == body and state in {"confirmed", "pending", "unknown"}:
+        return state
+    store.set_publication(ledger.context.context_id, "pending", body)
+    try:
+        github_client.reply_to_review_thread(ledger.context.repository, ledger.context.pr_number, ledger.context.root_comment_id, body)  # type: ignore[attr-defined]
+    except GitHubRequestDeferred:
+        return "pending"
+    except httpx.HTTPStatusError as exc:
+        if 400 <= exc.response.status_code < 500 and exc.response.status_code not in {408, 429}:
+            store.set_publication(ledger.context.context_id, "definitely-not-sent", body)
+            return "definitely-not-sent"
+        store.set_publication(ledger.context.context_id, "unknown", body)
+        return "unknown"
+    except Exception:
+        store.set_publication(ledger.context.context_id, "unknown", body)
+        return "unknown"
+    store.set_publication(ledger.context.context_id, "confirmed", body)
+    return "confirmed"
+
+
 def publish_context(
     github_client: object,
     store: AdjudicationContextStore,
@@ -538,6 +575,7 @@ class ReviewAdjudicationService:
             ledger.context.source_unavailable = True
             result = ledger.current(None, None, reason)
             self.store.save(ledger, reason)
+            publish_lifecycle_projection(self.github, self.store, ledger, result, reason)
             key = (repository, pr_number, ledger.context.root_comment_id)
             with self._lock:
                 previous = self._snapshots.get(key)
@@ -564,6 +602,13 @@ class ReviewAdjudicationService:
             if ledger.context.root_author_id not in root_reviewer_ids or not tip_authors.issubset(set(adjudicator_ids)):
                 ledger.retire("authorization of the root or a current tip author was revoked")
                 self.store.save(ledger, "authorization-policy-revocation")
+                publish_lifecycle_projection(
+                    self.github,
+                    self.store,
+                    ledger,
+                    ledger.current(None, None, "authorization policy retired this context"),
+                    "authorization-policy-revocation",
+                )
 
     def apply_revision_binding(self, binding: PullRequestBinding) -> None:
         """Retire observed head/base changes before later fallible reads."""
@@ -577,6 +622,13 @@ class ReviewAdjudicationService:
             ):
                 ledger.retire("an authoritative PR revision binding changed")
                 self.store.save(ledger, "pr-revision-binding-change")
+                publish_lifecycle_projection(
+                    self.github,
+                    self.store,
+                    ledger,
+                    ledger.current(None, None, "PR revision retired this context"),
+                    "pr-revision-binding-change",
+                )
 
     def apply_contract_binding(
         self,
@@ -594,6 +646,13 @@ class ReviewAdjudicationService:
             ):
                 ledger.retire("an authoritative Issue contract or Objective binding changed")
                 self.store.save(ledger, "issue-contract-binding-change")
+                publish_lifecycle_projection(
+                    self.github,
+                    self.store,
+                    ledger,
+                    ledger.current(None, None, "Issue contract retired this context"),
+                    "issue-contract-binding-change",
+                )
 
     def snapshots(self, repository: str, pr_number: int) -> tuple[AdjudicationSnapshot, ...]:
         """Return the last fully persisted read-only observations for consumers."""

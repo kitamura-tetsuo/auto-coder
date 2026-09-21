@@ -3,11 +3,15 @@
 import json
 import uuid
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from auto_coder.review_adjudication import AdjudicationStatus, Decision, parse_decision, render_decision
-from auto_coder.review_adjudication_github import AdjudicationContextStore, AdjudicationSnapshot, IssueEvidence, PullRequestBinding, build_issue_contracts, new_context, reconcile_thread, render_context_projection
-from auto_coder.review_adjudication_orchestrator import AdjudicationEffectStore, plan_adjudication_effects
-from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
+import pytest
+
+from auto_coder.cloud_manager import CloudTaskBinding
+from auto_coder.pr_processor import _apply_review_adjudication_effects
+from auto_coder.review_adjudication import Decision, parse_decision, render_decision
+from auto_coder.review_adjudication_github import AdjudicationContextStore, IssueEvidence, PullRequestBinding, ReviewAdjudicationService, build_issue_contracts, new_context, reconcile_thread, render_context_projection
+from auto_coder.util.gh_cache import GitHubClient, PullRequestRepairMetadata, ReviewThread, ReviewThreadComment
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures/review_adjudication_workflow.json").read_text(encoding="utf-8"))
 
@@ -40,32 +44,110 @@ def test_reader_projection_exposes_complete_writer_preflight(tmp_path: Path) -> 
     assert parse_decision(projection.split("Copy, edit, and post this entire envelope as a direct reply:\n\n", 1)[1]).context_id == context.context_id
 
 
-def test_connector_replies_hydrate_and_plan_exact_downstream_effects(tmp_path: Path) -> None:
+def _raw_thread_response(reply_body: str | None = None) -> dict:
+    root = FIXTURE["root"]
+    comments = [
+        {
+            "databaseId": root["comment_id"],
+            "body": root["body"],
+            "createdAt": root["created_at"],
+            "updatedAt": root["updated_at"],
+            "replyTo": None,
+            "author": {"__typename": "Bot", "login": "review-bot", "databaseId": root["author_id"]},
+        }
+    ]
+    if reply_body is not None:
+        comments.append(
+            {
+                "databaseId": 902,
+                "body": reply_body,
+                "createdAt": "2026-09-02T00:00:00Z",
+                "updatedAt": "2026-09-02T00:00:00Z",
+                "replyTo": {"databaseId": root["comment_id"]},
+                "author": {"__typename": "User", "login": "operator", "databaseId": FIXTURE["adjudicator_id"]},
+            }
+        )
+    return {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [
+                            {
+                                "id": root["thread_id"],
+                                "isResolved": False,
+                                "isOutdated": False,
+                                "comments": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": comments},
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.mark.parametrize("case", FIXTURE["cases"], ids=lambda case: case["verdict"])
+def test_connector_replies_hydrate_and_run_normal_same_head_effects(tmp_path: Path, monkeypatch, case: dict) -> None:
     issue = FIXTURE["issue"]
-    contracts = build_issue_contracts([IssueEvidence(issue["id"], issue["number"], issue["title"], issue["body"])])
-    binding = PullRequestBinding(FIXTURE["repository_id"], FIXTURE["repository"], FIXTURE["pr_number"], FIXTURE["head_sha"], FIXTURE["base_sha"], FIXTURE["base_ref"])
+    monkeypatch.setenv("AUTO_CODER_REVIEW_ADJUDICATION_DB", str(tmp_path / "reader.sqlite"))
+    monkeypatch.setenv("AUTO_CODER_REVIEW_ADJUDICATION_EFFECTS_DB", str(tmp_path / "effects.sqlite"))
+    client = GitHubClient("fixture-token")
+    client.graphql_query = MagicMock(return_value=_raw_thread_response())
+    client.get_issue_dispatch_snapshot_strict = MagicMock(return_value=issue)
+    client.reply_to_review_thread = MagicMock()
+    client.resolve_review_thread = MagicMock()
+    metadata = {
+        "number": FIXTURE["pr_number"],
+        "head": {"ref": "feature", "sha": FIXTURE["head_sha"]},
+        "base": {"ref": FIXTURE["base_ref"], "sha": FIXTURE["base_sha"], "repo": {"id": FIXTURE["repository_id"]}},
+    }
+    client.get_pull_request_metadata_strict = MagicMock(return_value=metadata)
+    client.get_pull_request_repair_metadata_strict = MagicMock(return_value=PullRequestRepairMetadata(head_ref="feature", head_sha=FIXTURE["head_sha"], base_ref=FIXTURE["base_ref"]))
+    service = ReviewAdjudicationService(client, AdjudicationContextStore(tmp_path / "reader.sqlite"))
 
-    for index, case in enumerate(FIXTURE["cases"]):
-        thread = _root_thread()
-        context = new_context(binding, thread, contracts)
-        decision = Decision(str(uuid.uuid4()), context.context_id, context.head_sha, context.contract_digest, case["verdict"], case["directive"], (), "The complete two-concern root is assessed against Issue #2021 REQ-001.", "chatgpt-assisted")
-        raw_reply = render_decision(decision)
-        thread.comments.append(ReviewThreadComment(902 + index, raw_reply, "operator", FIXTURE["adjudicator_id"], "User", f"2026-09-0{index + 2}T00:00:00Z", f"2026-09-0{index + 2}T00:00:00Z", FIXTURE["root"]["comment_id"]))
-        store = AdjudicationContextStore(tmp_path / f"reader-{index}.sqlite")
-        ledger = store.register(context, f"observation-{index}")
-        result = reconcile_thread(ledger, thread, [FIXTURE["adjudicator_id"]], [FIXTURE["root"]["author_id"]])
-        snapshot = AdjudicationSnapshot(ledger.context, thread.comments[0].body, (issue["number"],), FIXTURE["root"]["author_id"], result.source_comment_id, result, f"observation-{index}")
-        plan = plan_adjudication_effects([snapshot], AdjudicationEffectStore(tmp_path / f"effects-{index}.sqlite"))
+    issued = service.refresh(FIXTURE["repository"], FIXTURE["pr_number"], metadata, [issue["number"]], [FIXTURE["root"]["author_id"]], [FIXTURE["adjudicator_id"]])[0]
+    assert issued.context is not None
+    assert "Copy, edit, and post" in client.reply_to_review_thread.call_args.args[3]
+    decision = Decision(
+        str(uuid.uuid4()),
+        issued.context.context_id,
+        FIXTURE["head_sha"],
+        issued.context.contract_digest,
+        case["verdict"],
+        case["directive"],
+        (),
+        "The complete two-concern root is assessed against Issue #2021 REQ-001.",
+        "chatgpt-assisted",
+    )
+    outgoing = render_decision(decision)
+    client.reply_to_review_thread(FIXTURE["repository"], FIXTURE["pr_number"], FIXTURE["root"]["comment_id"], outgoing)
+    client.graphql_query.return_value = _raw_thread_response(outgoing)
 
-        assert result.decision_id == decision.decision_id
-        if case["effect"] == "repair":
-            assert result.status is AdjudicationStatus.APPLICABLE
-            assert len(plan.upholds) == 1 and not plan.overrules
-            assert plan.upholds[0].rationale == decision.rationale
-        elif case["effect"] == "retire-root-only":
-            assert result.status is AdjudicationStatus.APPLICABLE
-            assert len(plan.overrules) == 1 and not plan.upholds
-            assert plan.overrules[0].gap_id is None
-        else:
-            assert result.status is AdjudicationStatus.UNDECIDED
-            assert not plan
+    hydrated = client.get_pr_review_threads_strict(FIXTURE["repository"], FIXTURE["pr_number"])
+    assert hydrated[0].comments[1].author_id == FIXTURE["adjudicator_id"]
+    assert hydrated[0].comments[1].in_reply_to_id == FIXTURE["root"]["comment_id"]
+    admitted = service.refresh(FIXTURE["repository"], FIXTURE["pr_number"], metadata, [issue["number"]], [FIXTURE["root"]["author_id"]], [FIXTURE["adjudicator_id"]])[0]
+    assert admitted.result.decision_id == decision.decision_id
+
+    with (
+        patch("auto_coder.pr_processor.get_pr_review_allowlist_from_config", return_value=[FIXTURE["root"]["author_id"]]),
+        patch("auto_coder.pr_processor.get_review_adjudicator_allowlist_from_config", return_value=[FIXTURE["adjudicator_id"]]),
+        patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=CloudTaskBinding(provider="codex-cloud", task_id="task_fixture")),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send_followup,
+    ):
+        actions, _ = _apply_review_adjudication_effects(FIXTURE["repository"], FIXTURE["pr_number"], metadata, client)
+
+    if case["effect"] == "repair":
+        assert send_followup.call_count == 1
+        assert any("authorized bounded correction" in action for action in actions)
+        client.resolve_review_thread.assert_not_called()
+    elif case["effect"] == "retire-root-only":
+        assert send_followup.call_count == 0
+        assert any("Retired an overruled finding" in action for action in actions)
+        client.resolve_review_thread.assert_called_once_with(FIXTURE["root"]["thread_id"])
+    else:
+        assert send_followup.call_count == 0
+        assert not actions
+        client.resolve_review_thread.assert_not_called()

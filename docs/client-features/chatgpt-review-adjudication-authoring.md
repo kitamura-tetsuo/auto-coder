@@ -15,6 +15,11 @@ unavailable, retired, changed, or unauthorized evidence. Decisions remain
 append-only, and ambiguous publication is recovered only by locating the exact
 attempted payload in the exact thread.
 
+Reader unavailability and permanent retirement are appended to the bound root
+thread as non-authorizing lifecycle projections. They remain GitHub-readable
+when later contract reads fail, and a restoration of matching values cannot
+turn a retired context back into authority.
+
 Semantic authoring evaluations are advisory and separate from deterministic
 transport and production-reader conformance tests. This authoring layer emits no
 new processing-trace schema or dashboard state; admitted decisions continue
