@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from auto_coder.cli_helpers import AdversarialValidationAvailability
 from auto_coder.pr_processor import TwoTierGateInputs, _execute_pending_strong_audit
-from auto_coder.pr_review_cycle import ContractSnapshot, StrongPolicyIdentity
+from auto_coder.pr_review_cycle import VERDICT_PASS, ContractSnapshot, RoundProvenance, StrongPolicyIdentity
 from auto_coder.pr_review_execution import ReviewExecutionResult, ReviewMode
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.utils import CommandResult
@@ -130,3 +130,30 @@ def test_unavailable_strong_route_releases_claim_without_acceptance(tmp_path: Pa
     assert snapshot.active_claim is None
     assert snapshot.accepted_strong_round is None
     assert snapshot.waiting_reason == "strong reviewer route is UNAVAILABLE"
+
+
+def test_completed_strong_audit_is_reused_without_transport_after_restart(tmp_path: Path, monkeypatch) -> None:
+    repository, base, head = _repository(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(14, head, base, inputs.contract)
+    claim = inputs.gate.state.claim_strong_audit(
+        14,
+        provenance=RoundProvenance(head, base),
+        contract=inputs.contract,
+        policy=inputs.policy,
+    )
+    round0 = inputs.gate.state.record_strong_result(14, claim.claim_id, VERDICT_PASS, "strong/codex/model")
+    inputs.gate.state.acknowledge_publication(14, round0.round_id)
+    completed = inputs.gate.state.accept_strong_pass_completion(14, round0.round_id)
+    reconstructed = _inputs(tmp_path, base, head)
+
+    with patch("auto_coder.pr_processor.execute_review") as transport:
+        accepted, reason = _execute_pending_strong_audit("owner/repo", 14, reconstructed)
+
+    assert accepted is False
+    assert reason == "Applicable STRONG_PASS completion already exists"
+    transport.assert_not_called()
+    after = reconstructed.gate.state.snapshot(14)
+    assert after.completion == completed.completion
+    assert after.accepted_strong_round == completed.accepted_strong_round

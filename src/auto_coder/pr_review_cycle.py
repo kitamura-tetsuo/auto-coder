@@ -247,6 +247,7 @@ class PrReviewCycleSnapshot:
     retry_not_before: float
     attempt_error_reason: str
     pending_effect: str
+    requires_new_strong_round: bool
 
 
 class PrReviewCycleRepository:
@@ -511,6 +512,7 @@ class PrReviewCycleRepository:
             retry_not_before=float(raw_pr.get("retry_not_before", 0.0)),
             attempt_error_reason=str(raw_pr.get("attempt_error_reason", "")),
             pending_effect=pending_effect,
+            requires_new_strong_round=requires_new_strong_round,
         )
 
     @staticmethod
@@ -667,6 +669,24 @@ class PrReviewCycleRepository:
                 raise NotApplicableError("Cannot claim a strong audit for a closed PR")
             if float(pr_state.get("retry_not_before", 0.0)) > time.time():
                 raise NotApplicableError("Strong-audit retry is deferred")
+
+            # This check belongs inside the serialized read/validate/write
+            # transition. A caller may have observed pending work immediately
+            # before another controller established completion.
+            completion = pr_state.get("completion")
+            findings = pr_state.get("findings", {})
+            completion_applies = (
+                isinstance(completion, dict)
+                and int(completion.get("open_epoch", -1)) == int(pr_state.get("open_epoch", 0))
+                and completion.get("head_sha") == provenance.head_sha
+                and completion.get("base_sha") == provenance.base_sha
+                and completion.get("contract_identity") == contract.identity
+                and completion.get("policy_identity") == policy.identity
+                and not pr_state.get("requires_new_strong_round")
+                and not any(isinstance(raw, dict) and raw.get("status") == OPEN for raw in findings.values())
+            )
+            if completion_applies:
+                raise NotApplicableError(f"Applicable {completion['basis']} completion already exists")
             accepted_id = str(pr_state.get("accepted_strong_round_id", ""))
             for raw_round in pr_state.get("strong_rounds", []) or []:
                 if not pr_state.get("requires_new_strong_round") and isinstance(raw_round, dict) and raw_round.get("round_id") == accepted_id and raw_round.get("publication_status") == PUBLICATION_PENDING:

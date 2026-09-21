@@ -293,6 +293,42 @@ def test_changing_only_the_ordinary_verifier_does_not_invalidate_strong_authoriz
     assert repo.is_completion_authorized(1, "h0")
 
 
+def test_applicable_completion_rejects_claim_without_destroying_evidence(tmp_path):
+    path = tmp_path / "state.json"
+    repo = PrReviewCycleRepository("owner/repo", path)
+    provenance = RoundProvenance("h0", "base")
+    repo.record_ordinary_pass(1, provenance, _contract())
+    claim = repo.claim_strong_audit(1, provenance, _contract(), _policy())
+    round0 = repo.record_strong_result(1, claim.claim_id, VERDICT_PASS, reviewer_provenance="codex/strong-1")
+    repo.acknowledge_publication(1, round0.round_id)
+    completed = repo.accept_strong_pass_completion(1, round0.round_id)
+
+    reconstructed = PrReviewCycleRepository("owner/repo", path)
+    with pytest.raises(NotApplicableError, match="Applicable STRONG_PASS completion already exists"):
+        reconstructed.claim_strong_audit(1, provenance, _contract(), _policy())
+
+    after = repo.snapshot(1)
+    assert after.completion == completed.completion
+    assert after.accepted_strong_round == completed.accepted_strong_round
+    assert after.active_claim is None
+
+
+def test_changed_policy_remains_eligible_after_completion(tmp_path):
+    repo = PrReviewCycleRepository("owner/repo", tmp_path / "state.json")
+    provenance = RoundProvenance("h0", "base")
+    repo.record_ordinary_pass(1, provenance, _contract())
+    claim = repo.claim_strong_audit(1, provenance, _contract(), _policy())
+    round0 = repo.record_strong_result(1, claim.claim_id, VERDICT_PASS, reviewer_provenance="codex/strong-1")
+    repo.acknowledge_publication(1, round0.round_id)
+    repo.accept_strong_pass_completion(1, round0.round_id)
+
+    changed_policy = StrongPolicyIdentity("strong", "model=changed", "v1")
+    renewed = repo.claim_strong_audit(1, provenance, _contract(), changed_policy)
+
+    assert renewed.policy_identity == changed_policy.identity
+    assert repo.snapshot(1).completion is None
+
+
 # AS-004: controlled overlapping result acceptance.
 
 
