@@ -396,7 +396,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         container = ui.column().classes("w-full max-w-4xl gap-4")
 
         # In-browser state for the current PR
-        state: Dict[str, Any] = {"csrf_token": None, "findings": [], "drafts": {}, "statuses": {}, "loading": True, "error": None}
+        state: Dict[str, Any] = {"csrf_token": None, "findings": [], "drafts": {}, "statuses": {}, "loading": True, "error": None, "rationales": {}}
 
         def render_disabled():
             container.clear()
@@ -433,7 +433,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         def check_auth_and_load():
             ui.run_javascript(
                 f"""
-                fetch("/dashboard-adjudication/context/{pr_number}")
+                fetch("/dashboard-adjudication/context/{pr_number}", {{
+                    headers: {{"Origin": window.location.origin}}
+                }})
                     .then(r => {{
                         if (r.status === 401 || r.status === 403) {{
                             const loginEvent = new CustomEvent("adjudication_needs_auth");
@@ -506,9 +508,15 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     for h in finding["history"]:
                         with ui.row().classes("gap-1 items-center"):
                             ui.label(f"[{h.get('time', 'unknown')}]").classes("text-xs text-gray-500")
+                            ui.label(f"ID: {h.get('decision_id', 'unknown')}").classes("text-xs font-mono")
                             ui.label(f"{h.get('action', 'action')}:").classes("text-xs")
+
                             actor_url = h.get("actor_url", "#")
                             ui.link(h.get("actor", "unknown"), actor_url).classes("text-xs text-blue-500")
+
+                            comment_url = h.get("comment_url")
+                            if comment_url:
+                                ui.link("comment", comment_url).classes("text-xs text-blue-500 ml-2")
 
                 ui.label("Tips (Conflicting / Active):").classes("font-bold mt-2")
                 for tip in finding.get("tips", []):
@@ -519,7 +527,13 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                 with ui.row().classes("mt-4 gap-2 items-center"):
                     pair_select = ui.select(valid_pairs, value="UNDECIDED+NONE", label="Verdict + Directive").classes("w-64")
 
-                rationale_input = ui.textarea(label="Rationale").classes("w-full mt-2")
+                # REQ-005: Restore rejected rationale
+                def on_rationale_change(e):
+                    ui.run_javascript(f"sessionStorage.setItem('rationale_{pr_number}_{finding['context_id']}', JSON.stringify({json.dumps(e.value)}));")
+
+                rationale_input = ui.textarea(label="Rationale", on_change=on_rationale_change).classes("w-full mt-2")
+
+                ui.run_javascript(f"return JSON.parse(sessionStorage.getItem('rationale_{pr_number}_{finding['context_id']}') || 'null');").then(lambda v: rationale_input.set_value(v) if v else None)
 
                 preview_container = ui.column().classes("w-full mt-4 p-4 border rounded bg-gray-50 hidden")
                 status_container = ui.column().classes("w-full mt-2 p-2 hidden")
@@ -542,6 +556,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                     preview_container.classes(remove="hidden")
 
                     verdict, directive = pair_select.value.split("+")
+                    captured_rationale = rationale_input.value
 
                     with preview_container:
                         ui.label("Explicit Confirmation Preview").classes("font-bold text-lg mb-2")
@@ -561,7 +576,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         def poll_status(decision_id):
                             ui.run_javascript(
                                 f"""
-                                fetch("/dashboard-adjudication/status/" + decision_id)
+                                fetch("/dashboard-adjudication/status/" + decision_id, {{headers: {{"Origin": window.location.origin}}}})
                                 .then(r => r.json())
                                 .then(st => {{
                                     const evt = new CustomEvent("adjudication_status_update", {{detail: st}});
@@ -633,7 +648,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                                             contract_digest: "{finding['contract_digest']}",
                                             verdict: "{verdict}",
                                             directive: "{directive}",
-                                            rationale: {json.dumps(rationale_input.value)},
+                                            rationale: {json.dumps(captured_rationale)},
                                             supersedes: {supersedes_json}
                                         }})
                                     }}).then(r => ({{status: r.status, id: draft.decision_id}}));

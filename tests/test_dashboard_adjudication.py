@@ -447,3 +447,49 @@ def test_adjudication_ui_displays_publisher_identity(tmp_path, monkeypatch):
         with open("src/auto_coder/dashboard.py", "r") as f:
             dashboard_code = f.read()
         assert "Actual Publishing Account: {finding.get('publisher_account', 'Unknown')}" in dashboard_code
+
+
+def test_adjudication_ui_browser_authenticated_get_origin(tmp_path, monkeypatch):
+    # TOG-c776f4ec3ed9
+    from unittest.mock import MagicMock, patch
+
+    from fastapi.testclient import TestClient
+
+    from auto_coder.webhook_server import create_app
+
+    engine = MagicMock()
+    app = create_app(engine, "dummy/repo")
+    client = TestClient(app)
+
+    with open("src/auto_coder/dashboard.py", "r") as f:
+        dashboard_code = f.read()
+
+    assert 'fetch("/dashboard-adjudication/context/{pr_number}", {{\n                    headers: {{"Origin": window.location.origin}}\n                }})' in dashboard_code
+    assert 'fetch("/dashboard-adjudication/status/" + decision_id, {{headers: {{"Origin": window.location.origin}}}})' in dashboard_code
+
+
+def test_adjudication_ui_history_omits_decision_identities_and_links(tmp_path, monkeypatch):
+    # TOG-9adc2fdcca8e
+
+    with open("src/auto_coder/dashboard.py", "r") as f:
+        dashboard_code = f.read()
+
+    assert "ui.label(f\"ID: {h.get('decision_id', 'unknown')}\")" in dashboard_code
+    assert 'ui.link("comment", comment_url)' in dashboard_code
+
+
+def test_adjudication_ui_preview_rationale_response_race(tmp_path, monkeypatch):
+    # TOG-f318fa36e8f2
+    with open("src/auto_coder/dashboard.py", "r") as f:
+        dashboard_code = f.read()
+
+    assert "captured_rationale = rationale_input.value" in dashboard_code
+    assert "rationale: {json.dumps(captured_rationale)}" in dashboard_code
+
+
+def test_adjudication_ui_refresh_discards_rejected_rationale(tmp_path, monkeypatch):
+    # TOG-9ff6f7796771
+    with open("src/auto_coder/dashboard.py", "r") as f:
+        dashboard_code = f.read()
+
+    assert "sessionStorage.setItem('rationale_" in dashboard_code
