@@ -4245,7 +4245,7 @@ def _handle_pr_merge(
                     if reusable_completion is not None:
                         published = True
                         publication_reason = f"no publication required; reused {reusable_completion.basis} completion"
-                    if published:
+                    if published and reusable_completion is None:
                         published_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
                         published_round = published_snapshot.accepted_strong_round
                         if published_round is not None and published_round.verdict == VERDICT_PASS:
