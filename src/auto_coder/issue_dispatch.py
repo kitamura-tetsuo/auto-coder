@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from .cloud_manager import CloudManager, CloudTaskBinding
 from .cloud_run import CloudRun, CloudRunRepository
@@ -480,3 +480,64 @@ class IssueDispatchGuard:
             if not tracking_complete:
                 return self._mark_tracking_incomplete(result, f"{result.diagnostic}; secondary tracking incomplete".strip("; "))
         return result
+
+    def dispatch_candidates(
+        self,
+        identity: IssueAttemptIdentity,
+        candidates: Iterable[CandidateHandoff],
+        invoke: Callable[[CandidateHandoff], AdapterOutcome],
+        *,
+        authorize_new_attempt: bool = False,
+    ) -> DispatchResult:
+        """Invoke one ranked candidate sequence through the shared claim boundary.
+
+        Candidate mode is deliberately irrelevant here.  Both synchronous local
+        invocations and asynchronous remote submissions acquire the same logical
+        Issue-attempt claim before their real execution boundary.  An adapter may
+        permit fallback only by returning ``NOT_STARTED``; every other observation
+        is suppressing and ends this pass.
+        """
+        seen: set[tuple[str, str]] = set()
+        last: Optional[DispatchResult] = None
+        for candidate in candidates:
+            key = (candidate.backend_name, candidate.provider)
+            if key in seen:
+                continue
+            seen.add(key)
+            claim = self.reserve(
+                identity,
+                candidate,
+                authorize_new_attempt=authorize_new_attempt,
+            )
+            # New-attempt authority belongs to the pass, not an individual
+            # fallback.  It is safe to present on each reservation because only
+            # a confirmed NOT_STARTED result can have released the predecessor.
+            if not claim.admitted:
+                return claim
+            try:
+                observation = invoke(candidate)
+            except Exception as exc:
+                observation = AdapterOutcome(
+                    DispatchOutcome.INDETERMINATE,
+                    diagnostic=f"adapter raised after admission: {exc}",
+                )
+            last = self.finalize(claim, observation)
+            if last.outcome != DispatchOutcome.NOT_STARTED:
+                return last
+
+        if last is not None:
+            return replace(
+                last,
+                outcome=DispatchOutcome.DEFERRED,
+                backend_name="",
+                provider="",
+                diagnostic="all ranked candidates were confirmed not started",
+                tracking_complete=True,
+                claim_incarnation="",
+                admitted=False,
+            )
+        return DispatchResult(
+            identity,
+            DispatchOutcome.DEFERRED,
+            diagnostic="no ranked dispatch candidates were supplied",
+        )

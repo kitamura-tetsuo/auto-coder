@@ -29,7 +29,14 @@ blocks automatic dispatch for that Issue. A caller may explicitly authorize a
 separate new attempt; the old binding is retained in the legacy ownership table
 and remains inspectable rather than being assigned to the new attempt.
 
-The guard is an adapter-stage production boundary and does not yet select
-candidates or replace ordinary Issue dispatch. Provider response classification
-and integration into Issue processing belong to the subsequent adapter stage.
+`dispatch_candidates` consumes a caller-ranked sequence without partitioning it
+by execution mode. Local and remote adapters acquire the same claim, each unique
+candidate is attempted at most once, and only a confirmed `NOT_STARTED` result
+releases ownership and advances the sequence. Empty or fully rejected sequences
+return an explicit deferred result rather than silently selecting a default.
 
+Provider clients must supply genuine provider references. In particular, a
+successful Claude Routine HTTP status without a usable session reference is an
+indeterminate send; no locally generated session identifier is persisted. The
+legacy cloud selector likewise advances only for explicit pre-submission quota
+or not-started rejections. General post-boundary failures stop the pass.
