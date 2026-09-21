@@ -1123,3 +1123,10 @@ diagnostic pages retain their process-local trace source and perform no GitHub
 query. `tests/test_dashboard_adjudication.py` joins the production reader,
 authenticated session, common renderer, GitHub reply adapter, receipt recovery,
 and durable effect projection.
+The mounted client-state regressions in
+`tests/test_dashboard_adjudication_browser.py` additionally drive a real
+headless browser through conflict provenance links, preview/edit races,
+rationale-preserving authoritative refresh, and reload recovery of an uncertain
+publication ID without another draft or submit. Run them with
+`bash scripts/test.sh tests/test_dashboard_adjudication_browser.py` in a
+Playwright-provisioned environment.

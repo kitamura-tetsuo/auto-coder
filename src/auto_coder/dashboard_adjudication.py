@@ -28,6 +28,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
@@ -272,8 +273,18 @@ class AdjudicationWriteService:
         return config
 
     def _require_origin(self, request: Request, config: DashboardAdjudicationConfig) -> None:
+        """Require browser provenance for both mutations and same-origin reads.
+
+        Browsers send ``Origin`` for the JSON POSTs but normally omit it for
+        same-origin GETs.  Those GETs carry ``Referer`` instead, so validate
+        its origin without requiring its path to equal the configured origin.
+        """
         origin = request.headers.get("origin")
-        if not origin or origin != config.allowed_origin:
+        if origin is None:
+            referer = request.headers.get("referer", "")
+            parsed = urlparse(referer)
+            origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else None
+        if origin != config.allowed_origin:
             raise AdjudicationAuthorizationError(status_code=403, detail="request origin is not the configured allowed_origin")
 
     def _require_session(self, request: Request, config: DashboardAdjudicationConfig) -> _SessionRecord:
@@ -408,6 +419,7 @@ class AdjudicationWriteService:
                             "directive": record.decision.directive,
                             "rationale": record.decision.rationale,
                             "actor_id": record.source.author_id,
+                            "actor_url": f"https://api.github.com/user/{record.source.author_id}",
                             "comment_id": record.source.comment_id,
                             "created_at": record.source.created_at,
                             "supersedes": list(record.decision.supersedes),

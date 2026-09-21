@@ -148,6 +148,20 @@ def test_context_read_requires_session_and_csrf_is_not_needed_for_reads(tmp_path
     assert login.cookies.get("auto_coder_dashboard_adjudication_session") is not None
 
 
+def test_authenticated_browser_get_accepts_allowed_referer_without_origin(tmp_path, monkeypatch):
+    engine = _build_engine(tmp_path, monkeypatch, _thread())
+    client, *_ = _mount(tmp_path, monkeypatch, engine)
+    assert _login(client).status_code == 200
+
+    session = client.get("/dashboard-adjudication/session", headers={"referer": f"{ORIGIN}/dashboard/adjudication/pr/{PR_NUMBER}"})
+    context = client.get(f"/dashboard-adjudication/context/{PR_NUMBER}", headers={"referer": f"{ORIGIN}/dashboard/adjudication/pr/{PR_NUMBER}"})
+    rejected = client.get("/dashboard-adjudication/session", headers={"referer": "https://evil.example.test/dashboard"})
+
+    assert session.status_code == 200
+    assert context.status_code == 200
+    assert rejected.status_code == 403
+
+
 def test_availability_and_session_report_server_verified_authority(tmp_path, monkeypatch):
     engine = _build_engine(tmp_path, monkeypatch, _thread())
     api = _fake_api()
