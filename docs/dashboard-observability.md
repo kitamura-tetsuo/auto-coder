@@ -1,5 +1,20 @@
 # Dashboard observability verification
 
+Issue #2002 mounts the read-only repository dependency-rescan projection at
+`/dashboard/jobs/dependency-rescan`. It consumes only the shared
+`RepoJobTraceCollector` snapshot produced by the real webhook/durable-worker
+path covered in `tests/test_dependency_rescan_repo_job_trace.py`; it does not
+derive stages or counts from dashboard queue rows or Issue results. The view
+keeps pre-execution intake/pending evidence separate, follows attempts by start
+sequence, pins exact execution identity, reports retention and stale-read
+uncertainty, and links recorded local targets back to normal Issue details.
+`tests/test_dashboard_repo_jobs.py` covers projection semantics, mounted routing,
+the exact legacy alias, absent-count handling, and the negative completion
+oracle. Run `bash scripts/test.sh tests/test_dashboard_repo_jobs.py
+tests/test_dependency_rescan_repo_job_trace.py tests/test_repo_job_trace.py` for
+the joined producer-to-page boundary. This is process-local diagnostic history,
+not complete live dependency state or persistent cross-restart history.
+
 Issue #1986 joins the existing Issue/decomposition and PR adversarial review
 producers to the durable `/dashboard/reviews` and detail-page Review History
 views. The projection reads `ReviewAuditStore` only: it introduces no GitHub or

@@ -28,10 +28,19 @@ from .dashboard_detail import (
     resolve_selected_execution,
     unscoped_events_for_item,
 )
+from .dashboard_repo_jobs import RepoJobPageState, facts_rows, observation_time, pending_observations, select_execution, selected_observations, status_text
 from .dashboard_reviews import list_row, record_signature, selection_error
 from .execution_trace import get_trace_collector
 from .implementation_slots import ImplementationSlotSnapshot, ImplementationSlotSnapshotUnavailable
 from .logger_config import get_logger
+from .repo_job_trace import (
+    RepoJobKind,
+    RepoJobSnapshot,
+    executions_for_target,
+    get_repo_job_trace_collector,
+    observations_for_execution,
+    resolve_repo_job_target,
+)
 from .review_audit import ReviewAuditRecord, ReviewAuditStore, StorageHealth
 from .trace_logger import get_trace_logger
 
@@ -103,6 +112,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
     def main_page() -> None:
         ui.label("Auto-Coder Dashboard").classes("text-2xl font-bold mb-4")
         ui.link("LLM Reviews — retained repository history", "/reviews").classes("text-lg text-blue-600 font-bold mb-4")
+        ui.link("Dependency Rescan — repository job diagnostics", "/jobs/dependency-rescan").classes("text-lg text-blue-600 font-bold mb-4")
 
         # Search Section
         ui.label("Search").classes("text-xl font-bold mt-4")
@@ -346,10 +356,12 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                             if worker_data:
                                 item_type = worker_data.get("type", "")
                                 item_number = worker_data.get("number")
-                                ui.link(
-                                    f"{item_type.capitalize()} #{item_number}",
-                                    f"/detail/{item_type}/{item_number}",
-                                ).classes("text-blue-500 font-bold")
+                                if item_type == "dependency" and item_number == 1:
+                                    ui.link("Dependency Rescan", "/jobs/dependency-rescan").classes("text-blue-500 font-bold")
+                                elif is_supported_item_type(item_type) and is_resolvable_item_number(item_number):
+                                    ui.link(f"{item_type.capitalize()} #{item_number}", f"/detail/{item_type}/{item_number}").classes("text-blue-500 font-bold")
+                                else:
+                                    ui.label("Unsupported internal work item").classes("text-amber-600 font-bold")
                                 ui.label(worker_data.get("title", "No Title")).classes("text-sm text-gray-500 truncate")
                             else:
                                 ui.label("Idle").classes("text-gray-400")
@@ -372,8 +384,15 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
                         with ui.row().classes("w-full border-b py-2 items-center"):
                             item_type = item.get("type", "")
                             item_number = item.get("number")
-                            ui.label(item_type.capitalize()).classes("w-20")
-                            ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes("w-20 text-blue-500")
+                            if item_type == "dependency" and item_number == 1:
+                                ui.label("Job").classes("w-20")
+                                ui.link("Rescan", "/jobs/dependency-rescan").classes("w-20 text-blue-500")
+                            else:
+                                ui.label(item_type.capitalize()).classes("w-20")
+                                if is_supported_item_type(item_type) and is_resolvable_item_number(item_number):
+                                    ui.link(f"#{item_number}", f"/detail/{item_type}/{item_number}").classes("w-20 text-blue-500")
+                                else:
+                                    ui.label("Invalid").classes("w-20 text-amber-600")
                             ui.label(str(item.get("priority"))).classes("w-20")
                             ui.label(item.get("title", "")).classes("flex-grow truncate")
 
@@ -509,8 +528,126 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
         refresh()
         ui.timer(1.0, refresh)
 
+    @ui.page("/jobs/dependency-rescan")
+    def dependency_rescan_page() -> None:
+        """Render process-local dependency-rescan evidence without side effects."""
+        target = resolve_repo_job_target(repo_name, RepoJobKind.DEPENDENCY_RESCAN.value)
+        if target is None:  # defensive: the constant above is validated
+            ui.label("Dependency-rescan diagnostics unavailable.").classes("text-red-600")
+            return
+
+        ui.label("Repository Dependency Reconciliation").classes("text-2xl font-bold mb-2")
+        ui.label(f"Repository: {repo_name}").classes("text-sm text-gray-500")
+        ui.label("Read-only, process-local observations; completion means scan, durable handoffs, and claim acknowledgement—not downstream Issue success.").classes("text-sm text-gray-500")
+        ui.link("Back to Dashboard", "/").classes("text-blue-500")
+        banner = ui.label("Loading local repository-job snapshot...")
+        pending_container = ui.column().classes("w-full mt-4")
+        history_container = ui.column().classes("w-full mt-4")
+        detail_container = ui.column().classes("w-full mt-4")
+        state = RepoJobPageState()
+
+        def choose(execution_id: Optional[str]) -> None:
+            state.pinned_execution_id = execution_id
+            state.signature = None
+            refresh_job()
+
+        def render_snapshot(snapshot: RepoJobSnapshot) -> None:
+            selection = select_execution(snapshot, target, state.pinned_execution_id)
+            observations = selected_observations(snapshot, selection)
+            pending = pending_observations(snapshot, target)
+            signature = (
+                snapshot.process_run_id,
+                tuple((item.observation_id, item.outcome, item.facts) for item in snapshot.observations),
+                tuple(snapshot.executions.items()),
+                state.pinned_execution_id,
+                snapshot.observations_truncated,
+                snapshot.execution_metadata_truncated,
+            )
+            if signature == state.signature:
+                return
+            state.signature = signature
+            banner.set_text(f"Local snapshot as of {observation_time(max((item.timestamp for item in snapshot.observations), default=0))}; process run {snapshot.process_run_id}.")
+            banner.classes(replace="text-sm text-gray-500")
+
+            pending_container.clear()
+            with pending_container:
+                ui.label("Repository intake and pending evidence").classes("text-xl font-bold")
+                if not pending:
+                    ui.label("No retained intake, queued, or recovered-pending observations. This does not prove no work exists.")
+                for item in pending:
+                    ui.label(f"{observation_time(item.timestamp)} · {item.kind} · {item.label}")
+                    for name, value in facts_rows(item.facts):
+                        ui.label(f"{name}: {value}").classes("text-xs")
+
+            executions = list(reversed(executions_for_target(snapshot, target)))
+            history_container.clear()
+            with history_container:
+                ui.label("Scan attempt history").classes("text-xl font-bold")
+                ui.button("Follow latest", on_click=lambda: choose(None)).props("flat dense")
+                if not executions:
+                    ui.label("No retained scan attempt history.")
+                for execution in executions:
+                    attempt_events = observations_for_execution(snapshot, execution.execution_id)
+                    ui.button(
+                        f"{execution.execution_id} · {status_text(execution, attempt_events)}",
+                        on_click=lambda identity=execution.execution_id: choose(identity),
+                    ).props("flat dense")
+                if snapshot.observations_truncated or snapshot.execution_metadata_truncated:
+                    ui.label("History is truncated/evicted; older evidence is unavailable.").classes("text-amber-600 font-bold")
+
+            detail_container.clear()
+            with detail_container:
+                if selection.pinned_evicted:
+                    ui.label(f"Pinned attempt {selection.pinned_execution_id} is unavailable (evicted or from another process run).").classes("text-amber-600 font-bold")
+                    return
+                if selection.execution is None:
+                    ui.label("No scan attempt selected.")
+                    return
+                ui.label(f"Attempt {selection.execution.execution_id}").classes("text-xl font-bold font-mono")
+                ui.label(f"Original start sequence: {selection.execution.start_sequence}; status: {status_text(selection.execution, observations)}")
+                for item in observations:
+                    with ui.card().classes("w-full"):
+                        ui.label(f"{observation_time(item.timestamp)} · {item.stage_id} · {item.kind} · outcome: {item.outcome or 'unavailable'}").classes("font-bold")
+                        ui.label(item.label)
+                        for name, value in facts_rows(item.facts):
+                            ui.label(f"{name}: {value}").classes("text-xs")
+                        if item.facts:
+                            for number in item.facts.target_issue_refs.numbers:
+                                ui.link(f"Target Issue #{number} (reevaluation requested; result not inferred)", f"/detail/issue/{number}")
+                            for number in item.facts.source_issue_refs.numbers:
+                                ui.link(f"Source Issue #{number}", f"/detail/issue/{number}")
+                            if item.facts.target_issue_refs.truncated or item.facts.source_issue_refs.truncated or item.facts.trigger_delivery_refs.truncated:
+                                ui.label("Partial list: retained references were clipped; displayed rows are not aggregate totals.").classes("text-amber-600")
+
+        def refresh_job() -> None:
+            if state.refreshing:
+                return
+            state.refreshing = True
+            try:
+                try:
+                    snapshot = get_repo_job_trace_collector().get_snapshot(target)
+                    newest_sequence = max((item.sequence for item in snapshot.observations), default=0)
+                    if newest_sequence < state.last_sequence and snapshot.process_run_id == getattr(state.last_snapshot, "process_run_id", None):
+                        return
+                    render_snapshot(snapshot)
+                    state.last_sequence = newest_sequence
+                    state.last_snapshot = snapshot
+                except Exception as exc:
+                    stale = "retained display is stale" if state.last_snapshot is not None else "no successful snapshot has been displayed"
+                    banner.set_text(f"Repository-job snapshot unavailable ({stale}): {exc}")
+                    banner.classes(replace="text-red-600 font-bold")
+            finally:
+                state.refreshing = False
+
+        refresh_job()
+        timer = ui.timer(1.0, refresh_job)
+        ui.context.client.on_disconnect(timer.deactivate)
+
     @ui.page("/detail/{item_type}/{item_number}")
     def detail_page(item_type: str, item_number: int) -> None:
+        if item_type == "dependency" and item_number == 1:
+            ui.navigate.to("/jobs/dependency-rescan")
+            return
         ui.label(f"Detail View: {item_type.capitalize()} #{item_number}").classes("text-2xl font-bold mb-4")
 
         # Back button
