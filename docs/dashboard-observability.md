@@ -612,6 +612,17 @@ The short first-use initialization lock and same-instance contention retry are l
 trace-neutral: they occur inside the existing HTTP governor boundary and neither create
 an entity execution nor alter the typed pending-work handoff. The runnable production
 boundary checks are
+Issue #2230 consumes that attribution to project the verified task link into
+the authoritative PR body. Confirmed-present, confirmed-updated, deferred,
+unavailable, and failed publication are returned as ordinary PR-processing
+actions; they do not add a provider route, task outcome, trace stage, or
+structured event field, so the dashboard continues to use the existing PR
+processing projection. `tests/test_codex_pr_attribution.py` drives the strict
+GitHub read/update boundary, stale-body preservation, equivalent-link
+idempotency, ambiguous-write restart recovery, and the no-verified-origin
+control. Run `bash scripts/test.sh tests/test_codex_pr_attribution.py` for this
+production-to-action boundary.
+
 `tests/test_github_request_governor.py::test_simultaneous_first_use_converges_and_preserves_live_request`
 and `tests/test_github_request_governor.py::test_pre_schema_pragma_contention_recovers_same_governor_instance`.
 
