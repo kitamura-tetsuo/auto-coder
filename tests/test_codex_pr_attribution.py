@@ -1,9 +1,16 @@
 """Regression coverage for accepted-launch-specific Codex PR attribution."""
 
 from dataclasses import replace
+from unittest.mock import MagicMock, patch
 
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin, task_ids_from_text
+from auto_coder.issue_processor import _process_issue_codex_cloud_mode
+from auto_coder.issue_stage_routing import ImplementationRetryRequest
+from auto_coder.pr_processor import process_pull_request
+from auto_coder.retry_dispatch import RetryDispatchRepository
 
 
 def accepted_run(issue: int, attempt: int, task: str, ref: str) -> CloudRun:
@@ -79,3 +86,95 @@ def test_unaccepted_run_and_foreign_head_cannot_become_verified(tmp_path):
     metadata = pr(52, 10, "expected")
     metadata["head"] = {"ref": "expected", "repo": {"full_name": "fork/repo"}}
     assert resolve_codex_pr_origin("owner/repo", metadata, runs, bindings).disposition is AttributionDisposition.UNRESOLVED
+
+
+def test_initial_dispatch_persists_intent_before_submit_and_recovers_accepted_receipt(tmp_path, monkeypatch):
+    """REQ-002: the real dispatch boundary never submits before durable intent."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    issue = {"number": 2229, "title": "Attribute PR", "body": "Implement it", "labels": []}
+    retry = ImplementationRetryRequest("request-2229", "owner/repo", 2229, "generation-1", "attempt-1", "owned", "execution-1")
+
+    with (
+        patch("auto_coder.codex_cloud_client.CodexCloudClient") as client_type,
+        patch("auto_coder.issue_processor.get_current_attempt", return_value=0),
+        patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+        patch("auto_coder.cloud_run.CloudRunRepository.acquire_submission_claim", side_effect=OSError("intent unavailable")),
+    ):
+        blocked = _process_issue_codex_cloud_mode("owner/repo", issue, AutomationConfig(), MagicMock(), "codex-alias")
+
+    client_type.return_value.submit_task.assert_not_called()
+    assert blocked == ["Deferred Codex Cloud task for issue #2229: could not persist submission claim: intent unavailable"]
+    assert CloudRunRepository("owner/repo").get(2229, 0) is None
+
+    receipts = RetryDispatchRepository("owner/repo")
+    receipts.claim(retry, "codex-cloud", "codex-alias", {"base_branch": "main"})
+    receipt = receipts.allocate_numeric_attempt(retry.request_id, [2])
+    assert receipt.numeric_attempt == 3
+    receipts.record_outcome(retry.request_id, "accepted", external_id="task_e_Accepted", external_url="https://chatgpt.com/codex/tasks/task_e_Accepted")
+
+    with (
+        patch("auto_coder.codex_cloud_client.CodexCloudClient") as replay_client_type,
+        patch("auto_coder.issue_processor.get_current_attempt", return_value=2),
+        patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+    ):
+        recovered = _process_issue_codex_cloud_mode("owner/repo", issue, AutomationConfig(), MagicMock(), "codex-alias", retry_authority=retry)
+
+    replay_client_type.return_value.submit_task.assert_not_called()
+    assert recovered == ["Codex Cloud task 'task_e_Accepted' already accepted for retry attempt-1; skipped duplicate dispatch"]
+    run = CloudRunRepository("owner/repo").get(2229, 3)
+    assert run is not None
+    assert (run.task_id, run.launch_identity, run.publication_head_repository, run.publication_head_ref) == (
+        "task_e_Accepted",
+        retry.request_id,
+        "owner/repo",
+        "issue-2229-attempt-3-codex-cloud",
+    )
+
+
+def test_real_pr_processing_verifies_url_free_intent_without_retargeting_jules(tmp_path, monkeypatch):
+    """REQ-007: a production PR pass persists URL-free accepted attribution."""
+    monkeypatch.setattr("auto_coder.cloud_run.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("auto_coder.codex_pr_attribution.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("auto_coder.cloud_manager.Path.home", lambda: tmp_path)
+    repository = "owner/repo"
+    run = accepted_run(2229, 4, "task_e_Published", "issue-2229-attempt-4-codex-cloud")
+    CloudRunRepository(repository).save(run)
+    manager = CloudManager(repository)
+    legacy = CloudTaskBinding("jules", "legacy-jules-session", "jules")
+    assert manager.ensure_binding(2229, legacy)
+    metadata = {
+        **pr(2237, 2229, run.publication_head_ref),
+        "state": "open",
+        "user": {"login": "codex"},
+        "changed_files": 1,
+        "head": {"ref": run.publication_head_ref, "sha": "head-sha", "repo": {"full_name": repository}},
+        "base": {"ref": "main", "sha": "base-sha"},
+    }
+
+    class FreshMetadataClient:
+        def __init__(self) -> None:
+            self.strict_reads = 0
+
+        def get_pull_request_metadata_strict(self, repo_name: str, pr_number: int) -> dict[str, object]:
+            assert (repo_name, pr_number) == (repository, 2237)
+            self.strict_reads += 1
+            return metadata
+
+    github = FreshMetadataClient()
+    closed = MagicMock(closed=True, actions=[], issue_numbers=())
+    with patch("auto_coder.pr_processor._close_empty_pr", return_value=closed):
+        process_pull_request(github, AutomationConfig(), repository, {"number": 2237})
+
+    assert github.strict_reads == 1
+    established = CodexPrAttributionRepository(repository).get(2237)
+    assert established.disposition is AttributionDisposition.VERIFIED
+    assert established.origin is not None
+    assert (established.origin.task_id, established.origin.provider, established.origin.backend_name, established.origin.attempt) == (
+        "task_e_Published",
+        "codex-cloud",
+        "codex-alias",
+        4,
+    )
+    assert established.origin.evidence == "retained-publication-intent+closing-reference"
+    assert established.consistency_token == "1"
+    assert manager.get_binding(2229) == legacy
