@@ -123,3 +123,43 @@ def test_unrecognized_conflict_retains_accepted_receipt_as_incomplete(mock_clien
     assert handoff.external_id == "task-new"
     assert handoff.projection_disposition == "accepted-tracking-incomplete"
     assert manager.read_bindings_strict()["2223"].task_id == "unknown-racer"
+
+
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_absent_run_without_retained_environment_stays_incomplete(mock_client_type, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    manager = CloudManager("owner/repo")
+    predecessor = CloudTaskBinding("jules", "jules-old", "jules")
+    assert manager.add_session(
+        2223,
+        predecessor.task_id,
+        provider=predecessor.provider,
+        backend_name=predecessor.backend_name,
+    )
+    authority = _authority()
+    store = RetryDispatchRepository("owner/repo")
+    store.claim(
+        authority,
+        "codex-cloud",
+        "codex-alias",
+        {"base_branch": "main"},
+        predecessor=(predecessor.provider, predecessor.task_id, predecessor.backend_name),
+    )
+    store.allocate_numeric_attempt(authority.request_id, [4])
+    store.record_outcome(
+        authority.request_id,
+        "accepted",
+        external_id="task-retained",
+        external_url="https://example.test/tasks/task-retained",
+    )
+
+    result = _dispatch(authority)
+
+    mock_client_type.assert_not_called()
+    assert result == ["Accepted Codex Cloud task 'task-retained' for issue #2223, but tracking is incomplete: " "Accepted cloud run provenance is incomplete"]
+    assert CloudRunRepository("owner/repo").get(2223, 5) is None
+    assert manager.read_bindings_strict()["2223"] == predecessor
+    retained = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    assert retained is not None
+    assert retained.external_id == "task-retained"
+    assert retained.projection_disposition == "accepted-tracking-incomplete"
