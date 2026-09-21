@@ -1735,13 +1735,18 @@ def _populate_test_oracle_gap_requirement_text(
             gap.requirement_text = requirement_text_by_id[gap.requirement_id]
 
 
-def _extract_test_oracle_gaps(raw_value: object, raw_response: str) -> tuple[List[TestOracleGap], Optional[AdversarialValidationResult]]:
+def _extract_test_oracle_gaps(
+    raw_value: object,
+    raw_response: str,
+    recorded_gaps: Sequence[TestOracleGap] = (),
+) -> tuple[List[TestOracleGap], Optional[AdversarialValidationResult]]:
     """Parse and consolidate the distinct material test-oracle-gap schema."""
     if not isinstance(raw_value, list):
         return [], _parse_error(raw_response, "schema_error", "Malformed validator schema: test_oracle_gaps must be a list", "test_oracle_gaps must be a list")
 
     gaps: List[TestOracleGap] = []
-    seen_ids: set[str] = set()
+    recorded_by_id = {gap.gap_id: gap for gap in recorded_gaps}
+    updates_by_id: dict[str, TestOracleGap] = {}
     required_fields = (
         "requirement_id",
         "authoritative_boundary",
@@ -1755,25 +1760,57 @@ def _extract_test_oracle_gaps(raw_value: object, raw_response: str) -> tuple[Lis
     for item in raw_value:
         if not isinstance(item, dict):
             return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap entry", "test-oracle gap entries must be objects")
+        supplied_id_value = item.get("gap_id", "")
+        if not isinstance(supplied_id_value, str):
+            return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap identity", "gap_id must be a string")
+        supplied_id = supplied_id_value.strip()
+        recorded = recorded_by_id.get(supplied_id) if supplied_id else None
+
+        # A recorded ID is an authoritative reference, not a request for the
+        # reviewer to reconstruct its scope.  Hydrate the immutable scope before
+        # validating the lifecycle projection so compact and paraphrased updates
+        # are adjudicated identically.
+        if supplied_id and recorded is None and recorded_by_id:
+            return [], _parse_error(raw_response, "schema_error", "Unknown recorded test-oracle gap", f"gap_id {supplied_id} is not present in the accepted reviewer-state snapshot")
+
+        status_value = item.get("status", "OPEN")
+        if not isinstance(status_value, str):
+            return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap status", "status must be a string")
+        status = status_value.strip().upper()
+        if status not in TEST_ORACLE_GAP_STATUSES:
+            return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap status", f"unsupported test-oracle gap status: {status}")
+        resolution_value = item.get("resolution_evidence", "")
+        if not isinstance(resolution_value, str):
+            return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap evidence", "resolution_evidence must be a string")
+        resolution_evidence = resolution_value.strip()
+        if status in {"RESOLVED", "INVALID"} and not resolution_evidence:
+            return [], _parse_error(raw_response, "schema_error", "Resolved test-oracle gap lacks evidence", f"{status} requires resolution_evidence")
+
+        if recorded is not None:
+            explicit_requirement = item.get("requirement_id")
+            if explicit_requirement is not None and (not isinstance(explicit_requirement, str) or explicit_requirement.strip() != recorded.requirement_id):
+                return [], _parse_error(raw_response, "schema_error", "Conflicting recorded test-oracle gap requirement", f"gap_id {supplied_id} belongs to {recorded.requirement_id}")
+            update = replace(recorded, status=status, resolution_evidence=resolution_evidence)
+            previous = updates_by_id.get(supplied_id)
+            if previous is not None:
+                if (previous.status, previous.resolution_evidence, previous.requirement_id) != (update.status, update.resolution_evidence, update.requirement_id):
+                    return [], _parse_error(raw_response, "schema_error", "Conflicting recorded test-oracle gap updates", f"gap_id {supplied_id} has conflicting lifecycle updates")
+                continue
+            updates_by_id[supplied_id] = update
+            gaps.append(update)
+            continue
+
         values = {name: str(item.get(name, "")).strip() for name in required_fields}
         missing = [name for name, value in values.items() if not value]
         if missing:
             return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap entry", f"test-oracle gap is missing: {', '.join(missing)}")
 
-        status = str(item.get("status", "OPEN")).strip().upper()
         phase = str(item.get("discovery_phase", "INITIAL")).strip().upper()
         exception_reason = str(item.get("rereview_exception_reason", "NONE")).strip().upper()
         exception_evidence = str(item.get("rereview_exception_evidence", "")).strip()
-        resolution_evidence = str(item.get("resolution_evidence", "")).strip()
-        if status not in TEST_ORACLE_GAP_STATUSES:
-            return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap status", f"unsupported test-oracle gap status: {status}")
         if phase not in {"INITIAL", "REREVIEW"}:
             return [], _parse_error(raw_response, "schema_error", "Malformed test-oracle gap discovery phase", f"unsupported discovery phase: {phase}")
-        if status in {"RESOLVED", "INVALID"} and not resolution_evidence:
-            return [], _parse_error(raw_response, "schema_error", "Resolved test-oracle gap lacks evidence", f"{status} requires resolution_evidence")
-
         derived_id = _stable_test_oracle_gap_id(values["requirement_id"], values["authoritative_boundary"], values["invariant"])
-        supplied_id = str(item.get("gap_id", "")).strip()
         if status in {"RESOLVED", "INVALID"} and not supplied_id:
             return [], _parse_error(
                 raw_response,
@@ -1783,27 +1820,32 @@ def _extract_test_oracle_gaps(raw_value: object, raw_response: str) -> tuple[Lis
             )
         if supplied_id and supplied_id != derived_id:
             return [], _parse_error(raw_response, "schema_error", "Unstable test-oracle gap identity", f"gap_id must be {derived_id} for the supplied scope")
-        if derived_id in seen_ids:
-            continue
-        seen_ids.add(derived_id)
-        gaps.append(
-            TestOracleGap(
-                gap_id=derived_id,
-                **values,
-                anchor_line=_optional_positive_int(item.get("anchor_line")),
-                anchor_side=str(item.get("anchor_side", "RIGHT")).strip().upper(),
-                anchor_start_line=_optional_positive_int(item.get("anchor_start_line")),
-                discovery_phase=phase,
-                rereview_exception_reason=exception_reason,
-                rereview_exception_evidence=exception_evidence,
-                status=status,
-                resolution_evidence=resolution_evidence,
-            )
+        new_gap = TestOracleGap(
+            gap_id=derived_id,
+            **values,
+            anchor_line=_optional_positive_int(item.get("anchor_line")),
+            anchor_side=str(item.get("anchor_side", "RIGHT")).strip().upper(),
+            anchor_start_line=_optional_positive_int(item.get("anchor_start_line")),
+            discovery_phase=phase,
+            rereview_exception_reason=exception_reason,
+            rereview_exception_evidence=exception_evidence,
+            status=status,
+            resolution_evidence=resolution_evidence,
         )
+        previous = updates_by_id.get(derived_id)
+        if previous is not None:
+            if previous != new_gap:
+                return [], _parse_error(raw_response, "schema_error", "Conflicting test-oracle gap updates", f"gap_id {derived_id} has conflicting entries")
+            continue
+        updates_by_id[derived_id] = new_gap
+        gaps.append(new_gap)
     return gaps, None
 
 
-def parse_adversarial_validation_response(response: str) -> AdversarialValidationResult:
+def parse_adversarial_validation_response(
+    response: str,
+    recorded_test_oracle_gaps: Sequence[TestOracleGap] = (),
+) -> AdversarialValidationResult:
     """Parse the strong model's adversarial validation output.
 
     Fail-closed policy:
@@ -1893,7 +1935,11 @@ def parse_adversarial_validation_response(response: str) -> AdversarialValidatio
                         return _parse_error(raw_response, "schema_error", "Malformed specification gap entry", "each specification gap requires all four descriptive fields and candidate_options must be a list of non-empty strings")
                     specification_gaps.append(SpecificationGap(**values, candidate_options=[option.strip() for option in options]))
 
-                test_oracle_gaps, gap_parse_error = _extract_test_oracle_gaps(parsed.get("test_oracle_gaps", []), raw_response)
+                test_oracle_gaps, gap_parse_error = _extract_test_oracle_gaps(
+                    parsed.get("test_oracle_gaps", []),
+                    raw_response,
+                    recorded_test_oracle_gaps,
+                )
                 if gap_parse_error is not None:
                     return gap_parse_error
 
@@ -2674,6 +2720,7 @@ def _complete_changed_file_evidence(
     backend_manager: BackendManager,
     requirement_manifest: str,
     head_sha: str,
+    recorded_test_oracle_gaps: Sequence[TestOracleGap] = (),
 ) -> AdversarialValidationResult:
     """Perform the one controller-driven, same-session coverage continuation."""
     unresolved = _remaining_unverified_paths(result, context)
@@ -2708,6 +2755,7 @@ def _complete_changed_file_evidence(
         unresolved_paths=json.dumps(unresolved, indent=2),
         requirement_manifest=requirement_manifest,
         prior_adjudication=result.raw_response or result.summary,
+        prior_test_oracle_gaps=json.dumps([gap.__dict__ for gap in recorded_test_oracle_gaps], indent=2, sort_keys=True),
         controller_retrievals=json.dumps(retrievals, indent=2),
     )
     initial_identity = backend_manager.get_current_backend_identity()
@@ -2728,7 +2776,7 @@ def _complete_changed_file_evidence(
             diagnostic_category="changed_file_completion_session_discontinuity",
             diagnostic_reason=f"Backend started a fresh session or switched identity instead of resuming the original reviewer session while completing: {', '.join(unresolved)}",
         )
-    completion = parse_adversarial_validation_response(response)
+    completion = parse_adversarial_validation_response(response, recorded_test_oracle_gaps)
     _log_contextual_parse_diagnostics(completion, response, backend_manager, context.pr_number, "evidence_completion")
     supplied_complete = {item["path"] for item in retrievals if item["status"] == "COMPLETE"}
     # Only this round's entries (for paths that were actually unresolved coming
@@ -3684,7 +3732,8 @@ def run_adversarial_validation(
     effective_lifecycle_session = lifecycle_session if was_resumed else None
 
     # 5. Parse response
-    result = parse_adversarial_validation_response(response)
+    canonical_recorded_gaps = effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else ()
+    result = parse_adversarial_validation_response(response, canonical_recorded_gaps)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
     result = _reconcile_test_oracle_gap_lifecycle(
@@ -3697,7 +3746,14 @@ def run_adversarial_validation(
             effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else (),
         ),
     )
-    result = _complete_changed_file_evidence(result, context, backend_manager, requirement_manifest, head_sha)
+    result = _complete_changed_file_evidence(
+        result,
+        context,
+        backend_manager,
+        requirement_manifest,
+        head_sha,
+        result.test_oracle_gaps,
+    )
     result = _apply_coverage_and_verdict_precedence(result, context)
     current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and (entry.path in context.unverified_files or entry.provenance == "REUSED_EQUIVALENT")]
 
@@ -3736,7 +3792,7 @@ def run_adversarial_validation(
                 correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
                 if refresh_ci_status is not None:
                     ci_status = refresh_ci_status()
-                result = parse_adversarial_validation_response(correction_response)
+                result = parse_adversarial_validation_response(correction_response, result.test_oracle_gaps)
                 _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_correction")
                 corrected_target = (result.dynamic_check_requested or "").strip()
                 repeated_error = validate_dynamic_check_target(corrected_target, Path(execution_cwd).resolve()) if corrected_target and execution_cwd else None
@@ -3792,7 +3848,7 @@ def run_adversarial_validation(
                     correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
                     if refresh_ci_status is not None:
                         ci_status = refresh_ci_status()
-                    result = parse_adversarial_validation_response(correction_response)
+                    result = parse_adversarial_validation_response(correction_response, result.test_oracle_gaps)
                     _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_selection_correction")
                     corrected_target = (result.dynamic_check_requested or "").strip()
                     if not corrected_target:
@@ -3863,6 +3919,7 @@ def run_adversarial_validation(
                         test_output=test_output[: config.MAX_PROMPT_SIZE * 2],
                         original_summary=result.summary,
                         original_findings=original_findings_str,
+                        prior_test_oracle_gaps=json.dumps([gap.__dict__ for gap in result.test_oracle_gaps], indent=2, sort_keys=True),
                         linked_issues_context=context.issue_context,
                         pr_diff=context.pr_diff,
                         requirement_manifest=requirement_manifest,
@@ -3877,7 +3934,7 @@ def run_adversarial_validation(
                             # Never guess an implicit last session. A provider that did not
                             # expose an ID cannot safely retain dynamic-check context.
                             raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
-                    result = parse_adversarial_validation_response(followup_response)
+                    result = parse_adversarial_validation_response(followup_response, result.test_oracle_gaps)
                     _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
                     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
                     result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)

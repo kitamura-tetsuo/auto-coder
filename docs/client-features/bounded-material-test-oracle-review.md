@@ -21,6 +21,13 @@ introduced a boundary, weakened protection, or required revalidation directly
 exposed an entirely untested authoritative material boundary. Closed gaps cannot
 be reopened for input variants or stronger assertions outside their original
 boundary and invariant.
+Recorded-gap responses are references to that PR-scoped registry: a reviewer may
+return only the stable gap ID, lifecycle status, and terminal evidence. The parser
+hydrates the requirement association and complete scope from persisted state and
+ignores echoed descriptive replacements, so paraphrasing cannot change identity or
+the closure oracle. Unknown IDs, cross-PR references, conflicting requirement IDs,
+and conflicting duplicate updates fail closed; equivalent duplicates consolidate.
+The full descriptive schema remains required for genuinely new OPEN discoveries.
 Previously published gap identities reuse their existing unresolved review
 threads; insufficient corrective commits do not create duplicate root threads.
 An evidence-backed independent `ADDRESSED` disposition for a thread whose root

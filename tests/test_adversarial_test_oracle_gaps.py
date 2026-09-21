@@ -225,6 +225,68 @@ def test_resolution_accepts_paraphrased_narrative_for_the_same_stable_scope() ->
     assert result.test_oracle_gaps[0].focused_regression_scenario == initial.focused_regression_scenario
 
 
+def test_recorded_gap_compact_and_replaced_scope_hydrate_the_same_canonical_record() -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    evidence = "tests/test_grid.py exercises the recorded mutation boundary and unchanged-state invariant."
+    compact = {
+        "gap_id": initial.gap_id,
+        "status": "RESOLVED",
+        "resolution_evidence": evidence,
+    }
+    replaced = gap_payload(status="RESOLVED", resolution_evidence=evidence)
+    replaced["authoritative_boundary"] = "UntrustedReplacement.apply"
+    replaced["invariant"] = "A substituted invariant that must not become authoritative."
+
+    compact_result = parse_adversarial_validation_response(validation_response(compact), [initial])
+    replaced_result = parse_adversarial_validation_response(validation_response(replaced), [initial])
+
+    assert compact_result.result == replaced_result.result == "PASS"
+    assert compact_result.test_oracle_gaps == replaced_result.test_oracle_gaps
+    assert compact_result.test_oracle_gaps[0].authoritative_boundary == initial.authoritative_boundary
+    assert compact_result.test_oracle_gaps[0].invariant == initial.invariant
+    assert compact_result.test_oracle_gaps[0].focused_regression_scenario == initial.focused_regression_scenario
+
+
+def test_recorded_gap_references_reject_unknown_conflicting_and_ordered_duplicates() -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    evidence = "The committed direct-boundary regression protects the original invariant."
+    resolved = {"gap_id": initial.gap_id, "status": "RESOLVED", "resolution_evidence": evidence}
+    opened = {"gap_id": initial.gap_id, "status": "OPEN"}
+
+    unknown = parse_adversarial_validation_response(
+        validation_response({"gap_id": "TOG-unknown", "status": "RESOLVED", "resolution_evidence": evidence}),
+        [initial],
+    )
+    wrong_requirement = parse_adversarial_validation_response(
+        validation_response({**resolved, "requirement_id": "REQ-OTHER"}),
+        [initial],
+    )
+    conflict_forward = json.loads(validation_response(resolved))
+    conflict_forward["test_oracle_gaps"] = [opened, resolved]
+    conflict_reverse = {**conflict_forward, "test_oracle_gaps": [resolved, opened]}
+
+    forward = parse_adversarial_validation_response(json.dumps(conflict_forward), [initial])
+    reverse = parse_adversarial_validation_response(json.dumps(conflict_reverse), [initial])
+
+    assert unknown.result == wrong_requirement.result == "ERROR"
+    assert "accepted reviewer-state snapshot" in (unknown.diagnostic_reason or "")
+    assert "belongs to REQ-001" in (wrong_requirement.diagnostic_reason or "")
+    assert forward.result == reverse.result == "ERROR"
+    assert forward.diagnostic_reason == reverse.diagnostic_reason == f"gap_id {initial.gap_id} has conflicting lifecycle updates"
+
+
+def test_equivalent_recorded_gap_duplicates_consolidate_without_order_effects() -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    update = {"gap_id": initial.gap_id, "status": "OPEN"}
+    payload = json.loads(validation_response(update, result="NEEDS_TESTS"))
+    payload["test_oracle_gaps"] = [update, dict(update)]
+
+    result = parse_adversarial_validation_response(json.dumps(payload), [initial])
+
+    assert result.result == "NEEDS_TESTS"
+    assert result.test_oracle_gaps == [initial]
+
+
 def test_rereview_discards_unbounded_new_gap_but_accepts_required_exception() -> None:
     resolved = parsed_result(gap_payload()).test_oracle_gaps[0]
     resolved.status = "RESOLVED"
