@@ -218,3 +218,19 @@ PR handoff happens only for PR_PRESENT, not merely PREVIOUSLY_PUBLISHED evidence
 [stale]: https://github.com/kitamura-tetsuo/auto-coder/blob/d704b54e59ea559cce17d5cfe1a0841ac3ef465d/src/auto_coder/issue_processor.py#L1117-L1350
 [replacement]: https://github.com/kitamura-tetsuo/auto-coder/blob/d704b54e59ea559cce17d5cfe1a0841ac3ef465d/src/auto_coder/issue_processor.py#L1350-L1412
 [recovery]: https://github.com/kitamura-tetsuo/auto-coder/blob/d704b54e59ea559cce17d5cfe1a0841ac3ef465d/src/auto_coder/codex_pr_recovery.py
+
+## Accepted Codex retry bookkeeping recovery
+
+For an accepted Codex retry, the enclosing controller consumes the exact
+durable retry receipt. Provider acceptance and provider-pointer projection are
+not sufficient for a successful handoff: the accepted CloudRun, current
+binding, implementation-slot membership, and acknowledgement must all agree.
+The same receipt is replayable without allocating an attempt or submitting a
+second provider task. A later accepted claim makes the older receipt historical.
+
+Startup reconciliation and the daemon's ordinary maintenance turn discover
+accepted receipts whose local projection is incomplete, even when an older
+provider-only completion flag is already set. Recovery retains the recorded
+backend, environment, base branch, request, logical/numeric attempt, and task;
+it performs local bookkeeping only. Contention or unavailable state leaves the
+receipt discoverable for the next turn instead of creating replacement work.

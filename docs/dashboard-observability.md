@@ -1164,3 +1164,18 @@ rationale-preserving authoritative refresh, and reload recovery of an uncertain
 publication ID without another draft or submit. Run them with
 `bash scripts/test.sh tests/test_dashboard_adjudication_browser.py` in a
 Playwright-provisioned environment.
+
+## Accepted Codex retry bookkeeping recovery
+
+The controller emits `issue.codex-retry-bookkeeping-recovery` when startup or
+normal daemon maintenance finds an accepted Codex retry whose local projection
+is still incomplete or has become historical. Its facts retain the retry
+request, logical and numeric attempts, accepted task, concrete phase/reason,
+and projection disposition. The generic Issue timeline renders this production
+stage without a new dashboard page or schema. A successful repair produces no
+extra recovery event because the original explicit processing stage already
+records the confirmed handoff; deferred and historical observations remain
+visible without implying provider execution or implementation completion.
+
+Run `bash scripts/test.sh tests/test_retry_handoff_recovery.py` to exercise the
+receipt discovery and production projection boundary used by this stage.

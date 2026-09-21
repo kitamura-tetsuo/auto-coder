@@ -130,6 +130,7 @@ from .repo_job_trace import (
     unassociated_observations_for_target,
 )
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
+from .retry_handoff_recovery import RetryHandoffDisposition, discover_unfinished_codex_handoffs, settle_codex_retry_handoff
 from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService
 from .review_capture import issue_review_audit
 from .shutdown_context import install_admission_check, reset_admission_check
@@ -2690,11 +2691,33 @@ class AutomationEngine:
         # (serviced from the capacity-refill loop) performs the actual fresh
         # observation before retiring anything.
         await asyncio.to_thread(recover_obligations_at_startup, slots)
+        await asyncio.to_thread(self._recover_codex_retry_handoffs, repo_name)
         await self._reconcile_open_github_entities(repo_name)
         # Explicit rerun acceptance precedes its wake.  If the prior process
         # stopped in that gap, the authority journal remains the durable
         # source from which Review-only routing is reconstructed here.
         await asyncio.to_thread(self._recover_issue_review_reruns, repo_name)
+
+    def _recover_codex_retry_handoffs(self, repo_name: str) -> None:
+        """Discover accepted retry receipts and finish local-only projections."""
+        slots = self._get_implementation_slots(repo_name)
+        for recovered in discover_unfinished_codex_handoffs(repo_name, slots):
+            outcome = Outcome.SKIPPED if recovered.disposition is RetryHandoffDisposition.SKIPPED else Outcome.DEFERRED
+            _record_issue_stage_result(
+                recovered.handoff.issue_number,
+                "issue.codex-retry-bookkeeping-recovery",
+                f"issue#{recovered.handoff.issue_number} Codex retry bookkeeping recovery",
+                outcome,
+                {
+                    "request_id": recovered.handoff.request_id,
+                    "attempt_id": recovered.handoff.attempt_id,
+                    "numeric_attempt": recovered.handoff.numeric_attempt,
+                    "task_id": recovered.handoff.external_id,
+                    "phase": recovered.phase,
+                    "reason": recovered.reason,
+                    "projection_disposition": recovered.handoff.projection_disposition,
+                },
+            )
 
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
         """One attempt at recovery through the normal invalidation path.
@@ -2764,6 +2787,11 @@ class AutomationEngine:
                     self.github,
                     lambda number: self.invalidate_entity(repo_name, "issue", number),
                     lambda number: self.invalidate_entity(repo_name, "pr", number),
+                )
+                await self._run_local_critical(
+                    "accepted Codex retry bookkeeping recovery",
+                    self._recover_codex_retry_handoffs,
+                    repo_name,
                 )
                 if self.is_draining:
                     return
@@ -6426,9 +6454,26 @@ class AutomationEngine:
                     from .cloud_manager import CloudManager
 
                     binding = CloudManager(repo_name).get_binding(item_number)
-                    if manual_retry and (jules_mode or is_difficult):
-                        if binding is None or binding == previous_binding:
-                            raise RuntimeError("Manual retry did not establish a new provider tracking target")
+                    if manual_retry and retry_authority is not None:
+                        from .retry_dispatch import RetryDispatchRepository
+
+                        handoff = RetryDispatchRepository(repo_name).get(retry_authority.request_id)
+                        if handoff is not None and handoff.route == "codex-cloud":
+                            settled = settle_codex_retry_handoff(repo_name, retry_authority.request_id, implementation_slots)
+                            result.actions.append(settled.diagnostic)
+                            result.target_reason = settled.diagnostic
+                            if settled.disposition is RetryHandoffDisposition.DEFERRED:
+                                result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                                result.success = False
+                                return result
+                            if settled.disposition is RetryHandoffDisposition.SKIPPED:
+                                result.target_outcome = ExplicitTargetOutcome.SKIPPED
+                                result.success = False
+                                return result
+                            binding = CloudManager(repo_name).get_binding(item_number)
+                        elif jules_mode or is_difficult:
+                            if binding is None or binding == previous_binding:
+                                raise RuntimeError("Manual retry did not establish a new provider tracking target")
                     if binding is not None:
                         owner = ImplementationOwner("issue", item_number)
                         if not self._get_implementation_slots(repo_name).record_provider_session(owner, binding.task_id):

@@ -63,6 +63,20 @@ Projection acknowledgement rechecks both latest-accepted order and the exact
 current pointer under the coordination fence, so a delayed acknowledgement
 cannot restore a superseded receipt to `accepted-current`.
 
-This layer does not activate a controller or CLI retry path, choose providers,
-change quota or fallback policy, cancel old work, or replace ordinary dispatch
-semantics.
+The explicit controller consumes the retained Codex receipt rather than action
+wording or pointer change. It reports success only after the accepted CloudRun,
+authorized current pointer, implementation-slot membership, and local
+acknowledgement agree. Definitely-not-started and indeterminate creation remain
+distinct deferred outcomes, while superseded or retired accepted work is
+reported as historical rather than current success.
+
+Daemon startup and its normal maintenance service scan the durable receipts,
+including legacy records whose provider-only `tracking_complete` bit predates
+the enclosing slot write. Recovery uses the receipt's original request,
+logical/numeric attempt, task, backend, environment, and base branch; it repairs
+local projections only and never consumes creation quota or invokes the
+provider. Transient failures remain `accepted-tracking-incomplete` and are
+retried by the same running daemon on a later maintenance turn.
+
+This recovery does not choose providers, change quota or fallback policy,
+cancel old work, or replace ordinary non-retry dispatch semantics.

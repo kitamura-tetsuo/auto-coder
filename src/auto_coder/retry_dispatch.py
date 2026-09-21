@@ -260,6 +260,18 @@ class RetryDispatchRepository:
             self._connection.execute("UPDATE retry_handoffs SET tracking_complete=1,projection_disposition='accepted-current',updated_at=? WHERE request_id=?", (time.time(), request_id))
             return self._require_locked(request_id)
 
+    def mark_handoff_complete(self, request_id: str) -> RetryHandoff:
+        """Acknowledge full controller bookkeeping, beyond provider tracking."""
+        with self._lock, self._connection:
+            current = self._require_locked(request_id)
+            if current.outcome not in {"accepted", "completed"} or not current.external_id:
+                raise RetryDispatchConflict("only accepted work can complete handoff bookkeeping")
+            self._connection.execute(
+                "UPDATE retry_handoffs SET outcome='completed',tracking_complete=1," "projection_disposition='accepted-current',diagnostic=NULL,updated_at=? " "WHERE request_id=?",
+                (time.time(), request_id),
+            )
+            return self._require_locked(request_id)
+
     def mark_historical(self, request_id: str, diagnostic: str) -> RetryHandoff:
         """Retain an accepted receipt that no longer owns the current pointer."""
         with self._lock, self._connection:
@@ -301,6 +313,15 @@ class RetryDispatchRepository:
             rows = self._connection.execute(
                 f"SELECT {HANDOFF_COLUMNS} FROM retry_handoffs " "WHERE repository=? AND issue_number=? ORDER BY rowid",
                 (self.repository, issue_number),
+            ).fetchall()
+        return tuple(self._decode(row) for row in rows)
+
+    def list_accepted(self) -> tuple[RetryHandoff, ...]:
+        """Return retained accepted receipts in durable creation-claim order."""
+        with self._lock:
+            rows = self._connection.execute(
+                f"SELECT {HANDOFF_COLUMNS} FROM retry_handoffs " "WHERE repository=? AND outcome IN ('accepted','completed') " "AND external_id IS NOT NULL ORDER BY rowid",
+                (self.repository,),
             ).fetchall()
         return tuple(self._decode(row) for row in rows)
 
