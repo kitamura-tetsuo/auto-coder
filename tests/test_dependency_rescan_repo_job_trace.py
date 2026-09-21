@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
@@ -159,6 +160,31 @@ class TestAS001IntakeRunningScanAndHandoffs:
 
         ack = next(o for o in events if o.stage_id == "dependency-rescan.claim-acknowledged")
         assert ack.outcome == "completed"
+
+        # Joined producer-to-mounted-page oracle: the page must expose the
+        # values above from the shared collector rather than reconstructing
+        # them from queue rows or downstream Issue results.
+        pages = {}
+
+        def capture_page(path):
+            def decorator(callback):
+                pages[path] = callback
+                return callback
+
+            return decorator
+
+        with patch("src.auto_coder.dashboard.ui") as dashboard_ui:
+            dashboard_ui.page.side_effect = capture_page
+            from src.auto_coder.dashboard import init_dashboard
+
+            init_dashboard(FastAPI(), engine, REPO)
+            pages["/jobs/dependency-rescan"]()
+
+        rendered = [str(call.args[0]) for call in dashboard_ui.label.call_args_list]
+        assert any("dependency-rescan.enumeration-completed" in value for value in rendered)
+        assert any("Discovered Issues: 3" in value for value in rendered)
+        assert any("Confirmed handoffs: 3" in value for value in rendered)
+        assert not any("999" in value for value in rendered)
 
     def test_scan_is_visible_as_a_running_job_while_it_scans(self, tmp_path: Path, monkeypatch):
         """REQ-001: `active_workers` keeps showing the dependency job busy through the whole scan."""
