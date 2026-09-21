@@ -257,7 +257,12 @@ class IssueDispatchGuard:
         else:
             state = DispatchOutcome.INDETERMINATE.value
             diagnostic = "imported unresolved legacy CloudRun ownership"
-        incarnation = f"legacy-{uuid.uuid5(uuid.NAMESPACE_URL, identity.full_repository_name + ':' + str(identity.issue_number) + ':' + identity.implementation_attempt_id)}"
+        # A migrated legacy record is a newly acquired claim. Its incarnation
+        # must therefore never be derived only from the logical attempt: after
+        # a confirmed release, unchanged legacy evidence may be observed and
+        # acquired again, and a deterministic value would give that successor
+        # the released predecessor's authority token.
+        incarnation = f"legacy-{uuid.uuid4()}"
         connection.execute(
             "INSERT INTO issue_dispatch_handoffs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (*self._key(identity), incarnation, state, backend, provider, reference, diagnostic, 1, now, now),

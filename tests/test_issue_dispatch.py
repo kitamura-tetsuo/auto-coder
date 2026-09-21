@@ -199,3 +199,29 @@ def test_legacy_pending_and_contradictory_binding_remain_suppressing(tmp_path):
     assert conflict is not None
     assert conflict.outcome == DispatchOutcome.DEFERRED
     assert "contradict" in conflict.diagnostic
+
+
+def test_reacquired_legacy_claim_has_new_incarnation_and_rejects_predecessor(tmp_path):
+    """A released legacy claim never shares authority with its successor."""
+    run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
+    assert run_store.save(CloudRun("owner/repo", 2077, 5, "provider-a", "", "backend-a", submission_outcome="indeterminate"))
+    identity = _identity(attempt="5")
+    guard = _guard(tmp_path)
+
+    predecessor = guard.inspect(identity)
+    assert predecessor is not None
+    assert predecessor.claim_incarnation.startswith("legacy-")
+    released = guard.finalize(predecessor, AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic="confirmed absent"))
+    assert released.outcome == DispatchOutcome.NOT_STARTED
+
+    successor = guard.inspect(identity)
+    assert successor is not None
+    assert successor.claim_incarnation.startswith("legacy-")
+    assert successor.claim_incarnation != predecessor.claim_incarnation
+
+    late = guard.finalize(predecessor, AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, "late-task"))
+    assert late.outcome == DispatchOutcome.DEFERRED
+    persisted = guard.inspect(identity)
+    assert persisted is not None
+    assert persisted.claim_incarnation == successor.claim_incarnation
+    assert persisted.provider_reference == ""
