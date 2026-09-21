@@ -23,6 +23,10 @@ def _thread() -> ReviewThread:
     return ReviewThread(id="T1", comments=[ReviewThreadComment(10, "finding", "bot", 7, "Bot", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")])
 
 
+def _publication_arguments(ledger):
+    return [8], ledger.current(None, None, "authoritative thread reconciled"), "observation-1"
+
+
 def test_context_registration_is_restart_safe_and_singleton(tmp_path: Path) -> None:
     contracts = build_issue_contracts([IssueEvidence(90, 9, "title", BODY)])
     binding = PullRequestBinding(3, "o/r", 4, "a" * 40, "b" * 40, "main")
@@ -57,11 +61,11 @@ def test_ambiguous_publication_is_verified_before_retry(tmp_path: Path) -> None:
             raise TimeoutError
 
     client = Client()
-    assert publish_context(client, store, ledger, _thread()) == "unknown"
+    assert publish_context(client, store, ledger, _thread(), *_publication_arguments(ledger)) == "unknown"
     saved = store.publication(context.context_id)[1]
     observed = _thread()
     observed.comments.append(ReviewThreadComment(12, saved))
-    assert publish_context(client, store, ledger, observed) == "confirmed"
+    assert publish_context(client, store, ledger, observed, *_publication_arguments(ledger)) == "confirmed"
     assert client.calls == 1
 
 
@@ -74,8 +78,8 @@ def test_publication_definite_refusal_remains_retryable(tmp_path: Path) -> None:
     request = httpx.Request("POST", "https://api.github.test/reply")
     client.reply_to_review_thread.side_effect = httpx.HTTPStatusError("refused", request=request, response=httpx.Response(422, request=request))
 
-    assert publish_context(client, store, ledger, _thread()) == "definitely-not-sent"
-    assert publish_context(client, store, ledger, _thread()) == "definitely-not-sent"
+    assert publish_context(client, store, ledger, _thread(), *_publication_arguments(ledger)) == "definitely-not-sent"
+    assert publish_context(client, store, ledger, _thread(), *_publication_arguments(ledger)) == "definitely-not-sent"
     assert client.reply_to_review_thread.call_count == 2
 
 
@@ -85,7 +89,8 @@ def test_restart_confirms_interrupted_pending_publication_without_post(tmp_path:
     path = tmp_path / "state.sqlite"
     first_store = AdjudicationContextStore(path)
     first_store.register(context, "r1")
-    body = render_context_projection(context, ())
+    result = AdjudicationContextStore(tmp_path / "render.sqlite").register(context, "r1").current(None, None, "authoritative thread reconciled")
+    body = render_context_projection(context, (), [8], result, "observation-1")
     first_store.set_publication(context.context_id, "pending", body)
     observed = _thread()
     observed.comments.append(ReviewThreadComment(12, body))
