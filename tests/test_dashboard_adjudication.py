@@ -138,8 +138,54 @@ def test_context_read_requires_session_and_csrf_is_not_needed_for_reads(tmp_path
     findings = ctx.json()["findings"]
     assert len(findings) == 1
     assert findings[0]["contributing_issues"] == [9]
+    assert findings[0]["contracts"] == [{"issue_number": 9, "requirements": [{"id": "REQ-001", "text": "Preserve the exact value."}]}]
+    assert findings[0]["raw_finding"] == "finding body"
+    assert findings[0]["reason"]
+    assert findings[0]["observation_revision"]
+    assert findings[0]["decisions"] == []
+    assert findings[0]["processing"] is None
     assert "s" * 40 not in ctx.text
     assert login.cookies.get("auto_coder_dashboard_adjudication_session") is not None
+
+
+def test_availability_and_session_report_server_verified_authority(tmp_path, monkeypatch):
+    engine = _build_engine(tmp_path, monkeypatch, _thread())
+    api = _fake_api()
+    api.users.get_authenticated.return_value = {"id": PUBLISHER_ID, "login": "review-publisher"}
+    client, *_ = _mount(tmp_path, monkeypatch, engine, api=api)
+
+    available = client.get("/dashboard-adjudication/availability").json()
+    assert available == {"repository": REPO, "configured": True, "diagnostic": "ready for operator authentication"}
+    assert _login(client).status_code == 200
+    session = client.get("/dashboard-adjudication/session", headers={"origin": ORIGIN})
+    assert session.status_code == 200
+    assert session.json()["publisher"] == {"id": PUBLISHER_ID, "login": "review-publisher"}
+    assert session.json()["authorization_valid"] is True
+    assert "github_token" not in session.text
+
+
+def test_draft_preview_uses_requested_pair_and_exact_server_renderer(tmp_path, monkeypatch):
+    engine = _build_engine(tmp_path, monkeypatch, _thread())
+    client, *_ = _mount(tmp_path, monkeypatch, engine)
+    assert _login(client).status_code == 200
+    context_id = engine.get_review_adjudication_snapshots(REPO, PR_NUMBER)[0].context.context_id
+
+    draft = client.post(
+        "/dashboard-adjudication/draft",
+        json={
+            "pr_number": PR_NUMBER,
+            "context_id": context_id,
+            "verdict": "OVERRULE",
+            "directive": "NO_CHANGE",
+            "rationale": "The finding is not supported by the explicit contract.",
+        },
+        headers={"origin": ORIGIN},
+    )
+    assert draft.status_code == 200
+    body = draft.json()["proposed_body"]
+    assert '"verdict":"OVERRULE"' in body
+    assert '"directive":"NO_CHANGE"' in body
+    assert "The finding is not supported by the explicit contract." in body
 
 
 def test_draft_and_submit_confirm_publication_and_trigger_reconciliation(tmp_path, monkeypatch):

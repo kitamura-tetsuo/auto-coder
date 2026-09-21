@@ -1112,3 +1112,14 @@ stage events continue to describe the same provider calls and outcomes, and no
 event schema, processing origin, stage identifier, or dashboard rendering is
 changed by this child. A later controller integration may add a production
 origin and must add its own production-to-view scenario then.
+
+Issue #2023 adds the separate `/dashboard/adjudication/pr/<number>` operator
+surface. Its authoritative observations come from
+`AutomationEngine.get_review_adjudication_snapshots`, publication receipts come
+from the authenticated publication journal, and delivery/retirement state comes
+from `AdjudicationEffectStore`; these are displayed independently and never
+collapsed into PASS, approval, or implementation success. Existing PR and Issue
+diagnostic pages retain their process-local trace source and perform no GitHub
+query. `tests/test_dashboard_adjudication.py` joins the production reader,
+authenticated session, common renderer, GitHub reply adapter, receipt recovery,
+and durable effect projection.
