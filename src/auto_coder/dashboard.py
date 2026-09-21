@@ -13,6 +13,7 @@ from nicegui import ui
 
 from . import dashboard_slots
 from .automation_engine import AutomationEngine
+from .dashboard_adjudication_ui import register_adjudication_page
 from .dashboard_detail import (
     DetailSelection,
     SelectionMode,
@@ -74,6 +75,7 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
     """
 
     review_store = ReviewAuditStore()
+    register_adjudication_page(repo_name)
 
     def render_review(record: ReviewAuditRecord, container: Any) -> None:
         """Render retained values as inert text; only recorded IDs are linked."""
@@ -658,6 +660,9 @@ def init_dashboard(app: FastAPI, engine: AutomationEngine, repo_name: str) -> No
             return
 
         ui.label(f"Repository: {repo_name}").classes("text-sm text-gray-500 mb-2")
+
+        if item_type == "pr":
+            ui.link("Open separate GitHub review-adjudication surface", f"/adjudication/pr/{item_number}").classes("text-blue-600 font-bold mb-3")
 
         ui.label("Review History").classes("text-xl font-bold mt-2")
         ui.label("Durable review evidence (separate from the process-local Execution Trace below).").classes("text-sm text-gray-500")

@@ -33,3 +33,22 @@ changing durable state. A checked-in JSON schema and copy-ready renderer use the
 same production parser. This foundational model emits no processing trace and
 performs no GitHub, repair, test, thread-resolution, Issue, or PASS side effect,
 so the dashboard observability production-to-view contract is unchanged.
+
+## Dashboard operator surface
+
+PR diagnostic pages link to a separate `/dashboard/adjudication/pr/<number>`
+GitHub review-adjudication surface. The diagnostic page remains a process-local
+projection and makes no GitHub request; the separate surface reads and writes
+only through the authenticated adjudication service. Issue diagnostic pages do
+not expose adjudication controls.
+
+The operator page reports configuration, the server-verified numeric publishing
+identity and repository allowlist result before enabling work. It renders the
+root finding and rationale as inert text, identifies observation freshness and
+contract/head bindings, and keeps applicability, confirmed publication, and
+durable downstream processing as separate states. Previewing uses the common
+server renderer and allocates a reader-bound decision identity; only the final
+confirmation can publish. Rejected stale or retired drafts retain the typed
+rationale on the page but require a fresh context, preview, and decision ID.
+Unknown publication outcomes are recovered by status lookup under the original
+decision ID and are never blindly reposted.
