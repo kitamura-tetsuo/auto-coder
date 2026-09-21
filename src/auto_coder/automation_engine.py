@@ -130,7 +130,6 @@ from .repo_job_trace import (
     unassociated_observations_for_target,
 )
 from .requirement_contract import REQUIREMENT_CONTRACT_PARSER_VERSION, build_normative_issue_manifest
-from .retry_handoff_recovery import RetryHandoffDisposition, discover_unfinished_codex_handoffs, settle_codex_retry_handoff
 from .review_adjudication_github import ADJUDICATION_DB_ENV, DEFAULT_ADJUDICATION_DB_PATH, AdjudicationContextStore, AdjudicationSnapshot, ReviewAdjudicationService
 from .review_capture import issue_review_audit
 from .shutdown_context import install_admission_check, reset_admission_check
@@ -180,6 +179,8 @@ STARTUP_RECONCILIATION_EFFECT = "startup-scan"
 # the equivalent PR-side stage.
 ISSUE_PROCESSING_STAGE = "issue-processing"
 ISSUE_PROCESSING_REFRESH_EFFECT = "authoritative-refresh"
+CODEX_RETRY_HANDOFF_STAGE = "codex-retry-handoff"
+CODEX_RETRY_HANDOFF_EFFECT = "joined-bookkeeping"
 
 
 def _issue_content_revision(issue_data: Dict[str, Any]) -> str:
@@ -542,6 +543,30 @@ class _IssueProcessingStageHandler:
         if result.target_outcome is ExplicitTargetOutcome.DEFERRED:
             return StageOutcome()
         return StageOutcome(completed_effects=obligation.unfinished_effects)
+
+
+class _CodexRetryHandoffStageHandler:
+    """Finish accepted Codex bookkeeping without re-entering Issue dispatch."""
+
+    def __init__(self, engine: "AutomationEngine", repo_name: str) -> None:
+        self._engine = engine
+        self._repo_name = repo_name
+
+    def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def recover(self, obligation: PendingObligation) -> StageOutcome:
+        return self._run(obligation)
+
+    def _run(self, obligation: PendingObligation) -> StageOutcome:
+        request_id = obligation.identity.revision
+        outcome, reason = self._engine._complete_codex_retry_handoff(self._repo_name, request_id)
+        if outcome in {ExplicitTargetOutcome.SUCCESS, ExplicitTargetOutcome.SKIPPED}:
+            return StageOutcome(completed_effects=obligation.unfinished_effects)
+        logger.info("Codex retry handoff {} remains pending: {}", request_id, reason)
+        # Keep the durable obligation waiting. PendingWorkScheduler interprets
+        # an empty outcome as unfinished and schedules another normal turn.
+        return StageOutcome()
 
 
 class _ValidationPublicationStageHandler:
@@ -2498,8 +2523,18 @@ class AutomationEngine:
         self.pending_work_scheduler.register_handler(STARTUP_RECONCILIATION_STAGE, _StartupReconciliationHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(CODEX_RETRY_HANDOFF_STAGE, _CodexRetryHandoffStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(VALIDATION_PUBLICATION_STAGE, _ValidationPublicationStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(DECOMPOSITION_PUBLICATION_STAGE, _DecompositionPublicationStageHandler(self, repo_name))
+
+        # Provider projection acknowledgements written by older releases do
+        # not prove the enclosing logical-slot write happened. Discover every
+        # accepted, not-joined receipt before startup reconciliation so normal
+        # pending-work service can finish it without creating provider work.
+        from .retry_dispatch import RetryDispatchRepository
+
+        for handoff in RetryDispatchRepository(repo_name).list_unfinished_accepted():
+            self._schedule_codex_retry_handoff(repo_name, handoff.request_id, handoff.issue_number)
 
         # A pending approval/merge effect (Issue #1939) is resumed by its own
         # dedicated scheduler rather than PR_PROCESSING_STAGE: its deadlines,
@@ -2691,33 +2726,11 @@ class AutomationEngine:
         # (serviced from the capacity-refill loop) performs the actual fresh
         # observation before retiring anything.
         await asyncio.to_thread(recover_obligations_at_startup, slots)
-        await asyncio.to_thread(self._recover_codex_retry_handoffs, repo_name)
         await self._reconcile_open_github_entities(repo_name)
         # Explicit rerun acceptance precedes its wake.  If the prior process
         # stopped in that gap, the authority journal remains the durable
         # source from which Review-only routing is reconstructed here.
         await asyncio.to_thread(self._recover_issue_review_reruns, repo_name)
-
-    def _recover_codex_retry_handoffs(self, repo_name: str) -> None:
-        """Discover accepted retry receipts and finish local-only projections."""
-        slots = self._get_implementation_slots(repo_name)
-        for recovered in discover_unfinished_codex_handoffs(repo_name, slots):
-            outcome = Outcome.SKIPPED if recovered.disposition is RetryHandoffDisposition.SKIPPED else Outcome.DEFERRED
-            _record_issue_stage_result(
-                recovered.handoff.issue_number,
-                "issue.codex-retry-bookkeeping-recovery",
-                f"issue#{recovered.handoff.issue_number} Codex retry bookkeeping recovery",
-                outcome,
-                {
-                    "request_id": recovered.handoff.request_id,
-                    "attempt_id": recovered.handoff.attempt_id,
-                    "numeric_attempt": recovered.handoff.numeric_attempt,
-                    "task_id": recovered.handoff.external_id,
-                    "phase": recovered.phase,
-                    "reason": recovered.reason,
-                    "projection_disposition": recovered.handoff.projection_disposition,
-                },
-            )
 
     async def _reconcile_open_github_entities(self, repo_name: str) -> None:
         """One attempt at recovery through the normal invalidation path.
@@ -2787,11 +2800,6 @@ class AutomationEngine:
                     self.github,
                     lambda number: self.invalidate_entity(repo_name, "issue", number),
                     lambda number: self.invalidate_entity(repo_name, "pr", number),
-                )
-                await self._run_local_critical(
-                    "accepted Codex retry bookkeeping recovery",
-                    self._recover_codex_retry_handoffs,
-                    repo_name,
                 )
                 if self.is_draining:
                     return
@@ -6454,26 +6462,25 @@ class AutomationEngine:
                     from .cloud_manager import CloudManager
 
                     binding = CloudManager(repo_name).get_binding(item_number)
-                    if manual_retry and retry_authority is not None:
+                    if manual_retry and (jules_mode or is_difficult):
+                        # Codex retries are classified from their exact durable
+                        # receipt, never from action wording or whether an
+                        # arbitrary CSV pointer happened to change.
+                        assert retry_authority is not None
                         from .retry_dispatch import RetryDispatchRepository
 
-                        handoff = RetryDispatchRepository(repo_name).get(retry_authority.request_id)
-                        if handoff is not None and handoff.route == "codex-cloud":
-                            settled = settle_codex_retry_handoff(repo_name, retry_authority.request_id, implementation_slots)
-                            result.actions.append(settled.diagnostic)
-                            result.target_reason = settled.diagnostic
-                            if settled.disposition is RetryHandoffDisposition.DEFERRED:
-                                result.target_outcome = ExplicitTargetOutcome.DEFERRED
-                                result.success = False
-                                return result
-                            if settled.disposition is RetryHandoffDisposition.SKIPPED:
-                                result.target_outcome = ExplicitTargetOutcome.SKIPPED
-                                result.success = False
-                                return result
-                            binding = CloudManager(repo_name).get_binding(item_number)
-                        elif jules_mode or is_difficult:
-                            if binding is None or binding == previous_binding:
-                                raise RuntimeError("Manual retry did not establish a new provider tracking target")
+                        retry_handoff = RetryDispatchRepository(repo_name).get(retry_authority.request_id)
+                        if retry_handoff is not None and retry_handoff.route == "codex-cloud":
+                            outcome, reason = self._complete_codex_retry_handoff(repo_name, retry_authority.request_id)
+                            result.target_outcome = outcome
+                            result.target_reason = reason
+                            result.actions.append(reason)
+                            result.success = outcome in {ExplicitTargetOutcome.SUCCESS, ExplicitTargetOutcome.SKIPPED}
+                            if outcome is ExplicitTargetOutcome.DEFERRED:
+                                result.error = reason
+                            return result
+                        if binding is None or binding == previous_binding:
+                            raise RuntimeError("Manual retry did not establish a new provider tracking target")
                     if binding is not None:
                         owner = ImplementationOwner("issue", item_number)
                         if not self._get_implementation_slots(repo_name).record_provider_session(owner, binding.task_id):
@@ -6519,6 +6526,8 @@ class AutomationEngine:
             logger.warning(f"Deferred {candidate.type} #{candidate.data.get('number', 'N/A')} after retryable backend failure: {diagnostic}")
         except Exception as e:
             result.error = str(e)
+            result.target_outcome = ExplicitTargetOutcome.FAILED
+            result.target_reason = str(e)
             logger.error(f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {e}")
 
         return result
@@ -6616,6 +6625,100 @@ class AutomationEngine:
             if self.implementation_slots is None or self.implementation_slots.repo_name != repo_name:
                 self.implementation_slots = ImplementationSlotRepository(repo_name, self.config.MAX_CONCURRENT_IMPLEMENTATIONS)
             return self.implementation_slots
+
+    def _schedule_codex_retry_handoff(self, repo_name: str, request_id: str, issue_number: int) -> None:
+        identity = WorkIdentity(repo_name, f"issue:{issue_number}:retry:{request_id}", CODEX_RETRY_HANDOFF_STAGE, request_id)
+        get_pending_work_store().schedule_reevaluation(identity, (CODEX_RETRY_HANDOFF_EFFECT,))
+        self.pending_work_scheduler.wake()
+
+    def _complete_codex_retry_handoff(self, repo_name: str, request_id: str) -> tuple[ExplicitTargetOutcome, str]:
+        """Confirm one exact accepted receipt across run, pointer, and slot state."""
+        from .cloud_manager import CloudManager, CloudTaskBinding
+        from .cloud_run import CloudRunRepository
+        from .retry_dispatch import RetryDispatchRepository
+
+        dispatch = RetryDispatchRepository(repo_name)
+        handoff = dispatch.get(request_id)
+        if handoff is None:
+            from .issue_stage_routing import IssueStageRoutingStore
+
+            routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
+            authority = IssueStageRoutingStore(routing_path).retry_request(request_id)
+            if authority is None or authority.repository != repo_name or authority.status != "owned" or not authority.ownership_reference:
+                return ExplicitTargetOutcome.FAILED, f"retry request {request_id} has no durable dispatch receipt or owned recovery authority"
+            manager = CloudManager(repo_name)
+            binding = manager.read_bindings_strict().get(str(authority.target_number))
+            matching_runs = [
+                run
+                for run in CloudRunRepository(repo_name).list_for_issue(authority.target_number)
+                if binding is not None and run.provider == "codex-cloud" and run.submission_outcome == "accepted" and run.task_id == binding.task_id and run.backend_name == binding.backend_name and run.environment_id and run.base_branch
+            ]
+            if len(matching_runs) != 1:
+                self._schedule_codex_retry_handoff(repo_name, request_id, authority.target_number)
+                return ExplicitTargetOutcome.DEFERRED, f"retry request {request_id} has no durable dispatch receipt and matching accepted CloudRun provenance is unavailable or contradictory"
+            recovered_run = matching_runs[0]
+            try:
+                handoff = dispatch.recover_accepted_receipt(
+                    authority,
+                    numeric_attempt=recovered_run.attempt,
+                    backend_name=recovered_run.backend_name,
+                    task_id=recovered_run.task_id,
+                    task_url=recovered_run.task_url,
+                    environment_id=recovered_run.environment_id,
+                    base_branch=recovered_run.base_branch,
+                )
+            except Exception as exc:
+                self._schedule_codex_retry_handoff(repo_name, request_id, authority.target_number)
+                return ExplicitTargetOutcome.DEFERRED, f"retry request {request_id} accepted receipt recovery is incomplete: {exc}"
+        identity = f"R={handoff.request_id} A={handoff.attempt_id} N={handoff.numeric_attempt or 'unassigned'}"
+        if handoff.outcome == "definitely-not-started":
+            return ExplicitTargetOutcome.DEFERRED, f"{identity} phase=definitely-not-started; provider refused before acceptance"
+        if handoff.outcome in {"claimed", "indeterminate"}:
+            return ExplicitTargetOutcome.DEFERRED, f"{identity} phase=indeterminate-creation; reconciliation or operator attention is required"
+        if handoff.outcome not in {"accepted", "completed"} or not handoff.external_id or handoff.numeric_attempt is None:
+            return ExplicitTargetOutcome.FAILED, f"{identity} has an invalid durable retry disposition"
+        task_identity = f"{identity} T={handoff.external_id}"
+        if handoff.projection_disposition == "accepted-historical" or not dispatch.is_latest_accepted(request_id):
+            dispatch.mark_historical(request_id, "a later accepted retry owns the current pointer")
+            return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; newer accepted work remains current"
+
+        run = CloudRunRepository(repo_name).get(handoff.issue_number, handoff.numeric_attempt)
+        if run is None or run.provider != "codex-cloud" or run.task_id != handoff.external_id or run.backend_name != handoff.backend_name or run.submission_outcome != "accepted":
+            reason = f"{task_identity} phase=accepted-tracking-incomplete; matching accepted CloudRun is unavailable or contradictory"
+            dispatch.mark_tracking_incomplete(request_id, reason)
+            self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
+            return ExplicitTargetOutcome.DEFERRED, reason
+
+        expected = CloudTaskBinding("codex-cloud", handoff.external_id, handoff.backend_name)
+        manager = CloudManager(repo_name)
+        slots = self._get_implementation_slots(repo_name)
+        owner = ImplementationOwner("issue", handoff.issue_number)
+        try:
+            with slots.serialize(owner):
+                if not dispatch.is_latest_accepted(request_id):
+                    dispatch.mark_historical(request_id, "a later accepted retry owns the current pointer")
+                    return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; newer accepted work won confirmation"
+                actual = manager.read_bindings_strict().get(str(handoff.issue_number))
+                if actual != expected:
+                    raise RuntimeError(f"current binding is {actual!r}, expected {expected!r}")
+                if not slots.record_provider_session(owner, handoff.external_id):
+                    if slots.has_retired_session(handoff.external_id):
+                        dispatch.mark_historical(request_id, "accepted ownership is retained in retired history")
+                        return ExplicitTargetOutcome.SKIPPED, f"{task_identity} phase=accepted-historical; ownership is validly retired"
+                    raise RuntimeError("logical implementation slot is unavailable")
+                # Recheck after the slot write so a stale consumer cannot
+                # acknowledge itself current across a later acceptance.
+                if not dispatch.is_latest_accepted(request_id) or manager.read_bindings_strict().get(str(handoff.issue_number)) != expected:
+                    raise RuntimeError("current ownership changed during slot confirmation")
+                if not handoff.tracking_complete:
+                    dispatch.mark_tracking_complete(request_id)
+                dispatch.mark_handoff_complete(request_id)
+        except Exception as exc:
+            reason = f"{task_identity} phase=accepted-tracking-incomplete; {exc}"
+            dispatch.mark_tracking_incomplete(request_id, reason)
+            self._schedule_codex_retry_handoff(repo_name, request_id, handoff.issue_number)
+            return ExplicitTargetOutcome.DEFERRED, reason
+        return ExplicitTargetOutcome.SUCCESS, f"{task_identity} phase=accepted-current; run, pointer, and slot bookkeeping confirmed"
 
     def get_implementation_slot_snapshot(self, repo_name: str) -> ImplementationSlotObservation:
         """Public read-only occupancy observation for `repo_name`'s slot store.

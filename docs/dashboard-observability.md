@@ -1093,6 +1093,14 @@ specific current-evidence reason and do not emit an accepted-handoff outcome or
 a provider receipt. Initiation logs include the bound PR head and qualifying
 failure identities; no structured event schema or dashboard field changed.
 
+Codex-associated repairs additionally revalidate the durable PR publication
+origin immediately before provider transport. Attribution failures remain
+deferred/failed actions and do not emit the existing accepted delivery events;
+confirmed deliveries continue to identify the admitted provider and task. This
+is observability-neutral for the dashboard schema: no event or field was added,
+and URL annotation remains outside the delivery oracle. The runnable routing and
+zero-send regressions are in `tests/test_verified_codex_pr_repair_routing.py`.
+
 # Jules candidate selection and final merge fencing
 
 Speculative candidate evaluation is intentionally represented by existing CI,
@@ -1147,6 +1155,19 @@ observability-neutral extensions of this same boundary. They introduce no new
 trace event or dashboard outcome; their durable disposition regressions live in
 `tests/test_codex_retry_promotion.py`.
 
+The enclosing controller now distinguishes provider tracking from joined
+handoff completion and registers unfinished accepted Codex receipts under the
+`codex-retry-handoff` pending-work stage. This changes durable resumption and
+explicit-result classification but is dashboard-observability-neutral: the
+existing explicit execution scope receives the authoritative SUCCESS,
+DEFERRED, SKIPPED, or FAILED result, while pending work is already exposed by
+daemon status and is not rendered as provider or implementation success. No
+structured trace fields or dashboard view are added. Joined-boundary and
+legacy provider-only checkpoint regressions are
+`tests/test_codex_retry_promotion.py::test_controller_confirms_accepted_receipt_only_after_slot_membership`
+and
+`test_controller_defers_legacy_provider_ack_without_slot_and_keeps_it_discoverable`.
+
 Issue #2023 adds the separate `/dashboard/adjudication/pr/<number>` operator
 surface. Its authoritative observations come from
 `AutomationEngine.get_review_adjudication_snapshots`, publication receipts come
@@ -1164,22 +1185,6 @@ rationale-preserving authoritative refresh, and reload recovery of an uncertain
 publication ID without another draft or submit. Run them with
 `bash scripts/test.sh tests/test_dashboard_adjudication_browser.py` in a
 Playwright-provisioned environment.
-
-## Accepted Codex retry bookkeeping recovery
-
-The controller emits `issue.codex-retry-bookkeeping-recovery` when startup or
-normal daemon maintenance finds an accepted Codex retry whose local projection
-is still incomplete or has become historical. Its facts retain the retry
-request, logical and numeric attempts, accepted task, concrete phase/reason,
-and projection disposition. The generic Issue timeline renders this production
-stage without a new dashboard page or schema. A successful repair produces no
-extra recovery event because the original explicit processing stage already
-records the confirmed handoff; deferred and historical observations remain
-visible without implying provider execution or implementation completion.
-
-Run `bash scripts/test.sh tests/test_retry_handoff_recovery.py` to exercise the
-receipt discovery and production projection boundary used by this stage.
-
 ## Codex PR attribution observability boundary
 
 Codex PR-origin attribution is local bookkeeping evaluated during existing PR

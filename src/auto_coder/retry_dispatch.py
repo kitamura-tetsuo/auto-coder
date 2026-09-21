@@ -22,7 +22,10 @@ from typing import Mapping, Optional
 from .issue_stage_routing import ImplementationRetryRequest
 
 HANDOFF_COLUMNS = (
-    "repository,issue_number,request_id,attempt_id,generation,route,backend_name," "creation_id,outcome,route_config,numeric_attempt,external_id,external_url," "diagnostic,tracking_complete,predecessor_provider,predecessor_task_id," "predecessor_backend_name,projection_disposition,environment_id"
+    "repository,issue_number,request_id,attempt_id,generation,route,backend_name,"
+    "creation_id,outcome,route_config,numeric_attempt,external_id,external_url,"
+    "diagnostic,tracking_complete,predecessor_provider,predecessor_task_id,"
+    "predecessor_backend_name,projection_disposition,environment_id,handoff_complete"
 )
 
 
@@ -52,6 +55,10 @@ class RetryHandoff:
     predecessor_backend_name: Optional[str] = None
     projection_disposition: str = "pending"
     environment_id: Optional[str] = None
+    # ``tracking_complete`` is the provider/pointer acknowledgement retained
+    # for compatibility with old receipts.  The controller sets this separate
+    # checkpoint only after logical-slot membership is durable as well.
+    handoff_complete: bool = False
 
     @property
     def suppresses_creation(self) -> bool:
@@ -112,6 +119,7 @@ class RetryDispatchRepository:
                     ("predecessor_backend_name", "TEXT"),
                     ("projection_disposition", "TEXT NOT NULL DEFAULT 'pending'"),
                     ("environment_id", "TEXT"),
+                    ("handoff_complete", "INTEGER NOT NULL DEFAULT 0"),
                 ):
                     if name not in columns:
                         self._connection.execute(f"ALTER TABLE retry_handoffs ADD COLUMN {name} {declaration}")
@@ -268,6 +276,64 @@ class RetryDispatchRepository:
             if coordination is not None:
                 coordination.close()
 
+    def recover_accepted_receipt(
+        self,
+        authority: ImplementationRetryRequest,
+        *,
+        numeric_attempt: int,
+        backend_name: str,
+        task_id: str,
+        task_url: str,
+        environment_id: str,
+        base_branch: str,
+    ) -> RetryHandoff:
+        """Rebuild a lost receipt from an owned request and its accepted run.
+
+        This is deliberately an insert-only recovery boundary. The existing
+        ownership reference is reused as the creation identity; no request,
+        attempt, or provider creation authority is allocated here.
+        """
+        self._validate_authority(authority, self.repository, authority.target_number)
+        if numeric_attempt < 0 or not backend_name or not task_id:
+            raise ValueError("accepted CloudRun identity is incomplete")
+        encoded = self._safe_config({"base_branch": base_branch})
+        with self._lock, self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            existing = self._get_locked(authority.request_id)
+            if existing is not None:
+                return existing
+            self._connection.execute(
+                "INSERT INTO retry_handoffs("
+                "repository,issue_number,request_id,attempt_id,generation,route,backend_name,"
+                "creation_id,outcome,route_config,numeric_attempt,external_id,external_url,diagnostic,"
+                "tracking_complete,updated_at,predecessor_provider,predecessor_task_id,"
+                "predecessor_backend_name,projection_disposition,environment_id,handoff_complete) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,0)",
+                (
+                    self.repository,
+                    authority.target_number,
+                    authority.request_id,
+                    authority.attempt_id,
+                    authority.generation,
+                    "codex-cloud",
+                    backend_name,
+                    authority.ownership_reference,
+                    "accepted",
+                    encoded,
+                    numeric_attempt,
+                    task_id,
+                    task_url or None,
+                    "accepted receipt recovered from matching durable CloudRun and owned request",
+                    time.time(),
+                    authority.predecessor_provider,
+                    authority.predecessor_task_id,
+                    authority.predecessor_backend_name,
+                    "accepted-tracking-incomplete",
+                    environment_id or None,
+                ),
+            )
+            return self._require_locked(authority.request_id)
+
     def mark_tracking_complete(self, request_id: str) -> RetryHandoff:
         with self._lock, self._connection:
             current = self._require_locked(request_id)
@@ -277,13 +343,13 @@ class RetryDispatchRepository:
             return self._require_locked(request_id)
 
     def mark_handoff_complete(self, request_id: str) -> RetryHandoff:
-        """Acknowledge full controller bookkeeping, beyond provider tracking."""
+        """Acknowledge the joined run, pointer, and logical-slot projection."""
         with self._lock, self._connection:
             current = self._require_locked(request_id)
-            if current.outcome not in {"accepted", "completed"} or not current.external_id:
-                raise RetryDispatchConflict("only accepted work can complete handoff bookkeeping")
+            if current.outcome not in {"accepted", "completed"} or not current.external_id or not current.tracking_complete or current.projection_disposition != "accepted-current":
+                raise RetryDispatchConflict("provider tracking is not confirmed current")
             self._connection.execute(
-                "UPDATE retry_handoffs SET outcome='completed',tracking_complete=1," "projection_disposition='accepted-current',diagnostic=NULL,updated_at=? " "WHERE request_id=?",
+                "UPDATE retry_handoffs SET handoff_complete=1,diagnostic=NULL,updated_at=? WHERE request_id=?",
                 (time.time(), request_id),
             )
             return self._require_locked(request_id)
@@ -292,7 +358,7 @@ class RetryDispatchRepository:
         """Retain an accepted receipt that no longer owns the current pointer."""
         with self._lock, self._connection:
             self._connection.execute(
-                "UPDATE retry_handoffs SET projection_disposition='accepted-historical',diagnostic=?,updated_at=? WHERE request_id=?",
+                "UPDATE retry_handoffs SET projection_disposition='accepted-historical',handoff_complete=1,diagnostic=?,updated_at=? WHERE request_id=?",
                 (diagnostic, time.time(), request_id),
             )
             return self._require_locked(request_id)
@@ -300,7 +366,7 @@ class RetryDispatchRepository:
     def mark_tracking_incomplete(self, request_id: str, diagnostic: str) -> RetryHandoff:
         with self._lock, self._connection:
             self._connection.execute(
-                "UPDATE retry_handoffs SET projection_disposition='accepted-tracking-incomplete',diagnostic=?,updated_at=? WHERE request_id=?",
+                "UPDATE retry_handoffs SET projection_disposition='accepted-tracking-incomplete',handoff_complete=0,diagnostic=?,updated_at=? WHERE request_id=?",
                 (diagnostic, time.time(), request_id),
             )
             return self._require_locked(request_id)
@@ -332,11 +398,11 @@ class RetryDispatchRepository:
             ).fetchall()
         return tuple(self._decode(row) for row in rows)
 
-    def list_accepted(self) -> tuple[RetryHandoff, ...]:
-        """Return retained accepted receipts in durable creation-claim order."""
+    def list_unfinished_accepted(self) -> tuple[RetryHandoff, ...]:
+        """Return accepted Codex receipts whose joined bookkeeping is pending."""
         with self._lock:
             rows = self._connection.execute(
-                f"SELECT {HANDOFF_COLUMNS} FROM retry_handoffs " "WHERE repository=? AND outcome IN ('accepted','completed') " "AND external_id IS NOT NULL ORDER BY rowid",
+                f"SELECT {HANDOFF_COLUMNS} FROM retry_handoffs " "WHERE repository=? AND route='codex-cloud' " "AND outcome IN ('accepted','completed') AND external_id IS NOT NULL " "AND handoff_complete=0 ORDER BY rowid",
                 (self.repository,),
             ).fetchall()
         return tuple(self._decode(row) for row in rows)
@@ -422,4 +488,5 @@ class RetryDispatchRepository:
             predecessor_backend_name=str(row[17]) if row[17] is not None else None,
             projection_disposition=str(row[18]),
             environment_id=str(row[19]) if row[19] is not None else None,
+            handoff_complete=bool(row[20]),
         )
