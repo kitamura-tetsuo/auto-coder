@@ -429,6 +429,64 @@ class TestResolveAddressedReviewThreads:
         assert resolved == []
         client.get_pull_request_head_sha_strict.assert_not_called()
 
+    def test_missing_disposition_is_preserved_as_an_unfinished_outcome(self):
+        client = MagicMock()
+        claimed = [self._claimed("t1", 1), self._claimed("t2", 2)]
+
+        report = resolve_addressed_review_threads(
+            client,
+            "owner/repo",
+            1,
+            "sha1",
+            claimed,
+            [self._disposition("t1", status="STILL_VALID")],
+            review_attempt_id="attempt-7",
+        )
+
+        assert report.resolved_thread_ids == ()
+        assert report.unresolved_thread_ids == ("t1", "t2")
+        assert [outcome.thread_id for outcome in report.thread_outcomes] == ["t1", "t2"]
+        missing = report.thread_outcomes[1]
+        assert missing.repository == "owner/repo"
+        assert missing.pr_number == 1
+        assert missing.evaluated_head_sha == "sha1"
+        assert missing.review_attempt_id == "attempt-7"
+        assert missing.decision == "MISSING"
+        assert missing.phase == "independent-decision"
+        assert missing.effect_state == "NOT_ATTEMPTED"
+        assert missing.reason == "Disposition omitted from validator response"
+
+    def test_effect_failure_retains_exact_phase_and_successful_sibling(self):
+        client = MagicMock()
+        client.get_pull_request_head_sha_strict.return_value = "sha1"
+
+        def reply(_repo, _pr, root_id, _body):
+            if root_id == 2:
+                raise RuntimeError("reply refused")
+
+        client.reply_to_review_thread.side_effect = reply
+        claimed = [self._claimed("t1", 1), self._claimed("t2", 2)]
+
+        report = resolve_addressed_review_threads(
+            client,
+            "owner/repo",
+            1,
+            "sha1",
+            claimed,
+            [self._disposition("t1"), self._disposition("t2")],
+        )
+
+        assert report.resolved_thread_ids == ("t1",)
+        assert report.unresolved_thread_ids == ("t2",)
+        unfinished = report.unfinished_outcomes
+        assert len(unfinished) == 1
+        assert unfinished[0].thread_id == "t2"
+        assert unfinished[0].decision == "ADDRESSED"
+        assert unfinished[0].acceptance_state == "CONFIRMED"
+        assert unfinished[0].effect_state == "UNCONFIRMED"
+        assert unfinished[0].phase == "explanation-publication"
+        assert unfinished[0].reason == "reply refused"
+
     def test_two_independent_addressed_threads_both_resolved(self):
         client = MagicMock()
         client.get_pull_request_head_sha_strict.return_value = "sha1"

@@ -82,6 +82,15 @@ deferred reason. No new dashboard projection is needed because these events use 
 existing PR stage timeline, while accepted closure remains distinct from publication
 or merge confirmation. Durable retry wakes reuse those stage identities and facts;
 their invalidation deadline is scheduling state, not a new dashboard event schema.
+Issue #2260 adds `pr.review-thread-closure` to the existing PR stage timeline.
+Blocked events expose `confirmed_count`, `unfinished_count`, and an `unfinished`
+array whose entries contain the exact thread ID, failed or unconfirmed phase,
+reason, independent decision, durable-acceptance state, and GitHub-effect state.
+This uses the existing stage/result detail projection; no dashboard renderer or
+schema migration is required. Run `bash scripts/test.sh
+tests/test_review_thread_validation.py tests/test_pr_blocker_closure.py
+tests/test_adversarial_validation_pr_flow.py` for producer, wrapper, and production
+consumer coverage.
 Run `bash scripts/test.sh tests/test_pr_review_execution.py
 tests/test_pr_review_cycle.py tests/test_two_tier_pr_gate.py
 tests/test_strong_audit_producer.py` for prompt,

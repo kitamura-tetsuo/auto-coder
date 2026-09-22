@@ -93,6 +93,29 @@ class ClosureEvaluationResult:
 
 
 @dataclass(frozen=True)
+class ThreadClosureOutcome:
+    """Machine-readable settlement state for one selected review thread."""
+
+    repository: str = ""
+    pr_number: int = 0
+    thread_id: str = ""
+    evaluated_head_sha: str = ""
+    review_attempt_id: str = ""
+    root_comment_database_id: Optional[int] = None
+    blocker_ids: tuple[str, ...] = ()
+    decision: str = "MISSING"
+    acceptance_state: str = "NOT_ACCEPTED"
+    effect_state: str = "NOT_ATTEMPTED"
+    phase: str = "disposition"
+    reason: str = "No disposition was returned for the selected thread"
+    cleanup_warning: Optional[str] = None
+
+    @property
+    def completed(self) -> bool:
+        return self.decision == "ADDRESSED" and self.acceptance_state == "CONFIRMED" and self.effect_state == "CONFIRMED"
+
+
+@dataclass(frozen=True, eq=False)
 class ClosureExecutionResult:
     """Outcome of persisting closures to the ledger and resolving GitHub threads."""
 
@@ -101,6 +124,25 @@ class ClosureExecutionResult:
     unresolved_thread_ids: tuple[str, ...] = ()
     persisted_blocker_transitions: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+    thread_outcomes: tuple[ThreadClosureOutcome, ...] = ()
+
+    @property
+    def unfinished_outcomes(self) -> tuple[ThreadClosureOutcome, ...]:
+        return tuple(outcome for outcome in self.thread_outcomes if not outcome.completed)
+
+    # Keep the former sequence surface while callers migrate to the report.
+    def __iter__(self):
+        return iter(self.resolved_thread_ids)
+
+    def __len__(self) -> int:
+        return len(self.resolved_thread_ids)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, (list, tuple)):
+            return tuple(other) == self.resolved_thread_ids
+        if not isinstance(other, ClosureExecutionResult):
+            return False
+        return self.__dict__ == other.__dict__
 
 
 # ---------------------------------------------------------------------------
@@ -610,9 +652,11 @@ def execute_durable_thread_closures(
         claimed_thread = _find_claimed_thread(claimed_threads, thread_id)
         if claimed_thread is None:
             logger.warning(f"Thread {thread_id} was not claimed for this run; ignoring")
+            errors.append(f"{thread_id}|claim-identity|Thread was not claimed for this validation invocation")
             continue
         if claimed_thread.root_comment_database_id is None:
             logger.error(f"Cannot record resolver explanation for thread {thread_id}: no root comment ID available")
+            errors.append(f"{thread_id}|root-identity|Root comment identity is unavailable")
             continue
 
         matching_eval = next((e for e in persisted_evaluations if e.thread_id == thread_id), None)
@@ -633,6 +677,7 @@ def execute_durable_thread_closures(
             )
         except Exception as exc:
             logger.error(f"Failed to record resolver explanation for thread {thread_id}: {exc}")
+            errors.append(f"{thread_id}|explanation-publication|{exc}")
             continue
 
         # Re-check immediately before durability marker and resolve mutation (REQ-006, AC-009)
@@ -656,6 +701,7 @@ def execute_durable_thread_closures(
             )
         except Exception as exc:
             logger.error(f"Could not durably record resolve-intent for thread {thread_id}; skipping mutation: {exc}")
+            errors.append(f"{thread_id}|intent-publication|{exc}")
             continue
 
         # Resolve mutation
@@ -663,6 +709,7 @@ def execute_durable_thread_closures(
             github_client.resolve_review_thread(thread_id)
         except Exception as exc:
             logger.error(f"Failed to resolve review thread {thread_id}: {exc}")
+            errors.append(f"{thread_id}|resolve-confirmation|Resolve delivery or confirmation failed: {exc}")
             continue
 
         # Post-mutation staleness recheck (REQ-006, REQ-008)
@@ -735,13 +782,15 @@ def execute_durable_thread_closures(
                 )
             except Exception as exc:
                 logger.error(f"Resolved thread {thread_id} but failed to post cleared marker: {exc}")
+                errors.append(f"{thread_id}|marker-cleanup|{exc}")
 
         resolved_thread_ids.append(thread_id)
 
+    selected_ids = tuple(dict.fromkeys(e.thread_id for e in evaluations if e.thread_id))
     return ClosureExecutionResult(
         accepted_closures=tuple(persisted_evaluations),
         resolved_thread_ids=tuple(resolved_thread_ids),
-        unresolved_thread_ids=tuple(unresolved_thread_ids),
+        unresolved_thread_ids=tuple(thread_id for thread_id in selected_ids if thread_id not in resolved_thread_ids),
         persisted_blocker_transitions=tuple(persisted_blockers),
         errors=tuple(errors),
     )
