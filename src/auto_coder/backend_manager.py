@@ -1196,6 +1196,38 @@ class LLMBackendManager:
             return cls._instance is not None
 
     @classmethod
+    def reset_noedit_singleton(cls) -> None:
+        """
+        Reset the no-edit/message singleton instance.
+
+        A caller that determines no synchronous no-edit candidate is
+        configured for the current effective configuration (rather than
+        simply not calling ``get_noedit_instance`` at all) uses this so a
+        stale instance bound to a previous repository or configuration in
+        the same process is not silently served to later callers.
+
+        Thread-safe: Uses locks to ensure reset happens atomically.
+        """
+        with cls._lock:
+            if cls._noedit_instance is not None:
+                try:
+                    cls._noedit_instance.close()
+                except Exception:
+                    pass  # Best effort cleanup
+            cls._noedit_instance = None
+
+    @classmethod
+    def is_noedit_initialized(cls) -> bool:
+        """
+        Check if the no-edit/message singleton instance has been initialized.
+
+        Returns:
+            bool: True if instance exists, False otherwise
+        """
+        with cls._lock:
+            return cls._noedit_instance is not None
+
+    @classmethod
     def get_noedit_instance(
         cls,
         default_backend: Optional[str] = None,
