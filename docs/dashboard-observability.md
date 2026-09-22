@@ -14,6 +14,9 @@ Issue #2079 changes candidate admission to the unified repository-scoped
 `[backend]` groups but does not change the trace schema: the selected resolved
 type still determines `issue.dispatch.selection`'s `candidate_pool`, and the
 structured dispatch outcome remains the source of no-start diagnostics. The
+ordinary route now emits `issue.dispatch-route` with `route=ordinary` instead
+of deriving `cloud` or `local` from the legacy global mode switch; the selected
+adapter remains visible in the subsequent selection event. The
 mixed-pool production-to-view regression is exercised by
 `tests/test_dashboard_observability.py`; configuration and group-order coverage
 lives in `tests/test_unified_ordinary_backend_selector.py`.

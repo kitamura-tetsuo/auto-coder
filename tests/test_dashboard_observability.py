@@ -549,7 +549,7 @@ class TestOutcomeMatrixCoverage:
         assert selection_events[0].facts["backend_type"] == backend_type
         assert selection_events[0].facts["candidate_pool"] == "cloud"
         route_events = [e for e in snapshot.events if e.stage_id == "issue.dispatch-route"]
-        assert route_events[0].facts["route"] == "cloud"
+        assert route_events[0].facts["route"] == "ordinary"
 
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})

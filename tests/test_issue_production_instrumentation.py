@@ -24,6 +24,7 @@ from auto_coder.automation_engine import (
 )
 from auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_trace_collector
 from auto_coder.github_pending_work import PendingObligation, PendingReason, WorkIdentity
+from auto_coder.llm_backend_config import LLMBackendConfiguration
 
 
 @pytest.fixture(autouse=True)
@@ -175,9 +176,13 @@ class TestDispatchRouteRecorded:
         engine = AutomationEngine(mock_github, config)
         candidate = Candidate(type="issue", priority=100, data={"number": 602, "title": "Simple bug", "labels": [{"name": "bug"}]})
 
-        with patch(
-            "auto_coder.issue_processor.CloudManager.get_binding",
-            return_value=CloudTaskBinding("jules", "sessions/provider-602", "jules"),
+        jules_config = LLMBackendConfiguration.load_from_dict({"backend": {"order": ["jules"]}})
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=jules_config),
+            patch(
+                "auto_coder.issue_processor.CloudManager.get_binding",
+                return_value=CloudTaskBinding("jules", "sessions/provider-602", "jules"),
+            ),
         ):
             result = engine._process_single_candidate_unified("owner/repo", candidate, config, jules_mode=True)
 
@@ -187,7 +192,7 @@ class TestDispatchRouteRecorded:
         snapshot = get_trace_collector().get_snapshot(item_type="issue", item_number=602)
         route_events = [e for e in snapshot.events if e.stage_id == "issue.dispatch-route"]
         assert len(route_events) == 1
-        assert route_events[0].facts["route"] == "cloud"
+        assert route_events[0].facts["route"] == "ordinary"
 
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._take_issue_actions")
@@ -212,7 +217,7 @@ class TestDispatchRouteRecorded:
         snapshot = get_trace_collector().get_snapshot(item_type="issue", item_number=603)
         route_events = [e for e in snapshot.events if e.stage_id == "issue.dispatch-route"]
         assert len(route_events) == 1
-        assert route_events[0].facts["route"] == "local"
+        assert route_events[0].facts["route"] == "ordinary"
 
 
 class TestDurableResumptionCreatesAnotherExecution:

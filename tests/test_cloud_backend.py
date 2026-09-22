@@ -15,6 +15,7 @@ from auto_coder.issue_dispatch import DispatchOutcome, DispatchResult, IssueAtte
 from auto_coder.issue_processor import (
     IssueDispatchExecution,
     _dispatch_issue_candidates,
+    _ordinary_issue_candidates,
     _process_issue_claude_routine_mode,
     _process_issue_cloud_backend,
     _process_issue_codex_cloud_mode,
@@ -81,10 +82,10 @@ class TestCloudBackendConfig:
             assert call_args["selected_backends"] == ["codex-cloud-luna"]
             assert call_args["primary_backend"] == "codex-cloud-luna"
 
-    def test_parse_backend_cloud_from_dict(self):
-        """Test parsing [backend_cloud] from dictionary/TOML."""
+    def test_parse_mixed_backend_from_dict(self):
+        """Test parsing a cloud alias from the unified selector."""
         data = {
-            "backend_cloud": {
+            "backend": {
                 "order": ["codex-cloud-luna"],
             },
             "backends": {
@@ -98,7 +99,7 @@ class TestCloudBackendConfig:
         }
 
         config = LLMBackendConfiguration.load_from_dict(data)
-        assert config.backend_cloud_order == ["codex-cloud-luna"]
+        assert config.backend_order == ["codex-cloud-luna"]
         assert "codex-cloud-luna" in config.backends
         backend = config.backends["codex-cloud-luna"]
         assert backend.backend_type == "codex-cloud"
@@ -111,7 +112,7 @@ class TestCloudBackendConfig:
         config_path = tmp_path / "llm_config.toml"
         config_path.write_text(
             """
-[backend_cloud]
+[backend]
 priority_groups = [["backend-a", "backend-b"], ["backend-c"]]
 
 [backends.backend-a]
@@ -127,8 +128,7 @@ model = "model-c"
         surpluses = {"backend-a": 0.1, "backend-b": 0.5, "backend-c": 0.99}
 
         with (
-            patch("auto_coder.cli_helpers.get_llm_config", return_value=config),
-            patch("auto_coder.cli_helpers.build_backend_manager") as build_manager,
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=config),
             patch(
                 "auto_coder.quota_selector.evaluate_backend_quota",
                 side_effect=lambda backend_name, **kwargs: BackendQuotaEvaluation(
@@ -137,47 +137,46 @@ model = "model-c"
                 ),
             ),
         ):
-            create_cloud_backend_manager()
+            candidates = _ordinary_issue_candidates("owner/repo")
 
-        assert config.backend_cloud_priority_groups == [["backend-a", "backend-b"], ["backend-c"]]
-        assert build_manager.call_args.kwargs["selected_backends"] == ["backend-b", "backend-a", "backend-c"]
-        assert build_manager.call_args.kwargs["primary_backend"] == "backend-b"
+        assert config.backend_priority_groups == [["backend-a", "backend-b"], ["backend-c"]]
+        assert candidates == ["backend-b", "backend-a", "backend-c"]
 
     @pytest.mark.parametrize(
         ("priority_groups", "message"),
         [
-            ([[], ["backend-a"]], "non-empty backend-name array"),
+            ([[], ["backend-a"]], "must be non-empty"),
             ([["backend-a", 7]], "backend name string"),
-            (["backend-a"], "non-empty backend-name array"),
+            (["backend-a"], "array of backend-name strings"),
         ],
     )
     def test_invalid_priority_groups_are_rejected(self, priority_groups, message):
         with pytest.raises(ValueError, match=message):
-            LLMBackendConfiguration.load_from_dict({"backend_cloud": {"priority_groups": priority_groups}})
+            LLMBackendConfiguration.load_from_dict({"backend": {"priority_groups": priority_groups}})
 
     def test_order_and_priority_groups_are_rejected_together(self):
-        with pytest.raises(ValueError, match=r"backend_cloud\.order and backend_cloud\.priority_groups"):
-            LLMBackendConfiguration.load_from_dict({"backend_cloud": {"order": ["backend-a"], "priority_groups": [["backend-b"]]}})
+        with pytest.raises(ValueError, match=r"backend\.order and backend\.priority_groups"):
+            LLMBackendConfiguration.load_from_dict({"backend": {"order": ["backend-a"], "priority_groups": [["backend-b"]]}})
 
     def test_repository_override_conflict_is_rejected_after_merge(self, tmp_path, monkeypatch):
         base_path = tmp_path / "llm_config.toml"
-        base_path.write_text('[backend_cloud]\norder = ["backend-a"]\n', encoding="utf-8")
+        base_path.write_text('[backend]\norder = ["backend-a"]\n', encoding="utf-8")
         override_path = tmp_path / ".auto-coder" / "owner" / "repo" / "llm_config.toml"
         override_path.parent.mkdir(parents=True)
-        override_path.write_text('[backend_cloud]\npriority_groups = [["backend-b"]]\n', encoding="utf-8")
+        override_path.write_text('[backend]\npriority_groups = [["backend-b"]]\n', encoding="utf-8")
         monkeypatch.setenv("HOME", str(tmp_path))
 
-        with pytest.raises(ValueError, match=r"backend_cloud\.order and backend_cloud\.priority_groups"):
+        with pytest.raises(ValueError, match=r"backend\.order and backend\.priority_groups"):
             LLMBackendConfiguration.load_from_file(str(base_path), repo_name="owner/repo")
 
     def test_priority_groups_translate_backend_alias_and_round_trip(self, tmp_path):
-        config = LLMBackendConfiguration.load_from_dict({"backend_cloud": {"priority_groups": [["gemini", "jules"]]}})
-        assert config.backend_cloud_priority_groups == [["antigravity", "jules"]]
+        config = LLMBackendConfiguration.load_from_dict({"backend": {"priority_groups": [["gemini", "jules"]]}})
+        assert config.backend_priority_groups == [["antigravity", "jules"]]
 
         config_path = tmp_path / "llm_config.toml"
         config.save_to_file(str(config_path))
         restored = LLMBackendConfiguration.load_from_file(str(config_path))
-        assert restored.backend_cloud_priority_groups == [["antigravity", "jules"]]
+        assert restored.backend_priority_groups == [["antigravity", "jules"]]
 
     def test_is_jules_mode_enabled_with_backend_cloud(self):
         """Test is_jules_mode_enabled returns True when backend_cloud_order is configured."""
@@ -371,7 +370,7 @@ class TestNonDifficultCloudIssueRouting:
         config_path = tmp_path / "llm_config.toml"
         config_path.write_text(
             """
-[backend_cloud]
+[backend]
 priority_groups = [["backend-a", "backend-b"], ["backend-c"]]
 
 [backends.backend-a]
@@ -459,7 +458,8 @@ backend_type = "codex-cloud"
         mock_github = MagicMock()
 
         llm_config = LLMBackendConfiguration(
-            backend_cloud_order=["codex-cloud-luna"],
+            backend_order=["codex-cloud-luna"],
+            backend_selector_explicit=True,
             backends={
                 "codex-cloud-luna": BackendConfig(
                     name="codex-cloud-luna",
@@ -498,7 +498,8 @@ backend_type = "codex-cloud"
         mock_github = MagicMock()
 
         llm_config = LLMBackendConfiguration(
-            backend_cloud_order=["claude-opus-routine"],
+            backend_order=["claude-opus-routine"],
+            backend_selector_explicit=True,
             backends={
                 "claude-opus-routine": BackendConfig(
                     name="claude-opus-routine",
@@ -528,15 +529,18 @@ backend_type = "codex-cloud"
         )
 
     @patch("auto_coder.issue_processor._process_issue_jules_mode")
-    def test_process_issue_cloud_backend_defaults_to_jules(self, mock_jules_mode):
-        """Test _process_issue_cloud_backend defaults to Jules when backend_cloud is empty."""
+    def test_process_issue_cloud_backend_uses_explicit_jules(self, mock_jules_mode):
+        """The unified selector dispatches Jules only when it is listed."""
         mock_jules_mode.return_value = ["Jules session started"]
 
         config = AutomationConfig()
         issue_data = {"number": 12, "title": "Default task", "labels": []}
         mock_github = MagicMock()
 
-        llm_config = LLMBackendConfiguration()
+        llm_config = LLMBackendConfiguration(
+            backend_order=["jules"],
+            backend_selector_explicit=True,
+        )
 
         with patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config):
             actions = _process_issue_cloud_backend(
@@ -570,7 +574,8 @@ backend_type = "codex-cloud"
         mock_github = MagicMock()
 
         llm_config = LLMBackendConfiguration(
-            backend_cloud_order=["claude-opus-routine", "jules"],
+            backend_order=["claude-opus-routine", "jules"],
+            backend_selector_explicit=True,
             backends={
                 "claude-opus-routine": BackendConfig(
                     name="claude-opus-routine",
@@ -639,7 +644,7 @@ backend_type = "codex-cloud"
             jules_mode=True,
         )
 
-        mock_candidates.assert_called_once_with("owner/repo", True)
+        mock_candidates.assert_called_once_with("owner/repo")
         mock_dispatch.assert_called_once()
         mock_high_score_cloud.assert_not_called()
         assert result.success is True

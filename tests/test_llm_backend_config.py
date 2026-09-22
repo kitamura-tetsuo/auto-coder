@@ -1016,6 +1016,7 @@ class TestLLMBackendConfiguration:
                         "timeout": 30,
                         "backend_type": "custom_type",
                     },
+                    "custom_type": {"enabled": True},
                 },
             }
             with open(config_file, "wb") as fh:
@@ -1697,6 +1698,7 @@ class TestConfigurationPriorityLogic:
             config.get_backend_config("antigravity").usage_limit_retry_wait_seconds = 30
             config.get_backend_config("antigravity").options = ["option1", "option2"]
             config.get_backend_config("antigravity").backend_type = "custom_gemini"
+            config.backends["custom_gemini"] = BackendConfig(name="custom_gemini")
             config.get_backend_config("antigravity").always_switch_after_execution = True
 
             config.get_backend_config("qwen").enabled = False

@@ -14,6 +14,7 @@ from auto_coder.automation_engine import AutomationEngine
 from auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_trace_collector
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
+from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import IndividualRelationshipContext, SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -21,6 +22,10 @@ from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHu
 
 BODY = "## Requirements\n- REQ-001: Return the current value."
 FINDING = SpecificationFinding("material_ambiguity", ("REQ-001",), "The current value is undefined.", "Define its source.", "", "")
+
+
+def jules_ordinary_config():
+    return LLMBackendConfiguration.load_from_dict({"backend": {"order": ["jules"]}})
 
 
 def lifecycle(tmp_path, verdict, analyzer=None, policy="provider/model-a"):
@@ -868,6 +873,7 @@ def test_production_jules_launch_registers_retained_provider_ownership(monkeypat
 
     candidate = Candidate(type="issue", data={"number": 1728, "title": "Async", "body": current["body"]}, priority=0)
     with (
+        patch("auto_coder.llm_backend_config.get_llm_config", return_value=jules_ordinary_config()),
         patch("auto_coder.issue_processor.JulesClient", return_value=jules),
         patch("auto_coder.issue_processor.get_commit_log", return_value=""),
     ):
@@ -1104,6 +1110,7 @@ def test_cloud_fallback_pr_preserves_capacity_across_issue_edit(tmp_path, route)
     llm_config.get_active_backends.return_value = ["local-fallback"]
     llm_config.get_backend_config.side_effect = lambda name: Mock(backend_type="codex" if name == "local-fallback" else "unsupported")
     llm_config.get_model_for_backend.return_value = "test-model"
+    llm_config.get_ordinary_priority_groups.return_value = [["local-fallback"]]
     api = Mock()
     api.pulls.create.return_value = {"number": 100, "html_url": "https://github.test/pull/100"}
 
@@ -1125,7 +1132,10 @@ def test_cloud_fallback_pr_preserves_capacity_across_issue_edit(tmp_path, route)
     candidate = Candidate(type="issue", data={"number": 1728}, priority=0)
     with (
         patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
-        patch("auto_coder.quota_selector.rank_high_score_backends_by_quota", side_effect=lambda values, _config: values),
+        patch(
+            "auto_coder.quota_selector.rank_high_score_backends_by_quota",
+            side_effect=lambda values, _config: [name for group in values for name in group],
+        ),
         patch("auto_coder.issue_processor._apply_issue_actions_directly", side_effect=fallback_actions),
         patch("auto_coder.issue_processor.get_ghapi_client", return_value=api),
         patch("auto_coder.issue_processor.run_llm_noedit_prompt", return_value=""),
@@ -1189,6 +1199,7 @@ def test_daemon_replacement_pr_preserves_capacity_across_later_edit(monkeypatch,
 
     candidate = Candidate(type="issue", data={"number": 1728}, priority=0)
     with (
+        patch("auto_coder.llm_backend_config.get_llm_config", return_value=jules_ordinary_config()),
         patch("auto_coder.issue_processor.JulesClient", return_value=launch_jules),
         patch("auto_coder.issue_processor.get_commit_log", return_value=""),
     ):

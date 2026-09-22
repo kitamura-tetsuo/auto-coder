@@ -394,9 +394,13 @@ class TestDifficultIssueHandling:
             },
         )
 
-        with patch(
-            "auto_coder.issue_processor.CloudManager.get_binding",
-            return_value=CloudTaskBinding("jules", "sessions/provider-102", "jules"),
+        jules_config = LLMBackendConfiguration.load_from_dict({"backend": {"order": ["jules"]}})
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=jules_config),
+            patch(
+                "auto_coder.issue_processor.CloudManager.get_binding",
+                return_value=CloudTaskBinding("jules", "sessions/provider-102", "jules"),
+            ),
         ):
             result = engine._process_single_candidate_unified(
                 "owner/repo",

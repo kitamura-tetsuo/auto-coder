@@ -567,7 +567,7 @@ class TestHighScoreBackendManagerIntegration:
         ("config_section", "processor"),
         [
             ("backend_with_high_score_cloud", _process_issue_high_score_cloud),
-            ("backend_cloud", _process_issue_cloud_backend),
+            ("backend", _process_issue_cloud_backend),
         ],
     )
     def test_direct_issue_processing_does_not_restore_all_ineligible_candidates(self, config_section, processor):
@@ -580,8 +580,8 @@ class TestHighScoreBackendManagerIntegration:
                 "quota_selection": {"strategy": "burst"},
                 config_section: {"order": ["codex-cloud", "disabled-cloud"]},
                 "backends": {
-                    "codex-cloud": {"type": "codex-cloud"},
-                    "disabled-cloud": {"type": "jules", "enabled": False},
+                    "codex-cloud": {"backend_type": "codex-cloud"},
+                    "disabled-cloud": {"backend_type": "jules", "enabled": False},
                 },
             }
         )
@@ -607,8 +607,11 @@ class TestHighScoreBackendManagerIntegration:
             patch("auto_coder.cli_helpers.create_high_score_backend_manager", return_value=None),
             patch("auto_coder.cli_helpers.create_cloud_backend_manager", return_value=None),
         ):
-            with pytest.raises(CloudSubmissionNotStartedError, match="No configured .*Cloud backend is eligible to submit work"):
-                processor("owner/repo", {"number": 1685}, AutomationConfig(), MagicMock())
+            if config_section == "backend":
+                assert processor("owner/repo", {"number": 1685}, AutomationConfig(), MagicMock()) == []
+            else:
+                with pytest.raises(CloudSubmissionNotStartedError, match="No configured .*Cloud backend is eligible to submit work"):
+                    processor("owner/repo", {"number": 1685}, AutomationConfig(), MagicMock())
 
         codex_dispatch.assert_not_called()
         jules_dispatch.assert_not_called()

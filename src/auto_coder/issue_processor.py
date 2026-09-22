@@ -1392,136 +1392,26 @@ def _process_issue_cloud_backend(
     manual_retry: bool = False,
     retry_authority: Optional[ImplementationRetryRequest] = None,
 ) -> List[str]:
-    """Process an issue using the backend_cloud configuration with failover support.
+    """Dispatch through the unified ordinary selector.
 
-    If backend_cloud is not configured, falls back to Jules mode.
-
-    Args:
-        repo_name: Repository name (e.g., 'owner/repo')
-        issue_data: Issue data dictionary
-        config: AutomationConfig instance
-        github_client: GitHub client for API operations
-        label_context: Optional LabelManagerContext
-
-    Returns:
-        List of action strings describing what was done
+    The historical function name remains only as an internal call-site bridge;
+    it has no retired ``backend_cloud`` parsing or fallback semantics.
     """
-    from .llm_backend_config import get_llm_config
 
     if manual_retry and retry_authority is None:
         return [f"Deferred cloud retry for issue #{issue_data['number']}: durable retry authority is required"]
 
-    llm_config = get_llm_config(repo_name=repo_name)
-    cloud_order = llm_config.backend_cloud_order
-    cloud_priority_groups = llm_config.backend_cloud_priority_groups
-    cloud_config = llm_config.get_backend_cloud()
-
-    priority_candidates: Union[List[str], List[List[str]]]
-    if cloud_priority_groups:
-        priority_candidates = list(cloud_priority_groups)
-    elif cloud_order:
-        priority_candidates = list(cloud_order)
-    elif cloud_config:
-        priority_candidates = [cloud_config.name]
-    else:
-        # Default to jules if backend_cloud is not explicitly configured
-        priority_candidates = ["jules"]
-
-    from .quota_selector import rank_high_score_backends_by_quota
-
-    candidates = rank_high_score_backends_by_quota(priority_candidates, llm_config)
-    if priority_candidates and not candidates:
-        raise CloudSubmissionNotStartedError("No configured Cloud backend is eligible to submit work")
-
-    if not manual_retry and retry_authority is None:
-        execution = _dispatch_issue_candidates(
-            repo_name,
-            issue_data,
-            config,
-            github_client,
-            candidates,
-            label_context=label_context,
-            implementation_slots=implementation_slots,
-        )
-        return execution.actions
-
-    rejected_submissions = 0
-    for backend_name in candidates:
-        b_cfg = llm_config.get_backend_config(backend_name)
-        backend_type = (b_cfg and b_cfg.backend_type) or backend_name
-        issue_number = issue_data["number"]
-        _record_dispatch_stage(
-            issue_number,
-            "issue.dispatch.selection",
-            f"issue#{issue_number} dispatch candidate selected",
-            Outcome.UNKNOWN,
-            {"candidate_pool": "cloud", "backend_type": backend_type, "backend_name": backend_name},
-            kind=EventKind.STAGE_STARTED,
-        )
-
-        try:
-            if backend_type == "claude-routine":
-                return _process_issue_claude_routine_mode(
-                    repo_name,
-                    issue_data,
-                    config,
-                    github_client,
-                    backend_name=backend_name,
-                    label_context=label_context,
-                    **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
-                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
-                )
-            elif backend_type == "codex-cloud":
-                return _process_issue_codex_cloud_mode(
-                    repo_name,
-                    issue_data,
-                    config,
-                    github_client,
-                    backend_name=backend_name,
-                    label_context=label_context,
-                    **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
-                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
-                )
-            elif backend_type == "jules":
-                return _process_issue_jules_mode(
-                    repo_name,
-                    issue_data,
-                    config,
-                    github_client,
-                    label_context=label_context,
-                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),  # type: ignore[arg-type]
-                    **({"backend_name": backend_name} if backend_name != "jules" or retry_authority is not None else {}),  # type: ignore[arg-type]
-                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
-                )
-        except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError) as e:
-            rejected_submissions += 1
-            logger.warning(f"Cloud backend '{backend_name}' rejected submission: {e}. Trying next backend.")
-            continue
-        except Exception as e:
-            # Once a request may have crossed a provider boundary, an ordinary
-            # exception is not evidence that nothing started. Only the explicit
-            # pre-submission rejection exceptions above authorize fallback.
-            logger.warning(f"Cloud backend '{backend_name}' failed with an indeterminate submission: {e}")
-            raise
-
-    if candidates and rejected_submissions == len(candidates):
-        raise CloudSubmissionNotStartedError("All configured Cloud backends rejected submission before remote work started")
-
-    from .cli_helpers import create_cloud_backend_manager
-
-    backend_manager = create_cloud_backend_manager()
-    if backend_manager is None:
-        logger.warning("backend_cloud is not configured or all candidates failed; using the default backend")
-
-    return _take_issue_actions(
+    execution = _dispatch_issue_candidates(
         repo_name,
         issue_data,
         config,
         github_client,
-        backend_manager=backend_manager,
+        _ordinary_issue_candidates(repo_name),
+        label_context=label_context,
         implementation_slots=implementation_slots,
-        **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
+        retry_authority=retry_authority,
     )
+    return execution.actions
 
 
 def _extract_session_id(session: Dict[str, Any]) -> Optional[str]:
