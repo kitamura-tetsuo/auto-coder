@@ -9,6 +9,42 @@ from click.testing import CliRunner
 from auto_coder.automation_config import AutomationConfig, Candidate
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.cli_commands_main import process_issues
+from auto_coder.llm_backend_config import LLMBackendConfiguration
+
+
+def test_process_issues_only_rejects_real_disabled_only_pool_before_prerequisites(tmp_path):
+    config_path = tmp_path / "llm_config.toml"
+    config_path.write_text(
+        '[backend]\norder = ["codex"]\n\n[backends.codex]\nenabled = false\n',
+        encoding="utf-8",
+    )
+    config = LLMBackendConfiguration.load_from_file(str(config_path))
+    prerequisites = MagicMock()
+    build_manager = MagicMock()
+
+    with (
+        patch("auto_coder.cli_commands_main.get_repo_or_detect", return_value="owner/repo"),
+        patch("auto_coder.cli_commands_main.get_llm_config", return_value=config),
+        patch("auto_coder.cli_commands_main.is_jules_mode_enabled", return_value=False),
+        patch("auto_coder.cli_commands_main.check_backend_prerequisites", prerequisites),
+        patch("auto_coder.cli_commands_main.build_backend_manager_from_config", build_manager),
+    ):
+        result = CliRunner().invoke(
+            process_issues,
+            [
+                "--repo",
+                "owner/repo",
+                "--github-token",
+                "token",
+                "--only",
+                "https://github.com/owner/repo/issues/2079",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "ordinary backend candidate pool is empty" in result.output
+    prerequisites.assert_not_called()
+    build_manager.assert_not_called()
 
 
 @pytest.mark.parametrize("retry", [False, True])
@@ -95,6 +131,8 @@ def test_process_issues_only_respects_no_jules_mode_cli_flag():
     llm_config.get_active_backends.return_value = ["codex"]
     llm_config.backend_order = ["codex"]
     llm_config.default_backend = "codex"
+    llm_config.get_ordinary_priority_groups.return_value = [["codex"]]
+    llm_config.resolve_backend_type.return_value = "codex"
 
     backend_manager = MagicMock()
     backend_manager._default_backend = "codex"
@@ -166,6 +204,8 @@ def test_process_issues_only_respects_jules_mode_cli_flag():
     llm_config.get_active_backends.return_value = ["codex"]
     llm_config.backend_order = ["codex"]
     llm_config.default_backend = "codex"
+    llm_config.get_ordinary_priority_groups.return_value = [["codex"]]
+    llm_config.resolve_backend_type.return_value = "codex"
 
     backend_manager = MagicMock()
     backend_manager._default_backend = "codex"
@@ -352,6 +392,8 @@ def test_process_issues_only_completion_status_uses_target_outcome(processing_re
     llm_config.get_active_backends.return_value = ["codex"]
     llm_config.backend_order = ["codex"]
     llm_config.default_backend = "codex"
+    llm_config.get_ordinary_priority_groups.return_value = [["codex"]]
+    llm_config.resolve_backend_type.return_value = "codex"
     backend_manager = MagicMock(_default_backend="codex", _clients={"codex": MagicMock()}, _factories={"codex": MagicMock()}, _all_backends=["codex"])
     message_manager = MagicMock(_default_backend="qwen", _all_backends=["qwen"])
     engine = MagicMock()
@@ -421,6 +463,8 @@ def test_process_issues_only_preserves_production_deferred_issue_outcome():
     llm_config.get_active_backends.return_value = ["codex"]
     llm_config.backend_order = ["codex"]
     llm_config.default_backend = "codex"
+    llm_config.get_ordinary_priority_groups.return_value = [["codex"]]
+    llm_config.resolve_backend_type.return_value = "codex"
     backend_manager = MagicMock(
         _default_backend="codex",
         _clients={"codex": MagicMock()},

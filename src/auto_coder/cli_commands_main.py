@@ -201,8 +201,6 @@ def process_issues(
         configured_cloud_mode = is_jules_mode_enabled(repo_name=repo_name)
 
     selected_backends = [name for group in config.get_ordinary_priority_groups() for name in group]
-    if not selected_backends and config.backend_order:
-        selected_backends = list(config.backend_order)
     if not selected_backends:
         raise click.ClickException("The ordinary backend candidate pool is empty")
     primary_backend = selected_backends[0]
