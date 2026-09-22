@@ -31,7 +31,7 @@ from .implementation_ownership import confirm_implementation_ownership
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_context import get_linked_issues_context, validate_issue_references
-from .issue_dispatch import DispatchResult
+from .issue_dispatch import AdapterOutcome, DispatchResult
 from .issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from .jules_client import JulesClient
 from .jules_engine import get_session_pull_request, is_session_stopped, mark_session_stopped
@@ -253,6 +253,7 @@ def _take_issue_actions(
                 config,
                 github_client,
                 backend_manager=backend_manager,
+                raise_on_failure=raise_on_failure,
             )
         else:
             action_results = _apply_issue_actions_directly(
@@ -262,6 +263,7 @@ def _take_issue_actions(
                 github_client,
                 backend_manager=backend_manager,
                 implementation_slots=implementation_slots,
+                raise_on_failure=raise_on_failure,
             )
         actions.extend(action_results)
         if retry_dispatch is not None and retry_authority is not None:
@@ -297,6 +299,7 @@ def _process_issue_jules_mode(
     implementation_slots: Optional[ImplementationSlotRepository] = None,
     backend_name: str = "jules",
     retry_authority: Optional[ImplementationRetryRequest] = None,
+    acceptance_observer: Optional[Callable[["AdapterOutcome"], None]] = None,
 ) -> List[str]:
     """Process an issue using Jules API for session-based AI interaction.
 
@@ -330,7 +333,7 @@ def _process_issue_jules_mode(
         width = configured_width
 
         # Initialize Jules client
-        jules_client = JulesClient()
+        jules_client = JulesClient(backend_name=backend_name)
 
         # Prepare the prompt for Jules
         # Extract issue labels, excluding the retired "@auto-coder" legacy
@@ -439,6 +442,18 @@ def _process_issue_jules_mode(
             success = True
         else:
             success = cloud_manager.add_session(issue_number, session_id, provider="jules", backend_name=backend_name)
+
+        if acceptance_observer is not None:
+            from .issue_dispatch import AdapterOutcome, DispatchOutcome
+
+            acceptance_observer(
+                AdapterOutcome(
+                    DispatchOutcome.REMOTE_ACCEPTED,
+                    session_id,
+                    "" if success else "CloudManager binding persistence failed",
+                    tracking_complete=success,
+                )
+            )
 
         if not success:
             if retry_dispatch is not None and retry_authority is not None:
@@ -585,6 +600,7 @@ def _process_issue_claude_routine_mode(
     label_context: Optional[LabelManagerContext] = None,
     manual_retry: bool = False,
     retry_authority: Optional[ImplementationRetryRequest] = None,
+    acceptance_observer: Optional[Callable[["AdapterOutcome"], None]] = None,
 ) -> List[str]:
     """Process an issue using Claude Routine for cloud-based AI routine execution.
 
@@ -719,6 +735,18 @@ def _process_issue_claude_routine_mode(
                 session_id,
                 provider="claude-routine",
                 backend_name=effective_backend,
+            )
+
+        if acceptance_observer is not None:
+            from .issue_dispatch import AdapterOutcome, DispatchOutcome
+
+            acceptance_observer(
+                AdapterOutcome(
+                    DispatchOutcome.REMOTE_ACCEPTED,
+                    session_id,
+                    "" if success else "CloudManager binding persistence failed",
+                    tracking_complete=success,
+                )
             )
 
         if not success and manual_retry:
@@ -1299,6 +1327,7 @@ def _dispatch_issue_candidates(
     def invoke(candidate: CandidateHandoff) -> AdapterOutcome:
         nonlocal actions
         backend_type = candidate.provider.lower()
+        observed_acceptance: List[AdapterOutcome] = []
         _record_dispatch_stage(
             issue_number,
             "issue.dispatch.selection",
@@ -1311,7 +1340,15 @@ def _dispatch_issue_candidates(
             if backend_type == "codex-cloud":
                 actions = _process_issue_codex_cloud_mode(repo_name, issue_data, config, github_client, backend_name=candidate.backend_name, label_context=label_context)
             elif backend_type == "claude-routine":
-                actions = _process_issue_claude_routine_mode(repo_name, issue_data, config, github_client, backend_name=candidate.backend_name, label_context=label_context)
+                actions = _process_issue_claude_routine_mode(
+                    repo_name,
+                    issue_data,
+                    config,
+                    github_client,
+                    backend_name=candidate.backend_name,
+                    label_context=label_context,
+                    acceptance_observer=observed_acceptance.append,
+                )
             elif backend_type == "jules":
                 actions = _process_issue_jules_mode(
                     repo_name,
@@ -1321,6 +1358,7 @@ def _dispatch_issue_candidates(
                     label_context=label_context,
                     implementation_slots=implementation_slots,
                     backend_name=candidate.backend_name,
+                    acceptance_observer=observed_acceptance.append,
                 )
             elif backend_type in local_types:
                 model = llm_config.get_model_for_backend(candidate.backend_name) or ""
@@ -1346,6 +1384,8 @@ def _dispatch_issue_candidates(
         except Exception as exc:
             return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic=str(exc))
 
+        if observed_acceptance:
+            return observed_acceptance[-1]
         binding = CloudManager(repo_name).get_binding(issue_number)
         if binding is not None and binding.provider == backend_type and binding.backend_name == candidate.backend_name:
             return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, binding.task_id)
@@ -2007,6 +2047,7 @@ def _apply_issue_actions_directly(
     github_client: GitHubClient,
     backend_manager: Optional[BackendManager] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
+    raise_on_failure: bool = False,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly.
 
@@ -2260,6 +2301,8 @@ def _apply_issue_actions_directly(
         raise
     except Exception as e:
         logger.error(f"Error applying issue actions directly: {e}")
+        if raise_on_failure:
+            raise
 
     return actions
 

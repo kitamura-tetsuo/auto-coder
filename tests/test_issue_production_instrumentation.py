@@ -123,7 +123,7 @@ class TestDispatchRouteRecorded:
 
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
-    @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
+    @patch("auto_coder.issue_processor._take_issue_actions")
     def test_difficult_label_with_no_jules_mode_still_routes_to_high_score_cloud(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
         mock_high_score_cloud.return_value = ["High score cloud action"]
         mock_ctx = MagicMock()
@@ -190,7 +190,7 @@ class TestDispatchRouteRecorded:
         assert route_events[0].facts["route"] == "cloud"
 
     @patch("auto_coder.automation_engine.LabelManager")
-    @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
+    @patch("auto_coder.issue_processor._take_issue_actions")
     def test_local_mode_records_local_route(self, mock_take_actions, mock_label_manager):
         mock_take_actions.return_value = ["Local action"]
         mock_ctx = MagicMock()

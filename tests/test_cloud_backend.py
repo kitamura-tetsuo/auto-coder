@@ -2,7 +2,7 @@
 Unit and integration tests for backend_cloud and non-difficult cloud issue routing.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -193,6 +193,118 @@ model = "model-c"
 
 class TestNonDifficultCloudIssueRouting:
     """Test handling and routing of non-difficult issues to backend_cloud."""
+
+    @pytest.mark.parametrize("backend_type", ["jules", "claude-routine"])
+    def test_remote_acceptance_survives_binding_failure(self, backend_type, tmp_path, monkeypatch):
+        """A genuine provider reference remains accepted when secondary tracking fails."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        alias = f"{backend_type}-team"
+        llm_config = LLMBackendConfiguration.load_from_dict({"backends": {alias: {"backend_type": backend_type, "api_key": "team-key", "url": "https://routine.test"}}})
+        github = MagicMock()
+        issue = {"number": 2078, "title": "Remote", "body": "Implement", "labels": []}
+        provider_reference = "provider-session-2078"
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.jules_client.get_llm_config", return_value=llm_config),
+            patch("auto_coder.claude_routine_client.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=0),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("auto_coder.issue_processor.CloudManager.add_session", return_value=False),
+            patch("auto_coder.issue_processor.JulesClient.start_session", return_value=provider_reference),
+            patch("auto_coder.claude_routine_client.ClaudeRoutineClient.fire_routine", return_value=(provider_reference, None)),
+            patch("auto_coder.cli_helpers.build_backend_manager") as fallback,
+        ):
+            execution = _dispatch_issue_candidates("owner/repo", issue, AutomationConfig(), github, [alias, "codex"])
+
+        assert execution.result.outcome is DispatchOutcome.REMOTE_ACCEPTED
+        assert execution.result.provider_reference == provider_reference
+        assert execution.result.tracking_complete is False
+        fallback.assert_not_called()
+
+        from auto_coder.issue_dispatch import IssueDispatchGuard
+
+        retained = IssueDispatchGuard().inspect(IssueAttemptIdentity("owner", "repo", 2078, "0"))
+        assert retained is not None
+        assert retained.outcome is DispatchOutcome.REMOTE_ACCEPTED
+        assert retained.provider_reference == provider_reference
+        assert retained.tracking_complete is False
+
+    def test_local_runtime_error_is_not_reported_completed(self, tmp_path, monkeypatch):
+        """A local side effect followed by an execution error remains indeterminate."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"local-team": {"backend_type": "codex", "model": "test"}, "remote-next": {"backend_type": "jules"}}})
+        side_effect = tmp_path / "edited.txt"
+
+        def fail_after_edit(*_args, **_kwargs):
+            side_effect.write_text("preserved", encoding="utf-8")
+            raise RuntimeError("local invocation failed after edit")
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=0),
+            patch("auto_coder.cli_helpers.build_backend_manager", return_value=MagicMock()),
+            patch("auto_coder.issue_processor._apply_issue_actions_directly", side_effect=fail_after_edit),
+            patch("auto_coder.issue_processor._process_issue_jules_mode") as remote,
+        ):
+            execution = _dispatch_issue_candidates(
+                "owner/repo",
+                {"number": 2079, "title": "Local", "labels": []},
+                AutomationConfig(),
+                MagicMock(),
+                ["local-team", "remote-next"],
+            )
+
+        assert side_effect.read_text(encoding="utf-8") == "preserved"
+        assert execution.result.outcome is DispatchOutcome.INDETERMINATE
+        assert "local invocation failed after edit" in execution.result.diagnostic
+        remote.assert_not_called()
+
+    def test_jules_alias_uses_selected_credentials_and_tracking_identity(self, tmp_path, monkeypatch):
+        """The selected Jules alias owns both transport credentials and binding attribution."""
+        from auto_coder.cloud_manager import CloudManager
+        from auto_coder.jules_client import JulesClient
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        alias = "jules-team"
+        llm_config = LLMBackendConfiguration.load_from_dict(
+            {
+                "backends": {
+                    "jules": {"backend_type": "jules", "api_key": "default-key"},
+                    alias: {"backend_type": "jules", "api_key": "team-key", "options": ["team-option"]},
+                }
+            }
+        )
+        response = MagicMock(status_code=200, text="accepted")
+        response.json.return_value = {"name": "sessions/provider-alias-session"}
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.jules_client.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=0),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+        ):
+            client = JulesClient(alias)
+            with (
+                patch.object(client.session, "post", return_value=response) as post,
+                patch("auto_coder.issue_processor.JulesClient", return_value=client),
+            ):
+                execution = _dispatch_issue_candidates(
+                    "owner/repo",
+                    {"number": 2080, "title": "Alias", "body": "Implement", "labels": []},
+                    AutomationConfig(),
+                    MagicMock(),
+                    [alias],
+                )
+
+        assert post.call_count == 1
+        assert client.session.headers["X-Goog-Api-Key"] == "team-key"
+        assert client.options == ["team-option"]
+        assert execution.result.outcome is DispatchOutcome.REMOTE_ACCEPTED
+        binding = CloudManager("owner/repo").get_binding(2080)
+        assert binding is not None
+        assert binding.backend_name == alias
+        assert binding.task_id == "provider-alias-session"
 
     @patch("auto_coder.codex_cloud_client.CodexCloudClient")
     def test_production_ranked_boundary_reaches_aliased_remote_transport(self, mock_client_type, tmp_path, monkeypatch):
@@ -412,6 +524,7 @@ backend_type = "codex-cloud"
             mock_github,
             backend_name="claude-opus-routine",
             label_context=None,
+            acceptance_observer=ANY,
         )
 
     @patch("auto_coder.issue_processor._process_issue_jules_mode")
@@ -442,6 +555,7 @@ backend_type = "codex-cloud"
             label_context=None,
             implementation_slots=None,
             backend_name="jules",
+            acceptance_observer=ANY,
         )
 
     @patch("auto_coder.issue_processor._process_issue_jules_mode")

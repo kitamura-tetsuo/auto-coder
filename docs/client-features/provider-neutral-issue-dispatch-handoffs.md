@@ -48,3 +48,11 @@ its invocation cannot rotate to another configuration. The engine retains the
 structured result alongside presentation actions and distinguishes synchronous
 local completion from a provider-accepted remote handoff. Difficult/high-score
 and explicitly owned retry routes remain on their dedicated continuations.
+
+Jules aliases construct their transport from the selected alias rather than the
+default `jules` configuration. Jules and Claude Routine publish their genuine
+provider reference to the dispatch adapter before secondary CloudManager
+tracking; a binding failure therefore remains `REMOTE_ACCEPTED` with
+`tracking_complete=false` across restart. Local workflow exceptions propagate
+back to the adapter, which retains workspace side effects and records an
+indeterminate result instead of `LOCAL_COMPLETED` or launching a fallback.

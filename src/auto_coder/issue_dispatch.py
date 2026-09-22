@@ -72,6 +72,7 @@ class AdapterOutcome:
     outcome: DispatchOutcome
     provider_reference: str = ""
     diagnostic: str = ""
+    tracking_complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -404,11 +405,12 @@ class IssueDispatchGuard:
                         admitted=False,
                     )
                 connection.execute(
-                    "UPDATE issue_dispatch_handoffs SET state=?, provider_reference=?, diagnostic=?, tracking_complete=1, updated_at=? WHERE repository_owner=? AND repository_name=? AND issue_number=? AND attempt_id=? AND incarnation=?",
+                    "UPDATE issue_dispatch_handoffs SET state=?, provider_reference=?, diagnostic=?, tracking_complete=?, updated_at=? WHERE repository_owner=? AND repository_name=? AND issue_number=? AND attempt_id=? AND incarnation=?",
                     (
                         observation.outcome.value,
                         observation.provider_reference or current_reference,
                         observation.diagnostic,
+                        int(observation.tracking_complete),
                         time.time(),
                         *self._key(claim.identity),
                         claim.claim_incarnation,
@@ -420,7 +422,7 @@ class IssueDispatchGuard:
                     outcome=observation.outcome,
                     provider_reference=observation.provider_reference or current_reference,
                     diagnostic=observation.diagnostic,
-                    tracking_complete=True,
+                    tracking_complete=observation.tracking_complete,
                     admitted=False,
                 )
         except Exception as exc:
