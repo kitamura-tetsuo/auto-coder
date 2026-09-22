@@ -247,24 +247,15 @@ def _take_issue_actions(
 
         # Ask LLM CLI to analyze the issue and take appropriate actions
         if implementation_slots is None:
-            action_results = _apply_issue_actions_directly(
-                repo_name,
-                issue_data,
-                config,
-                github_client,
-                backend_manager=backend_manager,
-                raise_on_failure=raise_on_failure,
-            )
+            if raise_on_failure:
+                action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager, raise_on_failure=True)
+            else:
+                action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager)
         else:
-            action_results = _apply_issue_actions_directly(
-                repo_name,
-                issue_data,
-                config,
-                github_client,
-                backend_manager=backend_manager,
-                implementation_slots=implementation_slots,
-                raise_on_failure=raise_on_failure,
-            )
+            if raise_on_failure:
+                action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager, implementation_slots=implementation_slots, raise_on_failure=True)
+            else:
+                action_results = _apply_issue_actions_directly(repo_name, issue_data, config, github_client, backend_manager=backend_manager, implementation_slots=implementation_slots)
         actions.extend(action_results)
         if retry_dispatch is not None and retry_authority is not None:
             retry_dispatch.record_outcome(
