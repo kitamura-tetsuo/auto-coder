@@ -1,6 +1,7 @@
 """Material test-oracle-gap lifecycle and convergence tests."""
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,8 @@ from auto_coder.adversarial_validator import (
     run_adversarial_validation,
 )
 from auto_coder.automation_config import AutomationConfig
+from auto_coder.backend_manager import BackendManager
+from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
     ClaimedReviewThread,
@@ -30,6 +33,35 @@ from auto_coder.review_thread_validation import (
 )
 from auto_coder.reviewer_session_registry import ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
+
+
+class FallbackReviewerClient:
+    def __init__(self, response: str, session_id: str, continue_error: Exception | None = None) -> None:
+        self.model_name = "strong"
+        self.config_backend = SimpleNamespace(backend_type="codex")
+        self.response = response
+        self.generated_session_id = session_id
+        self.session_id = session_id
+        self.continue_error = continue_error
+        self.fresh_prompts: list[str] = []
+        self.continued: list[tuple[str, str, bool]] = []
+
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+        self.fresh_prompts.append(prompt)
+        self.session_id = self.generated_session_id
+        return self.response
+
+    def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+        self.continued.append((session_id, prompt, is_noedit))
+        if self.continue_error is not None:
+            raise self.continue_error
+        return self.response
+
+    def get_last_session_id(self) -> str:
+        return self.session_id
+
+    def clear_last_session_id(self) -> None:
+        self.session_id = ""
 
 
 def gap_payload(
@@ -585,22 +617,32 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
     assert saved_after_retry.test_oracle_gaps[0].status == "RESOLVED"
 
 
-def test_fresh_continuation_fallback_hydrates_and_persists_compact_gap_resolution(tmp_path) -> None:
+@pytest.mark.parametrize("switch_backend", [False, True])
+def test_fresh_continuation_fallback_hydrates_and_persists_compact_gap_resolution(tmp_path, switch_backend) -> None:
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
     validation_context = context()
     validation_context.issue_context = "Linked Issue requires independent server validation."
-    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
-    registry.save(prior_session(initial, "sha-a"))
-    manager = MagicMock()
-    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
-    manager._last_session_id = "fresh-session"
-    manager._last_continue_session_resumed = False
     compact_resolution = {
         "gap_id": initial.gap_id,
         "status": "RESOLVED",
         "resolution_evidence": ("tests/test_grid.py exercises GridMutation.apply_candidate at sha-b " "and proves rejected candidates preserve state and revision."),
     }
-    manager.continue_session.return_value = validation_response(compact_resolution)
+    response = validation_response(compact_resolution)
+    primary_error: Exception = AutoCoderUsageLimitError("rotate reviewer") if switch_backend else RuntimeError("session not found")
+    primary = FallbackReviewerClient(response, "fresh-session", primary_error)
+    fallback = FallbackReviewerClient(response, "fresh-session")
+    clients = {"reviewer": primary, **({"fallback": fallback} if switch_backend else {})}
+    factories = {name: (lambda client=client: client) for name, client in clients.items()}
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(
+            default_backend="reviewer",
+            default_client=primary,
+            factories=factories,
+            order=list(clients),
+            automatic_session_resume=False,
+        )
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
 
     with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
         result = run_adversarial_validation(
@@ -611,8 +653,10 @@ def test_fresh_continuation_fallback_hydrates_and_persists_compact_gap_resolutio
             session_registry=registry,
         )
 
-    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
-    assert manager.continue_session.call_args.args[0] == "session-1"
+    used_backend = "fallback" if switch_backend else "reviewer"
+    saved = registry.get("owner/repo", 1, used_backend, "codex", "strong")
+    assert primary.continued[0][0] == "session-1"
+    assert len(primary.continued) == 1
     assert manager._last_continue_session_resumed is False
     assert result.result == "PASS"
     assert saved is not None
@@ -623,6 +667,7 @@ def test_fresh_continuation_fallback_hydrates_and_persists_compact_gap_resolutio
     assert saved.test_oracle_gaps[0].authoritative_boundary == initial.authoritative_boundary
     assert saved.test_oracle_gaps[0].status == "RESOLVED"
     assert saved.test_oracle_gaps[0].resolution_head_sha == "sha-b"
+    assert (fallback if switch_backend else primary).fresh_prompts
 
 
 def test_fresh_continuation_fallback_parse_failure_retains_accepted_gap(tmp_path) -> None:
