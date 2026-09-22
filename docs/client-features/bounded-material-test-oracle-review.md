@@ -50,6 +50,14 @@ thread effects even when unrelated bounded evidence recovery leaves the overall
 review inconclusive; persistence failure suppresses those effects and reports a
 dedicated non-passing diagnostic.
 
+The accepted reviewer lifecycle selected before an invocation remains the
+canonical gap authority when provider-session continuation falls back to a fresh
+session or another backend. The fallback remains non-resumed for conversational
+and execution-evidence purposes, while response parsing, lifecycle reconciliation,
+and successor checkpoints retain the selected gap identities and scopes. Thus a
+compact known-gap update can be hydrated after fallback, and a malformed or
+omitting response cannot replace an accepted lifecycle with an empty initial one.
+
 The broad initial review independently traces every material requirement from a
 supported production origin across the parser/configuration, model, manager,
 selector, persistence, authorization, UI, or public-API boundaries that matter
