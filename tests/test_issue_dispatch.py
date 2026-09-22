@@ -257,3 +257,67 @@ def test_reacquired_legacy_claim_has_new_incarnation_and_rejects_predecessor(tmp
     assert persisted is not None
     assert persisted.claim_incarnation == successor.claim_incarnation
     assert persisted.provider_reference == ""
+
+
+def test_ranked_candidates_cross_modes_and_advance_only_when_not_started(tmp_path):
+    guard = _guard(tmp_path)
+    identity = _identity()
+    invoked = []
+
+    def invoke(candidate):
+        invoked.append(candidate.backend_name)
+        if candidate.provider == "codex-cloud":
+            return AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic="quota rejected before send")
+        return AdapterOutcome(DispatchOutcome.LOCAL_COMPLETED)
+
+    result = guard.dispatch_candidates(
+        identity,
+        [CandidateHandoff("remote-alias", "codex-cloud"), CandidateHandoff("local-alias", "codex")],
+        invoke,
+    )
+
+    assert invoked == ["remote-alias", "local-alias"]
+    assert result.outcome is DispatchOutcome.LOCAL_COMPLETED
+    assert (result.backend_name, result.provider) == ("local-alias", "codex")
+
+
+def test_ranked_candidates_stop_on_indeterminate_and_suppress_restart(tmp_path):
+    guard = _guard(tmp_path)
+    identity = _identity()
+    invoked = []
+
+    def invoke(candidate):
+        invoked.append(candidate.backend_name)
+        return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic="response lost")
+
+    result = guard.dispatch_candidates(
+        identity,
+        [CandidateHandoff("remote", "claude-routine"), CandidateHandoff("local", "codex")],
+        invoke,
+    )
+    restarted = _guard(tmp_path).dispatch_candidates(
+        identity,
+        [CandidateHandoff("local", "codex")],
+        lambda candidate: AdapterOutcome(DispatchOutcome.LOCAL_COMPLETED),
+    )
+
+    assert invoked == ["remote"]
+    assert result.outcome is DispatchOutcome.INDETERMINATE
+    assert restarted.outcome is DispatchOutcome.INDETERMINATE
+    assert restarted.backend_name == "remote"
+
+
+def test_ranked_candidates_deduplicate_and_report_exhaustion(tmp_path):
+    invoked = []
+    candidate = CandidateHandoff("unavailable", "codex")
+
+    def invoke(item):
+        invoked.append((item.backend_name, item.provider))
+        return AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic="missing executable")
+
+    result = _guard(tmp_path).dispatch_candidates(_identity(), [candidate, candidate], invoke)
+
+    assert invoked == [("unavailable", "codex")]
+    assert result.outcome is DispatchOutcome.DEFERRED
+    assert result.backend_name == ""
+    assert result.diagnostic == "all ranked candidates were confirmed not started"

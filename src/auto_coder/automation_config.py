@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .issue_dispatch import DispatchResult
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -949,6 +950,7 @@ class CandidateProcessingResult:
     target_reason: Optional[str] = None
     blocked_cacheable: bool = False
     retry_not_before: Optional[float] = None
+    dispatch_result: Optional[DispatchResult] = None
 
 
 class PRProcessingOutcome(str, Enum):

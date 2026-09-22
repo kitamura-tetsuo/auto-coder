@@ -369,6 +369,8 @@ class TestDifficultIssueHandling:
     @patch("auto_coder.issue_processor._process_issue_jules_mode")
     def test_automation_engine_routes_non_difficult_to_jules(self, mock_jules_mode, mock_high_score_cloud, mock_label_manager):
         """Test that candidate without difficult label routes to Jules when jules_mode is True."""
+        from auto_coder.cloud_manager import CloudTaskBinding
+
         mock_jules_mode.return_value = ["Jules action"]
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
@@ -392,12 +394,16 @@ class TestDifficultIssueHandling:
             },
         )
 
-        result = engine._process_single_candidate_unified(
-            "owner/repo",
-            candidate,
-            config,
-            jules_mode=True,
-        )
+        with patch(
+            "auto_coder.issue_processor.CloudManager.get_binding",
+            return_value=CloudTaskBinding("jules", "sessions/provider-102", "jules"),
+        ):
+            result = engine._process_single_candidate_unified(
+                "owner/repo",
+                candidate,
+                config,
+                jules_mode=True,
+            )
 
         # Should call Jules mode
         mock_jules_mode.assert_called_once()

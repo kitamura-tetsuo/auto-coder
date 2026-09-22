@@ -181,9 +181,13 @@ class ClaudeRoutineClient(CloudTaskClientBase):
             session_id = response_data.get("claude_code_session_id") or response_data.get("sessionId") or response_data.get("session_id") or response_data.get("id")
             session_url = response_data.get("claude_code_session_url") or response_data.get("sessionUrl") or response_data.get("url")
 
-            if not session_id:
-                session_id = f"session_{int(time.time())}"
-                logger.warning(f"Could not extract session ID from response, using generated ID: {session_id}")
+            if not isinstance(session_id, str) or not session_id.strip():
+                # HTTP acceptance is not provider acceptance when no durable
+                # provider-issued reference is present.  Never manufacture an
+                # identifier: callers must retain the send as indeterminate and
+                # suppress fallback until it is reconciled.
+                raise RuntimeError("Claude Routine accepted the request without a usable provider session reference")
+            session_id = session_id.strip()
 
             self.active_sessions[session_id] = prompt
             state = _load_claude_routine_state()

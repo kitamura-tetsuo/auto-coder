@@ -508,6 +508,7 @@ class TestOutcomeMatrixCoverage:
         ],
     )
     def test_ordinary_cloud_selects_claude_routine_and_codex_cloud(self, mock_get_llm_config, mock_rank, mock_label_manager, backend_type, dispatch_target):
+        from auto_coder.cloud_manager import CloudTaskBinding
         from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 
         mock_ctx = MagicMock()
@@ -529,7 +530,13 @@ class TestOutcomeMatrixCoverage:
         issue_number = 2901 if backend_type == "claude-routine" else 2902
         candidate = Candidate(type="issue", priority=100, data={"number": issue_number, "title": "Simple bug", "labels": [{"name": "bug"}]})
 
-        with patch(dispatch_target, return_value=[f"{backend_type} handoff accepted"]) as mock_dispatch:
+        with (
+            patch(dispatch_target, return_value=[f"{backend_type} handoff accepted"]) as mock_dispatch,
+            patch(
+                "auto_coder.issue_processor.CloudManager.get_binding",
+                return_value=CloudTaskBinding(backend_type, f"provider-{issue_number}", "backend-1"),
+            ),
+        ):
             result = engine._process_single_candidate_unified("owner/repo", candidate, config, jules_mode=True)
 
         assert result.success is True

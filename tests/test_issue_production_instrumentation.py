@@ -123,7 +123,7 @@ class TestDispatchRouteRecorded:
 
     @patch("auto_coder.automation_engine.LabelManager")
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
-    @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
+    @patch("auto_coder.issue_processor._take_issue_actions")
     def test_difficult_label_with_no_jules_mode_still_routes_to_high_score_cloud(self, mock_take_actions, mock_high_score_cloud, mock_label_manager):
         mock_high_score_cloud.return_value = ["High score cloud action"]
         mock_ctx = MagicMock()
@@ -159,6 +159,8 @@ class TestDispatchRouteRecorded:
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
     @patch("auto_coder.issue_processor._process_issue_jules_mode")
     def test_non_difficult_issue_routes_to_cloud(self, mock_jules_mode, mock_high_score_cloud, mock_label_manager):
+        from auto_coder.cloud_manager import CloudTaskBinding
+
         mock_jules_mode.return_value = ["Jules action"]
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
@@ -173,7 +175,11 @@ class TestDispatchRouteRecorded:
         engine = AutomationEngine(mock_github, config)
         candidate = Candidate(type="issue", priority=100, data={"number": 602, "title": "Simple bug", "labels": [{"name": "bug"}]})
 
-        result = engine._process_single_candidate_unified("owner/repo", candidate, config, jules_mode=True)
+        with patch(
+            "auto_coder.issue_processor.CloudManager.get_binding",
+            return_value=CloudTaskBinding("jules", "sessions/provider-602", "jules"),
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, config, jules_mode=True)
 
         assert result.success is True
         mock_high_score_cloud.assert_not_called()
@@ -184,7 +190,7 @@ class TestDispatchRouteRecorded:
         assert route_events[0].facts["route"] == "cloud"
 
     @patch("auto_coder.automation_engine.LabelManager")
-    @patch("auto_coder.automation_engine.AutomationEngine._take_issue_actions")
+    @patch("auto_coder.issue_processor._take_issue_actions")
     def test_local_mode_records_local_route(self, mock_take_actions, mock_label_manager):
         mock_take_actions.return_value = ["Local action"]
         mock_ctx = MagicMock()

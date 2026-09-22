@@ -1014,7 +1014,7 @@ def test_initial_session_launch_rechecks_drain_after_prompt_context(monkeypatch,
     monkeypatch.setattr("auto_coder.issue_processor.CloudManager", lambda *_args: cloud_manager)
     if provider == "jules":
         client.start_session.return_value = "jules-session"
-        monkeypatch.setattr("auto_coder.issue_processor.JulesClient", lambda: client)
+        monkeypatch.setattr("auto_coder.issue_processor.JulesClient", lambda backend_name=None: client)
         operation = _process_issue_jules_mode
         operation_args = ("owner/repo", issue, AutomationConfig(), MagicMock())
         expected = ["Deferred Jules session for issue #1779: graceful shutdown is draining"]

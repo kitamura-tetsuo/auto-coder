@@ -833,8 +833,6 @@ def test_reconciliation_edit_is_rechecked_before_retry_ownership(tmp_path):
 
 def test_production_jules_launch_registers_retained_provider_ownership(monkeypatch, tmp_path):
     """Shared admission consumes the real Jules/CloudManager launch persistence."""
-    from auto_coder.issue_processor import _process_issue_jules_mode
-
     monkeypatch.setenv("HOME", str(tmp_path))
     current = {"body": BODY + " A"}
     github = Mock()
@@ -868,13 +866,8 @@ def test_production_jules_launch_registers_retained_provider_ownership(monkeypat
     jules = Mock()
     jules.start_session.return_value = "real-session-a"
 
-    def production_launch(repo, issue_data, config, client, label_context=None, implementation_slots=None):
-        assert implementation_slots is slots
-        return _process_issue_jules_mode(repo, issue_data, config, client, label_context)
-
     candidate = Candidate(type="issue", data={"number": 1728, "title": "Async", "body": current["body"]}, priority=0)
     with (
-        patch("auto_coder.issue_processor._process_issue_cloud_backend", side_effect=production_launch),
         patch("auto_coder.issue_processor.JulesClient", return_value=jules),
         patch("auto_coder.issue_processor.get_commit_log", return_value=""),
     ):
@@ -982,7 +975,7 @@ def test_completed_local_generation_owner_is_retired_before_changed_validation(t
 
     engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "validator", tmp_path / "local.json", analyze)
     candidate = Candidate(type="issue", data={"number": 1728, "title": "Local", "body": current["body"]}, priority=0)
-    with patch.object(engine, "_take_issue_actions", return_value=["implemented A"]) as local_backend:
+    with patch("auto_coder.issue_processor._take_issue_actions", return_value=["implemented A"]) as local_backend:
         first = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
     assert first.success is True
     local_backend.assert_called_once()
@@ -1030,7 +1023,7 @@ def test_real_local_pr_creation_preserves_capacity_across_issue_edit(tmp_path):
     api = Mock()
     api.pulls.create.return_value = {"number": 100, "html_url": "https://github.test/pull/100"}
 
-    def create_real_pr(_repo, issue_data, backend_manager=None):
+    def create_real_pr(_repo, issue_data, *_args, **_kwargs):
         return [
             _create_pr_for_issue(
                 "owner/repo",
@@ -1046,7 +1039,7 @@ def test_real_local_pr_creation_preserves_capacity_across_issue_edit(tmp_path):
 
     candidate = Candidate(type="issue", data={"number": 1728, "title": "Local PR", "body": current["body"]}, priority=0)
     with (
-        patch.object(engine, "_take_issue_actions", side_effect=create_real_pr),
+        patch("auto_coder.issue_processor._take_issue_actions", side_effect=create_real_pr),
         patch("auto_coder.issue_processor.get_ghapi_client", return_value=api),
         patch("auto_coder.issue_processor.run_llm_noedit_prompt", return_value=""),
         patch("auto_coder.issue_processor.validate_issue_references"),
@@ -1108,7 +1101,9 @@ def test_cloud_fallback_pr_preserves_capacity_across_issue_edit(tmp_path, route)
     )
     llm_config.get_backend_cloud.return_value = None
     llm_config.get_backend_with_high_score_cloud.return_value = None
-    llm_config.get_backend_config.return_value = Mock(backend_type="unsupported")
+    llm_config.get_active_backends.return_value = ["local-fallback"]
+    llm_config.get_backend_config.side_effect = lambda name: Mock(backend_type="codex" if name == "local-fallback" else "unsupported")
+    llm_config.get_model_for_backend.return_value = "test-model"
     api = Mock()
     api.pulls.create.return_value = {"number": 100, "html_url": "https://github.test/pull/100"}
 
@@ -1137,6 +1132,7 @@ def test_cloud_fallback_pr_preserves_capacity_across_issue_edit(tmp_path, route)
         patch("auto_coder.issue_processor.validate_issue_references"),
         patch("auto_coder.cli_helpers.create_cloud_backend_manager", return_value=Mock()),
         patch("auto_coder.cli_helpers.create_high_score_cloud_backend_manager", return_value=Mock()),
+        patch("auto_coder.cli_helpers.build_backend_manager", return_value=Mock()),
         patch("time.sleep"),
     ):
         launched = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=route == "ordinary-cloud")
@@ -1153,7 +1149,7 @@ def test_cloud_fallback_pr_preserves_capacity_across_issue_edit(tmp_path, route)
 
 def test_daemon_replacement_pr_preserves_capacity_across_later_edit(monkeypatch, tmp_path):
     """A real Jules launch and daemon fallback retain the replacement PR owner."""
-    from auto_coder.issue_processor import _create_pr_for_issue, _process_issue_jules_mode
+    from auto_coder.issue_processor import _create_pr_for_issue
 
     monkeypatch.setenv("HOME", str(tmp_path))
     current = {"body": BODY + " A"}
@@ -1191,13 +1187,8 @@ def test_daemon_replacement_pr_preserves_capacity_across_later_edit(monkeypatch,
     launch_jules = Mock()
     launch_jules.start_session.return_value = "daemon-session-a"
 
-    def production_launch(repo, issue_data, config, client, label_context=None, implementation_slots=None):
-        assert implementation_slots is slots
-        return _process_issue_jules_mode(repo, issue_data, config, client, label_context)
-
     candidate = Candidate(type="issue", data={"number": 1728}, priority=0)
     with (
-        patch("auto_coder.issue_processor._process_issue_cloud_backend", side_effect=production_launch),
         patch("auto_coder.issue_processor.JulesClient", return_value=launch_jules),
         patch("auto_coder.issue_processor.get_commit_log", return_value=""),
     ):

@@ -48,6 +48,23 @@ class TestClaudeRoutineCloudTask:
                     is_noedit=False,
                 )
 
+    def test_fire_routine_rejects_http_acceptance_without_provider_reference(self, mock_backend_config, tmp_path):
+        """A locally generated identifier must never turn an uncertain send into acceptance."""
+        with (
+            patch("auto_coder.claude_routine_client.get_llm_config", return_value=mock_backend_config),
+            patch("auto_coder.claude_routine_client.check_claude_usage_or_raise"),
+            patch("auto_coder.claude_routine_client.STATE_FILE", str(tmp_path / "state.json")),
+        ):
+            client = ClaudeRoutineClient("claude-opus-routine")
+            response = MagicMock(status_code=202, text="accepted")
+            response.json.return_value = {"status": "accepted"}
+            with patch.object(client.session, "post", return_value=response):
+                with pytest.raises(RuntimeError, match="without a usable provider session reference"):
+                    client.fire_routine("Implement issue", "owner/repo", "main")
+
+            assert client.active_sessions == {}
+            assert not (tmp_path / "state.json").exists()
+
     def test_get_task_without_pr_is_paused(self, mock_backend_config, tmp_path):
         """Test get_task without a PR is considered paused."""
         state_file = str(tmp_path / "claude_routine_state.json")

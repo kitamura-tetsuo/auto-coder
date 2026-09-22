@@ -449,13 +449,16 @@ class TestUnlockAndRetryLinkedIssue:
 
             with (
                 patch(
+                    "src.auto_coder.issue_dispatch.default_issue_dispatch_db_path",
+                    return_value=tmp_path / name / "dispatch.sqlite3",
+                ),
+                patch(
                     "src.auto_coder.pr_processor._check_github_actions_status",
                     return_value=MagicMock(spec=GitHubActionsStatusResult, success=False, in_progress=False),
                 ),
                 patch("src.auto_coder.pr_processor.increment_attempt", return_value=4) as increment,
-                patch.object(
-                    AutomationEngine,
-                    "_take_issue_actions",
+                patch(
+                    "src.auto_coder.issue_processor._take_issue_actions",
                     return_value=["Created branch issue-4636/attempt-4"],
                 ) as take_issue,
             ):

@@ -566,11 +566,13 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             result = engine._process_single_candidate_reserved("owner/repo", candidate, engine.config)
 
         assert result.outcome == PRProcessingOutcome.DEFERRED
-        assert result.success is True
+        assert result.success is False
+        assert result.dispatch_result is not None
+        assert result.dispatch_result.outcome.value == "indeterminate"
         assert "404 Not Found" in (result.error or "")
         assert "/backend-api/codex/responses" in result.actions[0]
         assert execution.call_count == 1
-        backend_manager._run_llm_cli.assert_called_once()
+        backend_manager._run_llm_cli.assert_not_called()
         increment.assert_not_called()
 
     def test_ineligible_issue_does_not_reserve_implementation_slot(self, tmp_path):
@@ -1301,9 +1303,23 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
 
+        from auto_coder.issue_dispatch import DispatchOutcome, DispatchResult, IssueAttemptIdentity
+        from auto_coder.issue_processor import IssueDispatchExecution
+
+        dispatch_result = DispatchResult(
+            IssueAttemptIdentity("owner", "repo", 300, "0"),
+            DispatchOutcome.LOCAL_COMPLETED,
+            "codex",
+            "codex",
+        )
+
         with (
             patch("auto_coder.automation_engine.LabelManager") as label_manager,
-            patch.object(engine, "_take_issue_actions", return_value=["did work"]) as implementation_backend,
+            patch("auto_coder.issue_processor._ordinary_issue_candidates", return_value=["codex"]),
+            patch(
+                "auto_coder.issue_processor._dispatch_issue_candidates",
+                return_value=IssueDispatchExecution(dispatch_result, ["did work"]),
+            ) as implementation_backend,
         ):
             label_manager.return_value.__enter__.return_value = mock_ctx
             result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, jules_mode=False)
@@ -1311,6 +1327,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         assert result.success is True
         assert result.actions == ["did work"]
         implementation_backend.assert_called_once()
+        assert result.dispatch_result == dispatch_result
 
     @pytest.mark.parametrize(
         ("outcome", "expected_error_count"),
