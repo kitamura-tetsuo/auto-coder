@@ -246,6 +246,12 @@ def test_deeply_nested_auth_failure_does_not_block_normal_github_initialization(
         def get_active_backends(self):
             return ["codex"]
 
+        def get_ordinary_priority_groups(self):
+            return [["codex"]]
+
+        def resolve_backend_type(self, _backend_name):
+            return "codex"
+
     initialized = []
 
     def stop_after_github_initialization(*args, **kwargs):
