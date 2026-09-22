@@ -32,6 +32,14 @@ REQUIRED_OPTIONS_BY_BACKEND = {
     "opencode": [],  # Local CLI; the required "provider/model" value is validated by OpenCodeClient
 }
 
+# Resolved implementation types that are task-only remote backends: they accept
+# an Issue/PR submission and return asynchronously (a session or cloud task),
+# never a synchronous prompt response. Ordinary selection may pick one of these
+# as the dispatched candidate, but any synchronous manager (general LLM prompts,
+# no-edit/message generation, review) must exclude them from its own candidate
+# pool rather than try to use them as a synchronous client.
+TASK_ONLY_BACKEND_TYPES = {"codex-cloud", "claude-routine", "jules"}
+
 
 def resolve_config_path(config_path: Optional[str] = None) -> str:
     """Resolve the configuration file path with priority rules.
@@ -1515,8 +1523,7 @@ class LLMBackendConfiguration:
             candidates = self.backend_for_noedit_order or ([self.backend_for_noedit_default] if self.backend_for_noedit_default else [])
         else:
             candidates = [name for group in self.get_ordinary_priority_groups() for name in group]
-        task_only = {"codex-cloud", "claude-routine", "jules"}
-        return [name for name in candidates if self.backends.get(name, BackendConfig(name=name)).enabled and self.resolve_backend_type(name) not in task_only]
+        return [name for name in candidates if self.backends.get(name, BackendConfig(name=name)).enabled and self.resolve_backend_type(name) not in TASK_ONLY_BACKEND_TYPES]
 
     # Deprecated alias for backward compatibility
     def get_active_message_backends(self) -> List[str]:

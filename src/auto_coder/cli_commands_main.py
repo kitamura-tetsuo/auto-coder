@@ -15,7 +15,7 @@ from .cli_helpers import build_backend_manager_from_config, build_message_backen
 from .cli_ui import Spinner, create_terminal_link, print_completion_message, print_configuration_summary, sleep_with_countdown
 from .git_utils import extract_number_from_branch, get_current_branch
 from .health_monitor import get_health_monitor, start_health_monitoring
-from .llm_backend_config import get_llm_config, is_jules_mode_enabled, set_active_repo_name
+from .llm_backend_config import TASK_ONLY_BACKEND_TYPES, get_llm_config, is_jules_mode_enabled, set_active_repo_name
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
 from .util.gh_cache import GitHubClient
@@ -235,7 +235,7 @@ def process_issues(
     # fallbacks validate their own prerequisites when selected, so an unused
     # local executable or workspace does not block an earlier remote handoff.
     check_backend_prerequisites([primary_backend])
-    if config.resolve_backend_type(primary_backend) not in {"codex-cloud", "claude-routine", "jules"}:
+    if config.resolve_backend_type(primary_backend) not in TASK_ONLY_BACKEND_TYPES:
         ensure_test_script_or_fail()
 
     backend_list_str = ", ".join(selected_backends)
@@ -283,34 +283,46 @@ def process_issues(
 
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
-    manager = build_backend_manager_from_config(
-        cli_models=models,
-        cli_backends=selected_backends,
-    )
 
-    # Initialize LLM backend manager singleton
-    from .backend_manager import LLMBackendManager
+    # The general and no-edit/message managers are synchronous prompt clients:
+    # they are never the ordinary per-issue dispatcher (that reads the full
+    # ordinary pool fresh from config and routes task-only remote candidates,
+    # such as Jules, straight to their own provider adapter). Building them
+    # from the full ordinary pool would try to construct a synchronous client
+    # for a task-only remote backend, and an all-remote ordinary policy would
+    # fail bootstrap entirely even though no synchronous manager is needed to
+    # reach ordinary dispatch. Scope each manager to its own synchronous
+    # candidates instead, and leave it uninitialized (rather than resurrecting
+    # an unlisted default) when that candidate list is empty.
+    synchronous_backends = [name for name in selected_backends if config.resolve_backend_type(name) not in TASK_ONLY_BACKEND_TYPES]
+    manager = None
+    if synchronous_backends:
+        manager = build_backend_manager_from_config(
+            cli_models=models,
+            cli_backends=synchronous_backends,
+        )
 
-    LLMBackendManager.get_llm_instance(
-        default_backend=manager._default_backend,
-        default_client=manager._clients[manager._default_backend],
-        factories=manager._factories,
-        order=manager._all_backends,
-    )
+        # Initialize LLM backend manager singleton
+        from .backend_manager import LLMBackendManager
 
-    selected_backends = manager._all_backends[:]
-    primary_backend = manager._default_backend
-    primary_model = None
-    if primary_backend in ("antigravity", "qwen", "auggie", "claude"):
-        client = manager._clients.get(primary_backend)
-        if client is not None:
-            primary_model = getattr(client, "model_name", None)
+        LLMBackendManager.get_llm_instance(
+            default_backend=manager._default_backend,
+            default_client=manager._clients[manager._default_backend],
+            factories=manager._factories,
+            order=manager._all_backends,
+        )
+    else:
+        logger.info("Ordinary backend pool has no synchronous candidate; the general LLM manager stays uninitialized until a synchronous operation needs one.")
 
-    message_manager = build_message_backend_manager(models=models)
-    message_backend_list = message_manager._all_backends[:]
-    message_primary_backend = message_manager._default_backend
-    message_backend_str = ", ".join(message_backend_list)
-    logger.info(f"Message backends: {message_backend_str} (default: {message_primary_backend})")
+    message_manager = None
+    if config.get_active_noedit_backends():
+        message_manager = build_message_backend_manager(models=models)
+        message_backend_list = message_manager._all_backends[:]
+        message_primary_backend = message_manager._default_backend
+        message_backend_str = ", ".join(message_backend_list)
+        logger.info(f"Message backends: {message_backend_str} (default: {message_primary_backend})")
+    else:
+        logger.info("No synchronous no-edit backend configured; message/no-edit manager stays uninitialized.")
 
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
@@ -374,8 +386,10 @@ def process_issues(
                 click.echo(f"Processed {target_type} #{number}")
                 # Close MCP session if present
                 try:
-                    manager.close()
-                    message_manager.close()
+                    if manager is not None:
+                        manager.close()
+                    if message_manager is not None:
+                        message_manager.close()
                 except Exception:
                     pass
                 # After resuming and processing the current branch item,
@@ -490,7 +504,8 @@ def process_issues(
 
         # Close MCP session if present
         try:
-            manager.close()
+            if manager is not None:
+                manager.close()
         except Exception:
             pass
         return
@@ -532,7 +547,8 @@ def process_issues(
 
     # Close MCP session if present
     try:
-        manager.close()
+        if manager is not None:
+            manager.close()
     except Exception:
         pass
 
