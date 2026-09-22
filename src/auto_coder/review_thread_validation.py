@@ -730,7 +730,7 @@ def resolve_addressed_review_threads(
     review_attempt_id: str = "",
     expected_ledger_revision: Optional[int] = None,
     known_absent_apis: tuple[str, ...] = (),
-) -> List[str]:
+) -> Any:
     """Resolve every thread the validator confirmed ADDRESSED, fail-closed.
 
     Implements REQ-001 through REQ-010: resolution requires an exact,
@@ -740,13 +740,12 @@ def resolve_addressed_review_threads(
     executing GitHub mutations, with compound root gating and CAS/staleness
     fencing.
 
-    Returns the thread IDs that were actually resolved.
+    Returns the complete per-thread closure report.  The report remains iterable
+    over confirmed thread IDs for compatibility with rollback/publication code.
     """
-    addressed_thread_ids = {disposition.thread_id for disposition in dispositions if disposition.status == "ADDRESSED"}
-    if not addressed_thread_ids:
-        return []
-
     from .pr_blocker_closure import (
+        ClosureExecutionResult,
+        ThreadClosureOutcome,
         adjudicate_claimed_thread_closures,
         execute_durable_thread_closures,
         extract_closure_candidates,
@@ -775,20 +774,76 @@ def resolve_addressed_review_threads(
 
     evaluations = adjudicate_claimed_thread_closures(candidates, dispositions, snapshot=snapshot)
 
-    exec_result = execute_durable_thread_closures(
-        github_client=github_client,
-        repo_name=repo_name,
-        pr_number=pr_number,
-        validated_head_sha=validated_head_sha,
-        evaluations=evaluations,
-        ledger=ledger,
-        api_origin=api_origin,
-        stale_registry=stale_registry,
-        expected_ledger_revision=expected_ledger_revision,
-        claimed_threads=claimed,
-    )
+    addressed_thread_ids = {disposition.thread_id for disposition in dispositions if disposition.status == "ADDRESSED"}
+    if addressed_thread_ids:
+        exec_result = execute_durable_thread_closures(
+            github_client=github_client,
+            repo_name=repo_name,
+            pr_number=pr_number,
+            validated_head_sha=validated_head_sha,
+            evaluations=evaluations,
+            ledger=ledger,
+            api_origin=api_origin,
+            stale_registry=stale_registry,
+            expected_ledger_revision=expected_ledger_revision,
+            claimed_threads=claimed,
+        )
+    else:
+        exec_result = ClosureExecutionResult(
+            unresolved_thread_ids=tuple(dict.fromkeys(thread.thread_id for thread in claimed)),
+        )
 
-    return list(exec_result.resolved_thread_ids)
+    outcomes: list[ThreadClosureOutcome] = []
+    returned_disposition_ids = {disposition.thread_id for disposition in dispositions}
+    for thread in claimed:
+        owned = tuple(e for e in evaluations if e.thread_id == thread.thread_id)
+        decisions = tuple(dict.fromkeys(e.effective_status for e in owned))
+        decision = "MISSING" if thread.thread_id not in returned_disposition_ids else decisions[0] if len(decisions) == 1 else "INCONCLUSIVE"
+        accepted = bool(owned) and all(e.is_accepted for e in owned)
+        completed = thread.thread_id in exec_result.resolved_thread_ids
+        thread_errors = [error for error in exec_result.errors if error.startswith(f"{thread.thread_id}|")]
+        phase = "complete" if completed else "disposition"
+        reason = "Thread resolution confirmed"
+        cleanup_warning = None
+        if thread_errors:
+            _, phase, reason = thread_errors[-1].split("|", 2)
+            cleanup = next((error.split("|", 2)[2] for error in thread_errors if "|marker-cleanup|" in error), None)
+            cleanup_warning = cleanup
+        elif not owned:
+            reason = "No valid disposition was returned for the selected thread"
+        elif not accepted:
+            rejected = next((e for e in owned if not e.is_accepted), owned[0])
+            phase = "independent-decision"
+            reason = rejected.rejection_reason or rejected.rationale or f"Independent disposition is {rejected.effective_status}"
+        elif not completed:
+            phase = "effect-confirmation"
+            reason = exec_result.errors[-1] if exec_result.errors else "GitHub resolution was not confirmed"
+
+        outcomes.append(
+            ThreadClosureOutcome(
+                repository=repo_name,
+                pr_number=pr_number,
+                thread_id=thread.thread_id,
+                evaluated_head_sha=validated_head_sha,
+                review_attempt_id=owned[0].candidate.review_attempt_id if owned else review_attempt_id,
+                root_comment_database_id=thread.root_comment_database_id,
+                blocker_ids=tuple(dict.fromkeys(e.evaluated_blocker_id for e in owned if e.evaluated_blocker_id)),
+                decision=decision,
+                acceptance_state="CONFIRMED" if accepted else "NOT_ACCEPTED",
+                effect_state="CONFIRMED" if completed else "NOT_ATTEMPTED" if not accepted else "UNCONFIRMED",
+                phase=phase,
+                reason=reason,
+                cleanup_warning=cleanup_warning,
+            )
+        )
+    return ClosureExecutionResult(
+        accepted_closures=exec_result.accepted_closures,
+        resolved_thread_ids=exec_result.resolved_thread_ids,
+        unresolved_thread_ids=tuple(outcome.thread_id for outcome in outcomes if not outcome.completed),
+        persisted_blocker_transitions=exec_result.persisted_blocker_transitions,
+        errors=exec_result.errors,
+        thread_outcomes=tuple(outcomes),
+    )
 
 
 def reopen_review_threads_after_publication_failure(

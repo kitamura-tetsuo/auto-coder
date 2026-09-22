@@ -3748,6 +3748,7 @@ def _handle_pr_merge(
                         pr_number,
                         head_sha,
                     )
+                    unfinished_closure_outcomes: tuple[Any, ...] = ()
                     if lookup_error:
                         actions.append(f"Could not check prior adversarial validation for PR #{pr_number}: {lookup_error}; validation not started")
                         if processing_status is not None:
@@ -3985,11 +3986,11 @@ def _handle_pr_merge(
                             # Independent thread-completion validation (REQ-001..REQ-010): this
                             # runs whenever the authoritative fresh validation produced
                             # dispositions, regardless of the PR-level verdict.
-                            if claimed_review_threads and val_result.thread_dispositions:
+                            if claimed_review_threads:
                                 try:
                                     blocker_ledger = CanonicalPRBlockerLedger()
                                     base_sha_for_closure = str((pr_data.get("base") or {}).get("sha") or "")
-                                    resolved_thread_ids = resolve_addressed_review_threads(
+                                    closure_report = resolve_addressed_review_threads(
                                         github_client,
                                         repo_name,
                                         pr_number,
@@ -4000,8 +4001,34 @@ def _handle_pr_merge(
                                         base_sha=base_sha_for_closure,
                                         review_attempt_id=active_attempt_id or "",
                                     )
+                                    resolved_thread_ids = list(closure_report)
+                                    unfinished_closure_outcomes = tuple(getattr(closure_report, "unfinished_outcomes", ()))
                                     if resolved_thread_ids:
                                         actions.append(f"Resolved {len(resolved_thread_ids)} claimed review thread(s) for PR #{pr_number} after independent validation")
+                                    if unfinished_closure_outcomes:
+                                        details = "; ".join(f"{outcome.thread_id} [{outcome.phase}]: {outcome.reason}" for outcome in unfinished_closure_outcomes)
+                                        actions.append(f"Review-thread closure incomplete for PR #{pr_number}: " f"{len(resolved_thread_ids)} confirmed, {len(unfinished_closure_outcomes)} unfinished; {details}")
+                                        _record_pr_stage(
+                                            pr_number,
+                                            "pr.review-thread-closure",
+                                            f"pr#{pr_number} review-thread closure",
+                                            Outcome.BLOCKED,
+                                            {
+                                                "confirmed_count": len(resolved_thread_ids),
+                                                "unfinished_count": len(unfinished_closure_outcomes),
+                                                "unfinished": [
+                                                    {
+                                                        "thread_id": outcome.thread_id,
+                                                        "phase": outcome.phase,
+                                                        "reason": outcome.reason,
+                                                        "decision": outcome.decision,
+                                                        "acceptance_state": outcome.acceptance_state,
+                                                        "effect_state": outcome.effect_state,
+                                                    }
+                                                    for outcome in unfinished_closure_outcomes
+                                                ],
+                                            },
+                                        )
                                 except StaleReviewThreadResolutionError as e:
                                     # A thread is durably resolved against a stale head and
                                     # could not be rolled back: GitHub's authoritative
@@ -4013,6 +4040,30 @@ def _handle_pr_merge(
                                     return actions
                                 except Exception as e:
                                     logger.error(f"Failed to process claimed review thread dispositions for PR #{pr_number}: {e}")
+                                    reason = f"Review-thread closure processing failed before completion: {e}"
+                                    actions.append(f"Skipping merge for PR #{pr_number}: {reason}")
+                                    _record_pr_stage(
+                                        pr_number,
+                                        "pr.review-thread-closure",
+                                        f"pr#{pr_number} review-thread closure",
+                                        Outcome.FAILED,
+                                        {
+                                            "confirmed_count": len(resolved_thread_ids),
+                                            "unfinished_count": len(claimed_review_threads),
+                                            "unfinished": [
+                                                {
+                                                    "thread_id": thread.thread_id,
+                                                    "phase": "closure-processing",
+                                                    "reason": str(e),
+                                                }
+                                                for thread in claimed_review_threads
+                                            ],
+                                        },
+                                    )
+                                    if processing_status is not None:
+                                        processing_status.error = reason
+                                        processing_status.outcome = PRProcessingOutcome.FAILED
+                                    return actions
 
                             _enforce_unresolved_provenance_gate(val_result, claimed_review_threads, resolved_thread_ids)
 
@@ -4085,6 +4136,13 @@ def _handle_pr_merge(
                                 _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "post-publication"})
                                 record_effect(review_target, active_review_id, "superseded", {"phase": "post-publication"})
                                 return actions
+                    if published_status == "PASS" and unfinished_closure_outcomes:
+                        reason = f"Review-thread closure remains unfinished for {len(unfinished_closure_outcomes)} " f"thread(s): {', '.join(outcome.thread_id for outcome in unfinished_closure_outcomes)}"
+                        if processing_status is not None:
+                            processing_status.error = reason
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                        actions.append(f"Skipping merge for PR #{pr_number}: {reason}")
+                        return actions
                     if published_status == "PASS":
                         pass
                     elif val_result.needs_fix:
