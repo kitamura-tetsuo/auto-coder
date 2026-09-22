@@ -6,7 +6,7 @@ the planned remaining quota at the current point in its quota cycle (quota surpl
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import AbstractSet, Callable, List, Optional, Sequence, Union
+from typing import AbstractSet, Callable, Iterable, List, Optional, Sequence, Union
 
 from dateutil import parser
 
@@ -339,7 +339,7 @@ def _rank_backends(
     if not candidate_backends:
         return []
 
-    priority_groups: List[Union[Sequence[str], BackendPriorityGroup]]
+    priority_groups: List[Iterable[str]]
     if isinstance(candidate_backends, (set, frozenset)):
         priority_groups = [candidate_backends]
     else:
@@ -351,6 +351,19 @@ def _rank_backends(
                 assert isinstance(candidate, str)
                 priority_groups.append((candidate,))
 
+    # A repeated normalized alias is owned by its first declared position.  Do
+    # this before quota retrieval so duplicates are not measured or attempted
+    # more than once and cannot reappear in a later priority group.
+    seen_names = set()
+    deduplicated_groups: List[Iterable[str]] = []
+    for group in priority_groups:
+        deduplicated_group = []
+        for backend_name in group:
+            if backend_name not in seen_names:
+                seen_names.add(backend_name)
+                deduplicated_group.append(backend_name)
+        deduplicated_groups.append(deduplicated_group)
+    priority_groups = deduplicated_groups
     backend_names = [backend_name for group in priority_groups for backend_name in group]
     evaluations = [
         evaluate_backend_quota(

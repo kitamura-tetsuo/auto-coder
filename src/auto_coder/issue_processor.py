@@ -1259,31 +1259,17 @@ def _process_issue_high_score_cloud(
     )
 
 
-def _ordinary_issue_candidates(repo_name: str, cloud_mode: bool) -> List[str]:
-    """Return the existing public selector's ranked aliases without executing them."""
+def _ordinary_issue_candidates(repo_name: str, cloud_mode: bool = False) -> List[str]:
+    """Return the repository-scoped unified ordinary selector in ranked order.
+
+    ``cloud_mode`` remains an ignored call-site compatibility argument while
+    callers migrate; backend type never chooses or augments the candidate pool.
+    """
     from .llm_backend_config import get_llm_config
     from .quota_selector import rank_high_score_backends_by_quota
 
     llm_config = get_llm_config(repo_name=repo_name)
-    if cloud_mode:
-        configured: Union[List[str], List[List[str]]]
-        if llm_config.backend_cloud_priority_groups:
-            configured = list(llm_config.backend_cloud_priority_groups)
-        elif llm_config.backend_cloud_order:
-            configured = list(llm_config.backend_cloud_order)
-        elif llm_config.get_backend_cloud():
-            configured = [llm_config.get_backend_cloud().name]  # type: ignore[union-attr]
-        else:
-            configured = ["jules"]
-        ranked_cloud = rank_high_score_backends_by_quota(configured, llm_config)
-        local_types = {"codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider"}
-        local_names = []
-        for name in llm_config.get_active_backends():
-            backend = llm_config.get_backend_config(name)
-            if backend is not None and (backend.backend_type or name) in local_types and name not in ranked_cloud:
-                local_names.append(name)
-        return [*ranked_cloud, *rank_high_score_backends_by_quota(local_names, llm_config)]
-    return rank_high_score_backends_by_quota(llm_config.get_active_backends(), llm_config)
+    return rank_high_score_backends_by_quota(llm_config.get_ordinary_priority_groups(), llm_config)
 
 
 def _dispatch_issue_candidates(
@@ -1295,6 +1281,7 @@ def _dispatch_issue_candidates(
     *,
     label_context: Optional[LabelManagerContext] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
+    retry_authority: Optional[ImplementationRetryRequest] = None,
 ) -> IssueDispatchExecution:
     """Execute one caller-ranked ordinary sequence through the durable boundary."""
     from .cli_helpers import build_backend_manager
@@ -1329,7 +1316,7 @@ def _dispatch_issue_candidates(
         )
         try:
             if backend_type == "codex-cloud":
-                actions = _process_issue_codex_cloud_mode(repo_name, issue_data, config, github_client, backend_name=candidate.backend_name, label_context=label_context)
+                actions = _process_issue_codex_cloud_mode(repo_name, issue_data, config, github_client, backend_name=candidate.backend_name, label_context=label_context, **({"retry_authority": retry_authority} if retry_authority is not None else {}))  # type: ignore[arg-type]
             elif backend_type == "claude-routine":
                 actions = _process_issue_claude_routine_mode(
                     repo_name,
@@ -1339,6 +1326,7 @@ def _dispatch_issue_candidates(
                     backend_name=candidate.backend_name,
                     label_context=label_context,
                     acceptance_observer=observed_acceptance.append,
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
             elif backend_type == "jules":
                 actions = _process_issue_jules_mode(
@@ -1350,6 +1338,7 @@ def _dispatch_issue_candidates(
                     implementation_slots=implementation_slots,
                     backend_name=candidate.backend_name,
                     acceptance_observer=observed_acceptance.append,
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
             elif backend_type in local_types:
                 model = llm_config.get_model_for_backend(candidate.backend_name) or ""
@@ -1366,6 +1355,7 @@ def _dispatch_issue_candidates(
                     backend_manager=manager,
                     implementation_slots=implementation_slots,
                     raise_on_failure=True,
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
                 return AdapterOutcome(DispatchOutcome.LOCAL_COMPLETED)
             else:

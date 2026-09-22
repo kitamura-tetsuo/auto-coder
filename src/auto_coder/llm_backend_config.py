@@ -412,6 +412,9 @@ class LLMBackendConfiguration:
 
     # General backend settings
     backend_order: List[str] = field(default_factory=list)
+    backend_priority_groups: List[List[str]] = field(default_factory=list)
+    backend_selector_explicit: bool = False
+    backend_selector_kind: Optional[str] = None
     default_backend: str = "codex"
     quota_selection_strategy: str = "surplus"
     # Individual backend configurations
@@ -492,6 +495,8 @@ class LLMBackendConfiguration:
                 raise ValueError(f"Error loading configuration from {config_path}: {e}")
 
         base_data = _normalize_config_dict(base_data)
+        if "backend_cloud" in base_data:
+            raise ValueError(f"Retired key 'backend_cloud' is present in {config_path}; move ordinary selection to [backend]")
         effective_data = base_data
 
         # If repo_name is provided, check for repository-specific override
@@ -508,6 +513,8 @@ class LLMBackendConfiguration:
                     raise ValueError(f"Repository configuration override at {override_path} must be a TOML table")
 
                 override_data = _normalize_config_dict(override_data)
+                if "backend_cloud" in override_data:
+                    raise ValueError(f"Retired key 'backend_cloud' is present in {override_path}; move ordinary selection to [backend]")
                 effective_data = deep_merge_config_dict(base_data, override_data)
 
         try:
@@ -530,6 +537,10 @@ class LLMBackendConfiguration:
     def _load_from_data(cls, data: Dict[str, Any], config_path: Optional[str] = None) -> "LLMBackendConfiguration":
         data = _normalize_config_dict(data)
 
+        if "backend_cloud" in data:
+            source = config_path or "<configuration>"
+            raise ValueError(f"Retired key 'backend_cloud' is present in {source}; move ordinary selection to [backend]")
+
         # Handle legacy "gemini" backend name translation
         def _translate_backend(val: Any) -> Any:
             if isinstance(val, str) and val == "gemini":
@@ -539,18 +550,49 @@ class LLMBackendConfiguration:
             return val
 
         # Parse general backend settings
-        backend_order = _translate_backend(data.get("backend", {}).get("order", []))
+        backend_data = data.get("backend", {})
+        if not isinstance(backend_data, dict):
+            raise ValueError("backend must be a TOML table")
+        if "order" in backend_data and "priority_groups" in backend_data:
+            raise ValueError("backend.order and backend.priority_groups are mutually exclusive")
+
+        def _validate_identifiers(value: Any, label: str) -> List[str]:
+            if not isinstance(value, list):
+                raise ValueError(f"{label} must be an array of backend-name strings")
+            normalized: List[str] = []
+            for entry in value:
+                if not isinstance(entry, str) or not entry.strip():
+                    raise ValueError(f"each {label} member must be a non-blank backend name string")
+                normalized.append(_translate_backend(entry.strip()))
+            return normalized
+
+        backend_selector_explicit = "order" in backend_data or "priority_groups" in backend_data
+        backend_selector_kind = "priority_groups" if "priority_groups" in backend_data else "order" if "order" in backend_data else None
+        backend_order = _validate_identifiers(backend_data["order"], "backend.order") if "order" in backend_data else []
+        backend_priority_groups: List[List[str]] = []
+        if "priority_groups" in backend_data:
+            raw_groups = backend_data["priority_groups"]
+            if not isinstance(raw_groups, list):
+                raise ValueError("backend.priority_groups must be an array of non-empty backend-name arrays")
+            for group in raw_groups:
+                names = _validate_identifiers(group, "backend.priority_groups")
+                if not names:
+                    raise ValueError("each backend.priority_groups entry must be non-empty")
+                backend_priority_groups.append(names)
         quota_selection_strategy = data.get("quota_selection", {}).get("strategy", "surplus")
         if quota_selection_strategy not in ("surplus", "burst"):
             raise ValueError("quota_selection.strategy must be 'surplus' or 'burst'")
 
         # Determine default backend - prioritize explicit "default" field, then order[0], then fallback to "codex"
-        default_backend = _translate_backend(data.get("backend", {}).get("default"))
+        default_backend = _translate_backend(backend_data.get("default"))
+        if "default" in backend_data and (not isinstance(default_backend, str) or not default_backend.strip()):
+            raise ValueError("backend.default must be a non-blank backend name string")
         if not default_backend:
             if backend_order:
                 default_backend = backend_order[0]
             else:
                 default_backend = "codex"
+        default_backend = default_backend.strip()
 
         # Parse backends
         backends_data = data.get("backends", {})
@@ -877,6 +919,9 @@ class LLMBackendConfiguration:
 
         config = cls(
             backend_order=backend_order,
+            backend_priority_groups=backend_priority_groups,
+            backend_selector_explicit=backend_selector_explicit,
+            backend_selector_kind=backend_selector_kind,
             default_backend=default_backend,
             quota_selection_strategy=quota_selection_strategy,
             backends=backends,
@@ -884,9 +929,6 @@ class LLMBackendConfiguration:
             backend_for_noedit_default=backend_for_noedit_default,
             backend_with_high_score=backend_with_high_score,
             backend_with_high_score_order=backend_with_high_score_order,
-            backend_cloud=backend_cloud,
-            backend_cloud_order=backend_cloud_order,
-            backend_cloud_priority_groups=backend_cloud_priority_groups,
             backend_with_high_score_cloud=backend_with_high_score_cloud,
             backend_with_high_score_cloud_order=backend_with_high_score_cloud_order,
             backend_adversarial_validation=backend_adversarial_validation,
@@ -904,6 +946,9 @@ class LLMBackendConfiguration:
             config_file_path=config_path or "~/.auto-coder/llm_config.toml",
         )
 
+        # Resolve the public selector during loading so malformed aliases/types
+        # cannot survive until a mutating startup path.
+        config.get_ordinary_priority_groups()
         return config
 
     def save_to_file(self, config_path: Optional[str] = None) -> None:
@@ -1316,8 +1361,16 @@ class LLMBackendConfiguration:
             if self.backend_strong_pr_adversarial_validation_default:
                 backend_strong_pr_adversarial_validation_data["default"] = self.backend_strong_pr_adversarial_validation_default
 
+        if self.backend_selector_kind == "priority_groups":
+            serialized_backend_selector: Dict[str, Any] = {"priority_groups": self.backend_priority_groups}
+        elif self.backend_selector_kind == "order" or self.backend_order:
+            serialized_backend_selector = {"order": self.backend_order}
+        else:
+            serialized_backend_selector = {}
+        serialized_backend_selector["default"] = self.default_backend
+
         data = {
-            "backend": {"order": self.backend_order, "default": self.default_backend},
+            "backend": serialized_backend_selector,
             "quota_selection": {"strategy": self.quota_selection_strategy},
             "backend_for_noedit": {"order": self.backend_for_noedit_order, "default": self.backend_for_noedit_default or self.default_backend},
             "backends": backend_data,
@@ -1326,10 +1379,6 @@ class LLMBackendConfiguration:
         # Add backend_with_high_score section if configured
         if backend_with_high_score_data:
             data["backend_with_high_score"] = backend_with_high_score_data
-
-        # Add backend_cloud section if configured
-        if backend_cloud_data:
-            data["backend_cloud"] = backend_cloud_data
 
         # Add backend_with_high_score_cloud section if configured
         if backend_with_high_score_cloud_data:
@@ -1407,6 +1456,36 @@ class LLMBackendConfiguration:
         else:
             # If no order is specified, return all enabled backends
             return [name for name, config in self.backends.items() if config.enabled]
+
+    def get_ordinary_priority_groups(self) -> List[List[str]]:
+        """Return the validated ordinary selector without inventing candidates."""
+        if self.backend_priority_groups:
+            groups = self.backend_priority_groups
+        elif self.backend_order:
+            groups = [[name] for name in self.backend_order]
+        elif self.backend_selector_explicit:
+            return []
+        else:
+            groups = [[self.default_backend or "codex"]]
+
+        seen = set()
+        result: List[List[str]] = []
+        for group in groups:
+            retained: List[str] = []
+            for name in group:
+                if name in seen:
+                    continue
+                backend = self.get_backend_config(name)
+                if backend is None:
+                    raise ValueError(f"backend selector references unresolvable backend '{name}'")
+                if backend.backend_type and self.get_backend_config(backend.backend_type) is None and backend.backend_type not in REQUIRED_OPTIONS_BY_BACKEND and backend.backend_type not in {"codex-cloud", "claude-routine"}:
+                    raise ValueError(f"backend '{name}' has unresolvable backend type '{backend.backend_type}'")
+                seen.add(name)
+                if backend.enabled:
+                    retained.append(name)
+            if retained:
+                result.append(retained)
+        return result
 
     def get_active_noedit_backends(self) -> List[str]:
         """Get list of enabled backends for non-editing operations in the configured order.

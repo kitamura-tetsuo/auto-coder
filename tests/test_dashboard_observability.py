@@ -514,9 +514,11 @@ class TestOutcomeMatrixCoverage:
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
         mock_label_manager.return_value.__enter__.return_value = mock_ctx
-        mock_rank.side_effect = lambda candidates, *_a, **_k: list(candidates)
+        mock_rank.side_effect = lambda candidates, *_a, **_k: [name for group in candidates for name in (group if isinstance(group, list) else [group])]
         mock_get_llm_config.return_value = LLMBackendConfiguration(
-            backend_cloud_order=["backend-1"],
+            backend_order=["backend-1"],
+            backend_selector_explicit=True,
+            backend_selector_kind="order",
             backends={"backend-1": BackendConfig(name="backend-1", backend_type=backend_type)},
         )
 
@@ -766,7 +768,9 @@ def test_cloud_submission_slot_cleanup_reaches_detail_view(mock_ui, tmp_path, mo
     engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "test", tmp_path / "spec.json", lambda *_: SpecificationAnalysisResult("READY"))
     backend_config = LLMBackendConfiguration(
         backends={"codex-cloud": BackendConfig(name="codex-cloud", backend_type="codex-cloud", environment_id="env-test")},
-        backend_cloud_order=["codex-cloud"],
+        backend_order=["codex-cloud"],
+        backend_selector_explicit=True,
+        backend_selector_kind="order",
         backend_with_high_score_cloud_order=["codex-cloud"],
     )
     collector = get_trace_collector()
@@ -775,7 +779,10 @@ def test_cloud_submission_slot_cleanup_reaches_detail_view(mock_ui, tmp_path, mo
         assert CloudRunRepository("owner/repo").save(CloudRun("owner/repo", 1982, 0, "codex-cloud", submission_outcome="indeterminate"))
     with (
         patch("auto_coder.llm_backend_config.get_llm_config", return_value=backend_config),
-        patch("auto_coder.quota_selector.rank_high_score_backends_by_quota", side_effect=lambda values, _: [] if ineligible else values),
+        patch(
+            "auto_coder.quota_selector.rank_high_score_backends_by_quota",
+            side_effect=lambda values, _: [] if ineligible else [name for group in values for name in (group if isinstance(group, list) else [group])],
+        ),
         patch("auto_coder.codex_cloud_client.CodexCloudClient") as client_type,
         patch("auto_coder.issue_processor.get_commit_log", return_value=""),
         patch("auto_coder.issue_processor.get_current_attempt", return_value=0),

@@ -112,16 +112,25 @@ claude --resume abc123
 
 ### Main Configuration Sections
 
-#### 1. Backend Order and Defaults
+#### 1. Ordinary Backend Priority and Defaults
 
 ```toml
 [backend]
 default = "codex"
-order = ["codex", "antigravity", "qwen"]
+priority_groups = [["codex-cloud", "codex"], ["antigravity", "qwen"]]
 ```
 
-- **`default`**: Primary backend to use
-- **`order`**: Fallback order when primary backend fails
+- **`priority_groups`**: Ordered priority groups. Quota metrics rank equal-priority
+  members only; groups can contain both local and cloud aliases.
+- **`order`**: Alternative flat strict order. Each member is a singleton group;
+  it cannot be combined with `priority_groups`.
+- **`default`**: Fallback candidate only when neither selector key is present.
+  An explicitly empty selector starts no implementation.
+
+`backend_cloud` has been removed and is rejected as a configuration error. Move
+any inline cloud settings into a named `[backends.<alias>]` declaration and
+reference that alias from `[backend]`. Repository override arrays replace base
+arrays; an inherited `order` conflicts with an override `priority_groups`.
 
 #### 2. Backend for Non-Edit Operations
 
