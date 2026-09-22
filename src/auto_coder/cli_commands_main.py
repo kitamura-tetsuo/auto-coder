@@ -294,6 +294,14 @@ def process_issues(
     # reach ordinary dispatch. Scope each manager to its own synchronous
     # candidates instead, and leave it uninitialized (rather than resurrecting
     # an unlisted default) when that candidate list is empty.
+    #
+    # Building either manager also eagerly constructs its selected candidate's
+    # client, which can probe that candidate's own prerequisites (e.g. an
+    # OpenCode/local CLI executable). Neither manager is required to reach
+    # ordinary dispatch, so a construction failure here is isolated rather
+    # than aborting startup: an earlier remote candidate (e.g. Jules) that the
+    # ordinary policy would actually select must not be blocked merely
+    # because a later, unused local fallback's prerequisites are missing.
     synchronous_backends = [name for name in selected_backends if config.resolve_backend_type(name) not in TASK_ONLY_BACKEND_TYPES]
     manager = None
 
@@ -301,22 +309,27 @@ def process_issues(
     from .backend_manager import LLMBackendManager
 
     if synchronous_backends:
-        manager = build_backend_manager_from_config(
-            cli_models=models,
-            cli_backends=synchronous_backends,
-        )
-
-        # force_reinitialize=True so a singleton left over from an earlier
-        # repository/configuration in the same long-lived process is always
-        # rebound to the current effective configuration, rather than
-        # silently reused with stale repository/alias settings.
-        LLMBackendManager.get_llm_instance(
-            default_backend=manager._default_backend,
-            default_client=manager._clients[manager._default_backend],
-            factories=manager._factories,
-            order=manager._all_backends,
-            force_reinitialize=True,
-        )
+        try:
+            manager = build_backend_manager_from_config(
+                cli_models=models,
+                cli_backends=synchronous_backends,
+            )
+        except Exception as exc:
+            logger.warning(f"Could not initialize the general LLM manager from the ordinary pool's synchronous candidates {synchronous_backends}; leaving it uninitialized so this does not block ordinary dispatch: {exc}")
+            manager = None
+            LLMBackendManager.reset_singleton()
+        else:
+            # force_reinitialize=True so a singleton left over from an earlier
+            # repository/configuration in the same long-lived process is
+            # always rebound to the current effective configuration, rather
+            # than silently reused with stale repository/alias settings.
+            LLMBackendManager.get_llm_instance(
+                default_backend=manager._default_backend,
+                default_client=manager._clients[manager._default_backend],
+                factories=manager._factories,
+                order=manager._all_backends,
+                force_reinitialize=True,
+            )
     else:
         # No synchronous candidate in the current ordinary pool: clear any
         # singleton bound to a previous repository/configuration instead of
@@ -327,11 +340,17 @@ def process_issues(
 
     message_manager = None
     if config.get_active_noedit_backends():
-        message_manager = build_message_backend_manager(models=models)
-        message_backend_list = message_manager._all_backends[:]
-        message_primary_backend = message_manager._default_backend
-        message_backend_str = ", ".join(message_backend_list)
-        logger.info(f"Message backends: {message_backend_str} (default: {message_primary_backend})")
+        try:
+            message_manager = build_message_backend_manager(models=models)
+        except Exception as exc:
+            logger.warning(f"Could not initialize the message/no-edit LLM manager; leaving it uninitialized so this does not block ordinary dispatch: {exc}")
+            message_manager = None
+            LLMBackendManager.reset_noedit_singleton()
+        else:
+            message_backend_list = message_manager._all_backends[:]
+            message_primary_backend = message_manager._default_backend
+            message_backend_str = ", ".join(message_backend_list)
+            logger.info(f"Message backends: {message_backend_str} (default: {message_primary_backend})")
     else:
         LLMBackendManager.reset_noedit_singleton()
         logger.info("No synchronous no-edit backend configured; message/no-edit manager stays uninitialized.")

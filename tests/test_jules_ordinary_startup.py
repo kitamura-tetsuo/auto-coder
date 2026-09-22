@@ -162,6 +162,65 @@ def test_process_issues_only_bootstraps_jules_only_pool_without_crashing(tmp_pat
     noedit_instance_spy.assert_not_called()
 
 
+def test_process_issues_only_reaches_jules_despite_unavailable_local_fallback_executable(tmp_path, monkeypatch):
+    """REQ-003: an unused *later* local fallback candidate's missing
+    prerequisites (here, the OpenCode CLI executable, forced to a
+    nonexistent path) must not block startup from reaching ordinary dispatch
+    for an earlier, usable remote candidate (Jules).
+
+    The synchronous-manager projection for this pool is `["opencode"]`
+    (Jules is filtered out as task-only), so building the general manager
+    eagerly constructs an ``OpenCodeClient`` as its default client. That
+    constructor probes the ``opencode`` executable and raises when it is
+    missing -- this must be isolated rather than aborting the whole CLI
+    command."""
+    from auto_coder.backend_manager import LLMBackendManager
+
+    _write_config(
+        tmp_path,
+        ('[backend]\norder = ["jules", "opencode"]\n\n' '[backends.jules]\nbackend_type = "jules"\nenabled = true\napi_key = "test-jules-key"\n\n' '[backends.opencode]\nbackend_type = "opencode"\nenabled = true\nmodel = "anthropic/claude-sonnet-4-5"\n'),
+        monkeypatch,
+    )
+    # Never rely on a real `opencode` binary happening to be on PATH: force
+    # OpenCodeClient to probe a definitely-nonexistent executable.
+    monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(tmp_path / "definitely-missing-opencode-binary"))
+    LLMBackendManager.reset_singleton()
+    LLMBackendManager.reset_noedit_singleton()
+
+    engine = MagicMock()
+    engine.process_single.return_value = {
+        "repository": "owner/repo",
+        "issues_processed": [],
+        "prs_processed": [],
+        "errors": [],
+    }
+
+    try:
+        with (
+            patch("auto_coder.cli_commands_main.get_repo_or_detect", return_value="owner/repo"),
+            patch("auto_coder.cli_commands_main.GitHubClient.get_instance", return_value=MagicMock()),
+            patch("auto_coder.cli_commands_main.AutomationEngine", return_value=engine),
+            patch("auto_coder.cli_commands_main.get_current_branch", return_value="main"),
+        ):
+            result = _invoke_only("owner/repo", 1591)
+
+        assert result.exit_code == 0, result.output
+        assert "is not supported" not in result.output
+
+        # Ordinary dispatch was reached despite the OpenCode fallback's
+        # unavailable executable.
+        engine.process_single.assert_called_once()
+        assert engine.process_single.call_args.args[:2] == ("owner/repo", "issue")
+
+        # The general manager could not be built from its only synchronous
+        # candidate (OpenCode), so it is left uninitialized rather than
+        # crashing startup or silently serving a stale/partial manager.
+        assert LLMBackendManager.is_initialized() is False
+    finally:
+        LLMBackendManager.reset_singleton()
+        LLMBackendManager.reset_noedit_singleton()
+
+
 def test_process_issues_only_clears_stale_singleton_from_a_prior_repository(tmp_path, monkeypatch):
     """REQ-006: an empty synchronous projection must not leave a manager
     bound to a *different* repository (or an obsolete configuration) in

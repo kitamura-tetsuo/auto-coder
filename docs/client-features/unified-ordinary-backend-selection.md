@@ -76,3 +76,13 @@ from a previous bootstrap when the current pool's synchronous projection is
 empty. A later `get_llm_backend_manager()`/`get_noedit_backend_manager()`
 call in that state raises rather than silently running with the wrong
 repository's settings.
+
+Building either manager also eagerly constructs its selected candidate's
+client (for example an `OpenCodeClient`, which probes its CLI executable at
+construction time). Since neither manager is on the path to ordinary
+dispatch, `process-issues` startup isolates that construction failure: it
+logs a warning, leaves the corresponding singleton uninitialized (clearing
+any stale one), and continues. An earlier ordinary candidate that the
+policy would actually select (for example Jules, first in the pool) is
+therefore never blocked merely because a later, unused local fallback's own
+prerequisites (missing executable, model, or similar) are not met.
