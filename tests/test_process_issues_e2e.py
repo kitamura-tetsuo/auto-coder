@@ -35,6 +35,8 @@ class TestProcessIssuesE2E:
             mock_config.default_backend = "codex"
             mock_config.get_active_backends.return_value = ["codex"]
             mock_config.backend_order = ["codex"]
+            mock_config.get_ordinary_priority_groups.return_value = [["codex"]]
+            mock_config.resolve_backend_type.return_value = "codex"
             mock_get_llm_config.return_value = mock_config
 
             # Setup mock GitHub client
