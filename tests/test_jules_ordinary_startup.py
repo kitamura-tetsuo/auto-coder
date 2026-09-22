@@ -12,6 +12,7 @@ newly changed helper.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from auto_coder.automation_config import AutomationConfig
@@ -159,6 +160,74 @@ def test_process_issues_only_bootstraps_jules_only_pool_without_crashing(tmp_pat
     # to reach dispatch (REQ-003/REQ-005).
     llm_instance_spy.assert_not_called()
     noedit_instance_spy.assert_not_called()
+
+
+def test_process_issues_only_clears_stale_singleton_from_a_prior_repository(tmp_path, monkeypatch):
+    """REQ-006: an empty synchronous projection must not leave a manager
+    bound to a *different* repository (or an obsolete configuration) in
+    place for later synchronous callers to silently reuse. Pre-initialize
+    both singletons the way a prior, real bootstrap for repository A would,
+    then bootstrap process-issues for a Jules-only repository B in the same
+    process and verify both singletons are cleared rather than served."""
+    from auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager, get_noedit_backend_manager
+
+    _write_config(
+        tmp_path,
+        '[backend]\norder = ["jules"]\n\n[backends.jules]\nbackend_type = "jules"\nenabled = true\napi_key = "test-jules-key"\n',
+        monkeypatch,
+    )
+
+    stale_client = MagicMock()
+    LLMBackendManager.reset_singleton()
+    LLMBackendManager.reset_noedit_singleton()
+    try:
+        LLMBackendManager.get_llm_instance(
+            default_backend="codex",
+            default_client=stale_client,
+            factories={"codex": lambda: stale_client},
+            order=["codex"],
+        )
+        LLMBackendManager.get_noedit_instance(
+            default_backend="codex",
+            default_client=stale_client,
+            factories={"codex": lambda: stale_client},
+            order=["codex"],
+        )
+        assert LLMBackendManager.is_initialized() is True
+        assert LLMBackendManager.is_noedit_initialized() is True
+
+        engine = MagicMock()
+        engine.process_single.return_value = {
+            "repository": "owner/repo",
+            "issues_processed": [],
+            "prs_processed": [],
+            "errors": [],
+        }
+
+        with (
+            patch("auto_coder.cli_commands_main.get_repo_or_detect", return_value="owner/repo"),
+            patch("auto_coder.cli_commands_main.GitHubClient.get_instance", return_value=MagicMock()),
+            patch("auto_coder.cli_commands_main.AutomationEngine", return_value=engine),
+            patch("auto_coder.cli_commands_main.get_current_branch", return_value="main"),
+        ):
+            result = _invoke_only("owner/repo", 1591)
+
+        assert result.exit_code == 0, result.output
+        assert "is not supported" not in result.output
+
+        # The prior repository's manager was cleared, not silently kept.
+        assert LLMBackendManager.is_initialized() is False
+        assert LLMBackendManager.is_noedit_initialized() is False
+
+        # A later synchronous caller must not receive the stale repo-A
+        # manager; it gets an explicit "not initialized" failure instead.
+        with pytest.raises(RuntimeError):
+            get_llm_backend_manager()
+        with pytest.raises(RuntimeError):
+            get_noedit_backend_manager()
+    finally:
+        LLMBackendManager.reset_singleton()
+        LLMBackendManager.reset_noedit_singleton()
 
 
 def test_process_issues_only_bootstraps_mixed_pool_using_only_local_synchronous_manager(tmp_path, monkeypatch):

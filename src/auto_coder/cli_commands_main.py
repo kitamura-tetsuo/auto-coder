@@ -296,22 +296,33 @@ def process_issues(
     # an unlisted default) when that candidate list is empty.
     synchronous_backends = [name for name in selected_backends if config.resolve_backend_type(name) not in TASK_ONLY_BACKEND_TYPES]
     manager = None
+
+    # Initialize LLM backend manager singleton
+    from .backend_manager import LLMBackendManager
+
     if synchronous_backends:
         manager = build_backend_manager_from_config(
             cli_models=models,
             cli_backends=synchronous_backends,
         )
 
-        # Initialize LLM backend manager singleton
-        from .backend_manager import LLMBackendManager
-
+        # force_reinitialize=True so a singleton left over from an earlier
+        # repository/configuration in the same long-lived process is always
+        # rebound to the current effective configuration, rather than
+        # silently reused with stale repository/alias settings.
         LLMBackendManager.get_llm_instance(
             default_backend=manager._default_backend,
             default_client=manager._clients[manager._default_backend],
             factories=manager._factories,
             order=manager._all_backends,
+            force_reinitialize=True,
         )
     else:
+        # No synchronous candidate in the current ordinary pool: clear any
+        # singleton bound to a previous repository/configuration instead of
+        # leaving it in place, so a later synchronous call cannot silently
+        # run against the wrong repository's manager.
+        LLMBackendManager.reset_singleton()
         logger.info("Ordinary backend pool has no synchronous candidate; the general LLM manager stays uninitialized until a synchronous operation needs one.")
 
     message_manager = None
@@ -322,6 +333,7 @@ def process_issues(
         message_backend_str = ", ".join(message_backend_list)
         logger.info(f"Message backends: {message_backend_str} (default: {message_primary_backend})")
     else:
+        LLMBackendManager.reset_noedit_singleton()
         logger.info("No synchronous no-edit backend configured; message/no-edit manager stays uninitialized.")
 
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)

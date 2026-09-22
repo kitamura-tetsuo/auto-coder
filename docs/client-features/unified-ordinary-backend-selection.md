@@ -63,3 +63,16 @@ all-Jules policy), both the general and message/no-edit manager singletons
 are simply left uninitialized rather than resurrecting an unlisted default
 backend; ordinary Issue dispatch is unaffected and proceeds normally to the
 selected remote candidate's provider adapter.
+
+Both manager singletons are process-lifetime state, so a long-lived daemon
+process that serves more than one repository (or is reconfigured between
+runs) must never let a manager bound to an earlier repository or an
+obsolete effective configuration answer a later synchronous call. Startup
+therefore always rebinds a present synchronous manager with
+`force_reinitialize=True` rather than silently keeping whatever the
+singleton already held, and explicitly clears (`LLMBackendManager.
+reset_singleton()` / `reset_noedit_singleton()`) any singleton left over
+from a previous bootstrap when the current pool's synchronous projection is
+empty. A later `get_llm_backend_manager()`/`get_noedit_backend_manager()`
+call in that state raises rather than silently running with the wrong
+repository's settings.
