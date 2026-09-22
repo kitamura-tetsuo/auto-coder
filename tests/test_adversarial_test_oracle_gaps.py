@@ -585,6 +585,78 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
     assert saved_after_retry.test_oracle_gaps[0].status == "RESOLVED"
 
 
+def test_fresh_continuation_fallback_hydrates_and_persists_compact_gap_resolution(tmp_path) -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "fresh-session"
+    manager._last_continue_session_resumed = False
+    compact_resolution = {
+        "gap_id": initial.gap_id,
+        "status": "RESOLVED",
+        "resolution_evidence": ("tests/test_grid.py exercises GridMutation.apply_candidate at sha-b " "and proves rejected candidates preserve state and revision."),
+    }
+    manager.continue_session.return_value = validation_response(compact_resolution)
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-b"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert manager.continue_session.call_args.args[0] == "session-1"
+    assert manager._last_continue_session_resumed is False
+    assert result.result == "PASS"
+    assert saved is not None
+    assert result.test_oracle_gaps == [saved.test_oracle_gaps[0]]
+    assert saved.session_id == "fresh-session"
+    assert saved.last_head_sha == "sha-b"
+    assert saved.test_oracle_gaps[0].gap_id == initial.gap_id
+    assert saved.test_oracle_gaps[0].authoritative_boundary == initial.authoritative_boundary
+    assert saved.test_oracle_gaps[0].status == "RESOLVED"
+    assert saved.test_oracle_gaps[0].resolution_head_sha == "sha-b"
+
+
+def test_fresh_continuation_fallback_parse_failure_retains_accepted_gap(tmp_path) -> None:
+    initial = parsed_result(gap_payload()).test_oracle_gaps[0]
+    validation_context = context()
+    validation_context.issue_context = "Linked Issue requires independent server validation."
+    registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+    registry.save(prior_session(initial, "sha-a"))
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager._last_session_id = "fresh-session"
+    manager._last_continue_session_resumed = False
+    manager.continue_session.return_value = "malformed response"
+
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-b"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
+    assert result.result == "ERROR"
+    assert saved is not None
+    assert saved.session_id == "fresh-session"
+    assert saved.last_head_sha == "sha-a"
+    assert len(saved.test_oracle_gaps) == 1
+    assert saved.test_oracle_gaps[0].gap_id == initial.gap_id
+    assert saved.test_oracle_gaps[0].authoritative_boundary == initial.authoritative_boundary
+    assert saved.test_oracle_gaps[0].status == "OPEN"
+
+
 @pytest.mark.parametrize("echo_gap", [False, True])
 @pytest.mark.parametrize("unrelated_blocker", ["provenance", "evidence", "finding"])
 def test_same_head_addressed_gap_thread_persists_before_unrelated_inconclusive_resolution(tmp_path, echo_gap, unrelated_blocker) -> None:

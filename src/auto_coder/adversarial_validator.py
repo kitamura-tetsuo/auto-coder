@@ -3728,8 +3728,12 @@ def run_adversarial_validation(
 
     used_backend, used_type, used_model = manager_identity()
     provider_session_id = getattr(backend_manager, "_last_session_id", None)
+    # Conversational continuity and the accepted review lifecycle are separate
+    # authorities.  A continuation fallback must not reuse execution evidence
+    # from the old provider session, but it still adjudicates the lifecycle
+    # snapshot selected before this invocation.
     effective_stored_session = stored_session if was_resumed else None
-    effective_lifecycle_session = lifecycle_session if was_resumed else None
+    effective_lifecycle_session = lifecycle_session
 
     # 5. Parse response
     canonical_recorded_gaps = effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else ()
