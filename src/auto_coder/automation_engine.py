@@ -6436,30 +6436,72 @@ class AutomationEngine:
                         # Use Cloud mode (backend_cloud, defaulting to Jules) for issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Cloud Mode (backend_cloud)", item_type="issue", item_number=item_number, details={"mode": "cloud"})
                         _record_issue_stage_result(item_number, "issue.dispatch-route", f"issue#{item_number} dispatch route", Outcome.COMPLETED, {"route": "cloud"})
-                        from .issue_processor import _process_issue_cloud_backend
+                        from .issue_processor import _dispatch_issue_candidates, _ordinary_issue_candidates, _process_issue_cloud_backend
 
-                        result.actions = _process_issue_cloud_backend(
-                            repo_name,
-                            candidate.data,
-                            config,
-                            self.github,
-                            label_context=should_process,
-                            implementation_slots=implementation_slots,
-                            **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
-                            **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
-                        )
+                        if manual_retry or retry_authority is not None:
+                            result.actions = _process_issue_cloud_backend(
+                                repo_name,
+                                candidate.data,
+                                config,
+                                self.github,
+                                label_context=should_process,
+                                implementation_slots=implementation_slots,
+                                **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
+                                **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
+                            )
+                        else:
+                            dispatch = _dispatch_issue_candidates(
+                                repo_name,
+                                candidate.data,
+                                config,
+                                self.github,
+                                _ordinary_issue_candidates(repo_name, True),
+                                label_context=should_process,
+                                implementation_slots=implementation_slots,
+                            )
+                            result.actions = dispatch.actions
+                            result.dispatch_result = dispatch.result
 
                     else:
                         # Regular issue processing
                         get_trace_logger().log("Dispatch", f"Dispatching issue #{item_number} to Local Mode", item_type="issue", item_number=item_number, details={"mode": "local"})
                         _record_issue_stage_result(item_number, "issue.dispatch-route", f"issue#{item_number} dispatch route", Outcome.COMPLETED, {"route": "local"})
-                        result.actions = self._take_issue_actions(repo_name, candidate.data, **({"retry_authority": retry_authority} if retry_authority is not None else {}))  # type: ignore[arg-type]
+                        if retry_authority is not None:
+                            result.actions = self._take_issue_actions(repo_name, candidate.data, retry_authority=retry_authority)
+                        else:
+                            from .issue_processor import _dispatch_issue_candidates, _ordinary_issue_candidates
+
+                            dispatch = _dispatch_issue_candidates(
+                                repo_name,
+                                candidate.data,
+                                config,
+                                self.github,
+                                _ordinary_issue_candidates(repo_name, False),
+                                label_context=should_process,
+                                implementation_slots=implementation_slots,
+                            )
+                            result.actions = dispatch.actions
+                            result.dispatch_result = dispatch.result
 
                     # Cloud launchers persist the authoritative provider task in
                     # CloudManager. Mirror that production output into logical
                     # slot membership before the local launch execution returns,
                     # so later generations cannot validate around remote work.
                     from .cloud_manager import CloudManager
+                    from .issue_dispatch import DispatchOutcome
+
+                    if result.dispatch_result is not None and result.dispatch_result.outcome not in {
+                        DispatchOutcome.LOCAL_COMPLETED,
+                        DispatchOutcome.REMOTE_ACCEPTED,
+                    }:
+                        result.success = False
+                        result.outcome = PRProcessingOutcome.DEFERRED
+                        result.target_outcome = ExplicitTargetOutcome.DEFERRED
+                        result.target_reason = result.dispatch_result.diagnostic
+                        result.error = result.dispatch_result.diagnostic
+                        if not result.actions and result.dispatch_result.diagnostic:
+                            result.actions = [result.dispatch_result.diagnostic]
+                        return result
 
                     binding = CloudManager(repo_name).get_binding(item_number)
                     if manual_retry and (jules_mode or is_difficult):

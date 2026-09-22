@@ -11,7 +11,10 @@ from auto_coder.automation_engine import AutomationEngine, Candidate
 from auto_coder.cli_helpers import create_cloud_backend_manager
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
 from auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.issue_dispatch import DispatchOutcome, DispatchResult, IssueAttemptIdentity
 from auto_coder.issue_processor import (
+    IssueDispatchExecution,
+    _dispatch_issue_candidates,
     _process_issue_claude_routine_mode,
     _process_issue_cloud_backend,
     _process_issue_codex_cloud_mode,
@@ -190,6 +193,58 @@ model = "model-c"
 
 class TestNonDifficultCloudIssueRouting:
     """Test handling and routing of non-difficult issues to backend_cloud."""
+
+    @patch("auto_coder.codex_cloud_client.CodexCloudClient")
+    def test_production_ranked_boundary_reaches_aliased_remote_transport(self, mock_client_type, tmp_path, monkeypatch):
+        """The shared production boundary retains alias, branch, prompt, and task identity."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict(
+            {
+                "backends": {
+                    "remote-primary": {
+                        "backend_type": "codex-cloud",
+                        "model": "gpt-test",
+                        "environment_id": "env-test",
+                    },
+                    "local-fallback": {"backend_type": "codex", "model": "gpt-local"},
+                }
+            }
+        )
+        client = mock_client_type.return_value
+        client.environment_id = "env-test"
+        client.submit_task.return_value = CodexSubmissionResult(
+            CodexSubmissionOutcome.ACCEPTED,
+            "task_provider_2078",
+            "https://chatgpt.com/codex/tasks/task_provider_2078",
+        )
+        github = MagicMock()
+        issue = {"number": 2078, "title": "Dispatch adapters", "body": "Implement requirements", "labels": []}
+        automation_config = AutomationConfig()
+        automation_config.MAIN_BRANCH = "release"
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=3),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+        ):
+            execution = _dispatch_issue_candidates(
+                "owner/repo",
+                issue,
+                automation_config,
+                github,
+                ["remote-primary", "local-fallback"],
+            )
+
+        assert execution.result.outcome is DispatchOutcome.REMOTE_ACCEPTED
+        assert execution.result.backend_name == "remote-primary"
+        assert execution.result.provider == "codex-cloud"
+        assert execution.result.provider_reference == "task_provider_2078"
+        mock_client_type.assert_called_once_with(backend_name="remote-primary", repo_name="owner/repo")
+        prompt = client.submit_task.call_args.args[0]
+        assert "Issue #2078" in prompt
+        assert client.submit_task.call_args.kwargs["repo_name"] == "owner/repo"
+        assert client.submit_task.call_args.kwargs["base_branch"] == "release"
 
     @patch("auto_coder.issue_processor._process_issue_codex_cloud_mode")
     @patch("auto_coder.quota_selector.evaluate_backend_quota")
@@ -385,6 +440,8 @@ backend_type = "codex-cloud"
             config,
             mock_github,
             label_context=None,
+            implementation_slots=None,
+            backend_name="jules",
         )
 
     @patch("auto_coder.issue_processor._process_issue_jules_mode")
@@ -426,11 +483,19 @@ backend_type = "codex-cloud"
         mock_jules_mode.assert_called_once()
 
     @patch("auto_coder.automation_engine.LabelManager")
-    @patch("auto_coder.issue_processor._process_issue_cloud_backend")
+    @patch("auto_coder.issue_processor._dispatch_issue_candidates")
+    @patch("auto_coder.issue_processor._ordinary_issue_candidates", return_value=["jules-alias"])
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
-    def test_automation_engine_routes_non_difficult_to_backend_cloud(self, mock_high_score_cloud, mock_cloud_backend, mock_label_manager):
-        """Test that candidate without difficult label routes to _process_issue_cloud_backend."""
-        mock_cloud_backend.return_value = ["Cloud action"]
+    def test_automation_engine_routes_non_difficult_to_backend_cloud(self, mock_high_score_cloud, mock_candidates, mock_dispatch, mock_label_manager):
+        """The normal cloud route exposes the shared boundary's structured result."""
+        dispatch_result = DispatchResult(
+            IssueAttemptIdentity("owner", "repo", 105, "0"),
+            DispatchOutcome.REMOTE_ACCEPTED,
+            "jules-alias",
+            "jules",
+            "sessions/real-provider-id",
+        )
+        mock_dispatch.return_value = IssueDispatchExecution(dispatch_result, ["Cloud action"])
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
         mock_label_manager.return_value.__enter__.return_value = mock_ctx
@@ -460,7 +525,9 @@ backend_type = "codex-cloud"
             jules_mode=True,
         )
 
-        mock_cloud_backend.assert_called_once()
+        mock_candidates.assert_called_once_with("owner/repo", True)
+        mock_dispatch.assert_called_once()
         mock_high_score_cloud.assert_not_called()
         assert result.success is True
         assert result.actions == ["Cloud action"]
+        assert result.dispatch_result == dispatch_result

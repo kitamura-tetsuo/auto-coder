@@ -7,10 +7,12 @@ machine-readable `DispatchResult` and SQLite claim are admission authority, whil
 the actual adapters retain the existing `issue.dispatch.selection` and
 provider-specific dispatch stages documented below. `tests/test_issue_dispatch.py`
 drives reservation, mixed local/remote ordering, fallback refusal, restart,
-legacy CloudRun/`cloud.csv`, conflict, and persistence-failure boundaries. Run
-`bash scripts/test.sh tests/test_issue_dispatch.py` for this admission contract;
-the existing dashboard suites remain the production-to-view oracle for adapter
-trace emissions.
+legacy CloudRun/`cloud.csv`, conflict, and persistence-failure boundaries. The
+ordinary engine stores this result on `CandidateProcessingResult` without a new
+dashboard schema; existing route and provider-stage emissions remain authoritative.
+Run `bash scripts/test.sh tests/test_issue_dispatch.py tests/test_cloud_backend.py`
+for this admission contract; the existing dashboard suites remain the
+production-to-view oracle for adapter trace emissions.
 
 Issue #2002 mounts the read-only repository dependency-rescan projection at
 `/dashboard/jobs/dependency-rescan`. It consumes only the shared

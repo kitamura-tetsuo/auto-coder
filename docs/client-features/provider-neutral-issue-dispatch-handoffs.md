@@ -40,3 +40,11 @@ successful Claude Routine HTTP status without a usable session reference is an
 indeterminate send; no locally generated session identifier is persisted. The
 legacy cloud selector likewise advances only for explicit pre-submission quota
 or not-started rejections. General post-boundary failures stop the pass.
+
+Both ordinary engine routes now resolve the aliases supplied by their existing
+public local or cloud selector and pass that single ranked sequence to the same
+boundary. The selected local alias is instantiated as a one-backend manager, so
+its invocation cannot rotate to another configuration. The engine retains the
+structured result alongside presentation actions and distinguishes synchronous
+local completion from a provider-accepted remote handoff. Difficult/high-score
+and explicitly owned retry routes remain on their dedicated continuations.
