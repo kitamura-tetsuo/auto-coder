@@ -159,6 +159,8 @@ class TestDispatchRouteRecorded:
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
     @patch("auto_coder.issue_processor._process_issue_jules_mode")
     def test_non_difficult_issue_routes_to_cloud(self, mock_jules_mode, mock_high_score_cloud, mock_label_manager):
+        from auto_coder.cloud_manager import CloudTaskBinding
+
         mock_jules_mode.return_value = ["Jules action"]
         mock_ctx = MagicMock()
         mock_ctx.__bool__.return_value = True
@@ -173,7 +175,11 @@ class TestDispatchRouteRecorded:
         engine = AutomationEngine(mock_github, config)
         candidate = Candidate(type="issue", priority=100, data={"number": 602, "title": "Simple bug", "labels": [{"name": "bug"}]})
 
-        result = engine._process_single_candidate_unified("owner/repo", candidate, config, jules_mode=True)
+        with patch(
+            "auto_coder.issue_processor.CloudManager.get_binding",
+            return_value=CloudTaskBinding("jules", "sessions/provider-602", "jules"),
+        ):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, config, jules_mode=True)
 
         assert result.success is True
         mock_high_score_cloud.assert_not_called()

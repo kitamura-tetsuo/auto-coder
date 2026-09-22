@@ -165,6 +165,9 @@ def test_perform_base_merge_enriches_pr_data_when_missing_fields():
 
 def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
     """Test that Jules PR is closed on degradation and its session is recreated."""
+    from src.auto_coder.issue_dispatch import DispatchOutcome, DispatchResult, IssueAttemptIdentity
+    from src.auto_coder.issue_processor import IssueDispatchExecution
+
     config = AutomationConfig()
     with (
         patch("src.auto_coder.conflict_resolver.cmd") as mock_cmd,
@@ -176,7 +179,7 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
         patch("src.auto_coder.conflict_resolver._extract_session_id_from_pr_body") as mock_extract_session_id,
         patch("src.auto_coder.cloud_manager.CloudManager") as mock_cloud_manager_class,
         patch("src.auto_coder.attempt_manager.increment_attempt") as mock_increment_attempt,
-        patch("src.auto_coder.issue_processor._process_issue_cloud_backend", return_value=["dispatched"]) as mock_process_issue,
+        patch("src.auto_coder.issue_processor._dispatch_issue_candidates") as mock_process_issue,
     ):
         mock_check_mergeability.return_value = False
         mock_extract_session_id.return_value = "session_xyz"
@@ -217,7 +220,16 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
 
         dispatch_order = []
         mock_increment_attempt.side_effect = lambda *_args: dispatch_order.append("increment") or 2
-        mock_process_issue.side_effect = lambda *_args, **_kwargs: dispatch_order.append("dispatch") or ["dispatched"]
+        mock_process_issue.side_effect = lambda *_args, **_kwargs: dispatch_order.append("dispatch") or IssueDispatchExecution(
+            DispatchResult(
+                IssueAttemptIdentity("test", "repo", 123, "2"),
+                DispatchOutcome.REMOTE_ACCEPTED,
+                "jules",
+                "jules",
+                "sessions/replacement",
+            ),
+            ["dispatched"],
+        )
 
         # Sequence: reset, clean, abort, fetch pr, checkout, fetch base, rev-parse, merge (fails)
         mock_cmd.run_command.side_effect = [

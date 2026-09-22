@@ -6499,6 +6499,7 @@ class AutomationEngine:
                         result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.target_reason = result.dispatch_result.diagnostic
                         result.error = result.dispatch_result.diagnostic
+                        result.cloud_submission_not_started = result.dispatch_result.outcome is DispatchOutcome.DEFERRED and result.dispatch_result.tracking_complete and not result.dispatch_result.claim_incarnation
                         if not result.actions and result.dispatch_result.diagnostic:
                             result.actions = [result.dispatch_result.diagnostic]
                         return result

@@ -1256,7 +1256,14 @@ def _ordinary_issue_candidates(repo_name: str, cloud_mode: bool) -> List[str]:
             configured = [llm_config.get_backend_cloud().name]  # type: ignore[union-attr]
         else:
             configured = ["jules"]
-        return rank_high_score_backends_by_quota(configured, llm_config)
+        ranked_cloud = rank_high_score_backends_by_quota(configured, llm_config)
+        local_types = {"codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider"}
+        local_names = []
+        for name in llm_config.get_active_backends():
+            backend = llm_config.get_backend_config(name)
+            if backend is not None and (backend.backend_type or name) in local_types and name not in ranked_cloud:
+                local_names.append(name)
+        return [*ranked_cloud, *rank_high_score_backends_by_quota(local_names, llm_config)]
     return rank_high_score_backends_by_quota(llm_config.get_active_backends(), llm_config)
 
 
@@ -1292,6 +1299,14 @@ def _dispatch_issue_candidates(
     def invoke(candidate: CandidateHandoff) -> AdapterOutcome:
         nonlocal actions
         backend_type = candidate.provider.lower()
+        _record_dispatch_stage(
+            issue_number,
+            "issue.dispatch.selection",
+            f"issue#{issue_number} dispatch candidate selected",
+            Outcome.UNKNOWN,
+            {"candidate_pool": "cloud" if backend_type in remote_types else "local", "backend_type": backend_type, "backend_name": candidate.backend_name},
+            kind=EventKind.STAGE_STARTED,
+        )
         try:
             if backend_type == "codex-cloud":
                 actions = _process_issue_codex_cloud_mode(repo_name, issue_data, config, github_client, backend_name=candidate.backend_name, label_context=label_context)
@@ -1398,7 +1413,7 @@ def _process_issue_cloud_backend(
         raise CloudSubmissionNotStartedError("No configured Cloud backend is eligible to submit work")
 
     if not manual_retry and retry_authority is None:
-        return _dispatch_issue_candidates(
+        execution = _dispatch_issue_candidates(
             repo_name,
             issue_data,
             config,
@@ -1406,7 +1421,8 @@ def _process_issue_cloud_backend(
             candidates,
             label_context=label_context,
             implementation_slots=implementation_slots,
-        ).actions
+        )
+        return execution.actions
 
     rejected_submissions = 0
     for backend_name in candidates:
