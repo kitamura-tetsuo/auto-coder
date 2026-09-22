@@ -10,6 +10,16 @@ drives reservation, mixed local/remote ordering, fallback refusal, restart,
 legacy CloudRun/`cloud.csv`, conflict, and persistence-failure boundaries. The
 ordinary engine stores this result on `CandidateProcessingResult` without a new
 dashboard schema; existing route and provider-stage emissions remain authoritative.
+Issue #2079 changes candidate admission to the unified repository-scoped
+`[backend]` groups but does not change the trace schema: the selected resolved
+type still determines `issue.dispatch.selection`'s `candidate_pool`, and the
+structured dispatch outcome remains the source of no-start diagnostics. The
+ordinary route now emits `issue.dispatch-route` with `route=ordinary` instead
+of deriving `cloud` or `local` from the legacy global mode switch; the selected
+adapter remains visible in the subsequent selection event. The
+mixed-pool production-to-view regression is exercised by
+`tests/test_dashboard_observability.py`; configuration and group-order coverage
+lives in `tests/test_unified_ordinary_backend_selector.py`.
 Run `bash scripts/test.sh tests/test_issue_dispatch.py tests/test_cloud_backend.py`
 for this admission contract; the existing dashboard suites remain the
 production-to-view oracle for adapter trace emissions.

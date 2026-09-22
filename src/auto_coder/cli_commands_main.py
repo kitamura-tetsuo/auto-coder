@@ -200,9 +200,9 @@ def process_issues(
     else:
         configured_cloud_mode = is_jules_mode_enabled(repo_name=repo_name)
 
-    active_backends = config.get_active_backends()
-    ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
-    selected_backends = ordered_backends or [config.default_backend or "codex"]
+    selected_backends = [name for group in config.get_ordinary_priority_groups() for name in group]
+    if not selected_backends:
+        raise click.ClickException("The ordinary backend candidate pool is empty")
     primary_backend = selected_backends[0]
     models = build_models_map()
     primary_model = models.get(primary_backend)
@@ -231,10 +231,12 @@ def process_issues(
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
-    check_backend_prerequisites(selected_backends)
-
-    # Ensure required test script is present (fail early)
-    ensure_test_script_or_fail()
+    # Startup validates only the candidate that can be attempted first. Later
+    # fallbacks validate their own prerequisites when selected, so an unused
+    # local executable or workspace does not block an earlier remote handoff.
+    check_backend_prerequisites([primary_backend])
+    if config.resolve_backend_type(primary_backend) not in {"codex-cloud", "claude-routine", "jules"}:
+        ensure_test_script_or_fail()
 
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Processing repository: {repo_name}")

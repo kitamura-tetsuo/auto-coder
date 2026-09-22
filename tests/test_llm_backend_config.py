@@ -538,6 +538,7 @@ class TestLLMBackendConfiguration:
         config = LLMBackendConfiguration()
         config.get_backend_config("codex").enabled = True
         config.backend_for_noedit_default = "codex"
+        config.backend_for_noedit_explicit = True
         config.default_backend = "antigravity"
 
         assert config.get_noedit_default_backend() == "codex"
@@ -1014,7 +1015,7 @@ class TestLLMBackendConfiguration:
                         "enabled": True,
                         "model": "gemini-pro",
                         "timeout": 30,
-                        "backend_type": "custom_type",
+                        "backend_type": "codex",
                     },
                 },
             }
@@ -1035,7 +1036,7 @@ class TestLLMBackendConfiguration:
             gemini_config = config.get_backend_config("antigravity")
             assert gemini_config is not None
             assert gemini_config.options_for_resume == []
-            assert gemini_config.backend_type == "custom_type"
+            assert gemini_config.backend_type == "codex"
             assert gemini_config.model == "gemini-pro"
             assert gemini_config.timeout == 30
 
@@ -1696,7 +1697,7 @@ class TestConfigurationPriorityLogic:
             config.get_backend_config("antigravity").usage_limit_retry_count = 3
             config.get_backend_config("antigravity").usage_limit_retry_wait_seconds = 30
             config.get_backend_config("antigravity").options = ["option1", "option2"]
-            config.get_backend_config("antigravity").backend_type = "custom_gemini"
+            config.get_backend_config("antigravity").backend_type = "codex"
             config.get_backend_config("antigravity").always_switch_after_execution = True
 
             config.get_backend_config("qwen").enabled = False
@@ -1730,7 +1731,7 @@ class TestConfigurationPriorityLogic:
                 assert gemini.usage_limit_retry_count == 3
                 assert gemini.usage_limit_retry_wait_seconds == 30
                 assert gemini.options == ["option1", "option2"]
-                assert gemini.backend_type == "custom_gemini"
+                assert gemini.backend_type == "codex"
                 assert gemini.always_switch_after_execution is True
 
                 # Verify qwen backend settings
@@ -2533,6 +2534,7 @@ class TestOptionInheritance:
                 "backends": {
                     "parent": {
                         "enabled": True,
+                        "backend_type": "codex",
                         "options": ["--parent-flag"],
                         "options_for_noedit": ["--parent-noedit-flag"],
                     },

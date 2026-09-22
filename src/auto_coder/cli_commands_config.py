@@ -581,35 +581,10 @@ def import_config(config_file: Optional[str], source_file: str) -> None:
         if "backends" not in imported_data:
             raise ValueError("Invalid configuration file: missing 'backends' section")
 
-        # Create configuration from imported data
-        config = LLMBackendConfiguration()
-        config.backend_order = imported_data.get("backend", {}).get("order", [])
-        config.default_backend = imported_data.get("backend", {}).get("default", "codex")
-        # Try new key first, fall back to old key for backward compatibility
-        config.backend_for_noedit_order = imported_data.get("backend_for_noedit", {}).get("order", [])
-        config.backend_for_noedit_default = imported_data.get("backend_for_noedit", {}).get("default")
-        if not config.backend_for_noedit_order and not config.backend_for_noedit_default:
-            config.backend_for_noedit_order = imported_data.get("message_backend", {}).get("order", [])
-            config.backend_for_noedit_default = imported_data.get("message_backend", {}).get("default")
-
-        # Import backends
-        config.backends = {}
-        for name, backend_data in imported_data.get("backends", {}).items():
-            from .llm_backend_config import BackendConfig
-
-            config.backends[name] = BackendConfig(
-                name=name,
-                enabled=backend_data.get("enabled", True),
-                model=backend_data.get("model"),
-                api_key=backend_data.get("api_key"),
-                base_url=backend_data.get("base_url"),
-                temperature=backend_data.get("temperature"),
-                timeout=backend_data.get("timeout"),
-                max_retries=backend_data.get("max_retries"),
-                openai_api_key=backend_data.get("openai_api_key"),
-                openai_base_url=backend_data.get("openai_base_url"),
-                extra_args=backend_data.get("extra_args", {}),
-            )
+        # Use the same strict public loader as TOML configuration so selector
+        # presence, priority-group boundaries, aliases, and backend fields are
+        # preserved rather than reconstructed by an incomplete import schema.
+        config = LLMBackendConfiguration.load_from_dict(imported_data)
 
         # Backup current config if it exists
         if config_path.exists():
@@ -1007,11 +982,14 @@ def config_to_dict(config: LLMBackendConfiguration) -> Dict[str, Any]:
 
             config.backends[backend_name] = BackendConfig(name=backend_name)
 
+    backend_selector: Dict[str, Any] = {"default": config.default_backend}
+    if config.backend_selector_kind == "priority_groups":
+        backend_selector["priority_groups"] = config.backend_priority_groups
+    elif config.backend_selector_kind == "order" or config.backend_order:
+        backend_selector["order"] = config.backend_order
+
     result: Dict[str, Any] = {
-        "backend": {
-            "order": config.backend_order,
-            "default": config.default_backend,
-        },
+        "backend": backend_selector,
         "backends": {},
     }
 
@@ -1027,12 +1005,19 @@ def config_to_dict(config: LLMBackendConfiguration) -> Dict[str, Any]:
             "openai_api_key": backend_config.openai_api_key,
             "openai_base_url": backend_config.openai_base_url,
             "extra_args": backend_config.extra_args,
+            "backend_type": backend_config.backend_type,
+            "environment_id": backend_config.environment_id,
+            "url": backend_config.url,
+            "options": backend_config.options,
+            "options_for_noedit": backend_config.options_for_noedit,
+            "options_for_resume": backend_config.options_for_resume,
         }
 
-    result["backend_for_noedit"] = {
-        "order": config.backend_for_noedit_order,
-        "default": config.backend_for_noedit_default,
-    }
+    if config.backend_for_noedit_explicit:
+        result["backend_for_noedit"] = {
+            "order": config.backend_for_noedit_order,
+            "default": config.backend_for_noedit_default,
+        }
 
     # Validate the result before returning
     if not isinstance(result, dict):
