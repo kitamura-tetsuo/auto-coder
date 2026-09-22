@@ -20,6 +20,8 @@ def test_process_issues_only_passes_configured_cloud_mode(retry):
     llm_config.get_active_backends.return_value = ["codex-cloud-spark"]
     llm_config.backend_order = ["codex-cloud-spark"]
     llm_config.default_backend = "codex-cloud-spark"
+    llm_config.get_ordinary_priority_groups.return_value = [["codex-cloud-spark", "codex"]]
+    llm_config.resolve_backend_type.return_value = "codex-cloud"
 
     backend_manager = MagicMock()
     backend_manager._default_backend = "codex-cloud-spark"
@@ -44,8 +46,8 @@ def test_process_issues_only_passes_configured_cloud_mode(retry):
         patch("auto_coder.cli_commands_main.get_llm_config", return_value=llm_config),
         patch("auto_coder.cli_commands_main.is_jules_mode_enabled", return_value=True) as cloud_mode,
         patch("auto_coder.cli_commands_main.build_models_map", return_value={}),
-        patch("auto_coder.cli_commands_main.check_backend_prerequisites"),
-        patch("auto_coder.cli_commands_main.ensure_test_script_or_fail"),
+        patch("auto_coder.cli_commands_main.check_backend_prerequisites") as prerequisites,
+        patch("auto_coder.cli_commands_main.ensure_test_script_or_fail") as test_script,
         patch("auto_coder.cli_commands_main.setup_progress_footer_logging"),
         patch("auto_coder.cli_commands_main.start_health_monitoring"),
         patch("auto_coder.cli_commands_main.GitHubClient.get_instance", return_value=MagicMock()),
@@ -72,6 +74,8 @@ def test_process_issues_only_passes_configured_cloud_mode(retry):
 
     assert result.exit_code == 0
     cloud_mode.assert_called_once_with(repo_name=repo_name)
+    prerequisites.assert_called_once_with(["codex-cloud-spark"])
+    test_script.assert_not_called()
     engine.process_single.assert_called_once_with(
         repo_name,
         "issue",

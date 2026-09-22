@@ -38,3 +38,11 @@ but replace arrays as a whole. Consequently, inheriting `backend.order` while
 adding `backend.priority_groups` is invalid; the base policy must remove the
 conflicting selector. Dedicated high-score, no-edit, and adversarial-validation
 policies remain independent of this ordinary pool.
+
+When no dedicated no-edit policy is present, synchronous message generation
+inherits only synchronous-capable aliases from the ordinary pool; task-only
+cloud aliases are filtered without changing the remaining order. An all-cloud
+inherited pool reports that no synchronous backend is available and does not
+launch a task. Startup likewise checks only the first candidate's required
+capabilities, so an earlier remote handoff is not blocked by an unused local
+fallback executable or test script.

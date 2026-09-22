@@ -83,6 +83,8 @@ def test_process_issues_sleep_logic(
     mock_config_instance = MagicMock()
     mock_config.return_value = mock_config_instance
     mock_config_instance.get_active_backends.return_value = ["antigravity"]
+    mock_config_instance.get_ordinary_priority_groups.return_value = [["antigravity"]]
+    mock_config_instance.resolve_backend_type.return_value = "antigravity"
     mock_config_instance.backend_order = []
     mock_config_instance.default_backend = "antigravity"
     mock_config_instance.get_backend_config.return_value = MagicMock(api_key="dummy")

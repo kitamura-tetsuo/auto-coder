@@ -117,10 +117,13 @@ priority_groups = [["backend-a", "backend-b"], ["backend-c"]]
 
 [backends.backend-a]
 model = "model-a"
+backend_type = "codex"
 [backends.backend-b]
 model = "model-b"
+backend_type = "codex"
 [backends.backend-c]
 model = "model-c"
+backend_type = "codex"
 """,
             encoding="utf-8",
         )

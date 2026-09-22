@@ -422,6 +422,7 @@ class LLMBackendConfiguration:
     # Backend configuration for non-editing operations (message generation, etc.)
     backend_for_noedit_order: List[str] = field(default_factory=list)
     backend_for_noedit_default: Optional[str] = None
+    backend_for_noedit_explicit: bool = False
     # Fallback backend configuration for failed PRs
     backend_with_high_score: Optional[BackendConfig] = None
     backend_with_high_score_order: List[str] = field(default_factory=list)
@@ -797,6 +798,7 @@ class LLMBackendConfiguration:
         # Parse backend for non-editing operations settings
         # Try new key first, then fall back to old key for backward compatibility
         backend_for_noedit_order = _translate_backend(data.get("backend_for_noedit", {}).get("order", []))
+        backend_for_noedit_explicit = "backend_for_noedit" in data
 
         # Determine default for noedit - prioritize explicit "default" field, then order[0]
         backend_for_noedit_default = _translate_backend(data.get("backend_for_noedit", {}).get("default"))
@@ -810,6 +812,7 @@ class LLMBackendConfiguration:
                 logger = get_logger(__name__)
                 logger.warning("Configuration uses deprecated 'message_backend' key. " "Please update to 'backend_for_noedit' in your config file.")
                 backend_for_noedit_order = old_order
+                backend_for_noedit_explicit = True
                 if backend_for_noedit_order:
                     backend_for_noedit_default = backend_for_noedit_order[0]
 
@@ -927,6 +930,7 @@ class LLMBackendConfiguration:
             backends=backends,
             backend_for_noedit_order=backend_for_noedit_order,
             backend_for_noedit_default=backend_for_noedit_default,
+            backend_for_noedit_explicit=backend_for_noedit_explicit,
             backend_with_high_score=backend_with_high_score,
             backend_with_high_score_order=backend_with_high_score_order,
             backend_with_high_score_cloud=backend_with_high_score_cloud,
@@ -1478,8 +1482,7 @@ class LLMBackendConfiguration:
                 backend = self.get_backend_config(name)
                 if backend is None:
                     raise ValueError(f"backend selector references unresolvable backend '{name}'")
-                if backend.backend_type and self.get_backend_config(backend.backend_type) is None and backend.backend_type not in REQUIRED_OPTIONS_BY_BACKEND and backend.backend_type not in {"codex-cloud", "claude-routine"}:
-                    raise ValueError(f"backend '{name}' has unresolvable backend type '{backend.backend_type}'")
+                self.resolve_backend_type(name)
                 seen.add(name)
                 if backend.enabled:
                     retained.append(name)
@@ -1487,17 +1490,33 @@ class LLMBackendConfiguration:
                 result.append(retained)
         return result
 
+    def resolve_backend_type(self, backend_name: str) -> str:
+        """Resolve an alias to a supported executable implementation type."""
+        supported = set(REQUIRED_OPTIONS_BY_BACKEND) | {"codex-cloud", "claude-routine"}
+        current = backend_name
+        visited = set()
+        while current not in supported:
+            if current in visited:
+                raise ValueError(f"backend '{backend_name}' has a cyclic backend_type chain")
+            visited.add(current)
+            config = self.get_backend_config(current)
+            if config is None or not config.backend_type:
+                raise ValueError(f"backend '{backend_name}' has no resolvable implementation type")
+            current = config.backend_type
+        return current
+
     def get_active_noedit_backends(self) -> List[str]:
         """Get list of enabled backends for non-editing operations in the configured order.
 
         Returns backend_for_noedit order if specifically configured, otherwise falls back to general backends.
         """
-        if self.backend_for_noedit_order:
+        if self.backend_for_noedit_explicit:
             # Filter to only include enabled backends that are in noedit order
-            return [name for name in self.backend_for_noedit_order if self.backends.get(name, BackendConfig(name=name)).enabled]
+            candidates = self.backend_for_noedit_order or ([self.backend_for_noedit_default] if self.backend_for_noedit_default else [])
         else:
-            # Fall back to using the general backend order for non-editing operations
-            return self.get_active_backends()
+            candidates = [name for group in self.get_ordinary_priority_groups() for name in group]
+        task_only = {"codex-cloud", "claude-routine", "jules"}
+        return [name for name in candidates if self.backends.get(name, BackendConfig(name=name)).enabled and self.resolve_backend_type(name) not in task_only]
 
     # Deprecated alias for backward compatibility
     def get_active_message_backends(self) -> List[str]:
@@ -1511,9 +1530,12 @@ class LLMBackendConfiguration:
 
         Returns backend_for_noedit default if specifically configured, otherwise falls back to general default.
         """
-        if self.backend_for_noedit_default and self.backends.get(self.backend_for_noedit_default, BackendConfig(name=self.backend_for_noedit_default)).enabled:
+        active = self.get_active_noedit_backends()
+        if self.backend_for_noedit_default in active:
             return self.backend_for_noedit_default
-        return self.default_backend
+        if active:
+            return active[0]
+        raise ValueError("No synchronous backend is available for no-edit operations")
 
     # Deprecated alias for backward compatibility
     def get_message_default_backend(self) -> str:

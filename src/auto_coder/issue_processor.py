@@ -1300,7 +1300,7 @@ def _dispatch_issue_candidates(
         candidates.append(CandidateHandoff(name, (backend_config.backend_type if backend_config is not None else None) or name))
     actions: List[str] = []
     remote_types = {"codex-cloud", "claude-routine", "jules"}
-    local_types = {"codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider"}
+    local_types = {"codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider", "opencode"}
 
     def invoke(candidate: CandidateHandoff) -> AdapterOutcome:
         nonlocal actions
