@@ -51,8 +51,8 @@ from .github_request_outcome import (
 )
 
 if TYPE_CHECKING:
-    from .github_app_reviewer import ReviewerAppIdentity
-    from .issue_review_publication import PublicationReceipt
+    from ..github_app_reviewer import ReviewerAppIdentity
+    from ..issue_review_publication import PublicationReceipt
 
 logger = get_logger(__name__)
 IMPLEMENTATION_READY_LABEL = "implementation-ready"
@@ -2575,7 +2575,7 @@ class GitHubClient:
         the dedicated reviewer App identity, never the ordinary controller
         credential this class otherwise uses for label/edit/close mutations.
         """
-        from .issue_review_publication import publish_findings_comment
+        from ..issue_review_publication import publish_findings_comment
 
         return publish_findings_comment(repo_name, issue_number, body, authorize_fn)
 
@@ -2587,7 +2587,7 @@ class GitHubClient:
         interaction goes through the same ``github``-shaped boundary as
         comments/labels/snapshots.
         """
-        from .github_app_reviewer import resolve_reviewer_app_identity
+        from ..github_app_reviewer import resolve_reviewer_app_identity
 
         return resolve_reviewer_app_identity(repo_name)
 
