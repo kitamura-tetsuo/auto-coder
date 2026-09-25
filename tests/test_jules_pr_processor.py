@@ -56,13 +56,20 @@ class TestJulesPRProcessor:
         session_id = "session_abc123"
         mock_client = MagicMock()
 
-        # Mock search_issues return value
-        # It's expected to be a list of dicts/objects
+        # Mock search_issues_strict return value, keyed by the searched spelling
+        # (both "session_abc123" and its "cse_abc123" alias are searched).
         # Case 1: Session ID in issue body
         issue1 = {"number": 101, "body": f"This is related to {session_id}"}
         issue2 = {"number": 102, "body": "Nothing here"}
 
-        mock_client.search_issues.return_value = [issue1, issue2]
+        def search_side_effect(query, *args, **kwargs):
+            if session_id in query:
+                return [issue1, issue2]
+            return []
+
+        mock_client.search_issues_strict.side_effect = search_side_effect
+        mock_client.get_issue_strict.side_effect = lambda repo, number: {101: issue1, 102: issue2}[number]
+        mock_client.get_issue_comments_strict.return_value = []
 
         # Execute
         result = _find_issue_by_session_id_in_comments(repo_name, session_id, mock_client)
@@ -76,19 +83,26 @@ class TestJulesPRProcessor:
         session_id = "session_xyz789"
         mock_client = MagicMock()
 
-        # Mock search_issues
+        # Mock search_issues_strict, keyed by the searched spelling
         issue1 = {"number": 201, "body": "No session id here"}
-        mock_client.search_issues.return_value = [issue1]
 
-        # Mock get_issue_comments
-        mock_client.get_issue_comments.return_value = [{"body": "Just a comment"}, {"body": f"Here is the session: {session_id}"}]
+        def search_side_effect(query, *args, **kwargs):
+            if session_id in query:
+                return [issue1]
+            return []
+
+        mock_client.search_issues_strict.side_effect = search_side_effect
+        mock_client.get_issue_strict.return_value = issue1
+
+        # Mock get_issue_comments_strict (the authoritative comment read)
+        mock_client.get_issue_comments_strict.return_value = [{"body": "Just a comment"}, {"body": f"Here is the session: {session_id}"}]
 
         # Execute
         result = _find_issue_by_session_id_in_comments(repo_name, session_id, mock_client)
 
         # Verify
         assert result == 201
-        mock_client.get_issue_comments.assert_called_once_with(repo_name, 201)
+        mock_client.get_issue_comments_strict.assert_called_once_with(repo_name, 201)
 
     @patch("auto_coder.pr_processor._extract_session_id_from_pr_body")
     @patch("auto_coder.pr_processor._is_jules_pr")

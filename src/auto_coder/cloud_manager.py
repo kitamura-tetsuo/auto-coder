@@ -30,6 +30,20 @@ class CloudTaskBinding:
     backend_name: str = ""
 
 
+def claude_session_alias(session_id: str) -> Optional[str]:
+    """Return the opposite Claude Routine session-ID spelling, or None if not applicable.
+
+    `session_<S>` and `cse_<S>` are lookup-equivalent for a nonempty, case-sensitive
+    suffix `S`; any other ID (including a bare `session_`/`cse_` with an empty
+    suffix) has no Claude alias.
+    """
+    if session_id.startswith("session_") and len(session_id) > len("session_"):
+        return f"cse_{session_id[len('session_'):]}"
+    if session_id.startswith("cse_") and len(session_id) > len("cse_"):
+        return f"session_{session_id[len('cse_'):]}"
+    return None
+
+
 def _session_ids_match(id1: str, id2: str) -> bool:
     """Check if two session IDs match, including Claude Routine session_ <-> cse_ equivalence."""
     if id1 == id2:
@@ -37,11 +51,7 @@ def _session_ids_match(id1: str, id2: str) -> bool:
     if not id1 or not id2:
         return False
     # Claude routine session ID equivalence: session_<id> <-> cse_<id>
-    if id1.startswith("session_") and id2.startswith("cse_"):
-        return id1[8:] == id2[4:]
-    if id1.startswith("cse_") and id2.startswith("session_"):
-        return id1[4:] == id2[8:]
-    return False
+    return claude_session_alias(id1) == id2
 
 
 class CloudManager:

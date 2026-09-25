@@ -3352,16 +3352,24 @@ class GitHubClient:
             List of issue dicts.
         """
         try:
-            logger.info(f"Searching issues with query: '{query}'")
-            api = get_ghapi_client(self.token)
-            # api.search.issues_and_pull_requests(q, sort, order, ...)
-            # returns { 'total_count': ..., 'incomplete_results': ..., 'items': [...] }
-            result = api.search.issues_and_pull_requests(q=query, sort=sort, order=order)
-            return result.get("items", [])
-
+            return self.search_issues_strict(query, sort=sort, order=order)
         except Exception as e:
             logger.error(f"Failed to search issues with query '{query}': {e}")
             return []
+
+    def search_issues_strict(self, query: str, sort: str = "updated", order: str = "desc") -> List[Any]:
+        """Search issues using GitHub Search API, preserving lookup failures.
+
+        Unlike `search_issues`, this lets the caller distinguish a genuine
+        zero-result search from a transport/API failure: it raises instead of
+        swallowing the exception into an empty list.
+        """
+        logger.info(f"Searching issues with query: '{query}'")
+        api = get_ghapi_client(self.token)
+        # api.search.issues_and_pull_requests(q, sort, order, ...)
+        # returns { 'total_count': ..., 'incomplete_results': ..., 'items': [...] }
+        result = api.search.issues_and_pull_requests(q=query, sort=sort, order=order)
+        return result.get("items", [])
 
     def _search_issues_by_title(self, repo_name: str, search_title: str) -> Optional[int]:
         """Search for an open issue by title using fuzzy matching."""

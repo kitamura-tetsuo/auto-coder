@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.cli_helpers import create_high_score_backend_manager
-from auto_coder.cloud_manager import CloudManager
+from auto_coder.cloud_manager import CloudManager, claude_session_alias
 from auto_coder.github_ci_observer import ci_observation_merge_authority, ci_read_phase, end_ci_read_phase
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
@@ -5223,67 +5223,110 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     return None
 
 
+def _get_attr(obj: Any, attr: str) -> Any:
+    """Read `attr` from a dict or an object (GhApi returns AttrDict usually)."""
+    return getattr(obj, attr, None) or (obj.get(attr) if isinstance(obj, dict) else None)
+
+
+def _session_id_token_pattern(token: str) -> re.Pattern[str]:
+    """Compile a whole-token matcher for `token` (no adjoining identifier chars)."""
+    return re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(token) + r"(?![A-Za-z0-9_-])")
+
+
 def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, github_client: Any) -> Optional[int]:
-    """Find issue number by searching for session ID using GitHub Search API."""
-    try:
-        # Use GitHub Search API for efficiency
-        # Query: repo:owner/repo "session_id" type:issue
-        # We search specifically for the session_id string
-        query = f"repo:{repo_name} {session_id} type:issue"
-        logger.info(f"Searching for session ID '{session_id}' with query: '{query}'")
+    """Find the ordinary Issue that recorded `session_id`, via GitHub Issue search.
 
-        # Use the new search_issues method
-        # We only check the top 5 results to avoid indefinite processing if search returns many loose matches
-        search_results = github_client.search_issues(query)
+    For a Claude Routine session ID, `session_<S>` and `cse_<S>` are
+    lookup-equivalent (see `cloud_manager.claude_session_alias`). GitHub's
+    search index can surface the Issue under only one of the two spellings
+    even though they name the same session, so both spellings are searched
+    (each bounded to its own first-5-results budget, so one spelling's loose
+    hits cannot starve the other) and every candidate is verified against a
+    fresh, authoritative Issue read before being trusted -- a search hit's
+    title/snippet is not by itself qualifying evidence. See Issue #2270.
 
-        # Iterate safely over the generator/list
+    A search or verification-read failure leaves recovery unavailable
+    (returns None) rather than declaring a match from partial observations.
+    Multiple distinct verified Issues make the lookup ambiguous and also
+    return None rather than guessing.
+    """
+    spellings = [session_id]
+    alt_spelling = claude_session_alias(session_id)
+    if alt_spelling:
+        spellings.append(alt_spelling)
+
+    token_patterns = [_session_id_token_pattern(spelling) for spelling in spellings]
+
+    def matches_session(text: Optional[str]) -> bool:
+        if not text:
+            return False
+        return any(pattern.search(text) for pattern in token_patterns)
+
+    # Step 1: discover candidate issue numbers, each spelling bounded to its
+    # own first-5-results budget, deduplicated by issue number.
+    ordered_candidates: List[int] = []
+    seen_numbers: Set[int] = set()
+    for spelling in spellings:
+        query = f"repo:{repo_name} {spelling} type:issue"
+        logger.info(f"Searching for session ID '{spelling}' with query: '{query}'")
+        try:
+            search_results = github_client.search_issues_strict(query)
+        except Exception as e:
+            logger.error(f"Session ID search for '{spelling}' failed; alias recovery unavailable this run: {e}")
+            return None
+
         count = 0
         for issue in search_results:
             if count >= 5:
                 break
             count += 1
+            issue_number = _get_attr(issue, "number")
+            if issue_number is None:
+                continue
+            issue_number = int(issue_number)
+            if issue_number not in seen_numbers:
+                seen_numbers.add(issue_number)
+                ordered_candidates.append(issue_number)
 
-            # Helper to get attributes from dict or object (GhApi returns AttrDict usually)
-            def get_attr(obj, attr):
-                return getattr(obj, attr, None) or (obj.get(attr) if isinstance(obj, dict) else None)
+    # Step 2: verify each candidate against a fresh, authoritative Issue read.
+    qualifying: Set[int] = set()
+    for issue_number in ordered_candidates:
+        try:
+            issue = github_client.get_issue_strict(repo_name, issue_number)
+        except Exception as e:
+            logger.error(f"Failed to read issue #{issue_number} from {repo_name} while verifying session alias; alias recovery unavailable this run: {e}")
+            return None
 
-            issue_number = get_attr(issue, "number")
-            issue_body = get_attr(issue, "body")
+        if _get_attr(issue, "pull_request") is not None:
+            # Search should already have excluded PRs (type:issue); skip defensively.
+            continue
 
-            def matches_session(text: Optional[str]) -> bool:
-                if not text:
-                    return False
-                if session_id in text:
-                    return True
-                if session_id.startswith("session_") and f"cse_{session_id[8:]}" in text:
-                    return True
-                if session_id.startswith("cse_") and f"session_{session_id[4:]}" in text:
-                    return True
-                return False
+        if matches_session(_get_attr(issue, "body")):
+            logger.info(f"Found session ID '{session_id}' in body of issue #{issue_number}")
+            qualifying.add(issue_number)
+            continue
 
-            # Double check if session_id is actually in body or comments to be sure
-            # Search API might return loose matches, although exact string match usually ranks high
-            if matches_session(issue_body):
-                logger.info(f"Found session ID '{session_id}' in body of issue #{issue_number}")
-                return issue_number
+        try:
+            comments = github_client.get_issue_comments_strict(repo_name, issue_number)
+        except Exception as e:
+            logger.error(f"Failed to read comments for issue #{issue_number} from {repo_name} while verifying session alias; alias recovery unavailable this run: {e}")
+            return None
 
-            # Check comments
-            # This is still an API call per issue, but we only do it for a few candidates
-            try:
-                comments = github_client.get_issue_comments(repo_name, issue_number)
-                for comment in comments:
-                    comment_body = comment.get("body")
-                    if matches_session(comment_body):
-                        logger.info(f"Found session ID '{session_id}' in comment of issue #{issue_number}")
-                        return issue_number
-            except Exception as e:
-                logger.warning(f"Failed to fetch comments for potential issue #{issue_number}: {e}")
+        for comment in comments:
+            comment_body = comment.get("body") if isinstance(comment, dict) else _get_attr(comment, "body")
+            if matches_session(comment_body):
+                logger.info(f"Found session ID '{session_id}' in comment of issue #{issue_number}")
+                qualifying.add(issue_number)
+                break
 
+    if not qualifying:
         logger.warning(f"Session ID '{session_id}' not found via search query")
         return None
-    except Exception as e:
-        logger.error(f"Error searching for session ID in comments: {e}")
+    if len(qualifying) > 1:
+        logger.warning(f"Session ID '{session_id}' matched multiple distinct issues {sorted(qualifying)}; refusing ambiguous alias recovery")
         return None
+
+    return next(iter(qualifying))
 
 
 def _update_jules_pr_body(
