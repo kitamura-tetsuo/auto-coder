@@ -5174,8 +5174,10 @@ def _extract_session_id_candidates(pr_body: str) -> List[Tuple[str, str]]:
     if match:
         _add("Pattern 3c (Codex Task URL)", match.group(1).strip())
 
-    # Pattern 4: Look for Jules Task IDs (e.g., jules.google.com/task/12345 or "task 12345")
-    task_url_pattern = r"jules\.google\.com/task/(\d+)"
+    # Pattern 4: Look for Jules Task IDs (e.g., jules.google.com/task/12345,
+    # jules.google.com/task/abcDEF-123_x, or "task 12345"). The ID may be any
+    # nonempty sequence of ASCII letters, digits, underscores, or hyphens.
+    task_url_pattern = r"jules\.google\.com/task/([a-zA-Z0-9_-]+)"
     match = re.search(task_url_pattern, pr_body)
     if match:
         _add("Pattern 4 (Jules Task URL)", match.group(1).strip())
@@ -5921,7 +5923,7 @@ def _link_jules_pr_to_issue(
     try:
         pr_number = pr_data["number"]
         pr_body = pr_data.get("body", "") or ""
-        pr_author = pr_data.get("user", {}).get("login", "")
+        pr_author = get_pr_author_login(pr_data) or ""
 
         is_jules = _is_jules_pr(pr_data)
         is_claude = "claude" in pr_author.lower() or "claude.ai/code/" in pr_body or bool(re.search(r"\bClaude session\b", pr_body, re.IGNORECASE))

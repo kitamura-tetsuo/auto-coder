@@ -15,9 +15,15 @@ from pathlib import Path
 from typing import Mapping, Optional, Sequence, Tuple
 
 from .backend_manager import BackendManager, run_llm_prompt
+from .logger_config import get_logger
 from .pr_review_cycle import ContractSnapshot, Finding, StrongPolicyIdentity
 from .prompt_loader import render_prompt
+from .security_utils import redact_string
 from .utils import CommandExecutor, bind_command_execution_cwd, reset_command_execution_cwd
+
+logger = get_logger(__name__)
+
+REVIEW_RESPONSE_PREVIEW_LIMIT = 2000
 
 
 class ReviewMode(str, Enum):
@@ -127,14 +133,268 @@ def execute_review(
     return parse_review_result(response, review_input, provenance)
 
 
+def _bounded_review_preview(response: str) -> str:
+    """Return a redacted, bounded preview suitable for normal diagnostics."""
+    redacted = redact_string(response)
+    if len(redacted) <= REVIEW_RESPONSE_PREVIEW_LIMIT:
+        return redacted
+    omitted = len(redacted) - REVIEW_RESPONSE_PREVIEW_LIMIT
+    return f"{redacted[:REVIEW_RESPONSE_PREVIEW_LIMIT]}... [{omitted} characters omitted]"
+
+
+def _reject_duplicate_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build an object while rejecting duplicate member names."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON member: {key}")
+        result[key] = value
+    return result
+
+
+def _strict_decoder() -> json.JSONDecoder:
+    return json.JSONDecoder(object_pairs_hook=_reject_duplicate_object)
+
+
+def _extract_claude_transport(response: str) -> Tuple[bool, Optional[str], Optional[str]]:
+    """Extract the authoritative answer from a recognized Claude CLI envelope.
+
+    Returns ``(detected, answer, error)``.  When ``detected`` is True the
+    caller must not fall back to any other candidate: either ``answer`` is the
+    single terminal result string or ``error`` describes the transport failure.
+    """
+    if not isinstance(response, str) or not response.strip():
+        return False, None, None
+    stripped = response.strip()
+
+    # Single JSON result envelope (``--output-format json``): the whole
+    # captured output is one top-level ``type="result"`` object.
+    try:
+        whole = json.loads(stripped, object_pairs_hook=_reject_duplicate_object)
+    except ValueError:
+        whole = None
+    if isinstance(whole, dict) and whole.get("type") == "result":
+        subtype = whole.get("subtype")
+        if subtype != "success":
+            return True, None, f"Invalid Claude transport: unsuccessful result subtype {subtype!r}"
+        if "is_error" in whole and whole.get("is_error") is not False:
+            return True, None, "Invalid Claude transport: invalid is_error must be absent or false"
+        result_text = whole.get("result")
+        if not isinstance(result_text, str) or not result_text.strip():
+            return True, None, "Invalid Claude transport: missing terminal result text"
+        return True, result_text, None
+
+    # Stream-json detection: any nonblank line that is a system/init or a
+    # top-level result object marks the capture as a Claude event stream,
+    # even when later lines are contaminated.  Detection alone forces the
+    # strict stream validation below with no fallback to other candidates.
+    nonblank = [line for line in response.splitlines() if line.strip()]
+    if not nonblank:
+        return False, None, None
+    has_claude_marker = False
+    for line in nonblank:
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if (event.get("type") == "system" and event.get("subtype") == "init") or event.get("type") == "result":
+            has_claude_marker = True
+            break
+    if not has_claude_marker:
+        return False, None, None
+
+    events: list[dict] = []
+    for line_number, line in enumerate(nonblank, start=1):
+        try:
+            event = json.loads(line, object_pairs_hook=_reject_duplicate_object)
+        except ValueError as exc:
+            message = str(exc)
+            if "duplicate" in message.lower():
+                return True, None, f"Invalid Claude transport: duplicate JSON member at line {line_number}"
+            return True, None, f"Invalid Claude transport: non-JSON content in event stream at line {line_number}"
+        if not isinstance(event, dict):
+            return True, None, f"Invalid Claude transport: event at line {line_number} is not an object"
+        events.append(event)
+
+    for line_number, event in enumerate(events, start=1):
+        if event.get("type") == "error":
+            return True, None, f"Invalid Claude transport: fatal error event at line {line_number}"
+
+    init_indices = [index for index, event in enumerate(events) if event.get("type") == "system" and event.get("subtype") == "init"]
+    if not init_indices:
+        return True, None, "Invalid Claude transport: missing init event"
+    result_indices = [index for index, event in enumerate(events) if event.get("type") == "result"]
+    if not result_indices:
+        return True, None, "Invalid Claude transport: missing terminal result"
+    if len(result_indices) > 1:
+        return True, None, f"Invalid Claude transport: multiple terminal results ({len(result_indices)})"
+    result_index = result_indices[0]
+    if result_index != len(events) - 1:
+        return True, None, "Invalid Claude transport: event after terminal result"
+
+    terminal = events[result_index]
+    terminal_line = result_index + 1
+    if terminal.get("subtype") != "success":
+        return True, None, f"Invalid Claude transport: unsuccessful result subtype {terminal.get('subtype')!r} at line {terminal_line}"
+    if "is_error" in terminal and terminal.get("is_error") is not False:
+        return True, None, f"Invalid Claude transport: invalid is_error at line {terminal_line} must be absent or false"
+    result_text = terminal.get("result")
+    if not isinstance(result_text, str) or not result_text.strip():
+        return True, None, f"Invalid Claude transport: missing terminal result text at line {terminal_line}"
+
+    init_session_ids = {str(event.get("session_id")) for event in (events[index] for index in init_indices) if isinstance(event.get("session_id"), str) and str(event.get("session_id")).strip()}
+    terminal_session_id = terminal.get("session_id")
+    if isinstance(terminal_session_id, str) and terminal_session_id.strip():
+        if len(init_session_ids) > 1 or (len(init_session_ids) == 1 and terminal_session_id not in init_session_ids):
+            return True, None, "Invalid Claude transport: mismatched session_id between init and result"
+    if len(init_session_ids) > 1:
+        return True, None, "Invalid Claude transport: mismatched session_id between init events"
+    return True, result_text, None
+
+
+def _extract_fenced_review_document(answer: str) -> Tuple[Optional[dict], Optional[str], bool]:
+    """Extract a review object from markdown-fenced presentation.
+
+    Returns ``(document, error, handled)`` where ``handled`` indicates the
+    answer contained fenced-block syntax and the non-fenced path must not run.
+    """
+    parts = answer.split("```")
+    complete_blocks = (len(parts) - 1) // 2
+    if len(parts) < 3:
+        if "```" in answer:
+            return None, "Reviewer output is not one JSON object: malformed fenced block", True
+        return None, None, False
+    if complete_blocks != 1 or len(parts) != 3:
+        return None, "Reviewer output is not one JSON object: competing candidates from multiple fenced blocks", True
+    block_content = parts[1]
+    after = parts[2]
+    before = parts[0]
+    stripped_block = block_content.strip()
+    if stripped_block.startswith("{"):
+        language_tag = ""
+        json_text = block_content.strip()
+    else:
+        if "\n" in block_content:
+            first_line, rest = block_content.split("\n", 1)
+            language_tag = first_line.strip()
+            json_text = rest.strip()
+        else:
+            language_tag = block_content.strip()
+            json_text = ""
+        if language_tag.lower() != "json":
+            return None, f"Reviewer output is not one JSON object: unsupported fence language {language_tag!r}", True
+        if not json_text:
+            return None, "Reviewer output is not one JSON object: empty fenced JSON document", True
+    try:
+        document = json.loads(json_text, object_pairs_hook=_reject_duplicate_object)
+    except ValueError as exc:
+        message = str(exc)
+        if "duplicate" in message.lower():
+            return None, "Reviewer output is not one JSON object: duplicate JSON member", True
+        return None, "Reviewer output is not one JSON object: malformed fenced JSON document", True
+    if not isinstance(document, dict):
+        return None, "Reviewer output is not one JSON object: fenced document is not an object", True
+    outside = before + after
+    if "{" in outside or "[" in outside:
+        return None, "Reviewer output is not one JSON object: competing candidates outside fenced block", True
+    return document, None, True
+
+
+def _extract_single_review_document(answer: str) -> Tuple[Optional[dict], Optional[str]]:
+    """Extract exactly one top-level review object from authoritative text."""
+    if not isinstance(answer, str) or not answer.strip():
+        return None, "Reviewer output is not one JSON object: empty response"
+    fenced_document, fenced_error, handled = _extract_fenced_review_document(answer)
+    if handled:
+        return fenced_document, fenced_error
+
+    decoder = _strict_decoder()
+    dict_spans: list[Tuple[int, int, dict]] = []
+    list_spans: list[Tuple[int, int, list]] = []
+    cursor = 0
+    while cursor < len(answer):
+        start = answer.find("{", cursor)
+        bracket = answer.find("[", cursor)
+        if start == -1 or (bracket != -1 and bracket < start):
+            start = bracket
+        if start == -1:
+            break
+        try:
+            value, end_offset = decoder.raw_decode(answer[start:])
+        except ValueError as exc:
+            if "duplicate" in str(exc).lower():
+                return None, "Reviewer output is not one JSON object: duplicate JSON member"
+            cursor = start + 1
+            continue
+        end = start + end_offset
+        if isinstance(value, dict):
+            dict_spans.append((start, end, value))
+        elif isinstance(value, list):
+            list_spans.append((start, end, value))
+        cursor = start + 1
+        if cursor >= len(answer):
+            break
+
+    if not dict_spans:
+        if list_spans:
+            return None, "Reviewer output is not one JSON object: top-level array is not an accepted review"
+        return None, "Reviewer output is not one JSON object"
+
+    outermost: list[Tuple[int, int, dict]] = []
+    for index, (start, end, value) in enumerate(dict_spans):
+        contained = False
+        for other_index, (other_start, other_end, _other) in enumerate(dict_spans):
+            if other_index == index:
+                continue
+            if other_start <= start and end <= other_end and (other_start, other_end) != (start, end):
+                contained = True
+                break
+        if not contained:
+            outermost.append((start, end, value))
+    if len(outermost) != 1:
+        return None, "Reviewer output is not one JSON object: competing candidates from multiple JSON objects"
+    selected_start, selected_end, selected = outermost[0]
+
+    for list_start, list_end, _value in list_spans:
+        if list_start <= selected_start and selected_end <= list_end:
+            return None, "Reviewer output is not one JSON object: top-level array is not an accepted review"
+        if not (list_end <= selected_start or list_start >= selected_end):
+            # Overlapping but not containing is still ambiguous; containing
+            # lists are rejected above and nested lists never reach here
+            # because nested list spans are inside the selected object.
+            pass
+        if list_end <= selected_start or list_start >= selected_end:
+            return None, "Reviewer output is not one JSON object: competing candidates from array and object"
+
+    outside = answer[:selected_start] + answer[selected_end:]
+    if "{" in outside or "[" in outside:
+        return None, "Reviewer output is not one JSON object: competing candidates outside review document"
+    return selected, None
+
+
+def _log_review_parse_failure(reason: str, response: str) -> None:
+    preview = _bounded_review_preview(response) if isinstance(response, str) and response else "<empty>"
+    state = "empty" if not isinstance(response, str) or not response.strip() else "non-empty"
+    logger.warning("Two-tier review output failed parsing: reason={}, response_state={}, response_length={}, preview={!r}", reason, state, len(response) if isinstance(response, str) else 0, preview)
+
+
 def parse_review_result(response: str, expected: ReviewExecutionInput, reviewer_provenance: str) -> ReviewExecutionResult:
     """Fail closed on malformed, stale, incomplete, or identity-mismatched output."""
-    try:
-        raw = json.loads(response)
-    except (TypeError, json.JSONDecodeError):
-        return _diagnostic(expected, reviewer_provenance, "Reviewer output is not one JSON object")
-    if not isinstance(raw, dict):
-        return _diagnostic(expected, reviewer_provenance, "Reviewer output is not an object")
+    detected, authoritative, transport_error = _extract_claude_transport(response)
+    if detected:
+        if transport_error is not None:
+            _log_review_parse_failure(transport_error, response)
+            return _diagnostic(expected, reviewer_provenance, transport_error)
+        assert authoritative is not None
+        answer_text = authoritative
+    else:
+        answer_text = response
+    raw, presentation_error = _extract_single_review_document(answer_text)
+    if presentation_error is not None or not isinstance(raw, dict):
+        _log_review_parse_failure(presentation_error or "Reviewer output is not an object", response)
+        return _diagnostic(expected, reviewer_provenance, presentation_error or "Reviewer output is not an object")
 
     identities = {
         "round_id": expected.round_id,

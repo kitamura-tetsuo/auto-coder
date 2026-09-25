@@ -31,7 +31,19 @@ strong audit. Only complete dispositions, no new findings, and evidence-backed
 
 The output parser validates every execution identity and required field. Invalid,
 stale, incomplete, contradictory, or unavailable output becomes an explicit
-non-complete diagnostic, never PASS. The result is evidence for the durable
+non-complete diagnostic, never PASS. Before schema validation, normalization
+removes only recognized Claude CLI transport wrappers and Markdown presentation
+wrappers without synthesizing review content. A Claude `stream-json` capture must
+contain a `system/init` event and exactly one terminal successful `result` event
+as its last line, while a `--output-format json` capture must be a single
+successful `result` envelope; the envelope's result string is the sole
+authoritative answer and transport failures never fall back to intermediate
+messages or transcript fragments. The authoritative answer must contain exactly
+one complete review object, optionally in one `json`-tagged fenced block, with no
+competing candidates, duplicate members, top-level arrays, or repaired syntax.
+Diagnostics distinguish transport, answer-JSON, and schema/identity failures with
+concrete reasons, keep the original capture in the interaction log, and bound any
+redacted preview to 2,000 characters. The result is evidence for the durable
 lifecycle; it cannot publish reviews, close threads, mutate Issues, or merge.
 The prompt specifies the exact portable finding keys and types, including
 string evidence, paired Requirement ID/text arrays, and the additional evidence
