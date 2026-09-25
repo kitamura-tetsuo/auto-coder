@@ -5233,7 +5233,35 @@ def _session_id_token_pattern(token: str) -> re.Pattern[str]:
     return re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(token) + r"(?![A-Za-z0-9_-])")
 
 
+@dataclass(frozen=True)
+class SessionAliasLookup:
+    """Outcome of the GitHub-search alias fallback for a Claude session ID.
+
+    `issue_number` is set only when exactly one distinct Issue verified.
+    `ambiguous` distinguishes "multiple distinct Issues verified" from a
+    clean "no Issue verified" (both otherwise collapse to `issue_number is
+    None`): callers that publish a link from this lookup, or fall back to a
+    weaker heuristic (branch name, PR title) when it comes up empty, must
+    not treat an ambiguous result as a plain empty one -- REQ-003 of Issue
+    #2270 forbids guessing a link for an evaluation the alias search found
+    ambiguous.
+    """
+
+    issue_number: Optional[int] = None
+    ambiguous: bool = False
+
+
 def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, github_client: Any) -> Optional[int]:
+    """Find the ordinary Issue that recorded `session_id`, via GitHub Issue search.
+
+    Thin wrapper over `_find_issue_by_session_id_in_comments_detailed` for
+    callers that don't need to distinguish "not found" from "ambiguous"
+    (both collapse to None here).
+    """
+    return _find_issue_by_session_id_in_comments_detailed(repo_name, session_id, github_client).issue_number
+
+
+def _find_issue_by_session_id_in_comments_detailed(repo_name: str, session_id: str, github_client: Any) -> SessionAliasLookup:
     """Find the ordinary Issue that recorded `session_id`, via GitHub Issue search.
 
     For a Claude Routine session ID, `session_<S>` and `cse_<S>` are
@@ -5246,9 +5274,10 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
     title/snippet is not by itself qualifying evidence. See Issue #2270.
 
     A search or verification-read failure leaves recovery unavailable
-    (returns None) rather than declaring a match from partial observations.
-    Multiple distinct verified Issues make the lookup ambiguous and also
-    return None rather than guessing.
+    (`SessionAliasLookup()`, not ambiguous) rather than declaring a match
+    from partial observations. Multiple distinct verified Issues make the
+    lookup ambiguous (`SessionAliasLookup(ambiguous=True)`) rather than
+    guessing.
     """
     spellings = [session_id]
     alt_spelling = claude_session_alias(session_id)
@@ -5273,7 +5302,7 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
             search_results = github_client.search_issues_strict(query)
         except Exception as e:
             logger.error(f"Session ID search for '{spelling}' failed; alias recovery unavailable this run: {e}")
-            return None
+            return SessionAliasLookup()
 
         count = 0
         for issue in search_results:
@@ -5295,7 +5324,7 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
             issue = github_client.get_issue_strict(repo_name, issue_number)
         except Exception as e:
             logger.error(f"Failed to read issue #{issue_number} from {repo_name} while verifying session alias; alias recovery unavailable this run: {e}")
-            return None
+            return SessionAliasLookup()
 
         if _get_attr(issue, "pull_request") is not None:
             # Search should already have excluded PRs (type:issue); skip defensively.
@@ -5310,7 +5339,7 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
             comments = github_client.get_issue_comments_strict(repo_name, issue_number)
         except Exception as e:
             logger.error(f"Failed to read comments for issue #{issue_number} from {repo_name} while verifying session alias; alias recovery unavailable this run: {e}")
-            return None
+            return SessionAliasLookup()
 
         for comment in comments:
             comment_body = comment.get("body") if isinstance(comment, dict) else _get_attr(comment, "body")
@@ -5321,12 +5350,12 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
 
     if not qualifying:
         logger.warning(f"Session ID '{session_id}' not found via search query")
-        return None
+        return SessionAliasLookup()
     if len(qualifying) > 1:
         logger.warning(f"Session ID '{session_id}' matched multiple distinct issues {sorted(qualifying)}; refusing ambiguous alias recovery")
-        return None
+        return SessionAliasLookup(ambiguous=True)
 
-    return next(iter(qualifying))
+    return SessionAliasLookup(issue_number=next(iter(qualifying)))
 
 
 def _update_jules_pr_body(
@@ -5794,6 +5823,7 @@ def _resolve_jules_pr_issue_number(
 
     issue_number: Optional[int] = None
     matched_session_id: Optional[str] = None
+    alias_search_ambiguous = False
 
     if candidates:
         cloud_manager = CloudManager(repo_name)
@@ -5829,9 +5859,13 @@ def _resolve_jules_pr_issue_number(
                     continue
 
                 logger.warning(f"No issue found for session ID '{candidate_session_id}' in local DB ({pattern_name}). Searching comments...")
-                found = _find_issue_by_session_id_in_comments(repo_name, candidate_session_id, github_client)
-                if found:
-                    issue_number = found
+                lookup = _find_issue_by_session_id_in_comments_detailed(repo_name, candidate_session_id, github_client)
+                if lookup.ambiguous:
+                    alias_search_ambiguous = True
+                    logger.warning(f"Session ID '{candidate_session_id}' ({pattern_name}) alias search is ambiguous; refusing to fall back to a branch/title guess for PR #{pr_number}")
+                    continue
+                if lookup.issue_number:
+                    issue_number = lookup.issue_number
                     matched_session_id = candidate_session_id
                     logger.info(f"Found issue #{issue_number} via comment search for session ID '{candidate_session_id}' ({pattern_name})")
                     break
@@ -5844,7 +5878,10 @@ def _resolve_jules_pr_issue_number(
         pr_data["_jules_session_id"] = candidates[0][1]
 
     # Fallback: Extract from branch name
-    if not issue_number:
+    # Skipped when the alias search found the session ambiguous (REQ-003 of
+    # Issue #2270): a weaker branch/title guess must not paper over a session
+    # ID that verified against multiple distinct Issues.
+    if not issue_number and not alias_search_ambiguous:
         branch_name = pr_data.get("head", {}).get("ref", "")
         if branch_name:
             # Match patterns like issue-123
@@ -5854,7 +5891,7 @@ def _resolve_jules_pr_issue_number(
                 logger.info(f"Extracted issue #{issue_number} from branch name '{branch_name}'")
 
     # Fallback: Extract from PR title
-    if not issue_number:
+    if not issue_number and not alias_search_ambiguous:
         pr_title = pr_data.get("title", "")
         if pr_title:
             # Match patterns like "Issue #123" or "Fix #123"

@@ -307,6 +307,46 @@ class TestAmbiguityAndLocalPrecedence:
 
         assert _find_issue_by_session_id_in_comments(repo_name, own_spelling, fake_client) == 501
 
+    def test_ambiguous_alias_search_does_not_fall_back_to_title_or_branch_guess(self, tmp_path) -> None:
+        """REQ-003: an ambiguous alias search must not let a guessable PR title or
+        branch publish a link for that evaluation.
+
+        Production entry point: _link_jules_pr_to_issue -> _resolve_jules_pr_issue_number.
+        Without this, an ambiguous _find_issue_by_session_id_in_comments result was
+        indistinguishable from "not found", so the resolver fell through to the
+        branch/title fallback and could still publish a guessed link.
+        """
+        repo_name = "owner/repo"
+        suffix = "AmbigGuess1"
+        own_spelling = f"session_{suffix}"
+        alt_spelling = f"cse_{suffix}"
+
+        fake_client = FakeGitHubClient()
+        fake_client.search_results[own_spelling] = [{"number": 501}]
+        fake_client.search_results[alt_spelling] = [{"number": 502}]
+        fake_client.issues[501] = {"number": 501, "body": own_spelling}
+        fake_client.issues[502] = {"number": 502, "body": alt_spelling}
+
+        # Both the PR title and the branch name contain a guessable Issue number
+        # (#501), matching the Issue this alias search happens to have discovered
+        # first -- exactly the guess the fallback must not make.
+        pr_data = {
+            "number": 9100,
+            "title": "Fix #501",
+            "body": f"https://claude.ai/code/{own_spelling}",
+            "user": {"login": "kitamura-tetsuo"},
+            "head": {"ref": "claude/issue-501"},
+        }
+        original_body = pr_data["body"]
+
+        manager = CloudManager(repo_name, cloud_file_path=tmp_path / "cloud.csv")
+        with patch("src.auto_coder.pr_processor.CloudManager", return_value=manager):
+            linked = _link_jules_pr_to_issue(repo_name, pr_data, fake_client)
+
+        assert linked is False
+        assert pr_data["body"] == original_body
+        assert 9100 not in fake_client.pr_bodies
+
     def test_unique_local_association_is_not_displaced_by_search(self, tmp_path) -> None:
         repo_name = "owner/repo"
         suffix = "LocalWins1"
