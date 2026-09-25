@@ -5841,7 +5841,7 @@ def _link_jules_pr_to_issue(
     try:
         pr_number = pr_data["number"]
         pr_body = pr_data.get("body", "") or ""
-        pr_author = pr_data.get("user", {}).get("login", "")
+        pr_author = get_pr_author_login(pr_data) or ""
 
         is_jules = _is_jules_pr(pr_data)
         is_claude = "claude" in pr_author.lower() or "claude.ai/code/" in pr_body or bool(re.search(r"\bClaude session\b", pr_body, re.IGNORECASE))
