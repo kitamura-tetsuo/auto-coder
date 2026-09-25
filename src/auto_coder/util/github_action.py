@@ -519,6 +519,28 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
     return GitHubActionsStatusResult(success=not failing, ids=run_ids, in_progress=pending, waiting_runs=waiting_runs, observation=snapshot)
 
 
+def is_ci_observation_recovered(github_checks: Optional[GitHubActionsStatusResult]) -> bool:
+    """Return whether ``github_checks`` establishes RECOVERED_CI (Issue #2275, REQ-001).
+
+    RECOVERED_CI requires a complete, nonempty, KNOWN-availability observation
+    (produced by ``_check_github_actions_status``) whose aggregate verdict is
+    success, with no pending facts and no observation error. A missing
+    observation, a bare/default success flag with no backing snapshot, a
+    known-empty/partial/unavailable/throttled/superseded observation, or a
+    pending/failing aggregate never establishes recovery: callers must keep
+    treating those as the current CI condition they actually are rather than
+    as an exemption from any independent wait gate.
+    """
+    if github_checks is None or github_checks.error:
+        return False
+    if github_checks.in_progress or not github_checks.success:
+        return False
+    observation = github_checks.observation
+    if observation is None or not observation.complete:
+        return False
+    return observation.availability is ObservationAvailability.KNOWN
+
+
 # --- Common helpers for historical GitHub Actions processing ---
 
 
