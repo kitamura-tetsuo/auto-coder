@@ -7,20 +7,25 @@ from src.auto_coder.pr_processor import _find_issue_by_session_id_in_comments
 
 class TestPRProcessorSearchOptimization:
     def test_find_issue_uses_search_api(self):
-        """Test that _find_issue_by_session_id_in_comments uses search_issues instead of get_open_issues."""
+        """Test that _find_issue_by_session_id_in_comments uses search_issues_strict instead of get_open_issues."""
         repo_name = "owner/repo"
         session_id = "test-session-id"
 
+        found_issue_obj = MagicMock(number=123, body=f"Session ID: {session_id}", pull_request=None)
+
         mock_github_client = MagicMock()
-        # Setup search_issues to return a found issue number
-        mock_github_client.search_issues.return_value = [MagicMock(number=123, body=f"Session ID: {session_id}")]
+        # Setup search_issues_strict to return a found issue number
+        mock_github_client.search_issues_strict.return_value = [found_issue_obj]
+        # Verification re-reads the candidate Issue rather than trusting the search hit
+        mock_github_client.get_issue_strict.return_value = found_issue_obj
 
         # Call the function
         found_issue = _find_issue_by_session_id_in_comments(repo_name, session_id, mock_github_client)
 
-        # Verify it used search_issues using the expected query format
-        mock_github_client.search_issues.assert_called_once()
-        call_args = mock_github_client.search_issues.call_args[0][0]
+        # Verify it used search_issues_strict using the expected query format
+        # ("test-session-id" has no session_/cse_ alias, so exactly one search)
+        mock_github_client.search_issues_strict.assert_called_once()
+        call_args = mock_github_client.search_issues_strict.call_args[0][0]
         assert f"repo:{repo_name}" in call_args
         assert session_id in call_args
         assert "type:issue" in call_args
@@ -37,9 +42,9 @@ class TestPRProcessorSearchOptimization:
         session_id = "idx-123"
 
         mock_github_client = MagicMock()
-        mock_github_client.search_issues.return_value = []
+        mock_github_client.search_issues_strict.return_value = []
 
         found_issue = _find_issue_by_session_id_in_comments(repo_name, session_id, mock_github_client)
 
         assert found_issue is None
-        mock_github_client.search_issues.assert_called_once()
+        mock_github_client.search_issues_strict.assert_called_once()
