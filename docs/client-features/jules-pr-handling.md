@@ -40,4 +40,11 @@
       - "Candidates are checked against the local session tracking database (cloud.csv) first. If an earlier pattern (e.g. an ambiguous URL parameter like 'start_new_session=True') produces a candidate not recorded in cloud.csv, resolution returns to subsequent patterns (e.g. Claude Routine session URL Pattern 3a) in order rather than prematurely inferring an issue via comment search."
       - "Claude Routine session IDs are matched flexibly across 'session_' and 'cse_' prefix variants sharing the same identifier suffix."
       - "Comment search on GitHub is only attempted after all candidates fail local database lookup, and clearly invalid tokens (such as boolean literals or tokens under 4 characters) are excluded from comment search."
+      - "Pattern 4 (Jules Task URL, jules.google.com/task/<id>) accepts any nonempty sequence of ASCII letters, digits, underscores, or hyphens for <id>, matching Pattern 3's (Jules Session URL) character class rather than digits only."
+    session_pr_author_resolution:
+      - "Before deciding whether a PR is a Jules/Claude/session PR and before linking it to its source issue, the author login is resolved via the shared get_pr_author_login() helper rather than a direct 'user'/'login' dict-chain lookup."
+      - "The resolved login is the first nonempty string among: a plain string 'author' field, 'author[\"login\"]' when 'author' is a dict, and 'user[\"login\"]' when 'user' is a dict, checked in that order."
+      - "A missing 'user'/'author' field, a null value for either, or a present-but-empty/null 'login' inside either dict never raises; resolution simply falls through to the next candidate and yields no login (empty string) when none is usable."
+      - "A PR body containing a Claude Code session URL or a Jules session/task URL still enters session-based issue resolution and, on a uniquely recorded local session-to-issue mapping, still gets linked even when the author login could not be resolved; an unresolvable author never causes the PR to be treated as not applicable."
+      - "The three special-prefix Jules PR titles ('🛡️ Sentinel: ', '🎨 Palette: ', '⚡ Bolt: ') remain exempt from automatic session-issue body linking regardless of which author representation was supplied."
 

@@ -85,16 +85,23 @@ def get_pr_author_login(pr_obj: Any) -> Optional[str]:
 
     try:
         if isinstance(pr_obj, dict):
-            # Try 'author' field first (some custom dicts or GraphQL results)
+            # Try 'author' field first (some custom dicts or GraphQL results).
+            # A present-but-empty/null login (or a non-dict/non-string author)
+            # provides no login and falls through to 'user' rather than
+            # short-circuiting with None.
             author = pr_obj.get("author")
-            if isinstance(author, dict):
-                return author.get("login")
-            if isinstance(author, str):
+            if isinstance(author, str) and author:
                 return author
+            if isinstance(author, dict):
+                author_login = author.get("login")
+                if isinstance(author_login, str) and author_login:
+                    return author_login
             # If not found, try 'user' -> 'login' (GitHub REST API format)
             user = pr_obj.get("user")
             if isinstance(user, dict):
-                return user.get("login")
+                user_login = user.get("login")
+                if isinstance(user_login, str) and user_login:
+                    return user_login
             return None
         else:
             # Handle PyGithub objects or Mocks
