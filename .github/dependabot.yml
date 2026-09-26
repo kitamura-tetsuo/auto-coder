@@ -4,6 +4,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # ghapi<2.0 calls fastcore.L.starmap(), which was removed in fastcore 2.0.
+      # Keep receiving compatible fastcore 1.x updates until ghapi 2.x is adopted.
+      - dependency-name: "fastcore"
+        versions: [">=2.0.0"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
