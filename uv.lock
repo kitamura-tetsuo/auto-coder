@@ -383,7 +383,7 @@ requires-dist = [
     { name = "build", specifier = ">=1.5.0" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "fastapi", specifier = ">=0.128.0" },
-    { name = "fastcore", specifier = ">=1.7.2,<2.0.0" },
+    { name = "fastcore", specifier = ">=2.2.30,<3.0.0" },
     { name = "flake8", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "ghapi", specifier = ">=1.0.0,<2.0.0" },
     { name = "gitpython", specifier = ">=3.1.0" },
@@ -871,11 +871,11 @@ wheels = [
 
 [[package]]
 name = "fastcore"
-version = "1.12.11"
+version = "2.2.30"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9b/78/3ded4af1e72f060aa0b0e37d4bad9d5e6e35dc6450f19b73af90c03681f8/fastcore-1.12.11.tar.gz", hash = "sha256:1e301add06f8b1240b5484197b221eeac00c77daf25c67ddd559020527f2a6d7", size = 91432, upload-time = "2026-01-30T07:42:05.015Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/93/71a5a4e91e7975d454977724b7ed7ce176e8db9471cb08f85f0b1a5e0518/fastcore-2.2.30.tar.gz", hash = "sha256:d180fa8909c4f16fcdf517b8d4a4a011889e8900407dd7ca6c5c496410d1bac6", size = 146742, upload-time = "2026-09-21T10:27:57.972Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/23/03/2fe18e3d718b5a36d6c548df3e7662a4c433efea4d28662063d259248a1d/fastcore-1.12.11-py3-none-any.whl", hash = "sha256:b6a0ce9f48509405109251d00ac0576cfe5cba0a2b1b495a4126283969efbad5", size = 95690, upload-time = "2026-01-30T07:42:03.141Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/1d/c16627e8fb71027935465f59fdfb255d1b2a104a29343dcd99be96342cf2/fastcore-2.2.30-py3-none-any.whl", hash = "sha256:fe3de774331b92e5405123e16f53638dcb1873a8bd32c0bd1187204c42b48e85", size = 153447, upload-time = "2026-09-21T10:27:56.355Z" },
 ]
 
 [[package]]
