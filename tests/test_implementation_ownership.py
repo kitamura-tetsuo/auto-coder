@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
+from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.implementation_ownership import (
     OwnershipStartDecision,
@@ -39,6 +39,7 @@ from auto_coder.issue_processor import handle_stale_jules_issue_sessions
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from auto_coder.stale_jules_recovery import capture_stale_jules_recovery, find_pending_stale_jules_recovery
 from tests.test_issue_stage_routing import REPO, _routing_engine
 
 ISSUE = ImplementationOwner("issue", 1)
@@ -333,6 +334,116 @@ def test_explicit_retry_after_completed_execution_starts_distinct_attempt(tmp_pa
     assert engine.implementation_slots.active_execution_ids(owner) == ()
     assert engine.implementation_slots.implementation_generation(owner) == generation
     assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+
+
+def test_automatic_stale_jules_recovery_defers_until_predecessor_retires(tmp_path, monkeypatch):
+    """Issue #2286 REQ-003: ordinary admission must not start a durably
+    recorded automatic stale-Jules recovery while the predecessor Jules
+    PR/session evidence is still retained on the owner record, even though no
+    local execution is live -- unlike ``acquire_explicit_retry`` itself,
+    which only refuses on a still-*live* execution."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = _standalone_snapshot(1, created_at)
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    reserved = MagicMock(return_value=CandidateProcessingResult(type="issue", number=1, success=True, actions=["dispatched"]))
+    engine._process_single_candidate_reserved = reserved
+    github.get_issue_comments_strict.return_value = []
+    owner = ImplementationOwner("issue", 1)
+
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    execution_id = engine.implementation_slots.start_execution(owner, generation=generation, implementation_pr=9001)
+    assert execution_id is not None
+    engine.issue_stage_routing.record_implementation_owned(REPO, 1, generation)
+    engine.implementation_slots.finish_execution(owner, execution_id)
+    # No live local execution, but the stale PR is still retained on the
+    # owner record -- retirement has not run yet.
+    assert engine.implementation_slots.has_qualifying_implementation_activity(owner)
+
+    authority = capture_stale_jules_recovery(engine.issue_stage_routing, REPO, 1, 9001, generation)
+    assert authority is not None
+
+    candidate = Candidate(type="issue", data=dict(snapshot), priority=0)
+    result = engine._process_single_candidate_unified(REPO, candidate, engine.config, origin="capacity-refill-intake")
+
+    reserved.assert_not_called()
+    assert result.target_outcome == ExplicitTargetOutcome.DEFERRED
+    pending = find_pending_stale_jules_recovery(engine.issue_stage_routing, REPO, 1)
+    assert pending is not None
+    assert pending.status == "pending"
+
+
+def test_automatic_stale_jules_recovery_acquires_once_predecessor_is_free(tmp_path, monkeypatch):
+    """Issue #2286 REQ-004: once the predecessor owner record is free (the
+    periodic reclamation scheduler already retired it), ordinary admission
+    reuses the durable automatic recovery grant to cross the owned-start
+    tombstone for exactly one successor attempt, without a CLI ``--retry``."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = _standalone_snapshot(1, created_at)
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    reserved = MagicMock(return_value=CandidateProcessingResult(type="issue", number=1, success=True, actions=["dispatched"]))
+    engine._process_single_candidate_reserved = reserved
+    github.get_issue_comments_strict.return_value = []
+    owner = ImplementationOwner("issue", 1)
+
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    execution_id = engine.implementation_slots.start_execution(owner, generation=generation)
+    assert execution_id is not None
+    engine.issue_stage_routing.record_implementation_owned(REPO, 1, generation)
+    engine.implementation_slots.finish_execution(owner, execution_id)
+    # Simulate the real retirement scheduler having already freed this owner
+    # (no retained execution, session, or PR membership).
+    assert not engine.implementation_slots.has_qualifying_implementation_activity(owner)
+
+    authority = capture_stale_jules_recovery(engine.issue_stage_routing, REPO, 1, 9001, generation)
+    assert authority is not None
+
+    candidate = Candidate(type="issue", data=dict(snapshot), priority=0)
+    result = engine._process_single_candidate_unified(REPO, candidate, engine.config, origin="capacity-refill-intake")
+
+    assert result.success
+    reserved.assert_called_once()
+    assert reserved.call_args.kwargs["manual_retry"] is True
+    granted = reserved.call_args.kwargs["retry_authority"]
+    assert granted.request_id == authority.request_id
+    assert granted.status == "owned"
+    assert engine.implementation_slots.implementation_generation(owner) == generation
+    assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+    assert find_pending_stale_jules_recovery(engine.issue_stage_routing, REPO, 1) is None
+
+
+def test_automatic_stale_jules_recovery_invalidated_on_generation_change(tmp_path, monkeypatch):
+    """Issue #2286 REQ-005: a specification change underneath a still-pending
+    automatic grant permanently invalidates it; ordinary admission then
+    proceeds with no special retry semantics at all."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = _standalone_snapshot(1, created_at)
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    reserved = MagicMock(return_value=CandidateProcessingResult(type="issue", number=1, success=True, actions=["dispatched"]))
+    engine._process_single_candidate_reserved = reserved
+    github.get_issue_comments_strict.return_value = []
+
+    stale_generation = "a-generation-that-no-longer-matches"
+    authority = capture_stale_jules_recovery(engine.issue_stage_routing, REPO, 1, 9001, stale_generation)
+    assert authority is not None
+
+    candidate = Candidate(type="issue", data=dict(snapshot), priority=0)
+    result = engine._process_single_candidate_unified(REPO, candidate, engine.config, origin="capacity-refill-intake")
+
+    assert result.success
+    reserved.assert_called_once()
+    assert reserved.call_args.kwargs.get("manual_retry") is not True
+    stored = engine.issue_stage_routing.retry_request(authority.request_id)
+    assert stored is not None
+    assert stored.status == "invalidated"
 
 
 def test_malformed_generation_binding_fails_closed_at_production_boundary_target_scoped(tmp_path, monkeypatch):

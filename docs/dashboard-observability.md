@@ -41,6 +41,29 @@ multi-attempt and backend-conflicting bindings, and restart durability);
 drives the same fix through `_dispatch_issue_candidates`, the real production
 ordinary-dispatch boundary.
 
+Issue #2286 lets a stale-Jules-PR closure (`_close_stale_jules_pr`) durably
+record an automatic recovery identity and, once the predecessor is retired,
+cross ordinary admission's owned-start tombstone for exactly one successor
+attempt (`docs/client-features/automatic-stale-jules-pr-recovery-successor-dispatch.md`).
+This introduces no new processing origin, execution-trace stage, structured
+event field, or dashboard projection: it reuses the existing
+`issue.manual-retry` stage id and `_dispatch_issue_candidates`/
+`issue.dispatch.selection`/`issue.dispatch-route` emissions exactly as the
+operator-issued `--only --force --retry` path already produces them, through
+the same `retry_authority`-carrying call into
+`_process_single_candidate_reserved`. The only observable difference is that
+`issue.manual-retry`'s existing `reason` field now also records "automatic
+stale-Jules recovery" as one of its values, alongside the pre-existing
+"explicit --only --force --retry"; no new value is added to `DispatchOutcome`,
+`ExplicitTargetOutcome`, or any dashboard-facing enum. The admission-boundary
+regressions in `tests/test_implementation_ownership.py`
+(`test_automatic_stale_jules_recovery_defers_until_predecessor_retires`,
+`::test_automatic_stale_jules_recovery_acquires_once_predecessor_is_free`,
+`::test_automatic_stale_jules_recovery_invalidated_on_generation_change`) and
+`tests/test_pr_processor_jules_timeout_close.py::TestCloseStaleJulesPrAutomaticRecovery`
+are this feature's production-to-view oracle; the existing dashboard suites
+remain authoritative for the reused emissions themselves.
+
 Issue #2002 mounts the read-only repository dependency-rescan projection at
 `/dashboard/jobs/dependency-rescan`. It consumes only the shared
 `RepoJobTraceCollector` snapshot produced by the real webhook/durable-worker

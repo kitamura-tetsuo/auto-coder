@@ -17,7 +17,7 @@
       - "New attempt branches are created from the validated base branch (main or the parent's current attempt branch) to re-implement changes safely."
     fallback:
       - "PR failures that cannot be auto-merged (LLM CANNOT_FIX/unclear output, commit/push errors, failed merges or conflict resolution) trigger attempt increments for every linked issue."
-      - "Jules PRs that still have failing CI more than [jules].pr_ci_timeout_hours (default 12) after PR creation are closed, and the attempt counter of the linked issue is incremented so the issue is retried from scratch."
+      - "Jules PRs that still have failing CI more than [jules].pr_ci_timeout_hours (default 12) after PR creation are closed, and the attempt counter of the linked issue is incremented so the issue is retried from scratch. When a current Implementation generation for the linked issue is available, this increment is a durable automatic recovery grant rather than a bare counter change; see `automatic-stale-jules-pr-recovery-successor-dispatch.md`."
       - "Jules sessions that do not open a PR within [jules].issue_pr_timeout_hours (default 12) are stopped, the attempt counter of the issue is incremented, and the issue is implemented by the backend_with_high_score backend instead."
       - "Conflict resolver fallbacks do the same when LLM-based conflict handling leaves unresolved markers or cannot push a clean merge, deduplicated by the PR head commit."
       - "When attempt count reaches 3 for any linked issue, the system automatically switches to the configured fallback backend (see [backend_with_high_score] configuration)."
