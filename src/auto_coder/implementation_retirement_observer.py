@@ -15,6 +15,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from .implementation_retirement import (
     ContinuingObligations,
@@ -67,10 +68,53 @@ _JULES_TERMINAL_STATES = frozenset({"COMPLETED", "FAILED"})
 
 
 # ---------------------------------------------------------------------------
-# PR output extraction — REQ-005: preserve EVERY pullRequest/pull_request
-# output in both mapping and list payloads; never flatten away an additional
-# output entry.
+# PR output extraction — REQ-005 (Issue #2147): preserve EVERY
+# pullRequest/pull_request output in both mapping and list payloads; never
+# flatten away an additional output entry.
+#
+# Issue #2284 REQ-001/REQ-002: a `pullRequest`/`pull_request` output entry
+# whose ``number`` field is absent or null (the official Jules Get Session
+# example only ever supplies url/title/description) must still establish the
+# exact repository/PR identity from a strictly validated `url`/`html_url`
+# field, without synthesizing a number. Any identity signal present
+# (url, html_url, number, repository.full_name, base.repo.full_name) must
+# agree with every other signal present on the same entry; a malformed,
+# inconsistent, or foreign-repository entry marks discovery incomplete
+# rather than being silently dropped or silently trusted.
 # ---------------------------------------------------------------------------
+
+# Output keys recognized as carrying a pull-request payload (case-insensitive).
+_PR_OUTPUT_KEYS = frozenset({"pullrequest", "pull_request"})
+
+
+def _is_pr_output_key(key: Any) -> bool:
+    """Return True if *key* names a pull-request output entry.
+
+    Unrelated output keys (e.g. a sibling "title"/"description" output, or
+    any other output kind) are never treated as PR evidence even when their
+    value happens to look URL-shaped (Issue #2284 AS-002).
+    """
+    return isinstance(key, str) and key.lower() in _PR_OUTPUT_KEYS
+
+
+def _iter_output_entries(raw_outputs: Any) -> List[Tuple[Any, Any]]:
+    """Yield (key, value) pairs from a Jules session's raw ``outputs``.
+
+    Supports the three shapes the Jules API and existing fixtures use: a
+    mapping, a list of single-entry mappings, or a list of [key, value]
+    pairs.
+    """
+    if isinstance(raw_outputs, dict):
+        return list(raw_outputs.items())
+    if isinstance(raw_outputs, list):
+        pairs: List[Tuple[Any, Any]] = []
+        for item in raw_outputs:
+            if isinstance(item, dict):
+                pairs.extend(item.items())
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                pairs.append((item[0], item[1]))
+        return pairs
+    return []
 
 
 def _extract_all_pr_numbers_from_outputs(raw_outputs: Any, expected_repo: str) -> Tuple[List[int], bool]:
@@ -79,85 +123,179 @@ def _extract_all_pr_numbers_from_outputs(raw_outputs: Any, expected_repo: str) -
     Reads the full raw payload directly (not the flattened single-PR view from
     ``normalize_session_outputs``) to preserve every PR output entry.
 
-    Returns (pr_numbers, any_foreign) where any_foreign is True when at least
-    one output references a different repository.
+    Returns (pr_numbers, discovery_incomplete). discovery_incomplete is True
+    when at least one PR-shaped output entry could not be safely resolved
+    (foreign repository, malformed shape, or inconsistent identity fields) —
+    such an entry must never be silently dropped as if it simply did not
+    exist (Issue #2284 REQ-002).
     """
     pr_numbers: List[int] = []
-    any_foreign = False
+    seen: set[int] = set()
+    discovery_incomplete = False
 
-    if isinstance(raw_outputs, dict):
-        entries: List[Any] = list(raw_outputs.values())
-    elif isinstance(raw_outputs, list):
-        # List of single-entry dicts or [key, value] pairs
-        entries = []
-        for item in raw_outputs:
-            if isinstance(item, dict):
-                entries.extend(item.values())
-            elif isinstance(item, (list, tuple)) and len(item) == 2:
-                entries.append(item[1])
-    else:
-        return pr_numbers, any_foreign
-
-    for entry in entries:
-        number, is_foreign = _resolve_pr_output_entry(entry, expected_repo)
-        if is_foreign:
-            any_foreign = True
-        if number is not None:
+    for key, value in _iter_output_entries(raw_outputs):
+        if not _is_pr_output_key(key):
+            continue
+        number, incomplete = _resolve_pr_output_entry(value, expected_repo)
+        if incomplete:
+            discovery_incomplete = True
+        if number is not None and number not in seen:
+            seen.add(number)
             pr_numbers.append(number)
 
-    return pr_numbers, any_foreign
+    return pr_numbers, discovery_incomplete
 
 
 def _resolve_pr_output_entry(entry: Any, expected_repo: str) -> Tuple[Optional[int], bool]:
-    """Resolve one output entry to (pr_number, is_foreign).
+    """Resolve one ``pullRequest``/``pull_request`` output value to (pr_number, incomplete).
 
-    Returns (None, False) for malformed/unresolvable entries.
-    Returns (None, True) for entries that resolve to a different repository.
-    Returns (number, False) for local PRs.
+    Returns (None, False) when the entry carries no PR-number evidence at all
+    (e.g. a genuinely empty publication with only title/description, or a
+    null value) — this is not an error, just "no PR yet".
+
+    Returns (None, True) when the entry is malformed, internally
+    inconsistent (its url/html_url/number/repository fields disagree), or
+    resolves to a different repository — discovery must be treated as
+    incomplete rather than silently empty (Issue #2284 REQ-002).
+
+    Returns (number, False) once every identity signal present on the entry
+    agrees and resolves to *expected_repo*.
     """
-    if isinstance(entry, dict):
-        number = entry.get("number")
-        # Validate repository identity
-        repo_name = _extract_repo_from_pr_dict(entry)
-        if repo_name is not None:
-            if repo_name.lower() != expected_repo.lower():
-                return None, True
-        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
-            return None, False
-        return number, False
+    if entry is None:
+        return None, False
 
-    if isinstance(entry, str) and "github.com" in entry:
-        number, repo_name = _parse_github_pr_url(entry)
+    if isinstance(entry, str):
+        parsed = _parse_github_pr_url(entry)
+        if parsed[0] is None:
+            # Not a string we can resolve. A string that merely mentions
+            # "github.com" without being a valid strict PR URL is a
+            # malformed PR entry, not silently empty evidence.
+            return (None, True) if "github.com" in entry else (None, False)
+        number, repo_name = parsed
         if repo_name is not None and repo_name.lower() != expected_repo.lower():
             return None, True
         return number, False
 
-    return None, False
+    if not isinstance(entry, dict):
+        # An unexpected shape under a PR output key (e.g. an int or list)
+        # is malformed, never treated as complete empty discovery.
+        return None, True
+
+    number_signals: List[int] = []
+    repo_signals: List[str] = []
+
+    number_raw = entry.get("number")
+    if number_raw is not None:
+        if isinstance(number_raw, bool) or not isinstance(number_raw, int) or number_raw <= 0:
+            return None, True
+        number_signals.append(number_raw)
+
+    for url_key in ("url", "html_url"):
+        url_val = entry.get(url_key)
+        if url_val is None:
+            continue
+        if not isinstance(url_val, str):
+            return None, True
+        url_number, url_repo = _parse_github_pr_url(url_val)
+        if url_number is None or url_repo is None:
+            return None, True
+        number_signals.append(url_number)
+        repo_signals.append(url_repo)
+
+    for repo_val in (_explicit_repo_field(entry, "repository"), _explicit_repo_field(entry, "base")):
+        if repo_val is not None:
+            repo_signals.append(repo_val)
+
+    if repo_signals:
+        first_repo = repo_signals[0]
+        if any(r.lower() != first_repo.lower() for r in repo_signals[1:]):
+            return None, True
+
+    if number_signals:
+        first_number = number_signals[0]
+        if any(n != first_number for n in number_signals[1:]):
+            return None, True
+
+    if not number_signals:
+        # No PR-number evidence at all (e.g. only a repository field, or
+        # only title/description) — nothing resolvable, but not malformed.
+        return None, False
+
+    resolved_repo = repo_signals[0] if repo_signals else expected_repo
+    if resolved_repo.lower() != expected_repo.lower():
+        return None, True
+
+    return number_signals[0], False
+
+
+def _explicit_repo_field(pr_dict: Dict[str, Any], key: str) -> Optional[str]:
+    """Extract an explicit (non-URL-derived) repository full_name field.
+
+    Reads ``repository.full_name``/``repository.name`` when *key* is
+    "repository", or ``base.repo.full_name``/``base.repo.name`` when *key*
+    is "base" — kept as a distinct signal from any url/html_url-derived
+    identity so the two can be cross-validated (Issue #2284 REQ-002).
+    """
+    val = pr_dict.get(key)
+    if key == "base" and isinstance(val, dict):
+        val = val.get("repo")
+    if isinstance(val, dict):
+        full_name = val.get("full_name") or val.get("name")
+        if isinstance(full_name, str) and full_name:
+            return full_name
+    return None
 
 
 def _extract_repo_from_pr_dict(pr_dict: Dict[str, Any]) -> Optional[str]:
-    """Extract repository full_name from a PR output dict, if present."""
-    repo = pr_dict.get("repository") or pr_dict.get("base", {}).get("repo")
-    if isinstance(repo, dict):
-        full_name = repo.get("full_name") or repo.get("name")
-        if isinstance(full_name, str) and full_name:
-            return full_name
+    """Extract repository full_name from a PR API response dict, if present."""
+    repo_name = _explicit_repo_field(pr_dict, "repository") or _explicit_repo_field(pr_dict, "base")
+    if repo_name is not None:
+        return repo_name
     url = pr_dict.get("url") or pr_dict.get("html_url")
-    if isinstance(url, str) and "github.com" in url:
+    if isinstance(url, str):
         _, repo_name = _parse_github_pr_url(url)
         return repo_name
     return None
 
 
 def _parse_github_pr_url(url: str) -> Tuple[Optional[int], Optional[str]]:
-    """Parse a GitHub PR URL into (pr_number, repo_full_name)."""
-    m = re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", url)
-    if m:
-        try:
-            return int(m.group(2)), m.group(1)
-        except ValueError:
-            pass
-    return None, None
+    """Strictly parse a GitHub PR URL into (pr_number, repo_full_name).
+
+    Accepts only ``https://github.com/<owner>/<repo>/pull/<positive-decimal>``
+    (host matched exactly, case-insensitively), with no user-info and no
+    non-default port; a trailing slash, query string, or fragment does not
+    change identity. Rejects host look-alikes (e.g. a "github.com" substring
+    embedded in a different host or path), extra path segments, and
+    boolean/zero/negative-shaped numbers — a partial/loose match must never
+    authorize a PR identity (Issue #2284 REQ-002).
+    """
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None, None
+
+    if parsed.scheme.lower() != "https":
+        return None, None
+    if parsed.username is not None or parsed.password is not None:
+        return None, None
+    hostname = parsed.hostname
+    if hostname is None or hostname.lower() != "github.com":
+        return None, None
+    if parsed.port is not None and parsed.port != 443:
+        return None, None
+
+    m = re.fullmatch(r"/([^/]+)/([^/]+)/pull/(\d+)/?", parsed.path)
+    if not m:
+        return None, None
+
+    owner, repo, number_str = m.group(1), m.group(2), m.group(3)
+    try:
+        number = int(number_str)
+    except ValueError:
+        return None, None
+    if number <= 0:
+        return None, None
+    return number, f"{owner}/{repo}"
 
 
 # ---------------------------------------------------------------------------
@@ -220,12 +358,12 @@ def _build_pr_candidate_set(
     # 3. Every PR output from each bound Jules session
     for session_id, raw_session in jules_session_raws.items():
         raw_outputs = raw_session.get("outputs", {})
-        pr_nums, any_foreign = _extract_all_pr_numbers_from_outputs(raw_outputs, expected_repo)
+        pr_nums, discovery_incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, expected_repo)
         for n in pr_nums:
             _add(n)
-        if any_foreign:
-            logger.debug(f"Session {session_id} has foreign-repository PR output; " "adding it to contradicted set")
-            # Do not add the foreign number to local_prs; mark investigation incomplete
+        if discovery_incomplete:
+            logger.debug(f"Session {session_id} has an unresolvable or foreign-repository PR output; " "marking discovery incomplete")
+            # Do not add the unresolved/foreign number to local_prs; mark investigation incomplete
             result.incomplete_discovery = True
 
     # 4. Open PR discovery with restricted attribution
@@ -648,9 +786,13 @@ def _observe_jules_session(
         logger.warning(f"Jules session {session_id} for {owner_key}: " f"unsupported state {raw_state!r} → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
-    # raw_state is COMPLETED or FAILED — extract PR publication evidence
+    # raw_state is COMPLETED or FAILED — extract PR publication evidence.
+    # A per-session unresolved/foreign entry is not re-checked here: the
+    # owner-level candidate set (`_build_pr_candidate_set`) independently
+    # derives the same discovery-incomplete signal from this session's raw
+    # outputs and blocks retirement on it.
     raw_outputs = raw_session.get("outputs", {})
-    pr_numbers, any_foreign = _extract_all_pr_numbers_from_outputs(raw_outputs, expected_repo)
+    pr_numbers, _discovery_incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, expected_repo)
     established_prs = [n for n in pr_numbers if n > 0]
 
     if raw_state == "COMPLETED" and not established_prs:

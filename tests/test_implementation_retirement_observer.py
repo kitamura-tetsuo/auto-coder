@@ -12,6 +12,7 @@ Covers acceptance scenarios AS-001 through AS-006:
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
@@ -973,3 +974,615 @@ def test_item3_cloud_run_repository_uses_list_for_issue_not_invented_methods() -
     runs = _get_cloud_runs_for_issue(store, REPO, ISSUE_100.number)
     assert runs == []
     store.list_for_issue.assert_called_once_with(ISSUE_100.number)
+
+
+# ---------------------------------------------------------------------------
+# Issue #2284: recognize URL-only Jules PR outputs through ordinary slot
+# reclamation. The official Jules Get Session example
+# (https://jules.google/docs/api/reference/sessions/#get-a-session) supplies
+# ``outputs: [{pullRequest: {url, title, description}}]`` with no ``number``
+# field at all.
+# ---------------------------------------------------------------------------
+
+
+def _url_only_pr_output(pr_number: int, repo: str = REPO, url_key: str = "url") -> Dict[str, Any]:
+    """A pullRequest output value shaped like the official Jules example: no
+    ``number`` field, only url/title/description."""
+    return {
+        url_key: f"https://github.com/{repo}/pull/{pr_number}",
+        "title": "Fix the reported bug",
+        "description": "Closes the linked issue",
+    }
+
+
+def _jules_session_url_only(session_id: str, state: str, pr_number: int, repo: str = REPO, url_key: str = "url") -> Dict[str, Any]:
+    return {
+        "name": f"projects/test/sessions/{session_id}",
+        "state": state,
+        "outputs": {"pullRequest": _url_only_pr_output(pr_number, repo, url_key=url_key)},
+    }
+
+
+# --- AS-001: production-shaped output reaches actual retirement ------------
+
+
+def test_i2284_as001_url_only_output_reaches_actual_retirement(tmp_path: Path) -> None:
+    """AS-001 (Issue #2284): a COMPLETED session whose only PR output is a
+    URL (no ``number``) — the official example's exact shape — must reach
+    real retirement through the production scheduler and slot store, not
+    merely be resolvable by the low-level parser.
+
+    The only recorded evidence of PR #205 is the Jules session's URL-only
+    output; there is no ``slots.record_implementation_pr`` call for it, so
+    the candidate set must discover it purely from the session outputs.
+    """
+    from auto_coder.implementation_reclamation_scheduler import (
+        ReclamationObligationStore,
+        run_due_reclamation_checks,
+        schedule_reevaluation,
+    )
+
+    slots = _setup_slots(tmp_path)
+    obligation_store = ReclamationObligationStore.for_slots(slots)
+
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-i2284-001")
+    slots.record_provider_session(ISSUE_100, "sess-url-only")
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    github_client = _make_github_client(pr_responses={205: _closed_pr(205)})
+    jules_client = _make_jules_client(
+        session_responses={"sess-url-only": _jules_session_url_only("sess-url-only", "COMPLETED", 205)},
+        activities={
+            "sess-url-only": [
+                {"type": "userMessage", "createTime": "2026-01-01T09:00:00Z"},
+                {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+            ]
+        },
+    )
+
+    assert schedule_reevaluation(ISSUE_100, slots, obligation_store, reason="test-i2284-as001") is True
+
+    released = run_due_reclamation_checks(
+        slots,
+        obligation_store,
+        github_client=github_client,
+        jules_client=jules_client,
+    )
+
+    assert released == 1, "the URL-only-published owner must actually be released, not just resolvable"
+    assert ISSUE_100 not in slots.active_owners()
+    assert slots.has_retired_session("sess-url-only")
+    assert obligation_store.due() == (), "the obligation must be cleared once released"
+
+    # No new task/attempt/GitHub mutation: the mocked github_client never
+    # received a write call, and the jules_client was only read from.
+    for mutating in ("create_pull_request", "close_issue", "merge_pull_request", "post_comment"):
+        assert not hasattr(github_client, mutating) or not getattr(github_client, mutating).called
+
+
+def test_i2284_as001_direct_observation_matches_scheduler_outcome(tmp_path: Path) -> None:
+    """The same URL-only shape observed directly via
+    ``collect_retirement_observation``/``retire_owner`` must agree with the
+    scheduler-driven outcome above: PR #205 is discovered, the session is
+    ENDED, and retirement is RELEASED."""
+    slots = _setup_slots(tmp_path)
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-i2284-001b")
+    slots.record_provider_session(ISSUE_100, "sess-url-only-b")
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    github_client = _make_github_client(pr_responses={206: _closed_pr(206)})
+    jules_client = _make_jules_client(
+        session_responses={"sess-url-only-b": _jules_session_url_only("sess-url-only-b", "COMPLETED", 206)},
+        activities={
+            "sess-url-only-b": [
+                {"type": "userMessage", "createTime": "2026-01-01T09:00:00Z"},
+                {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+            ]
+        },
+    )
+
+    obs = collect_retirement_observation(ISSUE_100, slots, github_client, jules_client=jules_client)
+    assert obs is not None
+    assert {pr.number for pr in obs.implementation_prs} == {206}
+    assert obs.provider_sessions[0].state is SessionTerminalState.ENDED
+
+    result = slots.retire_owner(obs)
+    assert result.status is RetirementStatus.RELEASED
+
+
+# --- AS-002: representation compatibility and complete membership ----------
+
+
+@pytest.mark.parametrize("url_key", ["url", "html_url"])
+def test_i2284_as002_url_only_recognized_via_url_and_html_url(url_key: str) -> None:
+    raw_outputs = {"pullRequest": _url_only_pr_output(301, url_key=url_key)}
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == [301]
+    assert incomplete is False
+
+
+@pytest.mark.parametrize("key_variant", ["pullRequest", "pull_request", "PULLREQUEST", "Pull_Request"])
+def test_i2284_as002_pr_output_key_case_and_style_variants_recognized(key_variant: str) -> None:
+    raw_outputs = {key_variant: _url_only_pr_output(302)}
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == [302]
+    assert incomplete is False
+
+
+def test_i2284_as002_array_of_mappings_and_key_value_pairs_recognized() -> None:
+    array_outputs = [{"pullRequest": _url_only_pr_output(303)}]
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(array_outputs, REPO)
+    assert pr_nums == [303]
+    assert incomplete is False
+
+    kv_outputs = [["pullRequest", _url_only_pr_output(304)]]
+    pr_nums2, incomplete2 = _extract_all_pr_numbers_from_outputs(kv_outputs, REPO)
+    assert pr_nums2 == [304]
+    assert incomplete2 is False
+
+
+def test_i2284_as002_coherent_number_bearing_entry_still_recognized() -> None:
+    """A number-bearing entry (url + matching number) still resolves — the
+    fix must not regress the pre-existing coherent shape."""
+    raw_outputs = {"pullRequest": {"number": 305, "url": f"https://github.com/{REPO}/pull/305"}}
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == [305]
+    assert incomplete is False
+
+
+def test_i2284_as002_repeated_identical_identities_collapse_to_one() -> None:
+    raw_outputs = [
+        {"pullRequest": _url_only_pr_output(306)},
+        {"pullRequest": _url_only_pr_output(306)},
+    ]
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == [306]
+    assert incomplete is False
+
+
+def test_i2284_as002_two_distinct_url_only_outputs_both_present() -> None:
+    raw_outputs = [
+        {"pullRequest": _url_only_pr_output(307)},
+        {"pullRequest": _url_only_pr_output(308)},
+    ]
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert set(pr_nums) == {307, 308}
+    assert incomplete is False
+
+
+def test_i2284_as002_second_open_pr_blocks_release_even_with_first_closed_url_only(tmp_path: Path) -> None:
+    """Two distinct url-only PR outputs; the second stays open and must
+    block retirement even though the first is already closed."""
+    slots = _setup_slots(tmp_path)
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-i2284-as002")
+    slots.record_provider_session(ISSUE_100, "sess-two-prs")
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    session = _jules_session_url_only("sess-two-prs", "COMPLETED", 309)
+    session["outputs"] = [
+        {"pullRequest": _url_only_pr_output(309)},
+        {"pullRequest": _url_only_pr_output(310)},
+    ]
+    github_client = _make_github_client(pr_responses={309: _closed_pr(309), 310: _open_pr(310)})
+    jules_client = _make_jules_client(
+        session_responses={"sess-two-prs": session},
+        activities={
+            "sess-two-prs": [
+                {"type": "userMessage", "createTime": "2026-01-01T09:00:00Z"},
+                {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+            ]
+        },
+    )
+
+    obs = collect_retirement_observation(ISSUE_100, slots, github_client, jules_client=jules_client)
+    assert obs is not None
+    assert {pr.number for pr in obs.implementation_prs} == {309, 310}
+    result = slots.retire_owner(obs)
+    assert result.status is RetirementStatus.RETAINED_ACTIVE
+    assert "pr:310" in result.responsible_members
+    assert "pr:309" not in result.responsible_members
+
+
+def test_i2284_as002_unrelated_output_key_not_adopted_as_pr() -> None:
+    """A URL-looking value under an unrelated output key must never be
+    adopted as a PR (only pullRequest/pull_request keys are PR evidence)."""
+    raw_outputs = {"summary": _url_only_pr_output(311), "description": f"see https://github.com/{REPO}/pull/999"}
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == []
+    assert incomplete is False
+
+
+def test_i2284_as002_foreign_repository_url_only_flags_incomplete() -> None:
+    raw_outputs = {"pullRequest": _url_only_pr_output(999, repo="other-org/other-repo")}
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == []
+    assert incomplete is True
+
+
+def test_i2284_as002_paired_valid_and_malformed_entries_block_release(tmp_path: Path) -> None:
+    """A valid closed PR paired with a malformed/foreign PR entry in the same
+    session outputs must leave discovery incomplete and never release."""
+    slots = _setup_slots(tmp_path)
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-i2284-paired")
+    slots.record_provider_session(ISSUE_100, "sess-paired")
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    session = {
+        "name": "projects/test/sessions/sess-paired",
+        "state": "COMPLETED",
+        "outputs": [
+            {"pullRequest": _url_only_pr_output(312)},
+            {"pullRequest": _url_only_pr_output(998, repo="other-org/other-repo")},
+        ],
+    }
+    github_client = _make_github_client(pr_responses={312: _closed_pr(312)})
+    jules_client = _make_jules_client(
+        session_responses={"sess-paired": session},
+        activities={
+            "sess-paired": [
+                {"type": "userMessage", "createTime": "2026-01-01T09:00:00Z"},
+                {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+            ]
+        },
+    )
+
+    obs = collect_retirement_observation(ISSUE_100, slots, github_client, jules_client=jules_client)
+    assert obs is not None
+    result = slots.retire_owner(obs)
+    assert result.status is RetirementStatus.RETAINED_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "malicious_url",
+    [
+        "https://github.com.evil.com/kitamura-tetsuo/auto-coder/pull/1",
+        "https://evil.com/github.com/kitamura-tetsuo/auto-coder/pull/1",
+        "https://user@github.com/kitamura-tetsuo/auto-coder/pull/1",
+        "https://github.com:8443/kitamura-tetsuo/auto-coder/pull/1",
+        "http://github.com/kitamura-tetsuo/auto-coder/pull/1",
+        "https://github.com/kitamura-tetsuo/auto-coder/pull/1/files",
+        "https://github.com/kitamura-tetsuo/auto-coder/pull/abc",
+        "https://github.com/kitamura-tetsuo/auto-coder/pull/-1",
+        "https://github.com/kitamura-tetsuo/auto-coder/pull/0",
+        "not-a-url-but-mentions github.com",
+    ],
+)
+def test_i2284_as002_malformed_or_lookalike_urls_never_authorize_identity(malicious_url: str) -> None:
+    """No partial/loose match on a host look-alike, embedded github.com
+    text, user-info, non-default port, wrong scheme, extra path segments, or
+    a non-positive/non-decimal PR number may ever authorize a PR identity."""
+    from auto_coder.implementation_retirement_observer import _parse_github_pr_url
+
+    number, repo = _parse_github_pr_url(malicious_url)
+    assert number is None
+    assert repo is None
+
+    raw_outputs = {"pullRequest": {"url": malicious_url, "title": "t", "description": "d"}}
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == []
+    assert incomplete is True, f"malformed URL {malicious_url!r} must mark discovery incomplete, not silently empty"
+
+
+def test_i2284_as002_valid_url_with_trailing_slash_query_and_fragment() -> None:
+    for suffix in ["/", "?tab=files", "#discussion", "/?x=1#y"]:
+        raw_outputs = {"pullRequest": {"url": f"https://github.com/{REPO}/pull/313{suffix}", "title": "t", "description": "d"}}
+        pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+        assert pr_nums == [313], f"suffix {suffix!r} must not change PR identity"
+        assert incomplete is False
+
+
+def test_i2284_as002_inconsistent_number_and_url_marks_incomplete() -> None:
+    """An entry whose explicit number disagrees with its URL's number is
+    malformed/inconsistent, not silently resolved from either field alone."""
+    raw_outputs = {"pullRequest": {"number": 400, "url": f"https://github.com/{REPO}/pull/401"}}
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == []
+    assert incomplete is True
+
+
+def test_i2284_as002_inconsistent_repository_field_and_url_marks_incomplete() -> None:
+    raw_outputs = {
+        "pullRequest": {
+            "url": f"https://github.com/{REPO}/pull/402",
+            "repository": {"full_name": "other-org/other-repo"},
+        }
+    }
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == []
+    assert incomplete is True
+
+
+@pytest.mark.parametrize("bad_number", [True, False, 0, -1, 1.5, "201"])
+def test_i2284_as002_boolean_zero_negative_and_non_int_numbers_rejected(bad_number: Any) -> None:
+    raw_outputs = {"pullRequest": {"number": bad_number, "url": f"https://github.com/{REPO}/pull/403"}}
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == []
+    assert incomplete is True
+
+
+def test_i2284_as002_genuinely_empty_publication_is_not_malformed() -> None:
+    """A pullRequest output entry with only title/description (no number,
+    no url at all) is genuinely-empty publication, not a malformed entry —
+    it must not itself mark discovery incomplete."""
+    raw_outputs = {"pullRequest": {"title": "Work in progress", "description": "no PR yet"}}
+    pr_nums, incomplete = _extract_all_pr_numbers_from_outputs(raw_outputs, REPO)
+    assert pr_nums == []
+    assert incomplete is False
+
+
+# --- AS-003: fixing publication does not bypass activity causality --------
+
+
+def test_i2284_as003_url_only_completed_with_causality_evidence_becomes_ended() -> None:
+    """REQ-003: a COMPLETED session with only a URL-shaped PR output (no
+    number) must not be marked publication-pending — once causality is also
+    satisfied, it resolves ENDED."""
+    jules_client = _make_jules_client(
+        session_responses={"sess": _jules_session_url_only("sess", "COMPLETED", 501)},
+        activities={
+            "sess": [
+                {"type": "userMessage", "createTime": "2026-01-01T09:00:00Z"},
+                {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+            ]
+        },
+    )
+    evidence = _observe_jules_session("sess", jules_client, REPO, 1, "issue:100")
+    assert evidence.state is SessionTerminalState.ENDED
+    assert 501 in evidence.established_pr_outputs
+    assert evidence.publication_pending is False
+
+
+def test_i2284_as003_url_only_completed_without_activities_stays_unknown_not_terminal() -> None:
+    """REQ-003: URL recognition alone must never be treated as session
+    termination — missing activity evidence keeps the session UNKNOWN."""
+    jules_client = MagicMock()
+    jules_client.get_session.return_value = _jules_session_url_only("sess", "COMPLETED", 502)
+    del jules_client.get_session_activities
+
+    evidence = _observe_jules_session("sess", jules_client, REPO, 1, "issue:100")
+    assert evidence.state is SessionTerminalState.UNKNOWN
+    assert 502 in evidence.established_pr_outputs
+
+
+def test_i2284_as003_url_only_completed_then_later_user_activity_is_not_settled() -> None:
+    """REQ-003: an observed later user/approval activity must prevent an
+    older URL-only completion from settling the session as ENDED."""
+    activities = [
+        {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+        {"type": "userMessage", "createTime": "2026-01-01T11:00:00Z"},
+    ]
+    jules_client = _make_jules_client(
+        session_responses={"sess": _jules_session_url_only("sess", "COMPLETED", 503)},
+        activities={"sess": activities},
+    )
+    evidence = _observe_jules_session("sess", jules_client, REPO, 1, "issue:100")
+    assert evidence.state is SessionTerminalState.UNKNOWN
+    assert 503 in evidence.established_pr_outputs
+
+
+def test_i2284_as003_url_only_genuinely_empty_publication_stays_pending() -> None:
+    """REQ-003: COMPLETED with successfully observed genuinely empty
+    publication (no PR output at all) remains publication-pending, even
+    though the URL-recognition fix now runs on the same outputs."""
+    jules_client = _make_jules_client(
+        session_responses={"sess": {"name": "projects/x/sessions/sess", "state": "COMPLETED", "outputs": {"pullRequest": {"title": "wip", "description": "no PR yet"}}}},
+    )
+    evidence = _observe_jules_session("sess", jules_client, REPO, 1, "issue:100")
+    assert evidence.state is SessionTerminalState.ACTIVE
+    assert evidence.publication_pending is True
+
+
+# --- AS-004: same evidence after an outage is not new work ------------------
+
+
+def test_i2284_as004_transient_observation_failure_then_recovery_same_service(tmp_path: Path) -> None:
+    """AS-004: an unavailable GitHub/Jules read must not force a release nor
+    lose the pending obligation; the same due-check succeeds once the
+    identical evidence becomes readable again, without a new attempt."""
+    from auto_coder.implementation_reclamation_scheduler import (
+        ReclamationObligationStore,
+        run_due_reclamation_checks,
+        schedule_reevaluation,
+    )
+
+    slots = _setup_slots(tmp_path)
+    obligation_store = ReclamationObligationStore.for_slots(slots)
+
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-i2284-as004")
+    slots.record_provider_session(ISSUE_100, "sess-outage")
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    session = _jules_session_url_only("sess-outage", "COMPLETED", 601)
+    activities = {
+        "sess-outage": [
+            {"type": "userMessage", "createTime": "2026-01-01T09:00:00Z"},
+            {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+        ]
+    }
+
+    failing_github_client = MagicMock()
+    failing_github_client.get_pull_request_metadata_strict.side_effect = RuntimeError("GitHub outage")
+    failing_github_client.get_connected_prs.side_effect = RuntimeError("GitHub outage")
+    failing_github_client.get_open_pull_requests_strict.side_effect = RuntimeError("GitHub outage")
+    jules_client = _make_jules_client(session_responses={"sess-outage": session}, activities=activities)
+
+    assert schedule_reevaluation(ISSUE_100, slots, obligation_store, reason="test-i2284-as004") is True
+
+    released_during_outage = run_due_reclamation_checks(
+        slots,
+        obligation_store,
+        github_client=failing_github_client,
+        jules_client=jules_client,
+    )
+    assert released_during_outage == 0
+    assert ISSUE_100 in slots.active_owners(), "capacity must be preserved during the outage"
+    assert obligation_store.all() != (), "the obligation must remain pending, not be dropped"
+
+    # Recovery: the same publication/terminal evidence, now readable. The
+    # rescheduled obligation is due 60s after the failed check.
+    recovered_github_client = _make_github_client(pr_responses={601: _closed_pr(601)})
+    later = time.time() + 61
+    released_after_recovery = run_due_reclamation_checks(
+        slots,
+        obligation_store,
+        github_client=recovered_github_client,
+        jules_client=jules_client,
+        now=later,
+    )
+    assert released_after_recovery == 1
+    assert ISSUE_100 not in slots.active_owners()
+
+    # Replaying the same completed retirement must not free capacity twice
+    # or recreate the retired owner.
+    released_replay = run_due_reclamation_checks(
+        slots,
+        obligation_store,
+        github_client=recovered_github_client,
+        jules_client=jules_client,
+        now=later + 61,
+    )
+    assert released_replay == 0
+    assert ISSUE_100 not in slots.active_owners()
+
+
+def test_i2284_as004_restart_recovers_progress_without_manual_repair(tmp_path: Path) -> None:
+    """AS-004: reconstructing the service and stores between failure and
+    recovery must recover the same pending-then-released progress without
+    requiring an Issue edit or manual state deletion."""
+    from auto_coder.implementation_reclamation_scheduler import (
+        ReclamationObligationStore,
+        run_due_reclamation_checks,
+        schedule_reevaluation,
+    )
+
+    slots = _setup_slots(tmp_path)
+    obligation_store = ReclamationObligationStore.for_slots(slots)
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-i2284-as004b")
+    slots.record_provider_session(ISSUE_100, "sess-restart")
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    session = _jules_session_url_only("sess-restart", "COMPLETED", 602)
+    activities = {
+        "sess-restart": [
+            {"type": "userMessage", "createTime": "2026-01-01T09:00:00Z"},
+            {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+        ]
+    }
+    jules_client = _make_jules_client(session_responses={"sess-restart": session}, activities=activities)
+    failing_github_client = MagicMock()
+    failing_github_client.get_pull_request_metadata_strict.side_effect = RuntimeError("outage")
+    failing_github_client.get_connected_prs.side_effect = RuntimeError("outage")
+    failing_github_client.get_open_pull_requests_strict.side_effect = RuntimeError("outage")
+
+    assert schedule_reevaluation(ISSUE_100, slots, obligation_store, reason="test-i2284-as004b") is True
+    assert run_due_reclamation_checks(slots, obligation_store, github_client=failing_github_client, jules_client=jules_client) == 0
+
+    # Reconstruct the repository/store objects against the same on-disk
+    # state, simulating a process restart.
+    slots_restarted = ImplementationSlotRepository(REPO, 2, tmp_path / "slots.json")
+    obligation_store_restarted = ReclamationObligationStore.for_slots(slots_restarted)
+    recovered_github_client = _make_github_client(pr_responses={602: _closed_pr(602)})
+
+    released = run_due_reclamation_checks(
+        slots_restarted,
+        obligation_store_restarted,
+        github_client=recovered_github_client,
+        jules_client=jules_client,
+        now=time.time() + 61,
+    )
+    assert released == 1
+    assert ISSUE_100 not in slots_restarted.active_owners()
+    assert slots_restarted.has_retired_session("sess-restart")
+
+
+# --- AS-005: a stale observation cannot free a successor's capacity --------
+
+
+def test_i2284_as005_stale_observation_cannot_release_owner_with_newer_membership(tmp_path: Path) -> None:
+    """AS-005: an observation captured before a durable newer PR membership
+    addition must not release that updated owner — even though the
+    URL-only PR it *did* see is legitimately closed."""
+    slots = _setup_slots(tmp_path)
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-i2284-as005")
+    slots.record_provider_session(ISSUE_100, "sess-stale")
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    session = _jules_session_url_only("sess-stale", "COMPLETED", 701)
+    activities = {
+        "sess-stale": [
+            {"type": "userMessage", "createTime": "2026-01-01T09:00:00Z"},
+            {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+        ]
+    }
+    github_client = _make_github_client(pr_responses={701: _closed_pr(701)})
+    jules_client = _make_jules_client(session_responses={"sess-stale": session}, activities=activities)
+
+    # Capture the observation ("paused after collection, before commit").
+    stale_obs = collect_retirement_observation(ISSUE_100, slots, github_client, jules_client=jules_client)
+    assert stale_obs is not None
+    assert {pr.number for pr in stale_obs.implementation_prs} == {701}
+
+    # Through the production membership boundary, durably record additional
+    # PR membership for the SAME owner/incarnation before the paused
+    # observation is allowed to commit.
+    added = slots.record_implementation_pr(ISSUE_100, 702)
+    assert added is True
+
+    # The stale (pre-update) observation must not release the now-updated
+    # owner. Recording new PR membership durably advances activity_revision
+    # (Issue #2146), so the commit-time fence rejects the stale observation
+    # as STALE_OBSERVATION before ever reaching the membership-completeness
+    # check — either outcome refuses release, but this is what the real
+    # incarnation/activity-revision fence actually returns here.
+    result = slots.retire_owner(stale_obs)
+    assert result.status is RetirementStatus.STALE_OBSERVATION
+    assert result.status is not RetirementStatus.RELEASED
+    assert ISSUE_100 in slots.active_owners()
+
+    # A fresh observation that actually covers PR #702 (still open) correctly
+    # retains the owner as ACTIVE instead.
+    fresh_obs = collect_retirement_observation(ISSUE_100, slots, github_client, jules_client=jules_client)
+    assert fresh_obs is not None
+    assert {pr.number for pr in fresh_obs.implementation_prs} == {701, 702}
+    result2 = slots.retire_owner(fresh_obs)
+    assert result2.status is RetirementStatus.RETAINED_UNKNOWN  # PR 702 has no registered response → UNKNOWN
+
+
+def test_i2284_as005_old_incarnation_replay_does_not_disturb_new_incarnation(tmp_path: Path) -> None:
+    """AS-005: legitimately retire the old incarnation, acquire a new one for
+    the same Issue, then replay the old (now-stale) observation — the new
+    owner and its capacity must remain intact."""
+    slots = _setup_slots(tmp_path)
+    exec_id = slots.start_execution(ISSUE_100, generation="gen-i2284-as005b-old")
+    slots.record_provider_session(ISSUE_100, "sess-old-inc")
+    slots.finish_execution(ISSUE_100, exec_id)
+
+    session = _jules_session_url_only("sess-old-inc", "COMPLETED", 703)
+    activities = {
+        "sess-old-inc": [
+            {"type": "userMessage", "createTime": "2026-01-01T09:00:00Z"},
+            {"type": "sessionCompleted", "createTime": "2026-01-01T10:00:00Z"},
+        ]
+    }
+    github_client = _make_github_client(pr_responses={703: _closed_pr(703)})
+    jules_client = _make_jules_client(session_responses={"sess-old-inc": session}, activities=activities)
+
+    old_obs = collect_retirement_observation(ISSUE_100, slots, github_client, jules_client=jules_client)
+    assert old_obs is not None
+    result = slots.retire_owner(old_obs)
+    assert result.status is RetirementStatus.RELEASED
+
+    # A new incarnation is acquired for the same Issue through production admission.
+    slots2 = ImplementationSlotRepository(REPO, 2, tmp_path / "slots.json")
+    exec_id2 = slots2.start_execution(ISSUE_100, generation="gen-i2284-as005b-new")
+    slots2.record_implementation_pr(ISSUE_100, 704)
+    slots2.finish_execution(ISSUE_100, exec_id2)
+    new_incarnation = slots2.owner_incarnation(ISSUE_100)
+    assert new_incarnation is not None and new_incarnation != old_obs.reservation_incarnation
+
+    # Replaying the old (retired) observation must be a safe no-op.
+    replay_result = slots2.retire_owner(old_obs)
+    assert replay_result.status is not RetirementStatus.RELEASED
+
+    assert ISSUE_100 in slots2.active_owners()
+    assert slots2.owner_incarnation(ISSUE_100) == new_incarnation
