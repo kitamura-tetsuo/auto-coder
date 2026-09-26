@@ -1286,13 +1286,42 @@ def _dispatch_issue_candidates(
     """Execute one caller-ranked ordinary sequence through the durable boundary."""
     from .cli_helpers import build_backend_manager
     from .cloud_run import CloudRunRepository
-    from .issue_dispatch import AdapterOutcome, CandidateHandoff, DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
+    from .issue_dispatch import AdapterOutcome, CandidateHandoff, DispatchOutcome, DispatchResult, IssueAttemptIdentity, IssueDispatchGuard
     from .llm_backend_config import get_llm_config
 
     owner, repository = repo_name.split("/", 1)
     issue_number = int(issue_data["number"])
     attempt = get_current_attempt(repo_name, issue_number)
-    identity = IssueAttemptIdentity(owner, repository, issue_number, str(attempt))
+    authorize_new_attempt = False
+    if retry_authority is not None:
+        # The shared guard's durable identity must be the retry's own logical
+        # attempt A, re-verified against the durable request store at this
+        # dispatch boundary. The ordinary numeric attempt counter must never
+        # be substituted here: it stays at its prior value (e.g. "0") across
+        # an explicit retry of a truncated/indeterminate attempt, which is
+        # exactly the predecessor identity a retry must not collide with.
+        try:
+            retry_authority = _durable_retry_authority(repo_name, issue_number, retry_authority)
+        except ValueError as exc:
+            diagnostic = f"Deferred retry dispatch for issue #{issue_number}: {exc}"
+            return IssueDispatchExecution(
+                DispatchResult(
+                    IssueAttemptIdentity(owner, repository, issue_number, str(attempt)),
+                    DispatchOutcome.DEFERRED,
+                    diagnostic=diagnostic,
+                    tracking_complete=True,
+                ),
+                [diagnostic],
+            )
+        identity = IssueAttemptIdentity(owner, repository, issue_number, retry_authority.attempt_id)
+        # An explicit, freshly re-verified retry is the only source of this
+        # exception: it lets the guard admit a fresh claim under A even when
+        # a same-issue predecessor row exists under a different attempt (e.g.
+        # legacy numeric "0"), without weakening ordinary same-attempt
+        # suppression for any other caller.
+        authorize_new_attempt = True
+    else:
+        identity = IssueAttemptIdentity(owner, repository, issue_number, str(attempt))
     llm_config = get_llm_config(repo_name=repo_name)
     candidates = []
     for name in candidate_names:
@@ -1371,14 +1400,23 @@ def _dispatch_issue_candidates(
         if binding is not None and binding.provider == backend_type and binding.backend_name == candidate.backend_name:
             return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, binding.task_id)
         if backend_type == "codex-cloud":
+            # A retry's numeric attempt N is allocated inside the adapter
+            # itself, after this closure captured the ambient counter; the
+            # once-assigned R/A-to-N binding, not that stale local value, is
+            # the acceptance lookup's authoritative key (see #2292).
+            match_attempt = attempt
+            if retry_authority is not None:
+                retry_handoff = RetryDispatchRepository(repo_name).get(retry_authority.request_id)
+                if retry_handoff is not None and retry_handoff.numeric_attempt is not None:
+                    match_attempt = retry_handoff.numeric_attempt
             runs = CloudRunRepository(repo_name).list_for_issue(issue_number)
-            matching = [run for run in runs if str(run.attempt) == str(attempt) and run.backend_name == candidate.backend_name]
+            matching = [run for run in runs if str(run.attempt) == str(match_attempt) and run.backend_name == candidate.backend_name]
             if matching and matching[-1].task_id and matching[-1].submission_outcome == "accepted":
                 return AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, matching[-1].task_id, "secondary tracking incomplete")
         assert backend_type in remote_types
         return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic="remote adapter returned without durable provider acceptance evidence")
 
-    result = IssueDispatchGuard().dispatch_candidates(identity, candidates, invoke)
+    result = IssueDispatchGuard().dispatch_candidates(identity, candidates, invoke, authorize_new_attempt=authorize_new_attempt)
     return IssueDispatchExecution(result, actions)
 
 
