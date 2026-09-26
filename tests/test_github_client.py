@@ -151,6 +151,22 @@ class TestGitHubClient:
         )
         response.raise_for_status.assert_called_once_with()
 
+    @patch("src.auto_coder.util.gh_cache.httpx.get")
+    def test_get_pull_request_routing_metadata_strict_normalizes_null_body(self, mock_get, mock_github_token):
+        response = Mock()
+        response.json.return_value = {
+            "state": "open",
+            "body": None,
+            "head": {"ref": "cloud-work", "sha": "live-sha", "repo": {"full_name": "owner/repo"}},
+        }
+        mock_get.return_value = response
+        client = GitHubClient.get_instance(mock_github_token)
+
+        metadata = client.get_pull_request_routing_metadata_strict("owner/repo", 42)
+
+        assert metadata.body == ""
+        assert metadata.head_ref == "cloud-work"
+
     def test_resolve_review_thread_rejects_wrong_returned_thread_id(self, mock_github_token):
         client = GitHubClient.get_instance(mock_github_token)
         response = {"data": {"resolveReviewThread": {"thread": {"id": "other-thread", "isResolved": True}}}}

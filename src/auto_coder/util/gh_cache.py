@@ -1273,9 +1273,12 @@ class GitHubClient:
         payload = response.json()
         head = payload.get("head") if isinstance(payload, dict) else None
         head_repo = head.get("repo") if isinstance(head, dict) else None
+        raw_body = payload.get("body") if isinstance(payload, dict) else None
         values = {
             "state": payload.get("state") if isinstance(payload, dict) else None,
-            "body": payload.get("body") if isinstance(payload, dict) else None,
+            # GitHub represents an empty PR description as JSON null. It is
+            # equivalent to an empty body for marker-based routing.
+            "body": "" if raw_body is None else raw_body,
             "head_repository": head_repo.get("full_name") if isinstance(head_repo, dict) else None,
             "head_ref": head.get("ref") if isinstance(head, dict) else None,
             "head_sha": head.get("sha") if isinstance(head, dict) else None,

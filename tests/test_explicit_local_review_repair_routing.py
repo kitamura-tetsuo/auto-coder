@@ -98,3 +98,13 @@ def test_failed_authoritative_read_is_unavailable_not_cloud_fallback() -> None:
 
     assert decision.disposition is ReviewRepairRouteDisposition.UNAVAILABLE
     assert "offline" in decision.reason
+
+
+def test_genuine_cloud_pr_with_empty_authoritative_body_keeps_cloud_route() -> None:
+    client = _client(_metadata(""))
+
+    decision = _select_review_repair_route("owner/repo", _pr(""), client)
+
+    assert decision.disposition is ReviewRepairRouteDisposition.CLOUD
+    assert decision.reason == "no authoritative explicit local declaration"
+    assert decision.evidence == _metadata("")
