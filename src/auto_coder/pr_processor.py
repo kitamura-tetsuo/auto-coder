@@ -66,8 +66,10 @@ from .git_commit import commit_and_push_changes, git_push, save_commit_failure_h
 from .git_info import get_commit_log
 from .github_app_reviewer import ExactReviewComment, GitHubAppReviewer, ReviewerAppIdentity, load_reviewer_app_config, publish_adversarial_review, resolve_reviewer_app_identity
 from .github_pending_work import WorkIdentity, get_pending_work_store
+from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .invocation_admission import bind_invocation_target
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
+from .issue_stage_routing import IMPLEMENTATION_STAGE, ImplementationRetryRequest, IssueStageRoutingStore
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
@@ -122,6 +124,7 @@ from .reviewer_session_registry import ReviewerSessionRegistry
 from .security_utils import redact_string
 from .shutdown_context import new_work_allowed
 from .speculative_jules_lifecycle import get_speculative_jules_lifecycle
+from .stale_jules_recovery import capture_stale_jules_recovery, current_stale_jules_recovery_context, publish_recovery_attempt_comment, stale_jules_recovery_context
 from .test_log_utils import extract_all_failed_tests, extract_first_failed_test, extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -1175,8 +1178,37 @@ def process_pull_request(
     *,
     force_adversarial_validation: bool = False,
     adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
+    stage_routing: Optional[IssueStageRoutingStore] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> ProcessedPRResult:
-    """Process a single pull request with priority order."""
+    """Process a single pull request with priority order.
+
+    *stage_routing*/*implementation_slots* are optional engine handles made
+    available (via a context variable, not threaded through every nested
+    helper) to ``_close_stale_jules_pr`` so it can capture a durable
+    automatic recovery identity for a Jules PR closed for stale CI (Issue
+    #2286). Omitting them preserves the historical unlinked behavior.
+    """
+    with stale_jules_recovery_context(stage_routing, implementation_slots):
+        return _process_pull_request_impl(
+            github_client,
+            config,
+            repo_name,
+            pr_data,
+            force_adversarial_validation=force_adversarial_validation,
+            adversarial_validation_scheduler=adversarial_validation_scheduler,
+        )
+
+
+def _process_pull_request_impl(
+    github_client: Any,
+    config: AutomationConfig,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    *,
+    force_adversarial_validation: bool = False,
+    adversarial_validation_scheduler: Optional[AdversarialValidationScheduler] = None,
+) -> ProcessedPRResult:
     try:
         processed_pr = ProcessedPRResult(
             pr_data=pr_data,
@@ -2146,12 +2178,41 @@ def _close_empty_pr(
     return result
 
 
+def _resolve_current_implementation_generation(
+    stage_routing: IssueStageRoutingStore,
+    implementation_slots: Optional[ImplementationSlotRepository],
+    repo_name: str,
+    issue_number: int,
+) -> Optional[str]:
+    """Best-effort read of the Issue's current Implementation generation (G).
+
+    Prefers the freshly reconciled pending Implementation lane item (set by
+    ordinary per-cycle routing); falls back to the generation already bound
+    to a durable production owner when the Issue's implementation already
+    started once. Returns ``None`` when neither is available -- callers must
+    treat this as "cannot establish G right now", never guess one (Issue
+    #2286 REQ-001).
+    """
+    lane_item = stage_routing.get(repo_name, IMPLEMENTATION_STAGE, issue_number)
+    if lane_item is not None:
+        return lane_item.generation
+    if implementation_slots is not None:
+        try:
+            return implementation_slots.implementation_generation(ImplementationOwner("issue", issue_number))
+        except Exception as exc:
+            logger.debug(f"Cannot read implementation generation for issue #{issue_number}: {exc}")
+    return None
+
+
 def _close_stale_jules_pr(
     github_client: Any,
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     github_checks: Optional[Any] = None,
+    *,
+    stage_routing: Optional[IssueStageRoutingStore] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> StaleJulesPRResult:
     """Close a Jules PR that failed to get CI green within the configured timeout.
 
@@ -2161,18 +2222,38 @@ def _close_stale_jules_pr(
     incremented, and the ``@auto-coder`` label that the dead Jules run left on those
     issues is removed so they can be picked up again from scratch.
 
+    When *stage_routing* is supplied and a current Implementation generation
+    can be resolved for a linked issue, the attempt increment is a projection
+    of a durable automatic recovery identity (Issue #2286): closing this PR
+    and publishing the attempt comment reuse the same explicit-retry
+    machinery as an operator ``--only --force --retry``, so ordinary engine
+    admission can later cross the owned-start tombstone for exactly one
+    successor attempt once this PR's predecessor Jules work is retired.
+    Without *stage_routing* (or when G cannot be resolved), this falls back
+    to the historical unlinked attempt increment.
+
     Args:
         github_client: GitHub client instance
         repo_name: Repository name (owner/repo)
         pr_data: PR data dictionary
         config: Automation configuration
         github_checks: Optional already-fetched GitHub Actions status result
+        stage_routing: Optional durable routing store used to capture the
+            automatic recovery identity described above.
+        implementation_slots: Optional slot repository, used only as a
+            fallback source for the current Implementation generation.
 
     Returns:
         StaleJulesPRResult; ``closed`` is False when the PR was left open.
     """
     result = StaleJulesPRResult()
     pr_number = int(pr_data["number"])
+
+    if stage_routing is None:
+        ambient = current_stale_jules_recovery_context()
+        if ambient is not None:
+            stage_routing = ambient.stage_routing
+            implementation_slots = ambient.implementation_slots
 
     try:
         from .llm_backend_config import is_jules_mode_enabled
@@ -2235,6 +2316,23 @@ def _close_stale_jules_pr(
             if resolved_issue:
                 issue_numbers = [resolved_issue]
 
+        # Durably record the automatic recovery identity (R) for every linked
+        # issue whose current Implementation generation (G) can be
+        # established, strictly before closing the PR or publishing any
+        # attempt effect (Issue #2286 REQ-001). A conflict (this exact PR
+        # already bound to a different, now-stale generation) or an
+        # unresolvable G silently falls back to the historical unlinked
+        # attempt increment for that one issue below.
+        recoveries: Dict[int, ImplementationRetryRequest] = {}
+        if stage_routing is not None:
+            for issue_number in issue_numbers:
+                generation = _resolve_current_implementation_generation(stage_routing, implementation_slots, repo_name, issue_number)
+                if generation is None:
+                    continue
+                authority = capture_stale_jules_recovery(stage_routing, repo_name, issue_number, pr_number, generation)
+                if authority is not None:
+                    recoveries[issue_number] = authority
+
         close_comment = f"Auto-Coder: Closing this PR because Jules did not get CI to pass within {config.JULES_PR_CI_TIMEOUT_HOURS} hours after the PR was created. The linked issue(s) will be retried with an incremented attempt count."
         client = github_client or GitHubClient.get_instance()
         client.close_pr(repo_name, pr_number, close_comment)
@@ -2255,12 +2353,25 @@ def _close_stale_jules_pr(
             return result
 
         for issue_number in issue_numbers:
-            try:
-                new_attempt = increment_attempt(repo_name, issue_number)
-                result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
-            except Exception as e:
-                logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
-                result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
+            recovery = recoveries.get(issue_number)
+            if recovery is not None:
+                try:
+                    new_attempt = publish_recovery_attempt_comment(client, repo_name, issue_number, recovery.request_id)
+                except Exception as e:
+                    logger.error(f"Failed to publish stale-Jules recovery attempt for issue #{issue_number}: {e}")
+                    result.actions.append(f"Failed to publish stale-Jules recovery attempt for issue #{issue_number}: {e}")
+                else:
+                    if new_attempt is not None:
+                        result.actions.append(f"Recorded stale-Jules recovery for issue #{issue_number} (request={recovery.request_id}, attempt={new_attempt})")
+                    else:
+                        result.actions.append(f"Stale-Jules recovery for issue #{issue_number} recorded (request={recovery.request_id}); attempt comment deferred pending readable prior evidence")
+            else:
+                try:
+                    new_attempt = increment_attempt(repo_name, issue_number)
+                    result.actions.append(f"Incremented attempt for issue #{issue_number} to {new_attempt}")
+                except Exception as e:
+                    logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
+                    result.actions.append(f"Failed to increment attempt for issue #{issue_number}: {e}")
 
             result.issue_numbers.append(issue_number)
 

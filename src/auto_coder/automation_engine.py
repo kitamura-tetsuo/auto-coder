@@ -153,6 +153,7 @@ from .specification_validation_lifecycle import (
     configured_provider_identity,
     validation_publication_identity,
 )
+from .stale_jules_recovery import find_pending_stale_jules_recovery
 from .test_log_utils import extract_important_errors
 from .test_result import TestResult
 from .trace_logger import get_trace_logger
@@ -3012,6 +3013,27 @@ class AutomationEngine:
         if execution_id is not None:
             confirm_implementation_ownership(routing, repo_name, owner, generation)
         return execution_id, False
+
+    def _pending_stale_jules_recovery(self, repo_name: str, item_number: int, generation: str) -> Optional[ImplementationRetryRequest]:
+        """Return this Issue's pending automatic stale-Jules recovery, if still current.
+
+        A pending recovery captured (by ``_close_stale_jules_pr``, Issue
+        #2286) against a since-superseded Implementation generation is
+        permanently invalidated here rather than silently reused or left to
+        linger (REQ-005); the caller then falls through to ordinary
+        admission with no special retry semantics.
+        """
+        pending = find_pending_stale_jules_recovery(self.issue_stage_routing, repo_name, item_number)
+        if pending is None:
+            return None
+        if pending.generation != generation:
+            self.issue_stage_routing.invalidate_retry_request(
+                pending.request_id,
+                generation,
+                reason="Implementation generation changed since the automatic stale-Jules recovery was captured",
+            )
+            return None
+        return pending
 
     def _routing_members_are_stable(self, repo_name: str, members: List[Dict[str, Any]]) -> bool:
         """Retain creation-anchored invalidations until every member is stable."""
@@ -6099,6 +6121,8 @@ class AutomationEngine:
             inherited_execution = execution_id is not None
             owner_existed_before_admission = owner in slots.active_owners()
             already_owned = False
+            auto_retry_deferred = False
+            retry_authority = None
             try:
                 if not inherited_execution:
                     implementation_key = self._compute_implementation_generation(repo_name, generation_context["snapshot"], generation_context.get("family_set")) if candidate.type == "issue" else None
@@ -6127,18 +6151,44 @@ class AutomationEngine:
                         retry_authority = authority
                     else:
                         retry_authority = None
-                        execution_id, already_owned = self._start_issue_implementation_execution(
-                            repo_name,
-                            slots,
-                            owner,
-                            implementation_key,
-                            implementation_pr=implementation_pr,
-                            bypass_capacity=explicit_only,
-                            bypass_active_execution=explicit_only and force and candidate.type == "pr",
-                            allow_urgent_emergency=urgent_issue,
-                            github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
-                        )
-                if execution_id is None and not already_owned and not explicit_only:
+                        auto_retry = self._pending_stale_jules_recovery(repo_name, item_number, implementation_key) if candidate.type == "issue" and implementation_key is not None else None
+                        if auto_retry is not None and slots.has_qualifying_implementation_activity(owner):
+                            # The predecessor Jules PR/session evidence this
+                            # recovery is waiting on has not been retired yet
+                            # (Issue #2286 REQ-003). Defer without attempting
+                            # either path so the capacity-retry fallback below
+                            # cannot start a plain same-generation
+                            # continuation around this deliberate wait.
+                            execution_id, already_owned = None, False
+                            auto_retry_deferred = True
+                        elif auto_retry is not None:
+                            assert implementation_key is not None
+                            authority = acquire_explicit_retry(
+                                self.issue_stage_routing,
+                                slots,
+                                repo_name,
+                                item_number,
+                                implementation_key,
+                                auto_retry.request_id,
+                                github_client=self.github if isinstance(self.github, GitHubClient) else None,
+                                bypass_capacity=False,
+                            )
+                            execution_id = authority.ownership_reference if authority.status == "owned" else None
+                            already_owned = False
+                            retry_authority = authority
+                        else:
+                            execution_id, already_owned = self._start_issue_implementation_execution(
+                                repo_name,
+                                slots,
+                                owner,
+                                implementation_key,
+                                implementation_pr=implementation_pr,
+                                bypass_capacity=explicit_only,
+                                bypass_active_execution=explicit_only and force and candidate.type == "pr",
+                                allow_urgent_emergency=urgent_issue,
+                                github_client=self.github if owner.kind == "issue" and isinstance(self.github, GitHubClient) else None,
+                            )
+                if execution_id is None and not already_owned and not explicit_only and not auto_retry_deferred:
                     slots.reconcile(self.github)
                     try:
                         generation_is_current = issue_generation_is_current()
@@ -6216,15 +6266,14 @@ class AutomationEngine:
                     result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, force_adversarial_validation=True)
             else:
                 with slots.serialize(owner):
-                    if manual_retry:
-                        assert retry_authority is not None
+                    if retry_authority is not None:
                         _record_issue_stage_result(
                             item_number,
                             "issue.manual-retry",
                             f"issue#{item_number} manual retry authorized",
                             Outcome.COMPLETED,
                             {
-                                "reason": "explicit --only --force --retry",
+                                "reason": "explicit --only --force --retry" if manual_retry else "automatic stale-Jules recovery",
                                 "owner": owner.key,
                                 "request_id": retry_authority.request_id,
                                 "attempt_id": retry_authority.attempt_id,
@@ -6509,6 +6558,8 @@ class AutomationEngine:
                         candidate.data,
                         force_adversarial_validation=force_adversarial_validation,
                         adversarial_validation_scheduler=self.adversarial_validation_scheduler,
+                        stage_routing=self.issue_stage_routing,
+                        implementation_slots=self._get_implementation_slots(repo_name),
                     )
                     result.actions = pr_result.actions_taken
                     # Check if there was an error during processing
