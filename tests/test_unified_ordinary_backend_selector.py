@@ -203,3 +203,61 @@ def test_ordinary_dispatch_runs_opencode_before_later_codex(monkeypatch, tmp_pat
     assert execution.result.outcome is DispatchOutcome.LOCAL_COMPLETED
     assert execution.result.backend_name == "local-open"
     assert built == [["local-open"]]
+
+
+def test_ordinary_dispatch_reaches_candidate_when_binding_is_attributed_to_another_attempt(monkeypatch, tmp_path):
+    """Issue #2285: a legacy binding already owned by another attempt must not
+    refuse an independently authorized ordinary dispatch for this attempt."""
+    from unittest.mock import MagicMock
+
+    from auto_coder.automation_config import AutomationConfig
+    from auto_coder.cloud_manager import CloudManager
+    from auto_coder.cloud_run import CloudRun, CloudRunRepository
+    from auto_coder.issue_dispatch import DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
+    from auto_coder.issue_processor import _dispatch_issue_candidates
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo_name = "owner/repo"
+    issue_number = 2079
+
+    # A previous attempt ("5") was already durably accepted by a remote
+    # provider and recorded in the production cloud.csv projection.
+    assert CloudRunRepository(repo_name).save(CloudRun(repo_name, issue_number, 5, "codex-cloud", "old-task", "remote-old"))
+    assert CloudManager(repo_name).add_session(issue_number, "old-task", "codex-cloud", "remote-old")
+    owner, repository = repo_name.split("/", 1)
+    imported = IssueDispatchGuard().inspect(IssueAttemptIdentity(owner, repository, issue_number, "5"))
+    assert imported is not None and imported.outcome == DispatchOutcome.REMOTE_ACCEPTED
+
+    config = LLMBackendConfiguration.load_from_dict(
+        {
+            "backend": {"order": ["local-open"]},
+            "backends": {"local-open": {"backend_type": "opencode"}},
+        }
+    )
+    built = []
+    monkeypatch.setattr("auto_coder.llm_backend_config.get_llm_config", lambda **_kwargs: config)
+    monkeypatch.setattr(
+        "auto_coder.cli_helpers.build_backend_manager",
+        lambda **kwargs: built.append(kwargs["selected_backends"]) or MagicMock(),
+    )
+    monkeypatch.setattr("auto_coder.issue_processor._take_issue_actions", lambda *_args, **_kwargs: ["done"])
+    monkeypatch.setattr("auto_coder.issue_processor.get_current_attempt", lambda *_args: 0)
+
+    execution = _dispatch_issue_candidates(
+        repo_name,
+        {"number": issue_number},
+        AutomationConfig(),
+        MagicMock(),
+        ["local-open"],
+    )
+
+    # Ordinary dispatch (no explicit retry authorization) reaches its
+    # candidate instead of being refused for attempt "5"'s sake.
+    assert execution.result.outcome is DispatchOutcome.LOCAL_COMPLETED
+    assert built == [["local-open"]]
+
+    # Attempt "5"'s own accepted record is untouched.
+    still_accepted = IssueDispatchGuard().inspect(IssueAttemptIdentity(owner, repository, issue_number, "5"))
+    assert still_accepted is not None
+    assert still_accepted.outcome == DispatchOutcome.REMOTE_ACCEPTED
+    assert still_accepted.provider_reference == "old-task"

@@ -186,7 +186,7 @@ def test_failed_confirmed_release_remains_durably_suppressing(tmp_path, monkeypa
     assert fallback_calls == 0
 
 
-def test_legacy_production_writers_suppress_conflict_and_preserve_attempt_isolation(tmp_path):
+def test_legacy_production_writers_import_and_preserve_attempt_isolation(tmp_path):
     """AC-006: CloudRun/cloud.csv evidence migrates without invented ownership."""
     run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
     manager = CloudManager("owner/repo", tmp_path / "owner-repo-cloud.csv")
@@ -199,23 +199,147 @@ def test_legacy_production_writers_suppress_conflict_and_preserve_attempt_isolat
     assert legacy.outcome == DispatchOutcome.REMOTE_ACCEPTED
     assert legacy.provider_reference == "task-a"
 
-    new_attempt = guard.reserve(_identity(attempt="caller-authorized-new"), CandidateHandoff("new", "provider-b"))
-    assert new_attempt.outcome == DispatchOutcome.DEFERRED
-    assert "no unambiguous attempt association" in new_attempt.diagnostic
+    other_repository = _guard(tmp_path, "other/repo")
+    independent = other_repository.reserve(_identity("other/repo", "7"), CandidateHandoff("new", "provider-b"))
+    assert independent.admitted is True
+
+
+def test_unassociated_legacy_binding_without_accepted_handoff_remains_deferred(tmp_path):
+    """AS-002: an issue-level binding with no qualifying accepted handoff stays ambiguous."""
+    manager = CloudManager("owner/repo", tmp_path / "owner-repo-cloud.csv")
+    assert manager.add_session(2077, "task-a", "provider-a", "backend-a")
+
+    guard = _guard(tmp_path)
+    ordinary = guard.reserve(_identity(attempt="fresh"), CandidateHandoff("new", "provider-b"))
+    assert ordinary.outcome == DispatchOutcome.DEFERRED
+    assert ordinary.admitted is False
+    assert "no unambiguous attempt association" in ordinary.diagnostic
+
+    retained_binding = guard.get_legacy_issue_ownership("owner", "repo", 2077)
+    assert retained_binding is not None
+    assert retained_binding.provider_reference == "task-a"
+    assert guard.get_other_attempt_ownership(_identity(attempt="fresh")) is None
+
     authorized = guard.reserve(
         _identity(attempt="explicitly-authorized"),
         CandidateHandoff("new", "provider-b"),
         authorize_new_attempt=True,
     )
     assert authorized.admitted is True
-    retained_binding = guard.get_legacy_issue_ownership("owner", "repo", 2077)
-    assert retained_binding is not None
-    assert retained_binding.provider_reference == "task-a"
-    assert guard.inspect(_identity(attempt="7")).provider_reference == "task-a"
 
-    other_repository = _guard(tmp_path, "other/repo")
-    independent = other_repository.reserve(_identity("other/repo", "7"), CandidateHandoff("new", "provider-b"))
-    assert independent.admitted is True
+
+def test_other_attempt_accepted_binding_admits_independent_attempt_without_authorization(tmp_path):
+    """AS-001/AS-002/REQ-001/REQ-002: a binding owned by attempt P does not block attempt A."""
+    run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
+    manager = CloudManager("owner/repo", tmp_path / "owner-repo-cloud.csv")
+    assert run_store.save(CloudRun("owner/repo", 2077, 7, "provider-a", "task-a", "backend-a"))
+    assert manager.add_session(2077, "task-a", "provider-a", "backend-a")
+
+    guard = _guard(tmp_path)
+    predecessor = guard.inspect(_identity(attempt="7"))
+    assert predecessor is not None and predecessor.outcome == DispatchOutcome.REMOTE_ACCEPTED
+
+    other_owner = guard.get_other_attempt_ownership(_identity(attempt="A"))
+    assert other_owner is not None
+    assert other_owner.attributed_attempt_id == "7"
+    assert other_owner.provider == "provider-a"
+    assert other_owner.provider_reference == "task-a"
+    assert other_owner.requested_attempt_id == "A"
+
+    new_claim = guard.reserve(_identity(attempt="A"), CandidateHandoff("new", "provider-b"))
+    assert new_claim.admitted is True
+    assert new_claim.outcome == DispatchOutcome.INDETERMINATE
+
+    finalized = guard.finalize(new_claim, AdapterOutcome(DispatchOutcome.REMOTE_ACCEPTED, "task-b"))
+    assert finalized.outcome == DispatchOutcome.REMOTE_ACCEPTED
+
+    # P's own durable record and cloud.csv binding are untouched by A's claim.
+    still_p = _guard(tmp_path).inspect(_identity(attempt="7"))
+    assert still_p is not None
+    assert still_p.outcome == DispatchOutcome.REMOTE_ACCEPTED
+    assert still_p.provider_reference == "task-a"
+    assert manager.get_binding(2077).task_id == "task-a"
+
+    # A restarted guard replays the same classification from durable state alone.
+    restarted_admission = _guard(tmp_path).reserve(_identity(attempt="A2"), CandidateHandoff("new", "provider-b"))
+    assert restarted_admission.admitted is True
+
+
+def test_other_attempt_binding_still_suppressed_by_current_attempt_claim(tmp_path):
+    """AS-003/REQ-003: an existing current-attempt claim keeps winning over P's binding."""
+    run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
+    manager = CloudManager("owner/repo", tmp_path / "owner-repo-cloud.csv")
+    assert run_store.save(CloudRun("owner/repo", 2077, 7, "provider-a", "task-a", "backend-a"))
+    assert manager.add_session(2077, "task-a", "provider-a", "backend-a")
+
+    guard = _guard(tmp_path)
+    assert guard.inspect(_identity(attempt="7")).outcome == DispatchOutcome.REMOTE_ACCEPTED
+    first = guard.reserve(_identity(attempt="A"), CandidateHandoff("new", "provider-b"))
+    assert first.admitted is True
+
+    replay = _guard(tmp_path).reserve(_identity(attempt="A"), CandidateHandoff("new", "provider-b"))
+    assert replay.admitted is False
+    assert replay.outcome == DispatchOutcome.INDETERMINATE
+    assert replay.claim_incarnation == first.claim_incarnation
+
+
+def test_other_attempt_binding_with_multiple_qualifying_attempts_remains_conflicted(tmp_path):
+    """AS-002/REQ-003: several incompatible qualifying associations stay non-admitting."""
+    run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
+    manager = CloudManager("owner/repo", tmp_path / "owner-repo-cloud.csv")
+    assert run_store.save(CloudRun("owner/repo", 2077, 7, "provider-a", "task-a", "backend-a"))
+    assert run_store.save(CloudRun("owner/repo", 2077, 9, "provider-a", "task-a", "backend-a"))
+    assert manager.add_session(2077, "task-a", "provider-a", "backend-a")
+
+    guard = _guard(tmp_path)
+    assert guard.inspect(_identity(attempt="7")).outcome == DispatchOutcome.REMOTE_ACCEPTED
+    assert guard.inspect(_identity(attempt="9")).outcome == DispatchOutcome.REMOTE_ACCEPTED
+
+    ambiguous = guard.reserve(_identity(attempt="A"), CandidateHandoff("new", "provider-b"))
+    assert ambiguous.admitted is False
+    assert ambiguous.outcome == DispatchOutcome.DEFERRED
+    assert "multiple accepted attempts" in ambiguous.diagnostic
+
+
+def test_other_attempt_binding_with_conflicting_backend_remains_deferred_under_ordinary_dispatch(tmp_path):
+    """REQ-001: an incompatible populated backend identity is a conflict, not a match."""
+    run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
+    manager = CloudManager("owner/repo", tmp_path / "owner-repo-cloud.csv")
+    assert run_store.save(CloudRun("owner/repo", 2077, 7, "provider-a", "task-a", "backend-a"))
+    assert manager.add_session(2077, "task-a", "provider-a", "backend-a")
+
+    guard = _guard(tmp_path)
+    assert guard.inspect(_identity(attempt="7")).outcome == DispatchOutcome.REMOTE_ACCEPTED
+
+    # The cloud.csv binding is later rewritten with a contradictory backend
+    # identity for the same provider/task pair.
+    assert manager.add_session(2077, "task-a", "provider-a", "backend-c")
+
+    ordinary = guard.reserve(_identity(attempt="A"), CandidateHandoff("new", "provider-b"))
+    assert ordinary.admitted is False
+    assert ordinary.outcome == DispatchOutcome.DEFERRED
+    assert "backend identity conflicts" in ordinary.diagnostic
+
+    authorized = guard.reserve(
+        _identity(attempt="A-explicit"),
+        CandidateHandoff("new", "provider-b"),
+        authorize_new_attempt=True,
+    )
+    assert authorized.admitted is True
+
+
+def test_other_attempt_binding_missing_legacy_backend_still_matches(tmp_path):
+    """REQ-001: a missing/empty legacy backend does not defeat a unique accepted match."""
+    run_store = CloudRunRepository("owner/repo", tmp_path / "owner-repo-runs.json")
+    manager = CloudManager("owner/repo", tmp_path / "owner-repo-cloud.csv")
+    assert run_store.save(CloudRun("owner/repo", 2077, 7, "provider-a", "task-a", "backend-a"))
+    assert manager.add_session(2077, "task-a", "provider-a", "")
+
+    guard = _guard(tmp_path)
+    assert guard.inspect(_identity(attempt="7")).outcome == DispatchOutcome.REMOTE_ACCEPTED
+
+    admitted = guard.reserve(_identity(attempt="A"), CandidateHandoff("new", "provider-b"))
+    assert admitted.admitted is True
 
 
 def test_legacy_pending_and_contradictory_binding_remain_suppressing(tmp_path):
