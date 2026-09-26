@@ -3,9 +3,10 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock, patch
 
+from auto_coder.ci_observation import CIConclusion, CIObservationSnapshot, ObservationAvailability, ObservationRequest, ObservationSubject, WorkflowExecutionIdentity, WorkflowObservation
+from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, is_ci_observation_recovered
 from src.auto_coder.automation_config import AutomationConfig, StaleJulesPRResult
 from src.auto_coder.pr_processor import _close_stale_jules_pr, _handle_pr_merge, _should_skip_waiting_for_jules, process_pull_request
-from src.auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
 
 JULES_PR_BODY = "Fixes the reported bug.\n\nSession ID: 901463134778726610\nhttps://jules.google.com/session/901463134778726610\n\nclose #4636"
 
@@ -508,6 +509,101 @@ class TestUnlockAndRetryLinkedIssue:
         assert len(issue_candidates) == 1, "the unlocked issue must be queued exactly once"
 
 
+def _ci_observation(availability: ObservationAvailability, facts: tuple = (), *, unavailable_reason=None) -> CIObservationSnapshot:
+    """Build a real CIObservationSnapshot for a fixed subject/request (Issue #2275)."""
+    return CIObservationSnapshot(
+        subject=ObservationSubject("https://api.github.com", "owner/repo", 123, "deadbeef" * 5),
+        request=ObservationRequest("github-actions", "checks+workflows"),
+        cycle_id="cycle-1",
+        invalidation_epoch=0,
+        availability=availability,
+        facts=facts,
+        unavailable_reason=unavailable_reason,
+    )
+
+
+def _success_workflow_fact() -> WorkflowObservation:
+    return WorkflowObservation(execution=WorkflowExecutionIdentity("wf-1", "run-1", 1), conclusion=CIConclusion.SUCCESS)
+
+
+def _pending_workflow_fact() -> WorkflowObservation:
+    return WorkflowObservation(execution=WorkflowExecutionIdentity("wf-1", "run-1", 1), conclusion=CIConclusion.PENDING)
+
+
+def _failing_workflow_fact() -> WorkflowObservation:
+    return WorkflowObservation(execution=WorkflowExecutionIdentity("wf-1", "run-1", 1), conclusion=CIConclusion.FAILURE)
+
+
+def recovered_ci_checks() -> GitHubActionsStatusResult:
+    """A complete, KNOWN, all-success, non-pending, error-free CI observation (RECOVERED_CI)."""
+    observation = _ci_observation(ObservationAvailability.KNOWN, (_success_workflow_fact(),))
+    return GitHubActionsStatusResult(success=True, ids=[1], in_progress=False, error=None, observation=observation)
+
+
+def failing_ci_checks() -> GitHubActionsStatusResult:
+    observation = _ci_observation(ObservationAvailability.KNOWN, (_failing_workflow_fact(),))
+    return GitHubActionsStatusResult(success=False, ids=[1], in_progress=False, error=None, observation=observation)
+
+
+def pending_ci_checks() -> GitHubActionsStatusResult:
+    observation = _ci_observation(ObservationAvailability.KNOWN, (_pending_workflow_fact(),))
+    return GitHubActionsStatusResult(success=True, ids=[1], in_progress=True, error=None, observation=observation)
+
+
+class TestIsCiObservationRecovered:
+    """Unit coverage for the RECOVERED_CI contract (Issue #2275, REQ-001)."""
+
+    def test_complete_known_success_is_recovered(self):
+        assert is_ci_observation_recovered(recovered_ci_checks()) is True
+
+    def test_none_is_not_recovered(self):
+        assert is_ci_observation_recovered(None) is False
+
+    def test_missing_observation_is_not_recovered(self):
+        checks = GitHubActionsStatusResult(success=True, in_progress=False, error=None, observation=None)
+        assert is_ci_observation_recovered(checks) is False
+
+    def test_pending_is_not_recovered(self):
+        assert is_ci_observation_recovered(pending_ci_checks()) is False
+
+    def test_failing_is_not_recovered(self):
+        assert is_ci_observation_recovered(failing_ci_checks()) is False
+
+    def test_error_is_not_recovered_even_if_success_flag_true(self):
+        observation = _ci_observation(ObservationAvailability.KNOWN, (_success_workflow_fact(),))
+        checks = GitHubActionsStatusResult(success=True, in_progress=False, error="unexpected", observation=observation)
+        assert is_ci_observation_recovered(checks) is False
+
+    def test_known_empty_is_not_recovered(self):
+        observation = _ci_observation(ObservationAvailability.KNOWN_EMPTY)
+        checks = GitHubActionsStatusResult(success=False, in_progress=True, error="No current CI observations", observation=observation)
+        assert is_ci_observation_recovered(checks) is False
+
+    def test_partial_is_not_recovered(self):
+        observation = _ci_observation(ObservationAvailability.PARTIAL, unavailable_reason="partial read")
+        checks = GitHubActionsStatusResult(success=False, error="partial read", observation=observation)
+        assert is_ci_observation_recovered(checks) is False
+
+    def test_unavailable_is_not_recovered(self):
+        observation = _ci_observation(ObservationAvailability.UNAVAILABLE, unavailable_reason="GitHub CI request failed (unavailable)")
+        checks = GitHubActionsStatusResult(success=False, error="GitHub CI request failed (unavailable)", observation=observation)
+        assert is_ci_observation_recovered(checks) is False
+
+    def test_throttled_is_not_recovered(self):
+        observation = _ci_observation(ObservationAvailability.THROTTLED, unavailable_reason="GitHub CI request failed (throttled)")
+        checks = GitHubActionsStatusResult(success=False, error="GitHub CI request failed (throttled)", observation=observation)
+        assert is_ci_observation_recovered(checks) is False
+
+    def test_superseded_is_not_recovered(self):
+        observation = _ci_observation(ObservationAvailability.SUPERSEDED, unavailable_reason="completion was fenced by newer observation state")
+        checks = GitHubActionsStatusResult(success=False, error="completion was fenced by newer observation state", observation=observation)
+        assert is_ci_observation_recovered(checks) is False
+
+    def test_bare_default_success_without_observation_is_not_recovered(self):
+        """A default-constructed ``GitHubActionsStatusResult(success=True)`` must never authorize recovery on its own."""
+        assert is_ci_observation_recovered(GitHubActionsStatusResult()) is False
+
+
 class TestShouldSkipWaitingForJules:
     """Test cases for _should_skip_waiting_for_jules time-based behavior."""
 
@@ -534,6 +630,141 @@ class TestShouldSkipWaitingForJules:
         github_client = self._client_with_wait_comment(comment_age_hours=0.5)
 
         assert _should_skip_waiting_for_jules(github_client, "owner/repo", {"number": 123}, config) is True
+
+    def test_recovered_ci_releases_wait_within_timeout(self):
+        """REQ-002: RECOVERED_CI makes the comment/timeout-based wait nonblocking."""
+        config = AutomationConfig()
+        config.JULES_WAIT_TIMEOUT_HOURS = 2
+        github_client = self._client_with_wait_comment(comment_age_hours=0.5)
+
+        assert _should_skip_waiting_for_jules(github_client, "owner/repo", {"number": 123}, config, github_checks=recovered_ci_checks()) is False
+        # RECOVERED_CI short-circuits before any comment/commit evidence is consulted.
+        github_client.get_pr_comments.assert_not_called()
+
+    def test_pending_ci_does_not_release_wait(self):
+        """REQ-004: CI that is still pending must not activate the RECOVERED_CI exception."""
+        config = AutomationConfig()
+        config.JULES_WAIT_TIMEOUT_HOURS = 2
+        github_client = self._client_with_wait_comment(comment_age_hours=0.5)
+
+        assert _should_skip_waiting_for_jules(github_client, "owner/repo", {"number": 123}, config, github_checks=pending_ci_checks()) is True
+
+    def test_failing_ci_does_not_release_wait(self):
+        """REQ-004: a complete current terminal CI failure remains eligible for the ordinary wait."""
+        config = AutomationConfig()
+        config.JULES_WAIT_TIMEOUT_HOURS = 2
+        github_client = self._client_with_wait_comment(comment_age_hours=0.5)
+
+        assert _should_skip_waiting_for_jules(github_client, "owner/repo", {"number": 123}, config, github_checks=failing_ci_checks()) is True
+
+    @patch("auto_coder.jules_client.JulesClient")
+    def test_recovered_ci_releases_wait_with_active_session(self, mock_jules_client_class):
+        """REQ-002: an IN_PROGRESS Jules session alone must not veto progress once CI is recovered."""
+        mock_jules_client = Mock()
+        mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
+        mock_jules_client_class.return_value = mock_jules_client
+        config = AutomationConfig()
+        pr_data = _jules_pr_data(hours_old=1)
+        github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
+
+        assert _should_skip_waiting_for_jules(github_client, "owner/repo", pr_data, config, github_checks=recovered_ci_checks()) is False
+
+    @patch("auto_coder.jules_client.JulesClient")
+    def test_active_session_still_waits_without_recovered_ci(self, mock_jules_client_class):
+        """Positive control: session activity alone still gates progress when CI is not recovered."""
+        mock_jules_client = Mock()
+        mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
+        mock_jules_client_class.return_value = mock_jules_client
+        config = AutomationConfig()
+        pr_data = _jules_pr_data(hours_old=1)
+        github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
+
+        assert _should_skip_waiting_for_jules(github_client, "owner/repo", pr_data, config) is True
+        assert _should_skip_waiting_for_jules(github_client, "owner/repo", pr_data, config, github_checks=failing_ci_checks()) is True
+
+
+class TestProcessPullRequestResumesOnRecoveredCI:
+    """Production-path coverage: process_pull_request must itself obtain CI and share it with
+    the legacy Jules wait gate, so a recovered head is not deferred purely on session activity
+    (Issue #2275, REQ-002/REQ-005/REQ-007, AS-001/AS-005/AS-006).
+    """
+
+    @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
+    @patch("auto_coder.jules_client.JulesClient")
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    def test_active_session_no_longer_defers_processing_once_ci_recovers(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
+        mock_check_status.return_value = recovered_ci_checks()
+        mock_jules_client = Mock()
+        mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
+        mock_jules_client_class.return_value = mock_jules_client
+
+        from src.auto_coder.pr_processor import ProcessedPRResult
+
+        mock_process_fixes.return_value = ProcessedPRResult(pr_data={}, actions_taken=["Processed normally"], priority="fix", analysis=None)
+
+        github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
+        config = AutomationConfig()
+        pr_data = _jules_pr_data(hours_old=1)
+
+        result = process_pull_request(github_client, config, "owner/repo", pr_data)
+
+        assert not any("waiting for Jules" in action for action in result.actions_taken)
+        mock_process_fixes.assert_called_once()
+
+    @patch("src.auto_coder.pr_processor._process_pr_for_fixes")
+    @patch("auto_coder.jules_client.JulesClient")
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    def test_active_session_still_defers_when_ci_is_still_failing(self, mock_check_status, mock_jules_client_class, mock_process_fixes):
+        """Positive preservation control (AS-005): a still-failing head keeps the ordinary wait."""
+        mock_check_status.return_value = failing_ci_checks()
+        mock_jules_client = Mock()
+        mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
+        mock_jules_client_class.return_value = mock_jules_client
+
+        github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
+        config = AutomationConfig()
+        pr_data = _jules_pr_data(hours_old=1)
+
+        result = process_pull_request(github_client, config, "owner/repo", pr_data)
+
+        assert any("waiting for Jules" in action for action in result.actions_taken)
+        mock_process_fixes.assert_not_called()
+
+
+class TestGetCandidatesResumesOnRecoveredCI:
+    """The collector must release the same wait as the processor for a recovered head
+    (Issue #2275, REQ-007, AS-004).
+    """
+
+    @patch("auto_coder.jules_client.JulesClient")
+    @patch("src.auto_coder.util.github_action._check_github_actions_status")
+    def test_recovered_ci_pr_is_not_excluded_at_collection(self, mock_check_status, mock_jules_client_class):
+        from src.auto_coder.automation_engine import AutomationEngine
+
+        mock_check_status.return_value = recovered_ci_checks()
+        mock_jules_client = Mock()
+        mock_jules_client.get_session.return_value = {"state": "IN_PROGRESS"}
+        mock_jules_client_class.return_value = mock_jules_client
+
+        github_client = Mock()
+        github_client.get_pr_review_threads_strict.return_value = []
+        config = AutomationConfig()
+        pr_data = _jules_pr_data(hours_old=1)
+        pr_data["draft"] = False
+        pr_data["mergeable"] = True
+        github_client.get_open_prs_json.return_value = [pr_data]
+        github_client.get_open_issues.return_value = []
+        github_client.get_open_issues_json.return_value = []
+
+        engine = AutomationEngine(github_client, config=config)
+        with patch("src.auto_coder.util.github_action.preload_github_actions_status"):
+            candidates = engine._get_candidates("owner/repo")
+
+        assert any(candidate.data.get("number") == pr_data["number"] for candidate in candidates)
 
 
 class TestSingleTargetTypeDetection:

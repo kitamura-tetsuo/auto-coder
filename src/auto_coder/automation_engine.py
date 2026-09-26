@@ -4769,8 +4769,11 @@ class AutomationEngine:
                 # or we could refactor, but for now let's just call it to get the object as it's cached
                 checks = _check_github_actions_status(repo_name, pr_data, self.config)
 
-                # Check if we should skip this PR because it's waiting for Jules
-                if _should_skip_waiting_for_jules(self.github, repo_name, pr_data):
+                # Check if we should skip this PR because it's waiting for Jules.
+                # ``checks`` is this same current-head CI observation, so a
+                # recovered CI never gets excluded here only for the processor
+                # to release the same wait moments later (Issue #2275, REQ-007).
+                if _should_skip_waiting_for_jules(self.github, repo_name, pr_data, github_checks=checks):
                     logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
                     continue
 

@@ -27,7 +27,7 @@ from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager, claude_session_alias
 from auto_coder.github_ci_observer import ci_observation_merge_authority, ci_read_phase, end_ci_read_phase
 from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
-from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, is_ci_observation_recovered
 
 from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from .adversarial_validation_scheduler import AdversarialValidationScheduler
@@ -1274,8 +1274,15 @@ def process_pull_request(
                 processed_pr.actions_taken = [*([projection_action] if projection_action else []), "Skipped - already being processed (@auto-coder label present)"]
                 return processed_pr
 
+        # Obtain a current, read-only CI observation once and share it with the
+        # legacy Jules CI-wait gate below as well as this PR's ordinary
+        # CI-eligibility evaluation further down, so that gate can never veto
+        # progress on CI evidence it never itself consulted (Issue #2275,
+        # REQ-001/REQ-002/REQ-007).
+        github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
+
         # Check if we should skip this PR because it's waiting for Jules
-        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data, config):
+        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data, config, github_checks=github_checks):
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
             get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
             _record_pr_stage(pr_number, "pr.provider-ownership-wait", f"pr#{pr_number} provider-ownership wait", Outcome.DEFERRED, {"provider": "jules"})
@@ -1296,7 +1303,7 @@ def process_pull_request(
             # Continue with normal processing even if Jules processing fails
 
         # Check if we should skip this PR because it's waiting for Jules
-        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data, config):
+        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data, config, github_checks=github_checks):
             logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
             get_trace_logger().log("PR Processing", f"Skipping PR #{pr_number} - waiting for Jules", item_type="pr", item_number=pr_number, details={"skip_reason": "waiting_for_jules"})
             processed_pr.actions_taken = [*([projection_action] if projection_action else []), "Skipped - waiting for Jules to fix CI failures"]
@@ -1320,8 +1327,9 @@ def process_pull_request(
             try:
                 get_trace_logger().log("PR Processing", f"Processing PR #{pr_number}", item_type="pr", item_number=pr_number, details={"branch": branch_name})
 
-                # Check GitHub Actions status and mergeability
-                github_checks = _check_github_actions_status(repo_name, pr_data, config, github_client)
+                # GitHub Actions status was already obtained above to gate the
+                # legacy Jules CI-wait; reuse it here rather than issuing a
+                # second read for the same head (Issue #2275).
 
                 get_trace_logger().log("CI Status", f"CI Status for PR #{pr_number}: {'Success' if github_checks.success else 'Failure/Pending'}", item_type="pr", item_number=pr_number, details={"success": github_checks.success, "in_progress": github_checks.in_progress})
 
@@ -1641,15 +1649,33 @@ def evaluate_dependency_bot_admission(
     return DependencyBotAdmissionDecision(allowed=True)
 
 
-def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: Dict[str, Any], config: Optional[AutomationConfig] = None) -> bool:
+def _should_skip_waiting_for_jules(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: Optional[AutomationConfig] = None,
+    github_checks: Optional[GitHubActionsStatusResult] = None,
+) -> bool:
     """Check if PR should be skipped because it's waiting for Jules to fix CI failures.
 
     Returns True if:
     1. The last comment on the PR is the specific "CI checks failed..." message from Auto-Coder.
     2. There are no commits after that comment.
     3. The wait has not exceeded ``config.JULES_WAIT_TIMEOUT_HOURS``.
+
+    ``github_checks``, when supplied, is a read-only CI observation for the
+    PR's *current* head that the caller already obtained. When it establishes
+    RECOVERED_CI (Issue #2275, REQ-001), this legacy wait releases immediately:
+    Jules session presence/state, PR-output association, comment history, and
+    the wait timeout are never consulted in that case (REQ-002). CI that is
+    still pending, failing, or not currently observable falls straight through
+    to the existing session/comment/timeout evaluation below (REQ-004).
     """
     if _is_codex_or_claude_pr(pr_data):
+        return False
+
+    if is_ci_observation_recovered(github_checks):
+        logger.info(f"PR #{pr_data.get('number')} has current recovered CI; releasing the legacy Jules CI-wait (Issue #2275).")
         return False
 
     wait_timeout_hours = (config or AutomationConfig()).JULES_WAIT_TIMEOUT_HOURS
