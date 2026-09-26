@@ -18,6 +18,7 @@ import time
 import zipfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from string import Template
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -26,7 +27,7 @@ from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, 
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager, claude_session_alias
 from auto_coder.github_ci_observer import ci_observation_merge_authority, ci_read_phase, end_ci_read_phase
-from auto_coder.util.gh_cache import GitHubClient, ReviewThread, get_ghapi_client
+from auto_coder.util.gh_cache import GitHubClient, PullRequestRoutingMetadata, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, is_ci_observation_recovered
 
 from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
@@ -601,11 +602,26 @@ class PRActionList(list[str]):
 class CloudReviewRepairResult(list[str]):
     """Actions plus confirmation that blocking review work has an owner."""
 
-    def __init__(self, values: Sequence[str] = (), delivered: bool = False, deferred: bool = False, retry_not_before: Optional[float] = None) -> None:
+    def __init__(self, values: Sequence[str] = (), delivered: bool = False, deferred: bool = False, retry_not_before: Optional[float] = None, route_disposition: str = "CLOUD") -> None:
         super().__init__(values)
         self.delivered = delivered
         self.deferred = deferred
         self.retry_not_before = retry_not_before
+        self.route_disposition = route_disposition
+
+
+class ReviewRepairRouteDisposition(Enum):
+    CLOUD = "CLOUD"
+    LOCAL_REQUIRED = "LOCAL_REQUIRED"
+    CONFLICT = "CONFLICT"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass(frozen=True)
+class ReviewRepairRouteDecision:
+    disposition: ReviewRepairRouteDisposition
+    reason: str
+    evidence: Optional[PullRequestRoutingMetadata] = None
 
 
 def _retain_claude_quota_deferral(
@@ -3681,7 +3697,7 @@ def _handle_pr_merge(
                                 "pr.repair-delegation",
                                 f"pr#{pr_number} repair delegation",
                                 Outcome.ACCEPTED_HANDOFF if repair_result.delivered else (Outcome.DEFERRED if repair_result.deferred else Outcome.FAILED),
-                                {"effect": "review-thread-repair", "thread_count": len(repair_threads)},
+                                {"effect": "review-thread-repair", "thread_count": len(repair_threads), "route_disposition": repair_result.route_disposition},
                             )
                     if not force_admission_eligible:
                         return actions
@@ -6779,6 +6795,79 @@ def _reconcile_codex_review_feedback(client: Any, provider: str, task_id: str, f
     return {identity for identity in feedback if client.get_followup_delivery(task_id, identity) is FollowUpDeliveryOutcome.DELIVERED}
 
 
+_LOCAL_REPAIR_MARKERS = ("<!-- auto-coder:local-llm -->", "<!-- auto-coder:local -->")
+
+
+def _read_review_repair_routing_metadata(repo_name: str, pr_number: int, pr_data: Dict[str, Any], github_client: Optional[Any]) -> Optional[PullRequestRoutingMetadata]:
+    """Read uncached routing evidence; tolerate old test doubles outside local scope."""
+    reader = getattr(github_client, "get_pull_request_routing_metadata_strict", None)
+    # MagicMock invents attributes. Existing cloud-only callers do not need this
+    # boundary unless their queued snapshot declares the PR local.
+    explicitly_supported = github_client is not None and (isinstance(github_client, GitHubClient) or "get_pull_request_routing_metadata_strict" in getattr(github_client, "__dict__", {}) or "get_pull_request_routing_metadata_strict" in getattr(type(github_client), "__dict__", {}))
+    queued_body = str(pr_data.get("body") or "")
+    if not explicitly_supported and not any(marker in queued_body for marker in _LOCAL_REPAIR_MARKERS):
+        return None
+    if not callable(reader):
+        raise RuntimeError("authoritative current PR routing lookup is unavailable")
+    metadata = reader(repo_name, pr_number)
+    if not isinstance(metadata, PullRequestRoutingMetadata):
+        raise RuntimeError("authoritative current PR routing lookup returned invalid metadata")
+    return metadata
+
+
+def _select_review_repair_route(repo_name: str, pr_data: Dict[str, Any], github_client: Optional[Any]) -> ReviewRepairRouteDecision:
+    """Select explicit-local routing without consulting linked-Issue history."""
+    pr_number = int(pr_data["number"])
+    try:
+        evidence = _read_review_repair_routing_metadata(repo_name, pr_number, pr_data, github_client)
+    except Exception as exc:
+        return ReviewRepairRouteDecision(ReviewRepairRouteDisposition.UNAVAILABLE, f"authoritative PR routing evidence is unavailable: {exc}")
+    if evidence is None or not any(marker in evidence.body for marker in _LOCAL_REPAIR_MARKERS):
+        return ReviewRepairRouteDecision(ReviewRepairRouteDisposition.CLOUD, "no authoritative explicit local declaration", evidence)
+    if evidence.repository != repo_name or evidence.number != pr_number or evidence.state.lower() != "open":
+        return ReviewRepairRouteDecision(ReviewRepairRouteDisposition.UNAVAILABLE, "authoritative PR routing evidence does not identify the open target PR", evidence)
+
+    try:
+        direct_binding = CloudManager(repo_name).get_binding(pr_number)
+        from .cloud_run import CloudRunRepository
+
+        attribution = resolve_codex_pr_origin(
+            repo_name,
+            {**pr_data, "body": evidence.body, "head": {"ref": evidence.head_ref, "sha": evidence.head_sha, "repo": {"full_name": evidence.head_repository}}},
+            CloudRunRepository(repo_name),
+            CodexPrAttributionRepository(repo_name),
+        )
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        return ReviewRepairRouteDecision(ReviewRepairRouteDisposition.UNAVAILABLE, f"exact-PR cloud association evidence is unavailable: {type(exc).__name__}: {exc}", evidence)
+    if direct_binding is not None or (attribution.disposition is AttributionDisposition.VERIFIED and attribution.origin is not None):
+        return ReviewRepairRouteDecision(ReviewRepairRouteDisposition.CONFLICT, "explicit local declaration conflicts with a durable exact-PR cloud association", evidence)
+    if attribution.disposition in (AttributionDisposition.CONFLICT, AttributionDisposition.UNAVAILABLE):
+        return ReviewRepairRouteDecision(ReviewRepairRouteDisposition(attribution.disposition.value), f"exact-PR Codex attribution is {attribution.disposition.value}: {attribution.boundary}", evidence)
+    return ReviewRepairRouteDecision(
+        ReviewRepairRouteDisposition.LOCAL_REQUIRED,
+        f"explicit local review repair is required for {evidence.api_origin} {evidence.repository} PR #{evidence.number} at {evidence.head_repository}:{evidence.head_ref}@{evidence.head_sha}",
+        evidence,
+    )
+
+
+def _revalidate_local_review_repair_route(decision: ReviewRepairRouteDecision, repo_name: str, pr_data: Dict[str, Any], github_client: Optional[Any]) -> ReviewRepairRouteDecision:
+    """Invalidate a selected local route when its target evidence has changed."""
+    if decision.disposition is not ReviewRepairRouteDisposition.LOCAL_REQUIRED:
+        return decision
+    current = _select_review_repair_route(repo_name, pr_data, github_client)
+    if current.disposition is not ReviewRepairRouteDisposition.LOCAL_REQUIRED:
+        if current.disposition is ReviewRepairRouteDisposition.CLOUD:
+            return ReviewRepairRouteDecision(
+                ReviewRepairRouteDisposition.CONFLICT,
+                "authoritative PR target or local declaration changed after route selection",
+                current.evidence,
+            )
+        return current
+    if current.evidence != decision.evidence:
+        return ReviewRepairRouteDecision(ReviewRepairRouteDisposition.CONFLICT, "authoritative PR target or local declaration changed after route selection", current.evidence)
+    return current
+
+
 def _resolve_cloud_task_origin(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -6901,6 +6990,15 @@ def _delegate_cloud_review_thread_repair(
     task, branch, or pull request is created by this path.
     """
     pr_number = int(pr_data["number"])
+    route = _select_review_repair_route(repo_name, pr_data, github_client)
+    if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED:
+        route = _revalidate_local_review_repair_route(route, repo_name, pr_data, github_client)
+    if route.disposition is not ReviewRepairRouteDisposition.CLOUD:
+        if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED:
+            message = f"LOCAL_REQUIRED for PR #{pr_number}: {route.reason}; local review repair has not been executed"
+        else:
+            message = f"Review repair routing {route.disposition.value} for PR #{pr_number}: {route.reason}"
+        return CloudReviewRepairResult([message], route_disposition=route.disposition.value)
     exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
     if exhaustion_info and exhaustion_info.is_exhausted:
         publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 import httpx
 import pytest
 
-from src.auto_coder.util.gh_cache import GitHubClient, PullRequestRepairMetadata
+from src.auto_coder.util.gh_cache import GitHubClient, PullRequestRepairMetadata, PullRequestRoutingMetadata
 
 
 class AttrDict(dict):
@@ -125,6 +125,31 @@ class TestGitHubClient:
 
         with pytest.raises(RuntimeError, match="complete current repair metadata"):
             client.get_pull_request_repair_metadata_strict("owner/repo", 42)
+
+    @patch("src.auto_coder.util.gh_cache.httpx.get")
+    def test_get_pull_request_routing_metadata_strict_returns_live_identity(self, mock_get, mock_github_token):
+        response = Mock()
+        response.json.return_value = {
+            "state": "open",
+            "body": "<!-- auto-coder:local-llm -->",
+            "head": {"ref": "issue-7", "sha": "live-sha", "repo": {"full_name": "owner/fork"}},
+        }
+        mock_get.return_value = response
+        client = GitHubClient.get_instance(mock_github_token)
+
+        metadata = client.get_pull_request_routing_metadata_strict("owner/repo", 42)
+
+        assert metadata == PullRequestRoutingMetadata(
+            api_origin="https://api.github.com",
+            repository="owner/repo",
+            number=42,
+            state="open",
+            body="<!-- auto-coder:local-llm -->",
+            head_repository="owner/fork",
+            head_ref="issue-7",
+            head_sha="live-sha",
+        )
+        response.raise_for_status.assert_called_once_with()
 
     def test_resolve_review_thread_rejects_wrong_returned_thread_id(self, mock_github_token):
         client = GitHubClient.get_instance(mock_github_token)
