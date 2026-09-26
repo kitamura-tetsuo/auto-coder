@@ -103,6 +103,35 @@ class LegacyIssueOwnership:
     diagnostic: str
 
 
+@dataclass(frozen=True)
+class OtherAttemptProviderOwnership:
+    """A ``cloud.csv`` binding uniquely attributed to a different logical attempt.
+
+    This is diagnostic-only evidence: it neither suppresses nor authorizes the
+    requesting attempt. It exists so callers can distinguish "known ownership
+    by a different attempt" from genuinely unassociated legacy ownership.
+    """
+
+    repository_owner: str
+    repository_name: str
+    issue_number: int
+    requested_attempt_id: str
+    attributed_attempt_id: str
+    backend_name: str
+    provider: str
+    provider_reference: str
+
+
+@dataclass(frozen=True)
+class _LegacyEvidence:
+    """Internal classification of retained legacy production-writer state."""
+
+    run: Optional[CloudRun]
+    binding: Optional[CloudTaskBinding]
+    conflict: str = ""
+    other_attempt_id: str = ""
+
+
 def default_issue_dispatch_db_path() -> Path:
     return Path.home() / ".auto-coder" / "issue_dispatch_handoffs.sqlite3"
 
@@ -193,7 +222,49 @@ class IssueDispatchGuard:
             claim_incarnation=str(row["incarnation"]),
         )
 
-    def _legacy_evidence(self, identity: IssueAttemptIdentity) -> tuple[Optional[CloudRun], Optional[CloudTaskBinding], str]:
+    def _resolve_other_attempt_attribution(
+        self,
+        connection: sqlite3.Connection,
+        identity: IssueAttemptIdentity,
+        binding: CloudTaskBinding,
+    ) -> tuple[str, str]:
+        """Attribute an issue-level binding to another attempt's accepted handoff.
+
+        Returns ``(other_attempt_id, conflict_diagnostic)``; at most one is
+        non-empty. A qualifying handoff is a durable ``REMOTE_ACCEPTED`` record
+        for the exact repository/Issue matching the binding's provider family
+        and case-sensitive task/session id; a missing/empty legacy backend does
+        not defeat that match, but an incompatible populated backend does.
+        """
+        rows = connection.execute(
+            "SELECT * FROM issue_dispatch_handoffs WHERE repository_owner=? AND repository_name=? " "AND issue_number=? AND state=?",
+            (
+                identity.repository_owner,
+                identity.repository_name,
+                identity.issue_number,
+                DispatchOutcome.REMOTE_ACCEPTED.value,
+            ),
+        ).fetchall()
+        matches: dict[str, sqlite3.Row] = {}
+        backend_conflict = False
+        for row in rows:
+            if str(row["provider"]) != binding.provider or str(row["provider_reference"]) != binding.task_id:
+                continue
+            row_backend = str(row["backend_name"])
+            if binding.backend_name and row_backend and binding.backend_name != row_backend:
+                backend_conflict = True
+                continue
+            matches[str(row["attempt_id"])] = row
+        other_matches = {attempt_id: row for attempt_id, row in matches.items() if attempt_id != identity.implementation_attempt_id}
+        if len(other_matches) > 1:
+            return "", "legacy provider binding matches multiple accepted attempts"
+        if backend_conflict:
+            return "", "legacy provider binding backend identity conflicts with an accepted attempt record"
+        if len(other_matches) == 1:
+            return next(iter(other_matches)), ""
+        return "", ""
+
+    def _legacy_evidence(self, connection: sqlite3.Connection, identity: IssueAttemptIdentity) -> _LegacyEvidence:
         """Read old production writers strictly; any ambiguity remains suppressing."""
         repository = self._cloud_run_repository_factory(identity.full_repository_name)
         manager = self._cloud_manager_factory(identity.full_repository_name)
@@ -202,14 +273,19 @@ class IssueDispatchGuard:
         binding = bindings.get(str(identity.issue_number))
         exact_runs = [run for run in runs if str(run.attempt) == identity.implementation_attempt_id]
         if len(exact_runs) > 1:
-            return None, binding, "multiple legacy runs match the logical attempt"
+            return _LegacyEvidence(None, binding, "multiple legacy runs match the logical attempt")
         run = exact_runs[0] if exact_runs else None
         if run is not None and binding is not None:
             if binding.task_id != run.task_id or (binding.provider and binding.provider != run.provider):
-                return run, binding, "legacy CloudRun and provider binding contradict each other"
+                return _LegacyEvidence(run, binding, "legacy CloudRun and provider binding contradict each other")
         if run is None and binding is not None:
-            return None, binding, "legacy provider binding has no unambiguous attempt association"
-        return run, binding, ""
+            other_attempt_id, conflict = self._resolve_other_attempt_attribution(connection, identity, binding)
+            if conflict:
+                return _LegacyEvidence(None, binding, conflict)
+            if other_attempt_id:
+                return _LegacyEvidence(None, binding, other_attempt_id=other_attempt_id)
+            return _LegacyEvidence(None, binding, "legacy provider binding has no unambiguous attempt association")
+        return _LegacyEvidence(run, binding)
 
     def _materialize_legacy(
         self,
@@ -217,8 +293,16 @@ class IssueDispatchGuard:
         identity: IssueAttemptIdentity,
         allow_unassociated_binding: bool = False,
     ) -> Optional[DispatchResult]:
-        run, binding, conflict = self._legacy_evidence(identity)
+        evidence = self._legacy_evidence(connection, identity)
+        run, binding, conflict = evidence.run, evidence.binding, evidence.conflict
         if run is None and binding is None and not conflict:
+            return None
+        if evidence.other_attempt_id:
+            # This binding is known, durable ownership of a different logical
+            # attempt. It is not this identity's concern: an otherwise
+            # independently authorized reservation for `identity` must reach
+            # its own candidate rather than being refused for the other
+            # attempt's sake, and its history/ownership must stay untouched.
             return None
         now = time.time()
         provider = run.provider if run is not None else (binding.provider if binding is not None else "")
@@ -311,6 +395,35 @@ class IssueDispatchGuard:
             )
         except Exception as exc:
             logger.error(f"Legacy Issue ownership read failed for {repository_owner}/{repository_name}#{issue_number}: {exc}")
+            return None
+
+    def get_other_attempt_ownership(self, identity: IssueAttemptIdentity) -> Optional[OtherAttemptProviderOwnership]:
+        """Return diagnostic-only evidence that `identity`'s binding belongs elsewhere.
+
+        This never suppresses or authorizes `identity`; it exists so callers can
+        report that a retained ``cloud.csv`` binding is known, durable ownership
+        of a different logical attempt rather than genuinely unassociated
+        legacy ownership.
+        """
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                evidence = self._legacy_evidence(connection, identity)
+                connection.execute("COMMIT")
+            if not evidence.other_attempt_id or evidence.binding is None:
+                return None
+            return OtherAttemptProviderOwnership(
+                identity.repository_owner,
+                identity.repository_name,
+                identity.issue_number,
+                identity.implementation_attempt_id,
+                evidence.other_attempt_id,
+                evidence.binding.backend_name,
+                evidence.binding.provider,
+                evidence.binding.task_id,
+            )
+        except Exception as exc:
+            logger.error(f"Other-attempt ownership read failed for {identity}: {exc}")
             return None
 
     def reserve(

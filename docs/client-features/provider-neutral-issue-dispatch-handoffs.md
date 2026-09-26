@@ -23,11 +23,25 @@ requires a provider reference. If secondary tracking fails, accepted ownership
 and its incomplete-tracking state remain durable and suppress replacement work.
 
 CloudRun and `cloud.csv` are migration inputs. Matching CloudRun records become
-suppressing attempt ownership. Pending records remain uncertain, contradictory
-run/binding references defer, and an attempt-unassociated `cloud.csv` binding
+suppressing attempt ownership. Pending records remain uncertain, and
+contradictory run/binding references for the requesting attempt defer.
+
+When a requesting attempt has no matching CloudRun of its own, an issue-level
+`cloud.csv` binding is first resolved against every other attempt's durable
+`REMOTE_ACCEPTED` handoff for the same repository/Issue (exact provider family
+and case-sensitive task/session id; a missing legacy backend does not defeat
+the match, but an incompatible populated one does). A binding uniquely
+attributed this way to a different attempt is that attempt's own ownership,
+not the requesting attempt's: it does not block ordinary dispatch, is never
+copied onto the requesting attempt, and the other attempt's record and
+`cloud.csv` binding are left untouched. `get_other_attempt_ownership` exposes
+this attribution for diagnostics without suppressing or authorizing either
+attempt. Only a genuinely unassociated binding (no qualifying accepted
+handoff), or one matching several attempts or an incompatible backend, still
 blocks automatic dispatch for that Issue. A caller may explicitly authorize a
-separate new attempt; the old binding is retained in the legacy ownership table
-and remains inspectable rather than being assigned to the new attempt.
+separate new attempt in that remaining ambiguous case; the old binding is
+retained in the legacy ownership table and remains inspectable rather than
+being assigned to the new attempt.
 
 `dispatch_candidates` consumes a caller-ranked sequence without partitioning it
 by execution mode. Local and remote adapters acquire the same claim, each unique

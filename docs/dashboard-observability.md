@@ -24,6 +24,23 @@ Run `bash scripts/test.sh tests/test_issue_dispatch.py tests/test_cloud_backend.
 for this admission contract; the existing dashboard suites remain the
 production-to-view oracle for adapter trace emissions.
 
+Issue #2285 refines that same admission gate: an issue-level `cloud.csv`
+binding with no matching CloudRun for the requesting attempt is now first
+resolved against every other attempt's durable `REMOTE_ACCEPTED` handoff
+before it is classified as attempt-unassociated. A uniquely attributed
+other-attempt match no longer defers the requesting attempt, so
+`issue.dispatch.selection`/`issue.dispatch-route` now fire for candidates that
+a stale other-attempt binding previously blocked; this is observability-neutral
+for the event schema itself, since it introduces no new `DispatchOutcome`
+value, processing origin, or structured event field — only an existing
+`DEFERRED`-vs-admitted admission decision moves in cases that are now provably
+unambiguous. `tests/test_issue_dispatch.py` covers the classifier (unique
+other-attempt attribution, still-suppressing current-attempt claims, ambiguous
+multi-attempt and backend-conflicting bindings, and restart durability);
+`tests/test_unified_ordinary_backend_selector.py::test_ordinary_dispatch_reaches_candidate_when_binding_is_attributed_to_another_attempt`
+drives the same fix through `_dispatch_issue_candidates`, the real production
+ordinary-dispatch boundary.
+
 Issue #2002 mounts the read-only repository dependency-rescan projection at
 `/dashboard/jobs/dependency-rescan`. It consumes only the shared
 `RepoJobTraceCollector` snapshot produced by the real webhook/durable-worker
