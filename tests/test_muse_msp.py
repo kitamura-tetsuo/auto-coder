@@ -57,12 +57,15 @@ for line in sys.stdin:
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"serverInfo":{"name":"fixture","version":"1.3.1"},"schemaInfo":{"fingerprint":"sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"},"capabilities":{"sessionDurability":"durable"}}})
     elif method in ("session/start", "session/resume"):
         sid = "opaque/provider/session" if method == "session/start" else frame["params"]["sessionId"]
+        if method == "session/resume" and os.environ.get("MSP_WRONG_RESUME_ID"):
+            sid = "different/provider/session"
         workspace = os.environ.get("MSP_STORED_WORKSPACE", os.getcwd()) if method == "session/resume" else os.getcwd()
         session = {"sessionId":sid,"workspaceRoot":workspace}
         missing_model = os.environ.get("MSP_MISSING_MODEL") or (os.environ.get("MSP_MISSING_MODEL_RESUME") and method == "session/resume")
         if not missing_model:
             session["modelId"] = "muse-spark-1.3"
-        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":session,"pendingRequests":[]}})
+        pending = [{"kind":"approval","approvalId":"pending-1","viewCursor":"cursor-1"}] if method == "session/resume" and os.environ.get("MSP_PENDING_RESUME") else []
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":session,"pendingRequests":pending}})
         if os.environ.get("MSP_STOP_READING"):
             time.sleep(10)
     elif method == "turn/start":
@@ -354,3 +357,40 @@ def test_muse_noedit_continuation_prevents_write_and_shell_effects(tmp_path, mon
     turns = [json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "turn/start"]
     assert len(turns) == 2
     assert turns[1]["argv"] == ["serve", "--disable-write", "--disable-shell", "--disable-approval"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "error_pattern"),
+    [
+        ("MSP_WRONG_RESUME_ID", "different session identity"),
+        ("MSP_PENDING_RESUME", "pending interactive requests"),
+    ],
+)
+def test_muse_incompatible_resume_state_fails_before_turn_and_falls_back(tmp_path, monkeypatch, _use_real_commands, mode, error_pattern):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv(mode, "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    client = manager._clients["muse"]
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match=error_pattern):
+        client.continue_session("opaque/provider/session", "second")
+    assert time.monotonic() - started < 5
+    assert client.get_last_session_id() is None
+    failed_methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
+    assert failed_methods.count("session/resume") == 1
+    assert "turn/start" not in failed_methods
+
+    log.unlink()
+    assert manager.continue_session("opaque/provider/session", "second") == "answer:second"
+    assert manager._last_continue_session_resumed is False
+    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
+    assert methods.count("session/resume") == 1
+    assert methods.count("session/start") == 1
+    assert methods.count("turn/start") == 1
