@@ -130,6 +130,12 @@ class LocalExecutionBoundary:
             if EvidenceStatus.FAILED in (filesystem, publication, writers, violations_observed):
                 self._failure = self._failure or "local execution enforcement failed"
 
+    def record_writer_completion(self, invocation_id: str) -> None:
+        """Accept positive settlement only from an invocation supervisor."""
+        with self._lock:
+            self._accept(invocation_id)
+            self._writer_completion = EvidenceStatus.ESTABLISHED
+
     def report_policy_violation(self, invocation_id: str, reason: str) -> None:
         with self._lock:
             self._accept(invocation_id)
