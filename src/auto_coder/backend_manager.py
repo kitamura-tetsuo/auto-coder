@@ -638,6 +638,9 @@ class BackendManager(LLMBackendManagerBase):
             raise ValueError("Session ID must be nonempty for explicit continuation")
         backend_name = self._current_backend_name()
         client = self._get_or_create_client(backend_name)
+        config_backend = getattr(client, "config_backend", None)
+        backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
+        is_muse_backend = backend_type == "muse"
         self._is_noedit = is_noedit
         try:
             # Re-use _execute_backend_with_providers to capture interaction
@@ -657,14 +660,14 @@ class BackendManager(LLMBackendManagerBase):
             raise
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
             self._last_continue_session_resumed = False
+            if is_muse_backend:
+                raise
             self.switch_to_next_backend()
             return self._run_llm_cli(prompt, is_noedit=is_noedit)
         except Exception as exc:
             if not isinstance(exc, (ValueError, RuntimeError, NotImplementedError)):
                 raise
-            config_backend = getattr(client, "config_backend", None)
-            backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
-            if backend_type == "muse":
+            if is_muse_backend:
                 raise
             logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
             self._last_continue_session_resumed = False
