@@ -24,6 +24,7 @@ from .automation_config import AutomationConfig, Candidate, CandidateProcessingR
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .candidate_queue import CandidateQueue
 from .claude_followup_waits import get_claude_followup_wait_store
+from .codex_cloud_task import canonical_codex_cloud_task_url
 from .decomposition_analyzer import DecompositionIssue
 from .decomposition_validation_lifecycle import (
     DECOMPOSITION_PUBLICATION_STAGE,
@@ -6826,7 +6827,7 @@ class AutomationEngine:
                         environment_id=handoff.environment_id,
                         base_branch=base_branch,
                         submission_outcome="accepted",
-                        task_url=handoff.external_url or "",
+                        task_url=canonical_codex_cloud_task_url(handoff.external_id) or handoff.external_url or "",
                         launch_identity=handoff.request_id,
                         publication_head_repository=str(retained_config.get("publication_head_repository", "")),
                         publication_head_ref=str(retained_config.get("publication_head_ref", "")),

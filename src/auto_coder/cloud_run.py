@@ -303,6 +303,10 @@ class CloudRunRepository:
                         return old
                     if (old.provider, old.task_id, old.backend_name) != (run.provider, run.task_id, run.backend_name):
                         raise ValueError("Contradictory accepted cloud run")
+                    if run.task_url and old.task_url != run.task_url:
+                        old.task_url = run.task_url
+                        data[key] = old.to_dict()
+                        self._write_all(data)
                     return old
                 if not run.task_id or not run.backend_name or not run.environment_id or not run.base_branch:
                     raise ValueError("Accepted cloud run provenance is incomplete")
