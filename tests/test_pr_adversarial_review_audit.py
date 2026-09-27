@@ -286,15 +286,15 @@ for line in sys.stdin:
     frame = json.loads(line)
     method = frame.get("method")
     if method == "initialize":
-        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"serverInfo":{"name":"fixture","version":"1.3.1"},"schemaInfo":{"fingerprint":"sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"},"capabilities":{"sessionDurability":"durable"}}})
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"serverInfo":{"name":"fixture","version":"1.3.0"},"schema":{"version":1,"fingerprint":"sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"},"capabilities":{"sessionDurability":"durable"}}})
     elif method == "session/start":
-        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":"review-session","workspaceRoot":os.getcwd(),"modelId":"muse-spark-1.3"},"pendingRequests":[]}})
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":"review-session","workspaceRoot":os.getcwd(),"modelId":"muse-spark-1.3","approvalMode":{"mode":"denyUnmatched"}},"pendingRequests":[]}})
     elif method == "turn/start":
         Path(os.environ["MUSE_READY"]).write_text("ready")
         while not Path(os.environ["MUSE_RELEASE"]).exists():
             time.sleep(0.01)
         turn = "review-turn"
-        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"turnId":turn,"disposition":"started"}})
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"commandId":frame["params"]["commandId"],"status":"accepted","turnId":turn,"startedNewTurn":True,"disposition":"started"}})
         emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"review-session","item":{"itemId":"answer","kind":"message","revision":1,"status":"completed","turnId":turn,"role":"assistant","text":os.environ["MUSE_VERDICT"]}}})
         emit({"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"review-session","turnId":turn,"terminal":"completed"}})
 """
