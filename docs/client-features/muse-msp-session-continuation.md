@@ -11,8 +11,9 @@ Auto-Coder accepts only the final assistant message belonging to a successfully
 completed new turn. Protocol failures, identity or workspace mismatches,
 pending interactive requests, rejected or unverifiable approval changes, host
 death, and timeouts fail continuation. The backend manager propagates Muse
-continuation errors without starting a fresh session, because a fresh call
-cannot preserve the explicitly requested conversation.
+protocol and session-state continuation errors without starting a fresh
+session, because a fresh call cannot preserve the explicitly requested
+conversation.
 
 No-edit is applied independently to every host by passing only
 `--disable-write` and `--disable-shell` to `muse serve`, then establishing
