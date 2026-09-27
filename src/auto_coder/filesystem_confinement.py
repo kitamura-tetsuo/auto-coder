@@ -32,6 +32,7 @@ _PTRACE_PEEKDATA = 2
 _PTRACE_SYSCALL = 24
 _PTRACE_SETOPTIONS = 0x4200
 _PTRACE_GETEVENTMSG = 0x4201
+_PTRACE_GET_SYSCALL_INFO = 0x420E
 _PTRACE_O_TRACESYSGOOD = 1
 _PTRACE_O_TRACEFORK = 2
 _PTRACE_O_TRACEVFORK = 4
@@ -247,6 +248,29 @@ class _UserRegsStruct(ctypes.Structure):
     ]
 
 
+class _SyscallEntry(ctypes.Structure):
+    _fields_ = [("nr", ctypes.c_ulonglong), ("args", ctypes.c_ulonglong * 6)]
+
+
+class _SyscallExit(ctypes.Structure):
+    _fields_ = [("rval", ctypes.c_longlong), ("is_error", ctypes.c_ubyte)]
+
+
+class _SyscallData(ctypes.Union):
+    _fields_ = [("entry", _SyscallEntry), ("exit", _SyscallExit)]
+
+
+class _SyscallInfo(ctypes.Structure):
+    _fields_ = [
+        ("op", ctypes.c_ubyte),
+        ("pad", ctypes.c_ubyte * 3),
+        ("arch", ctypes.c_uint),
+        ("instruction_pointer", ctypes.c_ulonglong),
+        ("stack_pointer", ctypes.c_ulonglong),
+        ("data", _SyscallData),
+    ]
+
+
 def _ptrace(request: int, pid: int, address: object, data: object) -> int:
     libc = ctypes.CDLL(None, use_errno=True)
     libc.ptrace.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
@@ -267,7 +291,6 @@ class PtraceDenialMonitor:
     writable_roots: tuple[Path, ...]
     _root_pid: Optional[int] = field(default=None, init=False)
     _root_returncode: Optional[int] = field(default=None, init=False)
-    _entering: dict[int, bool] = field(default_factory=dict, init=False)
     _pending: dict[int, Optional[str]] = field(default_factory=dict, init=False)
     _tracees: set[int] = field(default_factory=set, init=False)
 
@@ -286,7 +309,6 @@ class PtraceDenialMonitor:
         _ptrace(_PTRACE_SETOPTIONS, pid, 0, options)
         self._root_pid = pid
         self._tracees.add(pid)
-        self._entering[pid] = True
         _ptrace(_PTRACE_SYSCALL, pid, 0, 0)
 
     def pump(self) -> tuple[str, ...]:
@@ -316,7 +338,6 @@ class PtraceDenialMonitor:
             if pid == self._root_pid:
                 self._root_returncode = os.waitstatus_to_exitcode(status)
             self._tracees.discard(pid)
-            self._entering.pop(pid, None)
             self._pending.pop(pid, None)
             return ()
         event = status >> 16
@@ -324,22 +345,18 @@ class PtraceDenialMonitor:
             child_pid = ctypes.c_ulong()
             _ptrace(_PTRACE_GETEVENTMSG, pid, 0, ctypes.byref(child_pid))
             self._tracees.add(child_pid.value)
-            self._entering[child_pid.value] = True
         stop_signal = os.WSTOPSIG(status)
         if stop_signal == (signal.SIGTRAP | 0x80):
-            entering = self._entering.get(pid, True)
-            regs = _registers(pid)
-            if entering:
+            info = _syscall_info(pid)
+            if info.op == 1:  # PTRACE_SYSCALL_INFO_ENTRY
+                regs = _entry_registers(info)
                 operation = self._mutation_outside_roots(pid, regs)
                 self._pending[pid] = operation
-            else:
+            elif info.op == 2:  # PTRACE_SYSCALL_INFO_EXIT
                 operation = self._pending.pop(pid, None)
-                result = ctypes.c_longlong(regs.rax).value
+                result = info.data.exit.rval
                 if operation is not None and result in {-errno.EACCES, -errno.EPERM, -errno.EXDEV}:
                     denials.append(f"filesystem policy denied {operation} for invocation process {pid}")
-            self._entering[pid] = not entering
-        else:
-            self._entering.setdefault(pid, True)
         try:
             delivered_signal = stop_signal if stop_signal not in {signal.SIGTRAP, signal.SIGSTOP} else 0
             _ptrace(_PTRACE_SYSCALL, pid, 0, delivered_signal)
@@ -407,9 +424,16 @@ class PtraceDenialMonitor:
         return target is not None and not any(_contains(root, target) for root in self.writable_roots)
 
 
-def _registers(pid: int) -> _UserRegsStruct:
+def _syscall_info(pid: int) -> _SyscallInfo:
+    info = _SyscallInfo()
+    _ptrace(_PTRACE_GET_SYSCALL_INFO, pid, ctypes.sizeof(info), ctypes.byref(info))
+    return info
+
+
+def _entry_registers(info: _SyscallInfo) -> _UserRegsStruct:
     registers = _UserRegsStruct()
-    _ptrace(12, pid, 0, ctypes.byref(registers))  # PTRACE_GETREGS
+    registers.orig_rax = info.data.entry.nr
+    registers.rdi, registers.rsi, registers.rdx, registers.r10, registers.r8, registers.r9 = info.data.entry.args
     return registers
 
 
