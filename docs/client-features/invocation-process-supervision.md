@@ -7,19 +7,25 @@ cgroup between `fork` and `exec`. Cgroup membership follows forks, double-forks,
 session changes, and reparenting, so process IDs, a working directory, and a
 one-time process snapshot are not treated as ownership evidence.
 
-The production profile is Linux with a unified cgroup-v2 hierarchy and a delegated,
-writable `/sys/fs/cgroup/auto-coder` subtree. The deployment must permit creating
-and removing child cgroups and writing `cgroup.procs`; Linux 5.14 or newer provides
-`cgroup.kill`, while older cgroup-v2 kernels use repeated member termination. These
+The production profile is Linux 5.14 or newer with a unified cgroup-v2 hierarchy
+and a root-owned `/sys/fs/cgroup/auto-coder` subtree. A privileged controller must
+be able to create child cgroups and must configure an explicit, non-root worker UID
+and GID. The launcher joins the child to its invocation cgroup and then permanently
+drops its supplementary groups, GID, and UID before `exec`. The subtree must not be
+writable by those worker credentials, preventing a provider from creating or
+joining a sibling cgroup. `cgroup.kill` is mandatory; kernels lacking it are
+rejected rather than using reusable numeric PIDs as termination identities. These
 capabilities are checked before provider submission. A missing controller,
-read-only/non-delegated hierarchy, unsafe/reused invocation identity, failed policy
+unsafe delegation or credentials, unsafe/reused invocation identity, failed policy
 installation, or failed owned launch returns `pre-start-unavailable` without an
 unowned fallback.
 
 Writer state is controller-owned and progresses from `not-started` through
 `active` and `stopping` to either `positively-stopped` or `termination-unknown`.
 Positive completion is emitted only after the kernel's `cgroup.events` reports
-`populated 0` and the direct child is reaped. Timeout, cancellation, provider
+`populated 0` and the direct child is reaped. Prompt delivery and stdout/stderr
+draining run concurrently with lifecycle observation, so pipe backpressure cannot
+block timeout or cancellation. Timeout, cancellation, provider
 failure, and writer settlement remain independent result facts. Confirmation
 failure retains the invocation's original outcome, cgroup and result paths, and
 cannot authorize replacement. Positive settlement likewise does not dispose of a
@@ -30,5 +36,6 @@ The deterministic conformance coverage is in
 `tests/test_invocation_process_supervisor.py`; run it with
 `bash scripts/test.sh tests/test_invocation_process_supervisor.py`. Production
 startup compatibility can be checked by ensuring `/sys/fs/cgroup/cgroup.controllers`
-exists and `/sys/fs/cgroup/auto-coder` is a writable delegated subtree. The tested
-profile is CPython 3.12 on Linux cgroup v2 (kernel 5.14 or newer preferred).
+and `cgroup.kill` exist, the controller runs as root, a non-root worker identity is
+configured, and `/sys/fs/cgroup/auto-coder` is root-owned and not worker-writable.
+The tested profile is CPython 3.12 on Linux cgroup v2, kernel 5.14 or newer.

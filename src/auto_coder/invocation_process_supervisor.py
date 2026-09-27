@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional, Protocol, Sequence
+from typing import IO, Callable, Optional, Protocol, Sequence
 
 from .local_execution_boundary import EvidenceStatus, LocalExecutionBoundary
 
@@ -103,6 +102,8 @@ class CgroupV2Owner:
     """A delegated cgroup-v2 subtree used as a non-PID ownership identity."""
 
     root: Path = Path("/sys/fs/cgroup/auto-coder")
+    worker_uid: Optional[int] = None
+    worker_gid: Optional[int] = None
     confirmation_hook: Optional[Callable[[Path], None]] = None
 
     def prepare(self, invocation_id: str) -> Path:
@@ -110,50 +111,62 @@ class CgroupV2Owner:
             raise CgroupV2Unavailable("invocation identity is not a safe cgroup component")
         if not Path("/sys/fs/cgroup/cgroup.controllers").is_file() and self.root == Path("/sys/fs/cgroup/auto-coder"):
             raise CgroupV2Unavailable("Linux cgroup v2 is unavailable")
+        group: Optional[Path] = None
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             group = self.root / invocation_id
             group.mkdir()
             # Real cgroupfs creates these control files. Their absence also keeps
             # ordinary directories from being mistaken for enforcement.
-            for required in ("cgroup.procs", "cgroup.events"):
+            for required in ("cgroup.procs", "cgroup.events", "cgroup.kill"):
                 if not (group / required).is_file():
                     raise CgroupV2Unavailable(f"delegated cgroup lacks {required}")
+            if os.geteuid() != 0 or self.worker_uid in (None, 0) or self.worker_gid is None:
+                raise CgroupV2Unavailable("cgroup containment requires a root supervisor and an explicit non-root worker identity")
+            root_stat = self.root.stat()
+            group_stat = group.stat()
+            if root_stat.st_uid != 0 or group_stat.st_uid != 0 or (root_stat.st_mode & 0o022):
+                raise CgroupV2Unavailable("cgroup subtree must be root-owned and not writable by worker credentials")
+            assert self.worker_uid is not None
+            assert self.worker_gid is not None
+            membership_controls = (path / "cgroup.procs" for path in self.root.iterdir() if path.is_dir())
+            for candidate in (self.root, *membership_controls):
+                candidate_stat = candidate.stat()
+                worker_writable = bool(candidate_stat.st_mode & 0o002)
+                worker_writable |= candidate_stat.st_uid == self.worker_uid and bool(candidate_stat.st_mode & 0o200)
+                worker_writable |= candidate_stat.st_gid == self.worker_gid and bool(candidate_stat.st_mode & 0o020)
+                if worker_writable:
+                    raise CgroupV2Unavailable("cgroup hierarchy permits worker-controlled membership migration")
             return group
-        except OSError as exc:
+        except CgroupV2Unavailable:
+            if group is not None:
+                self.discard(group)
+            raise
+        except (OSError, ValueError) as exc:
+            if group is not None:
+                self.discard(group)
             raise CgroupV2Unavailable(f"cannot create delegated invocation cgroup: {exc}") from exc
 
-    @staticmethod
-    def child_joiner(group: Path) -> Callable[[], None]:
+    def child_joiner(self, group: Path) -> Callable[[], None]:
         def join() -> None:
             fd = os.open(group / "cgroup.procs", os.O_WRONLY)
             try:
                 os.write(fd, str(os.getpid()).encode("ascii"))
             finally:
                 os.close(fd)
+            assert self.worker_uid is not None
+            assert self.worker_gid is not None
+            os.setgroups([])
+            os.setgid(self.worker_gid)
+            os.setuid(self.worker_uid)
 
         return join
 
     def stop_and_confirm(self, group: Path, deadline: float) -> None:
-        kill_file = group / "cgroup.kill"
         try:
-            if kill_file.exists():
-                kill_file.write_text("1")
-            else:
-                # cgroup.kill is Linux 5.14+. A delegated v2 hierarchy on older
-                # kernels is still supportable by repeatedly killing every member.
-                while True:
-                    pids = [int(value) for value in (group / "cgroup.procs").read_text().split()]
-                    if not pids:
-                        break
-                    for pid in pids:
-                        try:
-                            os.kill(pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("owned cgroup did not empty")
-                    time.sleep(0.01)
+            # cgroup.kill is the only supported termination primitive. Numeric
+            # PIDs are reusable and therefore cannot be an ownership identity.
+            (group / "cgroup.kill").write_text("1")
             while self._populated(group):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("owned cgroup termination was not confirmed")
@@ -183,6 +196,7 @@ class InvocationProcessSupervisor:
     owner: CgroupV2Owner = field(default_factory=CgroupV2Owner)
     settlement_timeout: float = 5.0
     _states: dict[str, WriterState] = field(default_factory=dict, init=False)
+    _retained: dict[str, tuple[subprocess.Popen[bytes], Path]] = field(default_factory=dict, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def state(self, invocation_id: str) -> WriterState:
@@ -235,7 +249,6 @@ class InvocationProcessSupervisor:
                 stdin=stdin,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
                 preexec_fn=self.owner.child_joiner(group),
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -243,13 +256,14 @@ class InvocationProcessSupervisor:
             return self._unavailable(request, f"owned launch failed: {exc}", tuple(installations))
 
         self._set_state(request.invocation_id, WriterState.ACTIVE)
-        if process.stdin is not None:
-            try:
-                process.stdin.write(request.prompt or "")
-                process.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass
         start = time.monotonic()
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        readers = [
+            self._start_reader(process.stdout, stdout_chunks),
+            self._start_reader(process.stderr, stderr_chunks),
+        ]
+        input_writer = self._start_writer(process.stdin, (request.prompt or "").encode("utf-8"))
         outcome = InvocationOutcome.FAILED
         while process.poll() is None:
             if request.cancellation is not None and request.cancellation.is_set():
@@ -274,24 +288,83 @@ class InvocationProcessSupervisor:
         except (CgroupV2Unavailable, subprocess.TimeoutExpired) as exc:
             writer_state = WriterState.TERMINATION_UNKNOWN
             detail = str(exc)
+            with self._lock:
+                self._retained[request.invocation_id] = (process, group)
         self._set_state(request.invocation_id, writer_state)
-        # communicate() tries to flush a closed stdin; detach it after the finite
-        # prompt has been delivered so output collection remains well-defined.
-        process.stdin = None
-        stdout, stderr = process.communicate()
+        if writer_state is WriterState.POSITIVELY_STOPPED:
+            for thread in (*readers, input_writer):
+                if thread is not None:
+                    thread.join(timeout=self.settlement_timeout)
         return SupervisedInvocationResult(
             request.invocation_id,
             outcome,
             writer_state,
             process.returncode,
-            stdout,
-            stderr,
+            b"".join(stdout_chunks).decode("utf-8", errors="replace"),
+            b"".join(stderr_chunks).decode("utf-8", errors="replace"),
             detail,
             tuple(installations),
         )
 
     def authorize_replacement(self, predecessor: SupervisedInvocationResult, *, controller_decision: bool) -> bool:
         return controller_decision and predecessor.writer_complete and self.state(predecessor.invocation_id) is WriterState.POSITIVELY_STOPPED
+
+    def settle_retained(self, invocation_id: str) -> bool:
+        """Retry authoritative cleanup without converting the original outcome."""
+        with self._lock:
+            retained = self._retained.get(invocation_id)
+        if retained is None:
+            return self.state(invocation_id) is WriterState.POSITIVELY_STOPPED
+        process, group = retained
+        try:
+            self.owner.stop_and_confirm(group, time.monotonic() + self.settlement_timeout)
+            process.wait(timeout=self.settlement_timeout)
+        except (CgroupV2Unavailable, subprocess.TimeoutExpired):
+            return False
+        self.owner.discard(group)
+        with self._lock:
+            self._retained.pop(invocation_id, None)
+            self._states[invocation_id] = WriterState.POSITIVELY_STOPPED
+        return True
+
+    @staticmethod
+    def _start_reader(stream: Optional[IO[bytes]], chunks: list[bytes]) -> Optional[threading.Thread]:
+        if stream is None:
+            return None
+
+        def read() -> None:
+            try:
+                while chunk := os.read(stream.fileno(), 65536):
+                    chunks.append(chunk)
+            except OSError:
+                pass
+            finally:
+                stream.close()
+
+        thread = threading.Thread(target=read, name="invocation-output-reader", daemon=True)
+        thread.start()
+        return thread
+
+    @staticmethod
+    def _start_writer(stream: Optional[IO[bytes]], prompt: bytes) -> Optional[threading.Thread]:
+        if stream is None:
+            return None
+
+        def write() -> None:
+            try:
+                stream.write(prompt)
+                stream.flush()
+            except (BrokenPipeError, OSError):
+                pass
+            finally:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+        thread = threading.Thread(target=write, name="invocation-prompt-writer", daemon=True)
+        thread.start()
+        return thread
 
     def _unavailable(
         self,
