@@ -8,7 +8,7 @@ cannot authorize a body update.
 
 Immediately before an update, Auto-Coder bypasses caches to read the live PR
 body and rechecks the durable attribution token. It preserves that body and
-appends only `https://chatgpt.com/codex/tasks/<task-id>`. An already-present
+appends only `https://chatgpt.com/codex/cloud/tasks/<task-id>`. An already-present
 supported equivalent URL confirms the projection without rewriting it. A
 successful update or authoritative read is required for confirmation; rejected
 or indeterminate writes remain retryable, and the next processing pass rereads

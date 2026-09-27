@@ -171,7 +171,7 @@ def test_find_codex_cloud_task_for_issue_cloud_manager(tmp_path: Path):
 
     with patch("auto_coder.pr_processor.CloudManager", return_value=cloud_manager):
         url = _find_codex_cloud_task_for_issue(repo, 42)
-        assert url == "https://chatgpt.com/codex/tasks/task_e_abcdef123456"
+        assert url == "https://chatgpt.com/codex/cloud/tasks/task_e_abcdef123456"
 
 
 def test_find_codex_cloud_task_for_issue_rejects_placeholder_session(tmp_path: Path):
@@ -193,7 +193,7 @@ def test_find_codex_cloud_task_for_issue_falls_back_after_placeholder_session(tm
     with patch("auto_coder.pr_processor.CloudManager", return_value=cloud_manager):
         url = _find_codex_cloud_task_for_issue(repo, 42, github_client)
 
-    assert url == "https://chatgpt.com/codex/tasks/task_e_real123"
+    assert url == "https://chatgpt.com/codex/cloud/tasks/task_e_real123"
 
 
 def test_find_codex_cloud_task_for_issue_comments(tmp_path: Path):
@@ -207,4 +207,4 @@ def test_find_codex_cloud_task_for_issue_comments(tmp_path: Path):
 
     with patch("auto_coder.pr_processor.CloudManager", return_value=cloud_manager):
         url = _find_codex_cloud_task_for_issue(repo, 99, github_client)
-        assert url == "https://chatgpt.com/codex/tasks/task_e_comment123"
+        assert url == "https://chatgpt.com/codex/cloud/tasks/task_e_comment123"

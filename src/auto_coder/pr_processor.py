@@ -54,7 +54,7 @@ from .branch_manager import BranchManager
 from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
 from .ci_repair_authority import current_ci_failure_authority
 from .claude_followup_waits import ClaudeFollowupHoldActive, get_claude_followup_wait_store, wait_from_error
-from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
+from .codex_cloud_task import canonical_codex_cloud_task_url, extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin, task_ids_from_text
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
@@ -5735,10 +5735,8 @@ def _find_codex_cloud_task_for_issue(
         session_id = cloud_manager.get_session_id(issue_number)
         if session_id:
             task_id = extract_codex_cloud_task_id(session_id)
-            if session_id.startswith("http") and "/codex/tasks/" in session_id and task_id:
-                return session_id
-            if is_valid_codex_cloud_task_id(session_id):
-                return f"https://chatgpt.com/codex/tasks/{session_id.strip()}"
+            if task_id:
+                return canonical_codex_cloud_task_url(task_id)
 
         # 2. Check comments on the issue if github_client is available
         if github_client:
@@ -5747,14 +5745,16 @@ def _find_codex_cloud_task_for_issue(
                 for comment in comments:
                     comment_body = comment.get("body", "") or ""
                     # Check for direct URL in comment
-                    url_match = re.search(r"(https?://[^\s]+/codex/tasks/[a-zA-Z0-9_-]+)", comment_body)
-                    if url_match and extract_codex_cloud_task_id(url_match.group(1)):
-                        return url_match.group(1)
+                    url_match = re.search(r"(https?://[^\s]+/codex/(?:cloud/)?tasks/[a-zA-Z0-9_-]+)", comment_body)
+                    if url_match:
+                        task_id = extract_codex_cloud_task_id(url_match.group(1))
+                        if task_id:
+                            return canonical_codex_cloud_task_url(task_id)
 
                     # Check for "Codex Cloud task ... Task ID: <id>"
                     task_match = re.search(r"Codex Cloud task.*?Task ID:\s*(task_[a-zA-Z0-9_-]+)", comment_body, re.IGNORECASE | re.DOTALL)
                     if task_match and is_valid_codex_cloud_task_id(task_match.group(1)):
-                        return f"https://chatgpt.com/codex/tasks/{task_match.group(1)}"
+                        return canonical_codex_cloud_task_url(task_match.group(1))
             except Exception as e:
                 logger.debug(f"Failed to fetch comments for issue #{issue_number}: {e}")
 
@@ -5838,7 +5838,9 @@ def _link_codex_cloud_pr_to_issue(
         if admitted != attribution:
             return CodexTaskProjectionResult("deferred", "Codex task projection deferred: attribution changed before update admission")
 
-        codex_url = f"https://chatgpt.com/codex/tasks/{origin.task_id}"
+        codex_url = canonical_codex_cloud_task_url(origin.task_id)
+        if codex_url is None:
+            return CodexTaskProjectionResult("deferred", "Codex task projection deferred: verified task ID is invalid")
         separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
         new_body = f"{pr_body}{separator}{codex_url}"
 
