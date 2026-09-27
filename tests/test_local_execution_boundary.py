@@ -1,0 +1,88 @@
+from pathlib import Path
+
+import pytest
+
+from src.auto_coder.local_execution_boundary import (
+    LocalBoundaryError,
+    LocalExecutionBoundary,
+    bind_local_execution_boundary,
+    get_current_local_execution_boundary,
+)
+from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
+
+
+def _binding(tmp_path: Path) -> LocalWorkspaceBinding:
+    caller = tmp_path / "caller"
+    workspace = tmp_path / "private" / "repository"
+    git_dir = caller / ".git"
+    workspace.mkdir(parents=True)
+    git_dir.mkdir(parents=True)
+    return LocalWorkspaceBinding(
+        invocation_id="invocation-1",
+        caller_root=caller,
+        caller_git_dir=git_dir,
+        caller_common_dir=git_dir,
+        initial_head="refs/heads/main",
+        initial_commit="a" * 40,
+        index_checksum="index",
+        file_snapshot_checksum="files",
+        workspace=workspace,
+        ownership=LocalWorkspaceOwnership(),
+    )
+
+
+def test_boundary_requires_settled_writers_before_promotion(tmp_path: Path) -> None:
+    boundary = LocalExecutionBoundary(_binding(tmp_path), "opencode", editable=True)
+
+    with pytest.raises(LocalBoundaryError, match="writer lifetime is not settled"):
+        boundary.require_promotable()
+
+    boundary.settle_writers()
+    evidence = boundary.require_promotable()
+    assert evidence.invocation_id == "invocation-1"
+    assert evidence.backend_type == "opencode"
+    assert evidence.editable is True
+    assert evidence.promotable is True
+
+
+def test_policy_violation_is_sticky_after_writer_settlement(tmp_path: Path) -> None:
+    boundary = LocalExecutionBoundary(_binding(tmp_path), "muse", editable=True)
+    boundary.report_policy_violation("external publication denied")
+    boundary.settle_writers()
+
+    with pytest.raises(LocalBoundaryError, match="external publication denied"):
+        boundary.require_promotable()
+    assert boundary.evidence().policy_violation is True
+    assert boundary.evidence().promotable is False
+
+
+def test_boundary_is_invocation_local_and_rejects_nesting(tmp_path: Path) -> None:
+    binding = _binding(tmp_path)
+    assert get_current_local_execution_boundary() is None
+
+    with bind_local_execution_boundary(binding, backend_type="codex", editable=False) as boundary:
+        assert get_current_local_execution_boundary() is boundary
+        with pytest.raises(LocalBoundaryError, match="already active"):
+            with bind_local_execution_boundary(binding, backend_type="codex", editable=False):
+                pass
+
+    assert get_current_local_execution_boundary() is None
+
+
+def test_boundary_rejects_workspace_aliasing_caller_authority(tmp_path: Path) -> None:
+    binding = _binding(tmp_path)
+    unsafe = LocalWorkspaceBinding(
+        invocation_id=binding.invocation_id,
+        caller_root=binding.caller_root,
+        caller_git_dir=binding.caller_git_dir,
+        caller_common_dir=binding.caller_common_dir,
+        initial_head=binding.initial_head,
+        initial_commit=binding.initial_commit,
+        index_checksum=binding.index_checksum,
+        file_snapshot_checksum=binding.file_snapshot_checksum,
+        workspace=binding.caller_root,
+        ownership=binding.ownership,
+    )
+
+    with pytest.raises(LocalBoundaryError, match="aliases caller-owned Git state"):
+        LocalExecutionBoundary(unsafe, "opencode", editable=True)
