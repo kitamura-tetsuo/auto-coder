@@ -5,10 +5,13 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import select
 import shlex
 import stat
 import subprocess
 import tempfile
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
@@ -22,6 +25,8 @@ from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
 from .utils import _COMMAND_EXECUTION_CWD
 
 logger = get_logger(__name__)
+
+_MUSE_MSP_SCHEMA_FINGERPRINT = "sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"
 
 _READ_ONLY_GIT_COMMANDS = {
     "blame",
@@ -505,96 +510,245 @@ class MuseClient(LLMClientBase):
 
         return False
 
-    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
-        cwd = self._execution_cwd()
-        before = self._snapshot()
-        effective_noedit = is_noedit or self.use_noedit_options
+    @staticmethod
+    def _msp_send(process: subprocess.Popen[bytes], frame: dict[str, object]) -> None:
+        if process.stdin is None:
+            raise RuntimeError("Muse MSP host has no input stream")
+        process.stdin.write((json.dumps(frame, separators=(",", ":")) + "\n").encode())
+        process.stdin.flush()
+
+    def _msp_wait(
+        self,
+        process: subprocess.Popen[bytes],
+        request_id: int,
+        deadline: float,
+        notifications: list[dict[str, object]],
+    ) -> dict[str, object]:
+        if process.stdout is None:
+            raise RuntimeError("Muse MSP host has no output stream")
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            ready, _, _ = select.select([process.stdout], [], [], max(0.0, remaining))
+            if not ready:
+                break
+            raw = process.stdout.readline()
+            if not raw:
+                detail = ""
+                if process.stderr is not None:
+                    detail = process.stderr.read().decode(errors="replace").strip()
+                markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded"]
+                if self._is_usage_limit_exhausted("", detail, process.returncode or 1, markers):
+                    raise AutoCoderUsageLimitError(detail or "Muse Code usage limit reached")
+                raise RuntimeError(f"Muse MSP host exited before completing the request: {detail}")
+            try:
+                frame = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("Muse MSP host emitted an invalid protocol frame") from exc
+            if not isinstance(frame, dict):
+                raise RuntimeError("Muse MSP host emitted a non-object protocol frame")
+            if frame.get("id") == request_id:
+                if "error" in frame:
+                    raise RuntimeError(f"Muse MSP request failed: {frame['error']}")
+                result = frame.get("result")
+                if not isinstance(result, dict):
+                    raise RuntimeError("Muse MSP response did not contain an object result")
+                return result
+            if "method" in frame and "id" in frame:
+                # Auto-Coder is deliberately non-interactive. Refuse every host
+                # request instead of allowing an approval or question to hang.
+                self._msp_send(
+                    process,
+                    {"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32601, "message": "Auto-Coder does not support interactive MSP requests"}},
+                )
+            elif "method" in frame:
+                notifications.append(frame)
+                if request_id == -1:
+                    return {}
+        raise AutoCoderTimeoutError(f"Muse MSP invocation timed out after {self.timeout} seconds")
+
+    @staticmethod
+    def _session_metadata(result: dict[str, object]) -> dict[str, object]:
+        session = result.get("session")
+        if not isinstance(session, dict):
+            raise RuntimeError("Muse MSP response omitted session metadata")
+        return session
+
+    def _msp_options(self, effective_noedit: bool) -> tuple[list[str], Optional[str]]:
         processed = self.config_backend.replace_placeholders(model_name=self.model_name) if self.config_backend else {}
-        options = processed.get("options_for_noedit" if effective_noedit and self.options_for_noedit else "options", self.options_for_noedit if effective_noedit and self.options_for_noedit else self.options)
-        command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse"))
-        raw_arguments = [*options, *self.consume_extra_args()]
-        self._reject_competing_prompt_sources(raw_arguments)
-        invocation_arguments = [arg for arg in raw_arguments if arg != "exec"]
+        configured = processed.get(
+            "options_for_noedit" if effective_noedit and self.options_for_noedit else "options",
+            self.options_for_noedit if effective_noedit and self.options_for_noedit else self.options,
+        )
+        arguments = [*configured, *self.consume_extra_args()]
+        self._reject_competing_prompt_sources(arguments)
+        host_arguments = ["serve"]
+        reasoning: Optional[str] = None
+        index = 0
+        harmless = {"exec", "--json", "--no-edit"}
+        while index < len(arguments):
+            argument = arguments[index]
+            if argument in harmless:
+                index += 1
+                continue
+            if argument in {"--model", "--reasoning-effort"}:
+                if index + 1 >= len(arguments):
+                    raise RuntimeError(f"Muse option {argument} requires a value")
+                value = arguments[index + 1]
+                if argument == "--model" and value != self.model_name:
+                    raise RuntimeError("Muse configured model conflicts with the selected backend model")
+                if argument == "--reasoning-effort":
+                    reasoning = value
+                index += 2
+                continue
+            if argument.startswith("--model="):
+                if argument.split("=", 1)[1] != self.model_name:
+                    raise RuntimeError("Muse configured model conflicts with the selected backend model")
+                index += 1
+                continue
+            if argument.startswith("--reasoning-effort="):
+                reasoning = argument.split("=", 1)[1]
+                index += 1
+                continue
+            if argument in {"--disable-write", "--disable-shell", "--disable-approval"}:
+                host_arguments.append(argument)
+                index += 1
+                continue
+            if argument in {"--yolo", "--disable-sandbox"} and effective_noedit:
+                index += 1
+                continue
+            raise RuntimeError(f"Muse option is not representable through MSP: {argument}")
         if effective_noedit:
-            invocation_arguments = [arg for arg in invocation_arguments if arg not in {"--yolo", "--disable-sandbox"}]
-            for required_flag in ("--disable-write", "--disable-shell", "--disable-approval"):
-                if required_flag not in invocation_arguments:
-                    invocation_arguments.append(required_flag)
+            for flag in ("--disable-write", "--disable-shell", "--disable-approval"):
+                if flag not in host_arguments:
+                    host_arguments.append(flag)
+        return host_arguments, reasoning
+
+    def _run_msp_turn(self, prompt: str, is_noedit: bool, session_id: Optional[str]) -> str:
+        cwd = self._execution_cwd().resolve()
+        before = self._snapshot_at(cwd)
+        effective_noedit = is_noedit or self.use_noedit_options
+        host_arguments, reasoning = self._msp_options(effective_noedit)
         rendered_prompt = render_prompt("muse.execution", task_prompt=prompt, mode="no-edit" if effective_noedit else "edit")
         env = os.environ.copy()
         if self.config_backend and self.config_backend.api_key and "MUSE_API_KEY" not in env:
             env["MUSE_API_KEY"] = self.config_backend.api_key
-
-        trace_file = tempfile.NamedTemporaryFile(prefix="auto-coder-muse-git-trace-", delete=False)
-        trace_path = trace_file.name
-        trace_file.close()
+        trace = tempfile.NamedTemporaryFile(prefix="auto-coder-muse-git-trace-", delete=False)
+        trace_path = trace.name
+        trace.close()
         env["GIT_TRACE2_EVENT"] = trace_path
+        command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse")) + host_arguments
+        process: Optional[subprocess.Popen[bytes]] = None
+        self._last_session_id = None
+        deadline = time.monotonic() + self.timeout
+        notifications: list[dict[str, object]] = []
         try:
-            prompt_path = self._create_prompt_file(rendered_prompt)
-        except BaseException:
+            logger.warning("LLM invocation: Muse Code MSP host is being called. Keep LLM calls minimized.")
+            process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix", bufsize=0)
+            self._msp_send(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "auto-coder", "version": "1"}}})
+            initialized = self._msp_wait(process, 1, deadline, notifications)
+            schema = initialized.get("schemaInfo")
+            if not isinstance(schema, dict) or not isinstance(schema.get("fingerprint"), str):
+                raise RuntimeError("Muse MSP initialization omitted schema compatibility metadata")
+            if schema["fingerprint"] != _MUSE_MSP_SCHEMA_FINGERPRINT:
+                raise RuntimeError("Muse MSP host schema is incompatible with Auto-Coder " f"(served {schema['fingerprint']}, expected {_MUSE_MSP_SCHEMA_FINGERPRINT})")
+            self._msp_send(process, {"jsonrpc": "2.0", "method": "initialized"})
+            if session_id is None:
+                params: dict[str, object] = {"workspaceRoot": str(cwd), "modelId": self.model_name, "approvalMode": "deny" if effective_noedit else "default"}
+                method = "session/start"
+            else:
+                if not session_id.strip():
+                    raise ValueError("Muse session ID must be nonempty")
+                params = {"sessionId": session_id, "excludeItems": False}
+                method = "session/resume"
+            self._msp_send(process, {"jsonrpc": "2.0", "id": 2, "method": method, "params": params})
+            opened = self._msp_wait(process, 2, deadline, notifications)
+            metadata = self._session_metadata(opened)
+            canonical_id = metadata.get("sessionId")
+            if not isinstance(canonical_id, str) or not canonical_id:
+                raise RuntimeError("Muse MSP returned an invalid session identity")
+            if session_id is not None and canonical_id != session_id:
+                raise RuntimeError("Muse MSP resumed a different session identity")
+            workspace = metadata.get("workspaceRoot")
+            if not isinstance(workspace, str) or Path(workspace).resolve() != cwd:
+                raise RuntimeError("Muse MSP session belongs to an incompatible workspace")
+            effective_model = metadata.get("modelId")
+            if effective_model is not None and effective_model != self.model_name:
+                raise RuntimeError("Muse MSP session uses an incompatible model")
+            pending = opened.get("pendingRequests")
+            if pending not in (None, []):
+                raise RuntimeError("Muse MSP session has pending interactive requests")
+            command_id = str(uuid.uuid4())
+            turn_params: dict[str, object] = {"commandId": command_id, "sessionId": canonical_id, "input": [{"type": "text", "text": rendered_prompt}]}
+            if reasoning is not None:
+                turn_params["reasoningEffort"] = reasoning
+            self._msp_send(process, {"jsonrpc": "2.0", "id": 3, "method": "turn/start", "params": turn_params})
+            turn_ack = self._msp_wait(process, 3, deadline, notifications)
+            turn_id = turn_ack.get("turnId")
+            if not isinstance(turn_id, str) or not turn_id:
+                raise RuntimeError("Muse MSP did not acknowledge the submitted turn")
+            terminal: Optional[dict[str, object]] = None
+            while terminal is None:
+                before_count = len(notifications)
+                # Wait for a deliberately unused response id while collecting notifications.
+                try:
+                    self._msp_wait(process, -1, deadline, notifications)
+                except AutoCoderTimeoutError:
+                    raise
+                except RuntimeError:
+                    raise
+                if len(notifications) == before_count:
+                    continue
+                for event in notifications[before_count:]:
+                    params_obj = event.get("params")
+                    if event.get("method") == "turn/completed" and isinstance(params_obj, dict) and params_obj.get("turnId") == turn_id:
+                        terminal = params_obj
+                        break
+            if terminal.get("terminal") != "completed":
+                raise RuntimeError(f"Muse MSP turn did not complete successfully: {terminal}")
+            answers: list[str] = []
+            for event in notifications:
+                params_obj = event.get("params")
+                if event.get("method") not in {"item/started", "item/updated", "item/completed"} or not isinstance(params_obj, dict):
+                    continue
+                item = params_obj.get("item")
+                if isinstance(item, dict) and item.get("turnId") == turn_id and item.get("role") == "assistant" and isinstance(item.get("text"), str):
+                    answers.append(str(item["text"]))
+            if not answers:
+                raise RuntimeError("Muse MSP turn completed without final assistant text")
+            self._last_session_id = canonical_id
+            return answers[-1]
+        except subprocess.TimeoutExpired as exc:
+            raise AutoCoderTimeoutError(f"Muse MSP invocation timed out after {self.timeout} seconds") from exc
+        finally:
+            if process is not None:
+                if process.stdin is not None:
+                    try:
+                        process.stdin.close()
+                    except OSError:
+                        pass
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
             try:
-                os.unlink(trace_path)
-            except OSError as cleanup_exc:
-                logger.error("Unable to remove Muse Git trace file %s: %s", trace_path, cleanup_exc)
-            raise
-        command.extend(["exec", *invocation_arguments, "--prompt-file", str(prompt_path)])
-
-        try:
-            logger.warning("LLM invocation: Muse Code CLI is being called. Keep LLM calls minimized.")
-            logger.info("Running Muse Code in non-interactive %s mode", "no-edit" if effective_noedit else "edit")
-            try:
-                result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=self.timeout, env=env)
-            except subprocess.TimeoutExpired as exc:
                 mutation_observed = self._trace_contains_git_mutation(trace_path)
                 self._assert_invariants(before, effective_noedit, mutation_observed)
-                raise AutoCoderTimeoutError(f"Muse Code CLI timed out after {self.timeout} seconds") from exc
-            except OSError as exc:
-                raise RuntimeError(f"Muse Code CLI could not be executed: {exc}") from exc
-
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            combined_output = "\n".join(part for part in (stdout, stderr) if part).strip()
-            mutation_observed = self._trace_contains_git_mutation(trace_path)
-            self._assert_invariants(before, effective_noedit, mutation_observed)
-            markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded"]
-            if self._is_usage_limit_exhausted(stdout, stderr, result.returncode, markers):
-                raise AutoCoderUsageLimitError(stderr or combined_output or "Muse Code usage limit reached")
-            if result.returncode != 0:
-                from .adversarial_validator import _extract_muse_jsonl_result
-
-                jsonl_detected, _, jsonl_error = _extract_muse_jsonl_result(stdout)
-                if jsonl_detected and jsonl_error:
-                    raise RuntimeError(f"Muse Code CLI failed with return code {result.returncode}: {jsonl_error}")
-                raise RuntimeError(f"Muse Code CLI failed with return code {result.returncode}\n{combined_output}")
-
-            from .adversarial_validator import _extract_muse_jsonl_result
-
-            jsonl_detected, extracted_text, jsonl_error = _extract_muse_jsonl_result(stdout)
-            if jsonl_detected:
-                if jsonl_error:
-                    raise RuntimeError(f"Muse Code CLI event stream error: {jsonl_error}")
-                final_output = extracted_text if extracted_text is not None else ""
-            else:
-                final_output = stdout or stderr
-        except BaseException as exc:
-            try:
-                prompt_path.unlink()
-            except OSError as cleanup_exc:
-                logger.error("Unable to remove Muse prompt file %s: %s", prompt_path, cleanup_exc)
-                exc.add_note(f"Muse prompt file cleanup failed: {cleanup_exc}")
-            raise
-        else:
-            try:
-                prompt_path.unlink()
-            except OSError as cleanup_exc:
-                logger.error("Unable to remove Muse prompt file %s: %s", prompt_path, cleanup_exc)
-                raise RuntimeError(f"Muse completed but its prompt file could not be removed: {cleanup_exc}") from cleanup_exc
-            return final_output
-        finally:
-            try:
+            finally:
                 os.unlink(trace_path)
-            except OSError as exc:
-                logger.error("Unable to remove Muse Git trace file %s: %s", trace_path, exc)
+
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+        return self._run_msp_turn(prompt, is_noedit, None)
+
+    def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+        return self._run_msp_turn(prompt, is_noedit, session_id)
+
+    def get_last_session_id(self) -> Optional[str]:
+        return self._last_session_id
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         return False

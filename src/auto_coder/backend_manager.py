@@ -602,6 +602,10 @@ class BackendManager(LLMBackendManagerBase):
             raise last_error
         raise RuntimeError("No backend available to run prompt")
 
+    def get_last_session_id(self) -> Optional[str]:
+        """Return the provider-issued identity from the last successful call."""
+        return self._last_session_id
+
     def get_current_backend_identity(self) -> Tuple[str, str, str]:
         """Return the current alias, resolved type, and model for registry keys."""
         backend_name = self._current_backend_name()
