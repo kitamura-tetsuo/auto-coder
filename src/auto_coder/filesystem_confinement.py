@@ -31,6 +31,7 @@ _PTRACE_TRACEME = 0
 _PTRACE_PEEKDATA = 2
 _PTRACE_SYSCALL = 24
 _PTRACE_SETOPTIONS = 0x4200
+_PTRACE_GETEVENTMSG = 0x4201
 _PTRACE_O_TRACESYSGOOD = 1
 _PTRACE_O_TRACEFORK = 2
 _PTRACE_O_TRACEVFORK = 4
@@ -268,6 +269,7 @@ class PtraceDenialMonitor:
     _root_returncode: Optional[int] = field(default=None, init=False)
     _entering: dict[int, bool] = field(default_factory=dict, init=False)
     _pending: dict[int, Optional[str]] = field(default_factory=dict, init=False)
+    _tracees: set[int] = field(default_factory=set, init=False)
 
     @property
     def root_returncode(self) -> Optional[int]:
@@ -283,45 +285,67 @@ class PtraceDenialMonitor:
         options = _PTRACE_O_TRACESYSGOOD | _PTRACE_O_TRACEFORK | _PTRACE_O_TRACEVFORK | _PTRACE_O_TRACECLONE
         _ptrace(_PTRACE_SETOPTIONS, pid, 0, options)
         self._root_pid = pid
+        self._tracees.add(pid)
         self._entering[pid] = True
         _ptrace(_PTRACE_SYSCALL, pid, 0, 0)
 
     def pump(self) -> tuple[str, ...]:
         denials: list[str] = []
-        while True:
-            try:
-                pid, status = os.waitpid(-1, os.WNOHANG | _WAIT_ALL)
-            except ChildProcessError:
-                break
-            if pid == 0:
-                break
-            if os.WIFEXITED(status) or os.WIFSIGNALED(status):
-                if pid == self._root_pid:
-                    self._root_returncode = os.waitstatus_to_exitcode(status)
-                self._entering.pop(pid, None)
-                self._pending.pop(pid, None)
-                continue
-            stop_signal = os.WSTOPSIG(status)
-            if stop_signal == (signal.SIGTRAP | 0x80):
-                entering = self._entering.get(pid, True)
-                regs = _registers(pid)
-                if entering:
-                    operation = self._mutation_outside_roots(pid, regs)
-                    self._pending[pid] = operation
-                else:
-                    operation = self._pending.pop(pid, None)
-                    result = ctypes.c_longlong(regs.rax).value
-                    if operation is not None and result in {-errno.EACCES, -errno.EPERM, -errno.EXDEV}:
-                        denials.append(f"filesystem policy denied {operation} for invocation process {pid}")
-                self._entering[pid] = not entering
+        # Never use waitpid(-1) here.  The supervisor can run alongside other
+        # controller children, and consuming one of their statuses would both
+        # corrupt that child's owner and make ptrace operations fail with EIO.
+        # Poll only tracees learned from the root and ptrace fork events.
+        made_progress = True
+        while made_progress:
+            made_progress = False
+            for traced_pid in tuple(self._tracees):
+                try:
+                    pid, status = os.waitpid(traced_pid, os.WNOHANG | _WAIT_ALL)
+                except ChildProcessError:
+                    self._tracees.discard(traced_pid)
+                    continue
+                if pid == 0:
+                    continue
+                made_progress = True
+                denials.extend(self._handle_stop(pid, status))
+        return tuple(denials)
+
+    def _handle_stop(self, pid: int, status: int) -> tuple[str, ...]:
+        denials: list[str] = []
+        if os.WIFEXITED(status) or os.WIFSIGNALED(status):
+            if pid == self._root_pid:
+                self._root_returncode = os.waitstatus_to_exitcode(status)
+            self._tracees.discard(pid)
+            self._entering.pop(pid, None)
+            self._pending.pop(pid, None)
+            return ()
+        event = status >> 16
+        if event in {_PTRACE_O_TRACEFORK, _PTRACE_O_TRACEVFORK, _PTRACE_O_TRACECLONE}:
+            child_pid = ctypes.c_ulong()
+            _ptrace(_PTRACE_GETEVENTMSG, pid, 0, ctypes.byref(child_pid))
+            self._tracees.add(child_pid.value)
+            self._entering[child_pid.value] = True
+        stop_signal = os.WSTOPSIG(status)
+        if stop_signal == (signal.SIGTRAP | 0x80):
+            entering = self._entering.get(pid, True)
+            regs = _registers(pid)
+            if entering:
+                operation = self._mutation_outside_roots(pid, regs)
+                self._pending[pid] = operation
             else:
-                self._entering.setdefault(pid, True)
-            try:
-                delivered_signal = stop_signal if stop_signal not in {signal.SIGTRAP, signal.SIGSTOP} else 0
-                _ptrace(_PTRACE_SYSCALL, pid, 0, delivered_signal)
-            except OSError as exc:
-                if exc.errno != errno.ESRCH:
-                    raise
+                operation = self._pending.pop(pid, None)
+                result = ctypes.c_longlong(regs.rax).value
+                if operation is not None and result in {-errno.EACCES, -errno.EPERM, -errno.EXDEV}:
+                    denials.append(f"filesystem policy denied {operation} for invocation process {pid}")
+            self._entering[pid] = not entering
+        else:
+            self._entering.setdefault(pid, True)
+        try:
+            delivered_signal = stop_signal if stop_signal not in {signal.SIGTRAP, signal.SIGSTOP} else 0
+            _ptrace(_PTRACE_SYSCALL, pid, 0, delivered_signal)
+        except OSError as exc:
+            if exc.errno != errno.ESRCH:
+                raise
         return tuple(denials)
 
     def _mutation_outside_roots(self, pid: int, regs: _UserRegsStruct) -> Optional[str]:

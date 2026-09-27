@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from src.auto_coder.filesystem_confinement import LandlockFilesystemPolicy
+from src.auto_coder.filesystem_confinement import LandlockFilesystemPolicy, PtraceDenialMonitor
 from src.auto_coder.invocation_process_supervisor import InvocationLaunch, InvocationOutcome, InvocationProcessSupervisor
 from src.auto_coder.local_execution_boundary import EvidenceStatus, LocalExecutionBoundary
 from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
@@ -40,6 +40,21 @@ class ProcessOwner:
         for child in group.iterdir():
             child.unlink()
         group.rmdir()
+
+
+def test_denial_monitor_does_not_consume_unrelated_controller_children(monkeypatch: pytest.MonkeyPatch) -> None:
+    monitor = PtraceDenialMonitor(())
+    monitor._tracees.add(1234)
+    waited: list[int] = []
+
+    def waitpid(pid: int, options: int) -> tuple[int, int]:
+        waited.append(pid)
+        return 0, 0
+
+    monkeypatch.setattr(os, "waitpid", waitpid)
+
+    assert monitor.pump() == ()
+    assert waited == [1234]
 
 
 def _launch(tmp_path: Path, code: str, *, mode: str = "editable", runtime_inputs: tuple[Path, ...] = ()) -> InvocationLaunch:
