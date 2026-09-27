@@ -212,7 +212,7 @@ def test_real_pr_processing_verifies_url_free_intent_without_retargeting_jules(t
         process_pull_request(github, AutomationConfig(), repository, {"number": 2237})
 
     assert github.strict_reads == 2
-    assert github.update_attempts == ["Closes #2229\n\nhttps://chatgpt.com/codex/tasks/task_e_Published"]
+    assert github.update_attempts == ["Closes #2229\n\nhttps://chatgpt.com/codex/cloud/tasks/task_e_Published"]
     established = CodexPrAttributionRepository(repository).get(2237)
     assert established.disposition is AttributionDisposition.VERIFIED
     assert established.origin is not None
@@ -292,7 +292,7 @@ def test_verified_projection_uses_fresh_body_and_is_idempotent(tmp_path, monkeyp
     github = ProjectionGitHub(_projection_metadata("Author's new summary\n\nTesting retained\n\nCloses #2230"))
 
     first = _link_codex_cloud_pr_to_issue("owner/repo", stale, github)
-    expected = "Author's new summary\n\nTesting retained\n\nCloses #2230\n\nhttps://chatgpt.com/codex/tasks/task_e_Projected77"
+    expected = "Author's new summary\n\nTesting retained\n\nCloses #2230\n\nhttps://chatgpt.com/codex/cloud/tasks/task_e_Projected77"
     assert (first.status, first.confirmed, first.confirmed_body) == ("updated", True, expected)
     assert github.live["body"] == expected
     assert stale["body"] == expected

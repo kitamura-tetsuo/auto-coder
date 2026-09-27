@@ -22,6 +22,7 @@ from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessRe
 from .backend_manager import BackendManager, get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
 from .branch_manager import BranchManager
 from .cloud_manager import CloudManager, CloudTaskBinding
+from .codex_cloud_task import canonical_codex_cloud_task_url
 from .exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError, CloudSubmissionNotStartedError
 from .execution_trace import EventKind, Outcome, get_trace_collector
 from .git_branch import branch_context, extract_attempt_from_branch
@@ -874,7 +875,7 @@ def _process_issue_codex_cloud_mode(
                         retry_authority.request_id,
                         "accepted",
                         external_id=retained_run.task_id,
-                        external_url=retained_run.task_url or None,
+                        external_url=canonical_codex_cloud_task_url(retained_run.task_id),
                     )
             if retry_handoff.outcome in {"accepted", "completed"} and retry_handoff.external_id:
                 retained_config = json.loads(retry_handoff.route_config)
@@ -888,7 +889,7 @@ def _process_issue_codex_cloud_mode(
                     environment_id=retry_handoff.environment_id or "",
                     base_branch=str(retained_config.get("base_branch", "")),
                     submission_outcome="accepted",
-                    task_url=retry_handoff.external_url or "",
+                    task_url=canonical_codex_cloud_task_url(retry_handoff.external_id) or retry_handoff.external_url or "",
                     launch_identity=retry_authority.request_id,
                     publication_head_repository=str(retained_config.get("publication_head_repository", "")),
                     publication_head_ref=str(retained_config.get("publication_head_ref", "")),

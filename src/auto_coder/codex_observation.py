@@ -11,6 +11,7 @@ from typing import Optional
 from .cloud_run import CloudRun, CloudRunRepository
 from .cloud_task_client_base import CloudTaskState
 from .codex_cloud_task import is_valid_codex_cloud_task_id
+from .codex_pr_attribution import task_ids_from_text
 from .codex_wham_client import CodexWhamClient, WhamTask
 from .util.gh_cache import GitHubClient
 
@@ -204,9 +205,9 @@ class CodexObservationService:
             return (True, False) if current else (False, True)
         raw_body = pr.get("body")
         body: str = raw_body if isinstance(raw_body, str) else ""
-        other_task = re.search(r"https://chatgpt\.com/codex/tasks/(task_[A-Za-z0-9_-]+)", body)
-        if other_task:
-            return other_task.group(1) == binding.task_id, other_task.group(1) != binding.task_id
+        body_task_ids = task_ids_from_text(body)
+        if body_task_ids:
+            return binding.task_id in body_task_ids, binding.task_id not in body_task_ids
         return native_closing or state_relevant(pr, binding.issue_number, binding.repository), False
 
 

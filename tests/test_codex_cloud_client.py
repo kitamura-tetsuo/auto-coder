@@ -77,7 +77,7 @@ class TestCodexCloudClient:
 
                 assert tid == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
                 assert tid in client.active_tasks
-                assert client.task_urls[tid] == "https://chatgpt.com/codex/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+                assert client.task_urls[tid] == "https://chatgpt.com/codex/cloud/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2"
 
                 cmd_args = mock_run.call_args[0][0]
                 assert cmd_args == [
@@ -186,6 +186,22 @@ environment_id = "env_from_toml"
 
         assert submission.outcome is CodexSubmissionOutcome.ACCEPTED
         assert submission.task_id == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+        assert submission.task_url == "https://chatgpt.com/codex/cloud/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+
+    def test_submission_formats_selected_id_not_incidental_url(self, mock_backend_config):
+        """The explicit provider identity remains authoritative over incidental URLs."""
+        output = '{"task_id":"task_e_Selected9","url":"https://chatgpt.com/codex/tasks/task_e_Other8"}'
+        with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
+            client = CodexCloudClient("codex-cloud")
+            with patch(
+                "auto_coder.codex_cloud_client.CommandExecutor.run_command",
+                return_value=MagicMock(returncode=0, stdout=output, stderr=""),
+            ):
+                submission = client.submit_task("Implement the issue")
+
+        assert submission.task_id == "task_e_Selected9"
+        assert submission.task_url == "https://chatgpt.com/codex/cloud/tasks/task_e_Selected9"
+        assert client.task_urls == {"task_e_Selected9": submission.task_url}
 
     def test_started_cli_without_identity_is_indeterminate(self, mock_backend_config):
         with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
@@ -353,6 +369,7 @@ environment_id = "env_from_toml"
                 assert len(tasks) == 2
                 assert tasks[0].task_id == "task_e_1"
                 assert tasks[0].state == CloudTaskState.RUNNING
+                assert tasks[0].url == "https://chatgpt.com/codex/cloud/tasks/task_e_1"
                 assert tasks[1].task_id == "task_e_2"
                 # READY is normalized to COMPLETED
                 assert tasks[1].state == CloudTaskState.COMPLETED
@@ -375,6 +392,7 @@ environment_id = "env_from_toml"
                 assert task.task_id == "task_e_123"
                 assert task.state == CloudTaskState.COMPLETED
                 assert task.title == "Test Task"
+                assert task.url == "https://chatgpt.com/codex/cloud/tasks/task_e_123"
 
                 cmd_args = mock_run.call_args[0][0]
                 assert cmd_args == ["codex", "cloud", "status", "task_e_123"]

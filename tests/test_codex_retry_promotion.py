@@ -3,6 +3,8 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from auto_coder.automation_config import AutomationConfig, ExplicitTargetOutcome
 from auto_coder.automation_engine import CODEX_RETRY_HANDOFF_EFFECT, AutomationEngine, _CodexRetryHandoffStageHandler
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
@@ -138,7 +140,16 @@ def test_missing_owner_recovery_counts_over_limit_and_preserves_existing_owner(t
     assert slots.active_execution_ids(ImplementationOwner("issue", 2223)) == ()
 
 
-def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "retained_url",
+    [
+        "https://chatgpt.com/codex/tasks/task_e_Recovered8",
+        "https://chatgpt.com/codex/cloud/tasks/task_e_Recovered8",
+        "",
+    ],
+)
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run(mock_client_type, retained_url, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     authority = _authority()
     run = CloudRun(
@@ -146,12 +157,12 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
         2223,
         5,
         "codex-cloud",
-        task_id="task-recovered",
+        task_id="task_e_Recovered8",
         backend_name="codex-original",
         environment_id="environment-original",
         base_branch="original-base",
         submission_outcome="accepted",
-        task_url="https://example.test/tasks/task-recovered",
+        task_url=retained_url,
     )
     CloudRunRepository("owner/repo").save(run)
     assert CloudManager("owner/repo").add_session(2223, run.task_id, run.provider, run.backend_name)
@@ -162,6 +173,7 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
 
     outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
 
+    mock_client_type.assert_not_called()
     assert outcome is ExplicitTargetOutcome.SUCCESS
     assert "R=request-1" in reason
     recovered = RetryDispatchRepository("owner/repo").get(authority.request_id)
@@ -172,6 +184,7 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
         recovered.generation,
         recovered.numeric_attempt,
         recovered.external_id,
+        recovered.external_url,
         recovered.backend_name,
         recovered.environment_id,
         recovered.creation_id,
@@ -181,7 +194,8 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
         authority.attempt_id,
         authority.generation,
         5,
-        run.task_id,
+        "task_e_Recovered8",
+        "https://chatgpt.com/codex/cloud/tasks/task_e_Recovered8",
         run.backend_name,
         run.environment_id,
         authority.ownership_reference,
@@ -285,6 +299,43 @@ def test_daemon_reconstructs_run_and_promotes_captured_legacy_predecessor(tmp_pa
         "owner/repo",
         "issue-2223-attempt-5-codex-cloud",
     )
+
+
+@pytest.mark.parametrize("retained_url", ["https://chatgpt.com/codex/tasks/task_e_Retained7", None])
+def test_daemon_reconstructs_canonical_url_from_retained_task_identity(tmp_path, monkeypatch, retained_url):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    store = RetryDispatchRepository("owner/repo")
+    store.claim(
+        authority,
+        "codex-cloud",
+        "codex-alias",
+        {
+            "base_branch": "main",
+            "publication_head_repository": "owner/repo",
+            "publication_head_ref": "issue-2223-attempt-5-codex-cloud",
+        },
+    )
+    store.allocate_numeric_attempt(authority.request_id, [4])
+    store.record_outcome(
+        authority.request_id,
+        "accepted",
+        external_id="task_e_Retained7",
+        external_url=retained_url,
+        environment_id="retained-environment",
+    )
+    slots = ImplementationSlotRepository("owner/repo", 2)
+    assert slots.reserve(ImplementationOwner("issue", 2223))
+    engine = AutomationEngine(MagicMock(), config=AutomationConfig())
+    engine.implementation_slots = slots
+
+    outcome, _ = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
+
+    assert outcome is ExplicitTargetOutcome.SUCCESS
+    run = CloudRunRepository("owner/repo").get(2223, 5)
+    assert run is not None
+    assert run.task_id == "task_e_Retained7"
+    assert run.task_url == "https://chatgpt.com/codex/cloud/tasks/task_e_Retained7"
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")
@@ -444,6 +495,52 @@ def test_claimed_retry_recovers_receipt_from_matching_accepted_run(mock_client_t
         "task-recovered",
         "accepted-current",
     )
+
+
+@pytest.mark.parametrize("retained_url", ["https://chatgpt.com/codex/tasks/task_e_Recovered8", ""])
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_claimed_retry_canonicalizes_retained_run_url_without_resubmission(mock_client_type, retained_url, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    authority = _authority()
+    store = RetryDispatchRepository("owner/repo")
+    store.claim(
+        authority,
+        "codex-cloud",
+        "codex-alias",
+        {
+            "base_branch": "main",
+            "publication_head_repository": "owner/repo",
+            "publication_head_ref": "issue-2223-attempt-5-codex-cloud",
+        },
+    )
+    store.allocate_numeric_attempt(authority.request_id, [4])
+    CloudRunRepository("owner/repo").save(
+        CloudRun(
+            "owner/repo",
+            2223,
+            5,
+            "codex-cloud",
+            task_id="task_e_Recovered8",
+            backend_name="codex-alias",
+            environment_id="retained-environment",
+            base_branch="main",
+            submission_outcome="accepted",
+            task_url=retained_url,
+            launch_identity=authority.request_id,
+            publication_head_repository="owner/repo",
+            publication_head_ref="issue-2223-attempt-5-codex-cloud",
+        )
+    )
+
+    result = _dispatch(authority)
+
+    mock_client_type.return_value.submit_task.assert_not_called()
+    assert "already accepted" in result[0]
+    canonical = "https://chatgpt.com/codex/cloud/tasks/task_e_Recovered8"
+    handoff = RetryDispatchRepository("owner/repo").get(authority.request_id)
+    run = CloudRunRepository("owner/repo").get(2223, 5)
+    assert handoff is not None and handoff.external_url == canonical
+    assert run is not None and run.task_url == canonical
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")

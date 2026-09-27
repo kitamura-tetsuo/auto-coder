@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .cloud_task_client_base import CloudTask, CloudTaskClientBase, CloudTaskState
-from .codex_cloud_task import extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
+from .codex_cloud_task import canonical_codex_cloud_task_url, extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .codex_usage_checker import codex_cloud_quota_allows_task
 from .codex_wham_client import CodexWhamClient, FollowUpDeliveryOutcome
 from .exceptions import AutoCoderUsageLimitError
@@ -124,7 +124,8 @@ class CodexCloudClient(CloudTaskClientBase):
         """Extract a task ID or task URL from Codex Cloud CLI output.
 
         Task IDs typically follow the shape: `task_e_6a26c19ac8a88326af83ebfb44b89fe2`
-        Task URLs typically follow: `https://chatgpt.com/codex/tasks/task_e_...`
+        Task URLs may use the historical ``/codex/tasks/`` route or the current
+        ``/codex/cloud/tasks/`` route.
         """
         if not output:
             return None
@@ -161,7 +162,7 @@ class CodexCloudClient(CloudTaskClientBase):
         if not output:
             return None
 
-        url_match = re.search(r"(https?://[^\s]+/codex/tasks/[a-zA-Z0-9_-]+)", output)
+        url_match = re.search(r"(https?://[^\s]+/codex/(?:cloud/)?tasks/[a-zA-Z0-9_-]+)", output)
         if url_match:
             return url_match.group(1)
         return None
@@ -271,7 +272,7 @@ class CodexCloudClient(CloudTaskClientBase):
         output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
 
         task_id = self._extract_task_id(output)
-        task_url = self._extract_task_url(output)
+        task_url = canonical_codex_cloud_task_url(task_id)
 
         if task_id:
             if task_url:
@@ -342,7 +343,7 @@ class CodexCloudClient(CloudTaskClientBase):
                                     state=state,
                                     raw_state=raw_state,
                                     title=item.get("title"),
-                                    url=item.get("url") or self.task_urls.get(str(tid)),
+                                    url=canonical_codex_cloud_task_url(tid),
                                     error=item.get("error"),
                                     raw_data=item,
                                 )
@@ -359,7 +360,7 @@ class CodexCloudClient(CloudTaskClientBase):
                     task_id=task_id,
                     prompt=prompt,
                     state=CloudTaskState.UNKNOWN,
-                    url=self.task_urls.get(task_id),
+                    url=canonical_codex_cloud_task_url(task_id),
                 )
             )
         return tasks
@@ -411,7 +412,7 @@ class CodexCloudClient(CloudTaskClientBase):
                             state=state,
                             raw_state=raw_state,
                             title=data.get("title"),
-                            url=data.get("url") or self.task_urls.get(task_id),
+                            url=canonical_codex_cloud_task_url(task_id),
                             error=data.get("error"),
                             raw_data=data,
                         )
@@ -442,7 +443,7 @@ class CodexCloudClient(CloudTaskClientBase):
                     state=state,
                     raw_state=output,
                     prompt=self.active_tasks.get(task_id),
-                    url=self.task_urls.get(task_id),
+                    url=canonical_codex_cloud_task_url(task_id),
                     raw_data=raw_data,
                 )
         except Exception as e:
@@ -453,7 +454,7 @@ class CodexCloudClient(CloudTaskClientBase):
                 task_id=task_id,
                 prompt=self.active_tasks[task_id],
                 state=CloudTaskState.UNKNOWN,
-                url=self.task_urls.get(task_id),
+                url=canonical_codex_cloud_task_url(task_id),
             )
 
         return None
