@@ -48,6 +48,7 @@ class HistoricalCorrection:
     comment_id: int = 0
     category: str = "IMPLEMENTATION"
     blocker_id: Optional[str] = None
+    blocker_identity_conflict: tuple[str, ...] = ()
     gap_id: Optional[str] = None
     requirement_ids: tuple[str, ...] = ()
     authoritative_boundary: str = ""
@@ -107,7 +108,7 @@ class FindingReconciliationResult:
 # ---------------------------------------------------------------------------
 
 
-_BLOCKER_ID_RE = re.compile(r"(?:Blocker identity:\s*`?([^`\s\n]+)`?|blocker_id[=:]\s*`?([^`\s\n]+)`?)", re.IGNORECASE)
+_BLOCKER_ID_LINE_RE = re.compile(r"^\s*Blocker identity:\s*`?([A-Za-z0-9_-]+)`?\s*$", re.IGNORECASE)
 _GAP_ID_RE = re.compile(r"(?:Gap identity:\s*`?([^`\s\n]+)`?|gap_id[=:]\s*`?([^`\s\n]+)`?|TEST_ORACLE_GAP\s+([a-zA-Z0-9_-]+))", re.IGNORECASE)
 _REQ_ID_RE = re.compile(r"\b(REQ-[0-9A-Za-z_-]+)\b")
 
@@ -154,11 +155,7 @@ def parse_historical_pr_review_roots(
         line_val: Optional[int] = raw_line if isinstance(raw_line, int) else None
         commit_id = str(comment.get("commit_id", ""))
 
-        # Check for compound roots: split by headings, issue markers, or dividers
-        parts = re.split(r"(?=(?:### Auto-Coder |### (?:Adversarial|Material)|Issue \d+:|\n\n---\n\n))", body)
-        sections = [p.strip() for p in parts if p.strip()]
-        if not sections:
-            sections = [body]
+        sections = _split_historical_comment_sections(body)
 
         for section in sections:
             parsed = _parse_comment_section(section, cid, path, line_val, commit_id)
@@ -173,6 +170,35 @@ def parse_historical_pr_review_roots(
     )
 
 
+_SECTION_START_RE = re.compile(r"(?=(?:### Auto-Coder |### (?:Adversarial|Material)|Issue \d+:|\n\n---\n\n))")
+
+
+def _split_historical_comment_sections(body: str) -> list[str]:
+    """Split compound findings without treating fenced examples as sections."""
+    masked = _mask_fenced_markdown(body)
+    starts = [match.start() for match in _SECTION_START_RE.finditer(masked)]
+    boundaries = sorted({0, *starts, len(body)})
+    sections = [body[start:end].strip() for start, end in zip(boundaries, boundaries[1:]) if body[start:end].strip()]
+    return sections or [body]
+
+
+def _mask_fenced_markdown(text: str) -> str:
+    """Mask fenced Markdown while retaining offsets and line structure."""
+    masked_parts: list[str] = []
+    in_fence = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        is_fence = stripped.startswith("```") or stripped.startswith("~~~")
+        if in_fence or is_fence:
+            masked_parts.append("".join("\n" if char == "\n" else " " for char in line))
+        else:
+            masked_parts.append(line)
+        if is_fence:
+            in_fence = not in_fence
+
+    return "".join(masked_parts)
+
+
 def _parse_comment_section(
     section_text: str,
     comment_id: int,
@@ -181,23 +207,22 @@ def _parse_comment_section(
     commit_id: str,
 ) -> Optional[HistoricalCorrection]:
     """Parse a single finding or gap section within a review comment."""
-    lower_text = section_text.lower()
+    authoritative_text = _mask_fenced_markdown(section_text)
+    lower_text = authoritative_text.lower()
     is_gap = "test-oracle gap" in lower_text or "test oracle gap" in lower_text or "test_oracle" in lower_text or "gap identity" in lower_text
-    is_finding = "adversarial finding" in lower_text or "finding" in lower_text or "violated requirement" in lower_text or "requirement:" in lower_text or bool(_REQ_ID_RE.search(section_text))
-    if not (is_gap or is_finding or _BLOCKER_ID_RE.search(section_text) or _GAP_ID_RE.search(section_text)):
+    is_finding = "adversarial finding" in lower_text or "finding" in lower_text or "violated requirement" in lower_text or "requirement:" in lower_text or bool(_REQ_ID_RE.search(authoritative_text))
+    if not (is_gap or is_finding or _standalone_blocker_identities(section_text) or _GAP_ID_RE.search(authoritative_text)):
         return None
 
-    blocker_id = None
-    blocker_match = _BLOCKER_ID_RE.search(section_text)
-    if blocker_match:
-        blocker_id = next((g.strip() for g in blocker_match.groups() if g), None)
+    blocker_ids = _standalone_blocker_identities(section_text)
+    blocker_id = blocker_ids[0] if len(blocker_ids) == 1 else None
 
     gap_id = None
-    gap_match = _GAP_ID_RE.search(section_text)
+    gap_match = _GAP_ID_RE.search(authoritative_text)
     if gap_match:
         gap_id = next((g.strip() for g in gap_match.groups() if g), None)
 
-    req_ids = tuple(dict.fromkeys(_REQ_ID_RE.findall(section_text)))
+    req_ids = tuple(dict.fromkeys(_REQ_ID_RE.findall(authoritative_text)))
     category = "TEST_ORACLE" if is_gap else "IMPLEMENTATION"
 
     boundary = _extract_section_field(section_text, "Authoritative boundary")
@@ -236,6 +261,7 @@ def _parse_comment_section(
         comment_id=comment_id,
         category=category,
         blocker_id=blocker_id,
+        blocker_identity_conflict=blocker_ids if len(blocker_ids) > 1 else (),
         gap_id=gap_id,
         requirement_ids=req_ids,
         authoritative_boundary=boundary,
@@ -246,6 +272,23 @@ def _parse_comment_section(
         line=line,
         commit_id=commit_id,
     )
+
+
+def _standalone_blocker_identities(text: str) -> tuple[str, ...]:
+    """Return controller declarations, excluding quoted and fenced examples."""
+    identities: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            continue
+        if in_fence or stripped.startswith(">"):
+            continue
+        match = _BLOCKER_ID_LINE_RE.fullmatch(line)
+        if match and match.group(1) not in identities:
+            identities.append(match.group(1))
+    return tuple(identities)
 
 
 def _extract_section_field(text: str, heading: str) -> str:
@@ -522,17 +565,24 @@ def reconcile_pr_findings_before_publication(
 
     rev = snapshot.ledger_revision if expected_ledger_revision is None else expected_ledger_revision
 
-    rev = _bootstrap_historical_roots(
-        ledger,
-        api_origin,
-        repo_name,
-        pr_number,
-        issue_number,
-        head_sha,
-        base_sha,
-        historical_parse.corrections,
-        rev,
-    )
+    try:
+        rev = _bootstrap_historical_roots(
+            ledger,
+            api_origin,
+            repo_name,
+            pr_number,
+            issue_number,
+            head_sha,
+            base_sha,
+            historical_parse.corrections,
+            rev,
+        )
+    except AssociationAmbiguityError as exc:
+        return FindingReconciliationResult(
+            snapshot=ledger.get_snapshot(api_origin, repo_name, pr_number, require_retained_state=True),
+            is_ambiguous=True,
+            ambiguity_reason=str(exc),
+        )
     snapshot = ledger.get_snapshot(api_origin, repo_name, pr_number, require_retained_state=True)
 
     candidates: list[ObservationCandidate] = []
@@ -715,6 +765,14 @@ def _bootstrap_historical_roots(
     if not corrections:
         return current_rev
 
+    initial_snapshot = ledger.get_snapshot(api_origin, repo_name, pr_number, require_retained_state=True)
+    initial_root_owners: dict[int, set[str]] = {}
+    declared_root_owners: dict[int, set[str]] = {}
+    for correction in corrections:
+        initial_root_owners.setdefault(correction.comment_id, set()).update(blocker.blocker_id for blocker in initial_snapshot.get_blockers_for_alias("github_root_comment", str(correction.comment_id)))
+        if correction.blocker_id:
+            declared_root_owners.setdefault(correction.comment_id, set()).add(correction.blocker_id)
+
     groups: list[list[HistoricalCorrection]] = []
     for corr in corrections:
         placed = False
@@ -749,6 +807,60 @@ def _bootstrap_historical_roots(
         earliest = sorted_by_id[0]
 
         snapshot = ledger.get_snapshot(api_origin, repo_name, pr_number, require_retained_state=True)
+        conflicting = [c for c in sorted_by_id if c.blocker_identity_conflict]
+        if conflicting:
+            details = ", ".join(f"root {c.comment_id}: {list(c.blocker_identity_conflict)}" for c in conflicting)
+            raise AssociationAmbiguityError(f"Conflicting blocker declarations in one historical finding section ({details})")
+
+        # A retained root binding is authoritative on reobservation.  Explicit
+        # identities are authoritative when recovering a producer's missing alias.
+        root_matches: dict[str, BlockerSnapshot] = {}
+        for corr in sorted_by_id:
+            for blocker in snapshot.get_blockers_for_alias("github_root_comment", str(corr.comment_id)):
+                root_matches[blocker.blocker_id] = blocker
+        declared_ids = {c.blocker_id for c in sorted_by_id if c.blocker_id}
+        if len(declared_ids) > 1:
+            raise AssociationAmbiguityError(f"Equivalent historical roots declare conflicting blockers: {sorted(declared_ids)}")
+        declared_id = next(iter(declared_ids), None)
+        declared_blocker = snapshot.get_blocker(declared_id) if declared_id else None
+        if declared_id and declared_blocker is None:
+            raise AssociationAmbiguityError(f"Historical root declares unknown blocker {declared_id!r} in this PR namespace")
+        if root_matches and declared_id and declared_id not in root_matches:
+            original_owners = set().union(*(initial_root_owners.get(corr.comment_id, set()) for corr in sorted_by_id))
+            complete_declarations = set().union(*(declared_root_owners.get(corr.comment_id, set()) for corr in sorted_by_id))
+            if original_owners and not original_owners.issubset(complete_declarations):
+                raise AssociationAmbiguityError(f"Historical root is already associated with {sorted(root_matches)} " f"and conflicts with {declared_id!r}")
+        matching_blocker: Optional[BlockerSnapshot]
+        if declared_blocker is not None:
+            matching_blocker = declared_blocker
+        elif len(root_matches) == 1:
+            sole_root_match = next(iter(root_matches.values()))
+            # A compound root may own independent implementation and oracle
+            # corrections.  Root identity reuses an existing owner only within
+            # the same category unless an explicit blocker declaration selects it.
+            matching_blocker = sole_root_match if sole_root_match.category == earliest.category else None
+        elif root_matches:
+            scope_matches = [
+                blocker
+                for blocker in root_matches.values()
+                if scopes_describe_same_blocker(
+                    ObservationCandidate(
+                        source_type=("FINDING" if earliest.category != "TEST_ORACLE" else "TEST_ORACLE_GAP"),
+                        category=earliest.category,
+                        requirement_ids=earliest.requirement_ids,
+                        authoritative_boundary=earliest.authoritative_boundary,
+                        incorrect_behavior_or_invariant=(earliest.incorrect_behavior_or_invariant),
+                        required_outcome=earliest.required_outcome,
+                    ),
+                    blocker,
+                )
+            ]
+            if len(scope_matches) != 1:
+                raise AssociationAmbiguityError(f"Historical root {earliest.comment_id} has multiple retained owners " "and this finding does not identify exactly one of them")
+            matching_blocker = scope_matches[0]
+        else:
+            matching_blocker = None
+
         cand_earliest = ObservationCandidate(
             source_type="FINDING" if earliest.category != "TEST_ORACLE" else "TEST_ORACLE_GAP",
             category=earliest.category,
@@ -757,12 +869,12 @@ def _bootstrap_historical_roots(
             incorrect_behavior_or_invariant=earliest.incorrect_behavior_or_invariant,
             required_outcome=earliest.required_outcome,
         )
-        matching_blocker: Optional[BlockerSnapshot] = None
-        for b in snapshot.blockers:
-            has_comment = any(a.alias_type == "github_root_comment" and a.alias_value == str(earliest.comment_id) for a in b.aliases)
-            if has_comment and scopes_describe_same_blocker(cand_earliest, b):
-                matching_blocker = b
-                break
+        if matching_blocker is None:
+            for b in snapshot.blockers:
+                has_comment = any(a.alias_type == "github_root_comment" and a.alias_value == str(earliest.comment_id) for a in b.aliases)
+                if has_comment and scopes_describe_same_blocker(cand_earliest, b):
+                    matching_blocker = b
+                    break
 
         if matching_blocker is None:
             aliases: list[BlockerAlias] = [BlockerAlias(alias_type="github_root_comment", alias_value=str(corr.comment_id)) for corr in sorted_by_id]
