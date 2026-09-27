@@ -1,13 +1,17 @@
-"""Git worktree utilities for local LLM isolation."""
+"""Private Git workspace utilities for local LLM execution."""
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import hashlib
 import os
 import shutil
 import stat
 import subprocess
 import tempfile
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Generator, Optional, Union
 
@@ -16,226 +20,258 @@ from .utils import _COMMAND_EXECUTION_CWD, bind_command_execution_cwd, reset_com
 
 logger = get_logger(__name__)
 
-_DISPOSABLE_DIRECTORY_NAMES = frozenset(
-    {
-        ".git",
-        ".venv",
-        "venv",
-        ".agent-tmp",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".cache",
-        "__pycache__",
-        "node_modules",
-    }
-)
+_DISPOSABLE_DIRECTORY_NAMES = frozenset({".venv", "venv", ".agent-tmp", ".mypy_cache", ".pytest_cache", ".cache", "__pycache__", "node_modules"})
+
+
+class WorkspacePreparationError(RuntimeError):
+    """Raised when a private execution workspace cannot be prepared safely."""
+
+
+@dataclass(frozen=True)
+class LocalWorkspaceBinding:
+    """Controller-owned identity and immutable starting-state record."""
+
+    invocation_id: str
+    caller_root: Path
+    caller_git_dir: Path
+    caller_common_dir: Path
+    initial_head: str
+    initial_commit: str
+    index_checksum: str
+    file_snapshot_checksum: str
+    workspace: Path
+
+
+_CURRENT_LOCAL_WORKSPACE: contextvars.ContextVar[Optional[LocalWorkspaceBinding]] = contextvars.ContextVar("auto_coder_local_workspace", default=None)
+
+
+def get_current_local_workspace() -> Optional[LocalWorkspaceBinding]:
+    """Return the binding owned by the current local invocation, if any."""
+    return _CURRENT_LOCAL_WORKSPACE.get()
+
+
+@dataclass(frozen=True)
+class _CapturedFile:
+    relative_path: str
+    contents: bytes
+    mode: int
+    symlink: bool
+
+
+@dataclass(frozen=True)
+class _SourceSnapshot:
+    binding: LocalWorkspaceBinding
+    staged_diff: bytes
+    unstaged_diff: bytes
+    untracked: tuple[_CapturedFile, ...]
+    directories: tuple[tuple[str, int], ...]
+    consistency_token: str
 
 
 def _resolve_target(cwd: Optional[Union[Path, str]] = None) -> Path:
     if cwd is not None:
         return Path(cwd)
     cmd_cwd = _COMMAND_EXECUTION_CWD.get()
-    if cmd_cwd:
-        return Path(cmd_cwd)
-    return Path.cwd()
+    return Path(cmd_cwd) if cmd_cwd else Path.cwd()
+
+
+def _git(target: Path, *args: str, input_data: Optional[bytes] = None) -> subprocess.CompletedProcess[bytes]:
+    result = subprocess.run(["git", *args], cwd=target, input=input_data, capture_output=True)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise WorkspacePreparationError(f"git {' '.join(args)} failed: {detail}")
+    return result
 
 
 def is_inside_git_worktree(cwd: Optional[Union[Path, str]] = None) -> bool:
-    """Check if the given directory (or current execution cwd) is an isolated worktree.
-
-    In a linked git worktree, ``.git`` is a file pointing to the main gitdir,
-    rather than a directory.
-    """
-    target = _resolve_target(cwd)
+    """Return whether *cwd* is an attached or detached linked worktree."""
     try:
-        git_path = target / ".git"
-        if git_path.is_file():
-            return True
+        return (_resolve_target(cwd) / ".git").is_file()
     except OSError:
-        pass
-    return False
+        return False
 
 
 def is_git_repository(cwd: Optional[Union[Path, str]] = None) -> bool:
-    """Check if the given directory is inside any git repository or worktree."""
-    target = _resolve_target(cwd)
+    """Check if the given directory is inside a Git worktree."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=target,
-            capture_output=True,
-            text=True,
-        )
+        result = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=_resolve_target(cwd), capture_output=True, text=True)
         return result.returncode == 0 and result.stdout.strip() == "true"
     except (OSError, subprocess.SubprocessError):
         return False
 
 
-def _seed_worktree_from_target(target: Path, worktree: Path) -> None:
-    """Seed the newly created worktree with target repository's dirty state.
+def _path_bytes(path: Path) -> tuple[bytes, int, bool]:
+    if path.is_symlink():
+        return os.fsencode(os.readlink(path)), stat.S_IMODE(path.lstat().st_mode), True
+    return path.read_bytes(), stat.S_IMODE(path.stat().st_mode), False
 
-    Copies:
-    1. Staged tracked changes (applied with git apply --cached and checked out).
-    2. Unstaged tracked changes (applied with git apply).
-    3. Untracked and ignored files (excluding disposable directories).
-    4. Non-disposable directories (including empty dirs) and directory permissions.
-    """
-    # 1. Apply staged changes if any
-    staged_diff = subprocess.run(
-        ["git", "diff", "--cached", "--binary"],
-        cwd=target,
-        capture_output=True,
+
+def _listed_paths(root: Path, *args: str) -> tuple[str, ...]:
+    raw = _git(root, "ls-files", "-z", *args).stdout
+    return tuple(os.fsdecode(item) for item in raw.split(b"\0") if item)
+
+
+def _filesystem_token(root: Path, tracked: tuple[str, ...], untracked: tuple[str, ...]) -> str:
+    digest = hashlib.sha256()
+    for relative in sorted(set(tracked + untracked)):
+        path = root / relative
+        digest.update(os.fsencode(relative) + b"\0")
+        try:
+            data, mode, symlink = _path_bytes(path)
+        except (FileNotFoundError, IsADirectoryError):
+            digest.update(b"missing\0")
+            continue
+        digest.update(str(mode).encode() + bytes([symlink]) + hashlib.sha256(data).digest())
+    return digest.hexdigest()
+
+
+def _source_token(root: Path, tracked: tuple[str, ...], untracked: tuple[str, ...]) -> tuple[str, str, str]:
+    head = _git(root, "rev-parse", "HEAD").stdout.strip().decode()
+    git_dir = Path(_git(root, "rev-parse", "--absolute-git-dir").stdout.strip().decode())
+    index_path = Path(os.fsdecode(_git(root, "rev-parse", "--git-path", "index").stdout.strip()))
+    if not index_path.is_absolute():
+        index_path = root / index_path
+    try:
+        index_digest = hashlib.sha256(index_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise WorkspacePreparationError(f"unable to read caller index: {exc}") from exc
+    token = hashlib.sha256(head.encode() + b"\0" + index_digest.encode() + b"\0" + _filesystem_token(root, tracked, untracked).encode()).hexdigest()
+    return token, index_digest, str(git_dir)
+
+
+def _capture_source(target: Path, workspace: Path) -> _SourceSnapshot:
+    root = Path(_git(target, "rev-parse", "--show-toplevel").stdout.strip().decode()).resolve()
+    if _git(root, "ls-files", "-u").stdout:
+        raise WorkspacePreparationError("unmerged indexes are not supported")
+    if _git(root, "ls-files", "-s").stdout.find(b"160000 ") >= 0:
+        raise WorkspacePreparationError("Git submodule entries are not supported")
+    sparse = subprocess.run(["git", "sparse-checkout", "list"], cwd=root, capture_output=True)
+    if sparse.returncode == 0:
+        raise WorkspacePreparationError("sparse checkouts are not supported")
+
+    tracked = _listed_paths(root, "--cached")
+    untracked_paths = tuple(path for path in _listed_paths(root, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    token, index_digest, git_dir_text = _source_token(root, tracked, untracked_paths)
+    commit = _git(root, "rev-parse", "HEAD").stdout.strip().decode()
+    symbolic = subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=root, capture_output=True, text=True)
+    initial_head = symbolic.stdout.strip() if symbolic.returncode == 0 else f"detached:{commit}"
+    common_dir = Path(_git(root, "rev-parse", "--git-common-dir").stdout.strip().decode())
+    if not common_dir.is_absolute():
+        common_dir = (root / common_dir).resolve()
+
+    files: list[_CapturedFile] = []
+    for relative in untracked_paths:
+        path = root / relative
+        try:
+            contents, mode, symlink = _path_bytes(path)
+        except OSError as exc:
+            raise WorkspacePreparationError(f"unable to capture {relative}: {exc}") from exc
+        files.append(_CapturedFile(relative, contents, mode, symlink))
+
+    directories: list[tuple[str, int]] = []
+    for current, names, _ in os.walk(root, followlinks=False):
+        names[:] = [name for name in names if name != ".git" and name not in _DISPOSABLE_DIRECTORY_NAMES]
+        for name in names:
+            path = Path(current) / name
+            if not path.is_symlink():
+                directories.append((str(path.relative_to(root)), stat.S_IMODE(path.stat().st_mode)))
+
+    binding = LocalWorkspaceBinding(
+        invocation_id=uuid.uuid4().hex,
+        caller_root=root,
+        caller_git_dir=Path(git_dir_text).resolve(),
+        caller_common_dir=common_dir,
+        initial_head=initial_head,
+        initial_commit=commit,
+        index_checksum=index_digest,
+        file_snapshot_checksum=token,
+        workspace=workspace,
     )
-    if staged_diff.returncode == 0 and staged_diff.stdout.strip():
-        subprocess.run(
-            ["git", "apply", "--cached", "--binary"],
-            cwd=worktree,
-            input=staged_diff.stdout,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "checkout-index", "-a", "-f"],
-            cwd=worktree,
-            capture_output=True,
-        )
-
-    # 2. Apply unstaged changes if any
-    unstaged_diff = subprocess.run(
-        ["git", "diff", "--binary"],
-        cwd=target,
-        capture_output=True,
+    return _SourceSnapshot(
+        binding=binding,
+        staged_diff=_git(root, "diff", "--cached", "--binary", "--full-index").stdout,
+        unstaged_diff=_git(root, "diff", "--binary", "--full-index").stdout,
+        untracked=tuple(files),
+        directories=tuple(directories),
+        consistency_token=token,
     )
-    if unstaged_diff.returncode == 0 and unstaged_diff.stdout.strip():
-        subprocess.run(
-            ["git", "apply", "--binary", "--whitespace=nowarn"],
-            cwd=worktree,
-            input=unstaged_diff.stdout,
-            capture_output=True,
-        )
-
-    # 3. Copy untracked and ignored files (excluding disposable directories)
-    untracked_res = subprocess.run(
-        ["git", "ls-files", "--others", "-z"],
-        cwd=target,
-        capture_output=True,
-    )
-    if untracked_res.returncode == 0 and untracked_res.stdout:
-        for raw_path in filter(None, untracked_res.stdout.split(b"\0")):
-            rel = os.fsdecode(raw_path)
-            parts = Path(rel).parts
-            if any(part in _DISPOSABLE_DIRECTORY_NAMES for part in parts):
-                continue
-            src_file = target / rel
-            dst_file = worktree / rel
-            try:
-                dst_file.parent.mkdir(parents=True, exist_ok=True)
-                if src_file.is_symlink():
-                    if dst_file.exists() or dst_file.is_symlink():
-                        dst_file.unlink()
-                    dst_file.symlink_to(os.readlink(src_file))
-                elif src_file.is_file():
-                    shutil.copy2(src_file, dst_file)
-            except OSError as exc:
-                logger.warning("Failed to seed file {} to isolated worktree: {}", rel, exc)
-
-    # 4. Replicate directory hierarchy, empty directories, and permissions
-    for root, dirs, _ in os.walk(target, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in _DISPOSABLE_DIRECTORY_NAMES]
-        for d in dirs:
-            src_dir = Path(root) / d
-            rel_dir = src_dir.relative_to(target)
-            dst_dir = worktree / rel_dir
-            try:
-                if not dst_dir.exists():
-                    dst_dir.mkdir(parents=True, exist_ok=True)
-                dst_dir.chmod(stat.S_IMODE(src_dir.stat().st_mode))
-            except OSError:
-                pass
 
 
-def sync_worktree_changes_back(source_worktree: Union[Path, str], target_repo: Union[Path, str]) -> None:
-    """Synchronize modified, deleted, and untracked files from an isolated worktree back to the target workspace."""
-    src = Path(source_worktree)
-    dst = Path(target_repo)
-
-    # 1. Apply tracked modifications and deletions via git diff
-    diff_res = subprocess.run(
-        ["git", "diff", "--binary", "HEAD"],
-        cwd=src,
-        capture_output=True,
-    )
-    applied = False
-    if diff_res.returncode == 0 and diff_res.stdout.strip():
-        apply_res = subprocess.run(
-            ["git", "apply", "--binary", "--whitespace=nowarn"],
-            cwd=dst,
-            input=diff_res.stdout,
-            capture_output=True,
-        )
-        if apply_res.returncode == 0:
-            applied = True
+def _seed_private_repository(snapshot: _SourceSnapshot) -> None:
+    root = snapshot.binding.caller_root
+    workspace = snapshot.binding.workspace
+    clone = subprocess.run(["git", "clone", "--no-local", "--no-hardlinks", "--no-checkout", str(root), str(workspace)], capture_output=True)
+    if clone.returncode != 0:
+        detail = clone.stderr.decode("utf-8", errors="replace").strip()
+        raise WorkspacePreparationError(f"private repository clone failed: {detail}")
+    _git(workspace, "checkout", "--detach", snapshot.binding.initial_commit)
+    for key in ("user.name", "user.email"):
+        value = subprocess.run(["git", "config", "--get", key], cwd=root, capture_output=True)
+        if value.returncode == 0:
+            _git(workspace, "config", "--local", key, value.stdout.rstrip(b"\n").decode())
+    if snapshot.staged_diff:
+        _git(workspace, "apply", "--cached", "--binary", input_data=snapshot.staged_diff)
+        _git(workspace, "checkout-index", "-a", "-f")
+        removed = _git(workspace, "diff", "--cached", "--name-only", "--diff-filter=D", "-z").stdout
+        for raw_path in filter(None, removed.split(b"\0")):
+            path = workspace / os.fsdecode(raw_path)
+            if path.exists() or path.is_symlink():
+                path.unlink()
+    if snapshot.unstaged_diff:
+        _git(workspace, "apply", "--binary", "--whitespace=nowarn", input_data=snapshot.unstaged_diff)
+    for relative, mode in snapshot.directories:
+        destination = workspace / relative
+        destination.mkdir(parents=True, exist_ok=True)
+        destination.chmod(mode)
+    for item in snapshot.untracked:
+        destination = workspace / item.relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() or destination.is_symlink():
+            destination.unlink()
+        if item.symlink:
+            destination.symlink_to(os.fsdecode(item.contents))
         else:
-            logger.warning(
-                "Failed to apply worktree diff back to target workspace: {}",
-                apply_res.stderr.decode("utf-8", errors="replace").strip(),
-            )
+            destination.write_bytes(item.contents)
+            destination.chmod(item.mode)
 
-    # Fallback or supplementary: if git apply did not succeed, synchronize changed files directly
-    if not applied and diff_res.returncode == 0 and diff_res.stdout.strip():
-        status_res = subprocess.run(
-            ["git", "status", "--porcelain=v1"],
-            cwd=src,
-            capture_output=True,
-            text=True,
-        )
-        if status_res.returncode == 0:
-            for line in status_res.stdout.splitlines():
-                if len(line) < 4:
-                    continue
-                code = line[:2]
-                path_str = line[3:].strip()
-                if " -> " in path_str:
-                    path_str = path_str.split(" -> ")[1].strip()
-                src_f = src / path_str
-                dst_f = dst / path_str
-                if "D" in code:
-                    if dst_f.exists() or dst_f.is_symlink():
-                        try:
-                            dst_f.unlink()
-                        except OSError:
-                            pass
-                elif src_f.exists():
-                    try:
-                        dst_f.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src_f, dst_f)
-                    except OSError:
-                        pass
+    tracked = _listed_paths(root, "--cached")
+    untracked = tuple(path for path in _listed_paths(root, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    current_token, _, _ = _source_token(root, tracked, untracked)
+    if current_token != snapshot.consistency_token:
+        raise WorkspacePreparationError("caller Git identity, index, or files changed during workspace preparation")
 
-    # 2. Copy untracked new files
-    untracked_res = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-        cwd=src,
-        capture_output=True,
-    )
-    if untracked_res.returncode == 0 and untracked_res.stdout:
-        for raw_path in filter(None, untracked_res.stdout.split(b"\0")):
-            rel = os.fsdecode(raw_path)
-            parts = Path(rel).parts
-            if any(part in _DISPOSABLE_DIRECTORY_NAMES for part in parts):
-                continue
-            src_file = src / rel
-            dst_file = dst / rel
-            try:
-                if src_file.is_symlink():
-                    dst_file.parent.mkdir(parents=True, exist_ok=True)
-                    if dst_file.exists() or dst_file.is_symlink():
-                        dst_file.unlink()
-                    dst_file.symlink_to(os.readlink(src_file))
-                elif src_file.is_file():
-                    dst_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_file, dst_file)
-            except OSError as exc:
-                logger.warning("Failed to copy untracked file {} back to target workspace: {}", rel, exc)
+
+def sync_worktree_changes_back(source_worktree: Union[Path, str], target_repo: Union[Path, str], baseline: str = "HEAD") -> None:
+    """Copy the private repository's final file state back without copying Git state."""
+    source = Path(source_worktree)
+    target = Path(target_repo)
+    del baseline  # The caller's dirty starting state is the file-copy baseline.
+    source_tracked = set(_listed_paths(source, "--cached"))
+    target_tracked = set(_listed_paths(target, "--cached"))
+    source_untracked = {path for path in _listed_paths(source, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts)}
+    for relative in sorted(source_tracked | target_tracked | source_untracked):
+        src = source / relative
+        dst = target / relative
+        if not src.exists() and not src.is_symlink():
+            if relative in target_tracked and (dst.exists() or dst.is_symlink()):
+                dst.unlink()
+            continue
+        source_value = _path_bytes(src)
+        try:
+            target_value = _path_bytes(dst)
+        except (FileNotFoundError, IsADirectoryError):
+            target_value = None
+        if source_value == target_value:
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists() or dst.is_symlink():
+            dst.unlink()
+        contents, mode, symlink = source_value
+        if symlink:
+            dst.symlink_to(os.fsdecode(contents))
+        else:
+            dst.write_bytes(contents)
+            dst.chmod(mode)
 
 
 @contextlib.contextmanager
@@ -243,60 +279,37 @@ def isolated_local_llm_worktree(
     base_cwd: Optional[Union[Path, str]] = None,
     is_noedit: bool = False,
 ) -> Generator[str, None, None]:
-    """Isolate local LLM execution in a detached git worktree.
-
-    - If the directory is already inside an isolated linked worktree (where ``.git`` is a file)
-      or not a git repository, yields the target directory directly without nesting.
-    - Otherwise, creates an ephemeral detached worktree at ``HEAD``, binds
-      ``_COMMAND_EXECUTION_CWD`` to it for the duration of the execution context, and cleans
-      it up in ``finally``.
-    - If ``is_noedit`` is False, changes made in the worktree are synchronized back to the
-      target workspace before the worktree is destroyed.
-    """
+    """Bind a Git-backed invocation to an independently cloned private repository."""
     target = _resolve_target(base_cwd)
-
-    # If already an isolated worktree or not a git repository, run directly
-    if is_inside_git_worktree(target) or not is_git_repository(target):
+    if not is_git_repository(target):
         yield str(target)
         return
 
-    worktree_dir: Optional[str] = None
+    parent = Path(tempfile.mkdtemp(prefix="auto_coder_llm_"))
+    workspace = parent / "repository"
     execution_token = None
+    binding_token = None
+    snapshot: Optional[_SourceSnapshot] = None
     try:
-        worktree_dir = tempfile.mkdtemp(prefix="auto_coder_llm_wt_")
-        add_res = subprocess.run(
-            ["git", "worktree", "add", "--detach", worktree_dir, "HEAD"],
-            cwd=target,
-            capture_output=True,
-            text=True,
-        )
-        if add_res.returncode != 0:
-            logger.warning(
-                "Failed to create isolated git worktree for local LLM: {}",
-                add_res.stderr.strip(),
-            )
-            shutil.rmtree(worktree_dir, ignore_errors=True)
-            worktree_dir = None
-            yield str(target)
-            return
+        snapshot = _capture_source(target, workspace)
+        _seed_private_repository(snapshot)
+    except WorkspacePreparationError:
+        shutil.rmtree(parent, ignore_errors=True)
+        raise
+    except (OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(parent, ignore_errors=True)
+        raise WorkspacePreparationError(f"private workspace preparation failed: {exc}") from exc
 
-        _seed_worktree_from_target(target, Path(worktree_dir))
-        execution_token = bind_command_execution_cwd(worktree_dir)
-        logger.debug("Bound isolated local LLM worktree at {} (is_noedit={})", worktree_dir, is_noedit)
-        yield worktree_dir
+    try:
+        binding_token = _CURRENT_LOCAL_WORKSPACE.set(snapshot.binding)
+        execution_token = bind_command_execution_cwd(str(workspace))
+        logger.debug("Bound private local LLM repository {} for invocation {}", workspace, snapshot.binding.invocation_id)
+        yield str(workspace)
+        if not is_noedit:
+            sync_worktree_changes_back(workspace, snapshot.binding.caller_root, snapshot.binding.initial_commit)
     finally:
         if execution_token is not None:
             reset_command_execution_cwd(execution_token)
-
-        if worktree_dir and os.path.exists(worktree_dir):
-            try:
-                if not is_noedit:
-                    sync_worktree_changes_back(worktree_dir, target)
-            finally:
-                subprocess.run(
-                    ["git", "worktree", "remove", "--force", worktree_dir],
-                    cwd=target,
-                    capture_output=True,
-                )
-                shutil.rmtree(worktree_dir, ignore_errors=True)
-                logger.debug("Cleaned up isolated local LLM worktree at {}", worktree_dir)
+        if binding_token is not None:
+            _CURRENT_LOCAL_WORKSPACE.reset(binding_token)
+        shutil.rmtree(parent, ignore_errors=True)
