@@ -7,6 +7,8 @@ import pytest
 
 from src.auto_coder.backend_manager import BackendManager
 from src.auto_coder.local_execution_boundary import (
+    BackendOutcome,
+    EvidenceStatus,
     LocalBoundaryError,
     LocalExecutionBoundary,
     bind_local_execution_boundary,
@@ -36,29 +38,96 @@ def _binding(tmp_path: Path) -> LocalWorkspaceBinding:
     )
 
 
-def test_boundary_requires_settled_writers_before_promotion(tmp_path: Path) -> None:
+def test_incomplete_evidence_cannot_authorize_confined_result(tmp_path: Path) -> None:
     boundary = LocalExecutionBoundary(_binding(tmp_path), "opencode", editable=True)
+    invocation_id = boundary.binding.invocation_id
+    boundary.record_backend_success(invocation_id)
 
-    with pytest.raises(LocalBoundaryError, match="writer lifetime is not settled"):
+    with pytest.raises(LocalBoundaryError, match="lacks complete"):
         boundary.require_promotable()
 
-    boundary.settle_writers()
-    evidence = boundary.require_promotable()
-    assert evidence.invocation_id == "invocation-1"
-    assert evidence.backend_type == "opencode"
-    assert evidence.editable is True
-    assert evidence.promotable is True
+    evidence = boundary.evidence()
+    assert evidence.backend_outcome is BackendOutcome.SUCCEEDED
+    assert evidence.filesystem_enforcement is EvidenceStatus.UNKNOWN
+    assert evidence.publication_enforcement is EvidenceStatus.UNKNOWN
+    assert evidence.writer_completion is EvidenceStatus.UNKNOWN
+    assert evidence.violation_observation is EvidenceStatus.UNKNOWN
+    assert evidence.confined_result_authorized is False
 
 
-def test_policy_violation_is_sticky_after_writer_settlement(tmp_path: Path) -> None:
+def test_complete_matching_evidence_authorizes_but_violation_is_sticky(tmp_path: Path) -> None:
     boundary = LocalExecutionBoundary(_binding(tmp_path), "muse", editable=True)
-    boundary.report_policy_violation("external publication denied")
-    boundary.settle_writers()
+    invocation_id = boundary.binding.invocation_id
+    boundary.record_backend_success(invocation_id)
+    boundary.record_enforcement(
+        invocation_id,
+        filesystem=EvidenceStatus.ESTABLISHED,
+        publication=EvidenceStatus.ESTABLISHED,
+        writers=EvidenceStatus.ESTABLISHED,
+        violations_observed=EvidenceStatus.ESTABLISHED,
+    )
+    assert boundary.require_promotable().confined_result_authorized is True
+    boundary.report_policy_violation(invocation_id, "external publication denied")
+    boundary.record_backend_success(invocation_id)
 
-    with pytest.raises(LocalBoundaryError, match="external publication denied"):
+    with pytest.raises(LocalBoundaryError, match="lacks complete"):
         boundary.require_promotable()
     assert boundary.evidence().policy_violation is True
     assert boundary.evidence().promotable is False
+
+
+def test_cross_invocation_and_late_evidence_are_rejected(tmp_path: Path) -> None:
+    boundary = LocalExecutionBoundary(_binding(tmp_path), "opencode", editable=True)
+    with pytest.raises(LocalBoundaryError, match="different local invocation"):
+        boundary.record_backend_success("another-invocation")
+    boundary.close()
+    with pytest.raises(LocalBoundaryError, match="evidence is closed"):
+        boundary.record_backend_success(boundary.binding.invocation_id)
+
+
+def test_normal_manager_return_remains_legacy_and_uncertified(tmp_path: Path, _use_real_commands: None) -> None:
+    class SuccessfulClient:
+        use_noedit_options = False
+        model_name = "test-model"
+        config_backend = SimpleNamespace(backend_type="opencode")
+
+        def __init__(self) -> None:
+            self.boundary: LocalExecutionBoundary | None = None
+
+        def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+            self.boundary = get_current_local_execution_boundary()
+            assert self.boundary is not None
+            return "plausible success"
+
+        def get_last_session_id(self) -> None:
+            return None
+
+    repository = tmp_path / "real-repository"
+    repository.mkdir()
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("initial\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    client = SuccessfulClient()
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(default_backend="alias", default_client=client, factories={"alias": lambda: client}, order=["alias"])
+    token = bind_command_execution_cwd(str(repository))
+    try:
+        assert manager._run_llm_cli("implement") == "plausible success"
+    finally:
+        reset_command_execution_cwd(token)
+
+    assert client.boundary is not None
+    evidence = client.boundary.evidence()
+    assert evidence.backend_outcome is BackendOutcome.SUCCEEDED
+    assert evidence.writer_completion is EvidenceStatus.UNKNOWN
+    assert evidence.filesystem_enforcement is EvidenceStatus.UNKNOWN
+    assert evidence.publication_enforcement is EvidenceStatus.UNKNOWN
+    assert evidence.confined_result_authorized is False
 
 
 def test_boundary_is_invocation_local_and_rejects_nesting(tmp_path: Path) -> None:

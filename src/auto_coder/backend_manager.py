@@ -812,16 +812,23 @@ class BackendManager(LLMBackendManagerBase):
                             # cooperative interruption never kills it, while any
                             # unrelated command run outside this block remains
                             # interruptible.
-                            with mark_invocation_active():
-                                if session_id:
-                                    out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
-                                else:
-                                    out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
-                        # Clients own their process trees and may only settle this
-                        # fact after their final reap/termination check returns.
-                        if local_boundary is not None:
-                            local_boundary.settle_writers()
-                            local_boundary.require_promotable()
+                            try:
+                                with mark_invocation_active():
+                                    if session_id:
+                                        out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
+                                    else:
+                                        out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                            except BaseException as exc:
+                                if local_boundary is not None:
+                                    local_boundary.record_backend_failure(local_boundary.binding.invocation_id, type(exc).__name__)
+                                raise
+                            if local_boundary is not None:
+                                # A normal provider return proves only its backend
+                                # outcome. Runtime enforcement/supervision facts stay
+                                # unknown until their later authoritative producers
+                                # are integrated; legacy execution remains usable but
+                                # is not certified as confined.
+                                local_boundary.record_backend_success(local_boundary.binding.invocation_id)
                         self._settle_admitted_invocation(invocation_handle, success=True)
                         if workspace_ownership is not None:
                             workspace_ownership.release_execution()
