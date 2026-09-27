@@ -483,7 +483,10 @@ def test_early_live_parent_family_refresh_retains_wrapped_admission_deferral(tmp
     # parent refresh, before validation or implementation can run.
     engine._fetch_authoritative_decomposition_set = MagicMock(side_effect=[(parent, [dict(issue)]), wrapped])
 
-    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+    with (
+        patch.object(engine, "_process_single_candidate_reserved") as implementation,
+        patch("auto_coder.automation_engine.logger.warning") as warning,
+    ):
         result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data=dict(issue), priority=0, issue_number=7), engine.config)
 
     identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
@@ -491,8 +494,20 @@ def test_early_live_parent_family_refresh_retains_wrapped_admission_deferral(tmp
     assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
     assert result.refill_retry_required is True
     assert obligation is not None
-    assert result.target_reason == ("Deferred reconciliation for owner/repo issue #7: " "stage=issue-processing; reason=request_in_flight; " f"api_origin=https://api.github.com; retry_at={obligation.not_before}; " "delivery=definitely_not_sent")
+    expected_reason = "Deferred reconciliation for owner/repo issue #7: " "stage=issue-processing; reason=request_in_flight; " f"api_origin=https://api.github.com; retry_at={obligation.not_before}; " "delivery=definitely_not_sent"
+    assert result.target_reason == expected_reason
+    assert result.actions == [expected_reason]
     assert obligation.reason is PendingReason.ADMISSION_DEFERRED
     assert obligation.not_before >= deferred.retry_at
+    warning.assert_called_once_with(
+        "Deferred GitHub reconciliation repository={} issue={} stage={} reason={} api_origin={} retry_at={} delivery={}",
+        "owner/repo",
+        7,
+        ISSUE_PROCESSING_STAGE,
+        "request_in_flight",
+        "https://api.github.com",
+        obligation.not_before,
+        DeliveryCertainty.DEFINITELY_NOT_SENT.value,
+    )
     engine.pending_work_scheduler.wake.assert_called_once_with()
     implementation.assert_not_called()
