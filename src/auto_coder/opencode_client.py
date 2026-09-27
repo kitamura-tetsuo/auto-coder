@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
@@ -685,18 +685,18 @@ class OpenCodeClient(LLMClientBase):
         command = [*self.command, "session", "list", "--format", "json"]
         try:
             result = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True, timeout=60, env=env)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError(f"OpenCode session continuation could not be verified before task launch: {exc}") from exc
+        except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+            raise SessionWorkspaceCompatibilityError(f"OpenCode session continuation could not be verified before task launch: {exc}") from exc
         if result.returncode != 0:
             diagnostics = (result.stderr or result.stdout or "").strip()[:400]
-            raise RuntimeError(f"OpenCode session continuation could not be verified before task launch (exit code {result.returncode}): {diagnostics or 'no diagnostic output'}")
+            raise SessionWorkspaceCompatibilityError(f"OpenCode session continuation could not be verified before task launch (exit code {result.returncode}): {diagnostics or 'no diagnostic output'}")
         stripped_stdout = (result.stdout or "").strip()
         try:
             sessions = json.loads(stripped_stdout) if stripped_stdout else []
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"OpenCode session continuation could not be verified before task launch: the session list was not valid JSON ({exc})") from exc
+            raise SessionWorkspaceCompatibilityError(f"OpenCode session continuation could not be verified before task launch: the session list was not valid JSON ({exc})") from exc
         if not isinstance(sessions, list) or not any(isinstance(entry, dict) and entry.get("id") == session_id for entry in sessions):
-            raise RuntimeError(f"OpenCode session {session_id!r} is not associated with the current execution directory {cwd}; refusing to continue rather than risk redirecting to, or silently reading stale content from, a different workspace")
+            raise SessionWorkspaceCompatibilityError(f"OpenCode session {session_id!r} is not associated with the current execution directory {cwd}; refusing to continue rather than risk redirecting to, or silently reading stale content from, a different workspace")
 
     @classmethod
     def _protected_git_dirs(cls, cwd: Path) -> Tuple[str, ...]:

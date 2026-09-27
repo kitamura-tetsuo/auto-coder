@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .backend_provider_manager import BackendProviderManager
 from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
 from .backend_state_manager import BackendStateManager
-from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
 from .invocation_admission import (
     InvocationHandle,
     current_invocation_gate,
@@ -26,6 +26,7 @@ from .invocation_admission import (
 )
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
+from .local_execution_boundary import bind_local_execution_boundary
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .review_audit import ReviewInteractionRecord
@@ -33,7 +34,7 @@ from .review_capture.context import bind_interaction_id, get_active_review_conte
 from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
-from .worktree_utils import LocalWorkspaceOwnership, isolated_local_llm_worktree
+from .worktree_utils import LocalWorkspaceOwnership, get_current_local_workspace, isolated_local_llm_worktree
 
 logger = get_logger(__name__)
 
@@ -483,9 +484,11 @@ class BackendManager(LLMBackendManagerBase):
 
     # ---------- Direct Compatibility Methods ----------
     @log_calls  # type: ignore[misc]
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: Optional[bool] = None) -> str:
         """Normal execution (circular retry on usage limit with provider rotation)."""
         from .utils import TemporaryEnvironment
+
+        requested_noedit = bool(getattr(self, "_is_noedit", False)) if is_noedit is None else is_noedit
 
         # Check if we need to auto-reset the backend based on saved state
         self.check_and_reset_backend_if_needed()
@@ -545,6 +548,7 @@ class BackendManager(LLMBackendManagerBase):
                         backend_attempt_number=attempts + 1,
                         temp_env_cls=TemporaryEnvironment,
                         session_id=self._last_session_id if should_resume else None,
+                        requested_noedit=requested_noedit,
                     )
                 except (AutoCoderUsageLimitError, AutoCoderTimeoutError, AutoCoderRetryableBackendError):
                     raise
@@ -564,6 +568,7 @@ class BackendManager(LLMBackendManagerBase):
                         prompt=prompt,
                         backend_attempt_number=attempts + 1,
                         temp_env_cls=TemporaryEnvironment,
+                        requested_noedit=requested_noedit,
                     )
                 # Check if we should switch to next backend after successful execution
                 backend_config = get_llm_config().get_backend_config(backend_name)
@@ -622,8 +627,9 @@ class BackendManager(LLMBackendManagerBase):
     def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
         """Ask the current client to continue an opaque session explicitly.
 
-        Session-specific rejection falls back to a new session on the same
-        backend. Usage failures retain ordinary backend rotation behavior.
+        A workspace/session compatibility rejection remains an explicit failure
+        instead of making a fresh provider call look resumed. Other established
+        provider failures retain the existing fallback behavior.
         """
         self._last_continue_session_resumed = False
         if not session_id.strip():
@@ -640,25 +646,27 @@ class BackendManager(LLMBackendManagerBase):
                 backend_attempt_number=1,
                 temp_env_cls=contextlib.nullcontext,
                 session_id=session_id,
+                requested_noedit=is_noedit,
             )
             self._last_continue_session_resumed = True
             return str(output)
+        except SessionWorkspaceCompatibilityError:
+            self._last_continue_session_resumed = False
+            raise
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
             self._last_continue_session_resumed = False
             self.switch_to_next_backend()
-            return self._run_llm_cli(prompt)
+            return self._run_llm_cli(prompt, is_noedit=is_noedit)
         except Exception as exc:
-            # We must catch any fallback errors that are expected from client
             if not isinstance(exc, (ValueError, RuntimeError, NotImplementedError)):
                 raise
-            # Re-execute as a fresh session
             logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
             self._last_continue_session_resumed = False
             self._last_session_id = None
             self._save_session_state(backend_name, None)
             if hasattr(client, "clear_last_session_id"):
                 client.clear_last_session_id()
-            return self._run_llm_cli(prompt)
+            return self._run_llm_cli(prompt, is_noedit=is_noedit)
 
     def run_prompt(self, prompt: str) -> str:
         """
@@ -717,6 +725,7 @@ class BackendManager(LLMBackendManagerBase):
         backend_attempt_number: int,
         temp_env_cls: Callable[[Dict[str, str]], Any],
         session_id: Optional[str] = None,
+        requested_noedit: bool = False,
     ) -> str:
         """
         Execute a backend client while honoring provider rotation rules.
@@ -776,7 +785,11 @@ class BackendManager(LLMBackendManagerBase):
                         logger.warning(f"Failed to record review interaction start: {e}")
 
                 # Determine if this is a no-edit operation
-                is_noedit = getattr(self, "_is_noedit", False)
+                # Resolve the effective mode before workspace/boundary selection.
+                # Clients constructed for no-edit retain that restriction even
+                # when an alias or caller omits an explicit true argument.
+                client_is_noedit = getattr(cli, "use_noedit_options", False) is True
+                is_noedit = requested_noedit or client_is_noedit
                 # Atomically register this controlled provider action before it
                 # runs, at the final invocation boundary shared by every
                 # backend/provider rotation attempt (Issue #2009, REQ-001/002).
@@ -788,18 +801,40 @@ class BackendManager(LLMBackendManagerBase):
                     workspace_ownership = LocalWorkspaceOwnership() if is_local else None
                     worktree_ctx = isolated_local_llm_worktree(is_noedit=is_noedit, ownership=workspace_ownership) if is_local else contextlib.nullcontext()
                     with worktree_ctx:
-                        with bind_interaction_id(interaction_id):
+                        workspace_binding = get_current_local_workspace()
+                        boundary_ctx = (
+                            bind_local_execution_boundary(
+                                workspace_binding,
+                                backend_type=backend_type,
+                                editable=not is_noedit,
+                            )
+                            if workspace_binding is not None
+                            else contextlib.nullcontext()
+                        )
+                        with boundary_ctx as local_boundary, bind_interaction_id(interaction_id):
                             # Issue #2010 REQ-004: only the controlled provider
                             # action itself (and any subprocess/tool tree it
                             # spawns) is marked protected, so graceful draining's
                             # cooperative interruption never kills it, while any
                             # unrelated command run outside this block remains
                             # interruptible.
-                            with mark_invocation_active():
-                                if session_id:
-                                    out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
-                                else:
-                                    out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                            try:
+                                with mark_invocation_active():
+                                    if session_id:
+                                        out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
+                                    else:
+                                        out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                            except BaseException as exc:
+                                if local_boundary is not None:
+                                    local_boundary.record_backend_failure(local_boundary.binding.invocation_id, type(exc).__name__)
+                                raise
+                            if local_boundary is not None:
+                                # A normal provider return proves only its backend
+                                # outcome. Runtime enforcement/supervision facts stay
+                                # unknown until their later authoritative producers
+                                # are integrated; legacy execution remains usable but
+                                # is not certified as confined.
+                                local_boundary.record_backend_success(local_boundary.binding.invocation_id)
                         self._settle_admitted_invocation(invocation_handle, success=True)
                         if workspace_ownership is not None:
                             workspace_ownership.release_execution()
@@ -901,14 +936,13 @@ class BackendManager(LLMBackendManagerBase):
         with ProgressStage(stage_label):
             try:
                 # This is not a no-edit operation
-                self._is_noedit = False
-                out: str = self._run_llm_cli(prompt)
+                out: str = self._run_llm_cli(prompt, is_noedit=False)
             except AutoCoderTimeoutError as exc:
                 logger.warning(f"Timeout error on backend '{active_backend}', switching to next backend")
                 self.switch_to_next_backend()
                 # Try again with the next backend
                 with ProgressStage(f"Running LLM: {self._current_backend_name()}"):
-                    out = self._run_llm_cli(prompt)
+                    out = self._run_llm_cli(prompt, is_noedit=False)
 
         # Update state
         self._last_prompt = prompt
@@ -1370,8 +1404,7 @@ def run_llm_noedit_prompt(prompt: str) -> str:
     if manager is None:
         raise RuntimeError("Non-editing backend manager not initialized. " "Call get_noedit_backend_manager() with initialization parameters first.")
     # Mark this as a no-edit operation so clients use options_for_noedit
-    manager._is_noedit = True
-    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
+    return manager._run_llm_cli(prompt, is_noedit=True)  # type: ignore[no-any-return]
 
 
 def run_llm_message_prompt(prompt: str) -> str:
@@ -1458,11 +1491,7 @@ def run_llm_prompt(prompt: str, backend_manager: Optional[BackendManager] = None
     manager = backend_manager or LLMBackendManager.get_llm_instance()
     if manager is None:
         raise RuntimeError("LLM backend manager not initialized. " "Call get_llm_backend_manager() with initialization parameters first.")
-    if is_noedit:
-        manager._is_noedit = True
-    else:
-        manager._is_noedit = False
-    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
+    return manager._run_llm_cli(prompt, is_noedit=is_noedit)  # type: ignore[no-any-return]
 
 
 def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:

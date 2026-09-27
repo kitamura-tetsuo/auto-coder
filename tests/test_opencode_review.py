@@ -565,7 +565,7 @@ class TestAC002PrScopedSessionContinuity:
 
 
 class TestAC003SessionRecoveryAndEvidenceContinuation:
-    def test_stale_pr_session_triggers_fresh_review_and_new_association(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    def test_stale_pr_session_fails_without_fresh_review_or_new_association(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
         repo, head_sha = _build_test_repo(tmp_path)
         pass_response = _pr_validation_pass_payload()
 
@@ -605,8 +605,12 @@ class TestAC003SessionRecoveryAndEvidenceContinuation:
         github_client = _build_github_client(head_sha)
         pr_data = _build_pr_data(head_sha)
 
-        with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
-            res = run_adversarial_validation(
+        with (
+            patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config),
+            patch("src.auto_coder.opencode_client.get_llm_config", return_value=config),
+            pytest.raises(RuntimeError, match="not associated with the current execution directory"),
+        ):
+            run_adversarial_validation(
                 repo_name=REPO_NAME,
                 pr_data=pr_data,
                 config=auto_config,
@@ -615,20 +619,15 @@ class TestAC003SessionRecoveryAndEvidenceContinuation:
                 execution_cwd=str(repo),
             )
 
-        assert res.result == "PASS"
-        assert res.reviewer_session_checkpoint is not None
-        assert res.reviewer_session_checkpoint.session_id == "ses_fresh"
-
-        # Registry should have been updated with ses_fresh, replacing ses_stale
-        updated = registry.get(
+        unchanged = registry.get(
             REPO_NAME,
             PR_NUMBER,
             "opencode-pr",
             "opencode",
             "anthropic/claude-sonnet-4-5",
         )
-        assert updated is not None
-        assert updated.session_id == "ses_fresh"
+        assert unchanged is not None
+        assert unchanged.session_id == "ses_stale"
 
     def test_evidence_completion_continuation_discontinuity_terminates_as_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
         repo, head_sha = _build_test_repo(tmp_path)
