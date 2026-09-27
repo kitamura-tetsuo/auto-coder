@@ -661,10 +661,17 @@ class MuseClient(LLMClientBase):
         reasoning: Optional[str] = None
         deny_approval = effective_noedit
         index = 0
-        harmless = {"exec", "--json", "--no-edit"}
+        harmless = {"exec", "--json"}
         while index < len(arguments):
             argument = arguments[index]
             if argument in harmless:
+                index += 1
+                continue
+            if argument == "--no-edit":
+                deny_approval = True
+                for flag in ("--disable-write", "--disable-shell"):
+                    if flag not in host_arguments:
+                        host_arguments.append(flag)
                 index += 1
                 continue
             if argument in {"--model", "--reasoning-effort"}:

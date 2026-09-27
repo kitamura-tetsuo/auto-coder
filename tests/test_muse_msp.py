@@ -71,8 +71,9 @@ for line in sys.stdin:
         if not missing_model:
             session["modelId"] = "muse-spark-1.3"
         requested_denial = method == "session/start" and frame["params"].get("approvalMode") == "denyUnmatched"
-        if requested_denial or (method == "session/resume" and os.environ.get("MSP_RESUME_DENIED")):
-            session["approvalMode"] = {"mode":"denyUnmatched"}
+        approval_mode = os.environ.get("MSP_APPROVAL_MODE")
+        if approval_mode != "omit" and (requested_denial or (method == "session/resume" and os.environ.get("MSP_RESUME_DENIED"))):
+            session["approvalMode"] = {"mode":approval_mode or "denyUnmatched"}
         pending = [{"kind":"approval","approvalId":"pending-1","viewCursor":"cursor-1"}] if method == "session/resume" and os.environ.get("MSP_PENDING_RESUME") else []
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":session,"pendingRequests":pending}})
         if os.environ.get("MSP_STOP_READING"):
@@ -159,6 +160,42 @@ def test_muse_msp_explicit_disable_approval_uses_only_wire_mode(tmp_path, monkey
     start = next(json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "session/start")
     assert start["argv"] == ["serve"]
     assert start["frame"]["params"]["approvalMode"] == "denyUnmatched"
+
+
+def test_muse_msp_configured_no_edit_maps_all_restrictions_for_editable_caller(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--no-edit"])})
+
+    assert _manager(config)._clients["muse"]._run_llm_cli("first") == "answer:first"
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    start = next(entry for entry in entries if entry["frame"].get("method") == "session/start")
+    assert start["argv"] == ["serve", "--disable-write", "--disable-shell"]
+    assert "--disable-approval" not in start["argv"]
+    assert start["frame"]["params"]["approvalMode"] == "denyUnmatched"
+    assert any(entry["frame"].get("method") == "turn/start" for entry in entries)
+
+
+@pytest.mark.parametrize("approval_mode", ["omit", "allowAll"])
+def test_muse_msp_fresh_noedit_rejects_unconfirmed_approval_before_turn(tmp_path, monkeypatch, _use_real_commands, approval_mode):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_APPROVAL_MODE", approval_mode)
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+
+    with pytest.raises(RuntimeError, match="fresh session did not confirm approval denial"):
+        _manager(config)._clients["muse"]._run_llm_cli("first", is_noedit=True)
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert any(entry["frame"].get("method") == "session/start" for entry in entries)
+    assert not any(entry["frame"].get("method") == "turn/start" for entry in entries)
 
 
 def _assert_uuid7(value: str) -> None:
