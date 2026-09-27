@@ -31,7 +31,6 @@ _PTRACE_TRACEME = 0
 _PTRACE_PEEKDATA = 2
 _PTRACE_SYSCALL = 24
 _PTRACE_SETOPTIONS = 0x4200
-_PTRACE_SETREGS = 13
 _PTRACE_O_TRACESYSGOOD = 1
 _PTRACE_O_TRACEFORK = 2
 _PTRACE_O_TRACEVFORK = 4
@@ -309,17 +308,10 @@ class PtraceDenialMonitor:
                 if entering:
                     operation = self._mutation_outside_roots(pid, regs)
                     self._pending[pid] = operation
-                    if operation is not None:
-                        # Suppress the syscall itself. This covers mutation classes
-                        # (for example chmod) that Landlock does not mediate while
-                        # retaining Landlock as the path-race-safe backstop.
-                        regs.orig_rax = ctypes.c_ulonglong(-1).value
-                        _ptrace(_PTRACE_SETREGS, pid, 0, ctypes.byref(regs))
                 else:
                     operation = self._pending.pop(pid, None)
-                    if operation is not None:
-                        regs.rax = ctypes.c_ulonglong(-errno.EACCES).value
-                        _ptrace(_PTRACE_SETREGS, pid, 0, ctypes.byref(regs))
+                    result = ctypes.c_longlong(regs.rax).value
+                    if operation is not None and result in {-errno.EACCES, -errno.EPERM, -errno.EXDEV}:
                         denials.append(f"filesystem policy denied {operation} for invocation process {pid}")
                 self._entering[pid] = not entering
             else:
