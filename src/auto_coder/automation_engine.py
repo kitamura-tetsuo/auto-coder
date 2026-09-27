@@ -50,7 +50,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .github_ci_observer import ci_read_phase_method, end_ci_read_phase
-from .github_pending_work import PendingObligation, PendingWorkScheduler, StageOutcome, WorkIdentity, get_pending_work_store
+from .github_pending_work import PendingObligation, PendingReason, PendingWorkScheduler, StageOutcome, WorkIdentity, get_pending_work_store
 from .github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_ownership import (
@@ -162,11 +162,43 @@ from .update_manager import check_for_updates_and_restart
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, InvalidSubIssueRelationshipError, get_ghapi_client, is_implementation_ready, parse_parent_issue_number, parse_parent_issue_url_number, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
-from .util.github_request_outcome import GitHubRequestError, configure_github_request_boundary
+from .util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestError, configure_github_request_boundary
 from .utils import CommandExecutor, get_target_container, log_action
 from .validation_scheduler import ValidationAdmissionDeferred, ValidationJob, ValidationScheduler
 
 logger = get_logger(__name__)
+
+_RECONCILIATION_ADMISSION_DEFERRALS = frozenset(
+    {
+        "request_in_flight",
+        "mutation_spacing",
+        "request_rolling_window",
+        "mutation_minute_window",
+        "mutation_hour_window",
+        "governor_initialization_contention",
+        "governor_transaction_contention",
+        "rate_limit_cooldown",
+    }
+)
+
+
+def _reconciliation_admission_deferral(error: BaseException) -> GitHubRequestDeferred | None:
+    """Recover a typed, definitely-unsent deferral from operational wrappers."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, GitHubRequestDeferred) and current.reason in _RECONCILIATION_ADMISSION_DEFERRALS and current.outcome.classification is GitHubApiOutcome.REFUSED and current.outcome.delivery is DeliveryCertainty.DEFINITELY_NOT_SENT:
+            return current
+        # Reconciliation deliberately wraps failures with ``raise ... from``.
+        # Only that explicit causal chain is authoritative: implicit or
+        # suppressed ``__context__`` may belong to an unrelated programming
+        # error raised while a prior deferral was being handled.
+        if not isinstance(current, ParentOperationalError):
+            return None
+        current = current.__cause__
+    return None
+
 
 JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS = 60 * 60
 MAINTENANCE_INTERVAL_SECONDS = 60
@@ -3553,6 +3585,11 @@ class AutomationEngine:
                         raise RuntimeError(f"GitHub returned an ambiguous Issue snapshot for #{observed.number}")
                     if "pull_request" in snapshot or not self._is_open_issue(snapshot):
                         continue
+                    pending_identity = WorkIdentity(repo_name, f"issue:{observed.number}", ISSUE_PROCESSING_STAGE, _issue_content_revision(snapshot))
+                    pending_reconciliation = get_pending_work_store().get(pending_identity)
+                    if pending_reconciliation is not None and pending_reconciliation.reason is PendingReason.ADMISSION_DEFERRED:
+                        blocked_issue_numbers.add(observed.number)
+                        continue
                     if isinstance(self.github, GitHubClient) and isinstance(snapshot.get("id"), int) and parse_parent_declaration(snapshot.get("body")).status is not ParentDeclarationStatus.ABSENT:
                         declaration = parse_parent_declaration(snapshot.get("body"))
                         try:
@@ -3564,10 +3601,19 @@ class AutomationEngine:
                             logger.warning("Blocked relationship reconciliation for {}/#{} during refill: {}", repo_name, observed.number, exc)
                             continue
                         except ParentOperationalError as exc:
-                            reconciliation_retry_required = True
                             blocked_issue_numbers.add(observed.number)
                             if declaration.parent_number is not None:
                                 blocked_issue_numbers.add(declaration.parent_number)
+                            deferred_result = self._defer_wrapped_reconciliation(
+                                repo_name,
+                                observed.number,
+                                snapshot,
+                                exc,
+                                CandidateProcessingResult(type="issue", number=observed.number, title=str(snapshot.get("title") or "")),
+                            )
+                            if deferred_result is not None:
+                                continue
+                            reconciliation_retry_required = True
                             logger.warning("Deferred relationship reconciliation for {}/#{} during refill: {}", repo_name, observed.number, exc)
                             continue
                     issue_data = self.github.get_issue_details(snapshot)
@@ -3882,39 +3928,41 @@ class AutomationEngine:
                     if self._check_if_pr_merged_or_closed(candidate, result):
                         self.notify_pr_merged_or_closed()
 
-                except GitHubRequestDeferred as deferred:
-                    if invalidation_claim is None:
-                        raise
-                    context = deferred.outcome.context
-                    try:
-                        retained = await asyncio.to_thread(
-                            self.invalidations.defer,
-                            invalidation_claim,
-                            deferred.reason,
-                            deferred.retry_at,
-                            context.api_origin,
-                        )
-                    except Exception as persistence_error:
-                        stop_after_persistence_failure = True
-                        logger.opt(exception=True).error("Failed to persist authoritative-refresh deferral " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={deferred.reason} api_origin={context.api_origin}: {persistence_error}")
-                        get_health_monitor().record_event(
-                            "worker_error",
-                            f"worker {worker_id}: deferral persistence failed: {type(persistence_error).__name__}",
-                            f"{candidate.type} #{item_number}",
-                        )
-                    else:
-                        deferral_committed = True
-                        log = logger.error if deferred.reason == "governor_state_unavailable" else logger.warning
-                        log("Authoritative refresh safely deferred " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={retained.reason} retry_at={retained.retry_not_before} " f"api_origin={retained.api_origin or 'unknown'}")
-                        if self._invalidation_wake_event is not None:
-                            self._invalidation_wake_event.set()
                 except asyncio.CancelledError:
                     logger.info(f"Worker {worker_id} cancelled")
                     get_health_monitor().record_event("worker_exit", f"worker {worker_id} cancelled", f"{candidate.type} #{item_number}")
                     raise
                 except Exception as e:
-                    logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
-                    get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
+                    deferred = e if isinstance(e, GitHubRequestDeferred) else _reconciliation_admission_deferral(e)
+                    if deferred is not None:
+                        if invalidation_claim is None:
+                            raise
+                        context = deferred.outcome.context
+                        try:
+                            retained = await asyncio.to_thread(
+                                self.invalidations.defer,
+                                invalidation_claim,
+                                deferred.reason,
+                                deferred.retry_at,
+                                context.api_origin,
+                            )
+                        except Exception as persistence_error:
+                            stop_after_persistence_failure = True
+                            logger.opt(exception=True).error("Failed to persist authoritative-refresh deferral " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={deferred.reason} api_origin={context.api_origin}: {persistence_error}")
+                            get_health_monitor().record_event(
+                                "worker_error",
+                                f"worker {worker_id}: deferral persistence failed: {type(persistence_error).__name__}",
+                                f"{candidate.type} #{item_number}",
+                            )
+                        else:
+                            deferral_committed = True
+                            log = logger.error if deferred.reason == "governor_state_unavailable" else logger.warning
+                            log("Authoritative refresh safely deferred " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={retained.reason} retry_at={retained.retry_not_before} " f"api_origin={retained.api_origin or 'unknown'}")
+                            if self._invalidation_wake_event is not None:
+                                self._invalidation_wake_event.set()
+                    else:
+                        logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
+                        get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
                 finally:
                     completion_transition = None
                     if invalidation_claim is not None:
@@ -5383,6 +5431,9 @@ class AutomationEngine:
                     _record_issue_stage_result(item_number, "issue.parent-reconciliation", f"issue#{item_number} parent reconciliation", Outcome.BLOCKED, {"reason": str(exc)})
                     return result
                 except ParentOperationalError as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
                     result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
@@ -5432,6 +5483,9 @@ class AutomationEngine:
                         result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                         return result
                     except ParentOperationalError as exc:
+                        deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                        if deferred_result is not None:
+                            return deferred_result
                         result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
                         result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
@@ -5543,6 +5597,9 @@ class AutomationEngine:
                 try:
                     live_parent_set = self._fetch_authoritative_decomposition_set(repo_name, live_parent_number)
                 except Exception as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
                     result.error = f"Cannot fetch authoritative parent/child specification set: {exc}"
                     return result
                 if live_parent_set is None or item_number not in {child.get("number") for child in live_parent_set[1]}:
@@ -5586,6 +5643,9 @@ class AutomationEngine:
                         result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                         return result
                     except ParentOperationalError as exc:
+                        deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                        if deferred_result is not None:
+                            return deferred_result
                         result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
                         result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
@@ -5671,6 +5731,9 @@ class AutomationEngine:
                 result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                 return result
             except ParentOperationalError as exc:
+                deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                if deferred_result is not None:
+                    return deferred_result
                 result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
                 result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
@@ -5705,6 +5768,9 @@ class AutomationEngine:
                 try:
                     authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                 except Exception as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
                     result.error = f"Cannot fetch authoritative parent/child specification set: {exc}"
                     return result
                 if authoritative_set is None or item_number not in {child.get("number") for child in authoritative_set[1]}:
@@ -5968,6 +6034,9 @@ class AutomationEngine:
                 try:
                     dependency_satisfaction = self._reconcile_sibling_dependencies(repo_name, item_number, dispatch_snapshot)
                 except Exception as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
                     _record_issue_stage_result(item_number, "issue.sibling-dependency-gate", f"issue#{item_number} sibling dependency gate", Outcome.DEFERRED, {"reason": "relationship reconciliation unavailable"})
                     result.error = f"Sibling dependency reconciliation is unresolved: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED
@@ -5990,7 +6059,13 @@ class AutomationEngine:
                 submission_current = False
             decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
             if inherited_parent_number is not None:
-                latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                try:
+                    latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                except Exception as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
+                    raise
                 if latest_set is not None:
                     dispatch_relationship = self._child_review_context(*latest_set, item_number)
                 submission_current = latest_set is not None and self._is_open_issue(latest_set[0]) and is_implementation_ready(latest_set[0]) and item_number in {child.get("number") for child in latest_set[1]}
@@ -6028,6 +6103,9 @@ class AutomationEngine:
             try:
                 hierarchy_blocked = self._has_open_sub_issues(repo_name, candidate)
             except Exception as exc:
+                deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                if deferred_result is not None:
+                    return deferred_result
                 result.error = f"Cannot establish current Issue hierarchy before dispatch: {exc}"
                 result.refill_retry_required = True
                 return result
@@ -6621,16 +6699,43 @@ class AutomationEngine:
             (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE),
         )
         logger.warning(
-            "Deferred Issue #{} after GitHub operational failure {}; next eligible at {}",
+            "Deferred GitHub reconciliation repository={} issue={} stage={} reason={} api_origin={} retry_at={} delivery={}",
+            repo_name,
             item_number,
-            obligation.reason.value,
+            ISSUE_PROCESSING_STAGE,
+            getattr(error, "reason", obligation.reason.value),
+            error.outcome.context.api_origin,
             obligation.not_before,
+            error.outcome.delivery.value,
         )
         self.pending_work_scheduler.wake()
         result.error = str(error)
         result.target_outcome = ExplicitTargetOutcome.DEFERRED
-        result.actions = [f"Deferred GitHub-dependent work: {obligation.reason.value}"]
+        result.target_reason = (
+            f"Deferred reconciliation for {repo_name} issue #{item_number}: "
+            f"stage={ISSUE_PROCESSING_STAGE}; "
+            f"reason={getattr(error, 'reason', obligation.reason.value)}; "
+            f"api_origin={error.outcome.context.api_origin}; "
+            f"retry_at={obligation.not_before}; "
+            f"delivery={error.outcome.delivery.value}"
+        )
+        result.actions = [result.target_reason]
+        result.refill_retry_required = True
         return result
+
+    def _defer_wrapped_reconciliation(
+        self,
+        repo_name: str,
+        item_number: int,
+        issue_data: Dict[str, Any],
+        error: BaseException,
+        result: CandidateProcessingResult,
+    ) -> CandidateProcessingResult | None:
+        """Durably retain only the narrowly-defined admission deferral cause."""
+        deferred = _reconciliation_admission_deferral(error)
+        if deferred is None:
+            return None
+        return self._defer_issue_evaluation(repo_name, item_number, issue_data, deferred, result)
 
     def _defer_validation_publication(
         self,
@@ -7263,6 +7368,20 @@ class AutomationEngine:
                             result.errors.append(result.target_reason)
                             return explicit_result()
                         except ParentOperationalError as exc:
+                            deferred = _reconciliation_admission_deferral(exc)
+                            if deferred is not None:
+                                deferred_result = self._defer_issue_evaluation(
+                                    repo_name,
+                                    number,
+                                    candidate.data,
+                                    deferred,
+                                    CandidateProcessingResult(type="issue", number=number, title=str(candidate.data.get("title") or "")),
+                                )
+                                result.target_outcome = ExplicitTargetOutcome.DEFERRED.value
+                                result.target_reason = deferred_result.target_reason
+                                result.target_actions = list(deferred_result.actions)
+                                result.errors.append(deferred_result.error or str(deferred))
+                                return explicit_result()
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED.value
                             result.target_reason = f"Retryable relationship reconciliation failure for Issue #{number}: {exc}"
                             result.target_actions = [result.target_reason]
