@@ -248,6 +248,11 @@ class CloudRunRepository:
         with self._lock:
             return [CloudRun.from_dict(raw) for raw in self._read_all().values()]
 
+    def list_codex_attribution_runs(self) -> List[CloudRun]:
+        """Read Codex runs without deserializing unrelated provider history."""
+        with self._lock:
+            return [CloudRun.from_dict(raw) for raw in self._read_all().values() if raw.get("provider") == "codex-cloud"]
+
     def save(self, run: CloudRun) -> bool:
         """Persist (create or update) a cloud run durably."""
         with self._lock:

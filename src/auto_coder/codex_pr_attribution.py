@@ -178,7 +178,7 @@ def resolve_codex_pr_origin(repository: str, pr: dict[str, object], runs: CloudR
     if existing.disposition in {AttributionDisposition.UNAVAILABLE, AttributionDisposition.CONFLICT}:
         return existing
     try:
-        accepted = [run for run in runs.list_all() if run.provider == "codex-cloud" and run.submission_outcome == "accepted" and run.task_id]
+        accepted = [run for run in runs.list_codex_attribution_runs() if run.submission_outcome == "accepted" and run.task_id]
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         return AttributionResult(AttributionDisposition.UNAVAILABLE, boundary=f"accepted launch read failed: {type(exc).__name__}")
     url_ids = task_ids_from_text(pr.get("body"))

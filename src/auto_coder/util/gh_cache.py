@@ -203,6 +203,20 @@ class PullRequestRepairMetadata:
 
 
 @dataclass(frozen=True)
+class PullRequestRoutingMetadata:
+    """Uncached PR identity and declaration used for repair-owner routing."""
+
+    api_origin: str
+    repository: str
+    number: int
+    state: str
+    body: str
+    head_repository: str
+    head_ref: str
+    head_sha: str
+
+
+@dataclass(frozen=True)
 class OpenGitHubIssue:
     """Issue identity and scheduling metadata needed by startup recovery."""
 
@@ -1239,6 +1253,39 @@ class GitHubClient:
             head_sha=cast(str, head_sha),
             base_ref=cast(str, base_ref),
         )
+
+    @retry_with_backoff()
+    def get_pull_request_routing_metadata_strict(self, repo_name: str, pr_number: int) -> PullRequestRoutingMetadata:
+        """Fetch the authoritative PR declaration and complete target identity."""
+        owner, repo = repo_name.split("/")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        api_origin = "https://api.github.com"
+        response = _strict_request(
+            "GET",
+            f"{api_origin}/repos/{owner}/{repo}/pulls/{pr_number}",
+            headers=headers,
+            follow_redirects=False,
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        head = payload.get("head") if isinstance(payload, dict) else None
+        head_repo = head.get("repo") if isinstance(head, dict) else None
+        raw_body = payload.get("body") if isinstance(payload, dict) else None
+        values = {
+            "state": payload.get("state") if isinstance(payload, dict) else None,
+            # GitHub represents an empty PR description as JSON null. It is
+            # equivalent to an empty body for marker-based routing.
+            "body": "" if raw_body is None else raw_body,
+            "head_repository": head_repo.get("full_name") if isinstance(head_repo, dict) else None,
+            "head_ref": head.get("ref") if isinstance(head, dict) else None,
+            "head_sha": head.get("sha") if isinstance(head, dict) else None,
+        }
+        if not all(isinstance(value, str) for value in values.values()) or not all(values[key] for key in ("state", "head_repository", "head_ref", "head_sha")):
+            raise RuntimeError(f"GitHub did not return complete current routing metadata for PR #{pr_number} in {repo_name}")
+        return PullRequestRoutingMetadata(api_origin, repo_name, pr_number, cast(str, values["state"]), cast(str, values["body"]), cast(str, values["head_repository"]), cast(str, values["head_ref"]), cast(str, values["head_sha"]))
 
     @retry_with_backoff()
     def get_open_prs_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:

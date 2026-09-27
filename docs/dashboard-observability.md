@@ -1296,3 +1296,18 @@ are consumed by provider-effect routing and are deliberately not presented as
 task-lifecycle outcomes. The existing PR processing stage remains the runnable
 dashboard observation boundary; attribution-specific diagnostics stay in the
 durable attribution registry until a dedicated operator surface is introduced.
+
+## Explicit-local unresolved-review routing observability
+
+Issue #2298 reuses the existing `pr.repair-delegation` stage for explicit-local
+review correction. Its facts now include the machine-readable
+`route_disposition`: `LOCAL_REQUIRED`, `CONFLICT`, and `UNAVAILABLE` are emitted
+with `Outcome.FAILED`, remain merge-blocking, and never represent cloud handoff
+or local completion; ordinary accepted cloud delivery continues to use `CLOUD`
+and `Outcome.ACCEPTED_HANDOFF`. No dashboard renderer or processing origin is
+added because the generic stage-detail projection already preserves facts and
+outcomes. `tests/test_explicit_local_review_repair_routing.py` exercises the
+production routing boundary, authoritative reread, stale-decision invalidation,
+and zero-cloud-send behavior; the joined existing cloud controls are in
+`tests/test_codex_cloud_pr_review_flow.py` and
+`tests/test_verified_codex_pr_repair_routing.py`.
