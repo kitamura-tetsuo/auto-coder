@@ -722,76 +722,95 @@ class GitHubAppReviewer:
         event, body, _comments_json, review_id = ledger.get_publication_recovery_payload(self._api_url, repo_name, pr_number, intent_id)
         identity = self.get_identity()
         try:
+            retained = ledger.get_publication_intent(self._api_url, repo_name, pr_number, intent_id)
+            if retained is None:
+                return ReviewPublicationResult(False, event, "Publication operation is no longer retained")
+            discovered_roots: Optional[list[dict[str, object]]] = None
             if review_id is None:
                 page = 1
-                matches: list[int] = []
+                matches: list[tuple[int, Optional[list[dict[str, object]]]]] = []
                 while True:
                     data = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/reviews?per_page=100&page={page}", token).json()
                     if not isinstance(data, list):
                         raise RuntimeError("GitHub did not return pull-request reviews")
                     for review in data:
-                        if not isinstance(review, dict) or review.get("body", "") != body:
+                        if not isinstance(review, dict) or (body and review.get("body", "") != body):
                             continue
                         author = review.get("user")
                         rid = review.get("id")
-                        if isinstance(rid, int) and rid > 0 and isinstance(author, dict) and identity.matches_login(author.get("login") if isinstance(author.get("login"), str) else None):
-                            matches.append(rid)
+                        commit_id = review.get("commit_id")
+                        if not (isinstance(rid, int) and rid > 0 and isinstance(author, dict) and identity.matches_login(author.get("login") if isinstance(author.get("login"), str) else None) and (commit_id is None or commit_id == retained.reviewed_head_sha)):
+                            continue
+                        if body:
+                            matches.append((rid, None))
+                            continue
+                        candidate_roots = self._review_root_comments(repo_name, pr_number, rid, token)
+                        associations, conflicts = self._publication_root_associations(candidate_roots, identity, repo_name, pr_number, blocker_ids)
+                        if not conflicts and set(associations) == set(blocker_ids):
+                            matches.append((rid, candidate_roots))
                     if len(data) < 100:
                         break
                     page += 1
-                if len(set(matches)) != 1:
+                unique_matches = {item[0]: item[1] for item in matches}
+                if len(unique_matches) != 1:
                     return ReviewPublicationResult(False, event, "Publication accepted state is unresolved; exact native review is unavailable or ambiguous")
-                review_id = matches[0]
+                review_id, discovered_roots = next(iter(unique_matches.items()))
                 ledger.record_publication_acceptance(self._api_url, repo_name, pr_number, intent_id, review_id)
 
             review = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/reviews/{review_id}", token).json()
             review_author = review.get("user") if isinstance(review, dict) else None
             review_commit = review.get("commit_id") if isinstance(review, dict) else None
-            retained = ledger.get_publication_intent(self._api_url, repo_name, pr_number, intent_id)
             if (
                 not isinstance(review, dict)
                 or review.get("id") != review_id
-                or review.get("body", "") != body
+                or (body and review.get("body", "") != body)
                 or not isinstance(review_author, dict)
                 or not identity.matches_login(review_author.get("login") if isinstance(review_author.get("login"), str) else None)
-                or retained is None
                 or (review_commit is not None and review_commit != retained.reviewed_head_sha)
             ):
                 return ReviewPublicationResult(False, event, "Publication review receipt does not match the retained target, author, payload, or head")
 
-            roots: list[dict[str, object]] = []
-            page = 1
-            while True:
-                data = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/reviews/{review_id}/comments?per_page=100&page={page}", token).json()
-                if not isinstance(data, list):
-                    raise RuntimeError("GitHub did not return review comments")
-                for item in data:
-                    if not isinstance(item, dict):
-                        continue
-                    item_review_id = item.get("pull_request_review_id")
-                    if item_review_id is not None and item_review_id != review_id:
-                        return ReviewPublicationResult(False, event, "Review-specific comment response contained another review")
-                    roots.append(item)
-                if len(data) < 100:
-                    break
-                page += 1
-            parsed = parse_historical_pr_review_roots(roots, reviewer_identity=identity, repo_name=repo_name, pr_number=pr_number)
-            associations: dict[str, int] = {}
-            conflicts: set[str] = set()
-            for correction in parsed.corrections:
-                if correction.blocker_identity_conflict:
-                    conflicts.update(correction.blocker_identity_conflict)
-                if correction.blocker_id in blocker_ids:
-                    old = associations.get(correction.blocker_id)
-                    if old is not None and old != correction.comment_id:
-                        conflicts.add(correction.blocker_id)
-                    associations[correction.blocker_id] = correction.comment_id
+            roots = discovered_roots or self._review_root_comments(repo_name, pr_number, review_id, token)
+            associations, conflicts = self._publication_root_associations(roots, identity, repo_name, pr_number, blocker_ids)
             if conflicts or set(associations) != set(blocker_ids):
                 return ReviewPublicationResult(False, event, "Publication root association is incomplete or conflicting")
             ledger.confirm_publication_intent(self._api_url, repo_name, pr_number, intent_id, tuple(sorted(associations.items())), evidence=f"review:{review_id}")
             return ReviewPublicationResult(True, event, "")
         except Exception:
             return ReviewPublicationResult(False, event, f"Publication root reconciliation is pending for operation {intent_id}")
+
+    def _review_root_comments(self, repo_name: str, pr_number: int, review_id: int, token: str) -> list[dict[str, object]]:
+        roots: list[dict[str, object]] = []
+        page = 1
+        while True:
+            data = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/reviews/{review_id}/comments?per_page=100&page={page}", token).json()
+            if not isinstance(data, list):
+                raise RuntimeError("GitHub did not return review comments")
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                item_review_id = item.get("pull_request_review_id")
+                if item_review_id is not None and item_review_id != review_id:
+                    raise RuntimeError("Review-specific comment response contained another review")
+                roots.append(item)
+            if len(data) < 100:
+                return roots
+            page += 1
+
+    @staticmethod
+    def _publication_root_associations(roots: list[dict[str, object]], identity: ReviewerAppIdentity, repo_name: str, pr_number: int, blocker_ids: tuple[str, ...]) -> tuple[dict[str, int], set[str]]:
+        parsed = parse_historical_pr_review_roots(roots, reviewer_identity=identity, repo_name=repo_name, pr_number=pr_number)
+        associations: dict[str, int] = {}
+        conflicts: set[str] = set()
+        for correction in parsed.corrections:
+            if correction.blocker_identity_conflict:
+                conflicts.update(correction.blocker_identity_conflict)
+            if correction.blocker_id in blocker_ids:
+                old = associations.get(correction.blocker_id)
+                if old is not None and old != correction.comment_id:
+                    conflicts.add(correction.blocker_id)
+                associations[correction.blocker_id] = correction.comment_id
+        return associations, conflicts
 
     def _changed_files(self, repo_name: str, pr_number: int, token: str) -> dict[str, object]:
         changed_files: dict[str, object] = {}

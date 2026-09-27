@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem, ReviewThreadDisposition, TestOracleGap
+from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, CanonicalPRBlockerLedger, CorrectionScope, QualifiedRequirement
 from auto_coder.github_app_reviewer import ExactReviewComment, GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
 from auto_coder.utils import is_same_github_login
 
@@ -81,6 +82,63 @@ def auth_responses(head_sha: str = "sha-a") -> list[httpx.Response]:
         response(200, {"head": {"sha": head_sha}}),
         response(200, {"id": 9}),
     ]
+
+
+def test_recovers_legacy_empty_payload_from_root_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A migrated CONFIRMED-empty intent discovers its H1 review without body metadata."""
+    ledger = CanonicalPRBlockerLedger(db_path=tmp_path / "ledger.db")
+    snapshot = ledger.initialize_namespace("https://api.github.test", "owner/repo", 42)
+    blocker_id, snapshot = ledger.admit_blocker(
+        "https://api.github.test",
+        "owner/repo",
+        42,
+        "admit-legacy",
+        snapshot.ledger_revision,
+        BlockerAdmissionPayload(
+            category="IMPLEMENTATION",
+            qualified_requirements=(QualifiedRequirement(issue_number=0, requirement_id="REQ-005"),),
+            authoritative_boundary="src/auto_coder/github_app_reviewer.py",
+            incorrect_behavior_or_missing_invariant="Legacy root is not recovered",
+            required_correction_outcome="Recover the original root",
+            accepted_scope=CorrectionScope(description="legacy recovery"),
+        ),
+    )
+    ledger.record_publication_intent(
+        "https://api.github.test",
+        "owner/repo",
+        42,
+        "legacy-operation",
+        snapshot.ledger_revision,
+        (blocker_id,),
+        "owner/repo",
+        42,
+        "head-h1",
+    )
+    with ledger._connect() as conn:
+        conn.execute("UPDATE publication_intents SET status = 'CONFIRMED' WHERE intent_id = 'legacy-operation'")
+
+    root = {
+        "id": 701,
+        "pull_request_review_id": 501,
+        "in_reply_to_id": None,
+        "body": f"### Auto-Coder adversarial finding\n\nBlocker identity: `{blocker_id}`",
+        "user": {"login": "reviewer[bot]"},
+    }
+    client = RecordingClient(
+        [
+            response(200, [{"id": 501, "body": "real summary", "commit_id": "head-h1", "user": {"login": "reviewer[bot]"}}]),
+            response(200, [root]),
+            response(200, {"id": 501, "body": "real summary", "commit_id": "head-h1", "user": {"login": "reviewer[bot]"}}),
+        ]
+    )
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    monkeypatch.setattr(reviewer, "get_identity", lambda: ReviewerAppIdentity("reviewer[bot]", 4765828))
+
+    result = reviewer._recover_publication_intent("owner/repo", 42, "legacy-operation", (blocker_id,), "token", ledger)
+
+    assert result.success is True
+    assert ledger.get_publication_intent("https://api.github.test", "owner/repo", 42, "legacy-operation").confirmed_roots == ((blocker_id, 701),)  # type: ignore[union-attr]
+    assert all(method == "GET" for method, _url, _kwargs in client.calls)
 
 
 def test_exact_review_creates_one_diff_thread_per_finding(tmp_path, monkeypatch):
