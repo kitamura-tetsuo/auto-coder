@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -508,6 +509,12 @@ class GitHubAppReviewer:
                 return ReviewPublicationResult(False, event, "Pull request head changed after adversarial validation")
 
             effective_ledger = ledger if ledger is not None else self._ledger
+            if effective_ledger is not None:
+                pending = effective_ledger.get_pending_publication_intents(self._api_url, repo_name, pr_number)
+                for retained in pending:
+                    recovered = self._recover_publication_intent(repo_name, pr_number, retained.intent_id, retained.blocker_ids, token, effective_ledger)
+                    if not recovered.success:
+                        return recovered
             comments: list[dict[str, object]] = []
             file_level_clarification: Optional[dict[str, object]] = None
             unrooted_findings: list[AdversarialValidationFinding] = list(result.findings)
@@ -608,6 +615,12 @@ class GitHubAppReviewer:
                         raise ValueError("Change-provenance clarification must reference a changed file")
 
             intent_id = operation_id or f"pub_{repo_name.replace('/', '_')}_{pr_number}_{validated_head_sha[:10]}_{uuid.uuid4().hex[:6]}"
+            review_body = format_adversarial_review_summary(
+                result,
+                validated_head_sha,
+                attached_test_oracle_gap_count=len(gaps_to_publish),
+            )
+            comments_json = json.dumps(comments, sort_keys=True, separators=(",", ":"))
             if effective_ledger is not None and unrooted_blocker_ids and reconciled_snapshot:
                 try:
                     effective_ledger.record_publication_intent(
@@ -622,6 +635,9 @@ class GitHubAppReviewer:
                         reviewed_head_sha=validated_head_sha,
                         reviewed_base_sha="",
                         review_attempt_id=result.attempt_id,
+                        submitted_event=event,
+                        submitted_body=review_body,
+                        submitted_comments_json=comments_json,
                     )
                 except (PublicationContentionError, StaleLedgerRevisionError) as exc:
                     return ReviewPublicationResult(False, event, f"Publication authority refused: {exc}")
@@ -631,23 +647,19 @@ class GitHubAppReviewer:
             # it before the durable verdict so a failed comment request cannot
             # leave a saved same-SHA result that suppresses the required thread.
             if file_level_clarification is not None:
-                self._request(
+                response = self._request(
                     "POST",
                     f"/repos/{repo_name}/pulls/{pr_number}/comments",
                     token,
                     json=file_level_clarification,
                 )
             try:
-                self._request(
+                response = self._request(
                     "POST",
                     f"/repos/{repo_name}/pulls/{pr_number}/reviews",
                     token,
                     json={
-                        "body": format_adversarial_review_summary(
-                            result,
-                            validated_head_sha,
-                            attached_test_oracle_gap_count=len(gaps_to_publish),
-                        ),
+                        "body": review_body,
                         "event": event,
                         "commit_id": validated_head_sha,
                         **({"comments": comments} if comments else {}),
@@ -666,13 +678,13 @@ class GitHubAppReviewer:
                 raise
 
             if effective_ledger is not None and unrooted_blocker_ids:
-                effective_ledger.confirm_publication_intent(
-                    self._api_url,
-                    repo_name,
-                    pr_number,
-                    intent_id=intent_id,
-                    confirmed_root_aliases=(),
-                )
+                response_data = response.json()
+                review_id = response_data.get("id") if isinstance(response_data, dict) else None
+                if isinstance(review_id, int) and review_id > 0:
+                    effective_ledger.record_publication_acceptance(self._api_url, repo_name, pr_number, intent_id, review_id)
+                recovered = self._recover_publication_intent(repo_name, pr_number, intent_id, tuple(unrooted_blocker_ids), token, effective_ledger)
+                if not recovered.success:
+                    return recovered
 
             for disposition in result.thread_dispositions:
                 root_comment_id = result.provenance_thread_comment_ids.get(disposition.thread_id)
@@ -696,6 +708,90 @@ class GitHubAppReviewer:
             # include credential-bearing request details.
             logger.bind(repository=repo_name, target=str(pr_number), phase="publication").error("Dedicated reviewer GitHub App could not publish the adversarial verdict")
             return ReviewPublicationResult(False, event, "Dedicated reviewer GitHub App publication failed")
+
+    def _recover_publication_intent(
+        self,
+        repo_name: str,
+        pr_number: int,
+        intent_id: str,
+        blocker_ids: tuple[str, ...],
+        token: str,
+        ledger: CanonicalPRBlockerLedger,
+    ) -> ReviewPublicationResult:
+        """Confirm an accepted review and bind every authenticated root by identity."""
+        event, body, _comments_json, review_id = ledger.get_publication_recovery_payload(self._api_url, repo_name, pr_number, intent_id)
+        identity = self.get_identity()
+        try:
+            if review_id is None:
+                page = 1
+                matches: list[int] = []
+                while True:
+                    data = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/reviews?per_page=100&page={page}", token).json()
+                    if not isinstance(data, list):
+                        raise RuntimeError("GitHub did not return pull-request reviews")
+                    for review in data:
+                        if not isinstance(review, dict) or review.get("body", "") != body:
+                            continue
+                        author = review.get("user")
+                        rid = review.get("id")
+                        if isinstance(rid, int) and rid > 0 and isinstance(author, dict) and identity.matches_login(author.get("login") if isinstance(author.get("login"), str) else None):
+                            matches.append(rid)
+                    if len(data) < 100:
+                        break
+                    page += 1
+                if len(set(matches)) != 1:
+                    return ReviewPublicationResult(False, event, "Publication accepted state is unresolved; exact native review is unavailable or ambiguous")
+                review_id = matches[0]
+                ledger.record_publication_acceptance(self._api_url, repo_name, pr_number, intent_id, review_id)
+
+            review = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/reviews/{review_id}", token).json()
+            review_author = review.get("user") if isinstance(review, dict) else None
+            review_commit = review.get("commit_id") if isinstance(review, dict) else None
+            retained = ledger.get_publication_intent(self._api_url, repo_name, pr_number, intent_id)
+            if (
+                not isinstance(review, dict)
+                or review.get("id") != review_id
+                or review.get("body", "") != body
+                or not isinstance(review_author, dict)
+                or not identity.matches_login(review_author.get("login") if isinstance(review_author.get("login"), str) else None)
+                or retained is None
+                or (review_commit is not None and review_commit != retained.reviewed_head_sha)
+            ):
+                return ReviewPublicationResult(False, event, "Publication review receipt does not match the retained target, author, payload, or head")
+
+            roots: list[dict[str, object]] = []
+            page = 1
+            while True:
+                data = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/reviews/{review_id}/comments?per_page=100&page={page}", token).json()
+                if not isinstance(data, list):
+                    raise RuntimeError("GitHub did not return review comments")
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    item_review_id = item.get("pull_request_review_id")
+                    if item_review_id is not None and item_review_id != review_id:
+                        return ReviewPublicationResult(False, event, "Review-specific comment response contained another review")
+                    roots.append(item)
+                if len(data) < 100:
+                    break
+                page += 1
+            parsed = parse_historical_pr_review_roots(roots, reviewer_identity=identity, repo_name=repo_name, pr_number=pr_number)
+            associations: dict[str, int] = {}
+            conflicts: set[str] = set()
+            for correction in parsed.corrections:
+                if correction.blocker_identity_conflict:
+                    conflicts.update(correction.blocker_identity_conflict)
+                if correction.blocker_id in blocker_ids:
+                    old = associations.get(correction.blocker_id)
+                    if old is not None and old != correction.comment_id:
+                        conflicts.add(correction.blocker_id)
+                    associations[correction.blocker_id] = correction.comment_id
+            if conflicts or set(associations) != set(blocker_ids):
+                return ReviewPublicationResult(False, event, "Publication root association is incomplete or conflicting")
+            ledger.confirm_publication_intent(self._api_url, repo_name, pr_number, intent_id, tuple(sorted(associations.items())), evidence=f"review:{review_id}")
+            return ReviewPublicationResult(True, event, "")
+        except Exception:
+            return ReviewPublicationResult(False, event, f"Publication root reconciliation is pending for operation {intent_id}")
 
     def _changed_files(self, repo_name: str, pr_number: int, token: str) -> dict[str, object]:
         changed_files: dict[str, object] = {}

@@ -206,6 +206,10 @@ class PublicationIntentSnapshot:
     blocker_ids: tuple[str, ...] = ()
     status: str = "PENDING"  # PENDING, CONFIRMED, REJECTED
     confirmed_roots: tuple[tuple[str, int], ...] = ()
+    submitted_event: str = ""
+    submitted_body: str = ""
+    submitted_comments_json: str = "[]"
+    accepted_review_id: Optional[int] = None
     failure_reason: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
@@ -499,6 +503,15 @@ class CanonicalPRBlockerLedger:
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(publication_intents)")}
+            for name, declaration in (
+                ("submitted_event", "TEXT NOT NULL DEFAULT ''"),
+                ("submitted_body", "TEXT NOT NULL DEFAULT ''"),
+                ("submitted_comments_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("accepted_review_id", "INTEGER"),
+            ):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE publication_intents ADD COLUMN {name} {declaration}")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS repair_bundles (
@@ -1996,6 +2009,9 @@ class CanonicalPRBlockerLedger:
         reviewed_base_sha: str = "",
         review_attempt_id: str = "",
         intended_payload_hash: str = "",
+        submitted_event: str = "",
+        submitted_body: str = "",
+        submitted_comments_json: str = "[]",
     ) -> PublicationIntentSnapshot:
         """Durably record a publication intent and acquire exclusive publication authority.
 
@@ -2014,6 +2030,9 @@ class CanonicalPRBlockerLedger:
             "head": reviewed_head_sha,
             "base": reviewed_base_sha,
             "attempt": review_attempt_id,
+            "event": submitted_event,
+            "body": submitted_body,
+            "comments": submitted_comments_json,
         }
         computed_hash = intended_payload_hash or self._hash_payload(payload_dict)
         now = _now_iso()
@@ -2086,8 +2105,9 @@ class CanonicalPRBlockerLedger:
                         intent_id, namespace_key, destination_repo, destination_pr,
                         reviewed_head_sha, reviewed_base_sha, review_attempt_id,
                         payload_hash, blocker_ids_json, status, confirmed_roots_json,
-                        failure_reason, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '[]', NULL, ?, ?)
+                        failure_reason, created_at, updated_at,
+                        submitted_event, submitted_body, submitted_comments_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', '[]', NULL, ?, ?, ?, ?, ?)
                     """,
                     (
                         intent_id,
@@ -2101,6 +2121,9 @@ class CanonicalPRBlockerLedger:
                         json.dumps(list(blocker_ids)),
                         now,
                         now,
+                        submitted_event,
+                        submitted_body,
+                        submitted_comments_json,
                     ),
                 )
 
@@ -2160,6 +2183,10 @@ class CanonicalPRBlockerLedger:
                 row = cursor.fetchone()
                 if row is None:
                     raise BlockerPersistenceError(f"Publication intent {intent_id!r} not found in namespace {key}")
+                intended_blockers = set(json.loads(row[1]))
+                supplied_blockers = {item.blocker_id if isinstance(item, BlockerAlias) else item[0] for item in confirmed_root_aliases}
+                if intended_blockers and supplied_blockers != intended_blockers:
+                    raise BlockerPersistenceError("Publication completion requires one confirmed root for every intended blocker")
 
                 cursor = conn.execute("SELECT ledger_revision FROM namespaces WHERE namespace_key = ?", (key,))
                 rev_row = cursor.fetchone()
@@ -2222,6 +2249,43 @@ class CanonicalPRBlockerLedger:
                 conn.close()
 
         return self.get_snapshot(norm_origin, repository, pr_number, require_retained_state=True)
+
+    def record_publication_acceptance(self, api_origin: str, repository: str, pr_number: int, intent_id: str, review_id: int) -> None:
+        """Retain an accepted native review receipt without claiming root completion."""
+        if review_id <= 0:
+            raise ValueError("Accepted review ID must be positive")
+        key = _make_namespace_key(normalize_api_origin(api_origin), repository, pr_number)
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT accepted_review_id, status FROM publication_intents WHERE intent_id = ? AND namespace_key = ?", (intent_id, key)).fetchone()
+                if row is None:
+                    raise BlockerPersistenceError(f"Publication intent {intent_id!r} not found in namespace {key}")
+                if row[0] is not None and int(row[0]) != review_id:
+                    raise IdempotencyConflictError("Publication intent is already bound to another review")
+                if row[1] == "REJECTED":
+                    raise IdempotencyConflictError("Rejected publication intent cannot accept a review")
+                conn.execute("UPDATE publication_intents SET accepted_review_id = ?, failure_reason = NULL, updated_at = ? WHERE intent_id = ? AND namespace_key = ?", (review_id, _now_iso(), intent_id, key))
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+
+    def get_publication_recovery_payload(self, api_origin: str, repository: str, pr_number: int, intent_id: str) -> tuple[str, str, str, Optional[int]]:
+        """Return the exact retained request and known native-review receipt."""
+        key = _make_namespace_key(normalize_api_origin(api_origin), repository, pr_number)
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT submitted_event, submitted_body, submitted_comments_json, accepted_review_id FROM publication_intents WHERE intent_id = ? AND namespace_key = ?", (intent_id, key)).fetchone()
+                if row is None:
+                    raise BlockerPersistenceError(f"Publication intent {intent_id!r} not found in namespace {key}")
+                return str(row[0]), str(row[1]), str(row[2]), int(row[3]) if row[3] is not None else None
+            finally:
+                conn.close()
 
     def reject_publication_intent(
         self,
@@ -2331,7 +2395,8 @@ class CanonicalPRBlockerLedger:
                            payload_hash, blocker_ids_json, status, confirmed_roots_json,
                            failure_reason, created_at, updated_at
                     FROM publication_intents
-                    WHERE namespace_key = ? AND status = 'PENDING'
+                    WHERE namespace_key = ?
+                      AND (status = 'PENDING' OR (status = 'CONFIRMED' AND blocker_ids_json != '[]' AND confirmed_roots_json = '[]'))
                     ORDER BY created_at ASC
                     """,
                     (key,),
