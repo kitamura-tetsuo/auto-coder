@@ -65,7 +65,7 @@ from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .github_app_reviewer import ExactReviewComment, GitHubAppReviewer, ReviewerAppIdentity, load_reviewer_app_config, publish_adversarial_review, resolve_reviewer_app_identity
+from .github_app_reviewer import ExactReviewComment, GitHubAppReviewer, ReviewerAppIdentity, load_reviewer_app_config, publish_adversarial_review, recover_pending_adversarial_publications, resolve_reviewer_app_identity
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .invocation_admission import bind_invocation_target
@@ -3958,6 +3958,14 @@ def _handle_pr_merge(
                         return actions
 
                     if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and not force_adversarial_validation:
+                        publication_recovery = recover_pending_adversarial_publications(repo_name, pr_number)
+                        if not publication_recovery.success:
+                            reason = publication_recovery.reason or "review-root association remains incomplete"
+                            actions.append(f"Adversarial review publication incomplete for PR #{pr_number}: {reason}")
+                            if processing_status is not None:
+                                processing_status.error = reason
+                                processing_status.outcome = PRProcessingOutcome.FAILED
+                            return actions
                         # REQ-005/REQ-011: an authoritative same-head result is
                         # consumed without a new reviewer-backend invocation.
                         # Provenance for the producing review may be genuinely
@@ -4264,9 +4272,14 @@ def _handle_pr_merge(
                                     val_result,
                                 )
                                 if publication_confirmed:
-                                    published_status = _parse_adversarial_validation_status(format_adversarial_validation_comment(val_result, head_sha))
-                                    actions.append(f"Reconciled adversarial review publication for PR #{pr_number}: the expected verdict was already durable")
-                                    record_effect(review_target, active_review_id, "confirmed", {"phase": "reconciliation"})
+                                    root_recovery = recover_pending_adversarial_publications(repo_name, pr_number)
+                                    if root_recovery.success:
+                                        published_status = _parse_adversarial_validation_status(format_adversarial_validation_comment(val_result, head_sha))
+                                        actions.append(f"Reconciled adversarial review publication for PR #{pr_number}: the expected verdict and root associations were durable")
+                                        record_effect(review_target, active_review_id, "confirmed", {"phase": "reconciliation"})
+                                    else:
+                                        publication_confirmed = False
+                                        reconciliation_error = root_recovery.reason or "review-root association remains incomplete"
                                 elif resolved_thread_ids:
                                     reopened_thread_ids = reopen_review_threads_after_publication_failure(
                                         github_client,

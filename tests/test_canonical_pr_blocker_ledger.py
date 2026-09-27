@@ -710,3 +710,50 @@ def test_reviewer_session_registry_decoupling(ledger: CanonicalPRBlockerLedger, 
     assert len(snapshot_after.blockers) == 1
     assert snapshot_after.blockers[0].blocker_id == bid
     assert snapshot_after.blockers[0].accepted_scope.description == "Decoupled scope"
+
+
+def test_publication_receipt_requires_complete_roots_and_survives_reconstruction(ledger: CanonicalPRBlockerLedger, db_path: Path) -> None:
+    snapshot = ledger.initialize_namespace(API_ORIGIN, REPO, PR_NUMBER)
+    blocker_id, snapshot = ledger.admit_blocker(
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        operation_id="admit-publication-root",
+        expected_ledger_revision=snapshot.ledger_revision,
+        payload=BlockerAdmissionPayload(
+            category="IMPLEMENTATION",
+            qualified_requirements=(QualifiedRequirement(issue_number=2310, requirement_id="REQ-002"),),
+            authoritative_boundary="src/auto_coder/github_app_reviewer.py",
+            incorrect_behavior_or_missing_invariant="A review acknowledgement is treated as root confirmation",
+            required_correction_outcome="Bind the authenticated root comment",
+            accepted_scope=CorrectionScope(description="Confirm publication root", concern_ids=("root",)),
+        ),
+    )
+    ledger.record_publication_intent(
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        "pub-root",
+        snapshot.ledger_revision,
+        (blocker_id,),
+        REPO,
+        PR_NUMBER,
+        "head-1",
+        submitted_event="REQUEST_CHANGES",
+        submitted_body="summary",
+        submitted_comments_json='[{"body":"finding"}]',
+    )
+
+    with pytest.raises(BlockerPersistenceError, match="every intended blocker"):
+        ledger.confirm_publication_intent(API_ORIGIN, REPO, PR_NUMBER, "pub-root", ())
+
+    ledger.record_publication_acceptance(API_ORIGIN, REPO, PR_NUMBER, "pub-root", 501)
+    reopened = CanonicalPRBlockerLedger(db_path=db_path)
+    assert reopened.get_publication_recovery_payload(API_ORIGIN, REPO, PR_NUMBER, "pub-root") == (
+        "REQUEST_CHANGES",
+        "summary",
+        '[{"body":"finding"}]',
+        501,
+    )
+    final = reopened.confirm_publication_intent(API_ORIGIN, REPO, PR_NUMBER, "pub-root", ((blocker_id, 701),), evidence="review:501")
+    assert final.get_blocker(blocker_id).get_canonical_root_comment_id() == 701  # type: ignore[union-attr]

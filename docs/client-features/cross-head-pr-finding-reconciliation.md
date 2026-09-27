@@ -98,3 +98,19 @@ concern identities even if paths, prose, commits, or observation order change.
 Repeated imports are idempotent. Compound roots may still own several genuinely
 independent corrections; repeated representations of an owner do not create a
 new owner or replace another correction's scope.
+
+## Review-root publication confirmation and recovery
+
+Ordinary reviewer-App publications retain their exact native-review request before
+crossing the GitHub creation boundary. A successful review acknowledgement is only
+an acceptance receipt: completion additionally requires paginated, review-specific
+comment retrieval and an authenticated, non-reply root declaring each intended
+canonical blocker identity. Review IDs are never used as comment aliases, and a
+root-producing operation cannot be confirmed with an empty or partial alias set.
+
+If acknowledgement or root discovery is interrupted, the durable operation remains
+pending and suppresses another publication for the same blockers. A later ordinary
+publication entry reconciles the accepted review from the retained request, records
+its receipt, and completes the original root associations without rerunning semantic
+review. Ambiguous, missing, conflicting, or unauthenticated evidence stays explicitly
+incomplete; genuinely root-free reviews retain their existing behavior.

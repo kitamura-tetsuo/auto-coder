@@ -1,11 +1,13 @@
 """Tests for dedicated GitHub App adversarial review publication."""
 
+import json
 from pathlib import Path
 
 import httpx
 import pytest
 
 from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, ChangeProvenanceItem, ReviewThreadDisposition, TestOracleGap
+from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, CanonicalPRBlockerLedger, CorrectionScope, QualifiedRequirement
 from auto_coder.github_app_reviewer import ExactReviewComment, GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity, load_reviewer_app_config, resolve_reviewer_app_identity
 from auto_coder.utils import is_same_github_login
 
@@ -81,6 +83,63 @@ def auth_responses(head_sha: str = "sha-a") -> list[httpx.Response]:
         response(200, {"head": {"sha": head_sha}}),
         response(200, {"id": 9}),
     ]
+
+
+def test_recovers_legacy_empty_payload_from_root_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A migrated CONFIRMED-empty intent discovers its H1 review without body metadata."""
+    ledger = CanonicalPRBlockerLedger(db_path=tmp_path / "ledger.db")
+    snapshot = ledger.initialize_namespace("https://api.github.test", "owner/repo", 42)
+    blocker_id, snapshot = ledger.admit_blocker(
+        "https://api.github.test",
+        "owner/repo",
+        42,
+        "admit-legacy",
+        snapshot.ledger_revision,
+        BlockerAdmissionPayload(
+            category="IMPLEMENTATION",
+            qualified_requirements=(QualifiedRequirement(issue_number=0, requirement_id="REQ-005"),),
+            authoritative_boundary="src/auto_coder/github_app_reviewer.py",
+            incorrect_behavior_or_missing_invariant="Legacy root is not recovered",
+            required_correction_outcome="Recover the original root",
+            accepted_scope=CorrectionScope(description="legacy recovery"),
+        ),
+    )
+    ledger.record_publication_intent(
+        "https://api.github.test",
+        "owner/repo",
+        42,
+        "legacy-operation",
+        snapshot.ledger_revision,
+        (blocker_id,),
+        "owner/repo",
+        42,
+        "head-h1",
+    )
+    with ledger._connect() as conn:
+        conn.execute("UPDATE publication_intents SET status = 'CONFIRMED' WHERE intent_id = 'legacy-operation'")
+
+    root = {
+        "id": 701,
+        "pull_request_review_id": 501,
+        "in_reply_to_id": None,
+        "body": f"### Auto-Coder adversarial finding\n\nBlocker identity: `{blocker_id}`",
+        "user": {"login": "reviewer[bot]"},
+    }
+    client = RecordingClient(
+        [
+            response(200, [{"id": 501, "body": "real summary", "commit_id": "head-h1", "user": {"login": "reviewer[bot]"}}]),
+            response(200, [root]),
+            response(200, {"id": 501, "body": "real summary", "commit_id": "head-h1", "user": {"login": "reviewer[bot]"}}),
+        ]
+    )
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    monkeypatch.setattr(reviewer, "get_identity", lambda: ReviewerAppIdentity("reviewer[bot]", 4765828))
+
+    result = reviewer._recover_publication_intent("owner/repo", 42, "legacy-operation", (blocker_id,), "token", ledger)
+
+    assert result.success is True
+    assert ledger.get_publication_intent("https://api.github.test", "owner/repo", 42, "legacy-operation").confirmed_roots == ((blocker_id, 701),)  # type: ignore[union-attr]
+    assert all(method == "GET" for method, _url, _kwargs in client.calls)
 
 
 def test_exact_review_creates_one_diff_thread_per_finding(tmp_path, monkeypatch):
@@ -928,3 +987,47 @@ def test_req008_loguru_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     pass
     # Actually wait, loguru structured fields aren't inherently in caplog unless mapped
     # Let's just use loguru caplog directly by inspecting the log text or injecting a sink
+
+
+def test_recovery_rejects_root_with_conflicting_retained_owner(tmp_path: Path) -> None:
+    ledger = CanonicalPRBlockerLedger(db_path=tmp_path / "conflict.db")
+    snapshot = ledger.initialize_namespace("https://api.github.test", "owner/repo", 42)
+    blocker_ids: list[str] = []
+    for index in (1, 2):
+        blocker_id, snapshot = ledger.admit_blocker(
+            "https://api.github.test",
+            "owner/repo",
+            42,
+            f"admit-{index}",
+            snapshot.ledger_revision,
+            BlockerAdmissionPayload(
+                category="IMPLEMENTATION",
+                qualified_requirements=(QualifiedRequirement(issue_number=0, requirement_id=f"REQ-00{index}"),),
+                authoritative_boundary=f"src/{index}.py",
+                incorrect_behavior_or_missing_invariant=f"defect {index}",
+                required_correction_outcome=f"fix {index}",
+                accepted_scope=CorrectionScope(description=f"scope {index}"),
+            ),
+        )
+        blocker_ids.append(blocker_id)
+    ledger.record_publication_intent("https://api.github.test", "owner/repo", 42, "owner-a", snapshot.ledger_revision, (blocker_ids[0],), "owner/repo", 42, "head")
+    ledger.confirm_publication_intent("https://api.github.test", "owner/repo", 42, "owner-a", ((blocker_ids[0], 701),))
+    root = {"id": 701, "body": f"### Auto-Coder adversarial finding\n\nBlocker identity: `{blocker_ids[1]}`", "user": {"login": "reviewer[bot]"}}
+
+    associations, conflicts = GitHubAppReviewer._publication_root_associations([root], ReviewerAppIdentity("reviewer[bot]", 1), "owner/repo", 42, (blocker_ids[1],), ledger, "https://api.github.test")
+
+    assert associations == {}
+    assert conflicts == {blocker_ids[1]}
+    assert ledger.get_snapshot("https://api.github.test", "owner/repo", 42).get_blockers_for_alias("github_root_comment", "701")[0].blocker_id == blocker_ids[0]
+
+
+def test_retained_root_payload_requires_exact_body_and_anchor() -> None:
+    blocker_id = "blk_exact"
+    intended = json.dumps([{"body": f"finding\n\nBlocker identity: `{blocker_id}`", "path": "src/a.py", "line": 7, "side": "RIGHT"}])
+    exact = [{"id": 701, "body": f"finding\n\nBlocker identity: `{blocker_id}`", "path": "src/a.py", "line": 7, "side": "RIGHT"}]
+
+    assert GitHubAppReviewer._root_payloads_match(intended, exact, {blocker_id: 701}) is True
+    changed_body = [dict(exact[0], body=f"different\n\nBlocker identity: `{blocker_id}`")]
+    changed_path = [dict(exact[0], path="src/other.py")]
+    assert GitHubAppReviewer._root_payloads_match(intended, changed_body, {blocker_id: 701}) is False
+    assert GitHubAppReviewer._root_payloads_match(intended, changed_path, {blocker_id: 701}) is False
