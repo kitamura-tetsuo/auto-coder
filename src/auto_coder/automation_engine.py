@@ -5744,6 +5744,9 @@ class AutomationEngine:
                 try:
                     authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
                 except Exception as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
                     result.error = f"Cannot fetch authoritative parent/child specification set: {exc}"
                     return result
                 if authoritative_set is None or item_number not in {child.get("number") for child in authoritative_set[1]}:
@@ -6007,6 +6010,9 @@ class AutomationEngine:
                 try:
                     dependency_satisfaction = self._reconcile_sibling_dependencies(repo_name, item_number, dispatch_snapshot)
                 except Exception as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
                     _record_issue_stage_result(item_number, "issue.sibling-dependency-gate", f"issue#{item_number} sibling dependency gate", Outcome.DEFERRED, {"reason": "relationship reconciliation unavailable"})
                     result.error = f"Sibling dependency reconciliation is unresolved: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED
@@ -6029,7 +6035,13 @@ class AutomationEngine:
                 submission_current = False
             decomposition_enabled = self._is_issue_decomposition_validation_enabled(repo_name, config)
             if inherited_parent_number is not None:
-                latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                try:
+                    latest_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                except Exception as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
+                    raise
                 if latest_set is not None:
                     dispatch_relationship = self._child_review_context(*latest_set, item_number)
                 submission_current = latest_set is not None and self._is_open_issue(latest_set[0]) and is_implementation_ready(latest_set[0]) and item_number in {child.get("number") for child in latest_set[1]}
@@ -6067,6 +6079,9 @@ class AutomationEngine:
             try:
                 hierarchy_blocked = self._has_open_sub_issues(repo_name, candidate)
             except Exception as exc:
+                deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                if deferred_result is not None:
+                    return deferred_result
                 result.error = f"Cannot establish current Issue hierarchy before dispatch: {exc}"
                 result.refill_retry_required = True
                 return result
@@ -6682,7 +6697,7 @@ class AutomationEngine:
         repo_name: str,
         item_number: int,
         issue_data: Dict[str, Any],
-        error: ParentOperationalError,
+        error: BaseException,
         result: CandidateProcessingResult,
     ) -> CandidateProcessingResult | None:
         """Durably retain only the narrowly-defined admission deferral cause."""

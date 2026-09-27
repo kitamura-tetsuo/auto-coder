@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from unittest.mock import MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig, Candidate, ExplicitTargetOutcome
 from auto_coder.automation_engine import (
@@ -35,6 +36,7 @@ from auto_coder.github_pending_work import (
 from auto_coder.github_request_governor import GitHubRequestDeferred
 from auto_coder.parent_issue_reconciliation import ParentOperationalError
 from auto_coder.pr_processor import PR_PROCESSING_STAGE
+from auto_coder.sibling_dependencies import DependencySatisfaction
 from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_request_outcome import (
     DeliveryCertainty,
@@ -347,3 +349,115 @@ def test_reconciliation_deferral_classification_never_parses_messages():
     misleading = ParentOperationalError("request_in_flight; definitely_not_sent")
 
     assert _reconciliation_admission_deferral(misleading) is None
+
+
+def _admission_deferral() -> GitHubRequestDeferred:
+    context = GitHubRequestContext(
+        "op",
+        "attempt",
+        "relationship-reconciliation",
+        "https://api.github.com",
+        "GET",
+        "read",
+        "/repos/{repo}/issues/{number}/dependencies",
+        "owner/repo",
+        "issue:7",
+        strict_read=True,
+    )
+    return GitHubRequestDeferred(context, "request_in_flight", retry_at=time.time() + 20)
+
+
+def _admitted_issue_engine(monkeypatch, tmp_path, issue):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    GitHubClient.reset_singleton()
+    github = GitHubClient.get_instance("token")
+    github.get_issue_dispatch_snapshot_strict = MagicMock(return_value=dict(issue))
+    github.get_direct_sub_issues_strict = MagicMock(return_value=[])
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._is_issue_author_allowed = MagicMock(return_value=True)
+    engine._reconcile_parent_issue = MagicMock(return_value=dict(issue))
+    engine._reconcile_validation_snapshot = MagicMock(return_value=dict(issue))
+    engine._is_issue_specification_validation_enabled = MagicMock(return_value=False)
+    engine._is_issue_decomposition_validation_enabled = MagicMock(return_value=False)
+    validator = MagicMock()
+    validator.is_reissue_required.return_value = False
+    validator.identity.return_value = "current-identity"
+    engine._get_specification_validator = MagicMock(return_value=validator)
+    decomposition_validator = MagicMock()
+    decomposition_validator.is_reissue_required.return_value = False
+    engine._get_decomposition_validator = MagicMock(return_value=decomposition_validator)
+    engine.pending_work_scheduler.wake = MagicMock()
+    return engine, store
+
+
+def test_sibling_gate_retains_wrapped_admission_deferral(tmp_path, monkeypatch):
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "## Requirements\n- REQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._get_authoritative_parent_number = MagicMock(return_value=None)
+    engine._standalone_relationship_is_current = MagicMock(return_value=True)
+    deferred = _admission_deferral()
+    engine._reconcile_sibling_dependencies = MagicMock(side_effect=ParentOperationalError("dependency read unavailable"))
+    engine._reconcile_sibling_dependencies.side_effect.__cause__ = deferred
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data=dict(issue), priority=0, issue_number=7), engine.config)
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert "request_in_flight" in (result.target_reason or "")
+    assert "https://api.github.com" in (result.target_reason or "")
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
+
+
+def test_family_recheck_retains_wrapped_admission_deferral(tmp_path, monkeypatch):
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "Parent-Issue: #6\n## Requirements\n- REQ-001: Preserve behavior.",
+        "labels": [],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    parent = {**issue, "id": 60, "number": 6, "body": "## Objective\nCoordinate work.", "labels": [{"name": "implementation-ready"}]}
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._get_authoritative_parent_number = MagicMock(return_value=6)
+    engine._reconcile_sibling_dependencies = MagicMock(return_value=DependencySatisfaction.SATISFIED)
+    deferred = _admission_deferral()
+    wrapped = ParentOperationalError("family read unavailable")
+    wrapped.__cause__ = deferred
+    # The unified wrapper first refreshes admission policy for this family;
+    # the second successful read is the implementation path's initial family
+    # evidence, and the refusal interrupts its final dispatch-time recheck.
+    family = (parent, [dict(issue)])
+    engine._fetch_authoritative_decomposition_set = MagicMock(side_effect=[family, family, wrapped])
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data=dict(issue), priority=0, issue_number=7), engine.config)
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert "request_in_flight" in (result.target_reason or "")
+    assert "https://api.github.com" in (result.target_reason or "")
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
