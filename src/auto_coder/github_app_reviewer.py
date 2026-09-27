@@ -1005,6 +1005,33 @@ def publish_adversarial_review(
     )
 
 
+def recover_pending_adversarial_publications(
+    repo_name: str,
+    pr_number: int,
+    *,
+    ledger: Optional[CanonicalPRBlockerLedger] = None,
+) -> ReviewPublicationResult:
+    """Recover retained review roots without running or publishing a semantic review."""
+    effective_ledger = ledger if ledger is not None else CanonicalPRBlockerLedger()
+    try:
+        pending = effective_ledger.get_pending_publication_intents("https://api.github.com", repo_name, pr_number)
+    except Exception:
+        return ReviewPublicationResult(False, "", "Publication recovery state is unavailable")
+    if not pending:
+        return ReviewPublicationResult(True, "", "")
+    try:
+        reviewer = GitHubAppReviewer(load_reviewer_app_config(repo_name=repo_name), ledger=effective_ledger)
+        token = reviewer._installation_token(repo_name, frozenset([("pull_requests", "write")]))
+        for retained in pending:
+            result = reviewer._recover_publication_intent(repo_name, pr_number, retained.intent_id, retained.blocker_ids, token, effective_ledger)
+            if not result.success:
+                return result
+        return ReviewPublicationResult(True, "", "")
+    except Exception:
+        logger.bind(repository=repo_name, phase="publication-recovery", target=str(pr_number)).error("Dedicated reviewer GitHub App could not recover pending review roots")
+        return ReviewPublicationResult(False, "", "Dedicated reviewer GitHub App publication recovery failed")
+
+
 def resolve_reviewer_app_identity(repo_name: Optional[str] = None) -> ReviewerAppIdentity:
     """Resolve the dedicated reviewer App's own bot identity.
 
