@@ -461,3 +461,40 @@ def test_family_recheck_retains_wrapped_admission_deferral(tmp_path, monkeypatch
     assert obligation.not_before >= deferred.retry_at
     engine.pending_work_scheduler.wake.assert_called_once_with()
     implementation.assert_not_called()
+
+
+def test_early_live_parent_family_refresh_retains_wrapped_admission_deferral(tmp_path, monkeypatch):
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "Parent-Issue: #6\n## Requirements\n- REQ-001: Preserve behavior.",
+        "labels": [],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    parent = {**issue, "id": 60, "number": 6, "body": "## Objective\nCoordinate work.", "labels": [{"name": "implementation-ready"}]}
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._get_authoritative_parent_number = MagicMock(return_value=6)
+    deferred = _admission_deferral()
+    wrapped = ParentOperationalError("early family refresh unavailable")
+    wrapped.__cause__ = deferred
+    # The unified admission wrapper establishes the first family observation;
+    # the typed refusal then interrupts the implementation path's early live
+    # parent refresh, before validation or implementation can run.
+    engine._fetch_authoritative_decomposition_set = MagicMock(side_effect=[(parent, [dict(issue)]), wrapped])
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data=dict(issue), priority=0, issue_number=7), engine.config)
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert "request_in_flight" in (result.target_reason or "")
+    assert "https://api.github.com" in (result.target_reason or "")
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()

@@ -5576,6 +5576,9 @@ class AutomationEngine:
                 try:
                     live_parent_set = self._fetch_authoritative_decomposition_set(repo_name, live_parent_number)
                 except Exception as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
                     result.error = f"Cannot fetch authoritative parent/child specification set: {exc}"
                     return result
                 if live_parent_set is None or item_number not in {child.get("number") for child in live_parent_set[1]}:
