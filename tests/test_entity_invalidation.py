@@ -22,6 +22,7 @@ from src.auto_coder.entity_invalidation import CIWebhookDelivery, ClaimedInvalid
 from src.auto_coder.github_pending_work import PendingWorkScheduler, PendingWorkStore
 from src.auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from src.auto_coder.parent_issue_reconciliation import ParentOperationalError
 from src.auto_coder.pr_processor import _handle_pr_merge
 from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
 from src.auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
@@ -144,6 +145,59 @@ def test_worker_persists_real_strict_refresh_deferral_without_candidate_error(tm
     logs = output.getvalue()
     assert "WARNING|Authoritative refresh safely deferred" in logs
     assert "Failed to create candidate" not in logs
+    assert "ERROR|Worker 0 error processing candidate" not in logs
+
+
+def test_worker_retains_wrapped_stage_routing_admission_deferral(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "Parent-Issue: #6\n## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [],
+        "state": "open",
+    }
+    candidate = Candidate(type="issue", data=issue, priority=0, issue_number=7)
+    retry_at = time.time() + 600
+    deferred = _github_deferral("request_in_flight", retry_at)
+    wrapped = ParentOperationalError("stage routing unavailable")
+    wrapped.__cause__ = deferred
+    monkeypatch.setattr(engine, "_create_candidate_from_single", lambda *_args: candidate)
+    monkeypatch.setattr(engine, "_cached_issue_refusal", lambda *_args: None)
+    monkeypatch.setattr(engine, "_defer_observed_dependency_wait", lambda *_args: False)
+    monkeypatch.setattr(engine, "_route_issue_stages_authoritatively", MagicMock(side_effect=wrapped))
+    engine._process_single_candidate = MagicMock()
+    output = io.StringIO()
+    sink = loguru_logger.add(output, format="{level}|{message}")
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "issue", 7)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0, "issue"))
+        for _ in range(200):
+            retained = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "issue", 7))
+            if retained is not None and engine.active_workers.get(0) is None:
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        loguru_logger.remove(sink)
+
+    retained = engine.invalidations.get_deferred(EntityIdentity("owner/repo", "issue", 7))
+    assert retained is not None
+    assert retained.reason == "request_in_flight"
+    assert retained.api_origin == "https://api.github.com"
+    assert retained.retry_not_before >= retry_at
+    assert engine._route_issue_stages_authoritatively.call_count == 1
+    engine._process_single_candidate.assert_not_called()
+    logs = output.getvalue()
+    assert "WARNING|Authoritative refresh safely deferred" in logs
     assert "ERROR|Worker 0 error processing candidate" not in logs
 
 

@@ -351,6 +351,25 @@ def test_reconciliation_deferral_classification_never_parses_messages():
     assert _reconciliation_admission_deferral(misleading) is None
 
 
+def test_reconciliation_deferral_classification_ignores_unrelated_suppressed_context():
+    deferred = _admission_deferral()
+    independent = None
+    try:
+        raise deferred
+    except GitHubRequestDeferred:
+        try:
+            raise RuntimeError("independent programming failure") from None
+        except RuntimeError as programming_error:
+            independent = programming_error
+            wrapped = ParentOperationalError("relationship adapter failed")
+            wrapped.__cause__ = programming_error
+
+    assert independent is not None
+    assert independent.__context__ is deferred
+    assert independent.__suppress_context__ is True
+    assert _reconciliation_admission_deferral(wrapped) is None
+
+
 def _admission_deferral() -> GitHubRequestDeferred:
     context = GitHubRequestContext(
         "op",
@@ -532,11 +551,13 @@ def test_capacity_refill_durably_retains_wrapped_admission_deferral(tmp_path, mo
     engine._process_single_candidate = MagicMock()
 
     with patch("auto_coder.automation_engine.logger.warning") as warning:
-        completed = asyncio.run(engine._refill_normal_implementation_slots("owner/repo"))
+        first_completed = asyncio.run(engine._refill_normal_implementation_slots("owner/repo"))
+        second_completed = asyncio.run(engine._refill_normal_implementation_slots("owner/repo"))
 
     identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
     obligation = store.get(identity)
-    assert completed is False
+    assert first_completed is True
+    assert second_completed is True
     assert obligation is not None
     assert obligation.reason is PendingReason.ADMISSION_DEFERRED
     assert obligation.not_before >= deferred.retry_at
@@ -551,4 +572,5 @@ def test_capacity_refill_durably_retains_wrapped_admission_deferral(tmp_path, mo
         DeliveryCertainty.DEFINITELY_NOT_SENT.value,
     )
     engine.pending_work_scheduler.wake.assert_called_once_with()
+    engine._reconcile_parent_issue.assert_called_once_with("owner/repo", 7, issue)
     engine._process_single_candidate.assert_not_called()

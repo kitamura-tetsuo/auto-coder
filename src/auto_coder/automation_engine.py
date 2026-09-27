@@ -49,7 +49,7 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .github_ci_observer import ci_read_phase_method, end_ci_read_phase
-from .github_pending_work import PendingObligation, PendingWorkScheduler, StageOutcome, WorkIdentity, get_pending_work_store
+from .github_pending_work import PendingObligation, PendingReason, PendingWorkScheduler, StageOutcome, WorkIdentity, get_pending_work_store
 from .github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_ownership import (
@@ -189,9 +189,13 @@ def _reconciliation_admission_deferral(error: BaseException) -> GitHubRequestDef
         seen.add(id(current))
         if isinstance(current, GitHubRequestDeferred) and current.reason in _RECONCILIATION_ADMISSION_DEFERRALS and current.outcome.classification is GitHubApiOutcome.REFUSED and current.outcome.delivery is DeliveryCertainty.DEFINITELY_NOT_SENT:
             return current
-        # Reconciliation adds useful context with ``raise ... from``. Follow
-        # exception identity, never message text, through those wrappers.
-        current = current.__cause__ or current.__context__
+        # Reconciliation deliberately wraps failures with ``raise ... from``.
+        # Only that explicit causal chain is authoritative: implicit or
+        # suppressed ``__context__`` may belong to an unrelated programming
+        # error raised while a prior deferral was being handled.
+        if not isinstance(current, ParentOperationalError):
+            return None
+        current = current.__cause__
     return None
 
 
@@ -3580,6 +3584,11 @@ class AutomationEngine:
                         raise RuntimeError(f"GitHub returned an ambiguous Issue snapshot for #{observed.number}")
                     if "pull_request" in snapshot or not self._is_open_issue(snapshot):
                         continue
+                    pending_identity = WorkIdentity(repo_name, f"issue:{observed.number}", ISSUE_PROCESSING_STAGE, _issue_content_revision(snapshot))
+                    pending_reconciliation = get_pending_work_store().get(pending_identity)
+                    if pending_reconciliation is not None and pending_reconciliation.reason is PendingReason.ADMISSION_DEFERRED:
+                        blocked_issue_numbers.add(observed.number)
+                        continue
                     if isinstance(self.github, GitHubClient) and isinstance(snapshot.get("id"), int) and parse_parent_declaration(snapshot.get("body")).status is not ParentDeclarationStatus.ABSENT:
                         declaration = parse_parent_declaration(snapshot.get("body"))
                         try:
@@ -3591,7 +3600,6 @@ class AutomationEngine:
                             logger.warning("Blocked relationship reconciliation for {}/#{} during refill: {}", repo_name, observed.number, exc)
                             continue
                         except ParentOperationalError as exc:
-                            reconciliation_retry_required = True
                             blocked_issue_numbers.add(observed.number)
                             if declaration.parent_number is not None:
                                 blocked_issue_numbers.add(declaration.parent_number)
@@ -3604,6 +3612,7 @@ class AutomationEngine:
                             )
                             if deferred_result is not None:
                                 continue
+                            reconciliation_retry_required = True
                             logger.warning("Deferred relationship reconciliation for {}/#{} during refill: {}", repo_name, observed.number, exc)
                             continue
                     issue_data = self.github.get_issue_details(snapshot)
@@ -3918,39 +3927,41 @@ class AutomationEngine:
                     if self._check_if_pr_merged_or_closed(candidate, result):
                         self.notify_pr_merged_or_closed()
 
-                except GitHubRequestDeferred as deferred:
-                    if invalidation_claim is None:
-                        raise
-                    context = deferred.outcome.context
-                    try:
-                        retained = await asyncio.to_thread(
-                            self.invalidations.defer,
-                            invalidation_claim,
-                            deferred.reason,
-                            deferred.retry_at,
-                            context.api_origin,
-                        )
-                    except Exception as persistence_error:
-                        stop_after_persistence_failure = True
-                        logger.opt(exception=True).error("Failed to persist authoritative-refresh deferral " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={deferred.reason} api_origin={context.api_origin}: {persistence_error}")
-                        get_health_monitor().record_event(
-                            "worker_error",
-                            f"worker {worker_id}: deferral persistence failed: {type(persistence_error).__name__}",
-                            f"{candidate.type} #{item_number}",
-                        )
-                    else:
-                        deferral_committed = True
-                        log = logger.error if deferred.reason == "governor_state_unavailable" else logger.warning
-                        log("Authoritative refresh safely deferred " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={retained.reason} retry_at={retained.retry_not_before} " f"api_origin={retained.api_origin or 'unknown'}")
-                        if self._invalidation_wake_event is not None:
-                            self._invalidation_wake_event.set()
                 except asyncio.CancelledError:
                     logger.info(f"Worker {worker_id} cancelled")
                     get_health_monitor().record_event("worker_exit", f"worker {worker_id} cancelled", f"{candidate.type} #{item_number}")
                     raise
                 except Exception as e:
-                    logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
-                    get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
+                    deferred = e if isinstance(e, GitHubRequestDeferred) else _reconciliation_admission_deferral(e)
+                    if deferred is not None:
+                        if invalidation_claim is None:
+                            raise
+                        context = deferred.outcome.context
+                        try:
+                            retained = await asyncio.to_thread(
+                                self.invalidations.defer,
+                                invalidation_claim,
+                                deferred.reason,
+                                deferred.retry_at,
+                                context.api_origin,
+                            )
+                        except Exception as persistence_error:
+                            stop_after_persistence_failure = True
+                            logger.opt(exception=True).error("Failed to persist authoritative-refresh deferral " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={deferred.reason} api_origin={context.api_origin}: {persistence_error}")
+                            get_health_monitor().record_event(
+                                "worker_error",
+                                f"worker {worker_id}: deferral persistence failed: {type(persistence_error).__name__}",
+                                f"{candidate.type} #{item_number}",
+                            )
+                        else:
+                            deferral_committed = True
+                            log = logger.error if deferred.reason == "governor_state_unavailable" else logger.warning
+                            log("Authoritative refresh safely deferred " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={retained.reason} retry_at={retained.retry_not_before} " f"api_origin={retained.api_origin or 'unknown'}")
+                            if self._invalidation_wake_event is not None:
+                                self._invalidation_wake_event.set()
+                    else:
+                        logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
+                        get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
                 finally:
                     completion_transition = None
                     if invalidation_claim is not None:

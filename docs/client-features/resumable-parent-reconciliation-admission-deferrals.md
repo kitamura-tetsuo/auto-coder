@@ -19,9 +19,17 @@ the GitHub request governor.
 
 Capacity-refill enumeration uses the same durable issue-processing obligation
 when relationship reconciliation is refused before sending. The affected Issue
-is excluded from that refill pass, the refill remains pending, and the scheduler
-is awakened for deadline-respecting reevaluation rather than relying only on an
-in-memory retry flag.
+is excluded from that refill pass, its evaluation remains pending, and the
+scheduler is awakened for deadline-respecting reevaluation rather than relying
+only on an in-memory retry flag. Later refill passes leave that retained Issue to the
+pending-work scheduler, so capacity polling and unrelated slot transitions
+cannot shorten the retained deadline.
+
+Durable-invalidation stage routing also recognizes an explicitly caused
+reconciliation deferral and stores its reason, API origin, and effective retry
+deadline on the invalidation record. Only explicit reconciliation cause chains
+are eligible; implicit or suppressed exception context is not treated as
+deferral authority.
 
 Deferral diagnostics identify the repository, Issue, interrupted stage, original
 reason, API origin, deadline, and delivery certainty at warning level. A durable
