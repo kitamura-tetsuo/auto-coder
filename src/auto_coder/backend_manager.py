@@ -33,7 +33,7 @@ from .review_capture.context import bind_interaction_id, get_active_review_conte
 from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
-from .worktree_utils import isolated_local_llm_worktree
+from .worktree_utils import LocalWorkspaceOwnership, isolated_local_llm_worktree
 
 logger = get_logger(__name__)
 
@@ -785,7 +785,8 @@ class BackendManager(LLMBackendManagerBase):
                     config_backend = getattr(cli, "config_backend", None)
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
-                    worktree_ctx = isolated_local_llm_worktree(is_noedit=is_noedit) if is_local else contextlib.nullcontext()
+                    workspace_ownership = LocalWorkspaceOwnership() if is_local else None
+                    worktree_ctx = isolated_local_llm_worktree(is_noedit=is_noedit, ownership=workspace_ownership) if is_local else contextlib.nullcontext()
                     with worktree_ctx:
                         with bind_interaction_id(interaction_id):
                             # Issue #2010 REQ-004: only the controlled provider
@@ -799,7 +800,9 @@ class BackendManager(LLMBackendManagerBase):
                                     out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
                                 else:
                                     out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
-                    self._settle_admitted_invocation(invocation_handle, success=True)
+                        self._settle_admitted_invocation(invocation_handle, success=True)
+                        if workspace_ownership is not None:
+                            workspace_ownership.release_execution()
 
                     end_dt = datetime.now(timezone.utc)
                     end_time_iso = end_dt.isoformat()

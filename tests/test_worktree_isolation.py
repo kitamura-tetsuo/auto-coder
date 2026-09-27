@@ -11,8 +11,10 @@ from pathlib import Path
 
 import pytest
 
+import src.auto_coder.worktree_utils as worktree_utils
 from src.auto_coder.utils import _COMMAND_EXECUTION_CWD
 from src.auto_coder.worktree_utils import (
+    LocalWorkspaceOwnership,
     WorkspacePreparationError,
     get_current_local_workspace,
     is_git_repository,
@@ -140,13 +142,18 @@ def test_isolated_worktree_non_git_passthrough(tmp_path: Path) -> None:
 def test_isolated_worktree_cleans_up_on_exception(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     captured_wt: list[str] = []
+    ownership = LocalWorkspaceOwnership()
 
     with pytest.raises(RuntimeError, match="simulated failure"):
-        with isolated_local_llm_worktree(repo, is_noedit=True) as wt_path:
+        with isolated_local_llm_worktree(repo, is_noedit=True, ownership=ownership) as wt_path:
             captured_wt.append(wt_path)
             raise RuntimeError("simulated failure")
 
     assert len(captured_wt) == 1
+    assert Path(captured_wt[0]).exists()
+    ownership.release_execution()
+    assert Path(captured_wt[0]).exists()
+    ownership.release_handoff()
     assert not Path(captured_wt[0]).exists()
 
 
@@ -252,7 +259,7 @@ def test_private_clone_has_copied_objects_without_hardlinks_or_alternates(tmp_pa
         subprocess.run(["git", "cat-file", "-e", object_id], cwd=workspace, check=True)
 
 
-@pytest.mark.parametrize("mutation", ["tracked-file", "index-only"])
+@pytest.mark.parametrize("mutation", ["tracked-file", "index-only", "symbolic-head"])
 def test_preparation_refuses_source_changes_during_seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
     repo = _init_repo(tmp_path)
     clone_finished = threading.Event()
@@ -282,10 +289,13 @@ def test_preparation_refuses_source_changes_during_seed(tmp_path: Path, monkeypa
     assert clone_finished.wait(timeout=10)
     if mutation == "tracked-file":
         (repo / "tracked.txt").write_text("changed during preparation\n")
-    else:
+    elif mutation == "index-only":
         new_blob = subprocess.check_output(["git", "hash-object", "-w", "--stdin"], cwd=repo, input=b"index-only\n").decode().strip()
         subprocess.run(["git", "update-index", "--cacheinfo", "100644", new_blob, "tracked.txt"], cwd=repo, check=True)
         assert (repo / "tracked.txt").read_text() == "initial content\n"
+    else:
+        subprocess.run(["git", "branch", "other", "HEAD"], cwd=repo, check=True)
+        subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/other"], cwd=repo, check=True)
     allow_seed.set()
     worker.join(timeout=10)
 
@@ -293,6 +303,68 @@ def test_preparation_refuses_source_changes_during_seed(tmp_path: Path, monkeypa
     assert len(outcome) == 1
     assert isinstance(outcome[0], WorkspacePreparationError)
     assert "changed during workspace preparation" in str(outcome[0])
+
+
+def test_handoff_failure_retains_workspace_until_explicit_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _init_repo(tmp_path)
+    ownership = LocalWorkspaceOwnership()
+    workspace_path: Path | None = None
+
+    def fail_handoff(*args, **kwargs) -> None:
+        raise WorkspacePreparationError("simulated handoff failure")
+
+    monkeypatch.setattr(worktree_utils, "sync_worktree_changes_back", fail_handoff)
+    with pytest.raises(WorkspacePreparationError, match="simulated handoff failure"):
+        with isolated_local_llm_worktree(repo, is_noedit=False, ownership=ownership) as workspace:
+            workspace_path = Path(workspace)
+            (workspace_path / "recoverable.txt").write_text("retain me\n")
+            ownership.release_execution()
+
+    assert workspace_path is not None
+    assert (workspace_path / "recoverable.txt").read_text() == "retain me\n"
+    ownership.release_handoff()
+    assert not workspace_path.exists()
+
+
+def test_workspace_waits_for_explicit_child_writer_settlement(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    ownership = LocalWorkspaceOwnership()
+    allow_write = threading.Event()
+    writer_finished = threading.Event()
+    workspace_path: Path | None = None
+
+    def delayed_writer(path: Path) -> None:
+        assert allow_write.wait(timeout=10)
+        (path / "late-result.txt").write_text("complete\n")
+        writer_finished.set()
+
+    with isolated_local_llm_worktree(repo, is_noedit=True, ownership=ownership) as workspace:
+        workspace_path = Path(workspace)
+        writer = threading.Thread(target=delayed_writer, args=(workspace_path,))
+        writer.start()
+
+    assert workspace_path.exists()
+    allow_write.set()
+    assert writer_finished.wait(timeout=10)
+    writer.join(timeout=10)
+    assert (workspace_path / "late-result.txt").read_text() == "complete\n"
+    ownership.release_execution()
+    assert not workspace_path.exists()
+
+
+def test_tracked_file_permissions_survive_preparation_and_noop_handoff(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    tracked = repo / "tracked.txt"
+    tracked.chmod(0o600)
+
+    previous_umask = os.umask(0o022)
+    try:
+        with isolated_local_llm_worktree(repo, is_noedit=False) as workspace:
+            assert stat.S_IMODE((Path(workspace) / "tracked.txt").stat().st_mode) == 0o600
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(tracked.stat().st_mode) == 0o600
 
 
 def test_disposing_one_private_workspace_preserves_peer_workspace_and_caller_refs(tmp_path: Path) -> None:
