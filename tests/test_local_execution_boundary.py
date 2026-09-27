@@ -133,3 +133,23 @@ def test_noedit_constructed_client_creates_read_only_boundary(tmp_path: Path) ->
             assert manager._run_llm_cli("inspect") == "read-only result"
         finally:
             reset_command_execution_cwd(token)
+
+
+def test_dynamic_client_attribute_does_not_invent_noedit_mode(tmp_path: Path) -> None:
+    """Mock/proxy clients without an explicit Boolean must not change mode."""
+    from unittest.mock import MagicMock
+
+    client = MagicMock(model_name="test-model")
+    client.config_backend = SimpleNamespace(backend_type="opencode")
+    client._run_llm_cli.return_value = "editable result"
+    client.get_last_session_id.return_value = None
+    binding = _binding(tmp_path)
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(default_backend="alias", default_client=client, factories={"alias": lambda: client}, order=["alias"])
+    with (
+        patch("src.auto_coder.backend_manager.isolated_local_llm_worktree", return_value=contextlib.nullcontext()),
+        patch("src.auto_coder.backend_manager.get_current_local_workspace", return_value=binding),
+    ):
+        assert manager._run_llm_cli("implement") == "editable result"
+
+    client._run_llm_cli.assert_called_once_with("implement", is_noedit=False)

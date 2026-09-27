@@ -782,7 +782,8 @@ class BackendManager(LLMBackendManagerBase):
                 # Resolve the effective mode before workspace/boundary selection.
                 # Clients constructed for no-edit retain that restriction even
                 # when an alias or caller omits an explicit true argument.
-                is_noedit = bool(getattr(self, "_is_noedit", False) or getattr(cli, "use_noedit_options", False))
+                client_is_noedit = getattr(cli, "use_noedit_options", False) is True
+                is_noedit = bool(getattr(self, "_is_noedit", False) or client_is_noedit)
                 # Atomically register this controlled provider action before it
                 # runs, at the final invocation boundary shared by every
                 # backend/provider rotation attempt (Issue #2009, REQ-001/002).
