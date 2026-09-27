@@ -30,6 +30,8 @@ _PR_SET_NO_NEW_PRIVS = 38
 _PTRACE_TRACEME = 0
 _PTRACE_PEEKDATA = 2
 _PTRACE_SYSCALL = 24
+_PTRACE_GETREGS = 12
+_PTRACE_SETREGS = 13
 _PTRACE_SETOPTIONS = 0x4200
 _PTRACE_GETEVENTMSG = 0x4201
 _PTRACE_GET_SYSCALL_INFO = 0x420E
@@ -37,6 +39,9 @@ _PTRACE_O_TRACESYSGOOD = 1
 _PTRACE_O_TRACEFORK = 2
 _PTRACE_O_TRACEVFORK = 4
 _PTRACE_O_TRACECLONE = 8
+_PTRACE_EVENT_FORK = 1
+_PTRACE_EVENT_VFORK = 2
+_PTRACE_EVENT_CLONE = 3
 _WAIT_ALL = 0x40000000
 
 _WRITE_FILE = 1 << 1
@@ -153,6 +158,8 @@ class LandlockFilesystemPolicy:
                     if _contains(root, runtime_input) or _contains(runtime_input, root) or _aliases(root, runtime_input):
                         raise FilesystemConfinementUnavailable("writable private data aliases a read-only runtime input")
             abi = _landlock_abi()
+            if abi < 3:
+                raise FilesystemConfinementUnavailable("Landlock ABI 3 or newer is required to confine truncation")
             # Landlock allow-lists are monotonic and cannot express "all normal
             # runtime reads except these protected inputs". This producer therefore
             # handles mutation rights only; approved inputs remain readable and
@@ -341,7 +348,7 @@ class PtraceDenialMonitor:
             self._pending.pop(pid, None)
             return ()
         event = status >> 16
-        if event in {_PTRACE_O_TRACEFORK, _PTRACE_O_TRACEVFORK, _PTRACE_O_TRACECLONE}:
+        if event in {_PTRACE_EVENT_FORK, _PTRACE_EVENT_VFORK, _PTRACE_EVENT_CLONE}:
             child_pid = ctypes.c_ulong()
             _ptrace(_PTRACE_GETEVENTMSG, pid, 0, ctypes.byref(child_pid))
             self._tracees.add(child_pid.value)
@@ -352,10 +359,17 @@ class PtraceDenialMonitor:
                 regs = _entry_registers(info)
                 operation = self._mutation_outside_roots(pid, regs)
                 self._pending[pid] = operation
+                if operation is not None:
+                    kernel_regs = _registers(pid)
+                    kernel_regs.orig_rax = ctypes.c_ulonglong(-1).value
+                    _ptrace(_PTRACE_SETREGS, pid, 0, ctypes.byref(kernel_regs))
             elif info.op == 2:  # PTRACE_SYSCALL_INFO_EXIT
                 operation = self._pending.pop(pid, None)
                 result = info.data.exit.rval
-                if operation is not None and result in {-errno.EACCES, -errno.EPERM, -errno.EXDEV}:
+                if operation is not None:
+                    kernel_regs = _registers(pid)
+                    kernel_regs.rax = ctypes.c_ulonglong(-errno.EACCES).value
+                    _ptrace(_PTRACE_SETREGS, pid, 0, ctypes.byref(kernel_regs))
                     denials.append(f"filesystem policy denied {operation} for invocation process {pid}")
         try:
             synthetic_stops = {signal.SIGTRAP, signal.SIGSTOP, signal.SIGTRAP | 0x80}
@@ -378,13 +392,14 @@ class PtraceDenialMonitor:
                 return None
             path_pointer = regs.rdi
             operation = "file open for mutation"
-        elif syscall == 257:  # openat
-            if not regs.rdx & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC):
+        elif syscall in {257, 437}:  # openat, openat2
+            flags = regs.rdx if syscall == 257 else (_read_process_word(pid, regs.rdx) or 0)
+            if not flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC):
                 return None
             directory_fd = ctypes.c_int(regs.rdi).value
             path_pointer = regs.rsi
             operation = "file open for mutation"
-        elif syscall in {76, 83, 84, 87, 90, 92}:
+        elif syscall in {76, 83, 84, 87, 90, 92, 132, 188, 189, 191, 192, 194, 195, 235}:
             path_pointer = regs.rdi
             operation = "path mutation"
         elif syscall in {82, 86}:  # rename, link: either pathname may escape
@@ -394,7 +409,7 @@ class PtraceDenialMonitor:
             return None
         elif syscall == 88:  # symlink: only the created link path is mutated
             path_pointer = regs.rsi
-        elif syscall in {258, 263, 268, 260}:
+        elif syscall in {258, 260, 263, 268, 280}:
             directory_fd = ctypes.c_int(regs.rdi).value
             path_pointer = regs.rsi
             operation = "path mutation"
@@ -431,6 +446,12 @@ def _syscall_info(pid: int) -> _SyscallInfo:
     return info
 
 
+def _registers(pid: int) -> _UserRegsStruct:
+    registers = _UserRegsStruct()
+    _ptrace(_PTRACE_GETREGS, pid, 0, ctypes.byref(registers))
+    return registers
+
+
 def _entry_registers(info: _SyscallInfo) -> _UserRegsStruct:
     registers = _UserRegsStruct()
     registers.orig_rax = info.data.entry.nr
@@ -461,6 +482,17 @@ def _read_process_string(pid: int, address: int, limit: int = 4096) -> Optional[
         return None
 
 
+def _read_process_word(pid: int, address: int) -> Optional[int]:
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.ptrace.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+    libc.ptrace.restype = ctypes.c_long
+    ctypes.set_errno(0)
+    word = int(libc.ptrace(_PTRACE_PEEKDATA, pid, ctypes.c_void_p(address), None))
+    if word == -1 and ctypes.get_errno():
+        return None
+    return word & ((1 << (ctypes.sizeof(ctypes.c_long) * 8)) - 1)
+
+
 def _resolve_process_path(pid: int, directory_fd: int, requested: str) -> Optional[Path]:
     try:
         if os.path.isabs(requested):
@@ -470,7 +502,10 @@ def _resolve_process_path(pid: int, directory_fd: int, requested: str) -> Option
             anchor = "cwd" if directory_fd == -100 else f"fd/{directory_fd}"
             base = Path(os.readlink(f"/proc/{pid}/{anchor}"))
             combined = base / requested
-        parent = combined.parent.resolve(strict=True)
-        return parent / combined.name
+        try:
+            return combined.resolve(strict=True)
+        except FileNotFoundError:
+            parent = combined.parent.resolve(strict=True)
+            return parent / combined.name
     except OSError:
         return None

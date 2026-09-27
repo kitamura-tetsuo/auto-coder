@@ -112,11 +112,32 @@ except PermissionError:
     result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),))
 
     if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
         pytest.skip(result.detail)
     assert result.outcome is InvocationOutcome.SUCCEEDED
     assert result.stdout == "escape-denied\n"
     assert (private / "edit.txt").read_text() == "private"
     assert not (protected / "escaped.txt").exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
+def test_supervisor_default_policy_denies_outside_write(tmp_path: Path) -> None:
+    protected = tmp_path / "caller"
+    request = _launch(
+        tmp_path,
+        f"from pathlib import Path\ntry: Path({str(protected / 'escape')!r}).write_text('bad')\nexcept PermissionError: pass",
+    )
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+
+    result = supervisor.run(request)
+
+    if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
+        pytest.skip(result.detail)
+    assert result.outcome is InvocationOutcome.SUCCEEDED
+    assert not (protected / "escape").exists()
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
@@ -135,6 +156,8 @@ except PermissionError:
     result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),))
 
     if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
         pytest.skip(result.detail)
     assert result.outcome is InvocationOutcome.SUCCEEDED
     assert result.stdout == "True\nwrite-denied\n"
@@ -165,6 +188,18 @@ def test_policy_rejects_protected_alias_before_task_submission(tmp_path: Path) -
     assert not (tmp_path / "started").exists()
 
 
+def test_policy_rejects_landlock_without_truncation_support_before_start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _launch(tmp_path, f"open({str(tmp_path / 'started')!r}, 'w').close()")
+    monkeypatch.setattr(filesystem_confinement, "_landlock_abi", lambda: 2)
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+
+    result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),))
+
+    assert result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE
+    assert "ABI 3 or newer" in result.detail
+    assert not (tmp_path / "started").exists()
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
 def test_runtime_input_does_not_block_provider_execution_or_private_reads(tmp_path: Path) -> None:
     runtime_input = tmp_path / "approved-input"
@@ -180,6 +215,8 @@ def test_runtime_input_does_not_block_provider_execution_or_private_reads(tmp_pa
     result = supervisor.run(request, policies=(LandlockFilesystemPolicy(read_visibility=(request.result_root,)),))
 
     if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
         pytest.skip(result.detail)
     assert result.outcome is InvocationOutcome.SUCCEEDED
     assert result.stdout == "approved\n"
@@ -216,6 +253,8 @@ def test_denied_escape_is_a_sticky_controller_owned_violation(tmp_path: Path) ->
     result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),), boundary=boundary)
 
     if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
         pytest.skip(result.detail)
     evidence = boundary.evidence()
     assert result.outcome is InvocationOutcome.SUCCEEDED
@@ -229,6 +268,99 @@ def test_denied_escape_is_a_sticky_controller_owned_violation(tmp_path: Path) ->
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
+@pytest.mark.parametrize("escape_kind", ["openat2", "leaf-symlink", "chmod", "utime", "setxattr"])
+def test_denied_nonstandard_escape_is_a_sticky_violation(tmp_path: Path, escape_kind: str) -> None:
+    protected = tmp_path / "caller"
+    target = protected / "protected.txt"
+    private = tmp_path / "private"
+    if escape_kind == "openat2":
+        code = f"""import ctypes, os
+class OpenHow(ctypes.Structure):
+    _fields_ = [('flags', ctypes.c_ulonglong), ('mode', ctypes.c_ulonglong), ('resolve', ctypes.c_ulonglong)]
+how = OpenHow(os.O_WRONLY, 0, 0)
+libc = ctypes.CDLL(None, use_errno=True)
+assert libc.syscall(437, -100, {os.fsencode(target)!r}, ctypes.byref(how), ctypes.sizeof(how)) == -1
+assert ctypes.get_errno() == 13
+"""
+    elif escape_kind == "leaf-symlink":
+        code = f"""import os
+os.symlink({str(target)!r}, 'escape-link')
+try:
+    open('escape-link', 'w').write('bad')
+except PermissionError:
+    pass
+"""
+    elif escape_kind == "chmod":
+        code = f"""import os
+try:
+    os.chmod({str(private / 'tracked.sh')!r}, 0o755)
+except PermissionError:
+    pass
+"""
+    elif escape_kind == "utime":
+        code = f"""import os
+try:
+    os.utime({str(private / 'tracked.sh')!r}, (1, 1))
+except PermissionError:
+    pass
+"""
+    else:
+        code = f"""import os
+try:
+    os.setxattr({str(private / 'tracked.sh')!r}, b'user.auto-coder-test', b'bad')
+except PermissionError:
+    pass
+"""
+    request = _launch(
+        tmp_path,
+        code,
+        mode="no-edit" if escape_kind in {"chmod", "utime", "setxattr"} else "editable",
+    )
+    target.write_text("protected")
+    tracked = request.result_root / "tracked.sh"
+    tracked.write_text("echo safe\n")
+    tracked.chmod(0o644)
+    original_mtime_ns = tracked.stat().st_mtime_ns
+    boundary = _boundary(request, tmp_path)
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+
+    result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),), boundary=boundary)
+
+    if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
+        pytest.skip(result.detail)
+    assert result.outcome is InvocationOutcome.SUCCEEDED
+    assert target.read_text() == "protected"
+    assert tracked.stat().st_mode & 0o777 == 0o644
+    assert tracked.stat().st_mtime_ns == original_mtime_ns
+    assert "user.auto-coder-test" not in os.listxattr(tracked)
+    evidence = boundary.evidence()
+    assert evidence.policy_violation
+    assert evidence.violation_observation is EvidenceStatus.FAILED
+    boundary.record_backend_success(request.invocation_id)
+    assert boundary.evidence().policy_violation
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
+def test_confined_forked_child_can_edit_private_root(tmp_path: Path) -> None:
+    request = _launch(
+        tmp_path,
+        "import os\npid=os.fork()\nif pid == 0:\n open('child-edit', 'w').write('ok'); os._exit(0)\nos.waitpid(pid, 0)",
+    )
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+
+    result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),))
+
+    if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
+        pytest.skip(result.detail)
+    assert result.outcome is InvocationOutcome.SUCCEEDED
+    assert (request.result_root / "child-edit").read_text() == "ok"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
 def test_ordinary_permitted_command_failure_is_not_a_policy_violation(tmp_path: Path) -> None:
     request = _launch(tmp_path, "from pathlib import Path\ntry: Path('missing').read_text()\nexcept FileNotFoundError: pass")
     boundary = _boundary(request, tmp_path)
@@ -237,6 +369,8 @@ def test_ordinary_permitted_command_failure_is_not_a_policy_violation(tmp_path: 
     result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),), boundary=boundary)
 
     if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
         pytest.skip(result.detail)
     assert result.outcome is InvocationOutcome.SUCCEEDED
     assert not boundary.evidence().policy_violation

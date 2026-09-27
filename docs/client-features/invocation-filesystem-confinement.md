@@ -1,7 +1,8 @@
 # Invocation-local filesystem confinement
 
-The invocation process supervisor can install `LandlockFilesystemPolicy` before it
-releases a provider executable. The controller supplies an immutable invocation
+The invocation process supervisor always installs `LandlockFilesystemPolicy` before
+it releases a provider executable; an explicit policy set that does not establish
+filesystem enforcement is rejected. The controller supplies an immutable invocation
 identity, effective mode, private result repository, owned runtime directories,
 protected caller or peer paths, and optional read-only runtime inputs. All paths
 are required to exist and be absolute. The installer resolves them, rejects
@@ -19,15 +20,16 @@ through path traversal, symlinks, hard-link creation, rename/refer operations, a
 newly opened descriptors are checked at the actual filesystem operation.
 
 The supported x86-64 profile also starts each confined child under a
-controller-owned ptrace syscall observer before the provider's first instruction.
-The observer follows forks and compares denied mutation targets with the pinned
-writable roots. A Landlock `EACCES`, `EPERM`, or cross-root `EXDEV` for an outside
-mutation becomes a sticky policy violation on that invocation; ordinary read
-errors and failures for operations within an allowed root are not classified as
-policy denials. Loss of the required exec stop fails startup rather than producing
-clean enforcement evidence.
+controller-owned ptrace syscall guard before the provider's first instruction.
+The guard follows fork, vfork, and clone events and denies out-of-root pathname
+mutations that Landlock does not mediate, including metadata changes. It resolves
+existing leaf symlinks to their targets and recognizes both `openat` and `openat2`.
+Every guarded denial becomes a sticky policy violation on that invocation;
+ordinary read errors and failures for operations within an allowed root are not
+classified as policy denials. Loss of the required exec stop fails startup rather
+than producing clean enforcement evidence.
 
-Landlock support and every policy prerequisite are checked before provider code is
+Landlock ABI 3 or newer and every policy prerequisite are checked before provider code is
 submitted. Unsupported kernels, missing roots, unsafe modes, or aliasing return a
 `pre-start-unavailable` result rather than launching without confinement. The
 cgroup owner retains the policy for detached descendants until definitive writer

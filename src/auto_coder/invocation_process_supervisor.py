@@ -71,6 +71,13 @@ class ExecutionPolicyInstaller(Protocol):
     def close(self) -> None: ...
 
 
+def _default_filesystem_policy() -> ExecutionPolicyInstaller:
+    # Keep the platform-specific implementation lazy and avoid a module cycle.
+    from .filesystem_confinement import LandlockFilesystemPolicy
+
+    return LandlockFilesystemPolicy()
+
+
 @dataclass(frozen=True)
 class InvocationLaunch:
     invocation_id: str
@@ -212,6 +219,7 @@ class CgroupV2Owner:
 @dataclass
 class InvocationProcessSupervisor:
     owner: CgroupV2Owner = field(default_factory=CgroupV2Owner)
+    filesystem_policy_factory: Callable[[], ExecutionPolicyInstaller] = _default_filesystem_policy
     settlement_timeout: float = 5.0
     _states: dict[str, WriterState] = field(default_factory=dict, init=False)
     _retained: dict[str, tuple[subprocess.Popen[bytes], Path]] = field(default_factory=dict, init=False)
@@ -229,7 +237,7 @@ class InvocationProcessSupervisor:
         self,
         request: InvocationLaunch,
         *,
-        policies: Sequence[ExecutionPolicyInstaller] = (),
+        policies: Optional[Sequence[ExecutionPolicyInstaller]] = None,
         boundary: Optional[LocalExecutionBoundary] = None,
     ) -> SupervisedInvocationResult:
         if self.state(request.invocation_id) is not WriterState.NOT_STARTED:
@@ -239,6 +247,7 @@ class InvocationProcessSupervisor:
         except CgroupV2Unavailable as exc:
             return self._unavailable(request, str(exc))
 
+        selected_policies: Sequence[ExecutionPolicyInstaller] = (self.filesystem_policy_factory(),) if policies is None else policies
         context = InstallationContext(
             request.invocation_id,
             request.backend_type,
@@ -250,19 +259,26 @@ class InvocationProcessSupervisor:
             request.runtime_inputs,
         )
         installations: list[PolicyInstallation] = []
-        for policy in policies:
+        for policy in selected_policies:
             try:
                 installed = policy.install(context)
             except Exception as exc:
                 installed = PolicyInstallation(False, f"policy installation raised: {exc}")
             installations.append(installed)
             if not installed.installed:
-                for prepared_policy in policies:
+                for prepared_policy in selected_policies:
                     close = getattr(prepared_policy, "close", None)
                     if close is not None:
                         close()
                 self.owner.discard(group)
                 return self._unavailable(request, installed.detail or "policy installation failed", tuple(installations))
+        if not any(item.establishes_filesystem_enforcement for item in installations):
+            for prepared_policy in selected_policies:
+                close = getattr(prepared_policy, "close", None)
+                if close is not None:
+                    close()
+            self.owner.discard(group)
+            return self._unavailable(request, "filesystem enforcement was not installed", tuple(installations))
 
         stdin = subprocess.PIPE if request.prompt_transport is PromptTransport.STDIN else None
         child_setups = tuple(item.child_setup for item in installations if item.child_setup is not None)
@@ -283,13 +299,13 @@ class InvocationProcessSupervisor:
                 preexec_fn=prepare_child,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            for policy in policies:
+            for policy in selected_policies:
                 close = getattr(policy, "close", None)
                 if close is not None:
                     close()
             self.owner.discard(group)
             return self._unavailable(request, f"owned launch failed: {exc}", tuple(installations))
-        for policy in policies:
+        for policy in selected_policies:
             close = getattr(policy, "close", None)
             if close is not None:
                 close()

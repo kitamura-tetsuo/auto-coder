@@ -7,7 +7,7 @@ cgroup between `fork` and `exec`. Cgroup membership follows forks, double-forks,
 session changes, and reparenting, so process IDs, a working directory, and a
 one-time process snapshot are not treated as ownership evidence.
 
-The production profile is Linux 5.14 or newer with a unified cgroup-v2 hierarchy
+The production profile is Linux with Landlock ABI 3 or newer and a unified cgroup-v2 hierarchy
 and a root-owned `/sys/fs/cgroup/auto-coder` subtree. A privileged controller must
 be able to create child cgroups and must configure an explicit, non-root worker UID
 and GID. The launcher joins the child to its invocation cgroup and then permanently
@@ -38,4 +38,4 @@ The deterministic conformance coverage is in
 startup compatibility can be checked by ensuring `/sys/fs/cgroup/cgroup.controllers`
 and `cgroup.kill` exist, the controller runs as root, a non-root worker identity is
 configured, and `/sys/fs/cgroup/auto-coder` is root-owned and not worker-writable.
-The tested profile is CPython 3.12 on Linux cgroup v2, kernel 5.14 or newer.
+The tested profile is CPython 3.12 on Linux cgroup v2 with Landlock ABI 3 or newer.
