@@ -76,3 +76,7 @@ class AutoCoderRetryableBackendError(RuntimeError):
     """
 
     pass
+
+
+class SessionWorkspaceCompatibilityError(RuntimeError):
+    """An explicit session cannot be proven compatible with the bound workspace."""

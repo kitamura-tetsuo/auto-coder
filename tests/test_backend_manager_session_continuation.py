@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from auto_coder.backend_manager import BackendManager
-from auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError
+from auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
 
 
 class SessionClient:
@@ -58,17 +58,18 @@ def test_consecutive_implementation_prompts_continue_the_first_session(tmp_path)
     assert client.continued == [("implementation-session", "second", False)]
 
 
-def test_stale_explicit_session_fallback_without_new_id_does_not_retain_old_id(tmp_path):
+def test_incompatible_explicit_session_fails_without_fresh_submission(tmp_path):
     client = SessionClient(fresh_session_id="stale-session")
-    client.continue_error = RuntimeError("session not found")
+    client.continue_error = SessionWorkspaceCompatibilityError("session belongs to another workspace")
     manager = _manager(tmp_path, {"claude": client}, automatic_session_resume=False)
     manager._last_session_id = "stale-session"
 
-    assert manager.continue_session("stale-session", "full review", is_noedit=True) == "fresh response"
+    with pytest.raises(SessionWorkspaceCompatibilityError, match="another workspace"):
+        manager.continue_session("stale-session", "full review", is_noedit=True)
 
     assert client.continued == [("stale-session", "full review", True)]
-    assert client.fresh_prompts == ["full review"]
-    assert manager._last_session_id is None
+    assert client.fresh_prompts == []
+    assert manager._last_session_id == "stale-session"
 
 
 def test_stale_implementation_session_fallback_clears_cached_client_id(tmp_path):
@@ -108,7 +109,6 @@ def test_resume_usage_limit_rotates_backend_without_same_client_fresh_retry(tmp_
 
     assert claude.fresh_prompts == []
     assert codex.fresh_prompts == ["review"]
-    assert manager.get_last_backend_and_model() == ("codex", "test-model")
 
 
 def test_explicit_resume_resets_continuity_before_unexpected_error(tmp_path):

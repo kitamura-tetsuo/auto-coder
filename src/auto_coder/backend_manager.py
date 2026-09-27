@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .backend_provider_manager import BackendProviderManager
 from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
 from .backend_state_manager import BackendStateManager
-from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
 from .invocation_admission import (
     InvocationHandle,
     current_invocation_gate,
@@ -623,8 +623,9 @@ class BackendManager(LLMBackendManagerBase):
     def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
         """Ask the current client to continue an opaque session explicitly.
 
-        Session-specific rejection falls back to a new session on the same
-        backend. Usage failures retain ordinary backend rotation behavior.
+        A workspace/session compatibility rejection remains an explicit failure
+        instead of making a fresh provider call look resumed. Other established
+        provider failures retain the existing fallback behavior.
         """
         self._last_continue_session_resumed = False
         if not session_id.strip():
@@ -644,15 +645,16 @@ class BackendManager(LLMBackendManagerBase):
             )
             self._last_continue_session_resumed = True
             return str(output)
+        except SessionWorkspaceCompatibilityError:
+            self._last_continue_session_resumed = False
+            raise
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
             self._last_continue_session_resumed = False
             self.switch_to_next_backend()
             return self._run_llm_cli(prompt)
         except Exception as exc:
-            # We must catch any fallback errors that are expected from client
             if not isinstance(exc, (ValueError, RuntimeError, NotImplementedError)):
                 raise
-            # Re-execute as a fresh session
             logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
             self._last_continue_session_resumed = False
             self._last_session_id = None
@@ -777,7 +779,10 @@ class BackendManager(LLMBackendManagerBase):
                         logger.warning(f"Failed to record review interaction start: {e}")
 
                 # Determine if this is a no-edit operation
-                is_noedit = getattr(self, "_is_noedit", False)
+                # Resolve the effective mode before workspace/boundary selection.
+                # Clients constructed for no-edit retain that restriction even
+                # when an alias or caller omits an explicit true argument.
+                is_noedit = bool(getattr(self, "_is_noedit", False) or getattr(cli, "use_noedit_options", False))
                 # Atomically register this controlled provider action before it
                 # runs, at the final invocation boundary shared by every
                 # backend/provider rotation attempt (Issue #2009, REQ-001/002).

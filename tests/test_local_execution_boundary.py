@@ -1,13 +1,18 @@
+import contextlib
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
+from src.auto_coder.backend_manager import BackendManager
 from src.auto_coder.local_execution_boundary import (
     LocalBoundaryError,
     LocalExecutionBoundary,
     bind_local_execution_boundary,
     get_current_local_execution_boundary,
 )
+from src.auto_coder.utils import bind_command_execution_cwd, reset_command_execution_cwd
 from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
 
 
@@ -86,3 +91,45 @@ def test_boundary_rejects_workspace_aliasing_caller_authority(tmp_path: Path) ->
 
     with pytest.raises(LocalBoundaryError, match="aliases caller-owned Git state"):
         LocalExecutionBoundary(unsafe, "opencode", editable=True)
+
+
+def test_noedit_constructed_client_creates_read_only_boundary(tmp_path: Path) -> None:
+    class NoEditClient:
+        use_noedit_options = True
+        model_name = "test-model"
+        config_backend = SimpleNamespace(backend_type="opencode")
+
+        def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            assert boundary.editable is False
+            assert is_noedit is True
+            return "read-only result"
+
+        def get_last_session_id(self) -> None:
+            return None
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("initial\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+
+    client = NoEditClient()
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(default_backend="alias", default_client=client, factories={"alias": lambda: client}, order=["alias"])
+    binding = _binding(tmp_path / "binding")
+    with (
+        patch("src.auto_coder.backend_manager.isolated_local_llm_worktree", return_value=contextlib.nullcontext()),
+        patch("src.auto_coder.backend_manager.get_current_local_workspace", return_value=binding),
+    ):
+        token = bind_command_execution_cwd(str(repository))
+        try:
+            assert manager._run_llm_cli("inspect") == "read-only result"
+        finally:
+            reset_command_execution_cwd(token)
