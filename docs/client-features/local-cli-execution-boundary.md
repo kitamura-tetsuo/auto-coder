@@ -13,7 +13,7 @@ descendant tree stopped; those facts require an enforcing launcher before this
 evidence can authorize promotion. Positive violations, once reported by that
 launcher, remain terminal even if the provider later exits successfully.
 
-Explicit continuation failures are not redirected into fresh invocations. Effective
-mode is resolved before boundary construction, including clients constructed for
-no-edit operation, so controller evidence cannot advertise editable authority for a
-read-only invocation.
+Explicit continuation compatibility failures are not redirected into fresh
+invocations. Effective mode is resolved before boundary construction, including
+clients constructed for no-edit operation, so controller evidence cannot advertise
+editable authority for a read-only invocation.
