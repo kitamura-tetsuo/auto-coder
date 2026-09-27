@@ -60,6 +60,8 @@ for line in sys.stdin:
             result["schemaInfo"] = result.pop("schema")
         if os.environ.get("MSP_SCHEMA_VERSION"):
             schema["version"] = os.environ["MSP_SCHEMA_VERSION"]
+        if os.environ.get("MSP_SCHEMA_FINGERPRINT"):
+            schema["fingerprint"] = os.environ["MSP_SCHEMA_FINGERPRINT"]
         emit({"jsonrpc":"2.0","id":frame["id"],"result":result})
     elif method in ("session/start", "session/resume"):
         sid = "opaque/provider/session" if method == "session/start" else frame["params"]["sessionId"]
@@ -322,12 +324,28 @@ def test_muse_msp_rejects_unmapped_semantics_before_host(tmp_path, monkeypatch, 
     assert not log.exists()
 
 
+@pytest.mark.parametrize("is_noedit", [False, True])
+def test_muse_msp_continuation_rejects_workspace_trust_before_protocol_setup(tmp_path, monkeypatch, _use_real_commands, is_noedit):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--trust-workspace"])})
+
+    with pytest.raises(RuntimeError, match="without independent PR-review authorization"):
+        _manager(config).continue_session("opaque/provider/session", "prompt", is_noedit=is_noedit)
+    assert not log.exists()
+
+
 @pytest.mark.parametrize(
     ("environment", "message"),
     [
         ({"MSP_SERVER_VERSION": "1.3.1"}, "host version"),
         ({"MSP_SCHEMA_ALIAS": "1"}, "omitted schema"),
         ({"MSP_SCHEMA_VERSION": "1"}, "schema is incompatible"),
+        ({"MSP_SCHEMA_FINGERPRINT": "sha256:deadbeef"}, "schema is incompatible"),
     ],
 )
 def test_muse_msp_rejects_incompatible_initialization_before_session(tmp_path, monkeypatch, _use_real_commands, environment, message):
