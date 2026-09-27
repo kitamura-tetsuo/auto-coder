@@ -20,3 +20,12 @@ republished without rerunning the model, definitely-not-started work can be
 readmitted, and a completed attempt does not absorb later distinct feedback. Local
 execution and publication never resolve a review thread or count as merge success:
 independent current-head validation remains the owner of that decision.
+
+The production repair-allowance ledger is acquired before the local claim or any
+workspace mutation. Unreadable allowance state fails closed, while a temporary
+absence of a synchronous backend remains definitely not started and retryable.
+Backend `CANNOT_FIX` output is retained as terminal failure rather than successful
+no-change completion. Successful no-change and published completions proceed to
+independent same-head revalidation. Ordinary unstaged model edits are staged by the
+controller; if staging or committing fails, the detached workspace path is retained
+with the durable attempt for recovery.

@@ -1319,3 +1319,6 @@ correction is executing, indeterminate, publication-pending, completed with no
 change, or awaiting independent validation. These remain non-success PR outcomes;
 the stage does not treat local invocation or publication as a resolved finding or
 merged pull request. No structured event schema changes are introduced.
+Backend-unavailable, allowance-not-admitted, and terminal-failure reasons use the
+same stage and existing reason/route fields; no dashboard event schema changes are
+required.
