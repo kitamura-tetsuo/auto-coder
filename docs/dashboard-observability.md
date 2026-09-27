@@ -1311,3 +1311,11 @@ production routing boundary, authoritative reread, stale-decision invalidation,
 and zero-cloud-send behavior; the joined existing cloud controls are in
 `tests/test_codex_cloud_pr_review_flow.py` and
 `tests/test_verified_codex_pr_repair_routing.py`.
+# Local unresolved-review correction
+
+The existing `pr.repair-delegation` stage now reports
+`route_disposition=LOCAL_EXECUTION` while an explicit-local unresolved-review
+correction is executing, indeterminate, publication-pending, completed with no
+change, or awaiting independent validation. These remain non-success PR outcomes;
+the stage does not treat local invocation or publication as a resolved finding or
+merged pull request. No structured event schema changes are introduced.

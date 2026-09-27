@@ -249,6 +249,17 @@ pr:
     Please fix the issues that are causing the GitHub Actions failures. Make the necessary code changes to resolve the errors.
     DO NOT include git commit or push commands in your response.
 
+  local_review_correction: |-
+    Correct the currently unresolved review findings below in this protected checkout. The linked Issue's explicit Requirements are the sole implementation contract; preserve its Objective verbatim and do not edit the Issue or expand the work to unrelated changes. Inspect the code, implement the bounded correction, and run the relevant tests. Do not change branches, commit, push, create or replace a pull request, resolve review threads, or mutate GitHub state; Auto-Coder owns publication and independent validation.
+
+    Linked Issue contract:
+    $linked_issue_contract
+
+    Exact captured review feedback:
+    $actionable_feedback
+
+    On success output only one line beginning with `ACTION_SUMMARY:`. If the findings cannot be corrected, output `CANNOT_FIX`.
+
   local_test_fix: |-
     Fix the following local test failures for PR #$pr_number:
 
