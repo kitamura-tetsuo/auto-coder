@@ -484,9 +484,11 @@ class BackendManager(LLMBackendManagerBase):
 
     # ---------- Direct Compatibility Methods ----------
     @log_calls  # type: ignore[misc]
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: Optional[bool] = None) -> str:
         """Normal execution (circular retry on usage limit with provider rotation)."""
         from .utils import TemporaryEnvironment
+
+        requested_noedit = bool(getattr(self, "_is_noedit", False)) if is_noedit is None else is_noedit
 
         # Check if we need to auto-reset the backend based on saved state
         self.check_and_reset_backend_if_needed()
@@ -546,6 +548,7 @@ class BackendManager(LLMBackendManagerBase):
                         backend_attempt_number=attempts + 1,
                         temp_env_cls=TemporaryEnvironment,
                         session_id=self._last_session_id if should_resume else None,
+                        requested_noedit=requested_noedit,
                     )
                 except (AutoCoderUsageLimitError, AutoCoderTimeoutError, AutoCoderRetryableBackendError):
                     raise
@@ -565,6 +568,7 @@ class BackendManager(LLMBackendManagerBase):
                         prompt=prompt,
                         backend_attempt_number=attempts + 1,
                         temp_env_cls=TemporaryEnvironment,
+                        requested_noedit=requested_noedit,
                     )
                 # Check if we should switch to next backend after successful execution
                 backend_config = get_llm_config().get_backend_config(backend_name)
@@ -642,6 +646,7 @@ class BackendManager(LLMBackendManagerBase):
                 backend_attempt_number=1,
                 temp_env_cls=contextlib.nullcontext,
                 session_id=session_id,
+                requested_noedit=is_noedit,
             )
             self._last_continue_session_resumed = True
             return str(output)
@@ -651,7 +656,7 @@ class BackendManager(LLMBackendManagerBase):
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
             self._last_continue_session_resumed = False
             self.switch_to_next_backend()
-            return self._run_llm_cli(prompt)
+            return self._run_llm_cli(prompt, is_noedit=is_noedit)
         except Exception as exc:
             if not isinstance(exc, (ValueError, RuntimeError, NotImplementedError)):
                 raise
@@ -661,7 +666,7 @@ class BackendManager(LLMBackendManagerBase):
             self._save_session_state(backend_name, None)
             if hasattr(client, "clear_last_session_id"):
                 client.clear_last_session_id()
-            return self._run_llm_cli(prompt)
+            return self._run_llm_cli(prompt, is_noedit=is_noedit)
 
     def run_prompt(self, prompt: str) -> str:
         """
@@ -720,6 +725,7 @@ class BackendManager(LLMBackendManagerBase):
         backend_attempt_number: int,
         temp_env_cls: Callable[[Dict[str, str]], Any],
         session_id: Optional[str] = None,
+        requested_noedit: bool = False,
     ) -> str:
         """
         Execute a backend client while honoring provider rotation rules.
@@ -783,7 +789,7 @@ class BackendManager(LLMBackendManagerBase):
                 # Clients constructed for no-edit retain that restriction even
                 # when an alias or caller omits an explicit true argument.
                 client_is_noedit = getattr(cli, "use_noedit_options", False) is True
-                is_noedit = bool(getattr(self, "_is_noedit", False) or client_is_noedit)
+                is_noedit = requested_noedit or client_is_noedit
                 # Atomically register this controlled provider action before it
                 # runs, at the final invocation boundary shared by every
                 # backend/provider rotation attempt (Issue #2009, REQ-001/002).
@@ -930,14 +936,13 @@ class BackendManager(LLMBackendManagerBase):
         with ProgressStage(stage_label):
             try:
                 # This is not a no-edit operation
-                self._is_noedit = False
-                out: str = self._run_llm_cli(prompt)
+                out: str = self._run_llm_cli(prompt, is_noedit=False)
             except AutoCoderTimeoutError as exc:
                 logger.warning(f"Timeout error on backend '{active_backend}', switching to next backend")
                 self.switch_to_next_backend()
                 # Try again with the next backend
                 with ProgressStage(f"Running LLM: {self._current_backend_name()}"):
-                    out = self._run_llm_cli(prompt)
+                    out = self._run_llm_cli(prompt, is_noedit=False)
 
         # Update state
         self._last_prompt = prompt
@@ -1399,8 +1404,7 @@ def run_llm_noedit_prompt(prompt: str) -> str:
     if manager is None:
         raise RuntimeError("Non-editing backend manager not initialized. " "Call get_noedit_backend_manager() with initialization parameters first.")
     # Mark this as a no-edit operation so clients use options_for_noedit
-    manager._is_noedit = True
-    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
+    return manager._run_llm_cli(prompt, is_noedit=True)  # type: ignore[no-any-return]
 
 
 def run_llm_message_prompt(prompt: str) -> str:
@@ -1487,11 +1491,7 @@ def run_llm_prompt(prompt: str, backend_manager: Optional[BackendManager] = None
     manager = backend_manager or LLMBackendManager.get_llm_instance()
     if manager is None:
         raise RuntimeError("LLM backend manager not initialized. " "Call get_llm_backend_manager() with initialization parameters first.")
-    if is_noedit:
-        manager._is_noedit = True
-    else:
-        manager._is_noedit = False
-    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
+    return manager._run_llm_cli(prompt, is_noedit=is_noedit)  # type: ignore[no-any-return]
 
 
 def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:

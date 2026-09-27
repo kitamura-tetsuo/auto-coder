@@ -1,4 +1,5 @@
 import contextlib
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -222,3 +223,51 @@ def test_dynamic_client_attribute_does_not_invent_noedit_mode(tmp_path: Path) ->
         assert manager._run_llm_cli("implement") == "editable result"
 
     client._run_llm_cli.assert_called_once_with("implement", is_noedit=False)
+
+
+def test_concurrent_manager_continuations_keep_invocation_modes(tmp_path: Path) -> None:
+    class ConcurrentClient:
+        use_noedit_options = False
+        model_name = "test-model"
+        config_backend = SimpleNamespace(backend_type="opencode")
+
+        def __init__(self) -> None:
+            self.entered = threading.Barrier(2)
+            self.calls: dict[str, tuple[bool, bool]] = {}
+
+        def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            self.entered.wait(timeout=5)
+            self.calls[session_id] = (is_noedit, boundary.editable)
+            return session_id
+
+        def get_last_session_id(self) -> None:
+            return None
+
+    client = ConcurrentClient()
+    binding = _binding(tmp_path)
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(default_backend="alias", default_client=client, factories={"alias": lambda: client}, order=["alias"])
+
+    errors: list[BaseException] = []
+
+    def run(session_id: str, is_noedit: bool) -> None:
+        try:
+            manager.continue_session(session_id, "continue", is_noedit=is_noedit)
+        except BaseException as exc:
+            errors.append(exc)
+
+    with (
+        patch("src.auto_coder.backend_manager.isolated_local_llm_worktree", return_value=contextlib.nullcontext()),
+        patch("src.auto_coder.backend_manager.get_current_local_workspace", return_value=binding),
+    ):
+        first = threading.Thread(target=run, args=("read-only", True))
+        second = threading.Thread(target=run, args=("editable", False))
+        first.start()
+        second.start()
+        first.join(timeout=5)
+        second.join(timeout=5)
+
+    assert errors == []
+    assert client.calls == {"read-only": (True, False), "editable": (False, True)}

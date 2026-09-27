@@ -53,6 +53,7 @@ class CodexClient(LLMClientBase):
                 structured no-edit review responses.
         """
         super().__init__()
+        self.use_noedit_options = use_noedit_options
         config = get_llm_config()
 
         # If backend_name is provided, get config from that backend

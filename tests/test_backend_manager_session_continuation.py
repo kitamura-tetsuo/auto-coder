@@ -5,8 +5,9 @@ from unittest.mock import patch
 
 import pytest
 
-from auto_coder.backend_manager import BackendManager
-from auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
+from src.auto_coder.backend_manager import BackendManager
+from src.auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
+from src.auto_coder.opencode_client import OpenCodeClient
 
 
 class SessionClient:
@@ -135,3 +136,38 @@ def test_empty_explicit_session_is_rejected_without_claiming_continuity(tmp_path
     assert manager._last_continue_session_resumed is False
     assert client.continued == []
     assert client.fresh_prompts == []
+
+
+def test_unreadable_opencode_preflight_does_not_start_fresh_or_clear_session(tmp_path, monkeypatch):
+    class PreflightClient(SessionClient):
+        command = ["opencode"]
+
+        def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+            self.continued.append((session_id, prompt, is_noedit))
+            OpenCodeClient._verify_resumable_session_in_current_workspace(self, session_id=session_id, cwd=tmp_path, env={})
+            raise AssertionError("continued task must not be submitted")
+
+    client = PreflightClient(fresh_session_id="prior-session")
+    manager = _manager(tmp_path, {"opencode": client}, automatic_session_resume=False)
+    manager._last_session_id = "prior-session"
+    import subprocess
+
+    original_run = subprocess.run
+
+    def unreadable_session_list(command, *args, **kwargs):
+        if command[:2] == ["opencode", "session"]:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "src.auto_coder.opencode_client.subprocess.run",
+        unreadable_session_list,
+    )
+
+    with pytest.raises(SessionWorkspaceCompatibilityError, match="could not be verified"):
+        manager.continue_session("prior-session", "continue", is_noedit=True)
+
+    assert client.continued == [("prior-session", "continue", True)]
+    assert client.fresh_prompts == []
+    assert manager._last_session_id == "prior-session"
+    assert manager._last_continue_session_resumed is False

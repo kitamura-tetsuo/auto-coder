@@ -33,8 +33,25 @@ class TestCodexClient:
 
         client = CodexClient()
         assert client.model_name == "codex"
+        assert client.use_noedit_options is False
         # Verify output_logger is initialized
         assert client.output_logger is not None
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_constructor_retains_noedit_restriction(self, mock_get_config, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_backend = MagicMock()
+        mock_backend.model = "codex"
+        mock_backend.options_for_noedit = ["exec", "--json", "--sandbox", "read-only"]
+        mock_backend.options = ["exec", "--json", "--sandbox", "workspace-write"]
+        mock_backend.validate_required_options.return_value = []
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
+
+        client = CodexClient(backend_name="inspection-alias", use_noedit_options=True)
+
+        assert client.use_noedit_options is True
+        assert client.options == mock_backend.options_for_noedit
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")

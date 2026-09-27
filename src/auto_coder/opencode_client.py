@@ -685,7 +685,7 @@ class OpenCodeClient(LLMClientBase):
         command = [*self.command, "session", "list", "--format", "json"]
         try:
             result = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True, timeout=60, env=env)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
             raise SessionWorkspaceCompatibilityError(f"OpenCode session continuation could not be verified before task launch: {exc}") from exc
         if result.returncode != 0:
             diagnostics = (result.stderr or result.stdout or "").strip()[:400]
