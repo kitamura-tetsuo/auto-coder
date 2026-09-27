@@ -86,6 +86,22 @@ class TestFilesystemPolicy:
         pass
 
 
+class StubPublicationPolicy:
+    def __init__(self, environment: dict[str, str]) -> None:
+        self.environment = environment
+
+    def install(self, context: InstallationContext) -> PolicyInstallation:
+        return PolicyInstallation(
+            True,
+            establishes_publication_enforcement=True,
+            establishes_violation_observation=True,
+            environment=self.environment,
+        )
+
+    def close(self) -> None:
+        pass
+
+
 def make_supervisor(owner: ProcessGroupOwner, **kwargs) -> InvocationProcessSupervisor:
     return InvocationProcessSupervisor(
         owner=owner,  # type: ignore[arg-type]
@@ -155,6 +171,19 @@ def test_prompt_and_failure_survive_positive_settlement(tmp_path: Path) -> None:
     assert not result.replacement_authorized
     assert not supervisor.authorize_replacement(result, controller_decision=False)
     assert supervisor.authorize_replacement(result, controller_decision=True)
+
+
+def test_installed_policy_supplies_controller_owned_child_environment(tmp_path: Path) -> None:
+    supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
+    policies = (TestFilesystemPolicy(), StubPublicationPolicy({"MEDIATED": "yes"}))
+
+    result = supervisor.run(
+        request(tmp_path, "import os; print(os.environ.get('MEDIATED')); print(os.environ.get('CALLER_SECRET'))", environment={"CALLER_SECRET": "secret"}),
+        policies=policies,
+    )
+
+    assert result.outcome is InvocationOutcome.SUCCEEDED
+    assert result.stdout == "yes\nNone\n"
 
 
 def test_large_output_is_drained_while_provider_runs(tmp_path: Path) -> None:

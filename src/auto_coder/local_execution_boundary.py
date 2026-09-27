@@ -144,6 +144,22 @@ class LocalExecutionBoundary:
             if status is EvidenceStatus.FAILED:
                 self._failure = self._failure or "filesystem enforcement failed"
 
+    def record_publication_enforcement(self, invocation_id: str, status: EvidenceStatus) -> None:
+        """Accept installation/lifetime truth from the publication producer."""
+        with self._lock:
+            self._accept(invocation_id)
+            self._publication_enforcement = status
+            if status is EvidenceStatus.FAILED:
+                self._failure = self._failure or "publication enforcement failed"
+
+    def record_violation_observation(self, invocation_id: str, status: EvidenceStatus) -> None:
+        """Accept availability truth from the controller-owned denial observer."""
+        with self._lock:
+            self._accept(invocation_id)
+            self._violation_observation = status
+            if status is EvidenceStatus.FAILED:
+                self._failure = self._failure or "publication violation observation failed"
+
     def report_policy_violation(self, invocation_id: str, reason: str) -> None:
         with self._lock:
             self._accept(invocation_id)

@@ -40,6 +40,9 @@ class PolicyInstallation:
     installed: bool
     detail: str = ""
     establishes_filesystem_enforcement: bool = False
+    establishes_publication_enforcement: bool = False
+    establishes_violation_observation: bool = False
+    environment: Optional[dict[str, str]] = field(default=None, compare=False, repr=False)
     child_setup: Optional[Callable[[], None]] = field(default=None, compare=False, repr=False)
     denial_monitor: Optional["PolicyDenialMonitor"] = field(default=None, compare=False, repr=False)
 
@@ -280,6 +283,15 @@ class InvocationProcessSupervisor:
             self.owner.discard(group)
             return self._unavailable(request, "filesystem enforcement was not installed", tuple(installations))
 
+        environments = [item.environment for item in installations if item.environment is not None]
+        child_environment = request.environment
+        if environments:
+            child_environment = dict(request.environment if request.environment is not None else os.environ)
+            for environment in environments:
+                assert environment is not None
+                child_environment.clear()
+                child_environment.update(environment)
+
         stdin = subprocess.PIPE if request.prompt_transport is PromptTransport.STDIN else None
         child_setups = tuple(item.child_setup for item in installations if item.child_setup is not None)
 
@@ -292,7 +304,7 @@ class InvocationProcessSupervisor:
             process = subprocess.Popen(
                 [request.executable, *request.arguments],
                 cwd=request.cwd,
-                env=request.environment,
+                env=child_environment,
                 stdin=stdin,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -311,6 +323,11 @@ class InvocationProcessSupervisor:
                 close()
         if boundary is not None and any(item.establishes_filesystem_enforcement for item in installations):
             boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.ESTABLISHED)
+        if boundary is not None:
+            if any(item.establishes_publication_enforcement for item in installations):
+                boundary.record_publication_enforcement(request.invocation_id, EvidenceStatus.ESTABLISHED)
+            if any(item.establishes_violation_observation for item in installations):
+                boundary.record_violation_observation(request.invocation_id, EvidenceStatus.ESTABLISHED)
 
         monitors = tuple(item.denial_monitor for item in installations if item.denial_monitor is not None)
         try:
