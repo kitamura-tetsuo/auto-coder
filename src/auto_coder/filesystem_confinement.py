@@ -358,7 +358,8 @@ class PtraceDenialMonitor:
                 if operation is not None and result in {-errno.EACCES, -errno.EPERM, -errno.EXDEV}:
                     denials.append(f"filesystem policy denied {operation} for invocation process {pid}")
         try:
-            delivered_signal = stop_signal if stop_signal not in {signal.SIGTRAP, signal.SIGSTOP} else 0
+            synthetic_stops = {signal.SIGTRAP, signal.SIGSTOP, signal.SIGTRAP | 0x80}
+            delivered_signal = stop_signal if stop_signal not in synthetic_stops else 0
             _ptrace(_PTRACE_SYSCALL, pid, 0, delivered_signal)
         except OSError as exc:
             if exc.errno != errno.ESRCH:

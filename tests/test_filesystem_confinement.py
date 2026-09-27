@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from src.auto_coder import filesystem_confinement
 from src.auto_coder.filesystem_confinement import LandlockFilesystemPolicy, PtraceDenialMonitor
 from src.auto_coder.invocation_process_supervisor import InvocationLaunch, InvocationOutcome, InvocationProcessSupervisor
 from src.auto_coder.local_execution_boundary import EvidenceStatus, LocalExecutionBoundary
@@ -55,6 +56,23 @@ def test_denial_monitor_does_not_consume_unrelated_controller_children(monkeypat
 
     assert monitor.pump() == ()
     assert waited == [1234]
+
+
+def test_denial_monitor_does_not_redeliver_synthetic_syscall_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    monitor = PtraceDenialMonitor(())
+    resumed: list[tuple[int, int]] = []
+    info = filesystem_confinement._SyscallInfo()
+
+    monkeypatch.setattr(filesystem_confinement, "_syscall_info", lambda pid: info)
+    monkeypatch.setattr(
+        filesystem_confinement,
+        "_ptrace",
+        lambda request, pid, address, data: resumed.append((request, int(data))) or 0,
+    )
+
+    syscall_stop_status = ((signal.SIGTRAP | 0x80) << 8) | 0x7F
+    assert monitor._handle_stop(1234, syscall_stop_status) == ()
+    assert resumed == [(filesystem_confinement._PTRACE_SYSCALL, 0)]
 
 
 def _launch(tmp_path: Path, code: str, *, mode: str = "editable", runtime_inputs: tuple[Path, ...] = ()) -> InvocationLaunch:
