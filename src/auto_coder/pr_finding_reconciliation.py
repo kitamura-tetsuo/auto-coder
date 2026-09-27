@@ -155,11 +155,7 @@ def parse_historical_pr_review_roots(
         line_val: Optional[int] = raw_line if isinstance(raw_line, int) else None
         commit_id = str(comment.get("commit_id", ""))
 
-        # Check for compound roots: split by headings, issue markers, or dividers
-        parts = re.split(r"(?=(?:### Auto-Coder |### (?:Adversarial|Material)|Issue \d+:|\n\n---\n\n))", body)
-        sections = [p.strip() for p in parts if p.strip()]
-        if not sections:
-            sections = [body]
+        sections = _split_historical_comment_sections(body)
 
         for section in sections:
             parsed = _parse_comment_section(section, cid, path, line_val, commit_id)
@@ -174,6 +170,35 @@ def parse_historical_pr_review_roots(
     )
 
 
+_SECTION_START_RE = re.compile(r"(?=(?:### Auto-Coder |### (?:Adversarial|Material)|Issue \d+:|\n\n---\n\n))")
+
+
+def _split_historical_comment_sections(body: str) -> list[str]:
+    """Split compound findings without treating fenced examples as sections."""
+    masked = _mask_fenced_markdown(body)
+    starts = [match.start() for match in _SECTION_START_RE.finditer(masked)]
+    boundaries = sorted({0, *starts, len(body)})
+    sections = [body[start:end].strip() for start, end in zip(boundaries, boundaries[1:]) if body[start:end].strip()]
+    return sections or [body]
+
+
+def _mask_fenced_markdown(text: str) -> str:
+    """Mask fenced Markdown while retaining offsets and line structure."""
+    masked_parts: list[str] = []
+    in_fence = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        is_fence = stripped.startswith("```") or stripped.startswith("~~~")
+        if in_fence or is_fence:
+            masked_parts.append("".join("\n" if char == "\n" else " " for char in line))
+        else:
+            masked_parts.append(line)
+        if is_fence:
+            in_fence = not in_fence
+
+    return "".join(masked_parts)
+
+
 def _parse_comment_section(
     section_text: str,
     comment_id: int,
@@ -182,21 +207,22 @@ def _parse_comment_section(
     commit_id: str,
 ) -> Optional[HistoricalCorrection]:
     """Parse a single finding or gap section within a review comment."""
-    lower_text = section_text.lower()
+    authoritative_text = _mask_fenced_markdown(section_text)
+    lower_text = authoritative_text.lower()
     is_gap = "test-oracle gap" in lower_text or "test oracle gap" in lower_text or "test_oracle" in lower_text or "gap identity" in lower_text
-    is_finding = "adversarial finding" in lower_text or "finding" in lower_text or "violated requirement" in lower_text or "requirement:" in lower_text or bool(_REQ_ID_RE.search(section_text))
-    if not (is_gap or is_finding or _standalone_blocker_identities(section_text) or _GAP_ID_RE.search(section_text)):
+    is_finding = "adversarial finding" in lower_text or "finding" in lower_text or "violated requirement" in lower_text or "requirement:" in lower_text or bool(_REQ_ID_RE.search(authoritative_text))
+    if not (is_gap or is_finding or _standalone_blocker_identities(section_text) or _GAP_ID_RE.search(authoritative_text)):
         return None
 
     blocker_ids = _standalone_blocker_identities(section_text)
     blocker_id = blocker_ids[0] if len(blocker_ids) == 1 else None
 
     gap_id = None
-    gap_match = _GAP_ID_RE.search(section_text)
+    gap_match = _GAP_ID_RE.search(authoritative_text)
     if gap_match:
         gap_id = next((g.strip() for g in gap_match.groups() if g), None)
 
-    req_ids = tuple(dict.fromkeys(_REQ_ID_RE.findall(section_text)))
+    req_ids = tuple(dict.fromkeys(_REQ_ID_RE.findall(authoritative_text)))
     category = "TEST_ORACLE" if is_gap else "IMPLEMENTATION"
 
     boundary = _extract_section_field(section_text, "Authoritative boundary")
@@ -739,6 +765,14 @@ def _bootstrap_historical_roots(
     if not corrections:
         return current_rev
 
+    initial_snapshot = ledger.get_snapshot(api_origin, repo_name, pr_number, require_retained_state=True)
+    initial_root_owners: dict[int, set[str]] = {}
+    declared_root_owners: dict[int, set[str]] = {}
+    for correction in corrections:
+        initial_root_owners.setdefault(correction.comment_id, set()).update(blocker.blocker_id for blocker in initial_snapshot.get_blockers_for_alias("github_root_comment", str(correction.comment_id)))
+        if correction.blocker_id:
+            declared_root_owners.setdefault(correction.comment_id, set()).add(correction.blocker_id)
+
     groups: list[list[HistoricalCorrection]] = []
     for corr in corrections:
         placed = False
@@ -792,15 +826,19 @@ def _bootstrap_historical_roots(
         if declared_id and declared_blocker is None:
             raise AssociationAmbiguityError(f"Historical root declares unknown blocker {declared_id!r} in this PR namespace")
         if root_matches and declared_id and declared_id not in root_matches:
-            raise AssociationAmbiguityError(f"Historical root is already associated with {sorted(root_matches)} and conflicts with {declared_id!r}")
-        if len(root_matches) == 1:
+            original_owners = set().union(*(initial_root_owners.get(corr.comment_id, set()) for corr in sorted_by_id))
+            complete_declarations = set().union(*(declared_root_owners.get(corr.comment_id, set()) for corr in sorted_by_id))
+            if original_owners and not original_owners.issubset(complete_declarations):
+                raise AssociationAmbiguityError(f"Historical root is already associated with {sorted(root_matches)} " f"and conflicts with {declared_id!r}")
+        matching_blocker: Optional[BlockerSnapshot]
+        if declared_blocker is not None:
+            matching_blocker = declared_blocker
+        elif len(root_matches) == 1:
             sole_root_match = next(iter(root_matches.values()))
             # A compound root may own independent implementation and oracle
             # corrections.  Root identity reuses an existing owner only within
             # the same category unless an explicit blocker declaration selects it.
-            matching_blocker = sole_root_match if declared_blocker is not None or sole_root_match.category == earliest.category else None
-        elif declared_blocker is not None:
-            matching_blocker = declared_blocker
+            matching_blocker = sole_root_match if sole_root_match.category == earliest.category else None
         elif root_matches:
             scope_matches = [
                 blocker

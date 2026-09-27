@@ -414,6 +414,120 @@ def test_historical_identity_conflicts_fail_closed(
     assert unchanged.blockers == ()
 
 
+def test_compound_root_reassociates_each_independently_declared_owner(
+    db_path: Path,
+) -> None:
+    """Issue #2308: one compound root may retain two independent owners."""
+    ledger = CanonicalPRBlockerLedger(db_path=db_path)
+    ledger.initialize_namespace(API_ORIGIN, REPO, PR_NUMBER)
+    blocker_ids: list[str] = []
+    for index, boundary in enumerate(("src/owner_a.py", "src/owner_b.py"), 1):
+        snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER, require_retained_state=True)
+        blocker_id, _ = ledger.admit_blocker(
+            API_ORIGIN,
+            REPO,
+            PR_NUMBER,
+            operation_id=f"admit-compound-owner-{index}",
+            expected_ledger_revision=snapshot.ledger_revision,
+            payload=BlockerAdmissionPayload(
+                category="IMPLEMENTATION",
+                qualified_requirements=(QualifiedRequirement(issue_number=2308, requirement_id=f"REQ-00{index}"),),
+                authoritative_boundary=boundary,
+                incorrect_behavior_or_missing_invariant=f"owner {index} behavior",
+                required_correction_outcome=f"owner {index} outcome",
+                evidence_needed=f"owner {index} evidence",
+                accepted_scope=CorrectionScope(
+                    description=f"owner {index} scope",
+                    concern_ids=(f"owner-{index}-concern",),
+                ),
+                observation_identity=f"owner-{index}-observation",
+            ),
+        )
+        blocker_ids.append(blocker_id)
+
+    body = "### Adversarial finding A\n" "Requirement: REQ-001\nPath: src/owner_a.py\nOwner A behavior.\n\n" f"Blocker identity: `{blocker_ids[0]}`\n\n" "### Adversarial finding B\n" "Requirement: REQ-002\nPath: src/owner_b.py\nOwner B behavior.\n\n" f"Blocker identity: `{blocker_ids[1]}`"
+    parsed = parse_historical_pr_review_roots(
+        [{"id": 2308010, "user": {"login": "reviewer[bot]"}, "body": body}],
+        reviewer_identity=ReviewerAppIdentity(login="reviewer[bot]", app_id=42),
+    )
+    assert [correction.blocker_id for correction in parsed.corrections] == blocker_ids
+
+    for active_ledger in (ledger, ledger, CanonicalPRBlockerLedger(db_path=db_path)):
+        result = reconcile_pr_findings_before_publication(
+            active_ledger,
+            API_ORIGIN,
+            REPO,
+            PR_NUMBER,
+            2308,
+            "head",
+            "base",
+            AdversarialValidationResult(result="PASS"),
+            parsed,
+        )
+        assert not result.is_ambiguous
+
+    final = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER, require_retained_state=True)
+    assert len(final.blockers) == 2
+    for index, blocker_id in enumerate(blocker_ids, 1):
+        blocker = final.get_blocker(blocker_id)
+        assert blocker is not None
+        assert blocker.accepted_scope.description == f"owner {index} scope"
+        assert blocker.concern_ids == (f"owner-{index}-concern",)
+        assert blocker.get_root_comment_ids() == (2308010,)
+
+
+@pytest.mark.parametrize("example_id", ("retained", "unknown"))
+def test_fenced_finding_heading_cannot_supply_blocker_identity(
+    ledger: CanonicalPRBlockerLedger,
+    example_id: str,
+) -> None:
+    """Issue #2308: section splitting retains fenced declaration context."""
+    ledger.initialize_namespace(API_ORIGIN, REPO, PR_NUMBER)
+    retained_id, _ = ledger.admit_blocker(
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        operation_id="admit-fenced-example-target",
+        expected_ledger_revision=1,
+        payload=BlockerAdmissionPayload(
+            category="IMPLEMENTATION",
+            authoritative_boundary="src/retained.py",
+            incorrect_behavior_or_missing_invariant="retained behavior",
+            required_correction_outcome="retained outcome",
+            evidence_needed="retained evidence",
+            accepted_scope=CorrectionScope(description="retained scope"),
+            observation_identity="retained-observation",
+        ),
+    )
+    fenced_id = retained_id if example_id == "retained" else "blk_unknown_example"
+    body = "Copied example:\n```markdown\n### Adversarial finding\n" f"Blocker identity: `{fenced_id}`\n```\n\n" "### Adversarial finding\nRequirement: REQ-001\nPath: src/real.py\n" "Real behavior.\n\n" f"Blocker identity: `{retained_id}`"
+    parsed = parse_historical_pr_review_roots(
+        [{"id": 2308011, "user": {"login": "reviewer[bot]"}, "body": body}],
+        reviewer_identity=ReviewerAppIdentity(login="reviewer[bot]", app_id=42),
+    )
+
+    assert len(parsed.corrections) == 1
+    assert parsed.corrections[0].blocker_id == retained_id
+    assert parsed.corrections[0].blocker_identity_conflict == ()
+    result = reconcile_pr_findings_before_publication(
+        ledger,
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        2308,
+        "head",
+        "base",
+        AdversarialValidationResult(result="PASS"),
+        parsed,
+    )
+    assert not result.is_ambiguous
+    snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER, require_retained_state=True)
+    assert len(snapshot.blockers) == 1
+    blocker = snapshot.get_blocker(retained_id)
+    assert blocker is not None
+    assert blocker.get_root_comment_ids() == (2308011,)
+
+
 # ---------------------------------------------------------------------------
 # AS-002: Already Duplicated Legacy PR
 # ---------------------------------------------------------------------------
