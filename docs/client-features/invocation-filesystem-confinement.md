@@ -18,14 +18,25 @@ executables, Git alternate-directory options, hooks, and every descendant. Write
 through path traversal, symlinks, hard-link creation, rename/refer operations, and
 newly opened descriptors are checked at the actual filesystem operation.
 
+The supported x86-64 profile also starts each confined child under a
+controller-owned ptrace syscall observer before the provider's first instruction.
+The observer follows forks and compares denied mutation targets with the pinned
+writable roots. A Landlock `EACCES`, `EPERM`, or cross-root `EXDEV` for an outside
+mutation becomes a sticky policy violation on that invocation; ordinary read
+errors and failures for operations within an allowed root are not classified as
+policy denials. Loss of the required exec stop fails startup rather than producing
+clean enforcement evidence.
+
 Landlock support and every policy prerequisite are checked before provider code is
 submitted. Unsupported kernels, missing roots, unsafe modes, or aliasing return a
 `pre-start-unavailable` result rather than launching without confinement. The
 cgroup owner retains the policy for detached descendants until definitive writer
 shutdown; termination uncertainty therefore retains both process and filesystem
-ownership. Read visibility can be narrowed with controller-selected roots for a
-later credential/publication stage and cannot be widened by provider environment
-variables or output.
+ownership. This stage deliberately handles mutation rights without globally
+allow-listing reads, so approved inference inputs do not accidentally hide the
+provider executable, shared libraries, system configuration, or private repository.
+Controller-selected input paths are validated as read-only aliases; a later
+publication stage may compose stricter visibility without widening mutation rights.
 
 The deterministic Linux regression suite is
 `tests/test_filesystem_confinement.py`; run it with

@@ -41,6 +41,16 @@ class PolicyInstallation:
     detail: str = ""
     establishes_filesystem_enforcement: bool = False
     child_setup: Optional[Callable[[], None]] = field(default=None, compare=False, repr=False)
+    denial_monitor: Optional["PolicyDenialMonitor"] = field(default=None, compare=False, repr=False)
+
+
+class PolicyDenialMonitor(Protocol):
+    def attach(self, process: subprocess.Popen[bytes]) -> None: ...
+
+    def pump(self) -> tuple[str, ...]: ...
+
+    @property
+    def root_returncode(self) -> Optional[int]: ...
 
 
 @dataclass(frozen=True)
@@ -286,6 +296,17 @@ class InvocationProcessSupervisor:
         if boundary is not None and any(item.establishes_filesystem_enforcement for item in installations):
             boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.ESTABLISHED)
 
+        monitors = tuple(item.denial_monitor for item in installations if item.denial_monitor is not None)
+        try:
+            for monitor in monitors:
+                monitor.attach(process)
+        except (OSError, RuntimeError) as exc:
+            self.owner.stop_and_confirm(group, time.monotonic() + self.settlement_timeout)
+            self.owner.discard(group)
+            if boundary is not None:
+                boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.FAILED)
+            return self._unavailable(request, f"denial observation unavailable: {exc}", tuple(installations))
+
         self._set_state(request.invocation_id, WriterState.ACTIVE)
         start = time.monotonic()
         stdout_chunks: list[bytes] = []
@@ -296,7 +317,24 @@ class InvocationProcessSupervisor:
         ]
         input_writer = self._start_writer(process.stdin, (request.prompt or "").encode("utf-8"))
         outcome = InvocationOutcome.FAILED
-        while process.poll() is None:
+        monitor_failures: list[str] = []
+
+        def provider_running() -> bool:
+            if monitors:
+                try:
+                    for monitor in monitors:
+                        for denial in monitor.pump():
+                            if boundary is not None:
+                                boundary.report_policy_violation(request.invocation_id, denial)
+                except (OSError, RuntimeError) as exc:
+                    monitor_failures.append(str(exc))
+                    if boundary is not None:
+                        boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.FAILED)
+                    return False
+                return any(monitor.root_returncode is None for monitor in monitors)
+            return process.poll() is None
+
+        while provider_running():
             if request.cancellation is not None and request.cancellation.is_set():
                 outcome = InvocationOutcome.CANCELLED
                 break
@@ -305,12 +343,28 @@ class InvocationProcessSupervisor:
                 break
             time.sleep(0.01)
         else:
+            monitored_returncode = next((monitor.root_returncode for monitor in monitors if monitor.root_returncode is not None), None)
+            if monitored_returncode is not None:
+                process.returncode = monitored_returncode
             outcome = InvocationOutcome.SUCCEEDED if process.returncode == 0 else InvocationOutcome.FAILED
+        if monitor_failures:
+            outcome = InvocationOutcome.FAILED
 
         self._set_state(request.invocation_id, WriterState.STOPPING)
-        detail = ""
+        detail = f"denial observation failed: {monitor_failures[0]}" if monitor_failures else ""
         try:
             self.owner.stop_and_confirm(group, time.monotonic() + self.settlement_timeout)
+            if monitors:
+                monitor_deadline = time.monotonic() + self.settlement_timeout
+                while any(monitor.root_returncode is None for monitor in monitors) and time.monotonic() < monitor_deadline:
+                    for monitor in monitors:
+                        for denial in monitor.pump():
+                            if boundary is not None:
+                                boundary.report_policy_violation(request.invocation_id, denial)
+                    time.sleep(0.01)
+                monitored_returncode = next((monitor.root_returncode for monitor in monitors if monitor.root_returncode is not None), None)
+                if monitored_returncode is not None:
+                    process.returncode = monitored_returncode
             process.wait(timeout=self.settlement_timeout)
             writer_state = WriterState.POSITIVELY_STOPPED
             self.owner.discard(group)

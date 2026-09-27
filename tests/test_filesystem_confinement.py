@@ -7,6 +7,8 @@ import pytest
 
 from src.auto_coder.filesystem_confinement import LandlockFilesystemPolicy
 from src.auto_coder.invocation_process_supervisor import InvocationLaunch, InvocationOutcome, InvocationProcessSupervisor
+from src.auto_coder.local_execution_boundary import EvidenceStatus, LocalExecutionBoundary
+from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
 
 
 class ProcessOwner:
@@ -40,7 +42,7 @@ class ProcessOwner:
         group.rmdir()
 
 
-def _launch(tmp_path: Path, code: str, *, mode: str = "editable") -> InvocationLaunch:
+def _launch(tmp_path: Path, code: str, *, mode: str = "editable", runtime_inputs: tuple[Path, ...] = ()) -> InvocationLaunch:
     private = tmp_path / "private"
     runtime = tmp_path / "runtime"
     protected = tmp_path / "caller"
@@ -53,6 +55,7 @@ def _launch(tmp_path: Path, code: str, *, mode: str = "editable") -> InvocationL
         result_root=private,
         runtime_paths=(runtime,),
         protected_paths=(protected,),
+        runtime_inputs=runtime_inputs,
         executable=sys.executable,
         arguments=("-c", code),
         cwd=private,
@@ -127,3 +130,80 @@ def test_policy_rejects_protected_alias_before_task_submission(tmp_path: Path) -
     assert result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE
     assert "aliases protected data" in result.detail
     assert not (tmp_path / "started").exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
+def test_runtime_input_does_not_block_provider_execution_or_private_reads(tmp_path: Path) -> None:
+    runtime_input = tmp_path / "approved-input"
+    runtime_input.mkdir()
+    (runtime_input / "model.txt").write_text("approved")
+    request = _launch(
+        tmp_path,
+        f"from pathlib import Path; print(Path({str(runtime_input / 'model.txt')!r}).read_text()); Path('edit').write_text('ok')",
+        runtime_inputs=(runtime_input,),
+    )
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+
+    result = supervisor.run(request, policies=(LandlockFilesystemPolicy(read_visibility=(request.result_root,)),))
+
+    if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        pytest.skip(result.detail)
+    assert result.outcome is InvocationOutcome.SUCCEEDED
+    assert result.stdout == "approved\n"
+    assert (request.result_root / "edit").read_text() == "ok"
+
+
+def _boundary(request: InvocationLaunch, tmp_path: Path) -> LocalExecutionBoundary:
+    protected = request.protected_paths[0]
+    binding = LocalWorkspaceBinding(
+        invocation_id=request.invocation_id,
+        caller_root=protected,
+        caller_git_dir=protected / ".git",
+        caller_common_dir=protected / ".git",
+        initial_head="refs/heads/main",
+        initial_commit="a" * 40,
+        index_checksum="index",
+        file_snapshot_checksum="files",
+        workspace=request.result_root,
+        ownership=LocalWorkspaceOwnership(),
+    )
+    return LocalExecutionBoundary(binding=binding, backend_type=request.backend_type, editable=request.effective_mode == "editable")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
+def test_denied_escape_is_a_sticky_controller_owned_violation(tmp_path: Path) -> None:
+    protected = tmp_path / "caller"
+    request = _launch(
+        tmp_path,
+        f"from pathlib import Path\ntry: Path({str(protected / 'escape')!r}).write_text('bad')\nexcept PermissionError: pass\nprint('success')",
+    )
+    boundary = _boundary(request, tmp_path)
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+
+    result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),), boundary=boundary)
+
+    if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        pytest.skip(result.detail)
+    evidence = boundary.evidence()
+    assert result.outcome is InvocationOutcome.SUCCEEDED
+    assert result.stdout == "success\n"
+    assert evidence.filesystem_enforcement is EvidenceStatus.ESTABLISHED
+    assert evidence.violation_observation is EvidenceStatus.FAILED
+    assert evidence.policy_violation
+    assert not evidence.confined_result_authorized
+    boundary.record_backend_success(request.invocation_id)
+    assert boundary.evidence().policy_violation
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
+def test_ordinary_permitted_command_failure_is_not_a_policy_violation(tmp_path: Path) -> None:
+    request = _launch(tmp_path, "from pathlib import Path\ntry: Path('missing').read_text()\nexcept FileNotFoundError: pass")
+    boundary = _boundary(request, tmp_path)
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+
+    result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),), boundary=boundary)
+
+    if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        pytest.skip(result.detail)
+    assert result.outcome is InvocationOutcome.SUCCEEDED
+    assert not boundary.evidence().policy_violation
