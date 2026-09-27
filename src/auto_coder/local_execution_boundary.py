@@ -136,6 +136,14 @@ class LocalExecutionBoundary:
             self._accept(invocation_id)
             self._writer_completion = EvidenceStatus.ESTABLISHED
 
+    def record_filesystem_enforcement(self, invocation_id: str, status: EvidenceStatus) -> None:
+        """Accept installation/lifetime truth from the filesystem producer."""
+        with self._lock:
+            self._accept(invocation_id)
+            self._filesystem_enforcement = status
+            if status is EvidenceStatus.FAILED:
+                self._failure = self._failure or "filesystem enforcement failed"
+
     def report_policy_violation(self, invocation_id: str, reason: str) -> None:
         with self._lock:
             self._accept(invocation_id)

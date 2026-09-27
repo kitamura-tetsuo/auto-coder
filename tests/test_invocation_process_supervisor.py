@@ -59,15 +59,39 @@ class ProcessGroupOwner:
 
 
 class ProbePolicy:
-    def __init__(self, sentinel: Path, installed: bool) -> None:
+    def __init__(self, sentinel: Path, installed: bool, establishes: bool = False) -> None:
         self.sentinel = sentinel
         self.installed = installed
+        self.establishes = establishes
         self.context: InstallationContext | None = None
 
     def install(self, context: InstallationContext) -> PolicyInstallation:
         assert not self.sentinel.exists()
         self.context = context
-        return PolicyInstallation(self.installed, "probe rejected execution")
+        return PolicyInstallation(
+            self.installed,
+            "probe rejected execution",
+            establishes_filesystem_enforcement=self.establishes,
+        )
+
+    def close(self) -> None:
+        pass
+
+
+class TestFilesystemPolicy:
+    def install(self, context: InstallationContext) -> PolicyInstallation:
+        return PolicyInstallation(True, establishes_filesystem_enforcement=True)
+
+    def close(self) -> None:
+        pass
+
+
+def make_supervisor(owner: ProcessGroupOwner, **kwargs) -> InvocationProcessSupervisor:
+    return InvocationProcessSupervisor(
+        owner=owner,  # type: ignore[arg-type]
+        filesystem_policy_factory=TestFilesystemPolicy,
+        **kwargs,
+    )
 
 
 def request(tmp_path: Path, code: str, **kwargs) -> InvocationLaunch:
@@ -87,7 +111,7 @@ def request(tmp_path: Path, code: str, **kwargs) -> InvocationLaunch:
 def test_policy_failure_prevents_task_start(tmp_path: Path) -> None:
     sentinel = tmp_path / "started"
     policy = ProbePolicy(sentinel, installed=False)
-    supervisor = InvocationProcessSupervisor(owner=ProcessGroupOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
 
     result = supervisor.run(request(tmp_path, f"open({str(sentinel)!r}, 'w').close()"), policies=(policy,))
 
@@ -99,8 +123,22 @@ def test_policy_failure_prevents_task_start(tmp_path: Path) -> None:
     assert not sentinel.exists()
 
 
+@pytest.mark.parametrize("policies", [(), (ProbePolicy(Path("/nonexistent"), installed=True),)])
+def test_launch_requires_a_filesystem_enforcement_installation(tmp_path: Path, policies) -> None:
+    sentinel = tmp_path / "outside"
+    launch = request(tmp_path, f"open({str(sentinel)!r}, 'w').close()")
+    runner = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
+
+    result = runner.run(launch, policies=policies)
+
+    assert result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE
+    assert result.writer_state is WriterState.NOT_STARTED
+    assert "filesystem enforcement was not installed" in result.detail
+    assert not sentinel.exists()
+
+
 def test_prompt_and_failure_survive_positive_settlement(tmp_path: Path) -> None:
-    supervisor = InvocationProcessSupervisor(owner=ProcessGroupOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
     launch = request(
         tmp_path,
         "import sys; data=sys.stdin.read(); print(data); raise SystemExit(7)",
@@ -120,7 +158,7 @@ def test_prompt_and_failure_survive_positive_settlement(tmp_path: Path) -> None:
 
 
 def test_large_output_is_drained_while_provider_runs(tmp_path: Path) -> None:
-    supervisor = InvocationProcessSupervisor(owner=ProcessGroupOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
     size = 2 * 1024 * 1024
 
     result = supervisor.run(
@@ -138,7 +176,7 @@ def test_large_output_is_drained_while_provider_runs(tmp_path: Path) -> None:
 
 
 def test_large_unread_prompt_does_not_block_cancellation(tmp_path: Path) -> None:
-    supervisor = InvocationProcessSupervisor(owner=ProcessGroupOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
     cancellation = threading.Event()
     launch = request(
         tmp_path,
@@ -165,7 +203,7 @@ def test_large_unread_prompt_does_not_block_cancellation(tmp_path: Path) -> None
 
 
 def test_large_unread_prompt_does_not_block_timeout(tmp_path: Path) -> None:
-    supervisor = InvocationProcessSupervisor(owner=ProcessGroupOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
     started = time.monotonic()
 
     result = supervisor.run(
@@ -185,7 +223,7 @@ def test_large_unread_prompt_does_not_block_timeout(tmp_path: Path) -> None:
 
 def test_timeout_and_confirmation_uncertainty_remain_distinct(tmp_path: Path) -> None:
     owner = ProcessGroupOwner(tmp_path / "owners", fail_confirmation=True, kill_before_failure=False)
-    supervisor = InvocationProcessSupervisor(owner=owner, settlement_timeout=0.1)  # type: ignore[arg-type]
+    supervisor = make_supervisor(owner, settlement_timeout=0.1)
 
     started = time.monotonic()
     result = supervisor.run(request(tmp_path, "import time; time.sleep(30)", timeout_seconds=0.05))
@@ -202,7 +240,7 @@ def test_timeout_and_confirmation_uncertainty_remain_distinct(tmp_path: Path) ->
 
 
 def test_cancelling_one_owner_does_not_stop_peer_or_delete_results(tmp_path: Path) -> None:
-    supervisor = InvocationProcessSupervisor(owner=ProcessGroupOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
     cancel = threading.Event()
     first_result = tmp_path / "first-result"
     second_heartbeat = tmp_path / "second-heartbeat"
@@ -236,7 +274,7 @@ def test_cancelling_one_owner_does_not_stop_peer_or_delete_results(tmp_path: Pat
 
 
 def test_invocation_identity_cannot_be_reused(tmp_path: Path) -> None:
-    supervisor = InvocationProcessSupervisor(owner=ProcessGroupOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
     first = supervisor.run(request(tmp_path, "pass"))
     second = supervisor.run(request(tmp_path, "pass"))
     assert first.writer_complete

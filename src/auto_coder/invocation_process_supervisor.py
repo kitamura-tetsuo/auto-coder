@@ -39,6 +39,18 @@ class PromptTransport(str, Enum):
 class PolicyInstallation:
     installed: bool
     detail: str = ""
+    establishes_filesystem_enforcement: bool = False
+    child_setup: Optional[Callable[[], None]] = field(default=None, compare=False, repr=False)
+    denial_monitor: Optional["PolicyDenialMonitor"] = field(default=None, compare=False, repr=False)
+
+
+class PolicyDenialMonitor(Protocol):
+    def attach(self, process: subprocess.Popen[bytes]) -> None: ...
+
+    def pump(self) -> tuple[str, ...]: ...
+
+    @property
+    def root_returncode(self) -> Optional[int]: ...
 
 
 @dataclass(frozen=True)
@@ -49,10 +61,21 @@ class InstallationContext:
     result_root: Path
     runtime_paths: tuple[Path, ...]
     ownership_path: Path
+    protected_paths: tuple[Path, ...] = ()
+    runtime_inputs: tuple[Path, ...] = ()
 
 
 class ExecutionPolicyInstaller(Protocol):
     def install(self, context: InstallationContext) -> PolicyInstallation: ...
+
+    def close(self) -> None: ...
+
+
+def _default_filesystem_policy() -> ExecutionPolicyInstaller:
+    # Keep the platform-specific implementation lazy and avoid a module cycle.
+    from .filesystem_confinement import LandlockFilesystemPolicy
+
+    return LandlockFilesystemPolicy()
 
 
 @dataclass(frozen=True)
@@ -70,6 +93,8 @@ class InvocationLaunch:
     cancellation: Optional[threading.Event] = None
     cwd: Optional[Path] = None
     environment: Optional[dict[str, str]] = None
+    protected_paths: tuple[Path, ...] = ()
+    runtime_inputs: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -194,6 +219,7 @@ class CgroupV2Owner:
 @dataclass
 class InvocationProcessSupervisor:
     owner: CgroupV2Owner = field(default_factory=CgroupV2Owner)
+    filesystem_policy_factory: Callable[[], ExecutionPolicyInstaller] = _default_filesystem_policy
     settlement_timeout: float = 5.0
     _states: dict[str, WriterState] = field(default_factory=dict, init=False)
     _retained: dict[str, tuple[subprocess.Popen[bytes], Path]] = field(default_factory=dict, init=False)
@@ -211,7 +237,7 @@ class InvocationProcessSupervisor:
         self,
         request: InvocationLaunch,
         *,
-        policies: Sequence[ExecutionPolicyInstaller] = (),
+        policies: Optional[Sequence[ExecutionPolicyInstaller]] = None,
         boundary: Optional[LocalExecutionBoundary] = None,
     ) -> SupervisedInvocationResult:
         if self.state(request.invocation_id) is not WriterState.NOT_STARTED:
@@ -221,6 +247,7 @@ class InvocationProcessSupervisor:
         except CgroupV2Unavailable as exc:
             return self._unavailable(request, str(exc))
 
+        selected_policies: Sequence[ExecutionPolicyInstaller] = (self.filesystem_policy_factory(),) if policies is None else policies
         context = InstallationContext(
             request.invocation_id,
             request.backend_type,
@@ -228,19 +255,39 @@ class InvocationProcessSupervisor:
             request.result_root,
             request.runtime_paths,
             group,
+            request.protected_paths,
+            request.runtime_inputs,
         )
         installations: list[PolicyInstallation] = []
-        for policy in policies:
+        for policy in selected_policies:
             try:
                 installed = policy.install(context)
             except Exception as exc:
                 installed = PolicyInstallation(False, f"policy installation raised: {exc}")
             installations.append(installed)
             if not installed.installed:
+                for prepared_policy in selected_policies:
+                    close = getattr(prepared_policy, "close", None)
+                    if close is not None:
+                        close()
                 self.owner.discard(group)
                 return self._unavailable(request, installed.detail or "policy installation failed", tuple(installations))
+        if not any(item.establishes_filesystem_enforcement for item in installations):
+            for prepared_policy in selected_policies:
+                close = getattr(prepared_policy, "close", None)
+                if close is not None:
+                    close()
+            self.owner.discard(group)
+            return self._unavailable(request, "filesystem enforcement was not installed", tuple(installations))
 
         stdin = subprocess.PIPE if request.prompt_transport is PromptTransport.STDIN else None
+        child_setups = tuple(item.child_setup for item in installations if item.child_setup is not None)
+
+        def prepare_child() -> None:
+            self.owner.child_joiner(group)()
+            for setup in child_setups:
+                setup()
+
         try:
             process = subprocess.Popen(
                 [request.executable, *request.arguments],
@@ -249,11 +296,32 @@ class InvocationProcessSupervisor:
                 stdin=stdin,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                preexec_fn=self.owner.child_joiner(group),
+                preexec_fn=prepare_child,
             )
         except (OSError, subprocess.SubprocessError) as exc:
+            for policy in selected_policies:
+                close = getattr(policy, "close", None)
+                if close is not None:
+                    close()
             self.owner.discard(group)
             return self._unavailable(request, f"owned launch failed: {exc}", tuple(installations))
+        for policy in selected_policies:
+            close = getattr(policy, "close", None)
+            if close is not None:
+                close()
+        if boundary is not None and any(item.establishes_filesystem_enforcement for item in installations):
+            boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.ESTABLISHED)
+
+        monitors = tuple(item.denial_monitor for item in installations if item.denial_monitor is not None)
+        try:
+            for monitor in monitors:
+                monitor.attach(process)
+        except (OSError, RuntimeError) as exc:
+            self.owner.stop_and_confirm(group, time.monotonic() + self.settlement_timeout)
+            self.owner.discard(group)
+            if boundary is not None:
+                boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.FAILED)
+            return self._unavailable(request, f"denial observation unavailable: {exc}", tuple(installations))
 
         self._set_state(request.invocation_id, WriterState.ACTIVE)
         start = time.monotonic()
@@ -265,7 +333,24 @@ class InvocationProcessSupervisor:
         ]
         input_writer = self._start_writer(process.stdin, (request.prompt or "").encode("utf-8"))
         outcome = InvocationOutcome.FAILED
-        while process.poll() is None:
+        monitor_failures: list[str] = []
+
+        def provider_running() -> bool:
+            if monitors:
+                try:
+                    for monitor in monitors:
+                        for denial in monitor.pump():
+                            if boundary is not None:
+                                boundary.report_policy_violation(request.invocation_id, denial)
+                except (OSError, RuntimeError) as exc:
+                    monitor_failures.append(str(exc))
+                    if boundary is not None:
+                        boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.FAILED)
+                    return False
+                return any(monitor.root_returncode is None for monitor in monitors)
+            return process.poll() is None
+
+        while provider_running():
             if request.cancellation is not None and request.cancellation.is_set():
                 outcome = InvocationOutcome.CANCELLED
                 break
@@ -274,12 +359,28 @@ class InvocationProcessSupervisor:
                 break
             time.sleep(0.01)
         else:
+            monitored_returncode = next((monitor.root_returncode for monitor in monitors if monitor.root_returncode is not None), None)
+            if monitored_returncode is not None:
+                process.returncode = monitored_returncode
             outcome = InvocationOutcome.SUCCEEDED if process.returncode == 0 else InvocationOutcome.FAILED
+        if monitor_failures:
+            outcome = InvocationOutcome.FAILED
 
         self._set_state(request.invocation_id, WriterState.STOPPING)
-        detail = ""
+        detail = f"denial observation failed: {monitor_failures[0]}" if monitor_failures else ""
         try:
             self.owner.stop_and_confirm(group, time.monotonic() + self.settlement_timeout)
+            if monitors:
+                monitor_deadline = time.monotonic() + self.settlement_timeout
+                while any(monitor.root_returncode is None for monitor in monitors) and time.monotonic() < monitor_deadline:
+                    for monitor in monitors:
+                        for denial in monitor.pump():
+                            if boundary is not None:
+                                boundary.report_policy_violation(request.invocation_id, denial)
+                    time.sleep(0.01)
+                monitored_returncode = next((monitor.root_returncode for monitor in monitors if monitor.root_returncode is not None), None)
+                if monitored_returncode is not None:
+                    process.returncode = monitored_returncode
             process.wait(timeout=self.settlement_timeout)
             writer_state = WriterState.POSITIVELY_STOPPED
             self.owner.discard(group)
