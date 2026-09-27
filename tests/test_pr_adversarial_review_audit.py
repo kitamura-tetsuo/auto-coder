@@ -269,6 +269,7 @@ class TestReq010OneCallExecution:
         executable = tmp_path / "muse-reviewer"
         executable.write_text(
             """#!/usr/bin/env python3
+import json
 import os
 import sys
 import time
@@ -279,10 +280,23 @@ if sys.argv[1:] == ["--version"]:
     raise SystemExit(0)
 count_path = Path(os.environ["MUSE_INVOCATION_COUNT"])
 count_path.write_text(count_path.read_text() + "1\\n" if count_path.exists() else "1\\n")
-Path(os.environ["MUSE_READY"]).write_text("ready")
-while not Path(os.environ["MUSE_RELEASE"]).exists():
-    time.sleep(0.01)
-print(os.environ["MUSE_VERDICT"])
+def emit(value):
+    print(json.dumps(value), flush=True)
+for line in sys.stdin:
+    frame = json.loads(line)
+    method = frame.get("method")
+    if method == "initialize":
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"serverInfo":{"name":"fixture","version":"1.3.1"},"schemaInfo":{"fingerprint":"sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"},"capabilities":{"sessionDurability":"durable"}}})
+    elif method == "session/start":
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":"review-session","workspaceRoot":os.getcwd(),"modelId":"muse-spark-1.3"},"pendingRequests":[]}})
+    elif method == "turn/start":
+        Path(os.environ["MUSE_READY"]).write_text("ready")
+        while not Path(os.environ["MUSE_RELEASE"]).exists():
+            time.sleep(0.01)
+        turn = "review-turn"
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"turnId":turn,"disposition":"started"}})
+        emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"review-session","item":{"itemId":"answer","kind":"message","revision":1,"status":"completed","turnId":turn,"role":"assistant","text":os.environ["MUSE_VERDICT"]}}})
+        emit({"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"review-session","turnId":turn,"terminal":"completed"}})
 """
         )
         executable.chmod(0o700)
