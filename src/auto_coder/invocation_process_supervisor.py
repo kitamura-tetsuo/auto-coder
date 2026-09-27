@@ -39,6 +39,8 @@ class PromptTransport(str, Enum):
 class PolicyInstallation:
     installed: bool
     detail: str = ""
+    establishes_filesystem_enforcement: bool = False
+    child_setup: Optional[Callable[[], None]] = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -49,10 +51,14 @@ class InstallationContext:
     result_root: Path
     runtime_paths: tuple[Path, ...]
     ownership_path: Path
+    protected_paths: tuple[Path, ...] = ()
+    runtime_inputs: tuple[Path, ...] = ()
 
 
 class ExecutionPolicyInstaller(Protocol):
     def install(self, context: InstallationContext) -> PolicyInstallation: ...
+
+    def close(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,8 @@ class InvocationLaunch:
     cancellation: Optional[threading.Event] = None
     cwd: Optional[Path] = None
     environment: Optional[dict[str, str]] = None
+    protected_paths: tuple[Path, ...] = ()
+    runtime_inputs: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -228,6 +236,8 @@ class InvocationProcessSupervisor:
             request.result_root,
             request.runtime_paths,
             group,
+            request.protected_paths,
+            request.runtime_inputs,
         )
         installations: list[PolicyInstallation] = []
         for policy in policies:
@@ -237,10 +247,21 @@ class InvocationProcessSupervisor:
                 installed = PolicyInstallation(False, f"policy installation raised: {exc}")
             installations.append(installed)
             if not installed.installed:
+                for prepared_policy in policies:
+                    close = getattr(prepared_policy, "close", None)
+                    if close is not None:
+                        close()
                 self.owner.discard(group)
                 return self._unavailable(request, installed.detail or "policy installation failed", tuple(installations))
 
         stdin = subprocess.PIPE if request.prompt_transport is PromptTransport.STDIN else None
+        child_setups = tuple(item.child_setup for item in installations if item.child_setup is not None)
+
+        def prepare_child() -> None:
+            self.owner.child_joiner(group)()
+            for setup in child_setups:
+                setup()
+
         try:
             process = subprocess.Popen(
                 [request.executable, *request.arguments],
@@ -249,11 +270,21 @@ class InvocationProcessSupervisor:
                 stdin=stdin,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                preexec_fn=self.owner.child_joiner(group),
+                preexec_fn=prepare_child,
             )
         except (OSError, subprocess.SubprocessError) as exc:
+            for policy in policies:
+                close = getattr(policy, "close", None)
+                if close is not None:
+                    close()
             self.owner.discard(group)
             return self._unavailable(request, f"owned launch failed: {exc}", tuple(installations))
+        for policy in policies:
+            close = getattr(policy, "close", None)
+            if close is not None:
+                close()
+        if boundary is not None and any(item.establishes_filesystem_enforcement for item in installations):
+            boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.ESTABLISHED)
 
         self._set_state(request.invocation_id, WriterState.ACTIVE)
         start = time.monotonic()
