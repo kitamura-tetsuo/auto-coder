@@ -161,11 +161,39 @@ from .update_manager import check_for_updates_and_restart
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, InvalidSubIssueRelationshipError, get_ghapi_client, is_implementation_ready, parse_parent_issue_number, parse_parent_issue_url_number, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
-from .util.github_request_outcome import GitHubRequestError, configure_github_request_boundary
+from .util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestError, configure_github_request_boundary
 from .utils import CommandExecutor, get_target_container, log_action
 from .validation_scheduler import ValidationAdmissionDeferred, ValidationJob, ValidationScheduler
 
 logger = get_logger(__name__)
+
+_RECONCILIATION_ADMISSION_DEFERRALS = frozenset(
+    {
+        "request_in_flight",
+        "mutation_spacing",
+        "request_rolling_window",
+        "mutation_minute_window",
+        "mutation_hour_window",
+        "governor_initialization_contention",
+        "governor_transaction_contention",
+        "rate_limit_cooldown",
+    }
+)
+
+
+def _reconciliation_admission_deferral(error: BaseException) -> GitHubRequestDeferred | None:
+    """Recover a typed, definitely-unsent deferral from operational wrappers."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, GitHubRequestDeferred) and current.reason in _RECONCILIATION_ADMISSION_DEFERRALS and current.outcome.classification is GitHubApiOutcome.REFUSED and current.outcome.delivery is DeliveryCertainty.DEFINITELY_NOT_SENT:
+            return current
+        # Reconciliation adds useful context with ``raise ... from``. Follow
+        # exception identity, never message text, through those wrappers.
+        current = current.__cause__ or current.__context__
+    return None
+
 
 JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS = 60 * 60
 MAINTENANCE_INTERVAL_SECONDS = 60
@@ -5382,6 +5410,9 @@ class AutomationEngine:
                     _record_issue_stage_result(item_number, "issue.parent-reconciliation", f"issue#{item_number} parent reconciliation", Outcome.BLOCKED, {"reason": str(exc)})
                     return result
                 except ParentOperationalError as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
                     result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.DEFERRED
                     result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
@@ -5431,6 +5462,9 @@ class AutomationEngine:
                         result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                         return result
                     except ParentOperationalError as exc:
+                        deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                        if deferred_result is not None:
+                            return deferred_result
                         result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
                         result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
@@ -5585,6 +5619,9 @@ class AutomationEngine:
                         result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                         return result
                     except ParentOperationalError as exc:
+                        deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                        if deferred_result is not None:
+                            return deferred_result
                         result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
                         result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
@@ -5670,6 +5707,9 @@ class AutomationEngine:
                 result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                 return result
             except ParentOperationalError as exc:
+                deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                if deferred_result is not None:
+                    return deferred_result
                 result.error = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
                 result.target_outcome = ExplicitTargetOutcome.DEFERRED
                 result.actions = ["Deferred - Parent-Issue reconciliation requires retry"]
@@ -6620,16 +6660,36 @@ class AutomationEngine:
             (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE),
         )
         logger.warning(
-            "Deferred Issue #{} after GitHub operational failure {}; next eligible at {}",
+            "Deferred GitHub reconciliation repository={} issue={} stage={} reason={} api_origin={} retry_at={} delivery={}",
+            repo_name,
             item_number,
-            obligation.reason.value,
+            ISSUE_PROCESSING_STAGE,
+            getattr(error, "reason", obligation.reason.value),
+            error.outcome.context.api_origin,
             obligation.not_before,
+            error.outcome.delivery.value,
         )
         self.pending_work_scheduler.wake()
         result.error = str(error)
         result.target_outcome = ExplicitTargetOutcome.DEFERRED
-        result.actions = [f"Deferred GitHub-dependent work: {obligation.reason.value}"]
+        result.target_reason = f"Deferred reconciliation for {repo_name} issue #{item_number}: " f"{getattr(error, 'reason', obligation.reason.value)}; " f"api_origin={error.outcome.context.api_origin}; retry_at={obligation.not_before}"
+        result.actions = [result.target_reason]
+        result.refill_retry_required = True
         return result
+
+    def _defer_wrapped_reconciliation(
+        self,
+        repo_name: str,
+        item_number: int,
+        issue_data: Dict[str, Any],
+        error: ParentOperationalError,
+        result: CandidateProcessingResult,
+    ) -> CandidateProcessingResult | None:
+        """Durably retain only the narrowly-defined admission deferral cause."""
+        deferred = _reconciliation_admission_deferral(error)
+        if deferred is None:
+            return None
+        return self._defer_issue_evaluation(repo_name, item_number, issue_data, deferred, result)
 
     def _defer_validation_publication(
         self,
@@ -7262,6 +7322,20 @@ class AutomationEngine:
                             result.errors.append(result.target_reason)
                             return explicit_result()
                         except ParentOperationalError as exc:
+                            deferred = _reconciliation_admission_deferral(exc)
+                            if deferred is not None:
+                                deferred_result = self._defer_issue_evaluation(
+                                    repo_name,
+                                    number,
+                                    candidate.data,
+                                    deferred,
+                                    CandidateProcessingResult(type="issue", number=number, title=str(candidate.data.get("title") or "")),
+                                )
+                                result.target_outcome = ExplicitTargetOutcome.DEFERRED.value
+                                result.target_reason = deferred_result.target_reason
+                                result.target_actions = list(deferred_result.actions)
+                                result.errors.append(deferred_result.error or str(deferred))
+                                return explicit_result()
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED.value
                             result.target_reason = f"Retryable relationship reconciliation failure for Issue #{number}: {exc}"
                             result.target_actions = [result.target_reason]

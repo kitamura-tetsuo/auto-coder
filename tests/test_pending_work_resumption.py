@@ -22,6 +22,7 @@ from auto_coder.automation_engine import (
     _issue_content_revision,
     _IssueProcessingStageHandler,
     _PrProcessingStageHandler,
+    _reconciliation_admission_deferral,
 )
 from auto_coder.github_pending_work import (
     PendingObligation,
@@ -31,7 +32,10 @@ from auto_coder.github_pending_work import (
     StageOutcome,
     WorkIdentity,
 )
+from auto_coder.github_request_governor import GitHubRequestDeferred
+from auto_coder.parent_issue_reconciliation import ParentOperationalError
 from auto_coder.pr_processor import PR_PROCESSING_STAGE
+from auto_coder.util.gh_cache import GitHubClient
 from auto_coder.util.github_request_outcome import (
     DeliveryCertainty,
     GitHubApiOutcome,
@@ -302,3 +306,44 @@ def test_process_single_candidate_defers_issue_hierarchy_observation_failure(tmp
     # Never a semantic success, empty collection, or unrelated verdict (REQ-001).
     assert result.success is False
     assert result.error is not None
+
+
+def test_wrapped_reconciliation_admission_deferral_is_durably_retained(tmp_path, monkeypatch):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+
+    context = GitHubRequestContext("op", "attempt", "parent", "https://api.github.com", "GET", "read", "/repos/{repo}/issues/{number}/parent", "owner/repo", "issue:7", strict_read=True)
+    deferred = GitHubRequestDeferred(context, "request_in_flight", retry_at=time.time() + 20)
+
+    class _ParentGithub(GitHubClient):
+        def __init__(self):
+            pass
+
+        def get_issue_dispatch_snapshot_strict(self, _repo, _number):
+            return {"id": 70, "number": 7, "title": "T", "body": "Parent-Issue: #6", "labels": [], "state": "open"}
+
+    engine = AutomationEngine(_ParentGithub(), AutomationConfig())
+
+    def fail_reconciliation(*_args):
+        try:
+            raise deferred
+        except GitHubRequestDeferred as cause:
+            raise ParentOperationalError("cannot read native parent") from cause
+
+    monkeypatch.setattr(engine, "_reconcile_parent_issue", fail_reconciliation)
+    issue_data = {"number": 7, "title": "T", "body": "Parent-Issue: #6", "labels": []}
+    result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data=issue_data, priority=0, issue_number=7), engine.config)
+
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert "request_in_flight" in (result.target_reason or "")
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue_data))
+    obligation = store.get(identity)
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+
+
+def test_reconciliation_deferral_classification_never_parses_messages():
+    misleading = ParentOperationalError("request_in_flight; definitely_not_sent")
+
+    assert _reconciliation_admission_deferral(misleading) is None
