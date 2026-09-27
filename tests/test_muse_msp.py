@@ -57,7 +57,8 @@ for line in sys.stdin:
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"serverInfo":{"name":"fixture","version":"1.3.1"},"schemaInfo":{"fingerprint":"sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"},"capabilities":{"sessionDurability":"durable"}}})
     elif method in ("session/start", "session/resume"):
         sid = "opaque/provider/session" if method == "session/start" else frame["params"]["sessionId"]
-        session = {"sessionId":sid,"workspaceRoot":os.getcwd()}
+        workspace = os.environ.get("MSP_STORED_WORKSPACE", os.getcwd()) if method == "session/resume" else os.getcwd()
+        session = {"sessionId":sid,"workspaceRoot":workspace}
         missing_model = os.environ.get("MSP_MISSING_MODEL") or (os.environ.get("MSP_MISSING_MODEL_RESUME") and method == "session/resume")
         if not missing_model:
             session["modelId"] = "muse-spark-1.3"
@@ -65,6 +66,11 @@ for line in sys.stdin:
         if os.environ.get("MSP_STOP_READING"):
             time.sleep(10)
     elif method == "turn/start":
+        if os.environ.get("MSP_ATTEMPT_EFFECTS"):
+            required = {"--disable-write", "--disable-shell", "--disable-approval"}
+            if not required.issubset(set(sys.argv[1:])):
+                Path("tracked.txt").write_text("model write effect\n")
+                Path(os.environ["MSP_SHELL_SENTINEL"]).write_text("shell effect\n")
         if os.environ.get("MSP_QUOTA_RESPONSE"):
             emit({"jsonrpc":"2.0","id":frame["id"],"error":{"code":429,"message":"quota exceeded"}})
             continue
@@ -274,3 +280,77 @@ def test_muse_missing_resume_model_falls_back_without_continuity(tmp_path, monke
     assert methods.count("session/resume") == 1
     assert methods.count("session/start") == 1
     assert methods.count("turn/start") == 1
+
+
+@pytest.mark.parametrize("remove_original", [False, True])
+def test_muse_foreign_or_removed_workspace_falls_back_without_continuity(tmp_path, monkeypatch, _use_real_commands, remove_original):
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    old_repo = _repository(first_root)
+    current_repo = _repository(second_root)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    old_tracked = old_repo / "tracked.txt"
+    if remove_original:
+        import shutil
+
+        shutil.rmtree(old_repo)
+    monkeypatch.chdir(current_repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_STORED_WORKSPACE", str(old_repo))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    client = manager._clients["muse"]
+
+    with pytest.raises(RuntimeError, match="incompatible workspace"):
+        client.continue_session("opaque/provider/session", "second")
+    assert client.get_last_session_id() is None
+    failed_methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
+    assert failed_methods.count("session/resume") == 1
+    assert "turn/start" not in failed_methods
+
+    log.unlink()
+    assert manager.continue_session("opaque/provider/session", "second") == "answer:second"
+    assert manager._last_continue_session_resumed is False
+    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
+    assert methods.count("session/resume") == 1
+    assert methods.count("session/start") == 1
+    assert methods.count("turn/start") == 1
+    assert manager.get_last_session_id() == "opaque/provider/session"
+    if remove_original:
+        assert not old_repo.exists()
+    else:
+        assert old_tracked.read_text() == "unchanged\n"
+
+
+def test_muse_noedit_continuation_prevents_write_and_shell_effects(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    shell_sentinel = tmp_path / "shell-effect"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    client = manager._clients["muse"]
+
+    assert client._run_llm_cli("first") == "answer:first"
+    session_id = client.get_last_session_id()
+    assert session_id == "opaque/provider/session"
+    before = client._snapshot_at(repo)
+    monkeypatch.setenv("MSP_ATTEMPT_EFFECTS", "1")
+    monkeypatch.setenv("MSP_SHELL_SENTINEL", str(shell_sentinel))
+
+    started = time.monotonic()
+    assert client.continue_session(session_id, "second", is_noedit=True) == "answer:second"
+    assert time.monotonic() - started < 5
+    assert client._snapshot_at(repo) == before
+    assert (repo / "tracked.txt").read_text() == "unchanged\n"
+    assert not shell_sentinel.exists()
+    turns = [json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "turn/start"]
+    assert len(turns) == 2
+    assert turns[1]["argv"] == ["serve", "--disable-write", "--disable-shell", "--disable-approval"]
