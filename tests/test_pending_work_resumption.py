@@ -37,7 +37,7 @@ from auto_coder.github_request_governor import GitHubRequestDeferred
 from auto_coder.parent_issue_reconciliation import ParentOperationalError
 from auto_coder.pr_processor import PR_PROCESSING_STAGE
 from auto_coder.sibling_dependencies import DependencySatisfaction
-from auto_coder.util.gh_cache import GitHubClient
+from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 from auto_coder.util.github_request_outcome import (
     DeliveryCertainty,
     GitHubApiOutcome,
@@ -511,3 +511,44 @@ def test_early_live_parent_family_refresh_retains_wrapped_admission_deferral(tmp
     )
     engine.pending_work_scheduler.wake.assert_called_once_with()
     implementation.assert_not_called()
+
+
+def test_capacity_refill_durably_retains_wrapped_admission_deferral(tmp_path, monkeypatch):
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "Parent-Issue: #6\n## Requirements\n- REQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine.github.get_open_entities_strict = MagicMock(return_value=OpenGitHubEntities(issues=[OpenGitHubIssue(7)]))
+    deferred = _admission_deferral()
+    wrapped = ParentOperationalError("refill reconciliation unavailable")
+    wrapped.__cause__ = deferred
+    engine._reconcile_parent_issue = MagicMock(side_effect=wrapped)
+    engine._process_single_candidate = MagicMock()
+
+    with patch("auto_coder.automation_engine.logger.warning") as warning:
+        completed = asyncio.run(engine._refill_normal_implementation_slots("owner/repo"))
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert completed is False
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    warning.assert_called_once_with(
+        "Deferred GitHub reconciliation repository={} issue={} stage={} reason={} api_origin={} retry_at={} delivery={}",
+        "owner/repo",
+        7,
+        ISSUE_PROCESSING_STAGE,
+        "request_in_flight",
+        "https://api.github.com",
+        obligation.not_before,
+        DeliveryCertainty.DEFINITELY_NOT_SENT.value,
+    )
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    engine._process_single_candidate.assert_not_called()

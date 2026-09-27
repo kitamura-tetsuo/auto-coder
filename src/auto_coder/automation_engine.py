@@ -3595,6 +3595,15 @@ class AutomationEngine:
                             blocked_issue_numbers.add(observed.number)
                             if declaration.parent_number is not None:
                                 blocked_issue_numbers.add(declaration.parent_number)
+                            deferred_result = self._defer_wrapped_reconciliation(
+                                repo_name,
+                                observed.number,
+                                snapshot,
+                                exc,
+                                CandidateProcessingResult(type="issue", number=observed.number, title=str(snapshot.get("title") or "")),
+                            )
+                            if deferred_result is not None:
+                                continue
                             logger.warning("Deferred relationship reconciliation for {}/#{} during refill: {}", repo_name, observed.number, exc)
                             continue
                     issue_data = self.github.get_issue_details(snapshot)

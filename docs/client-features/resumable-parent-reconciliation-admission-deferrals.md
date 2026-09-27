@@ -17,6 +17,12 @@ evidence. The store's one-second local retry floor and maximum retained deadline
 prevent notification-driven busy loops, while every retry still passes through
 the GitHub request governor.
 
+Capacity-refill enumeration uses the same durable issue-processing obligation
+when relationship reconciliation is refused before sending. The affected Issue
+is excluded from that refill pass, the refill remains pending, and the scheduler
+is awakened for deadline-respecting reevaluation rather than relying only on an
+in-memory retry flag.
+
 Deferral diagnostics identify the repository, Issue, interrupted stage, original
 reason, API origin, deadline, and delivery certainty at warning level. A durable
 write failure remains fatal to that evaluation and no dependent implementation
