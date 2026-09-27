@@ -200,7 +200,7 @@ def _capture_source(target: Path, workspace: Path) -> _SourceSnapshot:
 def _seed_private_repository(snapshot: _SourceSnapshot) -> None:
     root = snapshot.binding.caller_root
     workspace = snapshot.binding.workspace
-    clone = subprocess.run(["git", "clone", "--no-local", "--no-hardlinks", "--no-checkout", str(root), str(workspace)], capture_output=True)
+    clone = subprocess.run(["git", "clone", "--no-hardlinks", "--no-checkout", str(root), str(workspace)], capture_output=True)
     if clone.returncode != 0:
         detail = clone.stderr.decode("utf-8", errors="replace").strip()
         raise WorkspacePreparationError(f"private repository clone failed: {detail}")

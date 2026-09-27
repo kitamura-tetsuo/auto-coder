@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -226,3 +227,126 @@ def test_unsupported_repository_shapes_fail_before_launch(tmp_path: Path, unsupp
         with isolated_local_llm_worktree(repo, is_noedit=True):
             launched = True
     assert not launched
+
+
+def test_private_clone_has_copied_objects_without_hardlinks_or_alternates(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    object_id = subprocess.check_output(["git", "hash-object", "tracked.txt"], cwd=repo, text=True).strip()
+    caller_object = repo / ".git" / "objects" / object_id[:2] / object_id[2:]
+    caller_contents = caller_object.read_bytes()
+
+    with isolated_local_llm_worktree(repo, is_noedit=True) as workspace_text:
+        workspace = Path(workspace_text)
+        private_object = workspace / ".git" / "objects" / object_id[:2] / object_id[2:]
+        alternates = workspace / ".git" / "objects" / "info" / "alternates"
+
+        assert private_object.is_file()
+        assert caller_object.stat().st_nlink == 1
+        assert private_object.stat().st_nlink == 1
+        assert not alternates.exists()
+
+        private_contents = private_object.read_bytes()
+        private_object.write_bytes(b"deliberately private\n")
+        assert caller_object.read_bytes() == caller_contents
+        private_object.write_bytes(private_contents)
+        subprocess.run(["git", "cat-file", "-e", object_id], cwd=workspace, check=True)
+
+
+@pytest.mark.parametrize("mutation", ["tracked-file", "index-only"])
+def test_preparation_refuses_source_changes_during_seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
+    repo = _init_repo(tmp_path)
+    clone_finished = threading.Event()
+    allow_seed = threading.Event()
+    real_run = subprocess.run
+
+    def pausing_run(*args, **kwargs):
+        result = real_run(*args, **kwargs)
+        command = args[0] if args else kwargs.get("args", ())
+        if command[:2] == ["git", "clone"]:
+            clone_finished.set()
+            assert allow_seed.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr("src.auto_coder.worktree_utils.subprocess.run", pausing_run)
+    outcome: list[object] = []
+
+    def prepare() -> None:
+        try:
+            with isolated_local_llm_worktree(repo, is_noedit=True) as workspace:
+                outcome.append(workspace)
+        except BaseException as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=prepare)
+    worker.start()
+    assert clone_finished.wait(timeout=10)
+    if mutation == "tracked-file":
+        (repo / "tracked.txt").write_text("changed during preparation\n")
+    else:
+        new_blob = subprocess.check_output(["git", "hash-object", "-w", "--stdin"], cwd=repo, input=b"index-only\n").decode().strip()
+        subprocess.run(["git", "update-index", "--cacheinfo", "100644", new_blob, "tracked.txt"], cwd=repo, check=True)
+        assert (repo / "tracked.txt").read_text() == "initial content\n"
+    allow_seed.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], WorkspacePreparationError)
+    assert "changed during workspace preparation" in str(outcome[0])
+
+
+def test_disposing_one_private_workspace_preserves_peer_workspace_and_caller_refs(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    initial_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    subprocess.run(["git", "branch", "peer", initial_commit], cwd=repo, check=True)
+    subprocess.run(["git", "update-ref", "refs/testing/to-delete", initial_commit], cwd=repo, check=True)
+    prepared = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    finished = [threading.Event(), threading.Event()]
+    workspaces: list[Path | None] = [None, None]
+    failures: list[BaseException] = []
+
+    def hold_workspace(index: int) -> None:
+        try:
+            with isolated_local_llm_worktree(repo, is_noedit=True) as workspace:
+                workspaces[index] = Path(workspace)
+                prepared[index].set()
+                assert release[index].wait(timeout=10)
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            finished[index].set()
+
+    workers = [threading.Thread(target=hold_workspace, args=(index,)) for index in range(2)]
+    for worker in workers:
+        worker.start()
+    assert all(event.wait(timeout=10) for event in prepared)
+    assert workspaces[0] is not None and workspaces[1] is not None
+    assert workspaces[0] != workspaces[1]
+
+    peer_commit = subprocess.check_output(
+        ["git", "commit-tree", f"{initial_commit}^{{tree}}", "-p", initial_commit, "-m", "peer advance"],
+        cwd=repo,
+        text=True,
+    ).strip()
+    subprocess.run(["git", "update-ref", "refs/heads/peer", peer_commit, initial_commit], cwd=repo, check=True)
+    subprocess.run(["git", "update-ref", "refs/testing/created", peer_commit], cwd=repo, check=True)
+    subprocess.run(["git", "update-ref", "-d", "refs/testing/to-delete", initial_commit], cwd=repo, check=True)
+
+    first_workspace = workspaces[0]
+    second_workspace = workspaces[1]
+    release[0].set()
+    assert finished[0].wait(timeout=10)
+    assert first_workspace is not None and not first_workspace.exists()
+    assert second_workspace is not None and second_workspace.exists()
+    subprocess.run(["git", "status", "--short"], cwd=second_workspace, check=True, capture_output=True)
+    assert subprocess.check_output(["git", "rev-parse", "refs/heads/peer"], cwd=repo, text=True).strip() == peer_commit
+    assert subprocess.check_output(["git", "rev-parse", "refs/testing/created"], cwd=repo, text=True).strip() == peer_commit
+    assert subprocess.run(["git", "show-ref", "--verify", "refs/testing/to-delete"], cwd=repo).returncode != 0
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip() == initial_commit
+
+    release[1].set()
+    assert finished[1].wait(timeout=10)
+    for worker in workers:
+        worker.join(timeout=10)
+    assert failures == []
