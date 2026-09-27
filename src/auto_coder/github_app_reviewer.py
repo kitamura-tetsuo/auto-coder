@@ -719,12 +719,13 @@ class GitHubAppReviewer:
         ledger: CanonicalPRBlockerLedger,
     ) -> ReviewPublicationResult:
         """Confirm an accepted review and bind every authenticated root by identity."""
-        event, body, _comments_json, review_id = ledger.get_publication_recovery_payload(self._api_url, repo_name, pr_number, intent_id)
+        event, body, comments_json, review_id = ledger.get_publication_recovery_payload(self._api_url, repo_name, pr_number, intent_id)
         identity = self.get_identity()
         try:
             retained = ledger.get_publication_intent(self._api_url, repo_name, pr_number, intent_id)
             if retained is None:
                 return ReviewPublicationResult(False, event, "Publication operation is no longer retained")
+            expected_state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED", "COMMENT": "COMMENTED"}.get(event)
             discovered_roots: Optional[list[dict[str, object]]] = None
             if review_id is None:
                 page = 1
@@ -739,13 +740,20 @@ class GitHubAppReviewer:
                         author = review.get("user")
                         rid = review.get("id")
                         commit_id = review.get("commit_id")
-                        if not (isinstance(rid, int) and rid > 0 and isinstance(author, dict) and identity.matches_login(author.get("login") if isinstance(author.get("login"), str) else None) and (commit_id is None or commit_id == retained.reviewed_head_sha)):
+                        if not (
+                            isinstance(rid, int)
+                            and rid > 0
+                            and isinstance(author, dict)
+                            and identity.matches_login(author.get("login") if isinstance(author.get("login"), str) else None)
+                            and commit_id == retained.reviewed_head_sha
+                            and (expected_state is None or review.get("state") == expected_state)
+                        ):
                             continue
                         if body:
                             matches.append((rid, None))
                             continue
                         candidate_roots = self._review_root_comments(repo_name, pr_number, rid, token)
-                        associations, conflicts = self._publication_root_associations(candidate_roots, identity, repo_name, pr_number, blocker_ids)
+                        associations, conflicts = self._publication_root_associations(candidate_roots, identity, repo_name, pr_number, blocker_ids, ledger, self._api_url)
                         if not conflicts and set(associations) == set(blocker_ids):
                             matches.append((rid, candidate_roots))
                     if len(data) < 100:
@@ -766,14 +774,17 @@ class GitHubAppReviewer:
                 or (body and review.get("body", "") != body)
                 or not isinstance(review_author, dict)
                 or not identity.matches_login(review_author.get("login") if isinstance(review_author.get("login"), str) else None)
-                or (review_commit is not None and review_commit != retained.reviewed_head_sha)
+                or review_commit != retained.reviewed_head_sha
+                or (expected_state is not None and review.get("state") != expected_state)
             ):
                 return ReviewPublicationResult(False, event, "Publication review receipt does not match the retained target, author, payload, or head")
 
             roots = discovered_roots or self._review_root_comments(repo_name, pr_number, review_id, token)
-            associations, conflicts = self._publication_root_associations(roots, identity, repo_name, pr_number, blocker_ids)
+            associations, conflicts = self._publication_root_associations(roots, identity, repo_name, pr_number, blocker_ids, ledger, self._api_url)
             if conflicts or set(associations) != set(blocker_ids):
                 return ReviewPublicationResult(False, event, "Publication root association is incomplete or conflicting")
+            if comments_json != "[]" and not self._root_payloads_match(comments_json, roots, associations):
+                return ReviewPublicationResult(False, event, "Publication root payload does not match the retained request")
             ledger.confirm_publication_intent(self._api_url, repo_name, pr_number, intent_id, tuple(sorted(associations.items())), evidence=f"review:{review_id}")
             return ReviewPublicationResult(True, event, "")
         except Exception:
@@ -798,19 +809,57 @@ class GitHubAppReviewer:
             page += 1
 
     @staticmethod
-    def _publication_root_associations(roots: list[dict[str, object]], identity: ReviewerAppIdentity, repo_name: str, pr_number: int, blocker_ids: tuple[str, ...]) -> tuple[dict[str, int], set[str]]:
+    def _publication_root_associations(roots: list[dict[str, object]], identity: ReviewerAppIdentity, repo_name: str, pr_number: int, blocker_ids: tuple[str, ...], ledger: CanonicalPRBlockerLedger, api_origin: str) -> tuple[dict[str, int], set[str]]:
         parsed = parse_historical_pr_review_roots(roots, reviewer_identity=identity, repo_name=repo_name, pr_number=pr_number)
         associations: dict[str, int] = {}
         conflicts: set[str] = set()
+        snapshot = ledger.get_snapshot(api_origin, repo_name, pr_number, require_retained_state=True)
+        declarations_by_root: dict[int, set[str]] = {}
+        for correction in parsed.corrections:
+            if correction.blocker_id:
+                declarations_by_root.setdefault(correction.comment_id, set()).add(correction.blocker_id)
         for correction in parsed.corrections:
             if correction.blocker_identity_conflict:
                 conflicts.update(correction.blocker_identity_conflict)
             if correction.blocker_id in blocker_ids:
+                retained_owners = {blocker.blocker_id for blocker in snapshot.get_blockers_for_alias("github_root_comment", str(correction.comment_id))}
+                if retained_owners - declarations_by_root.get(correction.comment_id, set()):
+                    conflicts.add(correction.blocker_id)
+                    continue
                 old = associations.get(correction.blocker_id)
                 if old is not None and old != correction.comment_id:
                     conflicts.add(correction.blocker_id)
                 associations[correction.blocker_id] = correction.comment_id
         return associations, conflicts
+
+    @staticmethod
+    def _root_payloads_match(comments_json: str, roots: list[dict[str, object]], associations: dict[str, int]) -> bool:
+        try:
+            intended = json.loads(comments_json)
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(intended, list):
+            return False
+        roots_by_id = {root.get("id"): root for root in roots}
+        marker = re.compile(r"^\s*Blocker identity:\s*`?([A-Za-z0-9_-]+)`?\s*$", re.MULTILINE)
+        expected_by_blocker: dict[str, dict[str, object]] = {}
+        for comment in intended:
+            if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
+                return False
+            match = marker.search(comment["body"])
+            if match:
+                expected_by_blocker[match.group(1)] = comment
+        if set(expected_by_blocker) != set(associations):
+            return False
+        for blocker_id, root_id in associations.items():
+            actual = roots_by_id.get(root_id)
+            expected = expected_by_blocker[blocker_id]
+            if not isinstance(actual, dict):
+                return False
+            for field in ("body", "path", "line", "side", "start_line", "start_side"):
+                if field in expected and actual.get(field) != expected[field]:
+                    return False
+        return True
 
     def _changed_files(self, repo_name: str, pr_number: int, token: str) -> dict[str, object]:
         changed_files: dict[str, object] = {}

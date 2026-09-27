@@ -1984,6 +1984,7 @@ class TestAdversarialValidationPRFlow:
             merge_pr.assert_not_called()
             assert any("Ignored late adversarial-validation attempt" in action for action in actions)
 
+    @patch("auto_coder.pr_processor.recover_pending_adversarial_publications", return_value=ReviewPublicationResult(True, "", ""))
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
@@ -2000,6 +2001,7 @@ class TestAdversarialValidationPRFlow:
         mock_checks,
         mock_mergeable,
         mock_exit_in_progress,
+        mock_recover_publications,
     ):
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         head_sha = "abc123456789"
@@ -2030,6 +2032,7 @@ class TestAdversarialValidationPRFlow:
         mock_run_validation.assert_not_called()
         mock_worktree.assert_not_called()
         mock_merge_pr.assert_not_called()
+        mock_recover_publications.assert_called_once_with("owner/repo", 100)
         mock_feedback.assert_called_once()
         observe_activity.assert_not_called()
         assert "Previously rejected" in mock_feedback.call_args.args[3]
