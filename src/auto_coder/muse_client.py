@@ -141,6 +141,8 @@ class MuseClient(LLMClientBase):
         self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
         self.timeout = (self.config_backend and self.config_backend.timeout) or 7200
+        self._msp_stdout = bytearray()
+        self._msp_stderr = bytearray()
 
         override = os.environ.get("AUTOCODER_MUSE_CLI")
         command = shlex.split(override) if override else ["muse"]
@@ -510,12 +512,49 @@ class MuseClient(LLMClientBase):
 
         return False
 
-    @staticmethod
-    def _msp_send(process: subprocess.Popen[bytes], frame: dict[str, object]) -> None:
+    def _msp_timeout(self) -> AutoCoderTimeoutError:
+        return AutoCoderTimeoutError(f"Muse MSP invocation timed out after {self.timeout} seconds")
+
+    def _msp_send(self, process: subprocess.Popen[bytes], frame: dict[str, object], deadline: float) -> None:
         if process.stdin is None:
             raise RuntimeError("Muse MSP host has no input stream")
-        process.stdin.write((json.dumps(frame, separators=(",", ":")) + "\n").encode())
-        process.stdin.flush()
+        payload = memoryview((json.dumps(frame, separators=(",", ":")) + "\n").encode())
+        stdin_fd = process.stdin.fileno()
+        stderr_fd = process.stderr.fileno() if process.stderr is not None else None
+        while payload:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise self._msp_timeout()
+            reads = [stderr_fd] if stderr_fd is not None else []
+            readable, writable, _ = select.select(reads, [stdin_fd], [], remaining)
+            if stderr_fd is not None and stderr_fd in readable:
+                self._drain_msp_stderr(stderr_fd)
+            if stdin_fd not in writable:
+                continue
+            try:
+                written = os.write(stdin_fd, payload)
+            except BlockingIOError:
+                continue
+            if written <= 0:
+                raise RuntimeError("Muse MSP host stopped accepting protocol input")
+            payload = payload[written:]
+
+    def _drain_msp_stderr(self, stderr_fd: int) -> None:
+        try:
+            chunk = os.read(stderr_fd, 65536)
+        except BlockingIOError:
+            return
+        if chunk:
+            self._msp_stderr.extend(chunk)
+            if len(self._msp_stderr) > 8192:
+                del self._msp_stderr[:-8192]
+
+    def _raise_msp_failure(self, message: str, payload: object) -> None:
+        diagnostic = json.dumps(payload, ensure_ascii=False) if not isinstance(payload, str) else payload
+        markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded"]
+        if self._is_usage_limit_exhausted("", diagnostic, 1, markers):
+            raise AutoCoderUsageLimitError(diagnostic or "Muse Code usage limit reached")
+        raise RuntimeError(f"{message}: {diagnostic}")
 
     def _msp_wait(
         self,
@@ -526,45 +565,60 @@ class MuseClient(LLMClientBase):
     ) -> dict[str, object]:
         if process.stdout is None:
             raise RuntimeError("Muse MSP host has no output stream")
-        while time.monotonic() < deadline:
+        stdout_fd = process.stdout.fileno()
+        stderr_fd = process.stderr.fileno() if process.stderr is not None else None
+        while True:
+            newline = self._msp_stdout.find(b"\n")
+            if newline >= 0:
+                raw = bytes(self._msp_stdout[:newline])
+                del self._msp_stdout[: newline + 1]
+                try:
+                    frame = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("Muse MSP host emitted an invalid protocol frame") from exc
+                if not isinstance(frame, dict):
+                    raise RuntimeError("Muse MSP host emitted a non-object protocol frame")
+                if frame.get("id") == request_id:
+                    if "error" in frame:
+                        self._raise_msp_failure("Muse MSP request failed", frame["error"])
+                    result = frame.get("result")
+                    if not isinstance(result, dict):
+                        raise RuntimeError("Muse MSP response did not contain an object result")
+                    return result
+                if "method" in frame and "id" in frame:
+                    self._msp_send(
+                        process,
+                        {"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32601, "message": "Auto-Coder does not support interactive MSP requests"}},
+                        deadline,
+                    )
+                elif "method" in frame:
+                    notifications.append(frame)
+                    if request_id == -1:
+                        return {}
+                continue
+
             remaining = deadline - time.monotonic()
-            ready, _, _ = select.select([process.stdout], [], [], max(0.0, remaining))
-            if not ready:
-                break
-            raw = process.stdout.readline()
-            if not raw:
-                detail = ""
-                if process.stderr is not None:
-                    detail = process.stderr.read().decode(errors="replace").strip()
-                markers = self.usage_markers or ["rate limit", "usage limit", "quota exceeded"]
-                if self._is_usage_limit_exhausted("", detail, process.returncode or 1, markers):
-                    raise AutoCoderUsageLimitError(detail or "Muse Code usage limit reached")
-                raise RuntimeError(f"Muse MSP host exited before completing the request: {detail}")
+            if remaining <= 0:
+                raise self._msp_timeout()
+            reads = [stdout_fd]
+            if stderr_fd is not None:
+                reads.append(stderr_fd)
+            readable, _, _ = select.select(reads, [], [], remaining)
+            if not readable:
+                raise self._msp_timeout()
+            if stderr_fd is not None and stderr_fd in readable:
+                self._drain_msp_stderr(stderr_fd)
+            if stdout_fd not in readable:
+                continue
             try:
-                frame = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError("Muse MSP host emitted an invalid protocol frame") from exc
-            if not isinstance(frame, dict):
-                raise RuntimeError("Muse MSP host emitted a non-object protocol frame")
-            if frame.get("id") == request_id:
-                if "error" in frame:
-                    raise RuntimeError(f"Muse MSP request failed: {frame['error']}")
-                result = frame.get("result")
-                if not isinstance(result, dict):
-                    raise RuntimeError("Muse MSP response did not contain an object result")
-                return result
-            if "method" in frame and "id" in frame:
-                # Auto-Coder is deliberately non-interactive. Refuse every host
-                # request instead of allowing an approval or question to hang.
-                self._msp_send(
-                    process,
-                    {"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32601, "message": "Auto-Coder does not support interactive MSP requests"}},
-                )
-            elif "method" in frame:
-                notifications.append(frame)
-                if request_id == -1:
-                    return {}
-        raise AutoCoderTimeoutError(f"Muse MSP invocation timed out after {self.timeout} seconds")
+                chunk = os.read(stdout_fd, 65536)
+            except BlockingIOError:
+                continue
+            if chunk:
+                self._msp_stdout.extend(chunk)
+                continue
+            detail = self._msp_stderr.decode(errors="replace").strip()
+            self._raise_msp_failure("Muse MSP host exited before completing the request", detail)
 
     @staticmethod
     def _session_metadata(result: dict[str, object]) -> dict[str, object]:
@@ -650,14 +704,19 @@ class MuseClient(LLMClientBase):
         try:
             logger.warning("LLM invocation: Muse Code MSP host is being called. Keep LLM calls minimized.")
             process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix", bufsize=0)
-            self._msp_send(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "auto-coder", "version": "1"}}})
+            self._msp_stdout.clear()
+            self._msp_stderr.clear()
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    os.set_blocking(stream.fileno(), False)
+            self._msp_send(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "auto-coder", "version": "1"}}}, deadline)
             initialized = self._msp_wait(process, 1, deadline, notifications)
             schema = initialized.get("schemaInfo")
             if not isinstance(schema, dict) or not isinstance(schema.get("fingerprint"), str):
                 raise RuntimeError("Muse MSP initialization omitted schema compatibility metadata")
             if schema["fingerprint"] != _MUSE_MSP_SCHEMA_FINGERPRINT:
                 raise RuntimeError("Muse MSP host schema is incompatible with Auto-Coder " f"(served {schema['fingerprint']}, expected {_MUSE_MSP_SCHEMA_FINGERPRINT})")
-            self._msp_send(process, {"jsonrpc": "2.0", "method": "initialized"})
+            self._msp_send(process, {"jsonrpc": "2.0", "method": "initialized"}, deadline)
             if session_id is None:
                 params: dict[str, object] = {"workspaceRoot": str(cwd), "modelId": self.model_name, "approvalMode": "deny" if effective_noedit else "default"}
                 method = "session/start"
@@ -666,7 +725,7 @@ class MuseClient(LLMClientBase):
                     raise ValueError("Muse session ID must be nonempty")
                 params = {"sessionId": session_id, "excludeItems": False}
                 method = "session/resume"
-            self._msp_send(process, {"jsonrpc": "2.0", "id": 2, "method": method, "params": params})
+            self._msp_send(process, {"jsonrpc": "2.0", "id": 2, "method": method, "params": params}, deadline)
             opened = self._msp_wait(process, 2, deadline, notifications)
             metadata = self._session_metadata(opened)
             canonical_id = metadata.get("sessionId")
@@ -678,8 +737,8 @@ class MuseClient(LLMClientBase):
             if not isinstance(workspace, str) or Path(workspace).resolve() != cwd:
                 raise RuntimeError("Muse MSP session belongs to an incompatible workspace")
             effective_model = metadata.get("modelId")
-            if effective_model is not None and effective_model != self.model_name:
-                raise RuntimeError("Muse MSP session uses an incompatible model")
+            if effective_model != self.model_name:
+                raise RuntimeError("Muse MSP session omitted or uses an incompatible model")
             pending = opened.get("pendingRequests")
             if pending not in (None, []):
                 raise RuntimeError("Muse MSP session has pending interactive requests")
@@ -687,7 +746,7 @@ class MuseClient(LLMClientBase):
             turn_params: dict[str, object] = {"commandId": command_id, "sessionId": canonical_id, "input": [{"type": "text", "text": rendered_prompt}]}
             if reasoning is not None:
                 turn_params["reasoningEffort"] = reasoning
-            self._msp_send(process, {"jsonrpc": "2.0", "id": 3, "method": "turn/start", "params": turn_params})
+            self._msp_send(process, {"jsonrpc": "2.0", "id": 3, "method": "turn/start", "params": turn_params}, deadline)
             turn_ack = self._msp_wait(process, 3, deadline, notifications)
             turn_id = turn_ack.get("turnId")
             if not isinstance(turn_id, str) or not turn_id:
@@ -707,17 +766,21 @@ class MuseClient(LLMClientBase):
                 for event in notifications[before_count:]:
                     params_obj = event.get("params")
                     if event.get("method") == "turn/completed" and isinstance(params_obj, dict) and params_obj.get("turnId") == turn_id:
+                        if params_obj.get("sessionId") != canonical_id:
+                            raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
                         terminal = params_obj
                         break
             if terminal.get("terminal") != "completed":
-                raise RuntimeError(f"Muse MSP turn did not complete successfully: {terminal}")
+                self._raise_msp_failure("Muse MSP turn did not complete successfully", terminal)
             answers: list[str] = []
             for event in notifications:
                 params_obj = event.get("params")
-                if event.get("method") not in {"item/started", "item/updated", "item/completed"} or not isinstance(params_obj, dict):
+                if event.get("method") != "item/completed" or not isinstance(params_obj, dict):
                     continue
+                if params_obj.get("sessionId") != canonical_id:
+                    raise RuntimeError("Muse MSP assistant item belongs to an incompatible session")
                 item = params_obj.get("item")
-                if isinstance(item, dict) and item.get("turnId") == turn_id and item.get("role") == "assistant" and isinstance(item.get("text"), str):
+                if isinstance(item, dict) and item.get("turnId") == turn_id and item.get("kind") == "message" and item.get("status") == "completed" and item.get("role") == "assistant" and isinstance(item.get("text"), str):
                     answers.append(str(item["text"]))
             if not answers:
                 raise RuntimeError("Muse MSP turn completed without final assistant text")

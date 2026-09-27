@@ -122,3 +122,16 @@ def test_explicit_resume_resets_continuity_before_unexpected_error(tmp_path):
 
     assert manager._last_continue_session_resumed is False
     assert client.fresh_prompts == []
+
+
+def test_empty_explicit_session_is_rejected_without_claiming_continuity(tmp_path):
+    client = SessionClient()
+    manager = _manager(tmp_path, {"muse": client}, automatic_session_resume=False)
+    manager._last_continue_session_resumed = True
+
+    with pytest.raises(ValueError, match="Session ID must be nonempty"):
+        manager.continue_session("", "review", is_noedit=True)
+
+    assert manager._last_continue_session_resumed is False
+    assert client.continued == []
+    assert client.fresh_prompts == []

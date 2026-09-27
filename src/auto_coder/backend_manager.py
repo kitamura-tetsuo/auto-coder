@@ -626,6 +626,8 @@ class BackendManager(LLMBackendManagerBase):
         backend. Usage failures retain ordinary backend rotation behavior.
         """
         self._last_continue_session_resumed = False
+        if not session_id.strip():
+            raise ValueError("Session ID must be nonempty for explicit continuation")
         backend_name = self._current_backend_name()
         client = self._get_or_create_client(backend_name)
         self._is_noedit = is_noedit
