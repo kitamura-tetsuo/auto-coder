@@ -27,6 +27,9 @@ from .utils import _COMMAND_EXECUTION_CWD
 logger = get_logger(__name__)
 
 _MUSE_MSP_SCHEMA_FINGERPRINT = "sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"
+_MUSE_MSP_SERVER_VERSION = "1.3.0"
+_MUSE_MSP_SCHEMA_VERSION = 1
+_MUSE_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 
 _READ_ONLY_GIT_COMMANDS = {
     "blame",
@@ -123,6 +126,25 @@ class _GitState:
     ignored_files: tuple[_WorkspaceFile, ...]
     tracked_modes: tuple[_WorkspaceMode, ...]
     directory_modes: tuple[_WorkspaceMode, ...]
+
+
+@dataclass(frozen=True)
+class _MspOptions:
+    host_arguments: list[str]
+    reasoning_effort: Optional[str]
+    deny_approval: bool
+
+
+def _uuid7() -> str:
+    """Create an RFC 9562 UUIDv7 without depending on Python 3.14's uuid.uuid7."""
+    timestamp_ms = int(time.time_ns() // 1_000_000) & ((1 << 48) - 1)
+    random_bits = int.from_bytes(os.urandom(10), "big") & ((1 << 74) - 1)
+    value = timestamp_ms << 80
+    value |= 0x7 << 76
+    value |= (random_bits >> 62) << 64
+    value |= 0b10 << 62
+    value |= random_bits & ((1 << 62) - 1)
+    return str(uuid.UUID(int=value))
 
 
 class MuseClient(LLMClientBase):
@@ -627,7 +649,7 @@ class MuseClient(LLMClientBase):
             raise RuntimeError("Muse MSP response omitted session metadata")
         return session
 
-    def _msp_options(self, effective_noedit: bool) -> tuple[list[str], Optional[str]]:
+    def _msp_options(self, effective_noedit: bool) -> _MspOptions:
         processed = self.config_backend.replace_placeholders(model_name=self.model_name) if self.config_backend else {}
         configured = processed.get(
             "options_for_noedit" if effective_noedit and self.options_for_noedit else "options",
@@ -637,6 +659,7 @@ class MuseClient(LLMClientBase):
         self._reject_competing_prompt_sources(arguments)
         host_arguments = ["serve"]
         reasoning: Optional[str] = None
+        deny_approval = effective_noedit
         index = 0
         harmless = {"exec", "--json", "--no-edit"}
         while index < len(arguments):
@@ -663,19 +686,35 @@ class MuseClient(LLMClientBase):
                 reasoning = argument.split("=", 1)[1]
                 index += 1
                 continue
-            if argument in {"--disable-write", "--disable-shell", "--disable-approval"}:
+            if argument in {"--disable-write", "--disable-shell"}:
                 host_arguments.append(argument)
                 index += 1
                 continue
-            if argument in {"--yolo", "--disable-sandbox"} and effective_noedit:
+            if argument == "--disable-approval":
+                deny_approval = True
                 index += 1
                 continue
+            if argument == "--trust-workspace":
+                raise RuntimeError("Muse workspace trust was requested without independent PR-review authorization")
             raise RuntimeError(f"Muse option is not representable through MSP: {argument}")
+        if reasoning is not None and reasoning not in _MUSE_REASONING_EFFORTS:
+            raise RuntimeError(f"Muse reasoning effort is not supported by MSP: {reasoning}")
         if effective_noedit:
-            for flag in ("--disable-write", "--disable-shell", "--disable-approval"):
+            for flag in ("--disable-write", "--disable-shell"):
                 if flag not in host_arguments:
                     host_arguments.append(flag)
-        return host_arguments, reasoning
+        return _MspOptions(host_arguments, reasoning, deny_approval)
+
+    @staticmethod
+    def _validate_command_ack(result: dict[str, object], command_id: str, *, approval_change: bool = False) -> None:
+        if result.get("commandId") != command_id or result.get("status") != "accepted":
+            raise RuntimeError("Muse MSP returned an invalid or uncorrelated command acknowledgement")
+        if approval_change:
+            if result.get("applyOutcome") not in {"completed", "noop"}:
+                raise RuntimeError("Muse MSP did not apply approval denial")
+            effective_mode = result.get("effectiveMode")
+            if not isinstance(effective_mode, dict) or effective_mode.get("mode") != "denyUnmatched":
+                raise RuntimeError("Muse MSP did not confirm effective approval denial")
 
     def _run_msp_turn(self, prompt: str, is_noedit: bool, session_id: Optional[str]) -> str:
         # An invocation owns only the identity it establishes successfully.
@@ -685,7 +724,7 @@ class MuseClient(LLMClientBase):
         cwd = self._execution_cwd().resolve()
         before = self._snapshot_at(cwd)
         effective_noedit = is_noedit or self.use_noedit_options
-        host_arguments, reasoning = self._msp_options(effective_noedit)
+        msp_options = self._msp_options(effective_noedit)
         rendered_prompt = render_prompt("muse.execution", task_prompt=prompt, mode="no-edit" if effective_noedit else "edit")
         env = os.environ.copy()
         if self.config_backend and self.config_backend.api_key and "MUSE_API_KEY" not in env:
@@ -694,10 +733,19 @@ class MuseClient(LLMClientBase):
         trace_path = trace.name
         trace.close()
         env["GIT_TRACE2_EVENT"] = trace_path
-        command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse")) + host_arguments
+        command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse")) + msp_options.host_arguments
         process: Optional[subprocess.Popen[bytes]] = None
         deadline = time.monotonic() + self.timeout
         notifications: list[dict[str, object]] = []
+        command_ids: set[str] = set()
+
+        def new_command_id() -> str:
+            command_id = _uuid7()
+            while command_id in command_ids:
+                command_id = _uuid7()
+            command_ids.add(command_id)
+            return command_id
+
         completed_session_id: Optional[str] = None
         final_output: Optional[str] = None
         invocation_error: Optional[BaseException] = None
@@ -711,19 +759,26 @@ class MuseClient(LLMClientBase):
                     os.set_blocking(stream.fileno(), False)
             self._msp_send(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "auto-coder", "version": "1"}}}, deadline)
             initialized = self._msp_wait(process, 1, deadline, notifications)
-            schema = initialized.get("schemaInfo")
-            if not isinstance(schema, dict) or not isinstance(schema.get("fingerprint"), str):
+            server_info = initialized.get("serverInfo")
+            schema = initialized.get("schema")
+            if not isinstance(server_info, dict) or server_info.get("version") != _MUSE_MSP_SERVER_VERSION:
+                raise RuntimeError("Muse MSP host version is incompatible with Auto-Coder")
+            if not isinstance(schema, dict):
                 raise RuntimeError("Muse MSP initialization omitted schema compatibility metadata")
-            if schema["fingerprint"] != _MUSE_MSP_SCHEMA_FINGERPRINT:
-                raise RuntimeError("Muse MSP host schema is incompatible with Auto-Coder " f"(served {schema['fingerprint']}, expected {_MUSE_MSP_SCHEMA_FINGERPRINT})")
+            schema_version = schema.get("version")
+            if type(schema_version) is not int or schema_version != _MUSE_MSP_SCHEMA_VERSION or schema.get("fingerprint") != _MUSE_MSP_SCHEMA_FINGERPRINT:
+                raise RuntimeError("Muse MSP host schema is incompatible with Auto-Coder")
             self._msp_send(process, {"jsonrpc": "2.0", "method": "initialized"}, deadline)
+            session_command_id = new_command_id()
             if session_id is None:
-                params: dict[str, object] = {"workspaceRoot": str(cwd), "modelId": self.model_name, "approvalMode": "deny" if effective_noedit else "default"}
+                params: dict[str, object] = {"commandId": session_command_id, "workspaceRoot": str(cwd), "modelId": self.model_name}
+                if msp_options.deny_approval:
+                    params["approvalMode"] = "denyUnmatched"
                 method = "session/start"
             else:
                 if not session_id.strip():
                     raise ValueError("Muse session ID must be nonempty")
-                params = {"sessionId": session_id, "excludeItems": False}
+                params = {"commandId": session_command_id, "sessionId": session_id}
                 method = "session/resume"
             self._msp_send(process, {"jsonrpc": "2.0", "id": 2, "method": method, "params": params}, deadline)
             opened = self._msp_wait(process, 2, deadline, notifications)
@@ -734,7 +789,7 @@ class MuseClient(LLMClientBase):
             if session_id is not None and canonical_id != session_id:
                 raise RuntimeError("Muse MSP resumed a different session identity")
             workspace = metadata.get("workspaceRoot")
-            if not isinstance(workspace, str) or Path(workspace).resolve() != cwd:
+            if not isinstance(workspace, str) or workspace != str(cwd):
                 raise RuntimeError("Muse MSP session belongs to an incompatible workspace")
             effective_model = metadata.get("modelId")
             if effective_model != self.model_name:
@@ -742,14 +797,32 @@ class MuseClient(LLMClientBase):
             pending = opened.get("pendingRequests")
             if pending not in (None, []):
                 raise RuntimeError("Muse MSP session has pending interactive requests")
-            command_id = str(uuid.uuid4())
+            if msp_options.deny_approval:
+                approval_mode = metadata.get("approvalMode")
+                denial_confirmed = isinstance(approval_mode, dict) and approval_mode.get("mode") == "denyUnmatched"
+                if session_id is None:
+                    if not denial_confirmed:
+                        raise RuntimeError("Muse MSP fresh session did not confirm approval denial")
+                elif not denial_confirmed:
+                    approval_command_id = new_command_id()
+                    approval_params: dict[str, object] = {
+                        "commandId": approval_command_id,
+                        "sessionId": canonical_id,
+                        "mode": "denyUnmatched",
+                    }
+                    self._msp_send(process, {"jsonrpc": "2.0", "id": 3, "method": "session/setApprovalMode", "params": approval_params}, deadline)
+                    approval_result = self._msp_wait(process, 3, deadline, notifications)
+                    self._validate_command_ack(approval_result, approval_command_id, approval_change=True)
+            command_id = new_command_id()
             turn_params: dict[str, object] = {"commandId": command_id, "sessionId": canonical_id, "input": [{"type": "text", "text": rendered_prompt}]}
-            if reasoning is not None:
-                turn_params["reasoningEffort"] = reasoning
-            self._msp_send(process, {"jsonrpc": "2.0", "id": 3, "method": "turn/start", "params": turn_params}, deadline)
-            turn_ack = self._msp_wait(process, 3, deadline, notifications)
+            if msp_options.reasoning_effort is not None:
+                turn_params["reasoningEffort"] = msp_options.reasoning_effort
+            turn_request_id = 4
+            self._msp_send(process, {"jsonrpc": "2.0", "id": turn_request_id, "method": "turn/start", "params": turn_params}, deadline)
+            turn_ack = self._msp_wait(process, turn_request_id, deadline, notifications)
+            self._validate_command_ack(turn_ack, command_id)
             turn_id = turn_ack.get("turnId")
-            if not isinstance(turn_id, str) or not turn_id:
+            if not isinstance(turn_id, str) or not turn_id or type(turn_ack.get("startedNewTurn")) is not bool or not isinstance(turn_ack.get("disposition"), str) or not turn_ack.get("disposition"):
                 raise RuntimeError("Muse MSP did not acknowledge the submitted turn")
             terminal: Optional[dict[str, object]] = None
             while terminal is None:
