@@ -133,3 +133,26 @@ def test_muse_timeout_classification_survives_invariant_failure(tmp_path, monkey
     assert any("repository invariant check also failed" in note for note in raised.value.__notes__)
     assert client.get_last_session_id() is None
     assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+def test_muse_pre_host_option_failure_clears_previous_session(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    client = manager._clients["muse"]
+
+    assert client._run_llm_cli("first") == "answer:first"
+    assert client.get_last_session_id() == "opaque/provider/session"
+    frames_before_failure = log.read_text()
+    client.set_extra_args(["--unsupported-msp-option"])
+
+    with pytest.raises(RuntimeError, match="not representable through MSP"):
+        client._run_llm_cli("second")
+
+    assert client.get_last_session_id() is None
+    assert log.read_text() == frames_before_failure

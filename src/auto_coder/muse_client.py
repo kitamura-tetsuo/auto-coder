@@ -624,6 +624,10 @@ class MuseClient(LLMClientBase):
         return host_arguments, reasoning
 
     def _run_msp_turn(self, prompt: str, is_noedit: bool, session_id: Optional[str]) -> str:
+        # An invocation owns only the identity it establishes successfully.
+        # Clear before snapshot/configuration/rendering so any pre-host failure
+        # cannot expose a previous invocation's session as its own result.
+        self._last_session_id = None
         cwd = self._execution_cwd().resolve()
         before = self._snapshot_at(cwd)
         effective_noedit = is_noedit or self.use_noedit_options
@@ -638,7 +642,6 @@ class MuseClient(LLMClientBase):
         env["GIT_TRACE2_EVENT"] = trace_path
         command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse")) + host_arguments
         process: Optional[subprocess.Popen[bytes]] = None
-        self._last_session_id = None
         deadline = time.monotonic() + self.timeout
         notifications: list[dict[str, object]] = []
         completed_session_id: Optional[str] = None
