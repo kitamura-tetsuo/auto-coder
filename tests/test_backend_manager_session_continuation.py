@@ -6,7 +6,12 @@ from unittest.mock import patch
 import pytest
 
 from src.auto_coder.backend_manager import BackendManager
-from src.auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
+from src.auto_coder.exceptions import (
+    AutoCoderRetryableBackendError,
+    AutoCoderTimeoutError,
+    AutoCoderUsageLimitError,
+    SessionWorkspaceCompatibilityError,
+)
 from src.auto_coder.opencode_client import OpenCodeClient
 
 
@@ -110,6 +115,30 @@ def test_resume_usage_limit_rotates_backend_without_same_client_fresh_retry(tmp_
 
     assert claude.fresh_prompts == []
     assert codex.fresh_prompts == ["review"]
+
+
+@pytest.mark.parametrize(
+    "continuation_error",
+    [
+        AutoCoderTimeoutError("Muse continuation timed out"),
+        AutoCoderUsageLimitError("Muse quota exhausted"),
+    ],
+    ids=["timeout", "usage-limit"],
+)
+def test_muse_continuation_execution_error_does_not_use_fresh_fallback(tmp_path, continuation_error):
+    muse = SessionClient(fresh_session_id="exact-session")
+    muse.continue_error = continuation_error
+    fallback = SessionClient(fresh_session_id="fallback-session")
+    manager = _manager(tmp_path, {"muse": muse, "codex": fallback}, automatic_session_resume=False)
+
+    with pytest.raises(type(continuation_error), match=str(continuation_error)):
+        manager.continue_session("exact-session", "review follow-up", is_noedit=True)
+
+    assert muse.continued == [("exact-session", "review follow-up", True)]
+    assert muse.fresh_prompts == []
+    assert fallback.fresh_prompts == []
+    assert manager.get_current_backend_identity()[0] == "muse"
+    assert manager._last_continue_session_resumed is False
 
 
 def test_explicit_resume_resets_continuity_before_unexpected_error(tmp_path):
