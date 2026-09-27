@@ -79,7 +79,19 @@ for line in sys.stdin:
         if os.environ.get("MSP_STOP_READING"):
             time.sleep(10)
     elif method == "session/setApprovalMode":
-        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"commandId":frame["params"]["commandId"],"status":"accepted","applyOutcome":"completed","effectiveMode":{"mode":"denyUnmatched"}}})
+        ack_case = os.environ.get("MSP_APPROVAL_ACK_CASE", "completed")
+        ack = {"commandId":frame["params"]["commandId"],"status":"accepted","applyOutcome":ack_case if ack_case in ("completed", "noop") else "completed","effectiveMode":{"mode":"denyUnmatched"}}
+        if ack_case == "mismatched-command":
+            ack["commandId"] = "01900000-0000-7000-8000-000000000000"
+        elif ack_case == "rejected":
+            ack["status"] = "rejected"
+        elif ack_case == "pending":
+            ack["applyOutcome"] = "pending"
+        elif ack_case == "missing-mode":
+            ack.pop("effectiveMode")
+        elif ack_case == "permissive-mode":
+            ack["effectiveMode"] = {"mode":"allowAll"}
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
     elif method == "turn/start":
         if os.environ.get("MSP_ATTEMPT_EFFECTS"):
             required = {"--disable-write", "--disable-shell"}
@@ -238,13 +250,15 @@ def test_muse_msp_noedit_maps_host_and_wire_options(tmp_path, monkeypatch, _use_
     assert start["frame"]["params"]["commandId"] != turn["frame"]["params"]["commandId"]
 
 
-def test_muse_msp_resume_reestablishes_approval_denial(tmp_path, monkeypatch, _use_real_commands):
+@pytest.mark.parametrize("apply_outcome", ["completed", "noop"])
+def test_muse_msp_resume_reestablishes_approval_denial(tmp_path, monkeypatch, _use_real_commands, apply_outcome):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
     monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_APPROVAL_ACK_CASE", apply_outcome)
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
     client = _manager(config)._clients["muse"]
@@ -260,6 +274,29 @@ def test_muse_msp_resume_reestablishes_approval_denial(tmp_path, monkeypatch, _u
     assert len(command_ids) == len(set(command_ids))
     for command_id in command_ids:
         _assert_uuid7(command_id)
+
+
+@pytest.mark.parametrize(
+    "ack_case",
+    ["mismatched-command", "rejected", "pending", "missing-mode", "permissive-mode"],
+)
+def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path, monkeypatch, _use_real_commands, ack_case):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_APPROVAL_ACK_CASE", ack_case)
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+
+    with pytest.raises(RuntimeError):
+        _manager(config).continue_session("opaque/provider/session", "second", is_noedit=True)
+    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
+    assert methods.count("session/resume") == 1
+    assert methods.count("session/setApprovalMode") == 1
+    assert "session/start" not in methods
+    assert "turn/start" not in methods
 
 
 @pytest.mark.parametrize(
@@ -460,7 +497,7 @@ def test_muse_rejects_unverified_final_answer_events(tmp_path, monkeypatch, _use
     assert client.get_last_session_id() is None
 
 
-def test_muse_missing_resume_model_falls_back_without_continuity(tmp_path, monkeypatch, _use_real_commands):
+def test_muse_missing_resume_model_fails_without_fresh_fallback(tmp_path, monkeypatch, _use_real_commands):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -471,16 +508,17 @@ def test_muse_missing_resume_model_falls_back_without_continuity(tmp_path, monke
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
     manager = _manager(config)
 
-    assert manager.continue_session("opaque/provider/session", "second") == "answer:second"
+    with pytest.raises(RuntimeError, match="omitted or uses an incompatible model"):
+        manager.continue_session("opaque/provider/session", "second")
     assert manager._last_continue_session_resumed is False
     methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert methods.count("session/resume") == 1
-    assert methods.count("session/start") == 1
-    assert methods.count("turn/start") == 1
+    assert "session/start" not in methods
+    assert "turn/start" not in methods
 
 
 @pytest.mark.parametrize("remove_original", [False, True])
-def test_muse_foreign_or_removed_workspace_falls_back_without_continuity(tmp_path, monkeypatch, _use_real_commands, remove_original):
+def test_muse_foreign_or_removed_workspace_fails_without_fresh_fallback(tmp_path, monkeypatch, _use_real_commands, remove_original):
     first_root = tmp_path / "first"
     second_root = tmp_path / "second"
     first_root.mkdir()
@@ -510,13 +548,14 @@ def test_muse_foreign_or_removed_workspace_falls_back_without_continuity(tmp_pat
     assert "turn/start" not in failed_methods
 
     log.unlink()
-    assert manager.continue_session("opaque/provider/session", "second") == "answer:second"
+    with pytest.raises(RuntimeError, match="incompatible workspace"):
+        manager.continue_session("opaque/provider/session", "second")
     assert manager._last_continue_session_resumed is False
     methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert methods.count("session/resume") == 1
-    assert methods.count("session/start") == 1
-    assert methods.count("turn/start") == 1
-    assert manager.get_last_session_id() == "opaque/provider/session"
+    assert "session/start" not in methods
+    assert "turn/start" not in methods
+    assert manager.get_last_session_id() is None
     if remove_original:
         assert not old_repo.exists()
     else:
@@ -560,7 +599,7 @@ def test_muse_noedit_continuation_prevents_write_and_shell_effects(tmp_path, mon
         ("MSP_PENDING_RESUME", "pending interactive requests"),
     ],
 )
-def test_muse_incompatible_resume_state_fails_before_turn_and_falls_back(tmp_path, monkeypatch, _use_real_commands, mode, error_pattern):
+def test_muse_incompatible_resume_state_fails_without_fresh_fallback(tmp_path, monkeypatch, _use_real_commands, mode, error_pattern):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -582,9 +621,10 @@ def test_muse_incompatible_resume_state_fails_before_turn_and_falls_back(tmp_pat
     assert "turn/start" not in failed_methods
 
     log.unlink()
-    assert manager.continue_session("opaque/provider/session", "second") == "answer:second"
+    with pytest.raises(RuntimeError, match=error_pattern):
+        manager.continue_session("opaque/provider/session", "second", is_noedit=True)
     assert manager._last_continue_session_resumed is False
     methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert methods.count("session/resume") == 1
-    assert methods.count("session/start") == 1
-    assert methods.count("turn/start") == 1
+    assert "session/start" not in methods
+    assert "turn/start" not in methods

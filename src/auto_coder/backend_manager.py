@@ -628,8 +628,10 @@ class BackendManager(LLMBackendManagerBase):
         """Ask the current client to continue an opaque session explicitly.
 
         A workspace/session compatibility rejection remains an explicit failure
-        instead of making a fresh provider call look resumed. Other established
-        provider failures retain the existing fallback behavior.
+        instead of making a fresh provider call look resumed. Muse MSP exact-session
+        failures also remain explicit because a fresh call cannot preserve the
+        requested conversation. Other established provider failures retain the
+        existing fallback behavior.
         """
         self._last_continue_session_resumed = False
         if not session_id.strip():
@@ -659,6 +661,10 @@ class BackendManager(LLMBackendManagerBase):
             return self._run_llm_cli(prompt, is_noedit=is_noedit)
         except Exception as exc:
             if not isinstance(exc, (ValueError, RuntimeError, NotImplementedError)):
+                raise
+            config_backend = getattr(client, "config_backend", None)
+            backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
+            if backend_type == "muse":
                 raise
             logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
             self._last_continue_session_resumed = False

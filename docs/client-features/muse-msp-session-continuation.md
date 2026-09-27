@@ -9,9 +9,10 @@ workspace, model, and pending-request state, and then sends one new turn.
 
 Auto-Coder accepts only the final assistant message belonging to a successfully
 completed new turn. Protocol failures, identity or workspace mismatches,
-pending interactive requests, host death, and timeouts fail continuation; the
-backend manager may subsequently perform its existing fresh fallback, but does
-not report that fallback as resumed continuity.
+pending interactive requests, rejected or unverifiable approval changes, host
+death, and timeouts fail continuation. The backend manager propagates Muse
+continuation errors without starting a fresh session, because a fresh call
+cannot preserve the explicitly requested conversation.
 
 No-edit is applied independently to every host by passing only
 `--disable-write` and `--disable-shell` to `muse serve`, then establishing
