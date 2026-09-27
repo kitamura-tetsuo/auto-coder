@@ -625,6 +625,7 @@ class BackendManager(LLMBackendManagerBase):
         Session-specific rejection falls back to a new session on the same
         backend. Usage failures retain ordinary backend rotation behavior.
         """
+        self._last_continue_session_resumed = False
         backend_name = self._current_backend_name()
         client = self._get_or_create_client(backend_name)
         self._is_noedit = is_noedit

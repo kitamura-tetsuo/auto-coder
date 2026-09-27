@@ -6,7 +6,10 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from src.auto_coder.cli_helpers import build_backend_manager
+from src.auto_coder.exceptions import AutoCoderTimeoutError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 
 
@@ -28,7 +31,7 @@ def _host(path: Path) -> Path:
     host = path / "muse"
     host.write_text(
         r"""#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 if sys.argv[1:] == ["--version"]:
     print("Muse Code 1.3.1")
@@ -48,6 +51,10 @@ for line in sys.stdin:
         sid = "opaque/provider/session" if method == "session/start" else frame["params"]["sessionId"]
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":sid,"workspaceRoot":os.getcwd(),"modelId":"muse-spark-1.3"},"pendingRequests":[]}})
     elif method == "turn/start":
+        if os.environ.get("MSP_MUTATE"):
+            Path("tracked.txt").write_text("mutated\n")
+        if os.environ.get("MSP_SLEEP"):
+            time.sleep(float(os.environ["MSP_SLEEP"]))
         turn = "turn-" + frame["params"]["commandId"]
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"turnId":turn,"disposition":"started"}})
         emit({"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":frame["params"]["sessionId"],"item":{"itemId":"answer","kind":"message","revision":1,"status":"completed","turnId":turn,"role":"assistant","text":"answer:" + ("second" if "second" in frame["params"]["input"][0]["text"] else "first")}}})  # noqa: E501
@@ -87,4 +94,42 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     assert [entry["frame"]["params"]["sessionId"] for entry in resumes] == [session_id]
     assert len(turns) == 2
     assert turns[1]["argv"] == ["serve", "--disable-write", "--disable-shell", "--disable-approval"]
+    assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+def test_muse_failed_post_turn_invariant_does_not_expose_session(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_MUTATE", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    client = manager._clients["muse"]
+
+    with pytest.raises(RuntimeError, match="Git-state invariant"):
+        client._run_llm_cli("first", is_noedit=True)
+
+    assert client.get_last_session_id() is None
+    assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+def test_muse_timeout_classification_survives_invariant_failure(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_MUTATE", "1")
+    monkeypatch.setenv("MSP_SLEEP", "2")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", timeout=1)})
+    manager = _manager(config)
+    client = manager._clients["muse"]
+
+    with pytest.raises(AutoCoderTimeoutError, match="timed out after 1 seconds") as raised:
+        client._run_llm_cli("first", is_noedit=True)
+
+    assert any("repository invariant check also failed" in note for note in raised.value.__notes__)
+    assert client.get_last_session_id() is None
     assert (repo / "tracked.txt").read_text() == "unchanged\n"

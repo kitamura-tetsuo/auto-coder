@@ -641,6 +641,9 @@ class MuseClient(LLMClientBase):
         self._last_session_id = None
         deadline = time.monotonic() + self.timeout
         notifications: list[dict[str, object]] = []
+        completed_session_id: Optional[str] = None
+        final_output: Optional[str] = None
+        invocation_error: Optional[BaseException] = None
         try:
             logger.warning("LLM invocation: Muse Code MSP host is being called. Keep LLM calls minimized.")
             process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix", bufsize=0)
@@ -715,10 +718,13 @@ class MuseClient(LLMClientBase):
                     answers.append(str(item["text"]))
             if not answers:
                 raise RuntimeError("Muse MSP turn completed without final assistant text")
-            self._last_session_id = canonical_id
-            return answers[-1]
+            completed_session_id = canonical_id
+            final_output = answers[-1]
         except subprocess.TimeoutExpired as exc:
-            raise AutoCoderTimeoutError(f"Muse MSP invocation timed out after {self.timeout} seconds") from exc
+            invocation_error = AutoCoderTimeoutError(f"Muse MSP invocation timed out after {self.timeout} seconds")
+            invocation_error.__cause__ = exc
+        except BaseException as exc:
+            invocation_error = exc
         finally:
             if process is not None:
                 if process.stdin is not None:
@@ -738,8 +744,23 @@ class MuseClient(LLMClientBase):
             try:
                 mutation_observed = self._trace_contains_git_mutation(trace_path)
                 self._assert_invariants(before, effective_noedit, mutation_observed)
+            except BaseException as invariant_error:
+                self._last_session_id = None
+                if invocation_error is None:
+                    invocation_error = invariant_error
+                else:
+                    invocation_error.add_note(f"Muse repository invariant check also failed: {invariant_error}")
             finally:
                 os.unlink(trace_path)
+
+        if invocation_error is not None:
+            self._last_session_id = None
+            raise invocation_error.with_traceback(invocation_error.__traceback__)
+        if completed_session_id is None or final_output is None:
+            self._last_session_id = None
+            raise RuntimeError("Muse MSP invocation ended without a completed result")
+        self._last_session_id = completed_session_id
+        return final_output
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         return self._run_msp_turn(prompt, is_noedit, None)

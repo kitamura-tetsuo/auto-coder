@@ -109,3 +109,16 @@ def test_resume_usage_limit_rotates_backend_without_same_client_fresh_retry(tmp_
     assert claude.fresh_prompts == []
     assert codex.fresh_prompts == ["review"]
     assert manager.get_last_backend_and_model() == ("codex", "test-model")
+
+
+def test_explicit_resume_resets_continuity_before_unexpected_error(tmp_path):
+    client = SessionClient(fresh_session_id="session")
+    client.continue_error = OSError("unexpected transport failure")
+    manager = _manager(tmp_path, {"codex": client}, automatic_session_resume=False)
+    manager._last_continue_session_resumed = True
+
+    with pytest.raises(OSError, match="unexpected transport failure"):
+        manager.continue_session("session", "review", is_noedit=True)
+
+    assert manager._last_continue_session_resumed is False
+    assert client.fresh_prompts == []
