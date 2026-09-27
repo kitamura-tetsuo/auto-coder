@@ -602,12 +602,13 @@ class PRActionList(list[str]):
 class CloudReviewRepairResult(list[str]):
     """Actions plus confirmation that blocking review work has an owner."""
 
-    def __init__(self, values: Sequence[str] = (), delivered: bool = False, deferred: bool = False, retry_not_before: Optional[float] = None, route_disposition: str = "CLOUD") -> None:
+    def __init__(self, values: Sequence[str] = (), delivered: bool = False, deferred: bool = False, retry_not_before: Optional[float] = None, route_disposition: str = "CLOUD", local_phase: str = "") -> None:
         super().__init__(values)
         self.delivered = delivered
         self.deferred = deferred
         self.retry_not_before = retry_not_before
         self.route_disposition = route_disposition
+        self.local_phase = local_phase
 
 
 class ReviewRepairRouteDisposition(Enum):
@@ -3623,6 +3624,7 @@ def _handle_pr_merge(
             adv_enabled = _is_pr_adversarial_validation_enabled(config, repo_name)
             revalidating_older_head_threads = False
             forced_same_head_revalidation = False
+            local_revalidation_due = False
             reviewer_login = ""
             claimed_review_threads: Sequence[Any] = ()
 
@@ -3679,13 +3681,25 @@ def _handle_pr_merge(
                             publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
                             _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.BLOCKED, {"effect": "review-thread-repair", "reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids)})
                         else:
-                            repair_result = _delegate_cloud_review_thread_repair(
-                                repo_name,
-                                pr_data,
-                                github_client=github_client,
-                                unresolved_threads=repair_threads,
-                            )
+                            repair_kwargs = {
+                                "github_client": github_client,
+                                "unresolved_threads": repair_threads,
+                            }
+                            if any(marker in str(pr_data.get("body") or "") for marker in _LOCAL_REPAIR_MARKERS):
+                                repair_kwargs["config"] = config
+                            repair_result = _delegate_cloud_review_thread_repair(repo_name, pr_data, **repair_kwargs)
                             actions.extend(repair_result)
+                            if repair_result.local_phase in {"completed_no_change", "awaiting_validation"} and adv_enabled:
+                                local_revalidation_due = True
+                                force_adversarial_validation = True
+                                force_admission_eligible = True
+                                try:
+                                    reviewer_login = resolve_reviewer_app_identity(repo_name).login
+                                except Exception as exc:
+                                    logger.error(f"Could not authenticate local-correction revalidation for PR #{pr_number}: {exc}")
+                                else:
+                                    claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login, forced=True)
+                                actions.append(f"Continuing to independent validation for completed local correction on PR #{pr_number}")
                             if repair_result.deferred and processing_status is not None:
                                 processing_status.error = None
                                 processing_status.outcome = PRProcessingOutcome.DEFERRED
@@ -3705,7 +3719,10 @@ def _handle_pr_merge(
                     # current-head validation attempt; the remaining unresolved
                     # threads above are not eligible for independent rereview and
                     # remain a merge blocker (enforced again at the merge boundary).
-                    actions.append(f"Continuing to forced adversarial validation for PR #{pr_number} despite unresolved review threads (explicit --force); merge remains blocked while they are unresolved")
+                    if local_revalidation_due:
+                        actions.append(f"Continuing to independent validation for PR #{pr_number} despite unresolved review threads; merge remains blocked while they are unresolved")
+                    else:
+                        actions.append(f"Continuing to forced adversarial validation for PR #{pr_number} despite unresolved review threads (explicit --force); merge remains blocked while they are unresolved")
 
                 claimed_review_threads = claimed_thread_state.claimed
                 if claimed_review_threads:
@@ -6983,6 +7000,7 @@ def _delegate_cloud_review_thread_repair(
     pr_data: Dict[str, Any],
     github_client: Optional[Any] = None,
     unresolved_threads: Tuple[ReviewThread, ...] = (),
+    config: Optional[AutomationConfig] = None,
 ) -> CloudReviewRepairResult:
     """Assign unresolved review feedback to its originating cloud task.
 
@@ -6995,6 +7013,67 @@ def _delegate_cloud_review_thread_repair(
     route = _select_review_repair_route(repo_name, pr_data, github_client)
     if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED:
         route = _revalidate_local_review_repair_route(route, repo_name, pr_data, github_client)
+        if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED and config is not None:
+            from .local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance, execute_local_review_repair
+
+            evidence = route.evidence
+            if evidence is None:
+                return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: authoritative target evidence is absent"], route_disposition="LOCAL_REQUIRED")
+            implementer = (get_pr_author_login(pr_data) or "").lower()
+            feedback_entries = []
+            for thread in unresolved_threads:
+                addressed_through = max(
+                    (index for index, comment in enumerate(thread.comments) if "<!-- auto-coder-review-addressed:v1 -->" in comment.body),
+                    default=-1,
+                )
+                for index, comment in enumerate(thread.comments):
+                    if index <= addressed_through:
+                        continue
+                    if index and implementer and is_same_github_login(comment.author_login, implementer):
+                        continue
+                    if is_adjudication_envelope(comment.body) or is_change_provenance_thread(thread):
+                        continue
+                    identity = _review_feedback_identity(f"{repo_name}#{pr_number}:local:", thread, index)
+                    feedback_entries.append((thread.id, comment.body, identity))
+            if not feedback_entries:
+                return CloudReviewRepairResult([f"Awaiting independent validation for PR #{pr_number}: no unclaimed corrective feedback remains"], deferred=True, route_disposition="LOCAL_REQUIRED")
+            target = resolve_existing_pr_repair_target(repo_name, {"number": pr_number, "head": {"ref": evidence.head_ref, "sha": evidence.head_sha}, "base": pr_data.get("base", {})})
+            if target is None:
+                return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: exact head/base target is unavailable"], route_disposition="LOCAL_REQUIRED")
+            feedback = "\n\n".join(f"Thread `{thread_id}`:\n{body}" for thread_id, body, _identity in feedback_entries)
+            contract = get_linked_issues_context(github_client, repo_name, pr_data.get("body", ""))
+            details = render_prompt("pr.local_review_correction", actionable_feedback=feedback, linked_issue_contract=contract)
+            prompt = build_existing_pr_repair_prompt(target, details)
+            request = LocalReviewRepairRequest(
+                repository=repo_name,
+                pr_number=pr_number,
+                head_repository=evidence.head_repository,
+                head_ref=evidence.head_ref,
+                head_sha=evidence.head_sha,
+                feedback_identities=tuple(identity for _thread_id, _body, identity in feedback_entries),
+                prompt=prompt,
+            )
+            try:
+                allowance_authority, allowance_reason = admit_local_repair_allowance(request)
+            except Exception as exc:
+                return CloudReviewRepairResult(
+                    [f"Local review repair was not admitted for PR #{pr_number}: repair allowance authority is unavailable: {exc}"],
+                    route_disposition="LOCAL_EXECUTION",
+                    local_phase="not_admitted",
+                )
+            if allowance_authority is None:
+                return CloudReviewRepairResult(
+                    [f"Local review repair was not admitted for PR #{pr_number}: {allowance_reason}"],
+                    route_disposition="LOCAL_EXECUTION",
+                    local_phase="not_admitted",
+                )
+            outcome = execute_local_review_repair(request, allowance_authority=allowance_authority)
+            return CloudReviewRepairResult(
+                [f"Local review correction for PR #{pr_number} is {outcome.phase}: {outcome.reason}"],
+                deferred=outcome.phase not in {"not_admitted", "not_started", "backend_unavailable", "terminal_failure"},
+                route_disposition="LOCAL_EXECUTION",
+                local_phase=outcome.phase,
+            )
     if route.disposition is not ReviewRepairRouteDisposition.CLOUD:
         if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED:
             message = f"LOCAL_REQUIRED for PR #{pr_number}: {route.reason}; local review repair has not been executed"

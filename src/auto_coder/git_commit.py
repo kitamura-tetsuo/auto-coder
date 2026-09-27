@@ -64,6 +64,7 @@ def _perform_git_push(
     remote: str = "origin",
     branch: Optional[str] = None,
     skip_unpushed_check: bool = False,
+    expected_remote_sha: Optional[str] = None,
 ) -> CommandResult:
     """
     Actual git push implementation without recursion.
@@ -95,7 +96,11 @@ def _perform_git_push(
         branch = branch_result.stdout.strip()
 
     # Construct push command
-    push_cmd = ["git", "push", remote, branch]
+    push_cmd = ["git", "push"]
+    if expected_remote_sha:
+        destination = branch.split(":", 1)[-1] if branch else ""
+        push_cmd.append(f"--force-with-lease=refs/heads/{destination}:{expected_remote_sha}")
+    push_cmd.extend([remote, branch])
 
     # Execute push
     result = cmd.run_command(push_cmd, cwd=cwd)
@@ -146,6 +151,7 @@ def git_push(
     remote: str = "origin",
     branch: Optional[str] = None,
     commit_message: Optional[str] = None,
+    expected_remote_sha: Optional[str] = None,
 ) -> CommandResult:
     """
     Push all unpushed commits to remote with enhanced error handling.
@@ -158,6 +164,8 @@ def git_push(
         remote: Remote name (default: 'origin')
         branch: Optional branch name. If None, pushes current branch
         commit_message: Optional commit message for LLM fallback
+        expected_remote_sha: When set, publish with an exact destination lease
+            and return the first failure without unsafe recovery.
 
     Returns:
         CommandResult object with success status and output
@@ -167,10 +175,22 @@ def git_push(
 
     # Push unpushed commits using the actual implementation
     logger.info("Pushing unpushed commits...")
-    push_result = _perform_git_push(cwd=cwd, remote=remote, branch=branch, skip_unpushed_check=skip_unpushed_check)
+    push_result = _perform_git_push(
+        cwd=cwd,
+        remote=remote,
+        branch=branch,
+        skip_unpushed_check=skip_unpushed_check,
+        expected_remote_sha=expected_remote_sha,
+    )
 
     # If push succeeded, return the result
     if push_result.success:
+        return push_result
+
+    # An exact-head publication is deliberately fail-closed. In particular,
+    # never turn a rejected lease into a pull/rebase, formatter recommit, or
+    # LLM-assisted push that could target state other than the captured PR head.
+    if expected_remote_sha:
         return push_result
 
     cmd = CommandExecutor()
