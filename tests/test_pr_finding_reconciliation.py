@@ -270,6 +270,150 @@ def test_as001_repeat_without_another_root(ledger: CanonicalPRBlockerLedger) -> 
     assert b2_id != b1_id
 
 
+def test_authenticated_declared_root_reassociates_without_reparsing_scope(
+    ledger: CanonicalPRBlockerLedger,
+) -> None:
+    """Issue #2308: a retained identity outranks a changed historical rendering."""
+    ledger.initialize_namespace(API_ORIGIN, REPO, PR_NUMBER)
+    payload = BlockerAdmissionPayload(
+        category="IMPLEMENTATION",
+        qualified_requirements=(QualifiedRequirement(issue_number=2308, requirement_id="REQ-002"),),
+        authoritative_boundary="src/auto_coder/original.py",
+        incorrect_behavior_or_missing_invariant="the published root lacks its alias",
+        required_correction_outcome="retain the original blocker identity",
+        evidence_needed="canonical alias",
+        accepted_scope=CorrectionScope(
+            description="associate the published root",
+            concern_ids=("concern-original",),
+        ),
+        observation_identity="original-observation",
+    )
+    blocker_id, before = ledger.admit_blocker(
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        operation_id="admit-original",
+        expected_ledger_revision=1,
+        payload=payload,
+    )
+
+    parsed = parse_historical_pr_review_roots(
+        [
+            {
+                "id": 2308001,
+                "user": {"login": "auto-coder-reviewer[bot]"},
+                "path": "src/auto_coder/moved.py",
+                "body": ("### Adversarial finding\n" "Requirement: REQ-002\n" "**Reachable path**\n" "src/auto_coder/moved.py now uses different explanatory wording.\n\n" f"Blocker identity: `{blocker_id}`"),
+            }
+        ],
+        reviewer_identity=ReviewerAppIdentity(login="auto-coder-reviewer[bot]", app_id=4765828),
+        repo_name=REPO,
+        pr_number=PR_NUMBER,
+    )
+    result = reconcile_pr_findings_before_publication(
+        ledger,
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        2308,
+        "new-head",
+        "new-base",
+        AdversarialValidationResult(result="PASS"),
+        parsed,
+    )
+
+    assert not result.is_ambiguous
+    after = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER, require_retained_state=True)
+    assert len(after.blockers) == 1
+    blocker = after.get_blocker(blocker_id)
+    assert blocker is not None
+    assert blocker.accepted_scope == before.get_blocker(blocker_id).accepted_scope
+    assert blocker.authoritative_boundary == "src/auto_coder/original.py"
+    assert blocker.concern_ids == ("concern-original",)
+    assert blocker.get_canonical_root_comment_id() == 2308001
+
+    repeated = reconcile_pr_findings_before_publication(
+        ledger,
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        2308,
+        "later-head",
+        "new-base",
+        AdversarialValidationResult(result="PASS"),
+        parsed,
+    )
+    assert not repeated.is_ambiguous
+    final = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER, require_retained_state=True)
+    assert len(final.blockers) == 1
+    aliases = [alias for alias in final.get_blocker(blocker_id).aliases if alias.alias_type == "github_root_comment" and alias.alias_value == "2308001"]
+    assert len(aliases) == 1
+
+
+def test_historical_identity_conflicts_fail_closed(
+    ledger: CanonicalPRBlockerLedger,
+) -> None:
+    """Issue #2308: quoted, contradictory, and unknown identities cannot authorize."""
+    ledger.initialize_namespace(API_ORIGIN, REPO, PR_NUMBER)
+    parsed = parse_historical_pr_review_roots(
+        [
+            {
+                "id": 2308002,
+                "user": {"login": "auto-coder-reviewer[bot]"},
+                "body": ("### Adversarial finding\nRequirement: REQ-003\n" "> Blocker identity: `blk_quoted`\n" "```text\nBlocker identity: `blk_fenced`\n```\n" "Blocker identity: `blk_unknown_a`\n" "Blocker identity: `blk_unknown_b`"),
+            }
+        ],
+        reviewer_identity=ReviewerAppIdentity(login="auto-coder-reviewer[bot]", app_id=4765828),
+    )
+    assert parsed.corrections[0].blocker_id is None
+    assert parsed.corrections[0].blocker_identity_conflict == (
+        "blk_unknown_a",
+        "blk_unknown_b",
+    )
+
+    result = reconcile_pr_findings_before_publication(
+        ledger,
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        2308,
+        "head",
+        "base",
+        AdversarialValidationResult(result="PASS"),
+        parsed,
+    )
+    assert result.is_ambiguous
+    assert "Conflicting blocker declarations" in (result.ambiguity_reason or "")
+    snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER, require_retained_state=True)
+    assert snapshot.blockers == ()
+
+    unknown = parse_historical_pr_review_roots(
+        [
+            {
+                "id": 2308003,
+                "user": {"login": "auto-coder-reviewer[bot]"},
+                "body": ("### Adversarial finding\nRequirement: REQ-003\n" "Blocker identity: `blk_not_retained`"),
+            }
+        ],
+        reviewer_identity=ReviewerAppIdentity(login="auto-coder-reviewer[bot]", app_id=4765828),
+    )
+    unknown_result = reconcile_pr_findings_before_publication(
+        ledger,
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        2308,
+        "head",
+        "base",
+        AdversarialValidationResult(result="PASS"),
+        unknown,
+    )
+    assert unknown_result.is_ambiguous
+    assert "unknown blocker 'blk_not_retained'" in (unknown_result.ambiguity_reason or "")
+    unchanged = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER, require_retained_state=True)
+    assert unchanged.blockers == ()
+
+
 # ---------------------------------------------------------------------------
 # AS-002: Already Duplicated Legacy PR
 # ---------------------------------------------------------------------------

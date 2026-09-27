@@ -83,3 +83,18 @@ To ensure safe, idempotent publication across network disruptions and racing pro
   invariant scope checks or mutate ledger state outside the deterministic
   reconciliation lifecycle.
 
+## Authenticated Root Reassociation
+
+Historical roots authored by the configured reviewer App may recover a missing
+`github_root_comment` alias by declaring an already-retained blocker with a
+standalone `Blocker identity:` line. The declaration is interpreted only inside
+the normalized API-origin, repository, and pull-request ledger namespace. Quoted
+or fenced examples are ignored, while unknown IDs, contradictory declarations,
+and conflicts with a retained root binding stop reconciliation without admitting
+a substitute blocker.
+
+Once associated, the root reuses the blocker's immutable accepted scope and
+concern identities even if paths, prose, commits, or observation order change.
+Repeated imports are idempotent. Compound roots may still own several genuinely
+independent corrections; repeated representations of an owner do not create a
+new owner or replace another correction's scope.
