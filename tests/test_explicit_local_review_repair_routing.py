@@ -1,7 +1,9 @@
 """Regression coverage for explicit-local unresolved-review routing."""
 
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
+from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.codex_pr_attribution import AttributionDisposition, AttributionResult
 from auto_coder.pr_processor import (
     ReviewRepairRouteDisposition,
@@ -108,3 +110,39 @@ def test_genuine_cloud_pr_with_empty_authoritative_body_keeps_cloud_route() -> N
     assert decision.disposition is ReviewRepairRouteDisposition.CLOUD
     assert decision.reason == "no authoritative explicit local declaration"
     assert decision.evidence == _metadata("")
+
+
+@patch("auto_coder.pr_processor.resolve_codex_pr_origin", return_value=AttributionResult(AttributionDisposition.UNRESOLVED))
+def test_linked_issue_binding_is_retained_and_cannot_override_local_route(_attribution, tmp_path) -> None:
+    manager = CloudManager("owner/repo", cloud_file_path=tmp_path / "cloud.csv")
+    issue_binding = CloudTaskBinding(provider="jules", task_id="linked-issue-session")
+    assert manager.ensure_binding(7, issue_binding) is True
+    client = _client(_metadata(), _metadata())
+
+    with (
+        patch("auto_coder.pr_processor.CloudManager", return_value=manager),
+        patch("auto_coder.pr_processor._resolve_cloud_task_origin") as cloud_origin,
+    ):
+        result = _delegate_cloud_review_thread_repair("owner/repo", _pr(), client)
+
+    assert result.route_disposition == "LOCAL_REQUIRED"
+    assert result.delivered is False
+    assert "owner/repo PR #42 at owner/repo:issue-7_attempt-1@live-sha" in result[0]
+    cloud_origin.assert_not_called()
+    assert manager.get_binding(7) == issue_binding
+    assert manager.get_binding(42) is None
+
+
+@patch("auto_coder.pr_processor.resolve_codex_pr_origin", return_value=AttributionResult(AttributionDisposition.UNRESOLVED))
+@patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=None)
+def test_changed_authoritative_head_invalidates_selected_local_route(_binding, _attribution) -> None:
+    changed_head = replace(_metadata(), head_sha="changed-live-sha")
+    client = _client(_metadata(), changed_head)
+
+    with patch("auto_coder.pr_processor._resolve_cloud_task_origin") as cloud_origin:
+        result = _delegate_cloud_review_thread_repair("owner/repo", _pr(), client)
+
+    assert result.route_disposition == "CONFLICT"
+    assert result.delivered is False
+    assert result == ["Review repair routing CONFLICT for PR #42: authoritative PR target or local declaration changed after route selection"]
+    cloud_origin.assert_not_called()
