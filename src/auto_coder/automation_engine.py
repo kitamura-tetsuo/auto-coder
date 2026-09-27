@@ -6690,7 +6690,14 @@ class AutomationEngine:
         self.pending_work_scheduler.wake()
         result.error = str(error)
         result.target_outcome = ExplicitTargetOutcome.DEFERRED
-        result.target_reason = f"Deferred reconciliation for {repo_name} issue #{item_number}: " f"{getattr(error, 'reason', obligation.reason.value)}; " f"api_origin={error.outcome.context.api_origin}; retry_at={obligation.not_before}"
+        result.target_reason = (
+            f"Deferred reconciliation for {repo_name} issue #{item_number}: "
+            f"stage={ISSUE_PROCESSING_STAGE}; "
+            f"reason={getattr(error, 'reason', obligation.reason.value)}; "
+            f"api_origin={error.outcome.context.api_origin}; "
+            f"retry_at={obligation.not_before}; "
+            f"delivery={error.outcome.delivery.value}"
+        )
         result.actions = [result.target_reason]
         result.refill_retry_required = True
         return result

@@ -415,9 +415,8 @@ def test_sibling_gate_retains_wrapped_admission_deferral(tmp_path, monkeypatch):
     obligation = store.get(identity)
     assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
     assert result.refill_retry_required is True
-    assert "request_in_flight" in (result.target_reason or "")
-    assert "https://api.github.com" in (result.target_reason or "")
     assert obligation is not None
+    assert result.target_reason == ("Deferred reconciliation for owner/repo issue #7: " "stage=issue-processing; reason=request_in_flight; " f"api_origin=https://api.github.com; retry_at={obligation.not_before}; " "delivery=definitely_not_sent")
     assert obligation.reason is PendingReason.ADMISSION_DEFERRED
     assert obligation.not_before >= deferred.retry_at
     engine.pending_work_scheduler.wake.assert_called_once_with()
@@ -491,9 +490,8 @@ def test_early_live_parent_family_refresh_retains_wrapped_admission_deferral(tmp
     obligation = store.get(identity)
     assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
     assert result.refill_retry_required is True
-    assert "request_in_flight" in (result.target_reason or "")
-    assert "https://api.github.com" in (result.target_reason or "")
     assert obligation is not None
+    assert result.target_reason == ("Deferred reconciliation for owner/repo issue #7: " "stage=issue-processing; reason=request_in_flight; " f"api_origin=https://api.github.com; retry_at={obligation.not_before}; " "delivery=definitely_not_sent")
     assert obligation.reason is PendingReason.ADMISSION_DEFERRED
     assert obligation.not_before >= deferred.retry_at
     engine.pending_work_scheduler.wake.assert_called_once_with()
