@@ -14,4 +14,6 @@ explicit local marker and fails closed. Unavailable authoritative PR or
 association evidence also fails closed. The target evidence is read again before
 the local-required result is consumed, so a changed marker, target, head, or
 association invalidates the earlier decision. Linked-Issue bindings and receipts
-are neither erased nor used to override an explicit-local route.
+are neither erased nor used to override an explicit-local route. Exact-PR binding
+reads are strict, while malformed history for an unrelated non-Codex provider is
+not treated as unavailable Codex publication evidence.

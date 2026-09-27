@@ -1,10 +1,13 @@
 """Regression coverage for explicit-local unresolved-review routing."""
 
+import builtins
+import json
 from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
-from auto_coder.codex_pr_attribution import AttributionDisposition, AttributionResult
+from auto_coder.cloud_run import CloudRunRepository
+from auto_coder.codex_pr_attribution import AttributionDisposition, AttributionResult, CodexPrAttributionRepository
 from auto_coder.pr_processor import (
     ReviewRepairRouteDisposition,
     _delegate_cloud_review_thread_repair,
@@ -43,7 +46,7 @@ def _client(*metadata: PullRequestRoutingMetadata) -> MagicMock:
 
 
 @patch("auto_coder.pr_processor.resolve_codex_pr_origin", return_value=AttributionResult(AttributionDisposition.UNRESOLVED))
-@patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=None)
+@patch("auto_coder.pr_processor.CloudManager.read_bindings_strict", return_value={})
 def test_explicit_local_route_ignores_linked_issue_resolution(_binding, _attribution) -> None:
     client = _client(_metadata())
 
@@ -55,7 +58,7 @@ def test_explicit_local_route_ignores_linked_issue_resolution(_binding, _attribu
 
 
 @patch("auto_coder.pr_processor.resolve_codex_pr_origin", return_value=AttributionResult(AttributionDisposition.UNRESOLVED))
-@patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=None)
+@patch("auto_coder.pr_processor.CloudManager.read_bindings_strict", return_value={})
 def test_local_route_stops_before_cloud_delivery_and_reports_not_executed(_binding, _attribution) -> None:
     client = _client(_metadata(), _metadata())
 
@@ -69,7 +72,7 @@ def test_local_route_stops_before_cloud_delivery_and_reports_not_executed(_bindi
 
 
 @patch("auto_coder.pr_processor.resolve_codex_pr_origin", return_value=AttributionResult(AttributionDisposition.UNRESOLVED))
-@patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=None)
+@patch("auto_coder.pr_processor.CloudManager.read_bindings_strict", return_value={})
 def test_changed_authoritative_marker_invalidates_selected_local_route(_binding, _attribution) -> None:
     client = _client(_metadata(), _metadata("Closes #7"))
 
@@ -85,7 +88,7 @@ def test_changed_authoritative_marker_invalidates_selected_local_route(_binding,
 @patch("auto_coder.pr_processor.resolve_codex_pr_origin", return_value=AttributionResult(AttributionDisposition.UNRESOLVED))
 def test_exact_pr_binding_conflicts_with_explicit_local_marker(_attribution) -> None:
     client = _client(_metadata())
-    with patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=MagicMock(provider="jules", task_id="task")):
+    with patch("auto_coder.pr_processor.CloudManager.read_bindings_strict", return_value={"42": MagicMock(provider="jules", task_id="task")}):
         decision = _select_review_repair_route("owner/repo", _pr(), client)
 
     assert decision.disposition is ReviewRepairRouteDisposition.CONFLICT
@@ -134,7 +137,7 @@ def test_linked_issue_binding_is_retained_and_cannot_override_local_route(_attri
 
 
 @patch("auto_coder.pr_processor.resolve_codex_pr_origin", return_value=AttributionResult(AttributionDisposition.UNRESOLVED))
-@patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=None)
+@patch("auto_coder.pr_processor.CloudManager.read_bindings_strict", return_value={})
 def test_changed_authoritative_head_invalidates_selected_local_route(_binding, _attribution) -> None:
     changed_head = replace(_metadata(), head_sha="changed-live-sha")
     client = _client(_metadata(), changed_head)
@@ -145,4 +148,53 @@ def test_changed_authoritative_head_invalidates_selected_local_route(_binding, _
     assert result.route_disposition == "CONFLICT"
     assert result.delivered is False
     assert result == ["Review repair routing CONFLICT for PR #42: authoritative PR target or local declaration changed after route selection"]
+    cloud_origin.assert_not_called()
+
+
+def test_unreadable_exact_pr_binding_is_unavailable_at_selection_and_delegation(tmp_path) -> None:
+    cloud_path = tmp_path / "cloud.csv"
+    cloud_path.write_text("issue_number,provider,backend_name,session_id\n42,jules,,exact-pr-session\n", encoding="utf-8")
+    manager = CloudManager("owner/repo", cloud_file_path=cloud_path)
+    original_open = builtins.open
+
+    def deny_cloud_read(path, *args, **kwargs):
+        if str(path) == str(cloud_path):
+            raise PermissionError("cloud ownership denied")
+        return original_open(path, *args, **kwargs)
+
+    with (
+        patch("auto_coder.pr_processor.CloudManager", return_value=manager),
+        patch("builtins.open", side_effect=deny_cloud_read),
+        patch("auto_coder.pr_processor._resolve_cloud_task_origin") as cloud_origin,
+    ):
+        decision = _select_review_repair_route("owner/repo", _pr(), _client(_metadata()))
+        result = _delegate_cloud_review_thread_repair("owner/repo", _pr(), _client(_metadata()))
+
+    assert decision.disposition is ReviewRepairRouteDisposition.UNAVAILABLE
+    assert "PermissionError: cloud ownership denied" in decision.reason
+    assert result.route_disposition == "UNAVAILABLE"
+    assert "PermissionError: cloud ownership denied" in result[0]
+    assert "LOCAL_REQUIRED" not in result[0]
+    cloud_origin.assert_not_called()
+
+
+def test_malformed_unrelated_provider_history_does_not_change_local_route(tmp_path) -> None:
+    manager = CloudManager("owner/repo", cloud_file_path=tmp_path / "cloud.csv")
+    runs_path = tmp_path / "cloud_runs.json"
+    runs_path.write_text(json.dumps({"7:bad": {"repo_name": "owner/repo", "issue_number": 7, "attempt": "not-an-integer", "provider": "claude-routine", "task_id": "old-claude-task"}}), encoding="utf-8")
+    runs = CloudRunRepository("owner/repo", storage_path=runs_path)
+    attributions = CodexPrAttributionRepository("owner/repo", storage_path=tmp_path / "attributions.json")
+
+    with (
+        patch("auto_coder.pr_processor.CloudManager", return_value=manager),
+        patch("auto_coder.cloud_run.CloudRunRepository", return_value=runs),
+        patch("auto_coder.pr_processor.CodexPrAttributionRepository", return_value=attributions),
+        patch("auto_coder.pr_processor._resolve_cloud_task_origin") as cloud_origin,
+    ):
+        result = _delegate_cloud_review_thread_repair("owner/repo", _pr(), _client(_metadata(), _metadata()))
+
+    assert result.route_disposition == "LOCAL_REQUIRED"
+    assert result.delivered is False
+    assert "owner/repo PR #42 at owner/repo:issue-7_attempt-1@live-sha" in result[0]
+    assert json.loads(runs_path.read_text(encoding="utf-8"))["7:bad"]["attempt"] == "not-an-integer"
     cloud_origin.assert_not_called()

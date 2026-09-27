@@ -6828,7 +6828,9 @@ def _select_review_repair_route(repo_name: str, pr_data: Dict[str, Any], github_
         return ReviewRepairRouteDecision(ReviewRepairRouteDisposition.UNAVAILABLE, "authoritative PR routing evidence does not identify the open target PR", evidence)
 
     try:
-        direct_binding = CloudManager(repo_name).get_binding(pr_number)
+        direct_binding = CloudManager(repo_name).read_bindings_strict().get(str(pr_number))
+        if direct_binding is not None and (not direct_binding.provider or not direct_binding.task_id):
+            raise ValueError("exact-PR cloud association is incomplete")
         from .cloud_run import CloudRunRepository
 
         attribution = resolve_codex_pr_origin(
