@@ -5626,9 +5626,9 @@ def _is_codex_pr(pr_data: Dict[str, Any]) -> bool:
         return False
 
     # Check for Codex task / session URLs
-    if re.search(r"https?://(?:chatgpt\.com|chat\.openai\.com|[^\s/]+)/codex/tasks/[a-zA-Z0-9_-]+", pr_body, re.IGNORECASE):
+    if re.search(r"https?://(?:chatgpt\.com|chat\.openai\.com|[^\s/]+)/codex/(?:cloud/)?tasks/[a-zA-Z0-9_-]+", pr_body, re.IGNORECASE):
         return True
-    if "/codex/tasks/" in pr_body:
+    if "/codex/tasks/" in pr_body or "/codex/cloud/tasks/" in pr_body:
         return True
 
     return False

@@ -6732,7 +6732,7 @@ class AutomationEngine:
                     numeric_attempt=recovered_run.attempt,
                     backend_name=recovered_run.backend_name,
                     task_id=recovered_run.task_id,
-                    task_url=recovered_run.task_url,
+                    task_url=canonical_codex_cloud_task_url(recovered_run.task_id) or recovered_run.task_url,
                     environment_id=recovered_run.environment_id,
                     base_branch=recovered_run.base_branch,
                 )

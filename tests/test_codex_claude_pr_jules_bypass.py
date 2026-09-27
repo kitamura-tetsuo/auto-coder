@@ -8,11 +8,13 @@ import pytest
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.pr_processor import (
+    _close_empty_pr,
     _find_codex_cloud_task_for_issue,
     _is_claude_pr,
     _is_codex_or_claude_pr,
     _is_codex_pr,
     _is_jules_pr,
+    _is_unsafe_codex_cloud_branch,
     _link_codex_cloud_pr_to_issue,
     _send_jules_error_feedback,
     _should_skip_waiting_for_jules,
@@ -53,6 +55,40 @@ def test_is_codex_pr_detection():
         "user": {"login": "developer"},
     }
     assert _is_codex_pr(normal_pr) is False
+
+
+@pytest.mark.parametrize("route", ["codex/tasks", "codex/cloud/tasks"])
+def test_supported_codex_url_routes_have_identical_unsafe_branch_classification(route):
+    pr = {
+        "number": 7,
+        "body": f"Closes #7\n\nhttps://chatgpt.com/{route}/task_e_Ab19",
+        "user": {"login": "repository-user"},
+        "head": {"ref": "work"},
+    }
+
+    assert _is_codex_pr(pr) is True
+    assert _is_unsafe_codex_cloud_branch(pr) is True
+
+
+@pytest.mark.parametrize("route", ["codex/tasks", "codex/cloud/tasks"])
+def test_supported_codex_url_routes_defer_empty_work_branch_to_recovery(route):
+    pr = {
+        "number": 7,
+        "body": f"Closes #7\n\nhttps://chatgpt.com/{route}/task_e_Ab19",
+        "state": "open",
+        "user": {"login": "repository-user"},
+        "head": {"ref": "work"},
+        "changed_files": 0,
+        "additions": 0,
+        "deletions": 0,
+    }
+    github = MagicMock()
+
+    result = _close_empty_pr(github, "owner/repo", pr, AutomationConfig())
+
+    assert result.closed is False
+    assert result.actions == []
+    github.close_pr.assert_not_called()
 
 
 def test_is_claude_pr_detection():

@@ -140,7 +140,16 @@ def test_missing_owner_recovery_counts_over_limit_and_preserves_existing_owner(t
     assert slots.active_execution_ids(ImplementationOwner("issue", 2223)) == ()
 
 
-def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "retained_url",
+    [
+        "https://chatgpt.com/codex/tasks/task_e_Recovered8",
+        "https://chatgpt.com/codex/cloud/tasks/task_e_Recovered8",
+        "",
+    ],
+)
+@patch("auto_coder.codex_cloud_client.CodexCloudClient")
+def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run(mock_client_type, retained_url, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     authority = _authority()
     run = CloudRun(
@@ -148,12 +157,12 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
         2223,
         5,
         "codex-cloud",
-        task_id="task-recovered",
+        task_id="task_e_Recovered8",
         backend_name="codex-original",
         environment_id="environment-original",
         base_branch="original-base",
         submission_outcome="accepted",
-        task_url="https://example.test/tasks/task-recovered",
+        task_url=retained_url,
     )
     CloudRunRepository("owner/repo").save(run)
     assert CloudManager("owner/repo").add_session(2223, run.task_id, run.provider, run.backend_name)
@@ -164,6 +173,7 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
 
     outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
 
+    mock_client_type.assert_not_called()
     assert outcome is ExplicitTargetOutcome.SUCCESS
     assert "R=request-1" in reason
     recovered = RetryDispatchRepository("owner/repo").get(authority.request_id)
@@ -174,6 +184,7 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
         recovered.generation,
         recovered.numeric_attempt,
         recovered.external_id,
+        recovered.external_url,
         recovered.backend_name,
         recovered.environment_id,
         recovered.creation_id,
@@ -183,7 +194,8 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
         authority.attempt_id,
         authority.generation,
         5,
-        run.task_id,
+        "task_e_Recovered8",
+        "https://chatgpt.com/codex/cloud/tasks/task_e_Recovered8",
         run.backend_name,
         run.environment_id,
         authority.ownership_reference,
