@@ -30,6 +30,31 @@ class RepairRoundApplication:
     editor_error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class AuthoritativeRepairState:
+    """Fresh contract content plus submission and ownership authority."""
+
+    content: str
+    submission_active: bool = True
+    ownership_valid: bool = True
+    manifest_valid: bool = True
+
+
+def classify_repair_observation(
+    before_state: AuthoritativeRepairState,
+    after_state: Optional[AuthoritativeRepairState],
+) -> tuple[str, Optional[str]]:
+    """Classify fresh authority before comparing contract content."""
+    if after_state is None:
+        return "UNVERIFIED", None
+    if not after_state.submission_active or not after_state.ownership_valid:
+        return "SUPERSEDED", after_state.content
+    if not after_state.manifest_valid:
+        return "UNVERIFIED", after_state.content
+    outcome = "NO_CONTRACT_CHANGE" if after_state.content == before_state.content else "CONTRACT_CHANGED"
+    return outcome, after_state.content
+
+
 class SpecificationRepairRoundStore:
     """Persist immutable generation-to-episode assignments and bounded rounds.
 

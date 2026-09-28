@@ -5,6 +5,7 @@ from pathlib import Path
 
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import analyze_issue_specification
+from auto_coder.specification_repair_rounds import AuthoritativeRepairState
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "specification_regressions" / "auto-coder-1790"
@@ -183,7 +184,7 @@ def test_fourth_blocked_generation_trips_circuit_breaker_but_ready_can_converge(
             decision,
             lambda: True,
             lambda: None,
-            lambda body=bodies[generation]: body,
+            lambda body=bodies[generation]: AuthoritativeRepairState(body),
         )
         assert authorization.automatic_repair_authorized
         assert authorization.observation == "NO_CONTRACT_CHANGE"

@@ -18,6 +18,9 @@ reader. Before dispatch, the lifecycle durably binds the exact serialized
 subject state to the counted generation. After the editor returns or raises,
 the lifecycle reads again and durably records `NO_CONTRACT_CHANGE`,
 `CONTRACT_CHANGED`, or `UNVERIFIED`, while retaining editor failure separately.
+An ended submission or changed subject ownership takes precedence over content
+comparison and records `SUPERSEDED`; an invalid current manifest or malformed
+read records `UNVERIFIED` rather than apparent contract progress.
 Duplicate calls and restart recovery observe the same operation without
 dispatching the editor or incrementing the generation again. Neither an editor
 return value nor a comment is repair-progress evidence.

@@ -33,7 +33,12 @@ from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
 from .role_structural_assessment import ROLE_IMPLEMENTATION_CHILD, ROLE_TRACKING_PARENT, assess_role_structure
 from .runtime_locks import ensure_lock_directory, lock_path
-from .specification_repair_rounds import RepairRoundApplication, SpecificationRepairRoundStore
+from .specification_repair_rounds import (
+    AuthoritativeRepairState,
+    RepairRoundApplication,
+    SpecificationRepairRoundStore,
+    classify_repair_observation,
+)
 from .specification_validation_lifecycle import (
     DIAGNOSTIC_EFFECT,
     READINESS_WITHDRAWAL_EFFECT,
@@ -507,7 +512,7 @@ class DecompositionValidationLifecycle:
         decision: DecompositionDecision,
         set_is_current: Callable[[], bool],
         initiate: Callable[[], None],
-        read_authoritative_state: Optional[Callable[[], Optional[str]]] = None,
+        read_authoritative_state: Optional[Callable[[], Optional[AuthoritativeRepairState]]] = None,
     ) -> RepairRoundApplication:
         """Initiate once and settle a set repair from authoritative set reads."""
         from .llm_backend_config import get_specification_repair_round_limit_from_config
@@ -517,7 +522,7 @@ class DecompositionValidationLifecycle:
             if read_authoritative_state is None or current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not set_is_current():
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("decomposition", decision.identity.parent.issue_number))
             before_state = read_authoritative_state()
-            if before_state is None:
+            if before_state is None or not before_state.submission_active or not before_state.ownership_valid or not before_state.manifest_valid:
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("decomposition", decision.identity.parent.issue_number))
             applied = self.repair_rounds.authorize(
                 "decomposition",
@@ -525,7 +530,7 @@ class DecompositionValidationLifecycle:
                 self._repair_generation(current),
                 current.remediation,
                 get_specification_repair_round_limit_from_config(repo_name=self.repository),
-                before_state,
+                before_state.content,
             )
         editor_error: Optional[str] = None
         if applied.automatic_repair_authorized:
@@ -535,13 +540,13 @@ class DecompositionValidationLifecycle:
                 editor_error = f"{type(exc).__name__}: {exc}"
         try:
             after_state = read_authoritative_state()
-            observation = "UNVERIFIED" if after_state is None else ("NO_CONTRACT_CHANGE" if after_state == before_state else "CONTRACT_CHANGED")
+            observation, after_content = classify_repair_observation(before_state, after_state)
             observed = self.repair_rounds.observe(
                 "decomposition",
                 decision.identity.parent.issue_number,
                 self._repair_generation(decision),
                 observation,
-                after_state,
+                after_content,
                 editor_error,
             )
             return replace(observed, automatic_repair_authorized=applied.automatic_repair_authorized)

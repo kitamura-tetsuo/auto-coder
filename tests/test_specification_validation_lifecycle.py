@@ -18,6 +18,7 @@ from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import IndividualRelationshipContext, SpecificationAnalysisResult, SpecificationFinding
+from auto_coder.specification_repair_rounds import AuthoritativeRepairState
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 
@@ -247,7 +248,7 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
             decision,
             lambda: True,
             lambda: initiated.append(gate.repair_rounds.count("individual", 1728)),
-            lambda body=body: body,
+            lambda body=body: AuthoritativeRepairState(body),
         )
         assert authorization.automatic_repair_authorized
         assert initiated == [generation + 1]
@@ -301,7 +302,7 @@ def test_explicit_repair_observes_no_contract_change_and_never_replays_editor(tm
         decision,
         lambda: True,
         lambda: editor_calls.append("called"),
-        lambda: authoritative["state"],
+        lambda: AuthoritativeRepairState(authoritative["state"]),
     )
     assert first.automatic_repair_authorized is True
     assert first.observation == "NO_CONTRACT_CHANGE"
@@ -314,7 +315,7 @@ def test_explicit_repair_observes_no_contract_change_and_never_replays_editor(tm
         decision,
         lambda: True,
         lambda: editor_calls.append("replayed"),
-        lambda: authoritative["state"],
+        lambda: AuthoritativeRepairState(authoritative["state"]),
     )
     assert duplicate.automatic_repair_authorized is False
     assert duplicate.observation == "NO_CONTRACT_CHANGE"
@@ -332,9 +333,31 @@ def test_explicit_repair_observes_authoritative_contract_change(tmp_path):
     def edit() -> None:
         authoritative["state"] = BODY + "\n\n## Context\nChanged"
 
-    result = gate.authorize_automatic_repair(decision, lambda: True, edit, lambda: authoritative["state"])
+    result = gate.authorize_automatic_repair(decision, lambda: True, edit, lambda: AuthoritativeRepairState(authoritative["state"]))
     assert result.observation == "CONTRACT_CHANGED"
     assert result.editor_error is None
+    assert gate.repair_rounds.count("individual", 1728) == 1
+
+
+@pytest.mark.parametrize(
+    ("after", "expected"),
+    [
+        (AuthoritativeRepairState(BODY, submission_active=False), "SUPERSEDED"),
+        (AuthoritativeRepairState(BODY + " changed", ownership_valid=False), "SUPERSEDED"),
+        (AuthoritativeRepairState(BODY + " invalid", manifest_valid=False), "UNVERIFIED"),
+        (None, "UNVERIFIED"),
+    ],
+)
+def test_individual_repair_authority_precedes_content_comparison(tmp_path, after, expected):
+    """REQ-005: ended ownership and invalid reads cannot become progress."""
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=blocked))
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    reads = iter((AuthoritativeRepairState(BODY), after))
+
+    result = gate.authorize_automatic_repair(decision, lambda: True, lambda: None, lambda: next(reads))
+
+    assert result.observation == expected
     assert gate.repair_rounds.count("individual", 1728) == 1
 
 

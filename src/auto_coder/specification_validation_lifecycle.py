@@ -33,7 +33,12 @@ from .specification_analyzer import (
     individual_review_evidence,
     objective_integrity_result,
 )
-from .specification_repair_rounds import RepairRoundApplication, SpecificationRepairRoundStore
+from .specification_repair_rounds import (
+    AuthoritativeRepairState,
+    RepairRoundApplication,
+    SpecificationRepairRoundStore,
+    classify_repair_observation,
+)
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 from .util.github_request_outcome import GitHubRequestError
 
@@ -926,7 +931,7 @@ class SpecificationValidationLifecycle:
         decision: ValidationDecision,
         submission_is_current: Callable[[], bool],
         initiate: Callable[[], None],
-        read_authoritative_state: Optional[Callable[[], Optional[str]]] = None,
+        read_authoritative_state: Optional[Callable[[], Optional[AuthoritativeRepairState]]] = None,
     ) -> RepairRoundApplication:
         """Initiate once and settle the operation from a fresh authoritative read.
 
@@ -941,7 +946,7 @@ class SpecificationValidationLifecycle:
             if read_authoritative_state is None or current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not submission_is_current():
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("individual", decision.identity.issue_number))
             before_state = read_authoritative_state()
-            if before_state is None:
+            if before_state is None or not before_state.submission_active or not before_state.ownership_valid or not before_state.manifest_valid:
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("individual", decision.identity.issue_number))
             applied = self.repair_rounds.authorize(
                 "individual",
@@ -949,7 +954,7 @@ class SpecificationValidationLifecycle:
                 decision.identity.specification_digest,
                 current.remediation,
                 get_specification_repair_round_limit_from_config(repo_name=self.repository),
-                before_state,
+                before_state.content,
             )
         editor_error: Optional[str] = None
         if applied.automatic_repair_authorized:
@@ -959,13 +964,13 @@ class SpecificationValidationLifecycle:
                 editor_error = f"{type(exc).__name__}: {exc}"
         try:
             after_state = read_authoritative_state()
-            observation = "UNVERIFIED" if after_state is None else ("NO_CONTRACT_CHANGE" if after_state == before_state else "CONTRACT_CHANGED")
+            observation, after_content = classify_repair_observation(before_state, after_state)
             observed = self.repair_rounds.observe(
                 "individual",
                 decision.identity.issue_number,
                 decision.identity.specification_digest,
                 observation,
-                after_state,
+                after_content,
                 editor_error,
             )
             return replace(observed, automatic_repair_authorized=applied.automatic_repair_authorized)
