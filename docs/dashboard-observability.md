@@ -1347,3 +1347,7 @@ continue through the existing loguru reclamation diagnostics and capacity-refill
 path; `tests/test_codex_reclamation_composition.py` exercises the production
 predicate/settlement/removal composition, while dashboard renderers have no new
 event to map.
+Recovery-linked PR candidates, first-check settlement from durable handoff
+evidence, final guarded token revalidation, and provider-selective startup
+reconstruction remain internal safety decisions on that same reclamation path;
+they do not introduce a dashboard origin, outcome, route, or event schema.

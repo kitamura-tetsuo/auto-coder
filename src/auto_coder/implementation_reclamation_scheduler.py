@@ -447,7 +447,22 @@ def _collect_settle_and_retire_codex(
             RetirementStatus.RETAINED_UNKNOWN,
             diagnostic="Codex evidence is not conclusively terminal",
         )
-    return retire_implementation_slot(slots, converted, routing)
+
+    def _guarded_validation() -> bool:
+        latest_accounting = accounting.snapshot(owner, incarnation)
+        latest = collect_codex_retirement_observation(
+            slots.repo_name,
+            owner,
+            incarnation,
+            slots,
+            latest_accounting,
+            runs,
+            github_client,
+            wham=wham_client,
+        )
+        return latest == refreshed and latest.conclusive and latest_accounting.releasable
+
+    return retire_implementation_slot(slots, converted, routing, guarded_validation=_guarded_validation)
 
 
 def run_due_reclamation_checks(

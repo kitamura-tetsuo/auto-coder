@@ -119,8 +119,30 @@ def production_codex_reconstructor(repository: str, issue_number: int) -> CodexW
     routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
     repair_path = default_correlation_db_path()
 
-    def operation(operation_id: str, kind: str, request: str, phase: CodexWorkPhase, task: str = "", baseline: str = "") -> CodexWorkOperation:
-        return CodexWorkOperation(operation_id, kind, request, baseline or None, task or None, phase, False, False, False, None, phase is CodexWorkPhase.ACCEPTED)
+    def operation(
+        operation_id: str,
+        kind: str,
+        request: str,
+        phase: CodexWorkPhase,
+        task: str = "",
+        baseline: str = "",
+        *,
+        publication_complete: bool = False,
+        tracking_complete: bool = False,
+    ) -> CodexWorkOperation:
+        return CodexWorkOperation(
+            operation_id,
+            kind,
+            request,
+            baseline or None,
+            task or None,
+            phase,
+            False,
+            publication_complete,
+            tracking_complete,
+            None,
+            phase is CodexWorkPhase.ACCEPTED,
+        )
 
     def cloud_runs() -> CodexSourceSnapshot:
         selected = [run for run in runs.list_all() if run.issue_number == issue_number and run.provider == "codex-cloud"]
@@ -128,7 +150,19 @@ def production_codex_reconstructor(repository: str, issue_number: int) -> CodexW
         for run in selected:
             request = run.launch_identity or f"{repository}#{issue_number}:attempt:{run.attempt}"
             phase = CodexWorkPhase.ACCEPTED if run.task_id and run.submission_outcome == "accepted" else (CodexWorkPhase.DELIVERY_UNKNOWN if run.submission_outcome == "indeterminate" else CodexWorkPhase.RESERVED)
-            operations.append(operation(stable_codex_operation_id("submission", request), "submission", request, phase, run.task_id))
+            recovery_record = recovery.get(repository, run.task_id) if run.task_id else None
+            handoff_complete = bool(recovery_record and recovery_record.pr_number and recovery_record.handoff_complete)
+            operations.append(
+                operation(
+                    stable_codex_operation_id("submission", request),
+                    "submission",
+                    request,
+                    phase,
+                    run.task_id,
+                    publication_complete=handoff_complete,
+                    tracking_complete=handoff_complete,
+                )
+            )
         return CodexSourceSnapshot("cloud-runs", _path_identity(runs.storage_path), tuple(operations))
 
     def bindings() -> CodexSourceSnapshot:
@@ -190,12 +224,27 @@ def production_codex_reconstructor(repository: str, issue_number: int) -> CodexW
         task_ids = {run.task_id for run in runs.list_all() if run.issue_number == issue_number and run.task_id}
         if recovery.path.exists():
             with sqlite3.connect(recovery.path) as connection:
-                rows = connection.execute("SELECT task_id,state,completion_turn FROM codex_pr_recovery WHERE repository=? AND provider='codex-cloud'", (repository,)).fetchall()
-            for task, state, baseline in rows:
-                if task in task_ids and state in {"reminder_reserved", "reminder_accepted", "delivery_indeterminate"}:
-                    phase = CodexWorkPhase.ACCEPTED if state == "reminder_accepted" else (CodexWorkPhase.DELIVERY_UNKNOWN if state == "delivery_indeterminate" else CodexWorkPhase.RESERVED)
+                rows = connection.execute(
+                    "SELECT task_id,state,completion_turn,pr_number,handoff_complete FROM codex_pr_recovery WHERE repository=? AND provider='codex-cloud'",
+                    (repository,),
+                ).fetchall()
+            for task, state, baseline, pr_number, handoff_complete in rows:
+                if task in task_ids and state in {"reminder_reserved", "reminder_accepted", "delivery_indeterminate", "pr_observed"}:
+                    phase = CodexWorkPhase.ACCEPTED if state in {"reminder_accepted", "pr_observed"} else (CodexWorkPhase.DELIVERY_UNKNOWN if state == "delivery_indeterminate" else CodexWorkPhase.RESERVED)
                     request = f"initial-pr-publication:v1:{baseline}"
-                    operations.append(operation(stable_codex_operation_id("publication", request), "publication", request, phase, str(task), str(baseline or "")))
+                    completed = bool(pr_number and handoff_complete)
+                    operations.append(
+                        operation(
+                            stable_codex_operation_id("publication", request),
+                            "publication",
+                            request,
+                            phase,
+                            str(task),
+                            str(baseline or ""),
+                            publication_complete=completed,
+                            tracking_complete=completed,
+                        )
+                    )
         return CodexSourceSnapshot("pr-recovery", _value_identity(rows), tuple(operations))
 
     return CodexWorkReconstructor(
@@ -225,5 +274,8 @@ def reconstruct_active_codex_work(repository: str, slots: object) -> None:
         if not incarnation:
             raise RuntimeError(f"Active Issue #{owner.number} has no incarnation")
         reconstructor = production_codex_reconstructor(repository, owner.number)
+        receipt = reconstructor.reconstruct()
+        if not receipt.operations:
+            continue
         accounting = CodexWorkAccounting(slots, reconstructor.consistency_ids)
-        accounting.reconcile_from_receipt(owner, incarnation, reconstructor.reconstruct())
+        accounting.reconcile_from_receipt(owner, incarnation, receipt)

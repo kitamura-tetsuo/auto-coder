@@ -268,6 +268,7 @@ def retire_implementation_slot(
     routing: Optional[IssueStageRoutingStore] = None,
     *,
     pre_lock_barrier: Optional[Callable[[], None]] = None,
+    guarded_validation: Optional[Callable[[], bool]] = None,
 ) -> RetirementResult:
     """Atomically evaluate and commit retirement for *observation*.
 
@@ -283,6 +284,19 @@ def retire_implementation_slot(
         pre_lock_barrier()
 
     with slots.serialize(observation.owner):
+        if guarded_validation is not None:
+            try:
+                validation_current = guarded_validation()
+            except Exception as exc:
+                return RetirementResult(
+                    RetirementStatus.RETAINED_UNKNOWN,
+                    diagnostic=f"Guarded retirement validation unavailable: {type(exc).__name__}",
+                )
+            if not validation_current:
+                return RetirementResult(
+                    RetirementStatus.STALE_OBSERVATION,
+                    diagnostic="Retirement source or PR evidence changed before removal",
+                )
         with slots._state_lock():
             # Check idempotency first: if already retired and absent from active store
             if slots.is_incarnation_retired(observation.reservation_incarnation):

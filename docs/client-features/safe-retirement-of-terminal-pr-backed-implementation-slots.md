@@ -107,6 +107,17 @@ authority for a later admitted operation. Supported legacy records are reconstru
 into this inventory at startup, so a merged PR absent from the open-PR scan can
 still be reclaimed without creating a replacement task.
 
+PR identities durably recorded by initial-PR recovery are candidates even when
+they are not yet mirrored into CloudRun or slot membership and no longer carry a
+current closing reference. A completed recovery handoff supplies the reconstructed
+publication/tracking facts used with fresh causally terminal provider evidence;
+the accounting flags are not a circular prerequisite for observing those durable
+facts. Immediately before active removal, the guarded commit recollects and
+compares the complete Codex source and PR evidence, returning stale/unknown rather
+than releasing when it changed. Startup reconstruction creates Codex accounting
+only when the source inventory contains Codex operations, leaving local-only and
+Jules-only reservations on their established retirement path.
+
 Each owner's check runs inside `ImplementationSlotRepository.serialize(owner)` — the same per-owner cross-process lock ordinary admission/mutation paths already use — so two overlapping checks for the same incarnation never run. Before doing anything, a due check re-reads the live store's current incarnation for the owner and compares it against the obligation's recorded incarnation; a mismatch (already retired, or retired-and-recreated under a new incarnation) safely discards only the stale entry via `ReclamationObligationStore.clear`, which itself re-checks the incarnation immediately before removing the record — so an older incarnation's completion can never consume or clear a newer incarnation's obligation.
 
 This consumer is piggybacked onto the daemon's existing per-repository capacity-refill loop (`_capacity_refill_loop`, already ticking once per second) rather than adding a new global poller or asyncio task. No obligation store scan happens when nothing is pending in it, so idle repositories with no reclamation obligation incur no extra GitHub/Jules reads on this loop's account.

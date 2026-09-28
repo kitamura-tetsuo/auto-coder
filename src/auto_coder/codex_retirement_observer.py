@@ -17,6 +17,7 @@ from .cloud_run import CloudRun, CloudRunRepository
 from .cloud_task_client_base import CloudTaskState
 from .codex_observation import ObservationBinding, execution_evidence
 from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, closes_issue, task_ids_from_text
+from .codex_pr_recovery import CodexPRRecoveryStore, RecoveryRecord
 from .codex_wham_client import CodexWhamClient, WhamTask, WhamTurn
 from .codex_work_accounting import CodexWorkAccounting, CodexWorkOperation, CodexWorkSnapshot, WorkAccountingStatus
 from .implementation_retirement import ImplementationPRObservation, PRTerminalState
@@ -164,12 +165,14 @@ def collect_codex_retirement_observation(
     *,
     wham: Optional[CodexWhamClient] = None,
     attributions: Optional[CodexPrAttributionRepository] = None,
+    recovery: Optional[CodexPRRecoveryStore] = None,
 ) -> CodexRetirementObservation:
     """Collect a fail-closed Codex retirement snapshot without writing state."""
     reasons: list[str] = []
     provenance: list[CandidateSourceProvenance] = []
     client = wham or CodexWhamClient()
     registry = attributions or CodexPrAttributionRepository(repository)
+    recovery_store = recovery or CodexPRRecoveryStore()
 
     slot_before = slots.snapshot()
     if not isinstance(slot_before, ImplementationSlotSnapshot):
@@ -229,6 +232,16 @@ def collect_codex_retirement_observation(
     candidates = set(slot_owner.implementation_prs)
     for run in relevant_runs:
         candidates.update(run.pull_request_numbers)
+    recovery_records: tuple[RecoveryRecord, ...] = ()
+    recovery_identity = "unavailable"
+    try:
+        recovery_records = recovery_store.list_for_tasks(repository, (run.task_id for run in relevant_runs))
+        recovery_identity = _token([asdict(record) for record in recovery_records])
+        candidates.update(record.pr_number for record in recovery_records if record.pr_number is not None)
+        provenance.append(CandidateSourceProvenance("codex-pr-recovery", recovery_identity, True))
+    except Exception as exc:
+        reasons.append(f"Codex PR recovery inventory unavailable: {type(exc).__name__}")
+        provenance.append(CandidateSourceProvenance("codex-pr-recovery", recovery_identity, False))
     attribution_token = "unavailable"
     try:
         origins, attribution_token = registry.snapshot()
@@ -305,13 +318,24 @@ def collect_codex_retirement_observation(
     except Exception as exc:
         reasons.append(f"CloudRun inventory revalidation unavailable: {type(exc).__name__}")
     try:
+        current_recovery = recovery_store.list_for_tasks(repository, (run.task_id for run in relevant_runs))
+        if _token([asdict(record) for record in current_recovery]) != recovery_identity:
+            reasons.append("Codex PR recovery inventory changed during collection")
+    except Exception as exc:
+        reasons.append(f"Codex PR recovery inventory revalidation unavailable: {type(exc).__name__}")
+    try:
         _origins, current_attribution_token = registry.snapshot()
         if current_attribution_token != attribution_token:
             reasons.append("verified PR attribution inventory changed during collection")
     except Exception as exc:
         reasons.append(f"verified PR attribution revalidation unavailable: {type(exc).__name__}")
     try:
-        current_accounting = CodexWorkAccounting(slots).snapshot(owner, incarnation)
+        accounting = CodexWorkAccounting(slots)
+        with slots._state_lock():
+            current_record = slots._read().get(owner.key)
+        if not isinstance(current_record, dict):
+            raise ValueError("active accounting record disappeared")
+        current_accounting = accounting._snapshot_from_record(owner, incarnation, current_record)
         if _token(asdict(current_accounting)) != provenance[1].consistency_identity:
             reasons.append("work accounting changed during collection")
     except Exception as exc:
