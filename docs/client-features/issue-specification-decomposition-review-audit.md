@@ -60,6 +60,12 @@ bound/truncate beyond the structured, already-bounded dataclass fields
 applies). A `READY` verdict is retained exactly like `BLOCKED`/`ERROR`, never
 recorded only on failure.
 
+Individual reports also retain the semantic review mode, predecessor decision
+key, lossless assessed delta, stable finding identities and dispositions, and
+per-boundary coverage/no-impact evidence. This makes bounded rereview
+distinguishable from an unconditional restart without turning the audit adapter
+into authority.
+
 ## Reuse provenance
 
 A REUSED observation looks up the most recent same-generation `EXECUTED`/

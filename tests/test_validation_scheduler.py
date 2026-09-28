@@ -159,7 +159,8 @@ def test_executor_preserves_repository_context_through_real_analyzer_factories(t
         create_manager,
     )
     ready = '{"verdict":"READY","remediation":"NONE","findings":[]}'
-    monkeypatch.setattr("auto_coder.specification_analyzer.run_llm_prompt", lambda *_args, **_kwargs: ready)
+    issue_ready = '{"verdict":"READY","remediation":"NONE","findings":[],"finding_dispositions":[],"coverage":[{"boundary":"REQ-001","status":"FRESH","no_impact_reason":""},{"boundary":"contract-wide","status":"FRESH","no_impact_reason":""}]}'
+    monkeypatch.setattr("auto_coder.specification_analyzer.run_llm_prompt", lambda *_args, **_kwargs: issue_ready)
     decomposition_prompts: list[str] = []
 
     def run_decomposition(prompt: str, **_kwargs: object) -> str:

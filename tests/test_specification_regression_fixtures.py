@@ -16,6 +16,16 @@ def analyze_issue_specification(manifest, body, **kwargs):
     current = extract_objective(body)
     state = "ANCHORED" if current.status == "PRESENT" else "UNANCHORED"
     kwargs["review_evidence"] = IndividualReviewEvidence("{}", objective=ObjectiveAnchor(manifest.issue_number, state, current.text, "fixture:v1", current))
+    runner = kwargs.get("prompt_runner")
+    if runner is not None:
+
+        def evidence_runner(prompt):
+            payload = json.loads(runner(prompt))
+            payload["finding_dispositions"] = []
+            payload["coverage"] = [{"boundary": item.requirement_id, "status": "FRESH", "no_impact_reason": ""} for item in manifest.requirements] + [{"boundary": "contract-wide", "status": "FRESH", "no_impact_reason": ""}]
+            return json.dumps(payload)
+
+        kwargs["prompt_runner"] = evidence_runner
     return _analyze_issue_specification(manifest, body, **kwargs)
 
 

@@ -5,11 +5,12 @@ import pytest
 from auto_coder.objective_evidence import ObjectiveAnchor, ObjectiveExtraction
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import (
+    IncrementalReviewContext,
     IndividualRelationshipContext,
     IndividualReviewEvidence,
 )
 from auto_coder.specification_analyzer import analyze_issue_specification as _analyze_issue_specification
-from auto_coder.specification_analyzer import parse_specification_analysis_response
+from auto_coder.specification_analyzer import parse_incremental_specification_response, parse_specification_analysis_response
 
 
 def analyze_issue_specification(manifest, issue_body, **kwargs):
@@ -33,7 +34,15 @@ def _manifest():
 
 def _response(verdict="READY", findings=None, remediation=None):
     remediation = remediation or ("EDIT_IN_PLACE" if verdict == "BLOCKED" else "NONE")
-    return json.dumps({"verdict": verdict, "remediation": remediation, "findings": findings or []})
+    return json.dumps(
+        {
+            "verdict": verdict,
+            "remediation": remediation,
+            "findings": findings or [],
+            "finding_dispositions": [],
+            "coverage": [{"boundary": boundary, "status": "FRESH", "no_impact_reason": ""} for boundary in ("REQ-001", "REQ-002", "contract-wide")],
+        }
+    )
 
 
 def _finding(category="hidden_requirement", requirement_ids=None):
@@ -197,10 +206,53 @@ def test_false_success_requires_written_counterexample_and_boundary():
     finding = _finding("false_success_gap", ["REQ-001"])
     finding["counterexample"] = "Ordinary --only also bypasses capacity and still satisfies the stated rule."
     finding["missing_normative_boundary"] = "The contract does not forbid bypass without both flags."
-    result = parse_specification_analysis_response(_response("BLOCKED", [finding]), _manifest())
+    result = parse_specification_analysis_response(
+        json.dumps({"verdict": "BLOCKED", "remediation": "EDIT_IN_PLACE", "findings": [finding]}),
+        _manifest(),
+    )
     assert result.verdict == "BLOCKED"
     assert result.findings[0].requirement_ids == ("REQ-001",)
     assert result.findings[0].counterexample.startswith("Ordinary --only")
+
+
+def test_incremental_parser_requires_complete_coverage_and_predecessor_dispositions():
+    predecessor = json.dumps({"findings": [{"finding_id": "decision-a:finding:1"}]})
+    context = IncrementalReviewContext("INCREMENTAL", "decision-a", predecessor, "{}")
+    response = json.dumps(
+        {
+            "verdict": "READY",
+            "remediation": "NONE",
+            "findings": [],
+            "finding_dispositions": [
+                {
+                    "finding_id": "decision-a:finding:1",
+                    "disposition": "RESOLVED",
+                    "reasoning": "The current Requirement now defines the previously missing boundary.",
+                }
+            ],
+            "coverage": [
+                {"boundary": "REQ-001", "status": "FRESH", "no_impact_reason": ""},
+                {
+                    "boundary": "REQ-002",
+                    "status": "CARRIED",
+                    "no_impact_reason": "The edit changes only REQ-001 and has no producer or consumer shared with JSON serialization.",
+                },
+                {"boundary": "contract-wide", "status": "FRESH", "no_impact_reason": ""},
+            ],
+        }
+    )
+
+    result = parse_incremental_specification_response(response, _manifest(), context)
+
+    assert result.verdict == "READY"
+    assert result.dispositions[0].disposition == "RESOLVED"
+    assert result.coverage[1].status == "CARRIED"
+
+    incomplete = json.loads(response)
+    incomplete["coverage"] = incomplete["coverage"][:-1]
+    refused = parse_incremental_specification_response(json.dumps(incomplete), _manifest(), context)
+    assert refused.verdict == "ERROR"
+    assert refused.error == "Specification analyzer did not establish complete current coverage"
 
 
 @pytest.mark.parametrize(

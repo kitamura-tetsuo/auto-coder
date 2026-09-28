@@ -2128,7 +2128,11 @@ class AutomationEngine:
             }
 
         related = [contract(parent)] + [contract(child) for child in children if int(child["number"]) != issue_number]
-        return IndividualRelationshipContext(role="child", related_contracts=json.dumps(related, ensure_ascii=False, indent=2))
+        return IndividualRelationshipContext(
+            role="child",
+            related_contracts=json.dumps(related, ensure_ascii=False, indent=2),
+            parent_number=int(parent["number"]),
+        )
 
     def _authorize_and_apply_blocked(
         self,

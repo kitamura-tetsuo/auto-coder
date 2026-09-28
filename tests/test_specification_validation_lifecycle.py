@@ -1871,3 +1871,37 @@ def test_existing_comment_with_wrong_author_is_an_unconfirmed_conflict_not_a_rep
     assert len(github.comments) == 1, "must never repost over an unresolved conflict"
     saved = gate.store.get(decision.identity)
     assert saved.findings_published is False
+
+
+def test_changed_contract_uses_latest_durable_predecessor_and_retains_lossless_delta(tmp_path):
+    gate = lifecycle(tmp_path, "BLOCKED")
+    first = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    changed = BODY.replace("current value", "stored value")
+    second = gate.decide(build_normative_issue_manifest(1728, "Title", changed), "Title", changed)
+
+    assert first.review_mode == "FULL"
+    assert second.review_mode == "INCREMENTAL"
+    assert second.predecessor_decision_key == first.identity.key
+    delta = json.loads(second.assessed_delta)
+    assert delta["body"] == {"before": BODY, "after": changed}
+    assert delta["manifest"]["before"]["requirements"][0]["text"] == "Return the current value."
+    assert delta["manifest"]["after"]["requirements"][0]["text"] == "Return the stored value."
+    assert second.finding_ids == first.finding_ids
+
+    restarted = lifecycle(tmp_path, "READY", Mock(side_effect=AssertionError("exact decision must reuse")))
+    reused = restarted.decide(build_normative_issue_manifest(1728, "Title", changed), "Title", changed)
+    assert reused.review_mode == "REUSED"
+    assert reused.predecessor_decision_key == first.identity.key
+
+
+def test_changed_parent_selects_full_review_instead_of_child_predecessor(tmp_path):
+    gate = lifecycle(tmp_path, "READY")
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    first_context = IndividualRelationshipContext("child", "[]", 10)
+    gate.decide(manifest, "Title", BODY, first_context)
+    second_context = IndividualRelationshipContext("child", "[]", 11)
+
+    decision = gate.decide(manifest, "Title", BODY, second_context)
+
+    assert decision.review_mode == "FULL"
+    assert decision.predecessor_decision_key is None

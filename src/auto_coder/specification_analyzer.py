@@ -42,6 +42,34 @@ class SpecificationFinding:
 
 
 @dataclass(frozen=True)
+class FindingDisposition:
+    """Current adjudication of one controller-owned predecessor finding."""
+
+    finding_id: str
+    disposition: str
+    reasoning: str
+
+
+@dataclass(frozen=True)
+class ReviewCoverage:
+    """Evidence that one current Requirement or contract-wide boundary was checked."""
+
+    boundary: str
+    status: str
+    no_impact_reason: str = ""
+
+
+@dataclass(frozen=True)
+class IncrementalReviewContext:
+    """Lossless predecessor and delta supplied to a bounded rereview."""
+
+    mode: str
+    predecessor_decision_key: Optional[str] = None
+    predecessor_evidence: str = ""
+    assessed_delta: str = ""
+
+
+@dataclass(frozen=True)
 class SpecificationAnalysisResult:
     """Fail-closed semantic verdict for one authoritative Issue manifest."""
 
@@ -49,6 +77,8 @@ class SpecificationAnalysisResult:
     findings: tuple[SpecificationFinding, ...] = ()
     error: Optional[str] = None
     remediation: str = "NONE"
+    dispositions: tuple[FindingDisposition, ...] = ()
+    coverage: tuple[ReviewCoverage, ...] = ()
 
     @property
     def is_ready(self) -> bool:
@@ -62,6 +92,7 @@ class IndividualReviewEvidence:
     baseline: str
     prior_applied_outcomes: tuple[str, ...] = ()
     objective: Optional[ObjectiveAnchor] = None
+    incremental: IncrementalReviewContext = IncrementalReviewContext("FULL")
 
 
 @dataclass(frozen=True)
@@ -70,6 +101,7 @@ class IndividualRelationshipContext:
 
     role: str = "standalone"
     related_contracts: str = "(No authoritative cross-Issue relationship context supplied.)"
+    parent_number: Optional[int] = None
 
 
 _REVIEW_EVIDENCE: ContextVar[Optional[IndividualReviewEvidence]] = ContextVar("individual_review_evidence", default=None)
@@ -203,6 +235,90 @@ def parse_specification_analysis_response(response: str, manifest: NormativeIssu
     return SpecificationAnalysisResult(verdict=verdict, findings=tuple(findings), remediation=remediation)
 
 
+def parse_incremental_specification_response(
+    response: str,
+    manifest: NormativeIssueManifest,
+    context: IncrementalReviewContext,
+) -> SpecificationAnalysisResult:
+    """Fail closed on the evidence envelope used by production reviews."""
+    try:
+        payload = json.loads(response, object_pairs_hook=_reject_duplicate_json_members)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return _error("Specification analyzer returned unparsable JSON")
+    if not isinstance(payload, dict) or set(payload) != {
+        "verdict",
+        "remediation",
+        "findings",
+        "finding_dispositions",
+        "coverage",
+    }:
+        return _error("Specification analyzer output does not match the evidence schema")
+    core = json.dumps({key: payload[key] for key in ("verdict", "remediation", "findings")})
+    parsed = parse_specification_analysis_response(core, manifest)
+    if parsed.verdict == "ERROR":
+        return parsed
+
+    known_ids = {item.requirement_id for item in manifest.requirements}
+    raw_coverage = payload["coverage"]
+    if not isinstance(raw_coverage, list):
+        return _error("Specification analyzer coverage is malformed")
+    coverage: list[ReviewCoverage] = []
+    seen_boundaries: set[str] = set()
+    for raw in raw_coverage:
+        if not isinstance(raw, dict) or set(raw) != {"boundary", "status", "no_impact_reason"}:
+            return _error("Specification analyzer coverage entry is malformed")
+        boundary, status, reason = raw["boundary"], raw["status"], raw["no_impact_reason"]
+        if (
+            not isinstance(boundary, str)
+            or boundary in seen_boundaries
+            or (boundary not in known_ids and boundary != "contract-wide")
+            or status not in {"FRESH", "CARRIED", "UNRESOLVED"}
+            or not isinstance(reason, str)
+            or (status == "CARRIED" and not reason.strip())
+            or (status != "CARRIED" and reason)
+        ):
+            return _error("Specification analyzer coverage entry is invalid")
+        seen_boundaries.add(boundary)
+        coverage.append(ReviewCoverage(boundary, status, reason.strip()))
+    if seen_boundaries != known_ids | {"contract-wide"} or any(item.status == "UNRESOLVED" for item in coverage):
+        return _error("Specification analyzer did not establish complete current coverage")
+
+    raw_dispositions = payload["finding_dispositions"]
+    if not isinstance(raw_dispositions, list):
+        return _error("Specification analyzer finding dispositions are malformed")
+    predecessor_ids: set[str] = set()
+    if context.mode == "INCREMENTAL":
+        try:
+            predecessor = json.loads(context.predecessor_evidence)
+            predecessor_ids = {str(item["finding_id"]) for item in predecessor.get("findings", [])}
+        except (json.JSONDecodeError, TypeError, KeyError):
+            return _error("Incremental predecessor evidence is malformed")
+    dispositions: list[FindingDisposition] = []
+    seen_findings: set[str] = set()
+    for raw in raw_dispositions:
+        if not isinstance(raw, dict) or set(raw) != {"finding_id", "disposition", "reasoning"}:
+            return _error("Specification analyzer finding disposition is malformed")
+        finding_id, disposition, reasoning = raw["finding_id"], raw["disposition"], raw["reasoning"]
+        if not isinstance(finding_id, str) or finding_id not in predecessor_ids or finding_id in seen_findings or disposition not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"} or not isinstance(reasoning, str) or not reasoning.strip():
+            return _error("Specification analyzer finding disposition is invalid")
+        seen_findings.add(finding_id)
+        dispositions.append(FindingDisposition(finding_id, disposition, reasoning.strip()))
+    if seen_findings != predecessor_ids:
+        return _error("Specification analyzer did not adjudicate every predecessor finding")
+    if any(item.disposition == "UNVERIFIED" for item in dispositions):
+        return _error("Incremental finding evidence remains unverified")
+    if parsed.verdict == "READY" and any(item.disposition in {"STILL_VALID", "REGRESSED"} for item in dispositions):
+        return _error("READY contradicts a remaining predecessor finding")
+    return SpecificationAnalysisResult(
+        parsed.verdict,
+        parsed.findings,
+        parsed.error,
+        parsed.remediation,
+        tuple(dispositions),
+        tuple(coverage),
+    )
+
+
 def analyze_issue_specification(
     manifest: NormativeIssueManifest,
     issue_body: str,
@@ -246,6 +362,10 @@ def analyze_issue_specification(
         durable_baseline=review_evidence.baseline if review_evidence else "(No earlier baseline is available.)",
         prior_applied_outcomes=("\n\n".join(review_evidence.prior_applied_outcomes) if review_evidence and review_evidence.prior_applied_outcomes else "(No prior applied material review outcomes.)"),
         objective_evidence=(objective_evidence_json(review_evidence.objective) if review_evidence and review_evidence.objective else "(Required Objective evidence is unavailable.)"),
+        review_mode=review_evidence.incremental.mode,
+        predecessor_decision_key=review_evidence.incremental.predecessor_decision_key or "(none)",
+        predecessor_evidence=review_evidence.incremental.predecessor_evidence or "(none; perform a full review)",
+        assessed_delta=review_evidence.incremental.assessed_delta or "(none; perform a full review)",
     )
     try:
         if prompt_runner is not None:
@@ -261,4 +381,4 @@ def analyze_issue_specification(
     except Exception as exc:
         logger.exception("Specification analysis execution failed: %s", exc)
         return _error(f"Specification analysis execution failed: {type(exc).__name__}")
-    return parse_specification_analysis_response(response, manifest)
+    return parse_incremental_specification_response(response, manifest, review_evidence.incremental)

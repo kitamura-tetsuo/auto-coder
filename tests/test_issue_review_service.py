@@ -469,7 +469,7 @@ def test_production_specification_analyzer_crosses_prompt_and_parser(tmp_path):
 
     def runner(prompt: str) -> str:
         seen.append(prompt)
-        return '{"verdict": "READY", "remediation": "NONE", "findings": []}'
+        return '{"verdict":"READY","remediation":"NONE","findings":[],' '"finding_dispositions":[],"coverage":[' '{"boundary":"REQ-001","status":"FRESH","no_impact_reason":""},' '{"boundary":"contract-wide","status":"FRESH","no_impact_reason":""}]}'
 
     with individual_review_evidence(evidence):
         result = analyze_issue_specification(manifest, BODY, prompt_runner=runner)

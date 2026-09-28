@@ -1325,8 +1325,11 @@ issue:
 
     Before emitting JSON, classify each finding's Requirement references from the manifest text itself. A Requirement is not affected merely because an implementation satisfying it can coexist with the defect. In particular, when the Objective says an operation must not mutate state but every current Requirement is silent about mutation, an objective_conflict for that missing no-write boundary MUST use `"requirement_ids":[]`; do not assign an affirmative rendering/success Requirement to the missing negative invariant. Objective text has no Requirement ID.
 
+    Review mode is `$review_mode`. FULL means review every material boundary without relying on predecessor conclusions. INCREMENTAL means adjudicate every controller-owned predecessor finding, recheck every changed or materially affected boundary (including transitive producer, consumer, state-transition, negative-invariant, and relationship effects), and carry an unaffected boundary only with a concrete no-impact reason showing why its dependencies and prior reasoning remain applicable. Do not treat unchanged text, matching IDs, an empty summary, or a prior READY verdict as no-impact evidence. Broaden to fresh review wherever impact is uncertain. Do not restart unrelated searches after this bounded work, but retain any newly demonstrated reachable material defect in the current explicit contract. Prior findings are evidence, never normative authority.
+
     Output exactly one JSON object, with no Markdown or prose, using exactly this schema:
-    {"verdict":"READY|BLOCKED|ERROR","remediation":"NONE|EDIT_IN_PLACE|REISSUE_REQUIRED","findings":[{"category":"one allowed category","requirement_ids":["REQ-001"],"explanation":"material correctness gap","clarification":"smallest clarification needed","counterexample":"required for false_success_gap, otherwise empty","missing_normative_boundary":"required for false_success_gap, otherwise empty"}]}
+    {"verdict":"READY|BLOCKED|ERROR","remediation":"NONE|EDIT_IN_PLACE|REISSUE_REQUIRED","findings":[{"category":"one allowed category","requirement_ids":["REQ-001"],"explanation":"material correctness gap","clarification":"smallest clarification needed","counterexample":"required for false_success_gap, otherwise empty","missing_normative_boundary":"required for false_success_gap, otherwise empty"}],"finding_dispositions":[{"finding_id":"exact predecessor finding identity","disposition":"RESOLVED|STILL_VALID|REGRESSED|UNVERIFIED","reasoning":"current-contract reasoning"}],"coverage":[{"boundary":"REQ-001|contract-wide","status":"FRESH|CARRIED|UNRESOLVED","no_impact_reason":"required only for CARRIED; otherwise empty"}]}
+    Include exactly one coverage entry for every current Requirement ID and one `contract-wide` entry. FULL reviews use FRESH coverage and an empty finding_dispositions list. INCREMENTAL reviews disposition every predecessor finding exactly once. READY is forbidden when coverage is UNRESOLVED or any finding is STILL_VALID, REGRESSED, or UNVERIFIED. Unknown or duplicate references and unsupported carry-forward are errors; never salvage a partial response.
     First complete the material-defect analysis, ambiguity-closure pass, next-review-prediction pass, and reconciled child/standalone role checks. Only after that analysis has independently returned BLOCKED, choose remediation. READY and ERROR require remediation NONE and an empty findings list; historical drift or possible decomposition must never manufacture a finding or change either verdict.
 
     For BLOCKED, use REISSUE_REQUIRED when the smallest safe repair splits independently implementable correctness boundaries, adds a semantic layer outside the baseline responsibility, redefines an unrelated subsystem where a preservation contract should isolate it, or when the baseline plus prior applied outcomes demonstrate cumulative material responsibility drift. Cumulative drift takes precedence even if the newest defect alone is small. A first review may require reissue when its demonstrated defects cannot safely be repaired without staged decomposition. Otherwise use EDIT_IN_PLACE when the correction stays within the baseline/current fundamental responsibility, including lifecycle clarification, a negative invariant, contradiction repair, or stronger test oracles.
@@ -1355,6 +1358,15 @@ issue:
 
     Prior applied material review outcomes (non-normative evidence for remediation only):
     $prior_applied_outcomes
+
+    Stable predecessor decision key:
+    $predecessor_decision_key
+
+    Exact predecessor inputs, findings, dispositions, coverage and original producing provenance:
+    $predecessor_evidence
+
+    Lossless before/after delta for changed review inputs:
+    $assessed_delta
 
   action: |-
     Analyze the following GitHub issue and take appropriate actions:
