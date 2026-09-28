@@ -926,13 +926,22 @@ class SpecificationValidationLifecycle:
         decision: ValidationDecision,
         submission_is_current: Callable[[], bool],
         initiate: Callable[[], None],
+        read_authoritative_state: Optional[Callable[[], Optional[str]]] = None,
     ) -> RepairRoundApplication:
-        """Persist authorization before initiating an exact-current contract repair."""
+        """Initiate once and settle the operation from a fresh authoritative read.
+
+        The serialized state is caller-produced and must contain the exact title,
+        body, ordered manifest (including validity), and relationship ownership.
+        Omitting the reader means that no automatic repair can be initiated.
+        """
         from .llm_backend_config import get_specification_repair_round_limit_from_config
 
         with self.store.locked(decision.identity.key):
             current = self.store.get(decision.identity)
-            if current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not submission_is_current():
+            if read_authoritative_state is None or current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not submission_is_current():
+                return RepairRoundApplication(decision.remediation, self.repair_rounds.count("individual", decision.identity.issue_number))
+            before_state = read_authoritative_state()
+            if before_state is None:
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("individual", decision.identity.issue_number))
             applied = self.repair_rounds.authorize(
                 "individual",
@@ -940,10 +949,30 @@ class SpecificationValidationLifecycle:
                 decision.identity.specification_digest,
                 current.remediation,
                 get_specification_repair_round_limit_from_config(repo_name=self.repository),
+                before_state,
             )
-            if applied.automatic_repair_authorized:
+        editor_error: Optional[str] = None
+        if applied.automatic_repair_authorized:
+            try:
                 initiate()
-            return applied
+            except Exception as exc:
+                editor_error = f"{type(exc).__name__}: {exc}"
+        try:
+            after_state = read_authoritative_state()
+            observation = "UNVERIFIED" if after_state is None else ("NO_CONTRACT_CHANGE" if after_state == before_state else "CONTRACT_CHANGED")
+            observed = self.repair_rounds.observe(
+                "individual",
+                decision.identity.issue_number,
+                decision.identity.specification_digest,
+                observation,
+                after_state,
+                editor_error,
+            )
+            return replace(observed, automatic_repair_authorized=applied.automatic_repair_authorized)
+        except Exception as exc:
+            # Authorization remains durable and non-replayable. A later recovery
+            # call can perform observation without invoking the editor again.
+            return replace(applied, observation="UNVERIFIED", editor_error=editor_error or f"{type(exc).__name__}: {exc}")
 
     def _record_applied_outcome(self, decision: ValidationDecision) -> None:
         outcome = json.dumps(

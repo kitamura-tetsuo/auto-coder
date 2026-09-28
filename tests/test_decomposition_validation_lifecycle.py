@@ -903,8 +903,9 @@ def test_closed_parent_cannot_publish_pause_or_create_continuation_episode(tmp_p
         children = [issue(11, "Child", CHILD_BODY)]
         parent_input, child_inputs = decomposition_issues(parent, children)
         decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
-        applied = gate.authorize_automatic_repair(decision, lambda: True, lambda: None)
+        applied = gate.authorize_automatic_repair(decision, lambda: True, lambda: None, lambda parent=parent: parent["body"])
         assert applied.automatic_repair_authorized
+        assert applied.observation == "NO_CONTRACT_CHANGE"
 
     trigger_parent = issue(10, "Parent", PARENT_BODY + "\ntrigger", ready=True)
     children = [issue(11, "Child", CHILD_BODY)]

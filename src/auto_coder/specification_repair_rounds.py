@@ -25,6 +25,9 @@ class RepairRoundApplication:
     automatic_repair_authorized: bool = False
     paused: bool = False
     episode: int = 0
+    operation_identity: Optional[str] = None
+    observation: Optional[str] = None
+    editor_error: Optional[str] = None
 
 
 class SpecificationRepairRoundStore:
@@ -99,9 +102,17 @@ class SpecificationRepairRoundStore:
                 self._write(state)
             return RepairRoundApplication(remediation, previous, reason, authorized, paused, episode_number)
 
-    def authorize(self, subject_kind: str, subject_number: int, generation: str, remediation: str, limit: int) -> RepairRoundApplication:
+    def authorize(
+        self,
+        subject_kind: str,
+        subject_number: int,
+        generation: str,
+        remediation: str,
+        limit: int,
+        before_state: Optional[str] = None,
+    ) -> RepairRoundApplication:
         """Durably count, then authorize, one automatic in-place repair."""
-        return self.apply(
+        applied = self.apply(
             subject_kind,
             subject_number,
             generation,
@@ -109,6 +120,98 @@ class SpecificationRepairRoundStore:
             limit,
             authorize_automatic_repair=True,
         )
+        if before_state is None:
+            return applied
+        operation_identity = f"{subject_kind}:{subject_number}:{generation}"
+        with self._locked():
+            state = self._read()
+            subject = self._subject(state, f"{subject_kind}:{subject_number}")
+            operations = subject.setdefault("operations", {})
+            if not isinstance(operations, dict):
+                raise ValueError("Invalid specification repair operations")
+            operation = operations.get(generation)
+            if operation is None and applied.automatic_repair_authorized:
+                operations[generation] = {
+                    "operation_identity": operation_identity,
+                    "before_state": before_state,
+                    "phase": "AUTHORIZED",
+                    "observation": None,
+                    "after_state": None,
+                    "editor_error": None,
+                }
+                self._write(state)
+            elif not isinstance(operation, dict):
+                raise ValueError("Invalid specification repair operation")
+            elif operation.get("before_state") != before_state:
+                raise ValueError("Specification repair before-state conflict")
+            observation = operation.get("observation") if isinstance(operation, dict) else None
+            editor_error = operation.get("editor_error") if isinstance(operation, dict) else None
+        return RepairRoundApplication(
+            applied.remediation,
+            applied.previous_rounds,
+            applied.reason,
+            applied.automatic_repair_authorized,
+            applied.paused,
+            applied.episode,
+            operation_identity,
+            observation if isinstance(observation, str) else None,
+            editor_error if isinstance(editor_error, str) else None,
+        )
+
+    def observe(
+        self,
+        subject_kind: str,
+        subject_number: int,
+        generation: str,
+        observation: str,
+        after_state: Optional[str],
+        editor_error: Optional[str],
+    ) -> RepairRoundApplication:
+        """Idempotently settle an authorized invocation from authoritative evidence."""
+        key = f"{subject_kind}:{subject_number}"
+        with self._locked():
+            state = self._read()
+            subject = self._subject(state, key)
+            operations = subject.get("operations")
+            operation = operations.get(generation) if isinstance(operations, dict) else None
+            if not isinstance(operation, dict):
+                raise ValueError("Specification repair operation is unavailable")
+            existing = operation.get("observation")
+            if existing is not None:
+                if existing != observation or operation.get("after_state") != after_state:
+                    raise ValueError("Specification repair observation conflict")
+            else:
+                operation.update(
+                    {
+                        "phase": "OBSERVED",
+                        "observation": observation,
+                        "after_state": after_state,
+                        "editor_error": editor_error,
+                    }
+                )
+                self._write(state)
+            episodes = subject["episodes"]
+            associations = subject["generation_episodes"]
+            if not isinstance(episodes, list) or not isinstance(associations, dict):
+                raise ValueError("Invalid specification repair episode state")
+            episode_number = associations.get(generation)
+            if not isinstance(episode_number, int):
+                raise ValueError("Specification repair generation is unavailable")
+            episode = self._episode(episodes, episode_number)
+            counted = episode["counted_generations"]
+            if not isinstance(counted, list):
+                raise ValueError("Invalid specification repair generation count")
+            count = len(counted)
+            return RepairRoundApplication(
+                "EDIT_IN_PLACE",
+                count,
+                automatic_repair_authorized=False,
+                paused=episode["status"] == "paused",
+                episode=episode_number,
+                operation_identity=str(operation["operation_identity"]),
+                observation=str(operation["observation"]),
+                editor_error=operation.get("editor_error") if isinstance(operation.get("editor_error"), str) else None,
+            )
 
     def count(self, subject_kind: str, subject_number: int, episode: Optional[int] = None) -> int:
         raw = self._read().get(f"{subject_kind}:{subject_number}")

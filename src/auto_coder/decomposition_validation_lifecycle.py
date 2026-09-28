@@ -507,13 +507,17 @@ class DecompositionValidationLifecycle:
         decision: DecompositionDecision,
         set_is_current: Callable[[], bool],
         initiate: Callable[[], None],
+        read_authoritative_state: Optional[Callable[[], Optional[str]]] = None,
     ) -> RepairRoundApplication:
-        """Persist authorization before initiating an exact-current set repair."""
+        """Initiate once and settle a set repair from authoritative set reads."""
         from .llm_backend_config import get_specification_repair_round_limit_from_config
 
         with self.store.locked(decision.identity.key):
             current = self.store.get(decision.identity)
-            if current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not set_is_current():
+            if read_authoritative_state is None or current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not set_is_current():
+                return RepairRoundApplication(decision.remediation, self.repair_rounds.count("decomposition", decision.identity.parent.issue_number))
+            before_state = read_authoritative_state()
+            if before_state is None:
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("decomposition", decision.identity.parent.issue_number))
             applied = self.repair_rounds.authorize(
                 "decomposition",
@@ -521,10 +525,28 @@ class DecompositionValidationLifecycle:
                 self._repair_generation(current),
                 current.remediation,
                 get_specification_repair_round_limit_from_config(repo_name=self.repository),
+                before_state,
             )
-            if applied.automatic_repair_authorized:
+        editor_error: Optional[str] = None
+        if applied.automatic_repair_authorized:
+            try:
                 initiate()
-            return applied
+            except Exception as exc:
+                editor_error = f"{type(exc).__name__}: {exc}"
+        try:
+            after_state = read_authoritative_state()
+            observation = "UNVERIFIED" if after_state is None else ("NO_CONTRACT_CHANGE" if after_state == before_state else "CONTRACT_CHANGED")
+            observed = self.repair_rounds.observe(
+                "decomposition",
+                decision.identity.parent.issue_number,
+                self._repair_generation(decision),
+                observation,
+                after_state,
+                editor_error,
+            )
+            return replace(observed, automatic_repair_authorized=applied.automatic_repair_authorized)
+        except Exception as exc:
+            return replace(applied, observation="UNVERIFIED", editor_error=editor_error or f"{type(exc).__name__}: {exc}")
 
     def apply_blocked(self, github: object, decision: DecompositionDecision, fetch_set: Callable[[int], Optional[tuple[dict[str, object], list[dict[str, object]]]]]) -> Optional[str]:
         """Apply idempotent parent-scoped effects only while BLOCKED evidence is authoritative.

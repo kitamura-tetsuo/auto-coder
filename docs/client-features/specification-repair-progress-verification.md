@@ -13,6 +13,15 @@ inherited-child, and decomposition review paths all retain their diagnostic and
 readiness effects while leaving the repair count unchanged when no editor is
 configured.
 
+An explicit lifecycle repair requires a caller-provided authoritative-state
+reader. Before dispatch, the lifecycle durably binds the exact serialized
+subject state to the counted generation. After the editor returns or raises,
+the lifecycle reads again and durably records `NO_CONTRACT_CHANGE`,
+`CONTRACT_CHANGED`, or `UNVERIFIED`, while retaining editor failure separately.
+Duplicate calls and restart recovery observe the same operation without
+dispatching the editor or incrementing the generation again. Neither an editor
+return value nor a comment is repair-progress evidence.
+
 This separation is observability-neutral for the dashboard: it removes a false
 internal repair authorization that emitted no structured dashboard event and
 does not change processing origins, event schemas, or production-to-view

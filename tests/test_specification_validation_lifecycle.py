@@ -243,7 +243,12 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
         gate = SpecificationValidationLifecycle("owner/repo", f"policy-{generation}", decisions_path, lambda *_args: blocked)
         decision = gate.decide(build_normative_issue_manifest(1728, "Title", body), "Title", body)
         initiated = []
-        authorization = gate.authorize_automatic_repair(decision, lambda: True, lambda: initiated.append(gate.repair_rounds.count("individual", 1728)))
+        authorization = gate.authorize_automatic_repair(
+            decision,
+            lambda: True,
+            lambda: initiated.append(gate.repair_rounds.count("individual", 1728)),
+            lambda body=body: body,
+        )
         assert authorization.automatic_repair_authorized
         assert initiated == [generation + 1]
         assert gate.apply_blocked(GitHubFlow([snapshot(body=body)] * 4), decision) is None
@@ -281,6 +286,56 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     duplicate_gate.apply_blocked(GitHubFlow([snapshot(body=duplicate_body)] * 4), duplicate)
     assert duplicate_gate.repair_rounds.count("individual", 1728) == 3
     assert duplicate_gate.repair_rounds.count("individual", 200) == 0
+
+
+def test_explicit_repair_observes_no_contract_change_and_never_replays_editor(tmp_path):
+    """REQ-002 through REQ-007: no-write repair is durably observed once."""
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "decisions.json"
+    gate = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    authoritative = {"state": json.dumps({"title": "Title", "body": BODY, "manifest": decision.identity.manifest_binding}, sort_keys=True)}
+    editor_calls = []
+
+    first = gate.authorize_automatic_repair(
+        decision,
+        lambda: True,
+        lambda: editor_calls.append("called"),
+        lambda: authoritative["state"],
+    )
+    assert first.automatic_repair_authorized is True
+    assert first.observation == "NO_CONTRACT_CHANGE"
+    assert first.operation_identity == f"individual:1728:{decision.identity.specification_digest}"
+    assert editor_calls == ["called"]
+    assert gate.repair_rounds.count("individual", 1728) == 1
+
+    restarted = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    duplicate = restarted.authorize_automatic_repair(
+        decision,
+        lambda: True,
+        lambda: editor_calls.append("replayed"),
+        lambda: authoritative["state"],
+    )
+    assert duplicate.automatic_repair_authorized is False
+    assert duplicate.observation == "NO_CONTRACT_CHANGE"
+    assert editor_calls == ["called"]
+    assert restarted.repair_rounds.count("individual", 1728) == 1
+
+
+def test_explicit_repair_observes_authoritative_contract_change(tmp_path):
+    """REQ-005/REQ-006: callback output is ignored in favor of a fresh read."""
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=blocked))
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    authoritative = {"state": BODY}
+
+    def edit() -> None:
+        authoritative["state"] = BODY + "\n\n## Context\nChanged"
+
+    result = gate.authorize_automatic_repair(decision, lambda: True, edit, lambda: authoritative["state"])
+    assert result.observation == "CONTRACT_CHANGED"
+    assert result.editor_error is None
+    assert gate.repair_rounds.count("individual", 1728) == 1
 
 
 def test_production_blocked_publication_never_consumes_repair_rounds(tmp_path):

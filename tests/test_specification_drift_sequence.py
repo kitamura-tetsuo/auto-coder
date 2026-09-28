@@ -179,8 +179,14 @@ def test_fourth_blocked_generation_trips_circuit_breaker_but_ready_can_converge(
     for index, generation in enumerate(("baseline", "ownership", "urgent-capacity")):
         gate = SpecificationValidationLifecycle("kitamura-tetsuo/auto-coder", f"model-{index}", path)
         decision = submit(gate, 1790, bodies[generation])
-        authorization = gate.authorize_automatic_repair(decision, lambda: True, lambda: None)
+        authorization = gate.authorize_automatic_repair(
+            decision,
+            lambda: True,
+            lambda: None,
+            lambda body=bodies[generation]: body,
+        )
         assert authorization.automatic_repair_authorized
+        assert authorization.observation == "NO_CONTRACT_CHANGE"
         gate.apply_blocked(CurrentIssue(1790, TITLE, bodies[generation]), decision)
         assert gate.store.get(decision.identity).remediation == "EDIT_IN_PLACE"
 
