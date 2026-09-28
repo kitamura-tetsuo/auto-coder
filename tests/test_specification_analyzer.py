@@ -279,6 +279,15 @@ def test_public_operation_fails_closed_for_unhashable_verdict(invalid_verdict):
     assert result.is_ready is False
 
 
+@pytest.mark.parametrize("invalid_remediation", [[], {}])
+@pytest.mark.parametrize("verdict", ["READY", "BLOCKED"])
+def test_public_operation_fails_closed_for_unhashable_remediation(invalid_remediation, verdict):
+    response = json.dumps({"verdict": verdict, "remediation": invalid_remediation, "findings": []})
+    result = analyze_issue_specification(_manifest(), "body", prompt_runner=lambda _prompt: response)
+    assert (result.verdict, result.remediation, result.findings) == ("ERROR", "NONE", ())
+    assert result.is_ready is False
+
+
 @pytest.mark.parametrize("invalid_category", [[], {}])
 def test_public_operation_fails_closed_for_unhashable_category(invalid_category):
     finding = _finding()
