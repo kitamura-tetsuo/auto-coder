@@ -200,7 +200,8 @@ class LocalExecutionBoundary:
         if for_edit_promotion and not evidence.editable:
             raise LocalBoundaryError("no-edit evidence cannot authorize edit promotion")
         if not evidence.confined_result_authorized:
-            raise LocalBoundaryError("local execution lacks complete confined-result evidence")
+            detail = f": {evidence.failure}" if evidence.failure else ""
+            raise LocalBoundaryError(f"local execution lacks complete confined-result evidence{detail}")
         return evidence
 
     def require_promotable(self) -> LocalBoundaryEvidence:
