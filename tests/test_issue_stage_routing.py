@@ -11,7 +11,6 @@ from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from auto_coder.decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.implementation_slots import ImplementationSlotRepository
-from auto_coder.issue_review_rerun import ReviewSubject
 from auto_coder.issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -27,7 +26,7 @@ from auto_coder.issue_stage_routing import (
 )
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
-from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
 
 REPO = "owner/repo"
@@ -614,8 +613,7 @@ async def test_close_reopen_requires_current_authority_before_relabel_reuse(tmp_
     assert len(pending) == 1 and pending[0].target_number == 1
     assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
 
-    authority, request_id, _state = validator.reruns.authority(ReviewSubject(REPO, "individual", 1))
-    validator.store.save(ValidationDecision(baseline_identity, "READY", rerun_authority=authority, rerun_request_id=request_id))
+    persist_individual_ready(validator, 1, "Standalone", body)
     await engine.invalidate_entity(REPO, "issue", 1)
     await asyncio.wait_for(engine.queue.join(), timeout=5)
     assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
