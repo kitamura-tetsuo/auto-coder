@@ -5,9 +5,11 @@ import pytest
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.codex_observation import ObservationBinding
 from auto_coder.codex_pr_attribution import CodexPrAttributionRepository
+from auto_coder.codex_pr_recovery import CodexPRRecoveryStore, RecoveryOutcome
 from auto_coder.codex_retirement_observer import CodexEvidenceState, _task_state, collect_codex_retirement_observation
 from auto_coder.codex_wham_client import WhamTask, WhamTurn
 from auto_coder.codex_work_accounting import CodexWorkAccounting, CodexWorkPhase
+from auto_coder.implementation_retirement import PRTerminalState
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 
 OWNER = ImplementationOwner("issue", 2335)
@@ -383,6 +385,43 @@ def test_cloudrun_provenance_revalidation_fences_changed_inventory(tmp_path: Pat
     else:
         assert result.incomplete_reasons == ()
         assert result.conclusive is True
+
+
+def test_recovery_linked_pr_is_always_a_retirement_candidate(tmp_path: Path) -> None:
+    slots, runs, incarnation = _stores(tmp_path)
+    snapshot = _settled_initial_snapshot(slots, incarnation)
+    assert slots.reserve(OWNER, implementation_pr=10)
+    run = runs.list_for_issue(OWNER.number)[0]
+    recovery = CodexPRRecoveryStore(tmp_path / "recovery.sqlite3")
+    assert recovery.save_observation(run, RecoveryOutcome.PR_OBSERVED, pr_number=92)
+    assert recovery.mark_handoff(run)
+    task = _current_task(TASK, "completed")
+    prs = {
+        10: {"number": 10, "state": "closed"},
+        11: {"number": 11, "state": "closed"},
+        12: {"number": 12, "state": "closed", "body": "unrelated"},
+        92: {"number": 92, "state": "open", "body": "no current attribution"},
+    }
+
+    result = collect_codex_retirement_observation(
+        REPOSITORY,
+        OWNER,
+        incarnation,
+        slots,
+        snapshot,
+        runs,
+        GitHubReader(prs),  # type: ignore[arg-type]
+        wham=WhamReader(task, task.turns),  # type: ignore[arg-type]
+        attributions=CodexPrAttributionRepository(REPOSITORY, tmp_path / "attributions.json"),
+        recovery=recovery,
+    )
+
+    assert [(pr.number, pr.state) for pr in result.implementation_prs] == [
+        (10, PRTerminalState.CLOSED),
+        (11, PRTerminalState.CLOSED),
+        (92, PRTerminalState.OPEN),
+    ]
+    assert result.conclusive is False
 
 
 @pytest.mark.parametrize(

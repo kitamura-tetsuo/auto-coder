@@ -171,6 +171,15 @@ class CodexWorkAccounting:
                         operations[operation.logical_operation_id] = encoded
                     elif not isinstance(existing, dict) or any(existing.get(field) != encoded[field] for field in ("kind", "source_request_id", "causal_baseline", "task_id")):
                         raise ImplementationSlotUnavailable("Reconstruction conflicts with accounted Codex work")
+                    else:
+                        # Reconstruction may recover completion facts that were
+                        # durably committed after the original admission. These
+                        # fields are monotonic and do not by themselves settle
+                        # execution; fresh provider evidence still supplies the
+                        # causal settlement certificate.
+                        for field in ("publication_complete", "tracking_complete"):
+                            if encoded[field] is True:
+                                existing[field] = True
                 accounting["reconstruction_receipt_id"] = receipt.receipt_id
                 accounting["reconstruction_sources"] = list(receipt.sources)
                 accounting["reconstruction_consistency_ids"] = dict(receipt.source_consistency_ids)

@@ -219,7 +219,8 @@ def evaluate_retirement_predicate(
 
     # 2. Provider Sessions
     for session in observation.provider_sessions:
-        if session.provider.lower() != "jules":
+        provider = session.provider.lower()
+        if provider not in {"jules", "codex-cloud"}:
             unknown_blockers.append(f"session:{session.session_id}")
         elif session.state == SessionTerminalState.ACTIVE or not session.latest_activity_ended:
             active_blockers.append(f"session:{session.session_id}")
@@ -267,6 +268,7 @@ def retire_implementation_slot(
     routing: Optional[IssueStageRoutingStore] = None,
     *,
     pre_lock_barrier: Optional[Callable[[], None]] = None,
+    guarded_validation: Optional[Callable[[], bool]] = None,
 ) -> RetirementResult:
     """Atomically evaluate and commit retirement for *observation*.
 
@@ -282,6 +284,19 @@ def retire_implementation_slot(
         pre_lock_barrier()
 
     with slots.serialize(observation.owner):
+        if guarded_validation is not None:
+            try:
+                validation_current = guarded_validation()
+            except Exception as exc:
+                return RetirementResult(
+                    RetirementStatus.RETAINED_UNKNOWN,
+                    diagnostic=f"Guarded retirement validation unavailable: {type(exc).__name__}",
+                )
+            if not validation_current:
+                return RetirementResult(
+                    RetirementStatus.STALE_OBSERVATION,
+                    diagnostic="Retirement source or PR evidence changed before removal",
+                )
         with slots._state_lock():
             # Check idempotency first: if already retired and absent from active store
             if slots.is_incarnation_retired(observation.reservation_incarnation):
@@ -364,8 +379,12 @@ def retire_implementation_slot(
                 "kind": observation.owner.kind,
                 "number": observation.owner.number,
                 "incarnation": observation.reservation_incarnation,
-                "implementation_prs": sorted(stored_prs),
-                "provider_sessions": sorted(stored_sessions),
+                "implementation_prs": sorted(observed_prs),
+                "provider_sessions": sorted(observed_sessions),
+                # Preserve the exact settled Codex operation journal when
+                # present.  Retired history is evidence/fencing state only;
+                # it is never imported back into active capacity.
+                "codex_work_accounting": record.get("codex_work_accounting"),
                 "generation": generation if isinstance(generation, str) else None,
                 "retired_at": time.time(),
             }

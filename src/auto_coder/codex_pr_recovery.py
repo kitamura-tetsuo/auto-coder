@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Iterable, Optional
 
 from .cloud_run import CloudRun, CloudRunRepository
 from .codex_observation import CodexObservationService, CodexRunObservation, PullRequestPresence
@@ -102,6 +102,15 @@ class CodexPRRecoveryStore:
             handoff_complete=bool(row[8]),
             reason=str(row[9]),
         )
+
+    def list_for_tasks(self, repository: str, task_ids: Iterable[str]) -> tuple[RecoveryRecord, ...]:
+        """Return the complete recovery/publication inventory for bound tasks."""
+        records = []
+        for task_id in sorted(set(task_ids)):
+            record = self.get(repository, task_id)
+            if record is not None:
+                records.append(record)
+        return tuple(records)
 
     def save_observation(
         self,

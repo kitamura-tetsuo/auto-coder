@@ -6,7 +6,7 @@ Safe retirement of terminal PR-backed implementation slots introduces a coordina
 
 ## Scope and Invariants
 
-Retirement applies exclusively to ordinary Issue-owned implementation reservations that have established at least one implementation PR and whose retained work is identified as local execution or Jules provider tasks. Speculative competition owners, recurrent tasks, standalone PR owners, never-published reservations with no PR, unsupported providers, and ambiguous provider attribution are out of scope and cannot acquire an early-release entitlement.
+Retirement applies exclusively to ordinary Issue-owned implementation reservations that have established at least one implementation PR and whose retained work is identified as local execution, Jules provider tasks, or positively attributed Codex Cloud work. Speculative competition owners, recurrent tasks, standalone PR owners, never-published reservations with no PR, unsupported providers, mixed remote ownership, and ambiguous provider attribution are out of scope and cannot acquire an early-release entitlement.
 
 Retirement requires proving a conclusive terminal predicate across complete, coherent lifecycle evidence:
 * Every associated implementation pull request must be authoritatively closed or merged.
@@ -96,7 +96,27 @@ A `ReclamationObligationStore` persists one JSON object (`implementation_slots_r
 
 ### Due-Check Consumer and 60-Second Cadence (REQ-003)
 
-`run_due_reclamation_checks` services every currently due obligation once: for each, it calls `collect_retirement_observation` and hands the result to `retire_implementation_slot` (this module never reimplements terminality logic). On `RELEASED`, the obligation is cleared. On `RETAINED_ACTIVE`/`RETAINED_UNKNOWN`/`STALE_OBSERVATION`, or an evidence-collection failure, the obligation is rescheduled 60 seconds out (`RECLAMATION_RECHECK_SECONDS`).
+`run_due_reclamation_checks` services every currently due obligation once. Local/Jules owners use `collect_retirement_observation`; an owner carrying the Codex accounting fence uses the complete Codex collector and its source-bound reconstruction identities. Terminal Codex execution certificates are persisted under the same owner guard, all evidence is recollected after that valid settlement mutation, and only then is the shared retirement transaction allowed to remove capacity. On `RELEASED`, the obligation is cleared. On `RETAINED_ACTIVE`/`RETAINED_UNKNOWN`/`STALE_OBSERVATION`, or an evidence-collection failure, the obligation is rescheduled 60 seconds out (`RECLAMATION_RECHECK_SECONDS`).
+
+The Codex inventory includes slot membership, CloudManager and CloudRun bindings,
+retry authority and dispatch, follow-up delivery, repair admission, PR-recovery
+publication state, verified PR attribution, native Issue associations, and complete
+repository open-PR discovery. A missing, malformed, changed, or unreconciled source
+retains capacity. Accepted work and an earlier completed turn are not terminal
+authority for a later admitted operation. Supported legacy records are reconstructed
+into this inventory at startup, so a merged PR absent from the open-PR scan can
+still be reclaimed without creating a replacement task.
+
+PR identities durably recorded by initial-PR recovery are candidates even when
+they are not yet mirrored into CloudRun or slot membership and no longer carry a
+current closing reference. A completed recovery handoff supplies the reconstructed
+publication/tracking facts used with fresh causally terminal provider evidence;
+the accounting flags are not a circular prerequisite for observing those durable
+facts. Immediately before active removal, the guarded commit recollects and
+compares the complete Codex source and PR evidence, returning stale/unknown rather
+than releasing when it changed. Startup reconstruction creates Codex accounting
+only when the source inventory contains Codex operations, leaving local-only and
+Jules-only reservations on their established retirement path.
 
 Each owner's check runs inside `ImplementationSlotRepository.serialize(owner)` — the same per-owner cross-process lock ordinary admission/mutation paths already use — so two overlapping checks for the same incarnation never run. Before doing anything, a due check re-reads the live store's current incarnation for the owner and compares it against the obligation's recorded incarnation; a mismatch (already retired, or retired-and-recreated under a new incarnation) safely discards only the stale entry via `ReclamationObligationStore.clear`, which itself re-checks the incarnation immediately before removing the record — so an older incarnation's completion can never consume or clear a newer incarnation's obligation.
 
@@ -131,4 +151,4 @@ and activity reads that remain unavailable across repeated due checks.
 
 ### Scope Boundary (REQ-007, REQ-009)
 
-This scheduling layer never closes/reopens/merges Issues or PRs, changes labels, cancels remote work, starts a replacement implementation, or resets a generation tombstone. It reuses the existing per-owner `collect_retirement_observation` read set for each due check rather than performing a full Jules-session enumeration or a full-repository candidate scan, and it never runs anything when no reclamation obligation is pending.
+This scheduling layer never closes/reopens/merges Issues or PRs, changes labels, cancels remote work, starts a replacement implementation, reparents historical task/PR ownership, or resets a generation tombstone. It performs only read-only provider/GitHub observation plus validated settlement persistence and the existing guarded retirement commit, and it never runs anything when no reclamation obligation is pending. Retired Codex history preserves its task, PR, operation, and acquired-start evidence while consuming no active capacity; a later attempt still requires ordinary authorization and receives a distinct incarnation.
