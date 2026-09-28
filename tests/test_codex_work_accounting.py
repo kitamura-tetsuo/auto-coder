@@ -1,3 +1,4 @@
+import multiprocessing
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,6 +15,23 @@ from auto_coder.codex_work_accounting import (
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotUnavailable
 
 OWNER = ImplementationOwner("issue", 2333)
+
+
+def _register_in_process(storage_path: str, incarnation: str, barrier, output) -> None:
+    slots = ImplementationSlotRepository("owner/repo", 2, storage_path=Path(storage_path))
+    accounting = CodexWorkAccounting(slots)
+    barrier.wait()
+    try:
+        registration = accounting.register(
+            OWNER,
+            incarnation,
+            logical_operation_id="concurrent-operation",
+            kind="repair",
+            source_request_id="concurrent-request",
+        )
+        output.put(("registered", registration.send_authorized, registration.snapshot.revision))
+    except ImplementationSlotUnavailable:
+        output.put(("unavailable", False, None))
 
 
 def _repository(path: Path) -> ImplementationSlotRepository:
@@ -325,3 +343,53 @@ def test_settlement_requires_task_identity_when_no_baseline_exists(tmp_path: Pat
     snapshot = accounting.snapshot(OWNER, incarnation)
     assert snapshot.operations[0].phase is CodexWorkPhase.RESERVED
     assert snapshot.releasable is False
+
+
+def test_cross_process_registration_first_invalidates_retirement_snapshot(tmp_path: Path) -> None:
+    slots, incarnation = _reservation(tmp_path)
+    accounting = CodexWorkAccounting(slots)
+    old_snapshot = accounting.initialize_fresh(OWNER, incarnation)
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    output = context.Queue()
+    process = context.Process(target=_register_in_process, args=(str(slots.storage_path), incarnation, barrier, output))
+    process.start()
+
+    # The snapshot is already captured before both participants cross the
+    # barrier, so registration has a deterministic registration-first order.
+    barrier.wait(timeout=10)
+    process.join(timeout=10)
+    assert process.exitcode == 0
+    assert output.get(timeout=2) == ("registered", False, old_snapshot.revision + 1)
+
+    with accounting.retirement_guard(old_snapshot) as guard:
+        assert guard.status is RetirementValidation.STALE
+    current = accounting.snapshot(OWNER, incarnation)
+    with accounting.retirement_guard(current) as guard:
+        assert guard.status is RetirementValidation.NON_RELEASABLE
+
+
+def test_cross_process_retirement_first_fences_later_registration(tmp_path: Path) -> None:
+    slots, incarnation = _reservation(tmp_path)
+    accounting = CodexWorkAccounting(slots)
+    snapshot = accounting.initialize_fresh(OWNER, incarnation)
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    output = context.Queue()
+
+    with accounting.retirement_guard(snapshot) as guard:
+        assert guard.status is RetirementValidation.AUTHORIZED
+        process = context.Process(target=_register_in_process, args=(str(slots.storage_path), incarnation, barrier, output))
+        process.start()
+        # The guard holds the cross-process owner/store boundary before the
+        # registering process is released to call register().
+        barrier.wait(timeout=10)
+        with slots._state_lock():
+            owners = slots._read()
+            del owners[OWNER.key]
+            slots._write(owners)
+
+    process.join(timeout=10)
+    assert process.exitcode == 0
+    assert output.get(timeout=2) == ("unavailable", False, None)
+    assert slots.owner_incarnation(OWNER) is None
