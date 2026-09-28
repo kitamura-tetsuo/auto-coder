@@ -209,7 +209,9 @@ class IndividualReviewHistoryStore:
     def _read(self) -> dict[str, object]:
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
-            return value if isinstance(value, dict) else {}
+            if not isinstance(value, dict):
+                raise ValueError("Individual-review history root must be a JSON object")
+            return value
         except FileNotFoundError:
             return {}
 
@@ -627,15 +629,32 @@ class SpecificationValidationLifecycle:
                     handle.record_checkpoint_attempt_failed(str(exc))
                 raise
             observe_authorization_persistence("confirmed")
-            if authority:
-                if not self.reruns.satisfy(subject, authority, decision.identity.key, decision.evaluation_source):
-                    return replace(
-                        decision,
-                        verdict="ERROR",
-                        findings=(),
-                        remediation="NONE",
-                        remediation_reason="rerun authority changed before decision acceptance",
-                    )
+            try:
+                accepted_authority, _request_id, _state = self.reruns.authority(subject)
+            except RerunAuthorityUnavailable as exc:
+                return replace(
+                    decision,
+                    verdict="ERROR",
+                    findings=(),
+                    remediation="NONE",
+                    remediation_reason=f"Rerun authority unavailable: {exc}",
+                )
+            if accepted_authority != decision.rerun_authority:
+                return replace(
+                    decision,
+                    verdict="ERROR",
+                    findings=(),
+                    remediation="NONE",
+                    remediation_reason="review occurrence was revoked before decision acceptance",
+                )
+            if accepted_authority and not self.reruns.satisfy(subject, accepted_authority, decision.identity.key, decision.evaluation_source):
+                return replace(
+                    decision,
+                    verdict="ERROR",
+                    findings=(),
+                    remediation="NONE",
+                    remediation_reason="rerun authority changed before decision acceptance",
+                )
         handle = take_pending_invocation_handle()
         if handle is not None:
             handle.confirm_settled()

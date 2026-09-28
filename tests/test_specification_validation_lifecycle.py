@@ -138,6 +138,21 @@ def test_unreadable_rerun_authority_fails_closed_without_semantic_invocation(tmp
     analyzer.assert_not_called()
 
 
+def test_corrupt_history_root_fails_closed_without_replacing_evidence(tmp_path):
+    history_path = tmp_path / "individual_review_history.json"
+    history_path.write_text("[]", encoding="utf-8")
+    analyzer = Mock(side_effect=AssertionError("corrupt history must prevent semantic review"))
+    gate = lifecycle(tmp_path, "READY", analyzer)
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+
+    result = gate.decide(manifest, "Title", BODY)
+
+    assert (result.verdict, result.remediation, result.findings) == ("ERROR", "NONE", ())
+    assert "history root must be a JSON object" in (result.remediation_reason or "")
+    assert history_path.read_text(encoding="utf-8") == "[]"
+    analyzer.assert_not_called()
+
+
 def test_error_is_not_persisted_and_is_retried(tmp_path):
     calls = Mock(side_effect=[SpecificationAnalysisResult("ERROR", error="outage"), SpecificationAnalysisResult("READY")])
     gate = lifecycle(tmp_path, "READY", calls)

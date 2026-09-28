@@ -116,3 +116,38 @@ def test_running_pre_request_review_cannot_restore_or_satisfy_authority(tmp_path
     assert fresh.verdict == "READY"
     assert fresh.rerun_request_id == "rerun-42"
     assert lifecycle.reruns.status("rerun-42")[0].state == "satisfied"
+
+
+def test_rerun_committed_between_completion_check_and_save_revokes_result(tmp_path, monkeypatch):
+    body = "## Objective\nPreserve the value.\n\n## Requirements\nREQ-001: Return the value."
+    manifest = build_normative_issue_manifest(42, "Title", body)
+    lifecycle = SpecificationValidationLifecycle(
+        "owner/repo",
+        "route",
+        tmp_path / "decisions.json",
+        lambda *_args: SpecificationAnalysisResult("READY"),
+    )
+    save_entered = threading.Event()
+    release_save = threading.Event()
+    original_save = lifecycle.store.save
+
+    def paused_save(decision):
+        save_entered.set()
+        assert release_save.wait(5)
+        original_save(decision)
+
+    monkeypatch.setattr(lifecycle.store, "save", paused_save)
+    results = []
+    thread = threading.Thread(target=lambda: results.append(lifecycle.decide(manifest, "Title", body)))
+    thread.start()
+    assert save_entered.wait(5)
+
+    subject = ReviewSubject("owner/repo", "individual", 42)
+    lifecycle.reruns.accept("rerun-after-check", [subject])
+    release_save.set()
+    thread.join(5)
+
+    assert (results[0].verdict, results[0].remediation, results[0].findings) == ("ERROR", "NONE", ())
+    assert "revoked" in (results[0].remediation_reason or "")
+    assert lifecycle.store.get(results[0].identity) is None
+    assert lifecycle.reruns.status("rerun-after-check")[0].state == "pending"
