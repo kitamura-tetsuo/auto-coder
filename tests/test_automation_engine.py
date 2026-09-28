@@ -45,7 +45,7 @@ class TestAutomationEngine:
                 self.generation = "generation-1"
 
             def get_issue_strict(self, _repo, number):
-                return {"number": number, "title": "Child", "body": ""}
+                return {"number": number, "title": "Child", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior."}
 
             def get_issue_hierarchy_generation_strict(self, _repo, _number):
                 return self.generation
@@ -134,7 +134,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 self.generation = "generation-1"
 
             def get_issue_strict(self, _repo, number):
-                return {"number": number, "title": "Child", "body": ""}
+                return {"number": number, "title": "Child", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior."}
 
             def get_issue_hierarchy_generation_strict(self, _repo, _number):
                 return self.generation
@@ -178,7 +178,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 self.fail_children = False
 
             def get_issue_strict(self, _repo, number):
-                return {"number": number, "title": "Child", "body": ""}
+                return {"number": number, "title": "Child", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior."}
 
             def get_issue_hierarchy_generation_strict(self, _repo, _number):
                 return "generation-1"
@@ -240,7 +240,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 self.fail_children = False
 
             def get_issue_strict(self, _repo, number):
-                return {"number": number, "title": "Child", "body": ""}
+                return {"number": number, "title": "Child", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior."}
 
             def get_issue_hierarchy_generation_strict(self, _repo, _number):
                 return "generation-1"
@@ -456,7 +456,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         engine.implementation_slots = slots
         candidate = Candidate(
             type="pr",
-            data={"number": 100, "title": "Recovery", "body": "", "labels": [{"name": "@auto-coder"}]},
+            data={"number": 100, "title": "Recovery", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [{"name": "@auto-coder"}]},
             priority=1,
         )
         attempts = AdversarialValidationAttemptRepository("owner/repo", tmp_path / "attempts.json")
@@ -496,7 +496,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, repo_name, item_number):
                 assert (repo_name, item_number) == ("owner/repo", 5266)
-                return {"number": item_number, "body": "", "pull_request": {}}
+                return {"number": item_number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "pull_request": {}}
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
         candidate = Candidate(
@@ -911,14 +911,14 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         engine._process_single_candidate_reserved.assert_called_once()
         assert slots.active_execution_ids(ImplementationOwner("issue", 1684)) == ()
 
-    def test_legacy_issue_without_requirements_section_enters_normal_dispatch(self, tmp_path):
+    def test_issue_with_requirements_section_enters_normal_dispatch(self, tmp_path):
         github = MagicMock()
         github.get_item_type_strict.return_value = "issue"
-        github.get_issue_dispatch_snapshot_strict.return_value = {"number": 1685, "body": "Implement observable behavior.", "labels": [{"name": "implementation-ready"}]}
+        github.get_issue_dispatch_snapshot_strict.return_value = {"number": 1685, "body": "## Requirements\nREQ-001: Implement observable behavior.", "labels": [{"name": "implementation-ready"}]}
         engine = AutomationEngine(github, config=AutomationConfig())
         engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
         engine._process_single_candidate_reserved = Mock(return_value=CandidateProcessingResult(type="issue", number=1685, title="Legacy", success=True, actions=["dispatched"]))
-        candidate = Candidate(type="issue", data={"number": 1685, "title": "Legacy", "body": "Implement observable behavior.", "labels": []}, priority=0)
+        candidate = Candidate(type="issue", data={"number": 1685, "title": "Legacy", "body": "## Requirements\nREQ-001: Implement observable behavior.", "labels": []}, priority=0)
 
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
@@ -931,7 +931,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": "", "labels": [{"name": "implementation-ready"}, {"name": "urgent"}]}
+                return {"number": number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [{"name": "implementation-ready"}, {"name": "urgent"}]}
 
             def get_issue(self, _repo_name, number):
                 return {"number": number, "state": "open"}
@@ -968,7 +968,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 # handoff reevaluation is read 2.
                 if self.reads >= 4:
                     labels.pop()
-                return {"number": number, "body": "", "labels": labels}
+                return {"number": number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": labels}
 
             def get_issue(self, _repo_name, number):
                 return {"number": number, "state": "open"}
@@ -998,7 +998,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, _repo_name, number):
-                return {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
+                return {"number": number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [{"name": "implementation-ready"}]}
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
         slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
@@ -1051,7 +1051,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             data={
                 "number": 108,
                 "title": "Implementation",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "issue-100-work"},
             },
             priority=0,
@@ -1111,7 +1111,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                     {
                         "number": 108,
                         "title": "Implementation",
-                        "body": "",
+                        "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                         "head": {"ref": "issue-100-work"},
                     }
                 ]
@@ -1249,7 +1249,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
             def get_issue_dispatch_snapshot_strict(self, repo_name, item_number):
                 # Authoritative, cache-bypassing lookup: GitHub now reports a PR.
                 assert (repo_name, item_number) == ("owner/repo", 5266)
-                return {"number": item_number, "body": "", "pull_request": {}}
+                return {"number": item_number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "pull_request": {}}
 
         engine = AutomationEngine(GitHubStub(), config=AutomationConfig())
         candidate = Candidate(
@@ -1284,7 +1284,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
 
         class GitHubStub:
             def get_issue_dispatch_snapshot_strict(self, repo_name, item_number):
-                return {"number": item_number, "body": "", "labels": [{"name": "implementation-ready"}]}
+                return {"number": item_number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [{"name": "implementation-ready"}]}
 
             def get_item_type_strict(self, repo_name, item_number):
                 return "issue"
@@ -1381,7 +1381,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         """The real PR-processing chain must classify a status API error as failed."""
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 77, "title": "PR", "body": "", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 77, "title": "PR", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -1415,7 +1415,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         config = AutomationConfig()
         config.AUTO_MERGE = True
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 78, "title": "PR", "body": "", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 78, "title": "PR", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -1459,7 +1459,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         config = AutomationConfig()
         config.AUTO_MERGE = True
         engine = AutomationEngine(mock_github_client, config=config)
-        pr_data = {"number": 79, "title": "PR", "body": "", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 79, "title": "PR", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         candidate = Candidate(type="pr", data=pr_data, priority=1)
         open_result = Mock(closed=False)
         label_context = MagicMock()
@@ -1506,7 +1506,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         config = AutomationConfig()
         config.AUTO_MERGE = True
         engine = AutomationEngine(github_client, config=config)
-        pr_data = {"number": 80, "title": "PR", "body": "", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
+        pr_data = {"number": 80, "title": "PR", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [], "head": {"ref": "feature-test", "sha": "abc123"}, "mergeable": True}
         pr_data.update({"user": {"login": "developer"}, "state": "open"})
         github_client.get_pull_request_metadata_strict = MagicMock(return_value=pr_data)
         candidate = Candidate(type="pr", data=pr_data, priority=1)
@@ -2907,7 +2907,7 @@ class TestGetCandidates:
             {
                 "number": 1,
                 "title": "Regular issue",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -2920,7 +2920,7 @@ class TestGetCandidates:
             {
                 "number": 2,
                 "title": "Urgent issue",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": ["urgent"],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
@@ -2933,7 +2933,7 @@ class TestGetCandidates:
             {
                 "number": 3,
                 "title": "Another issue",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-03T00:00:00Z",
@@ -2988,7 +2988,7 @@ class TestGetCandidates:
             {
                 "number": 10,
                 "title": "Issue 10",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-05T00:00:00Z",
@@ -3001,7 +3001,7 @@ class TestGetCandidates:
             {
                 "number": 11,
                 "title": "Issue 11",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": ["urgent"],
                 "state": "open",
                 "created_at": "2024-01-06T00:00:00Z",
@@ -3018,7 +3018,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "PR needing fix",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-1"},
                 "labels": [],
                 "mergeable": True,  # Mergeable but failing checks
@@ -3027,7 +3027,7 @@ class TestGetCandidates:
             2: {
                 "number": 2,
                 "title": "PR ready for merge",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-2"},
                 "labels": [],
                 "mergeable": True,
@@ -3036,7 +3036,7 @@ class TestGetCandidates:
             3: {
                 "number": 3,
                 "title": "Urgent unmergeable PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-3"},
                 "labels": ["urgent"],
                 "mergeable": False,  # Not mergeable
@@ -3123,7 +3123,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "Unmergeable PR (older)",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-1"},
                 "labels": [],
                 "mergeable": False,  # Not mergeable (has conflicts)
@@ -3132,7 +3132,7 @@ class TestGetCandidates:
             2: {
                 "number": 2,
                 "title": "Failing checks but mergeable PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-2"},
                 "labels": [],
                 "mergeable": True,  # Mergeable but failing checks
@@ -3141,7 +3141,7 @@ class TestGetCandidates:
             3: {
                 "number": 3,
                 "title": "Unmergeable PR (younger)",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-3"},
                 "labels": [],
                 "mergeable": False,  # Not mergeable (has conflicts)
@@ -3216,7 +3216,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "Urgent unmergeable PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-1"},
                 "labels": ["urgent"],
                 "mergeable": False,
@@ -3225,7 +3225,7 @@ class TestGetCandidates:
             2: {
                 "number": 2,
                 "title": "Urgent mergeable PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-2"},
                 "labels": ["urgent"],
                 "mergeable": True,
@@ -3234,7 +3234,7 @@ class TestGetCandidates:
             3: {
                 "number": 3,
                 "title": "Regular unmergeable PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-3"},
                 "labels": [],
                 "mergeable": False,
@@ -3243,7 +3243,7 @@ class TestGetCandidates:
             4: {
                 "number": 4,
                 "title": "Regular mergeable PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "pr-4"},
                 "labels": [],
                 "mergeable": True,
@@ -3319,7 +3319,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "Dependabot green PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-1"},
                 "labels": [],
                 "mergeable": True,
@@ -3330,7 +3330,7 @@ class TestGetCandidates:
             2: {
                 "number": 2,
                 "title": "Dependabot non-ready PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-2"},
                 "labels": [],
                 "mergeable": False,
@@ -3397,7 +3397,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "Renovate green PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-1"},
                 "labels": [],
                 "mergeable": True,
@@ -3408,7 +3408,7 @@ class TestGetCandidates:
             2: {
                 "number": 2,
                 "title": "Renovate PR needing fixes",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-2"},
                 "labels": [],
                 "mergeable": False,
@@ -3479,7 +3479,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "Dependabot green PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-1"},
                 "labels": [],
                 "mergeable": True,
@@ -3489,7 +3489,7 @@ class TestGetCandidates:
             2: {
                 "number": 2,
                 "title": "Dependabot non-ready PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-2"},
                 "labels": [],
                 "mergeable": False,
@@ -3557,7 +3557,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "Dependabot passing PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-1"},
                 "labels": [],
                 "mergeable": True,
@@ -3620,7 +3620,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "Dependabot failing PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-1"},
                 "labels": [],
                 "mergeable": False,
@@ -3682,7 +3682,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "Dependabot failing PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-1"},
                 "labels": [],
                 "mergeable": False,
@@ -3746,7 +3746,7 @@ class TestGetCandidates:
             1: {
                 "number": 1,
                 "title": "Dependabot green PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-1"},
                 "labels": [],
                 "mergeable": True,
@@ -3756,7 +3756,7 @@ class TestGetCandidates:
             2: {
                 "number": 2,
                 "title": "Dependabot failing PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-2"},
                 "labels": [],
                 "mergeable": True,
@@ -3766,7 +3766,7 @@ class TestGetCandidates:
             3: {
                 "number": 3,
                 "title": "Dependabot unmergeable PR",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "head": {"ref": "bot-pr-3"},
                 "labels": [],
                 "mergeable": False,
@@ -3826,7 +3826,7 @@ class TestGetCandidates:
             {
                 "number": 10,
                 "title": "Issue 10",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
@@ -3839,7 +3839,7 @@ class TestGetCandidates:
             {
                 "number": 11,
                 "title": "Issue 11",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": ["@auto-coder"],
                 "state": "open",
                 "created_at": "2024-01-03T00:00:00Z",
@@ -3854,7 +3854,7 @@ class TestGetCandidates:
         pr_details = {
             "number": 1,
             "title": "PR",
-            "body": "",
+            "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
             "head": {"ref": "pr-1"},
             "labels": ["@auto-coder"],  # Has @auto-coder label - should skip
             "mergeable": True,
@@ -3907,7 +3907,7 @@ class TestGetCandidates:
             {
                 "number": 10,
                 "title": "Issue 10",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -3920,7 +3920,7 @@ class TestGetCandidates:
             {
                 "number": 11,
                 "title": "Issue 11",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
@@ -3933,7 +3933,7 @@ class TestGetCandidates:
             {
                 "number": 12,
                 "title": "Issue 12",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-03T00:00:00Z",
@@ -3950,7 +3950,7 @@ class TestGetCandidates:
             {
                 "number": 999,
                 "title": "PR 999",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "draft": False,
@@ -4039,7 +4039,7 @@ class TestGetCandidates:
             {
                 "number": 10,
                 "title": "Issue 10",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4052,7 +4052,7 @@ class TestGetCandidates:
             {
                 "number": 11,
                 "title": "Issue 11",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
@@ -4065,7 +4065,7 @@ class TestGetCandidates:
             {
                 "number": 12,
                 "title": "Issue 12",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-03T00:00:00Z",
@@ -4078,7 +4078,7 @@ class TestGetCandidates:
             {
                 "number": 13,
                 "title": "Issue 13",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-04T00:00:00Z",
@@ -4125,7 +4125,7 @@ class TestGetCandidates:
             {
                 "number": 10,
                 "title": "Issue 10",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4138,7 +4138,7 @@ class TestGetCandidates:
             {
                 "number": 11,
                 "title": "Issue 11",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
@@ -4151,7 +4151,7 @@ class TestGetCandidates:
             {
                 "number": 12,
                 "title": "Issue 12",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-03T00:00:00Z",
@@ -4198,7 +4198,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 10,
                 "title": "Regular issue without parent",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4236,7 +4236,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 20,
                 "title": "Sub-issue",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4282,7 +4282,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 30,
                 "title": "Latest sub-issue",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4328,7 +4328,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 25,
                 "title": "Issue 25",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4341,7 +4341,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 10,
                 "title": "Issue 10",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
@@ -4396,7 +4396,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 1,
                 "title": "Issue 1",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4409,7 +4409,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 2,
                 "title": "Issue 2",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
@@ -4422,7 +4422,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 3,
                 "title": "Issue 3",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-03T00:00:00Z",
@@ -4435,7 +4435,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 50,
                 "title": "Issue 50",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-04T00:00:00Z",
@@ -4448,7 +4448,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 10,
                 "title": "Issue 10",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-05T00:00:00Z",
@@ -4497,7 +4497,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 10,
                 "title": "Issue 10",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4510,7 +4510,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 15,
                 "title": "Issue 15",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
@@ -4523,7 +4523,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 20,
                 "title": "Issue 20",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-03T00:00:00Z",
@@ -4567,7 +4567,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 40,
                 "title": "Issue with error in parent check",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4608,7 +4608,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 50,
                 "title": "Issue 50",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-01T00:00:00Z",
@@ -4621,7 +4621,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 101,
                 "title": "Issue 101",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-02T00:00:00Z",
@@ -4634,7 +4634,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 102,
                 "title": "Issue 102",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-03T00:00:00Z",
@@ -4647,7 +4647,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 200,
                 "title": "Issue 200",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": "2024-01-04T00:00:00Z",
@@ -4696,7 +4696,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 1,
                 "title": "Recent issue",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -4709,7 +4709,7 @@ class TestElderSiblingDependencyLogic:
             {
                 "number": 2,
                 "title": "Older issue",
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [],
                 "state": "open",
                 "created_at": (now - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ"),

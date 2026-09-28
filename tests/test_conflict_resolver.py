@@ -203,14 +203,14 @@ def test_perform_base_merge_closes_jules_pr_recreates_session_on_degrade():
         mock_client.get_issue_details.return_value = {
             "number": 123,
             "title": "Test Title",
-            "body": "Test Body",
+            "body": "## Requirements\nREQ-001: Preserve replacement dispatch.",
             "state": "open",
             "labels": ["implementation-ready", "@auto-coder"],
         }
         mock_client.get_item_type_strict.return_value = "issue"
         mock_client.get_issue_dispatch_snapshot_strict.return_value = {
             "number": 123,
-            "body": "Test Body",
+            "body": "## Requirements\nREQ-001: Preserve replacement dispatch.",
             "state": "open",
             "labels": [{"name": "implementation-ready"}, {"name": "@auto-coder"}],
         }
@@ -300,7 +300,7 @@ def test_perform_base_merge_skips_conflict_resolution_for_dependabot_pr():
         pr_data = {
             "number": 4242,
             "title": "Bump requests from 2.31.0 to 2.32.0",
-            "body": "",
+            "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
             "author": {"login": "dependabot[bot]"},
             "baseRefName": "main",
         }
@@ -340,7 +340,7 @@ def test_check_mergeability_uses_llm_for_human_pr():
         pr_data = {
             "number": 4243,
             "title": "Add feature",
-            "body": "",
+            "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
             "author": {"login": "some-human"},
             "baseRefName": "main",
         }

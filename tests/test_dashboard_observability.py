@@ -51,7 +51,7 @@ def test_family_discovery_scope_reaches_mounted_detail(mock_ui):
     github = MagicMock()
     github.get_open_issue_declarations.return_value = [{"number": 900, "body": "Parent-Issue: #899"}]
     github.get_direct_sub_issues_strict.return_value = [{"number": 101}]
-    github.get_issue_dispatch_snapshot_strict.return_value = {"number": 101, "body": ""}
+    github.get_issue_dispatch_snapshot_strict.return_value = {"number": 101, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior."}
     engine = AutomationEngine(github, AutomationConfig(repo_name="owner/repo"))
     collector = get_trace_collector()
 
@@ -121,7 +121,7 @@ def _run_admission_to_view(mock_ui, item_type: str, item_number: int) -> None:
         config.PR_ALLOWLIST = []
     candidate = Candidate(
         type=item_type,
-        data={"number": item_number, "title": "Denied", "body": "", "labels": [], "head": {"sha": "a" * 40}},
+        data={"number": item_number, "title": "Denied", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [], "head": {"sha": "a" * 40}},
         priority=0,
     )
 
@@ -161,7 +161,7 @@ def test_missing_producer_emission_is_rejected_by_joined_oracle(mock_ui, monkeyp
         return real_record(kind, stage_id, origin, **kwargs)
 
     monkeypatch.setattr(collector, "record_event", suppress_required)
-    candidate = Candidate(type="issue", data={"number": 194805, "title": "Denied", "body": "", "labels": []}, priority=0)
+    candidate = Candidate(type="issue", data={"number": 194805, "title": "Denied", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": []}, priority=0)
 
     result = AutomationEngine(MagicMock(), config)._process_single_candidate_unified("owner/repo", candidate, config)
 
@@ -524,7 +524,7 @@ class TestOutcomeMatrixCoverage:
 
         mock_github = MagicMock()
         mock_github.get_item_type_strict.return_value = "issue"
-        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [{"name": "implementation-ready"}]}
         mock_github.get_all_sub_issues.return_value = []
 
         config = AutomationConfig()
@@ -719,7 +719,7 @@ def test_codex_app_server_failure_remains_deferred_in_detail_view(mock_ui, tmp_p
         collector.start_execution("owner/repo", "issue", 3501, origin="worker"),
     ):
         with pytest.raises(AutoCoderUsageLimitError):
-            _process_issue_codex_cloud_mode("owner/repo", {"number": 3501, "title": "Fix", "body": "", "labels": []}, AutomationConfig(), github, "codex-cloud")
+            _process_issue_codex_cloud_mode("owner/repo", {"number": 3501, "title": "Fix", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": []}, AutomationConfig(), github, "codex-cloud")
         assert CloudRunRepository("owner/repo").get(3501, 0) is None
     submit.assert_not_called()
     github.add_comment_to_issue.assert_not_called()
@@ -1021,7 +1021,7 @@ def test_manual_retry_authorization_reaches_mounted_detail(mock_ui, tmp_path):
 def test_explicit_cached_discovery_reaches_mounted_detail(mock_ui):
     github = MagicMock()
     github.get_open_issue_declarations.return_value = [{"number": 900, "body": "Unrelated"}]
-    github.get_issue_dispatch_snapshot_strict.return_value = {"number": 100, "body": "", "state": "open"}
+    github.get_issue_dispatch_snapshot_strict.return_value = {"number": 100, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "state": "open"}
     github.get_parent_issue_details_strict.return_value = None
     github.get_direct_sub_issues_strict.return_value = []
     engine = AutomationEngine(github, AutomationConfig(repo_name="owner/repo"))

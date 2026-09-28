@@ -170,9 +170,9 @@ def test_only_parent_reconciles_every_declared_child_before_unified_processing(w
     github = GraphGitHub(
         {
             100: graph_issue(100, body, ready=True),
-            101: graph_issue(101, body + "\nParent-Issue: #100"),
-            102: graph_issue(102, body + "\nParent-Issue: #100"),
-            103: graph_issue(103, body + "\nParent-Issue: #100"),
+            101: graph_issue(101, body + "\n\n## Context\nParent-Issue: #100"),
+            102: graph_issue(102, body + "\n\n## Context\nParent-Issue: #100"),
+            103: graph_issue(103, body + "\n\n## Context\nParent-Issue: #100"),
             900: graph_issue(900, "Unrelated Issue"),
         },
         {101: 100},
@@ -225,8 +225,8 @@ def test_only_child_reconciles_unmaterialized_elder_without_processing_it():
     github = GraphGitHub(
         {
             100: graph_issue(100, body, ready=True),
-            102: graph_issue(102, body + "\nParent-Issue: #100"),
-            103: graph_issue(103, body + "\nParent-Issue: #100", ready=True),
+            102: graph_issue(102, body + "\n\n## Context\nParent-Issue: #100"),
+            103: graph_issue(103, body + "\n\n## Context\nParent-Issue: #100", ready=True),
         },
         {103: 100},
         {100: [103]},
@@ -258,7 +258,7 @@ def test_only_relationship_contradiction_fails_closed_before_dispatch():
     github = GraphGitHub(
         {
             100: graph_issue(100, body, ready=True),
-            102: graph_issue(102, body + "\nParent-Issue: #100"),
+            102: graph_issue(102, body + "\n\n## Context\nParent-Issue: #100"),
             200: graph_issue(200, body),
         },
         {102: 200},
@@ -281,7 +281,7 @@ def test_only_materialization_failure_is_retryable_and_starts_no_target_work():
     github = GraphGitHub(
         {
             100: graph_issue(100, body, ready=True),
-            102: graph_issue(102, body + "\nParent-Issue: #100"),
+            102: graph_issue(102, body + "\n\n## Context\nParent-Issue: #100"),
         },
         {},
         {},
@@ -328,7 +328,7 @@ def test_parser_rejects_every_malformed_or_ambiguous_candidate(body: str):
 def test_webhook_child_reconciles_and_refetches_before_eager_validation(tmp_path: Path):
     """The supported invalidation origin preserves reconciliation ordering."""
     body = "## Requirements\n- REQ-001: Keep the graph authoritative."
-    initial_child = graph_issue(2, body + "\nParent-Issue: #1")
+    initial_child = graph_issue(2, body + "\n\n## Context\nParent-Issue: #1")
     parent = graph_issue(1, body, ready=True)
     github = GraphGitHub({1: parent, 2: initial_child}, {}, {})
     events: list[str] = []
@@ -357,9 +357,9 @@ def test_ordinary_child_validation_discovers_all_declared_siblings(tmp_path: Pat
     github = GraphGitHub(
         {
             1: graph_issue(1, body, ready=True),
-            2: graph_issue(2, body + "\nParent-Issue: #1"),
-            3: graph_issue(3, body + "\nparent_issue: 1"),
-            4: graph_issue(4, body + "\nPARENT ISSUE: #1"),
+            2: graph_issue(2, body + "\n\n## Context\nParent-Issue: #1"),
+            3: graph_issue(3, body + "\n\n## Context\nparent_issue: 1"),
+            4: graph_issue(4, body + "\n\n## Context\nPARENT ISSUE: #1"),
             5: graph_issue(5, body, state="closed"),
             99: graph_issue(99, "Parent-Issue: invalid"),
         },
@@ -418,7 +418,7 @@ def test_closed_issue_cannot_be_materialized_as_new_parent():
     github = GraphGitHub(
         {
             1: graph_issue(1, body, state="closed"),
-            2: graph_issue(2, body + "\nParent-Issue: #1", ready=True),
+            2: graph_issue(2, body + "\n\n## Context\nParent-Issue: #1", ready=True),
         },
         {},
         {},
@@ -476,7 +476,7 @@ def test_explicit_parent_reconciles_closed_children_before_any_validation(tmp_pa
 def test_fresh_authoritative_marker_is_reconciled_before_stale_candidate_validation(tmp_path: Path):
     body = "## Requirements\n- REQ-001: Preserve the graph."
     stale = graph_issue(2, body, ready=True)
-    current = graph_issue(2, body + "\nParent-Issue: #1", ready=True)
+    current = graph_issue(2, body + "\n\n## Context\nParent-Issue: #1", ready=True)
     github = GraphGitHub({1: graph_issue(1, body), 2: current}, {}, {})
     analyzed = []
     engine = AutomationEngine(github, AutomationConfig())
@@ -556,7 +556,7 @@ def test_standalone_blocked_completion_cannot_act_after_child_is_added(tmp_path:
 
 
 def test_ambiguous_422_is_operational_and_preserves_submission(monkeypatch):
-    body = "## Requirements\n- REQ-001: Preserve the graph.\nParent-Issue: #1"
+    body = "## Requirements\n- REQ-001: Preserve the graph.\n\n## Context\nParent-Issue: #1"
     child = graph_issue(2, body, ready=True)
     parent = graph_issue(1, body.replace("\nParent-Issue: #1", ""))
     GitHubClient.reset_singleton()
@@ -680,7 +680,7 @@ def test_parent_snapshot_is_reconciled_before_decomposition(tmp_path: Path):
             if number == 1:
                 self.parent_reads += 1
                 if self.parent_reads >= 1:
-                    snapshot["body"] = body + "\nParent-Issue: #abc"
+                    snapshot["body"] = body + "\n\n## Context\nParent-Issue: #abc"
                     self.issues[1]["body"] = snapshot["body"]
             return snapshot
 
@@ -698,7 +698,7 @@ def test_parent_snapshot_is_reconciled_before_decomposition(tmp_path: Path):
 
 def test_jules_replacement_reconciles_current_declaration_before_validation(tmp_path: Path):
     body = "## Requirements\n- REQ-001: Preserve the graph."
-    child = graph_issue(2, body + "\nParent-Issue: #3", ready=True)
+    child = graph_issue(2, body + "\n\n## Context\nParent-Issue: #3", ready=True)
     github = GraphGitHub({2: child, 3: graph_issue(3, body)}, {}, {})
     analyzed = []
     engine = AutomationEngine(github, AutomationConfig())
@@ -933,7 +933,7 @@ def test_child_validation_failure_message_includes_issue_number_and_reason(tmp_p
     from src.auto_coder.specification_validation_lifecycle import SpecificationAnalysisResult, SpecificationValidationLifecycle
 
     body = "## Requirements\n- REQ-001: Keep the graph authoritative."
-    child = graph_issue(2054, body + "\nParent-Issue: #1")
+    child = graph_issue(2054, body + "\n\n## Context\nParent-Issue: #1")
     parent = graph_issue(1, body, ready=True)
     github = GraphGitHub({1: parent, 2054: child}, {2054: 1}, {1: [2054]})
 

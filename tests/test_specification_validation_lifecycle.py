@@ -104,7 +104,7 @@ def test_exact_caller_manifest_binding_prevents_same_markdown_reuse_across_resta
     assert json.loads(persisted[first.identity.key]["identity"]["manifest_binding"])["requirements"] == [{"requirement_id": "REQ-001", "text": "Return the current value."}]
 
 
-def test_invalid_manifest_fails_before_custom_analyzer_and_cached_ready(tmp_path):
+def test_invalid_manifest_fails_before_production_analyzer_and_cached_ready(tmp_path):
     valid = build_normative_issue_manifest(1728, "Title", BODY)
     gate = lifecycle(tmp_path, "READY")
     assert gate.decide(valid, "Title", BODY).verdict == "READY"
@@ -113,9 +113,12 @@ def test_invalid_manifest_fails_before_custom_analyzer_and_cached_ready(tmp_path
         "Title",
         "## Requirements\nREQ-001: First.\nREQ-001: Duplicate.",
     )
-    analyzer = Mock(side_effect=AssertionError("invalid contracts must not reach semantic transport"))
-    restarted = lifecycle(tmp_path, "READY", analyzer)
-    result = restarted.decide(invalid, "Title", BODY)
+    restarted = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "decisions.json")
+    with patch(
+        "auto_coder.specification_analyzer.run_llm_prompt",
+        side_effect=AssertionError("invalid contracts must not reach semantic transport"),
+    ) as analyzer:
+        result = restarted.decide(invalid, "Title", BODY)
     assert result.verdict == "ERROR"
     assert result.evaluation_source == "local-only"
     assert "duplicate IDs" in (result.remediation_reason or "")
