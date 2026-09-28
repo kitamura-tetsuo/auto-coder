@@ -964,10 +964,11 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 self.reads += 1
                 labels = [{"name": "implementation-ready"}, {"name": "urgent"}]
                 # The urgent label is removed after validation and dispatch
-                # refresh (reads 1-3) but before ownership admission (read 4):
+                # refresh plus the model-start eligibility check (reads 1-4)
+                # but before ownership admission (read 5):
                 # the stale emergency must be denied. The Review lane's
                 # handoff reevaluation is read 2.
-                if self.reads >= 4:
+                if self.reads >= 5:
                     labels.pop()
                 return {"number": number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": labels}
 
