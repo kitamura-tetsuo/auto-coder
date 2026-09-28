@@ -17,7 +17,6 @@ from auto_coder.issue_review_rerun import RerunAuthorityUnavailable
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.requirement_contract import build_normative_issue_manifest
-from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.specification_analyzer import (
     FindingDisposition,
     IncrementalReviewContext,
