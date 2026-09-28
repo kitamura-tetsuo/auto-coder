@@ -3121,6 +3121,8 @@ class AutomationEngine:
         contract = self._routing_contract(repo_name, issue, "standalone")
         requirements: list[ReviewRequirement] = []
         issue_is_open = self._is_authoritatively_open_issue(issue)
+        if not issue_is_open:
+            self._withdraw_closed_individual_authority(repo_name, number)
         if issue_is_open and self._is_issue_specification_validation_enabled(repo_name):
             validator = self._get_specification_validator(repo_name)
             identity = validator.identity(number, contract.title, contract.body)
@@ -3154,6 +3156,7 @@ class AutomationEngine:
             individual_validator = self._get_specification_validator(repo_name)
             for child in children:
                 if not self._is_authoritatively_open_issue(child):
+                    self._withdraw_closed_individual_authority(repo_name, int(child["number"]))
                     continue
                 number = int(child["number"])
                 relationship = self._child_review_context(parent, children, number)
@@ -3196,6 +3199,17 @@ class AutomationEngine:
             self.issue_stage_routing.remove(repo_name, REVIEW_STAGE, number)
         # Tracking parents never enter the Implementation lane.
         self.issue_stage_routing.remove(repo_name, IMPLEMENTATION_STAGE, parent_number)
+
+    def _withdraw_closed_individual_authority(self, repo_name: str, issue_number: int) -> None:
+        """Durably fence work admitted before authoritative closure was observed."""
+        reruns = self._get_specification_validator(repo_name).reruns
+        subject = ReviewSubject(repo_name, "individual", issue_number)
+        authority, request_id, state = reruns.authority(subject)
+        if state == "deferred":
+            return
+        closure_request = f"observed-closure:{subject.key}:{authority + 1}"
+        status = reruns.accept(closure_request, (subject,))[0]
+        reruns.defer(subject, status.authority, f"individual review for Issue #{issue_number} is deferred because the subject is closed")
 
     def _route_issue_stages_authoritatively(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> None:
         """Classify one invalidated Issue from current GitHub and decision stores."""

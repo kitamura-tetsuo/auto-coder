@@ -7,7 +7,9 @@ the model transport faked. They cover REQ-011 slices mapping to AS-001,
 AS-002, AS-004, AS-005, AS-006, AS-007, AS-008, AS-010, AS-011, and AS-013.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import Mock
 
 from auto_coder.automation_config import AutomationConfig
@@ -222,6 +224,46 @@ def test_closed_child_rerun_is_durably_deferred_without_review_work(tmp_path, mo
 
     assert [(status.state, status.reason) for status in statuses] == [("deferred", "individual review for Issue #2 is deferred because the subject is closed")]
     assert calls.call_count == 0
+
+
+def test_closure_invalidates_in_flight_decision_across_reopen_and_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", str(tmp_path / "authority"))
+    github = FakeGitHub([])
+    github.issues[1] = github.snapshot(1)
+    started = Event()
+    release = Event()
+    calls = 0
+
+    def held_analysis(*_args):
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(5)
+        return SpecificationAnalysisResult("READY")
+
+    engine = engine_with_lane(tmp_path, github, held_analysis, monkeypatch=monkeypatch)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        late = pool.submit(engine._get_review_service(REPO).pump_target, 1, "held-before-close")
+        assert started.wait(5)
+        github.issues[1] = github.snapshot(1, state="closed")
+        engine._route_issue_stages_authoritatively(REPO, 1, dict(github.issues[1]))
+        github.issues[1] = github.snapshot(1)
+        release.set()
+        outcome = late.result(timeout=5)
+
+    assert outcome is not None
+    assert next(iter(outcome.decisions.values())).verdict == "ERROR"
+    assert github.comments == []
+    assert github.removals == []
+    assert calls == 1
+    identity = engine._get_specification_validator(REPO).identity(1, "Title", BODY)
+    assert engine._get_specification_validator(REPO).store.get(identity) is None
+
+    fresh_calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    restarted = engine_with_lane(tmp_path, github, fresh_calls, monkeypatch=monkeypatch)
+    current = restarted._get_review_service(REPO).pump_target(1, "after-reopen-restart")
+    assert current is not None and next(iter(current.decisions.values())).verdict == "READY"
+    assert fresh_calls.call_count == 1
 
 
 def test_blocked_standalone_publishes_once_and_withdraws_readiness(tmp_path, monkeypatch):
