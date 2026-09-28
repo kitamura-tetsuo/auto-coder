@@ -45,6 +45,7 @@ def test_same_task_distinct_operation_invalidates_snapshot_and_replay_is_idempot
         "initial",
         CodexWorkPhase.SETTLED,
         evidence_id="terminal-task-one-head-a",
+        evidence_causal_baseline="head-a",
         task_id="task-one",
         execution_complete=True,
         publication_complete=True,
@@ -81,6 +82,40 @@ def test_same_task_distinct_operation_invalidates_snapshot_and_replay_is_idempot
         assert guard.status is RetirementValidation.STALE
     with accounting.retirement_guard(repair.snapshot) as guard:
         assert guard.status is RetirementValidation.NON_RELEASABLE
+
+    with pytest.raises(ValueError, match="causal baseline"):
+        accounting.transition(
+            OWNER,
+            incarnation,
+            "repair-1",
+            CodexWorkPhase.SETTLED,
+            evidence_id="terminal-task-one-head-a",
+            evidence_causal_baseline="head-a",
+            task_id="task-one",
+            execution_complete=True,
+            publication_complete=True,
+            tracking_complete=True,
+        )
+    still_pending = accounting.snapshot(OWNER, incarnation)
+    assert still_pending.operations[1].phase is CodexWorkPhase.RESERVED
+    assert still_pending.operations[1].settlement_evidence_id is None
+    assert still_pending.releasable is False
+
+    repaired = accounting.transition(
+        OWNER,
+        incarnation,
+        "repair-1",
+        CodexWorkPhase.SETTLED,
+        evidence_id="terminal-task-one-head-b",
+        evidence_causal_baseline="head-b",
+        task_id="task-one",
+        execution_complete=True,
+        publication_complete=True,
+        tracking_complete=True,
+    )
+    assert repaired.operations[1].phase is CodexWorkPhase.SETTLED
+    assert repaired.operations[1].settlement_evidence_id == "terminal-task-one-head-b"
+    assert repaired.releasable is True
 
 
 def test_ambiguous_delivery_and_accepted_handoff_remain_unsettled_after_reconstruction(tmp_path: Path) -> None:

@@ -193,6 +193,7 @@ class CodexWorkAccounting:
         phase: CodexWorkPhase,
         *,
         evidence_id: str,
+        evidence_causal_baseline: Optional[str] = None,
         task_id: Optional[str] = None,
         execution_complete: bool = False,
         publication_complete: bool = False,
@@ -219,6 +220,9 @@ class CodexWorkAccounting:
                 raw["task_id"] = task_id
             accepted = existing_task is not None or raw.get("phase") == CodexWorkPhase.ACCEPTED.value
             if phase is CodexWorkPhase.SETTLED:
+                admitted_baseline = raw.get("causal_baseline")
+                if admitted_baseline is not None and evidence_causal_baseline != admitted_baseline:
+                    raise ValueError("Settlement evidence does not match the operation's causal baseline")
                 completed = execution_complete and publication_complete and tracking_complete
                 if not completed and not (definite_non_delivery and not accepted and task_id is None):
                     raise ValueError("Settlement requires matching execution and handoff completion evidence")
