@@ -100,7 +100,7 @@ class IssueReviewRerunScopeResolver:
                 raise ValueError(f"authoritative Issue #{number} snapshot is unavailable")
             self._snapshots[number] = snapshot
         state = snapshot.get("state")
-        if not isinstance(state, str):
+        if not isinstance(state, str) or state.lower() not in {"open", "closed"}:
             raise ValueError(f"authoritative Issue #{number} state is malformed")
         if require_open and state.lower() != "open":
             raise ValueError(f"Issue #{number} is closed")

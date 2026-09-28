@@ -3003,7 +3003,9 @@ class AutomationEngine:
             # Small legacy/local adapters historically represent only
             # successfully fetched open Issues and omit the REST state field.
             return True
-        return isinstance(state, str) and state.lower() == "open"
+        if not isinstance(state, str) or state.lower() not in {"open", "closed"}:
+            raise ParentOperationalError("authoritative Issue snapshot has unavailable or malformed state")
+        return state.lower() == "open"
 
     @staticmethod
     def _routing_contract(repo_name: str, snapshot: Dict[str, Any], role: str) -> ContractIdentity:

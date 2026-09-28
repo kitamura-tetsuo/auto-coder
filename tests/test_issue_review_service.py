@@ -12,6 +12,8 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import Mock
 
+import pytest
+
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
@@ -19,8 +21,10 @@ from auto_coder.decomposition_validation_lifecycle import DecompositionValidatio
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_review_rerun import ReviewSubject
 from auto_coder.issue_stage_routing import REVIEW_STAGE
+from auto_coder.parent_issue_reconciliation import ParentOperationalError
 from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from auto_coder.validation_scheduler import ValidationScheduler
 
 REPO = "owner/repo"
 BODY = "## Objective\n\nShip the widget.\n\n## Requirements\n- REQ-001: Return the current value."
@@ -224,6 +228,58 @@ def test_closed_child_rerun_is_durably_deferred_without_review_work(tmp_path, mo
 
     assert [(status.state, status.reason) for status in statuses] == [("deferred", "individual review for Issue #2 is deferred because the subject is closed")]
     assert calls.call_count == 0
+
+
+def test_malformed_child_state_defers_family_without_revoking_authority(tmp_path, monkeypatch):
+    github = FakeGitHub([], parents={2: 1, 3: 1})
+    github.issues[1] = github.snapshot(1, title="Parent", body="## Objective\n\nCoordinate.")
+    github.issues[2] = github.snapshot(2)
+    github.issues[3] = github.snapshot(3)
+    github.issues[3]["state"] = "unknown"
+    engine = engine_with_lane(tmp_path, github, Mock(return_value=SpecificationAnalysisResult("READY")), monkeypatch=monkeypatch)
+    subject = ReviewSubject(REPO, "individual", 3)
+
+    with pytest.raises(ParentOperationalError, match="unavailable or malformed state"):
+        engine._route_issue_family(REPO, dict(github.issues[1]), [dict(github.issues[2]), dict(github.issues[3])])
+
+    assert engine._get_specification_validator(REPO).reruns.authority(subject) == (0, None, "none")
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+
+
+def test_queued_individual_review_rechecks_closure_before_model_invocation(tmp_path, monkeypatch):
+    github = FakeGitHub([])
+    github.issues[1] = github.snapshot(1)
+    analyzer = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine = engine_with_lane(tmp_path, github, analyzer, monkeypatch=monkeypatch)
+    engine.review_scheduler.shutdown()
+    engine.review_scheduler = ValidationScheduler(1)
+    occupied = Event()
+    release = Event()
+    blocker = engine.review_scheduler.submit("occupied", lambda: occupied.set() or release.wait(5))
+    assert occupied.wait(5)
+    service = engine._get_review_service(REPO)
+    queued = Event()
+    original_scheduler_identity = service._scheduler_identity
+
+    def observe_queue(descriptor):
+        queued.set()
+        return original_scheduler_identity(descriptor)
+
+    service._scheduler_identity = observe_queue
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(service.pump_target, 1, "queued-before-close")
+        assert queued.wait(5)
+        github.issues[1] = github.snapshot(1, state="closed")
+        engine._route_issue_stages_authoritatively(REPO, 1, dict(github.issues[1]))
+        release.set()
+        assert blocker.result() is True
+        outcome = pending.result(timeout=5)
+
+    assert outcome is not None
+    assert next(iter(outcome.decisions.values())).verdict == "ERROR"
+    assert analyzer.call_count == 0
+    assert github.comments == []
+    assert github.removals == []
 
 
 def test_closure_invalidates_in_flight_decision_across_reopen_and_restart(tmp_path, monkeypatch):

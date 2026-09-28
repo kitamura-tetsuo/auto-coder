@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional, Union
 
 from .decomposition_analyzer import DecompositionIssue
 from .decomposition_validation_lifecycle import DecompositionDecision, DecompositionIdentity, DecompositionValidationLifecycle
+from .issue_review_rerun import ReviewSubject
 from .issue_review_worker import FreshReviewView, IssueReviewWorker
 from .issue_stage_routing import REVIEW_STAGE, IssueStageRoutingStore, PendingLaneItem
 from .requirement_contract import NormativeIssueManifest
@@ -285,6 +286,25 @@ class IssueReviewService:
                 lambda: self._decomp().decide(descriptor.identity, descriptor.parent_issue, descriptor.child_issues),
             )
         assert descriptor.manifest is not None
+        anchor = descriptor.parent_number if descriptor.role == "child" and descriptor.parent_number is not None else descriptor.number
+        current = self._describe(anchor)
+        if current is None or descriptor.identity_key not in {item.identity_key for item in current if isinstance(item, IndividualReviewDescriptor)}:
+            identity = self._spec().identity(
+                descriptor.number,
+                descriptor.title,
+                descriptor.body,
+                descriptor.relationship,
+                descriptor.manifest,
+            )
+            authority, request_id, _state = self._spec().reruns.authority(ReviewSubject(self._repository, "individual", descriptor.number))
+            return ValidationDecision(
+                identity,
+                "ERROR",
+                remediation_reason="Individual review eligibility changed before model invocation",
+                evaluation_source="local-only",
+                rerun_authority=authority,
+                rerun_request_id=request_id,
+            )
         return self._trace_job(
             self._repository,
             descriptor.number,

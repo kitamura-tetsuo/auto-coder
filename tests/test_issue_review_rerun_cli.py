@@ -49,6 +49,15 @@ def test_family_scope_retains_closed_child_as_context_without_individual_subject
     assert scope.exclusions == ("Issue #12: individual review is not required while the subject is closed",)
 
 
+def test_family_scope_rejects_malformed_child_state_as_unavailable() -> None:
+    malformed = issue(12, body="Parent-Issue: #10")
+    malformed["state"] = "unknown"
+    github = FakeGitHub({10: issue(10), 12: malformed}, {12: 10}, {10: [12]})
+
+    with pytest.raises(ValueError, match="state is malformed"):
+        IssueReviewRerunScopeResolver(github, REPO).family(10)
+
+
 def test_issue_rejects_family_member_and_unmaterialized_declaration() -> None:
     child = FakeGitHub({10: issue(10), 11: issue(11, body="Parent-Issue: #10")}, {11: 10}, {10: [11]})
     with pytest.raises(ValueError, match="use --family"):
