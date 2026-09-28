@@ -522,7 +522,7 @@ class DecompositionValidationLifecycle:
             if read_authoritative_state is None or current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not set_is_current():
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("decomposition", decision.identity.parent.issue_number))
             before_state = read_authoritative_state()
-            if before_state is None or not before_state.submission_active or not before_state.ownership_valid or not before_state.manifest_valid:
+            if before_state is None or before_state.decision_binding != decision.identity.key or not before_state.submission_active or not before_state.ownership_valid or not before_state.manifest_valid:
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("decomposition", decision.identity.parent.issue_number))
             applied = self.repair_rounds.authorize(
                 "decomposition",
@@ -533,14 +533,19 @@ class DecompositionValidationLifecycle:
                 before_state.content,
             )
         editor_error: Optional[str] = None
+        if applied.invocation_in_progress:
+            return applied
+        observation_before = AuthoritativeRepairState(applied.before_state or before_state.content, decision.identity.key)
         if applied.automatic_repair_authorized:
             try:
                 initiate()
             except Exception as exc:
                 editor_error = f"{type(exc).__name__}: {exc}"
+            finally:
+                self.repair_rounds.finish_invocation(applied.operation_identity)
         try:
             after_state = read_authoritative_state()
-            observation, after_content = classify_repair_observation(before_state, after_state)
+            observation, after_content = classify_repair_observation(observation_before, after_state)
             observed = self.repair_rounds.observe(
                 "decomposition",
                 decision.identity.parent.issue_number,

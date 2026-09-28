@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Event, Lock
+from threading import Barrier, Event, Lock, Thread
 from unittest.mock import Mock, call, patch
 
 import pytest
@@ -248,7 +248,7 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
             decision,
             lambda: True,
             lambda: initiated.append(gate.repair_rounds.count("individual", 1728)),
-            lambda body=body: AuthoritativeRepairState(body),
+            lambda body=body, binding=decision.identity.key: AuthoritativeRepairState(body, binding),
         )
         assert authorization.automatic_repair_authorized
         assert initiated == [generation + 1]
@@ -302,7 +302,7 @@ def test_explicit_repair_observes_no_contract_change_and_never_replays_editor(tm
         decision,
         lambda: True,
         lambda: editor_calls.append("called"),
-        lambda: AuthoritativeRepairState(authoritative["state"]),
+        lambda: AuthoritativeRepairState(authoritative["state"], decision.identity.key),
     )
     assert first.automatic_repair_authorized is True
     assert first.observation == "NO_CONTRACT_CHANGE"
@@ -315,7 +315,7 @@ def test_explicit_repair_observes_no_contract_change_and_never_replays_editor(tm
         decision,
         lambda: True,
         lambda: editor_calls.append("replayed"),
-        lambda: AuthoritativeRepairState(authoritative["state"]),
+        lambda: AuthoritativeRepairState(authoritative["state"], decision.identity.key),
     )
     assert duplicate.automatic_repair_authorized is False
     assert duplicate.observation == "NO_CONTRACT_CHANGE"
@@ -333,32 +333,109 @@ def test_explicit_repair_observes_authoritative_contract_change(tmp_path):
     def edit() -> None:
         authoritative["state"] = BODY + "\n\n## Context\nChanged"
 
-    result = gate.authorize_automatic_repair(decision, lambda: True, edit, lambda: AuthoritativeRepairState(authoritative["state"]))
+    result = gate.authorize_automatic_repair(decision, lambda: True, edit, lambda: AuthoritativeRepairState(authoritative["state"], decision.identity.key))
     assert result.observation == "CONTRACT_CHANGED"
     assert result.editor_error is None
     assert gate.repair_rounds.count("individual", 1728) == 1
 
 
 @pytest.mark.parametrize(
-    ("after", "expected"),
+    ("after_values", "expected"),
     [
-        (AuthoritativeRepairState(BODY, submission_active=False), "SUPERSEDED"),
-        (AuthoritativeRepairState(BODY + " changed", ownership_valid=False), "SUPERSEDED"),
-        (AuthoritativeRepairState(BODY + " invalid", manifest_valid=False), "UNVERIFIED"),
+        ((BODY, False, True, True), "SUPERSEDED"),
+        ((BODY + " changed", True, False, True), "SUPERSEDED"),
+        ((BODY + " invalid", True, True, False), "UNVERIFIED"),
         (None, "UNVERIFIED"),
     ],
 )
-def test_individual_repair_authority_precedes_content_comparison(tmp_path, after, expected):
+def test_individual_repair_authority_precedes_content_comparison(tmp_path, after_values, expected):
     """REQ-005: ended ownership and invalid reads cannot become progress."""
     blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
     gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=blocked))
     decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
-    reads = iter((AuthoritativeRepairState(BODY), after))
+    binding = decision.identity.key
+    after = None if after_values is None else AuthoritativeRepairState(after_values[0], binding, *after_values[1:])
+    reads = iter((AuthoritativeRepairState(BODY, binding), after))
 
     result = gate.authorize_automatic_repair(decision, lambda: True, lambda: None, lambda: next(reads))
 
     assert result.observation == expected
     assert gate.repair_rounds.count("individual", 1728) == 1
+
+
+def test_individual_repair_rejects_stale_decision_content(tmp_path):
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=blocked))
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    editor = Mock()
+
+    result = gate.authorize_automatic_repair(
+        decision,
+        lambda: True,
+        editor,
+        lambda: AuthoritativeRepairState(BODY + " changed", "stale-binding"),
+    )
+
+    assert result.automatic_repair_authorized is False
+    editor.assert_not_called()
+    assert gate.repair_rounds.count("individual", 1728) == 0
+
+
+def test_individual_competing_worker_cannot_settle_live_editor(tmp_path):
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "decisions.json"
+    gate = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    entered, release = Event(), Event()
+    state = {"content": BODY}
+    results = []
+
+    def edit() -> None:
+        entered.set()
+        assert release.wait(5)
+        state["content"] = BODY + " changed"
+
+    reader = lambda: AuthoritativeRepairState(state["content"], decision.identity.key)
+    worker = Thread(target=lambda: results.append(gate.authorize_automatic_repair(decision, lambda: True, edit, reader)))
+    worker.start()
+    assert entered.wait(5)
+    competing = gate.authorize_automatic_repair(decision, lambda: True, Mock(), reader)
+    assert competing.invocation_in_progress is True
+    assert competing.observation is None
+    release.set()
+    worker.join(5)
+    assert results[0].observation == "CONTRACT_CHANGED"
+
+
+def test_individual_unverified_observation_recovers_without_editor_replay(tmp_path):
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "decisions.json"
+    gate = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    editor = Mock()
+    reads = iter((AuthoritativeRepairState(BODY, decision.identity.key), None))
+    first = gate.authorize_automatic_repair(decision, lambda: True, editor, lambda: next(reads))
+    assert first.observation == "UNVERIFIED"
+
+    restarted = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    changed = AuthoritativeRepairState(BODY + " changed", decision.identity.key)
+    recovered = restarted.authorize_automatic_repair(decision, lambda: True, editor, lambda: changed)
+    assert recovered.observation == "CONTRACT_CHANGED"
+    assert editor.call_count == 1
+    assert restarted.repair_rounds.count("individual", 1728) == 1
+
+
+def test_repair_reservation_write_failure_cannot_leave_count_without_operation(tmp_path, monkeypatch):
+    """REQ-007: count and recoverable operation are one durable write."""
+    from auto_coder.specification_repair_rounds import SpecificationRepairRoundStore
+
+    rounds = SpecificationRepairRoundStore("owner/repo", tmp_path / "rounds.json")
+    monkeypatch.setattr(rounds, "_write", Mock(side_effect=OSError("disk unavailable")))
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        rounds.authorize("individual", 1728, "generation", "EDIT_IN_PLACE", 3, BODY)
+
+    assert rounds.count("individual", 1728) == 0
 
 
 def test_production_blocked_publication_never_consumes_repair_rounds(tmp_path):

@@ -184,7 +184,7 @@ def test_fourth_blocked_generation_trips_circuit_breaker_but_ready_can_converge(
             decision,
             lambda: True,
             lambda: None,
-            lambda body=bodies[generation]: AuthoritativeRepairState(body),
+            lambda body=bodies[generation], binding=decision.identity.key: AuthoritativeRepairState(body, binding),
         )
         assert authorization.automatic_repair_authorized
         assert authorization.observation == "NO_CONTRACT_CHANGE"

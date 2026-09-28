@@ -13,6 +13,8 @@ from typing import Iterator, Optional
 from .runtime_locks import ensure_lock_directory, lock_path
 
 PAUSE_REASON = "automatic_repair_paused(repair_round_limit_reached)"
+_ACTIVE_INVOCATIONS: set[str] = set()
+_ACTIVE_INVOCATIONS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,8 @@ class RepairRoundApplication:
     operation_identity: Optional[str] = None
     observation: Optional[str] = None
     editor_error: Optional[str] = None
+    invocation_in_progress: bool = False
+    before_state: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,7 @@ class AuthoritativeRepairState:
     """Fresh contract content plus submission and ownership authority."""
 
     content: str
+    decision_binding: str
     submission_active: bool = True
     ownership_valid: bool = True
     manifest_valid: bool = True
@@ -136,52 +141,98 @@ class SpecificationRepairRoundStore:
         limit: int,
         before_state: Optional[str] = None,
     ) -> RepairRoundApplication:
-        """Durably count, then authorize, one automatic in-place repair."""
-        applied = self.apply(
-            subject_kind,
-            subject_number,
-            generation,
-            remediation,
-            limit,
-            authorize_automatic_repair=True,
-        )
+        """Atomically persist the count, operation identity, and before-state."""
+        if limit <= 0:
+            raise ValueError("specification repair-round limit must be a positive integer")
         if before_state is None:
-            return applied
+            return self.apply(
+                subject_kind,
+                subject_number,
+                generation,
+                remediation,
+                limit,
+                authorize_automatic_repair=True,
+            )
+        key = f"{subject_kind}:{subject_number}"
         operation_identity = f"{subject_kind}:{subject_number}:{generation}"
         with self._locked():
             state = self._read()
-            subject = self._subject(state, f"{subject_kind}:{subject_number}")
+            subject = self._subject(state, key)
+            associations = subject["generation_episodes"]
+            episodes = subject["episodes"]
+            assert isinstance(associations, dict) and isinstance(episodes, list)
+            episode_number = associations.get(generation)
+            changed = False
+            if episode_number is None:
+                if not episodes or self._episode(episodes, len(episodes))["status"] == "paused":
+                    episodes.append({"status": "active", "counted_generations": [], "pause_trigger_generation": None})
+                episode_number = len(episodes)
+                associations[generation] = episode_number
+                changed = True
+            if not isinstance(episode_number, int):
+                raise ValueError("Invalid specification repair episode association")
+            episode = self._episode(episodes, episode_number)
+            counted = episode["counted_generations"]
+            assert isinstance(counted, list)
+            previous = len(counted)
+            paused = episode["status"] == "paused"
+            authorized = False
+            reason = PAUSE_REASON if paused and remediation == "EDIT_IN_PLACE" else None
             operations = subject.setdefault("operations", {})
             if not isinstance(operations, dict):
                 raise ValueError("Invalid specification repair operations")
             operation = operations.get(generation)
-            if operation is None and applied.automatic_repair_authorized:
-                operations[generation] = {
-                    "operation_identity": operation_identity,
-                    "before_state": before_state,
-                    "phase": "AUTHORIZED",
-                    "observation": None,
-                    "after_state": None,
-                    "editor_error": None,
-                }
-                self._write(state)
+            if remediation == "EDIT_IN_PLACE" and not paused and generation not in counted:
+                if previous >= limit:
+                    episode["status"] = "paused"
+                    episode["pause_trigger_generation"] = generation
+                    paused = True
+                    reason = PAUSE_REASON
+                    changed = True
+                else:
+                    operation = {
+                        "operation_identity": operation_identity,
+                        "before_state": before_state,
+                        "phase": "AUTHORIZED",
+                        "observation": None,
+                        "after_state": None,
+                        "editor_error": None,
+                    }
+                    operations[generation] = operation
+                    counted.append(generation)
+                    authorized = True
+                    changed = True
             elif not isinstance(operation, dict):
                 raise ValueError("Invalid specification repair operation")
-            elif operation.get("before_state") != before_state:
-                raise ValueError("Specification repair before-state conflict")
+            if changed:
+                self._write(state)
             observation = operation.get("observation") if isinstance(operation, dict) else None
             editor_error = operation.get("editor_error") if isinstance(operation, dict) else None
+        with _ACTIVE_INVOCATIONS_LOCK:
+            if authorized:
+                _ACTIVE_INVOCATIONS.add(operation_identity)
+            active = operation_identity in _ACTIVE_INVOCATIONS
         return RepairRoundApplication(
-            applied.remediation,
-            applied.previous_rounds,
-            applied.reason,
-            applied.automatic_repair_authorized,
-            applied.paused,
-            applied.episode,
+            remediation,
+            previous,
+            reason,
+            authorized,
+            paused,
+            episode_number,
             operation_identity,
             observation if isinstance(observation, str) else None,
             editor_error if isinstance(editor_error, str) else None,
+            active and not authorized,
+            operation.get("before_state") if isinstance(operation, dict) and isinstance(operation.get("before_state"), str) else None,
         )
+
+    @staticmethod
+    def finish_invocation(operation_identity: Optional[str]) -> None:
+        """Release process-local live-editor ownership before observation."""
+        if operation_identity is None:
+            return
+        with _ACTIVE_INVOCATIONS_LOCK:
+            _ACTIVE_INVOCATIONS.discard(operation_identity)
 
     def observe(
         self,
@@ -202,7 +253,7 @@ class SpecificationRepairRoundStore:
             if not isinstance(operation, dict):
                 raise ValueError("Specification repair operation is unavailable")
             existing = operation.get("observation")
-            if existing is not None:
+            if existing not in {None, "UNVERIFIED"}:
                 if existing != observation or operation.get("after_state") != after_state:
                     raise ValueError("Specification repair observation conflict")
             else:
