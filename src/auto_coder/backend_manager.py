@@ -840,7 +840,15 @@ class BackendManager(LLMBackendManagerBase):
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
                     workspace_ownership = LocalWorkspaceOwnership() if is_local else None
-                    worktree_ctx = isolated_local_llm_worktree(is_noedit=is_noedit, ownership=workspace_ownership) if is_local else contextlib.nullcontext()
+                    worktree_ctx = (
+                        isolated_local_llm_worktree(
+                            is_noedit=is_noedit,
+                            ownership=workspace_ownership,
+                            require_handoff_authorization=not is_noedit,
+                        )
+                        if is_local
+                        else contextlib.nullcontext()
+                    )
                     with worktree_ctx:
                         workspace_binding = get_current_local_workspace()
                         boundary_ctx = (
@@ -883,8 +891,14 @@ class BackendManager(LLMBackendManagerBase):
                                     local_boundary.binding.invocation_id,
                                     getattr(cli, "get_last_session_id", lambda: None)(),
                                 )
-                                if getattr(cli, "supports_supervised_local_turn", False) is True:
-                                    local_boundary.require_confined_result(local_boundary.binding.invocation_id)
+                                if not is_noedit and workspace_ownership is not None:
+                                    handoff_evidence = local_boundary.evidence()
+                                    if handoff_evidence.handoff_authorized:
+                                        workspace_ownership.authorize_handoff(
+                                            handoff_evidence.invocation_id,
+                                            handoff_evidence.turn_id,
+                                            local_boundary.binding.invocation_id,
+                                        )
                         self._settle_admitted_invocation(invocation_handle, success=True)
                         if workspace_ownership is not None:
                             workspace_ownership.release_execution()

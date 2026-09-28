@@ -60,6 +60,16 @@ class LocalBoundaryEvidence:
         """Compatibility spelling for confined-result authorization."""
         return self.confined_result_authorized
 
+    @property
+    def handoff_authorized(self) -> bool:
+        """Whether default local result handoff has positive lifecycle evidence.
+
+        Filesystem/publication confinement is deliberately not a prerequisite for
+        controller publication. Writer settlement and violation observation remain
+        mandatory so an incomplete turn can never promote files.
+        """
+        return self.editable and self.backend_outcome is BackendOutcome.SUCCEEDED and self.writer_completion is EvidenceStatus.ESTABLISHED and self.violation_observation is EvidenceStatus.ESTABLISHED and not self.policy_violation and self.failure is None
+
 
 @dataclass
 class LocalExecutionBoundary:
@@ -206,6 +216,16 @@ class LocalExecutionBoundary:
 
     def require_promotable(self) -> LocalBoundaryEvidence:
         return self.require_confined_result(self.binding.invocation_id)
+
+    def require_handoff_authorized(self, invocation_id: str) -> LocalBoundaryEvidence:
+        with self._lock:
+            if invocation_id != self.binding.invocation_id:
+                raise LocalBoundaryError("evidence belongs to a different local invocation")
+            evidence = self._evidence_unlocked()
+        if not evidence.handoff_authorized:
+            detail = f": {evidence.failure}" if evidence.failure else ""
+            raise LocalBoundaryError(f"local execution lacks complete result-handoff evidence{detail}")
+        return evidence
 
 
 _CURRENT_BOUNDARY: contextvars.ContextVar[Optional[LocalExecutionBoundary]] = contextvars.ContextVar("auto_coder_local_execution_boundary", default=None)

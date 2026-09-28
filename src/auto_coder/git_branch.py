@@ -280,7 +280,7 @@ def try_llm_commit_push(
     Returns:
         True if LLM successfully resolved the issue, False otherwise
     """
-    cmd = CommandExecutor()
+    del verify_push  # Publication truth is established by the controller retry.
 
     try:
 
@@ -300,23 +300,10 @@ def try_llm_commit_push(
 
         # Check if LLM indicated success
         if "COMMIT_PUSH_RESULT: SUCCESS" in response:
-            logger.info("LLM successfully resolved commit/push failure")
-
-            # Verify that there are no uncommitted changes
-            status_result = cmd.run_command(["git", "status", "--porcelain"])
-            if status_result.stdout.strip():
-                logger.error("LLM claimed success but there are still uncommitted changes")
-                logger.error(f"Uncommitted changes: {status_result.stdout}")
-                return False
-
-            # Optionally verify that the push was successful by checking for unpushed commits
-            if verify_push:
-                unpushed_result = cmd.run_command(["git", "log", "@{u}..HEAD", "--oneline"])
-                if unpushed_result.success and unpushed_result.stdout.strip():
-                    logger.error("LLM claimed success but there are still unpushed commits")
-                    logger.error(f"Unpushed commits: {unpushed_result.stdout}")
-                    return False
-
+            # The model repairs a private workspace. Its accepted file result is
+            # synchronized by the shared handoff; controller retry below is the
+            # only authority for commit/push success.
+            logger.info("LLM local repair returned an accepted file result")
             return True
         elif "COMMIT_PUSH_RESULT: FAILED:" in response:
             # Extract failure reason
