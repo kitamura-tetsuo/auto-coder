@@ -830,6 +830,7 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
                 return {
                     "number": 1684,
                     "body": authoritative["body"],
+                    "state": "open",
                     "labels": [{"name": "implementation-ready"}],
                     "created_at": "2024-01-01T00:00:00Z",
                     "updated_at": "2024-01-01T00:00:00Z",

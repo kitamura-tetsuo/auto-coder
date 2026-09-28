@@ -188,6 +188,42 @@ def test_closed_issue_removes_review_work_without_invoking_analyzer(tmp_path, mo
     assert all(outcome.status == "stale" for outcome in outcomes)
 
 
+def test_closed_child_is_decomposition_context_but_not_an_individual_review_gate(tmp_path, monkeypatch):
+    github = FakeGitHub([], parents={2: 1, 3: 1})
+    github.issues[1] = github.snapshot(1, title="Parent", body="## Objective\n\nCoordinate.")
+    github.issues[2] = github.snapshot(2, title="Open child")
+    github.issues[3] = github.snapshot(3, title="Closed child", state="closed")
+    individual_calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    decomposition_calls = Mock(return_value=DecompositionAnalysisResult("READY"))
+    engine = engine_with_lane(tmp_path, github, individual_calls, decomposition_calls, monkeypatch=monkeypatch)
+
+    descriptors = engine._family_review_descriptors(
+        REPO,
+        (dict(github.issues[1]), [dict(github.issues[2]), dict(github.issues[3])]),
+    )
+
+    assert [(descriptor.kind, getattr(descriptor, "number", None)) for descriptor in descriptors] == [
+        ("decomposition", None),
+        ("individual", 2),
+    ]
+    decomposition = descriptors[0]
+    assert decomposition.identity is not None
+    assert {member.issue_number for member in decomposition.identity.children} == {2, 3}
+
+
+def test_closed_child_rerun_is_durably_deferred_without_review_work(tmp_path, monkeypatch):
+    github = FakeGitHub([], parents={2: 1})
+    github.issues[1] = github.snapshot(1, title="Parent", body="## Objective\n\nCoordinate.")
+    github.issues[2] = github.snapshot(2, state="closed")
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine = engine_with_lane(tmp_path, github, calls, monkeypatch=monkeypatch)
+
+    statuses = engine.accept_issue_review_rerun("closed-rerun", [ReviewSubject(REPO, "individual", 2)])
+
+    assert [(status.state, status.reason) for status in statuses] == [("deferred", "individual review for Issue #2 is deferred because the subject is closed")]
+    assert calls.call_count == 0
+
+
 def test_blocked_standalone_publishes_once_and_withdraws_readiness(tmp_path, monkeypatch):
     github = FakeGitHub([])
     github.issues[1] = github.snapshot(1)
