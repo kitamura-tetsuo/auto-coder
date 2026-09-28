@@ -124,6 +124,25 @@ class CodexPrAttributionRepository:
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             return AttributionResult(AttributionDisposition.CONFLICT, boundary=f"attribution record is corrupt: {type(exc).__name__}")
 
+    def snapshot(self) -> tuple[tuple[CodexPrOrigin, ...], str]:
+        """Return every verified binding and its repository consistency token.
+
+        This is intentionally a pure read for retirement/discovery callers;
+        unlike ``establish`` it never creates or repairs attribution state.
+        """
+        value = self._read()
+        bindings = value.get("bindings")
+        revision = value.get("revision")
+        if not isinstance(bindings, dict) or isinstance(revision, bool) or not isinstance(revision, int):
+            raise ValueError("invalid Codex PR attribution registry")
+        origins: list[CodexPrOrigin] = []
+        for raw in bindings.values():
+            if not isinstance(raw, dict):
+                raise ValueError("invalid Codex PR attribution binding")
+            origins.append(CodexPrOrigin(**raw))
+        origins.sort(key=lambda origin: (origin.repository, origin.pr_number))
+        return tuple(origins), str(revision)
+
     def establish(self, candidate: CodexPrOrigin) -> AttributionResult:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
