@@ -5868,6 +5868,8 @@ class AutomationEngine:
                     eager_child_decisions = {}
                     if spec_validation_enabled:
                         for child in authoritative_set[1]:
+                            if not self._is_authoritatively_open_issue(child):
+                                continue
                             child_number = int(child["number"])
                             relationship = self._child_review_context(*authoritative_set, child_number)
                             child_identity = individual_validator.identity(
@@ -5879,7 +5881,8 @@ class AutomationEngine:
                             stored = individual_validator.store.get(child_identity)
                             if stored is not None:
                                 eager_child_decisions[child_number] = stored
-                    if (decomposition_enabled and decomposition_decision is None) or (spec_validation_enabled and len(eager_child_decisions) != len(authoritative_set[1])):
+                    open_child_count = sum(self._is_authoritatively_open_issue(child) for child in authoritative_set[1])
+                    if (decomposition_enabled and decomposition_decision is None) or (spec_validation_enabled and len(eager_child_decisions) != open_child_count):
                         result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - exact current review evidence is unavailable"]
                         result.refill_retry_required = True
