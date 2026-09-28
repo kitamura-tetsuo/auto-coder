@@ -48,6 +48,13 @@ class _SupervisedCommandContext:
 _SUPERVISED_COMMAND: ContextVar[Optional[_SupervisedCommandContext]] = ContextVar("auto_coder_supervised_command", default=None)
 
 
+def _chown_tree(root: Path, uid: int, gid: int) -> None:
+    for current, directories, files in os.walk(root):
+        os.chown(current, uid, gid)
+        for name in (*directories, *files):
+            os.chown(Path(current) / name, uid, gid, follow_symlinks=False)
+
+
 def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment: Dict[str, str]) -> Path:
     """Create private provider state beside the configured production runtime."""
     binding = context.boundary.binding
@@ -75,10 +82,7 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
         # with mode 0700. Transfer that parent as well as its repository so the
         # dropped worker can traverse to the immutable bound result root.
         for root in (binding.workspace.parent, runtime):
-            for current, directories, files in os.walk(root):
-                os.chown(current, uid, gid)
-                for name in (*directories, *files):
-                    os.chown(Path(current) / name, uid, gid, follow_symlinks=False)
+            _chown_tree(root, uid, gid)
     environment["HOME"] = str(home)
     # Provider runtimes such as Bun create executable/cache state in TMPDIR.
     # Keep that state inside the invocation-owned writable runtime rather than
@@ -914,6 +918,10 @@ class CommandExecutor:
                 protected_paths=(binding.caller_root, binding.caller_git_dir, binding.caller_common_dir),
             )
             result = supervised.supervisor.run(request, boundary=boundary)
+            if result.writer_complete:
+                # The controller owns result synchronization and disposal after
+                # all worker processes are positively stopped.
+                _chown_tree(binding.workspace.parent, os.geteuid(), os.getegid())
             if result.writer_complete and private_runtime is not None:
                 shutil.rmtree(private_runtime, ignore_errors=True)
             if on_stream is not None:
