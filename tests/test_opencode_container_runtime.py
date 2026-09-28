@@ -292,7 +292,7 @@ def test_ac001_container_executes_opencode_task_against_controlled_provider() ->
         container_script = f"""
 import os, subprocess, json
 from pathlib import Path
-from auto_coder.opencode_client import OpenCodeClient
+from auto_coder.cli_helpers import build_backend_manager
 
 home = Path("/runtime/home")
 home.mkdir(parents=True, exist_ok=True)
@@ -337,17 +337,27 @@ api_key = "sentinel-key"
 ''')
 
 os.chdir(str(repo))
-client = OpenCodeClient(backend_name="opencode")
-answer = client._run_llm_cli("Generate solution for task")
+manager = build_backend_manager(["opencode"], "opencode", {{}})
+answer = manager._run_llm_cli("Generate solution for task")
 print("NORMALIZED_ANSWER:" + answer)
 """
         cmd = [
             "docker",
             "run",
             "--rm",
+            "--privileged",
+            "--cgroupns=host",
+            "--volume",
+            "/sys/fs/cgroup:/sys/fs/cgroup:rw",
             *_container_network_args(),
             "-e",
             "HOME=/runtime/home",
+            "-e",
+            "AUTO_CODER_RUNTIME_ROOT=/runtime",
+            "-e",
+            "AUTO_CODER_LOCAL_WORKER_UID=65532",
+            "-e",
+            "AUTO_CODER_LOCAL_WORKER_GID=65532",
             "--entrypoint",
             "python3",
             image,

@@ -33,6 +33,9 @@ is positively empty and the direct child is reaped. Production deployments provi
 the non-root child credentials with `AUTO_CODER_LOCAL_WORKER_UID` and
 `AUTO_CODER_LOCAL_WORKER_GID`; missing or unusable cgroup/Landlock prerequisites
 cause refusal before the CLI starts rather than an editable fallback.
+An uncertain settlement error is terminal for automatic and explicit session
+resume handling: it retains the prior session identity and cannot be converted
+into a fresh call or a different-backend replacement.
 
 The checked-in `compose.channels.yml` production profile runs the controller with
 host cgroup-v2 access and supplies the image's dedicated UID/GID 65532 worker

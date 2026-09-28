@@ -18,7 +18,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .backend_provider_manager import BackendProviderManager
 from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
 from .backend_state_manager import BackendStateManager
-from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
+from .exceptions import (
+    AutoCoderRetryableBackendError,
+    AutoCoderTimeoutError,
+    AutoCoderUsageLimitError,
+    LocalWriterSettlementError,
+    SessionWorkspaceCompatibilityError,
+)
 from .invocation_admission import (
     InvocationHandle,
     current_invocation_gate,
@@ -568,7 +574,12 @@ class BackendManager(LLMBackendManagerBase):
                         session_id=self._last_session_id if should_resume else None,
                         requested_noedit=requested_noedit,
                     )
-                except (AutoCoderUsageLimitError, AutoCoderTimeoutError, AutoCoderRetryableBackendError):
+                except (
+                    AutoCoderUsageLimitError,
+                    AutoCoderTimeoutError,
+                    AutoCoderRetryableBackendError,
+                    LocalWriterSettlementError,
+                ):
                     raise
                 except (ValueError, RuntimeError, NotImplementedError) as exc:
                     if not should_resume:
@@ -674,6 +685,9 @@ class BackendManager(LLMBackendManagerBase):
             self._last_continue_session_resumed = True
             return str(output)
         except SessionWorkspaceCompatibilityError:
+            self._last_continue_session_resumed = False
+            raise
+        except LocalWriterSettlementError:
             self._last_continue_session_resumed = False
             raise
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
