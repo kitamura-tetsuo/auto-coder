@@ -40,7 +40,7 @@ from .specification_repair_rounds import RepairRoundApplication, SpecificationRe
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 from .util.github_request_outcome import GitHubRequestError
 
-VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v7-incremental-evidence"
+VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v8-retained-findings"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
 
 # Pending-work stage for the two independently-trackable BLOCKED publication
@@ -144,6 +144,16 @@ class ValidationIdentity:
 
 
 @dataclass(frozen=True)
+class RetainedFinding:
+    """One stable finding retained after resolution for recurrence detection."""
+
+    finding_id: str
+    finding: SpecificationFinding
+    disposition: str
+    reasoning: str
+
+
+@dataclass(frozen=True)
 class ValidationDecision:
     identity: ValidationIdentity
     verdict: str
@@ -185,6 +195,7 @@ class ValidationDecision:
     coverage: tuple[ReviewCoverage, ...] = ()
     review_inputs: str = ""
     accepted_sequence: int = 0
+    retained_findings: tuple[RetainedFinding, ...] = ()
 
 
 def _contract_evidence(manifest: NormativeIssueManifest, title: str, body: str) -> str:
@@ -248,7 +259,15 @@ def _predecessor_evidence(decision: ValidationDecision) -> str:
         "decision_key": decision.identity.key,
         "review_inputs": json.loads(decision.review_inputs),
         "verdict": decision.verdict,
-        "findings": [{"finding_id": finding_id, **asdict(finding)} for finding_id, finding in zip(decision.finding_ids, decision.findings)],
+        "findings": [
+            {
+                "finding_id": item.finding_id,
+                **asdict(item.finding),
+                "last_disposition": item.disposition,
+                "last_reasoning": item.reasoning,
+            }
+            for item in decision.retained_findings
+        ],
         "finding_dispositions": [asdict(item) for item in decision.finding_dispositions],
         "coverage": [asdict(item) for item in decision.coverage],
         "execution_provenance": decision.execution_provenance,
@@ -407,13 +426,63 @@ class SpecificationValidationStore:
         authority, _request_id, _state = self.reruns.authority(ReviewSubject(self.repository, "individual", identity.issue_number))
         if int(raw.get("rerun_authority") or 0) != authority:
             return None
+        if not self._raw_has_complete_evidence(raw, identity):
+            return None
         return self._decision_from_raw(identity, raw, evaluation_source="stored-decision-reuse")
+
+    @staticmethod
+    def _raw_has_complete_evidence(raw: dict[str, object], identity: ValidationIdentity) -> bool:
+        """Require the complete evidence envelope before a record can authorize reuse."""
+        try:
+            inputs = json.loads(raw["review_inputs"] if isinstance(raw["review_inputs"], str) else "")
+            binding = json.loads(identity.manifest_binding)
+            expected = {str(item["requirement_id"]) for item in binding["requirements"]} | {"contract-wide"}
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return False
+        coverage = raw.get("coverage")
+        dispositions = raw.get("finding_dispositions")
+        retained = raw.get("retained_findings")
+        finding_ids = raw.get("finding_ids")
+        findings = raw.get("findings")
+        if (
+            not isinstance(inputs, dict)
+            or not isinstance(coverage, list)
+            or not isinstance(dispositions, list)
+            or not isinstance(retained, list)
+            or not isinstance(finding_ids, list)
+            or not isinstance(findings, list)
+            or len(finding_ids) != len(findings)
+            or any(not isinstance(item, str) for item in finding_ids)
+            or len(set(finding_ids)) != len(finding_ids)
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"finding_id", "disposition", "reasoning"}
+                or not isinstance(item.get("finding_id"), str)
+                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"}
+                or not isinstance(item.get("reasoning"), str)
+                or not str(item.get("reasoning")).strip()
+                for item in dispositions
+            )
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {"finding_id", "finding", "disposition", "reasoning"}
+                or not isinstance(item.get("finding_id"), str)
+                or not isinstance(item.get("finding"), dict)
+                or item.get("disposition") not in {"RESOLVED", "STILL_VALID", "REGRESSED", "UNVERIFIED"}
+                or not isinstance(item.get("reasoning"), str)
+                for item in retained
+            )
+        ):
+            return False
+        boundaries = [item.get("boundary") for item in coverage if isinstance(item, dict) and set(item) == {"boundary", "status", "no_impact_reason"} and item.get("status") in {"FRESH", "CARRIED"}]
+        return len(boundaries) == len(set(boundaries)) and set(boundaries) == expected
 
     def _decision_from_raw(self, identity: ValidationIdentity, raw: dict[str, object], evaluation_source: str = "model") -> ValidationDecision:
         raw_findings = raw.get("findings")
         raw_dispositions = raw.get("finding_dispositions")
         raw_coverage = raw.get("coverage")
         raw_finding_ids = raw.get("finding_ids")
+        raw_retained = raw.get("retained_findings")
         findings = (
             tuple(
                 SpecificationFinding(
@@ -432,6 +501,27 @@ class SpecificationValidationStore:
         )
         dispositions = tuple(FindingDisposition(**item) for item in raw_dispositions if isinstance(item, dict)) if isinstance(raw_dispositions, list) else ()
         coverage = tuple(ReviewCoverage(**item) for item in raw_coverage if isinstance(item, dict)) if isinstance(raw_coverage, list) else ()
+        retained = (
+            tuple(
+                RetainedFinding(
+                    finding_id=str(item["finding_id"]),
+                    finding=SpecificationFinding(
+                        category=str(item["finding"]["category"]),
+                        requirement_ids=tuple(str(value) for value in item["finding"].get("requirement_ids", [])),
+                        explanation=str(item["finding"]["explanation"]),
+                        clarification=str(item["finding"]["clarification"]),
+                        counterexample=str(item["finding"]["counterexample"]),
+                        missing_normative_boundary=str(item["finding"]["missing_normative_boundary"]),
+                    ),
+                    disposition=str(item["disposition"]),
+                    reasoning=str(item["reasoning"]),
+                )
+                for item in raw_retained
+                if isinstance(item, dict) and isinstance(item.get("finding"), dict)
+            )
+            if isinstance(raw_retained, list)
+            else ()
+        )
         receipt = raw.get("publication_receipt")
         remediation_reason = raw.get("remediation_reason")
         execution_provenance = raw.get("execution_provenance")
@@ -462,32 +552,36 @@ class SpecificationValidationStore:
             coverage=coverage,
             review_inputs=str(raw.get("review_inputs", "")),
             accepted_sequence=accepted_sequence if isinstance(accepted_sequence, int) else 0,
+            retained_findings=retained,
         )
 
     def compatible_predecessor(self, identity: ValidationIdentity, authority: int, role: str, parent_number: Optional[int]) -> Optional[ValidationDecision]:
         """Return the latest accepted evidence record, never a legacy partial record."""
-        candidates: list[ValidationDecision] = []
+        candidates: list[tuple[int, ValidationIdentity, dict[str, object]]] = []
         for raw in self._read().values():
-            if not isinstance(raw, dict) or not raw.get("review_inputs") or not raw.get("coverage"):
+            if not isinstance(raw, dict):
                 continue
             identity_raw = raw.get("identity")
             if not isinstance(identity_raw, dict):
                 continue
             try:
                 candidate_identity = ValidationIdentity(**identity_raw)
-                inputs = json.loads(str(raw["review_inputs"]))
-            except (TypeError, ValueError, json.JSONDecodeError):
+            except (TypeError, ValueError):
                 continue
-            if (
-                candidate_identity.repository == identity.repository
-                and candidate_identity.issue_number == identity.issue_number
-                and candidate_identity.policy_identity == identity.policy_identity
-                and int(raw.get("rerun_authority") or 0) == authority
-                and inputs.get("role") == role
-                and inputs.get("parent_number") == parent_number
-            ):
-                candidates.append(self._decision_from_raw(candidate_identity, raw))
-        return max(candidates, key=lambda item: item.accepted_sequence, default=None)
+            if candidate_identity.repository == identity.repository and candidate_identity.issue_number == identity.issue_number and candidate_identity.policy_identity == identity.policy_identity and int(raw.get("rerun_authority") or 0) == authority:
+                candidates.append((int(raw.get("accepted_sequence") or 0), candidate_identity, raw))
+        if not candidates:
+            return None
+        _sequence, candidate_identity, raw = max(candidates, key=lambda item: item[0])
+        if not self._raw_has_complete_evidence(raw, candidate_identity):
+            return None
+        try:
+            inputs = json.loads(str(raw["review_inputs"]))
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return None
+        if inputs.get("role") != role or inputs.get("parent_number") != parent_number:
+            return None
+        return self._decision_from_raw(candidate_identity, raw)
 
     def legacy_candidates(self, identity: ValidationIdentity) -> tuple[dict[str, object], ...]:
         """Read-only diagnostic scan for pre-migration terminal records (REQ-006).
@@ -547,6 +641,7 @@ class SpecificationValidationStore:
                     (int(item.get("accepted_sequence") or 0) for item in state.values() if isinstance(item, dict)),
                     default=0,
                 ),
+                "retained_findings": [asdict(item) for item in decision.retained_findings],
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(f".tmp-{os.getpid()}-{threading.get_ident()}")
@@ -652,6 +747,7 @@ class SpecificationValidationLifecycle:
                     return ValidationDecision(identity, "ERROR", remediation_reason=f"Objective evidence unavailable: {exc}", evaluation_source="local-only", rerun_authority=authority, rerun_request_id=request_id)
                 integrity = objective_integrity_result(evidence, manifest.issue_number)
                 if integrity is not None:
+                    relationship = relationship_context or IndividualRelationshipContext()
                     decision = ValidationDecision(
                         identity,
                         integrity.verdict,
@@ -661,7 +757,11 @@ class SpecificationValidationLifecycle:
                         evaluation_source="local-only",
                         rerun_authority=authority,
                         rerun_request_id=request_id,
+                        coverage=tuple(ReviewCoverage(item.requirement_id, "FRESH") for item in manifest.requirements) + (ReviewCoverage("contract-wide", "FRESH"),),
+                        review_inputs=_review_inputs(manifest, title, body, relationship, evidence),
                     )
+                    decision = replace(decision, finding_ids=self._finding_ids(decision, None))
+                    decision = replace(decision, retained_findings=self._retained_findings(decision, None))
                     return self._settle_decision_checkpoint(decision)
             try:
                 existing = self.store.get(identity)
@@ -732,20 +832,48 @@ class SpecificationValidationLifecycle:
                 review_inputs=inputs,
             )
             decision = replace(decision, finding_ids=self._finding_ids(decision, predecessor))
+            decision = replace(decision, retained_findings=self._retained_findings(decision, predecessor))
             return self._settle_decision_checkpoint(decision)
 
     @staticmethod
     def _finding_ids(decision: ValidationDecision, predecessor: Optional[ValidationDecision]) -> tuple[str, ...]:
         """Retain identity for the same counterexample; allocate only for new defects."""
         prior: dict[str, list[str]] = {}
+        active_disposition_ids: list[str] = []
         if predecessor is not None:
-            for finding_id, finding in zip(predecessor.finding_ids, predecessor.findings):
-                prior.setdefault(finding.counterexample, []).append(finding_id)
+            for retained in predecessor.retained_findings:
+                if retained.finding.counterexample:
+                    prior.setdefault(retained.finding.counterexample, []).append(retained.finding_id)
+            active_disposition_ids = [item.finding_id for item in decision.finding_dispositions if item.disposition in {"STILL_VALID", "REGRESSED"}]
         values: list[str] = []
         for index, finding in enumerate(decision.findings, start=1):
-            matching_ids = prior.get(finding.counterexample, [])
-            values.append(matching_ids.pop(0) if matching_ids else f"{decision.identity.key}:finding:{index}")
+            matching_ids = prior.get(finding.counterexample, []) if finding.counterexample else active_disposition_ids
+            finding_id = matching_ids.pop(0) if matching_ids else f"{decision.identity.key}:finding:{index}"
+            values.append(finding_id)
+            active_disposition_ids = [value for value in active_disposition_ids if value != finding_id]
         return tuple(values)
+
+    @staticmethod
+    def _retained_findings(decision: ValidationDecision, predecessor: Optional[ValidationDecision]) -> tuple[RetainedFinding, ...]:
+        retained = {item.finding_id: item for item in predecessor.retained_findings} if predecessor is not None else {}
+        for disposition in decision.finding_dispositions:
+            previous = retained.get(disposition.finding_id)
+            if previous is not None:
+                retained[disposition.finding_id] = replace(
+                    previous,
+                    disposition=disposition.disposition,
+                    reasoning=disposition.reasoning,
+                )
+        dispositions = {item.finding_id: item for item in decision.finding_dispositions}
+        for finding_id, finding in zip(decision.finding_ids, decision.findings):
+            current_disposition = dispositions.get(finding_id)
+            retained[finding_id] = RetainedFinding(
+                finding_id,
+                finding,
+                current_disposition.disposition if current_disposition is not None else "STILL_VALID",
+                current_disposition.reasoning if current_disposition is not None else "Finding introduced by this accepted review.",
+            )
+        return tuple(retained.values())
 
     def _settle_decision_checkpoint(self, decision: "ValidationDecision") -> "ValidationDecision":
         """Persist a fresh decision (if reusable) and confirm its invocation checkpoint.
