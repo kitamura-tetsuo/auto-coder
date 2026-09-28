@@ -2145,14 +2145,12 @@ class AutomationEngine:
         decision: ValidationDecision,
         submission_is_current: Optional[Callable[[], bool]] = None,
     ) -> Optional[str]:
-        """Durably authorize a fresh standalone BLOCKED decision before publishing it.
+        """Publish a standalone BLOCKED decision without initiating repair.
 
-        Only a freshly scheduled/joined decision reaches this wrapper (REQ-003):
-        durable recovery of an already-decided pending publication calls
-        ``apply_blocked`` directly, without re-authorizing, so a replay never
-        double-counts (REQ-004, REQ-006).
+        Publication and readiness withdrawal are review effects.  With no
+        specification editor configured, they must not reserve an automatic
+        repair generation or pretend that one completed.
         """
-        validator.authorize_automatic_repair(decision, submission_is_current or (lambda: True), lambda: None)
         return validator.apply_blocked(github, decision, submission_is_current)
 
     def _authorize_and_apply_inherited_blocked(
@@ -2162,8 +2160,7 @@ class AutomationEngine:
         decision: ValidationDecision,
         set_is_current: Callable[[], bool],
     ) -> Optional[str]:
-        """Durably authorize a fresh inherited-child BLOCKED decision before publishing it."""
-        validator.authorize_automatic_repair(decision, set_is_current, lambda: None)
+        """Publish an inherited-child BLOCKED decision without initiating repair."""
         return validator.apply_inherited_blocked(github, decision, set_is_current)
 
     def _authorize_and_apply_decomposition_blocked(
@@ -2173,13 +2170,7 @@ class AutomationEngine:
         decision: DecompositionDecision,
         fetch_set: Callable[[int], Optional[tuple[Dict[str, Any], List[Dict[str, Any]]]]],
     ) -> Optional[str]:
-        """Durably authorize a fresh decomposition BLOCKED decision before publishing it."""
-
-        def set_is_current() -> bool:
-            fetched = fetch_set(decision.identity.parent.issue_number)
-            return fetched is not None and str(fetched[0].get("state") or "").lower() == "open" and is_implementation_ready(fetched[0]) and validator.identity(*fetched) == decision.identity
-
-        validator.authorize_automatic_repair(decision, set_is_current, lambda: None)
+        """Publish a decomposition BLOCKED decision without initiating repair."""
         return validator.apply_blocked(github, decision, fetch_set)
 
     def _family_individual_identities_match(

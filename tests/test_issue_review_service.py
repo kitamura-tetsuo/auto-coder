@@ -659,7 +659,7 @@ def test_restored_readiness_renews_withdrawal_without_new_diagnostic(tmp_path, m
     assert len(github.removals) == 2
 
 
-def test_repair_episode_pauses_without_fabricating_reissue(tmp_path, monkeypatch):
+def test_blocked_publication_does_not_start_placeholder_repairs(tmp_path, monkeypatch):
     github = FakeGitHub([])
     github.issues[1] = github.snapshot(1)
     bodies = [BODY + f"\n\n<!-- round {round} -->" for round in range(4)]
@@ -673,14 +673,14 @@ def test_repair_episode_pauses_without_fabricating_reissue(tmp_path, monkeypatch
         outcome = engine._get_review_service(REPO).pump_target(1, "test-origin")
         assert outcome is not None and outcome.status == "completed", round
     assert calls.call_count == 3
-    assert validator.repair_rounds.count("individual", 1) == 3
+    assert validator.repair_rounds.count("individual", 1) == 0
 
     github.issues[1] = github.snapshot(1, body=bodies[3])
     outcome = engine._get_review_service(REPO).pump_target(1, "test-origin")
     assert outcome is not None and outcome.status == "completed"
     decision = next(iter(outcome.decisions.values()))
     assert decision.remediation == "EDIT_IN_PLACE"
-    assert validator.repair_rounds.is_paused("individual", 1, decision.identity.specification_digest) is True
+    assert validator.repair_rounds.is_paused("individual", 1, decision.identity.specification_digest) is False
     assert validator.is_reissue_required(1) is False
 
 

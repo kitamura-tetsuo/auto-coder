@@ -283,17 +283,8 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     assert duplicate_gate.repair_rounds.count("individual", 200) == 0
 
 
-def test_production_dispatch_authorizes_three_repair_rounds_then_pauses_uncounted(tmp_path):
-    """REQ-003, REQ-005, REQ-014: real production processing authorizes/counts rounds.
-
-    Drives ``AutomationEngine._process_single_candidate_unified`` -- the actual
-    normal-worker production boundary, not the lifecycle API directly -- through
-    three previously-unassociated BLOCKED + EDIT_IN_PLACE generations and asserts
-    each durably authorizes and counts exactly one automatic repair round before
-    its diagnostic/readiness effects publish. A fourth previously-unassociated
-    generation must then pause the episode at the durable limit, leaving the
-    count unchanged and issuing no automatic repair or reissue marker.
-    """
+def test_production_blocked_publication_never_consumes_repair_rounds(tmp_path):
+    """REQ-001/REQ-009: review effects are not placeholder repair initiation."""
     blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
     decisions_path = tmp_path / "production-decisions.json"
     gate = SpecificationValidationLifecycle("owner/repo", "policy", decisions_path, lambda *_args: blocked)
@@ -307,7 +298,7 @@ def test_production_dispatch_authorizes_three_repair_rounds_then_pauses_uncounte
         candidate = Candidate(type="issue", data={"number": 1728, "title": "Title", "body": body}, priority=0)
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
         assert result.actions == ["Rejected - blocked specification"]
-        assert gate.repair_rounds.count("individual", 1728) == generation + 1
+        assert gate.repair_rounds.count("individual", 1728) == 0
         decision = gate.store.get(gate.identity(1728, "Title", body))
         assert decision is not None and decision.remediation_reason is None
 
@@ -316,14 +307,13 @@ def test_production_dispatch_authorizes_three_repair_rounds_then_pauses_uncounte
     candidate = Candidate(type="issue", data={"number": 1728, "title": "Title", "body": final_body}, priority=0)
     result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
     assert result.actions == ["Rejected - blocked specification"]
-    # The circuit breaker pauses without consuming a fourth round.
-    assert gate.repair_rounds.count("individual", 1728) == 3
-    assert gate.repair_rounds.is_paused("individual", 1728, gate.identity(1728, "Title", final_body).specification_digest)
+    assert gate.repair_rounds.count("individual", 1728) == 0
+    assert not gate.repair_rounds.is_paused("individual", 1728, gate.identity(1728, "Title", final_body).specification_digest)
     assert not gate.is_reissue_required(1728)
     paused_decision = gate.store.get(gate.identity(1728, "Title", final_body))
     assert paused_decision is not None and paused_decision.remediation == "EDIT_IN_PLACE"
-    assert paused_decision.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)"
-    assert "Automatic repair has paused" in engine.github.comments[-1]["body"]
+    assert paused_decision.remediation_reason is None
+    assert "Automatic repair has paused" not in engine.github.comments[-1]["body"]
 
 
 def test_concurrent_paths_coalesce_semantic_validation(tmp_path):

@@ -388,7 +388,6 @@ class IssueReviewService:
         def is_current() -> bool:
             return self._individual_is_current(descriptor, decision, cell, decisions)
 
-        lifecycle.authorize_automatic_repair(decision, is_current, lambda: None)
         if descriptor.role == "child" and descriptor.parent_number is not None:
             error = lifecycle.apply_inherited_blocked(github, decision, is_current)
         else:
@@ -407,7 +406,6 @@ class IssueReviewService:
         decision: DecompositionDecision,
     ) -> Optional[str]:
         lifecycle = self._decomp()
-        lifecycle.authorize_automatic_repair(decision, lambda: self._decomposition_is_current(descriptor, decision), lambda: None)
         error = lifecycle.apply_blocked(self._github_provider(), decision, self._fetch_set)
         self._record_blocked_effect_best_effort(
             review_kind=issue_review_audit.REVIEW_KIND_ISSUE_DECOMPOSITION,
