@@ -151,6 +151,25 @@ REQ-002: Values other than the booleans `true` and `false` must produce the obse
     assert "The blocker is missing normative semantics" in captured[0]
     assert '"requirement_id": "REQ-001"' in captured[0]
     assert "External Settings interface" in captured[0]
+    assert "Do not retrieve, inspect, or request" in captured[0]
+    assert "no retrieval tool exists" in captured[0]
+    assert "retrieval failure" in captured[0]
+    assert "restoring network access is not the clarification" in captured[0]
+    assert "genuine review execution or output-validation failure remains ERROR" in captured[0]
+
+
+def test_reference_retrieval_diagnostic_is_non_normative_and_does_not_trigger_recovery():
+    captured = []
+    result = analyze_issue_specification(
+        _manifest(),
+        "Optional provenance lookup reported curl: (6) Could not resolve host: example.invalid",
+        prompt_runner=lambda prompt: captured.append(prompt) or _response("READY"),
+    )
+
+    assert result.verdict == "READY"
+    assert result.remediation == "NONE"
+    assert result.findings == ()
+    assert "Never salvage or replace ERROR by recognizing a URL, DNS message" in captured[0]
 
 
 def test_scope_drift_evidence_is_rendered_only_as_remediation_evidence():
@@ -239,6 +258,15 @@ def test_provider_failure_returns_error_not_a_policy_verdict():
     result = analyze_issue_specification(_manifest(), "body", prompt_runner=failing_runner)
     assert result.verdict == "ERROR"
     assert result.findings == ()
+    assert result.error == "Specification analysis execution failed: RuntimeError"
+
+
+def test_provider_dns_failure_remains_error_not_reference_policy_success():
+    def failing_runner(_prompt):
+        raise RuntimeError("curl: (6) Could not resolve host: raw.githubusercontent.com")
+
+    result = analyze_issue_specification(_manifest(), "body", prompt_runner=failing_runner)
+    assert (result.verdict, result.remediation, result.findings) == ("ERROR", "NONE", ())
     assert result.error == "Specification analysis execution failed: RuntimeError"
 
 

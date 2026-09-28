@@ -16,11 +16,11 @@ from loguru import logger
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .invocation_admission import bind_invocation_target, take_pending_invocation_handle
 from .issue_review_publication import find_confirmed_publication
-from .issue_review_rerun import IssueReviewRerunStore, ReviewSubject
+from .issue_review_rerun import IssueReviewRerunStore, RerunAuthorityUnavailable, ReviewSubject
 from .objective_evidence import ObjectiveAnchorStore
 from .prompt_loader import load_prompts
 from .reissue_required_store import ReissueRequiredStore
-from .requirement_contract import NormativeIssueManifest
+from .requirement_contract import NormativeIssueManifest, build_normative_issue_manifest
 from .runtime_locks import ensure_lock_directory, lock_path
 from .specification_analyzer import (
     SPECIFICATION_FINDING_CATEGORIES,
@@ -37,7 +37,7 @@ from .specification_repair_rounds import RepairRoundApplication, SpecificationRe
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 from .util.github_request_outcome import GitHubRequestError
 
-VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v5-routing-independent-policy"
+VALIDATION_SCHEMA_VERSION = "issue-specification-validation-v6-local-contract-references"
 FINDINGS_MARKER_PREFIX = "auto-coder-specification-validation"
 
 # Pending-work stage for the two independently-trackable BLOCKED publication
@@ -129,6 +129,10 @@ class ValidationIdentity:
     specification_digest: str
     policy_identity: str
     relationship_digest: str = "standalone"
+    # Canonical, exact caller-supplied manifest binding.  Keeping the complete
+    # value in the identity (rather than only its digest) makes the durable
+    # authorization self-describing and prevents reconstruction from Markdown.
+    manifest_binding: str = ""
 
     @property
     def key(self) -> str:
@@ -180,6 +184,18 @@ def _contract_evidence(manifest: NormativeIssueManifest, title: str, body: str) 
         "requirements": [{"requirement_id": item.requirement_id, "text": item.text} for item in manifest.requirements],
     }
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def manifest_binding(manifest: NormativeIssueManifest) -> str:
+    """Return the exact ordered authoritative-manifest binding for reuse."""
+    value = {
+        "issue_number": manifest.issue_number,
+        "title": manifest.title,
+        "explicit_contract_present": manifest.explicit_contract_present,
+        "explicit_contract_valid": manifest.explicit_contract_valid,
+        "requirements": [{"requirement_id": item.requirement_id, "text": item.text} for item in manifest.requirements],
+    }
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 class IndividualReviewHistoryStore:
@@ -448,10 +464,23 @@ class SpecificationValidationLifecycle:
         title: str,
         body: str,
         relationship_context: Optional[IndividualRelationshipContext] = None,
+        manifest: Optional[NormativeIssueManifest] = None,
     ) -> ValidationIdentity:
         relationship = relationship_context or IndividualRelationshipContext()
         relationship_digest = hashlib.sha256(json.dumps(asdict(relationship), sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-        return ValidationIdentity(self.repository, issue_number, specification_digest(title, body), self.policy_identity, relationship_digest)
+        # Most current-state callers own the authoritative GitHub body and use
+        # the shared production producer here.  Review execution passes its
+        # already supplied manifest explicitly, which preserves the supported
+        # separation between Markdown evidence and the normative manifest.
+        bound_manifest = manifest or build_normative_issue_manifest(issue_number, title, body)
+        return ValidationIdentity(
+            self.repository,
+            issue_number,
+            specification_digest(title, body),
+            self.policy_identity,
+            relationship_digest,
+            manifest_binding(bound_manifest),
+        )
 
     def decide(
         self,
@@ -460,11 +489,28 @@ class SpecificationValidationLifecycle:
         body: str,
         relationship_context: Optional[IndividualRelationshipContext] = None,
     ) -> ValidationDecision:
-        identity = self.identity(manifest.issue_number, title, body, relationship_context)
+        identity = self.identity(manifest.issue_number, title, body, relationship_context, manifest)
         subject = self._rerun_subject(manifest.issue_number)
-        authority, request_id, _request_state = self.reruns.authority(subject)
+        try:
+            authority, request_id, _request_state = self.reruns.authority(subject)
+        except RerunAuthorityUnavailable as exc:
+            return ValidationDecision(
+                identity,
+                "ERROR",
+                remediation_reason=f"Rerun authority unavailable: {exc}",
+                evaluation_source="local-only",
+            )
         with self.store.locked(identity.key):
             evidence: Optional[IndividualReviewEvidence] = None
+            if not manifest.explicit_contract_present or not manifest.explicit_contract_valid:
+                return ValidationDecision(
+                    identity,
+                    "ERROR",
+                    remediation_reason=manifest.error or "A valid explicit normative Requirement manifest is required",
+                    evaluation_source="local-only",
+                    rerun_authority=authority,
+                    rerun_request_id=request_id,
+                )
             if manifest.explicit_contract_present and manifest.explicit_contract_valid:
                 contract = _contract_evidence(manifest, title, body)
                 try:
@@ -486,7 +532,15 @@ class SpecificationValidationLifecycle:
                         rerun_request_id=request_id,
                     )
                     return self._settle_decision_checkpoint(decision)
-            existing = self.store.get(identity)
+            try:
+                existing = self.store.get(identity)
+            except RerunAuthorityUnavailable as exc:
+                return ValidationDecision(
+                    identity,
+                    "ERROR",
+                    remediation_reason=f"Rerun authority unavailable: {exc}",
+                    evaluation_source="local-only",
+                )
             if existing is not None and existing.rerun_authority == authority:
                 return existing
             # Diagnostic only (REQ-006/REQ-009): a current-format miss may
@@ -505,33 +559,6 @@ class SpecificationValidationLifecycle:
                     len(legacy_matches),
                 )
             legacy_candidates_detected = len(legacy_matches)
-            if not manifest.explicit_contract_present or not manifest.explicit_contract_valid:
-                # Provenance is captured fresh right before this real analyzer
-                # call runs (REQ-004: "the execution configuration effective
-                # when it starts"; REQ-005): never at construction time, and
-                # never relabeled on later reuse or by a route change that
-                # only happens after this call was already dispatched.
-                provenance = configured_provider_identity()
-                with bind_invocation_target(self.repository, f"issue#{manifest.issue_number}", "specification_validation", defer_checkpoint=True):
-                    if self.analyzer is not None:
-                        analyzed = self.analyzer(manifest, body)
-                    elif relationship_context is not None:
-                        with individual_relationship_context(relationship_context):
-                            analyzed = analyze_issue_specification(manifest, body)
-                    else:
-                        analyzed = analyze_issue_specification(manifest, body)
-                decision = ValidationDecision(
-                    identity,
-                    analyzed.verdict,
-                    analyzed.findings,
-                    remediation=analyzed.remediation,
-                    remediation_reason=analyzed.error,
-                    execution_provenance=provenance,
-                    legacy_candidates_detected=legacy_candidates_detected,
-                    rerun_authority=authority,
-                    rerun_request_id=request_id,
-                )
-                return self._settle_decision_checkpoint(decision)
             assert evidence is not None
             provenance = configured_provider_identity()
             with bind_invocation_target(self.repository, f"issue#{manifest.issue_number}", "specification_validation", defer_checkpoint=True):
@@ -566,12 +593,30 @@ class SpecificationValidationLifecycle:
 
         observe_native_decision(decision)
         subject = self._rerun_subject(decision.identity.issue_number)
-        authority, _request_id, _state = self.reruns.authority(subject)
+        try:
+            authority, _request_id, _state = self.reruns.authority(subject)
+        except RerunAuthorityUnavailable as exc:
+            handle = take_pending_invocation_handle()
+            if handle is not None:
+                handle.confirm_settled()
+            return replace(
+                decision,
+                verdict="ERROR",
+                findings=(),
+                remediation="NONE",
+                remediation_reason=f"Rerun authority unavailable: {exc}",
+            )
         if authority != decision.rerun_authority:
             handle = take_pending_invocation_handle()
             if handle is not None:
                 handle.confirm_settled()
-            return replace(decision, verdict="ERROR", remediation_reason="review occurrence was revoked by a newer explicit rerun")
+            return replace(
+                decision,
+                verdict="ERROR",
+                findings=(),
+                remediation="NONE",
+                remediation_reason="review occurrence was revoked by a newer explicit rerun",
+            )
         if decision.verdict in {"READY", "BLOCKED"}:
             try:
                 self.store.save(decision)
@@ -584,7 +629,13 @@ class SpecificationValidationLifecycle:
             observe_authorization_persistence("confirmed")
             if authority:
                 if not self.reruns.satisfy(subject, authority, decision.identity.key, decision.evaluation_source):
-                    return replace(decision, verdict="ERROR", remediation_reason="rerun authority changed before decision acceptance")
+                    return replace(
+                        decision,
+                        verdict="ERROR",
+                        findings=(),
+                        remediation="NONE",
+                        remediation_reason="rerun authority changed before decision acceptance",
+                    )
         handle = take_pending_invocation_handle()
         if handle is not None:
             handle.confirm_settled()

@@ -13,6 +13,7 @@ from auto_coder.automation_config import AutomationConfig, Candidate, CandidateP
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_trace_collector
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.issue_review_rerun import RerunAuthorityUnavailable
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.requirement_contract import build_normative_issue_manifest
@@ -65,6 +66,73 @@ def test_completed_decision_survives_restart_and_provider_change_but_not_text_ch
     changed = lifecycle(tmp_path, "READY", calls)
     changed.decide(build_normative_issue_manifest(1728, "Edited", BODY), "Edited", BODY)
     assert calls.call_count == 2
+
+
+def test_exact_caller_manifest_binding_prevents_same_markdown_reuse_across_restart(tmp_path):
+    calls = Mock(
+        side_effect=[
+            SpecificationAnalysisResult("READY"),
+            SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE"),
+        ]
+    )
+    body_manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    alternate_manifest = type(body_manifest)(
+        issue_number=body_manifest.issue_number,
+        title=body_manifest.title,
+        explicit_contract_present=True,
+        explicit_contract_valid=True,
+        requirements=(type(body_manifest.requirements[0])("REQ-001", "Return the caller-selected value."),),
+    )
+    gate = lifecycle(tmp_path, "READY", calls)
+
+    first = gate.decide(body_manifest, "Title", BODY)
+    second = gate.decide(alternate_manifest, "Title", BODY)
+
+    assert first.verdict == "READY"
+    assert second.verdict == "BLOCKED"
+    assert first.identity.specification_digest == second.identity.specification_digest
+    assert first.identity.manifest_binding != second.identity.manifest_binding
+    assert first.identity.key != second.identity.key
+    assert calls.call_count == 2
+
+    restarted = lifecycle(tmp_path, "READY", Mock(side_effect=AssertionError("must reuse exact binding")))
+    reused_first = restarted.decide(body_manifest, "Title", BODY)
+    reused_second = restarted.decide(alternate_manifest, "Title", BODY)
+    assert reused_first.verdict == "READY"
+    assert reused_second.verdict == "BLOCKED"
+    persisted = json.loads((tmp_path / "decisions.json").read_text())
+    assert json.loads(persisted[first.identity.key]["identity"]["manifest_binding"])["requirements"] == [{"requirement_id": "REQ-001", "text": "Return the current value."}]
+
+
+def test_invalid_manifest_fails_before_custom_analyzer_and_cached_ready(tmp_path):
+    valid = build_normative_issue_manifest(1728, "Title", BODY)
+    gate = lifecycle(tmp_path, "READY")
+    assert gate.decide(valid, "Title", BODY).verdict == "READY"
+    invalid = build_normative_issue_manifest(
+        1728,
+        "Title",
+        "## Requirements\nREQ-001: First.\nREQ-001: Duplicate.",
+    )
+    analyzer = Mock(side_effect=AssertionError("invalid contracts must not reach semantic transport"))
+    restarted = lifecycle(tmp_path, "READY", analyzer)
+    result = restarted.decide(invalid, "Title", BODY)
+    assert result.verdict == "ERROR"
+    assert result.evaluation_source == "local-only"
+    assert "duplicate IDs" in (result.remediation_reason or "")
+    analyzer.assert_not_called()
+
+
+def test_unreadable_rerun_authority_fails_closed_without_semantic_invocation(tmp_path):
+    analyzer = Mock(side_effect=AssertionError("unreadable authority must prevent review"))
+    gate = lifecycle(tmp_path, "READY", analyzer)
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    with patch.object(gate.reruns, "authority", side_effect=RerunAuthorityUnavailable("database unreadable")):
+        result = gate.decide(manifest, "Title", BODY)
+
+    assert (result.verdict, result.remediation, result.findings) == ("ERROR", "NONE", ())
+    assert result.evaluation_source == "local-only"
+    assert result.remediation_reason == "Rerun authority unavailable: database unreadable"
+    analyzer.assert_not_called()
 
 
 def test_error_is_not_persisted_and_is_retried(tmp_path):
@@ -153,7 +221,7 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     decisions_path = tmp_path / "decisions.json"
 
     for generation in range(3):
-        body = BODY + f"\nGeneration {generation}"
+        body = BODY + f"\n\n## Context\nGeneration {generation}"
         gate = SpecificationValidationLifecycle("owner/repo", f"policy-{generation}", decisions_path, lambda *_args: blocked)
         decision = gate.decide(build_normative_issue_manifest(1728, "Title", body), "Title", body)
         initiated = []
@@ -166,7 +234,7 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     assert restarted.repair_rounds.count("individual", 1728) == 3
 
     # An ERROR beyond the limit remains unpersisted/retryable, and READY is not rewritten.
-    final_body = BODY + "\nFinal chance"
+    final_body = BODY + "\n\n## Context\nFinal chance"
     error_then_ready = Mock(side_effect=[SpecificationAnalysisResult("ERROR", error="temporary"), SpecificationAnalysisResult("READY")])
     ready_gate = SpecificationValidationLifecycle("owner/repo", "policy-ready", decisions_path, error_then_ready)
     manifest = build_normative_issue_manifest(1728, "Title", final_body)
@@ -174,7 +242,7 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     assert ready_gate.decide(manifest, "Title", final_body).verdict == "READY"
     assert ready_gate.repair_rounds.count("individual", 1728) == 3
 
-    blocked_body = BODY + "\nStill blocked"
+    blocked_body = BODY + "\n\n## Context\nStill blocked"
     blocked_gate = SpecificationValidationLifecycle("owner/repo", "policy-blocked", decisions_path, lambda *_args: blocked)
     blocked_decision = blocked_gate.decide(build_normative_issue_manifest(1728, "Title", blocked_body), "Title", blocked_body)
     github = GitHubFlow([snapshot(body=blocked_body)] * 8)
@@ -189,7 +257,7 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     assert "replacement/reissue is not required" in github.comments[0]["body"]
 
     # Exact/policy-only reuse is one generation, while a replacement number is clean.
-    duplicate_body = BODY + "\nGeneration 0"
+    duplicate_body = BODY + "\n\n## Context\nGeneration 0"
     duplicate_gate = SpecificationValidationLifecycle("owner/repo", "another-policy", decisions_path, lambda *_args: blocked)
     duplicate = duplicate_gate.decide(build_normative_issue_manifest(1728, "Title", duplicate_body), "Title", duplicate_body)
     duplicate_gate.apply_blocked(GitHubFlow([snapshot(body=duplicate_body)] * 4), duplicate)
@@ -1477,7 +1545,7 @@ def test_local_only_objective_conflict_never_calls_configured_provider_identity(
 def test_ready_and_blocked_decisions_both_reuse_across_route_change(tmp_path):
     """AS-002: READY and BLOCKED both reuse across a route-only change without a new backend call."""
     ready_manifest = build_normative_issue_manifest(1728, "Ready Title", BODY)
-    blocked_body = BODY + "\nBlocked variant."
+    blocked_body = BODY + "\n\n## Context\nBlocked variant."
     blocked_manifest = build_normative_issue_manifest(1729, "Blocked Title", blocked_body)
     blocked_result = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
 
@@ -1531,7 +1599,7 @@ def test_in_flight_route_change_is_not_a_rerun(tmp_path):
     assert decision_2.execution_provenance == "provider/model-a"
 
     # A later, genuinely new review (a different identity) uses the new route.
-    edited_body = BODY + "\nEdited."
+    edited_body = BODY + "\n\n## Context\nEdited."
     edited_manifest = build_normative_issue_manifest(1728, "Title", edited_body)
     with patch("auto_coder.specification_validation_lifecycle.configured_provider_identity", lambda: route["value"]):
         fresh = gate.decide(edited_manifest, "Title", edited_body)
