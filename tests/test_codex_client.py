@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.auto_coder.codex_client import CodexClient
-from src.auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError
+from src.auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError, LocalWriterSettlementError
 from src.auto_coder.llm_backend_config import BackendConfig
 from src.auto_coder.utils import CommandResult
 
@@ -387,6 +387,16 @@ class TestCodexClient:
 
         client = CodexClient()
         with pytest.raises(AutoCoderUsageLimitError):
+            client._run_llm_cli("hello world")
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_usage_limit_cannot_hide_uncertain_writer_settlement(self, mock_run_command, mock_run):
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(False, "", "Error: usage limit exceeded", 1, writer_settled=False)
+
+        client = CodexClient()
+        with pytest.raises(LocalWriterSettlementError, match="replacement is withheld"):
             client._run_llm_cli("hello world")
 
     @patch("subprocess.run")

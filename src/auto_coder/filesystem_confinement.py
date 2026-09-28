@@ -336,7 +336,14 @@ class PtraceDenialMonitor:
                 if pid == 0:
                     continue
                 made_progress = True
-                denials.extend(self._handle_stop(pid, status))
+                try:
+                    denials.extend(self._handle_stop(pid, status))
+                except OSError as exc:
+                    # A short-lived tracee can exit between waitpid reporting
+                    # its stop and a ptrace metadata read. Its later exit status
+                    # remains authoritative; the race is not lost observation.
+                    if exc.errno != errno.ESRCH:
+                        raise
         return tuple(denials)
 
     def _handle_stop(self, pid: int, status: int) -> tuple[str, ...]:
@@ -428,9 +435,14 @@ class PtraceDenialMonitor:
         if requested is None:
             return None
         target = _resolve_process_path(pid, directory_fd, requested)
+        # Opening the kernel null sink does not mutate persistent filesystem
+        # state. Real CLI runtimes routinely use it for discarded diagnostics,
+        # so it is not a confinement violation.
+        if target == Path("/dev/null"):
+            return None
         if target is None or any(_contains(root, target) for root in self.writable_roots):
             return None
-        return operation
+        return f"{operation} outside writable roots: {target}"
 
     def _path_is_outside(self, pid: int, directory_fd: int, pointer: int) -> bool:
         requested = _read_process_string(pid, pointer)

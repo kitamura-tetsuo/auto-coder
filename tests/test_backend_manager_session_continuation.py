@@ -10,6 +10,7 @@ from src.auto_coder.exceptions import (
     AutoCoderRetryableBackendError,
     AutoCoderTimeoutError,
     AutoCoderUsageLimitError,
+    LocalWriterSettlementError,
     SessionWorkspaceCompatibilityError,
 )
 from src.auto_coder.opencode_client import OpenCodeClient
@@ -103,6 +104,37 @@ def test_retryable_outage_during_automatic_resume_does_not_start_fresh_execution
 
     assert client.continued == [("persisted-session", "implementation context", False)]
     assert client.fresh_prompts == []
+
+
+def test_uncertain_writer_during_automatic_resume_does_not_start_fresh_execution(tmp_path):
+    client = SessionClient(fresh_session_id="persisted-session")
+    client.continue_error = LocalWriterSettlementError("writer settlement is uncertain")
+    manager = _manager(tmp_path, {"opencode": client})
+    manager._last_backend = "opencode"
+    manager._last_session_id = "persisted-session"
+
+    with pytest.raises(LocalWriterSettlementError, match="settlement is uncertain"):
+        manager._run_llm_cli("implementation context")
+
+    assert client.continued == [("persisted-session", "implementation context", False)]
+    assert client.fresh_prompts == []
+    assert manager._last_session_id == "persisted-session"
+
+
+def test_uncertain_writer_during_explicit_resume_does_not_launch_replacement(tmp_path):
+    opencode = SessionClient(fresh_session_id="opencode-session")
+    opencode.continue_error = LocalWriterSettlementError("writer settlement is uncertain")
+    fallback = SessionClient(fresh_session_id="fallback-session")
+    manager = _manager(tmp_path, {"opencode": opencode, "codex": fallback}, automatic_session_resume=False)
+
+    with pytest.raises(LocalWriterSettlementError, match="settlement is uncertain"):
+        manager.continue_session("opencode-session", "review", is_noedit=True)
+
+    assert opencode.continued == [("opencode-session", "review", True)]
+    assert opencode.fresh_prompts == []
+    assert fallback.fresh_prompts == []
+    assert manager.get_current_backend_identity()[0] == "opencode"
+    assert manager._last_continue_session_resumed is False
 
 
 def test_resume_usage_limit_rotates_backend_without_same_client_fresh_retry(tmp_path):

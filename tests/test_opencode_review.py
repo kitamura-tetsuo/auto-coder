@@ -225,6 +225,15 @@ def _pr_validation_fail_payload() -> str:
     )
 
 
+from src.auto_coder.backend_manager import BackendManager
+from tests.utils.supervised_local import make_test_supervisor
+
+
+@pytest.fixture(autouse=True)
+def _supervise_local_opencode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(BackendManager, "_production_local_supervisor", staticmethod(make_test_supervisor))
+
+
 # ---------------------------------------------------------------------------
 # AC-001: Issue & PR review with real TOML alias & kind-specific precedence
 # ---------------------------------------------------------------------------

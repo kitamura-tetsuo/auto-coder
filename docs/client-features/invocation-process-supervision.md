@@ -39,3 +39,8 @@ startup compatibility can be checked by ensuring `/sys/fs/cgroup/cgroup.controll
 and `cgroup.kill` exist, the controller runs as root, a non-root worker identity is
 configured, and `/sys/fs/cgroup/auto-coder` is root-owned and not worker-writable.
 The tested profile is CPython 3.12 on Linux cgroup v2 with Landlock ABI 3 or newer.
+The documented channel Compose profile supplies this profile using `cgroup: host`,
+a read-write `/sys/fs/cgroup` mount, privileged controller execution, and the
+image's fixed non-root worker UID/GID 65532. These privileges are required for the
+controller to create root-owned invocation cgroups; they are not optional provider
+permissions.
