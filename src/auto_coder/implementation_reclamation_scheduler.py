@@ -496,7 +496,6 @@ def run_due_reclamation_checks(
                         codex_wham_client,
                         routing,
                     )
-                    observation = None
                 else:
                     observation = collect_retirement_observation(
                         owner,
@@ -518,7 +517,7 @@ def run_due_reclamation_checks(
                 store.replace(_rescheduled(obligation, now, reason=cause))
                 continue
 
-            if observation is None:
+            if result is None:
                 # Not (or no longer) an in-scope Issue-owned PR-backed
                 # reservation. Nothing further to reevaluate here.
                 store.clear(owner, obligation.incarnation)

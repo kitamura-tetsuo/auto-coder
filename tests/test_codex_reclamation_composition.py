@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from auto_coder.codex_retirement_observer import (
     CandidateSourceProvenance,
     CodexEvidenceState,
@@ -8,8 +10,14 @@ from auto_coder.codex_retirement_observer import (
     OperationSettlementCertificate,
 )
 from auto_coder.codex_work_accounting import CodexWorkAccounting
-from auto_coder.implementation_reclamation_scheduler import _collect_settle_and_retire_codex
-from auto_coder.implementation_retirement import ImplementationPRObservation, PRTerminalState, RetirementStatus
+from auto_coder.implementation_reclamation_scheduler import (
+    RECLAMATION_RECHECK_SECONDS,
+    ReclamationObligationStore,
+    _collect_settle_and_retire_codex,
+    run_due_reclamation_checks,
+    schedule_reevaluation,
+)
+from auto_coder.implementation_retirement import ImplementationPRObservation, PRTerminalState, RetirementResult, RetirementStatus
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 
 
@@ -86,3 +94,64 @@ def test_codex_provider_is_not_an_unsupported_provider() -> None:
         )
     )
     assert result.status is RetirementStatus.RELEASED
+
+
+def _due_codex_owner(tmp_path: Path) -> tuple[ImplementationSlotRepository, ImplementationOwner, ReclamationObligationStore]:
+    owner = ImplementationOwner("issue", 2336)
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    assert slots.reserve(owner)
+    incarnation = slots.owner_incarnation(owner)
+    assert incarnation is not None
+    CodexWorkAccounting(slots).initialize_fresh(owner, incarnation)
+    store = ReclamationObligationStore.for_slots(slots)
+    assert schedule_reevaluation(owner, slots, store, due_at=100.0)
+    return slots, owner, store
+
+
+def test_due_codex_release_clears_obligation_and_wakes_capacity(tmp_path: Path, monkeypatch) -> None:
+    slots, _owner, store = _due_codex_owner(tmp_path)
+    wakes: list[str] = []
+    monkeypatch.setattr(
+        "auto_coder.implementation_reclamation_scheduler._collect_settle_and_retire_codex",
+        lambda *_args: RetirementResult(RetirementStatus.RELEASED),
+    )
+
+    released = run_due_reclamation_checks(
+        slots,
+        store,
+        github_client=object(),
+        on_capacity_freed=lambda: wakes.append("freed"),
+        now=100.0,
+    )
+
+    assert released == 1
+    assert wakes == ["freed"]
+    assert store.all() == ()
+
+
+@pytest.mark.parametrize(
+    "status",
+    (RetirementStatus.RETAINED_ACTIVE, RetirementStatus.RETAINED_UNKNOWN, RetirementStatus.STALE_OBSERVATION),
+)
+def test_due_codex_retention_reschedules_same_obligation(tmp_path: Path, monkeypatch, status: RetirementStatus) -> None:
+    slots, owner, store = _due_codex_owner(tmp_path)
+    incarnation = slots.owner_incarnation(owner)
+    monkeypatch.setattr(
+        "auto_coder.implementation_reclamation_scheduler._collect_settle_and_retire_codex",
+        lambda *_args: RetirementResult(
+            status,
+            responsible_members=("task:active",),
+            diagnostic="Codex task is active",
+        ),
+    )
+
+    released = run_due_reclamation_checks(slots, store, github_client=object(), now=100.0)
+
+    assert released == 0
+    assert store.due(100.0) == ()
+    pending = store.all()
+    assert len(pending) == 1
+    assert pending[0].owner == owner
+    assert pending[0].incarnation == incarnation
+    assert pending[0].next_due_at == 100.0 + RECLAMATION_RECHECK_SECONDS
+    assert pending[0].last_reason == f"{status.value}|Codex task is active|task:active"
