@@ -19,12 +19,15 @@ from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
+from .worktree_utils import get_current_local_workspace
 
 logger = get_logger(__name__)
 
 
 class CodexClient(LLMClientBase):
     """Codex CLI client for analyzing issues and generating solutions."""
+
+    supports_supervised_local_turn = True
 
     def __init__(
         self,
@@ -396,9 +399,11 @@ class CodexClient(LLMClientBase):
             # write that payload through its dedicated output channel so an
             # incidental non-JSON stdout line cannot corrupt a valid result.
             if self.capture_final_message and is_noedit and "--json" in cmd:
+                workspace_binding = get_current_local_workspace()
                 final_message_file = tempfile.NamedTemporaryFile(
                     prefix="auto-coder-codex-final-",
                     suffix=".txt",
+                    dir=workspace_binding.workspace if workspace_binding is not None else None,
                     delete=False,
                 )
                 final_message_path = Path(final_message_file.name)

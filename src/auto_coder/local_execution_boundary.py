@@ -37,10 +37,12 @@ class LocalBoundaryEvidence:
     """Immutable, non-transferable snapshot of one invocation's facts."""
 
     boundary_id: str
+    turn_id: str
     invocation_id: str
     backend_type: str
     workspace: Path
     editable: bool
+    provider_session_id: Optional[str]
     backend_outcome: BackendOutcome
     filesystem_enforcement: EvidenceStatus
     publication_enforcement: EvidenceStatus
@@ -51,15 +53,7 @@ class LocalBoundaryEvidence:
 
     @property
     def confined_result_authorized(self) -> bool:
-        return (
-            self.backend_outcome is BackendOutcome.SUCCEEDED
-            and self.filesystem_enforcement is EvidenceStatus.ESTABLISHED
-            and self.publication_enforcement is EvidenceStatus.ESTABLISHED
-            and self.writer_completion is EvidenceStatus.ESTABLISHED
-            and self.violation_observation is EvidenceStatus.ESTABLISHED
-            and not self.policy_violation
-            and self.failure is None
-        )
+        return self.backend_outcome is BackendOutcome.SUCCEEDED and self.filesystem_enforcement is EvidenceStatus.ESTABLISHED and self.writer_completion is EvidenceStatus.ESTABLISHED and self.violation_observation is EvidenceStatus.ESTABLISHED and not self.policy_violation and self.failure is None
 
     @property
     def promotable(self) -> bool:
@@ -75,6 +69,8 @@ class LocalExecutionBoundary:
     backend_type: str
     editable: bool
     boundary_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    turn_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    _provider_session_id: Optional[str] = field(default=None, init=False, repr=False)
     _backend_outcome: BackendOutcome = field(default=BackendOutcome.UNKNOWN, init=False, repr=False)
     _filesystem_enforcement: EvidenceStatus = field(default=EvidenceStatus.UNKNOWN, init=False, repr=False)
     _publication_enforcement: EvidenceStatus = field(default=EvidenceStatus.UNKNOWN, init=False, repr=False)
@@ -86,12 +82,23 @@ class LocalExecutionBoundary:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if not self.backend_type.strip() or not self.binding.invocation_id or not self.turn_id:
+            raise LocalBoundaryError("local turn identity is incomplete")
         if self.binding.workspace.resolve() in {
             self.binding.caller_root.resolve(),
             self.binding.caller_git_dir.resolve(),
             self.binding.caller_common_dir.resolve(),
         }:
             raise LocalBoundaryError("local execution workspace aliases caller-owned Git state")
+
+    def record_provider_session(self, invocation_id: str, session_id: Optional[str]) -> None:
+        """Associate provider metadata with this turn without granting continuation."""
+        with self._lock:
+            self._accept(invocation_id)
+            normalized = session_id.strip() if session_id else None
+            if self._provider_session_id is not None and normalized != self._provider_session_id:
+                raise LocalBoundaryError("provider session identity changed during one local turn")
+            self._provider_session_id = normalized
 
     def _accept(self, invocation_id: str) -> None:
         if invocation_id != self.binding.invocation_id:
@@ -144,6 +151,13 @@ class LocalExecutionBoundary:
             if status is EvidenceStatus.FAILED:
                 self._failure = self._failure or "filesystem enforcement failed"
 
+    def record_violation_observation(self, invocation_id: str) -> None:
+        """Record that the enforcing launcher observed this turn until settlement."""
+        with self._lock:
+            self._accept(invocation_id)
+            if not self._policy_violation:
+                self._violation_observation = EvidenceStatus.ESTABLISHED
+
     def report_policy_violation(self, invocation_id: str, reason: str) -> None:
         with self._lock:
             self._accept(invocation_id)
@@ -159,10 +173,12 @@ class LocalExecutionBoundary:
     def _evidence_unlocked(self) -> LocalBoundaryEvidence:
         return LocalBoundaryEvidence(
             boundary_id=self.boundary_id,
+            turn_id=self.turn_id,
             invocation_id=self.binding.invocation_id,
             backend_type=self.backend_type,
             workspace=self.binding.workspace,
             editable=self.editable,
+            provider_session_id=self._provider_session_id,
             backend_outcome=self._backend_outcome,
             filesystem_enforcement=self._filesystem_enforcement,
             publication_enforcement=self._publication_enforcement,
