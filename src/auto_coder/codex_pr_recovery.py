@@ -199,9 +199,11 @@ class CodexPRRecoveryMonitor:
         now: Callable[[], float] = time.time,
         poll_interval: float = POLL_INTERVAL_SECONDS,
         grace_period: float = COMPLETION_GRACE_SECONDS,
+        retirement_accounting: bool = True,
     ) -> None:
         self.runs, self.observations, self.wham, self.store = runs, observations, wham, store
         self.enqueue_pr, self.now, self.poll_interval, self.grace_period = enqueue_pr, now, poll_interval, grace_period
+        self.retirement_accounting = retirement_accounting
         self._next_due: dict[str, float] = {}
         self._task_locks: dict[str, asyncio.Lock] = {}
 
@@ -289,9 +291,51 @@ class CodexPRRecoveryMonitor:
         # outbound request has occurred yet.
         if not await asyncio.to_thread(self.wham.follow_up_preflight):
             return
-        if not self.store.reserve_send(run, fresh.execution.assistant_turn_id, fresh.execution.user_turn_id, now):
+        from .codex_work_fence import production_codex_fence
+
+        source_request_id = f"{REMINDER_PURPOSE}:{fresh.execution.assistant_turn_id}"
+        try:
+            if not self.retirement_accounting:
+                raise LookupError("retirement accounting disabled by test harness")
+            fence, work_identity = await asyncio.to_thread(
+                production_codex_fence,
+                run.repo_name,
+                run.task_id,
+                "publication",
+                source_request_id,
+                fresh.execution.assistant_turn_id,
+            )
+        except LookupError as exc:
+            if self.retirement_accounting:
+                logger.warning(f"Codex PR recovery could not establish retirement fence for {run.task_id}: {exc}")
+                return
+            fence = None
+            work_identity = None
+        except Exception as exc:
+            logger.warning(f"Codex PR recovery could not establish retirement fence for {run.task_id}: {exc}")
             return
-        result = await asyncio.to_thread(self.wham.send_follow_up, run.task_id, fresh.execution.assistant_turn_id, "Create PR", False)
+
+        def reserve_and_send():
+            if not self.store.reserve_send(run, fresh.execution.assistant_turn_id, fresh.execution.user_turn_id, now):
+                return None
+            return self.wham.send_follow_up(run.task_id, fresh.execution.assistant_turn_id, "Create PR", False)
+
+        try:
+            result = await asyncio.to_thread(fence.execute, work_identity, reserve_and_send) if fence is not None and work_identity is not None else await asyncio.to_thread(reserve_and_send)
+        except Exception as exc:
+            logger.warning(f"Codex PR recovery send was fenced for {run.task_id}: {exc}")
+            return
+        if result is None:
+            if fence is not None and work_identity is not None:
+                fence.record_delivery(work_identity, accepted=False, indeterminate=False, evidence_id="reservation-refused")
+            return
+        if fence is not None and work_identity is not None:
+            fence.record_delivery(
+                work_identity,
+                accepted=result.outcome is FollowUpDeliveryOutcome.DELIVERED,
+                indeterminate=result.outcome is FollowUpDeliveryOutcome.INDETERMINATE,
+                evidence_id=f"wham:{result.status_code or result.outcome.value}",
+            )
         state = {FollowUpDeliveryOutcome.DELIVERED: RecoveryOutcome.REMINDER_ACCEPTED, FollowUpDeliveryOutcome.NOT_DELIVERED: RecoveryOutcome.REMINDER_REJECTED, FollowUpDeliveryOutcome.INDETERMINATE: RecoveryOutcome.DELIVERY_INDETERMINATE}[result.outcome]
         self.store.transition(run, state, reason=f"HTTP {result.status_code}" if result.status_code else result.outcome.value)
 

@@ -584,6 +584,7 @@ def test_restart_with_new_effective_policy_config_does_not_refresh_existing_sess
     llm_config = LLMBackendConfiguration()
     llm_config.backends[backend_name] = BackendConfig(name=backend_name, backend_type="codex-cloud", environment_id="env-restart", attempts=1)
     config = AutomationConfig()
+    config.MAX_CONCURRENT_IMPLEMENTATIONS = 2
 
     def dispatch(issue_number: int, task_id: str) -> str:
         issue = _codex_issue(issue_number)

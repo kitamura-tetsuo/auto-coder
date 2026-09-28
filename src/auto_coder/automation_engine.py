@@ -2610,6 +2610,16 @@ class AutomationEngine:
         invalidation_task = asyncio.create_task(self._invalidation_loop(repo_name), name="github-invalidations")
         # Accepted Codex runs are durable and therefore need no webhook to
         # resume initial-PR recovery after registration or process restart.
+        slot_repository = self._get_implementation_slots(repo_name)
+        if isinstance(slot_repository, ImplementationSlotRepository):
+            from .codex_work_reconstruction import reconstruct_active_codex_work
+
+            try:
+                await asyncio.to_thread(reconstruct_active_codex_work, repo_name, slot_repository)
+            except Exception as exc:
+                # Incomplete reconstruction must remain fail-closed. Senders
+                # independently require current accounting before transport.
+                logger.error(f"Codex work reconstruction is incomplete for {repo_name}: {type(exc).__name__}: {exc}")
         from .cloud_run import CloudRunRepository
         from .codex_observation import CodexObservationService
         from .codex_pr_recovery import CodexPRRecoveryMonitor, CodexPRRecoveryStore
@@ -2631,7 +2641,6 @@ class AutomationEngine:
             # Corrupt/unwritable claim state fails closed for reminders without
             # preventing ordinary Issue/PR work from serving the repository.
             logger.error(f"Codex initial-PR recovery is unavailable for {repo_name}: {type(exc).__name__}")
-        slot_repository = self._get_implementation_slots(repo_name)
         capacity_task = asyncio.create_task(self._capacity_refill_loop(repo_name), name="implementation-capacity-refill") if isinstance(slot_repository, ImplementationSlotRepository) else None
 
         # Reserve worker capacity for each type so either lane can make progress.

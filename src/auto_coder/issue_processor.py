@@ -811,6 +811,7 @@ def _process_issue_codex_cloud_mode(
     label_context: Optional[LabelManagerContext] = None,
     manual_retry: bool = False,
     retry_authority: Optional[ImplementationRetryRequest] = None,
+    implementation_slots: Optional[ImplementationSlotRepository] = None,
 ) -> List[str]:
     """Submit an issue to Codex Cloud and persist its task identifier.
 
@@ -1011,23 +1012,47 @@ def _process_issue_codex_cloud_mode(
         publication_head_repository=repo_name,
         publication_head_ref=publication_head_ref,
     )
-    try:
-        claim, acquired = cloud_run_repo.acquire_submission_claim(claim)
-    except Exception as exc:
-        return [f"Deferred Codex Cloud task for issue #{issue_number}: could not persist submission claim: {exc}"]
-    if not acquired:
-        return [f"Deferred Codex Cloud task for issue #{issue_number}: a suppressing submission claim already exists"]
+    from .codex_work_fence import production_codex_issue_fence
 
     try:
+        if implementation_slots is None:
+            implementation_slots = ImplementationSlotRepository(repo_name, config.MAX_CONCURRENT_IMPLEMENTATIONS)
+        owner = ImplementationOwner("issue", issue_number)
+        if implementation_slots.owner_incarnation(owner) is None and not implementation_slots.reserve(owner):
+            raise RuntimeError("implementation capacity is unavailable")
+        fence, work_identity = production_codex_issue_fence(repo_name, issue_number, "submission", launch_identity, implementation_slots)
+    except Exception as exc:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: retirement accounting is unavailable: {exc}"]
+
+    def claim_and_submit():
+        retained, acquired = cloud_run_repo.acquire_submission_claim(claim)
+        if not acquired:
+            raise RuntimeError("a suppressing submission claim already exists")
         submission = client.submit_task(prompt, repo_name=repo_name, base_branch=config.MAIN_BRANCH, title=f"{issue_title} (#{issue_number})")
+        return retained, submission
+
+    try:
+        claim, submission = fence.execute(work_identity, claim_and_submit)
     except AutoCoderUsageLimitError:
         if retry_dispatch is not None and retry_authority is not None:
             retry_dispatch.record_outcome(retry_authority.request_id, "definitely-not-started", diagnostic="usage limit before submission")
         claim.submission_outcome = "definitely-not-submitted"
         cloud_run_repo.update_claim(claim)
         cloud_run_repo.release_definitely_not_submitted(issue_number, attempt)
+        fence.record_delivery(work_identity, accepted=False, indeterminate=False, evidence_id="usage-limit-before-submission")
         _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.DEFERRED, {"backend": "codex-cloud", "reason": "usage limit"})
         raise
+    except OSError as exc:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: could not persist submission claim: {exc}"]
+    except Exception as exc:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: fenced submission failed: {exc}"]
+    fence.record_delivery(
+        work_identity,
+        accepted=submission.outcome is CodexSubmissionOutcome.ACCEPTED,
+        indeterminate=submission.outcome is CodexSubmissionOutcome.INDETERMINATE,
+        evidence_id=f"submission:{submission.outcome.value}",
+        task_id=submission.task_id or None,
+    )
     claim.submission_outcome = submission.outcome.value
     claim.task_id = submission.task_id
     claim.task_url = submission.task_url
@@ -1216,6 +1241,7 @@ def _process_issue_high_score_cloud(
                     github_client,
                     backend_name=backend_name,
                     label_context=label_context,
+                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),  # type: ignore[arg-type]
                     **({"manual_retry": True} if manual_retry else {}),  # type: ignore[arg-type]
                     **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
                 )
@@ -1346,7 +1372,16 @@ def _dispatch_issue_candidates(
         )
         try:
             if backend_type == "codex-cloud":
-                actions = _process_issue_codex_cloud_mode(repo_name, issue_data, config, github_client, backend_name=candidate.backend_name, label_context=label_context, **({"retry_authority": retry_authority} if retry_authority is not None else {}))  # type: ignore[arg-type]
+                actions = _process_issue_codex_cloud_mode(
+                    repo_name,
+                    issue_data,
+                    config,
+                    github_client,
+                    backend_name=candidate.backend_name,
+                    label_context=label_context,
+                    **({"implementation_slots": implementation_slots} if implementation_slots is not None else {}),  # type: ignore[arg-type]
+                    **({"retry_authority": retry_authority} if retry_authority is not None else {}),  # type: ignore[arg-type]
+                )
             elif backend_type == "claude-routine":
                 actions = _process_issue_claude_routine_mode(
                     repo_name,

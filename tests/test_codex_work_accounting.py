@@ -184,6 +184,7 @@ def test_missing_inventory_is_unknown_and_receipt_controls_legacy_initialization
         )
     assert accounting.snapshot(OWNER, incarnation).accounting_status is WorkAccountingStatus.UNINITIALIZED
 
+    accounting = CodexWorkAccounting(slots, lambda sources: {"cloud": "cloud-v1", "retry": "retry-v1"})
     initialized = accounting.initialize_from_receipt(
         OWNER,
         incarnation,
@@ -192,11 +193,42 @@ def test_missing_inventory_is_unknown_and_receipt_controls_legacy_initialization
             ("cloud", "retry"),
             ("retry", "cloud"),
             (("cloud", ()), ("retry", ())),
+            source_consistency_ids=(("cloud", "cloud-v1"), ("retry", "retry-v1")),
         ),
     )
     assert initialized.accounting_status is WorkAccountingStatus.COMPLETE
     assert initialized.reconstruction_receipt_id == "receipt"
     assert initialized.releasable is True
+
+
+def test_reconstruction_receipt_becomes_unreconciled_when_a_source_changes(tmp_path: Path) -> None:
+    slots, incarnation = _reservation(tmp_path)
+    identities = {"cloud": "cloud-v1", "retry": "retry-v1"}
+    accounting = CodexWorkAccounting(slots, lambda sources: {source: identities[source] for source in sources})
+    receipt = ReconstructionReceipt(
+        "receipt",
+        ("cloud", "retry"),
+        ("cloud", "retry"),
+        (("cloud", ()), ("retry", ())),
+        source_consistency_ids=tuple(identities.items()),
+    )
+    assert accounting.initialize_from_receipt(OWNER, incarnation, receipt).releasable is True
+
+    identities["retry"] = "retry-v2"
+
+    snapshot = accounting.snapshot(OWNER, incarnation)
+    assert snapshot.accounting_status is WorkAccountingStatus.UNRECONCILED
+    assert snapshot.releasable is False
+    with pytest.raises(ImplementationSlotUnavailable, match="stale"):
+        accounting.register(
+            OWNER,
+            incarnation,
+            logical_operation_id="late",
+            kind="repair",
+            source_request_id="repair-1",
+        )
+    with accounting.retirement_guard(snapshot) as guard:
+        assert guard.status is RetirementValidation.NON_RELEASABLE
 
 
 def test_retired_incarnation_cannot_be_recreated_or_changed_by_late_receipt(tmp_path: Path) -> None:
@@ -304,9 +336,13 @@ def test_reconstruction_receipt_preserves_unsettled_correlated_operation(tmp_pat
         ("retry", "cloud"),
         (("cloud", ("publication",)), ("retry", ())),
         (operation,),
+        (("cloud", "cloud-v1"), ("retry", "retry-v1")),
     )
 
-    snapshot = CodexWorkAccounting(slots).initialize_from_receipt(OWNER, incarnation, receipt)
+    snapshot = CodexWorkAccounting(
+        slots,
+        lambda sources: {"cloud": "cloud-v1", "retry": "retry-v1"},
+    ).initialize_from_receipt(OWNER, incarnation, receipt)
     assert snapshot.accounting_status is WorkAccountingStatus.COMPLETE
     assert snapshot.operations == (operation,)
     assert snapshot.releasable is False

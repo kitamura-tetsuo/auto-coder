@@ -1324,3 +1324,17 @@ merged pull request. No structured event schema changes are introduced.
 Backend-unavailable, allowance-not-admitted, and terminal-failure reasons use the
 same stage and existing reason/route fields; no dashboard event schema changes are
 required.
+# Codex retirement-accounting fence
+
+Codex retirement registration and reconstruction are safety gates within the
+existing Issue dispatch, retry, continuation, repair, and recovery origins.
+They do not add or rename a processing origin, route, user-visible outcome, or
+structured trace schema: blocked work continues to use the originating path's
+existing deferred/unknown outcome. Consequently no dashboard event mapping or
+browser assertion changes for this integration; its production contract is
+covered by the source-bound accounting and pre-transport fence tests.
+The fence is now invoked by initial Issue dispatch, Codex Cloud follow-ups, and
+the direct initial-PR recovery sender, and active reservations are reconstructed
+before the recovery loop starts. These paths retain their existing stage and
+outcome emissions; accounting refusal is reported through the existing
+deferred/unknown diagnostics rather than a new dashboard event.

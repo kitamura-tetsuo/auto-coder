@@ -675,8 +675,30 @@ class CodexCloudClient(CloudTaskClientBase):
             logger.warning(f"Codex Cloud task '{task_id}' has no usable assistant turn for follow-up")
             return False
 
-        with _followup_state_lock:
-            try:
+        # Resolve scope from durable task ownership rather than backend alias
+        # spelling or a caller-provided eligibility flag. Registration occurs
+        # before the follow-up journal can retain responsibility or WHAM can
+        # observe a POST.
+        from .codex_work_fence import CodexWorkOutsideScope, production_codex_fence
+
+        source_request_id = ",".join(sorted(identities))
+        try:
+            fence, work_identity = production_codex_fence(
+                self.repo_name or "",
+                task_id,
+                "follow-up",
+                source_request_id,
+                turn_id,
+            )
+        except CodexWorkOutsideScope:
+            fence = None
+            work_identity = None
+        except Exception as exc:
+            logger.warning(f"Cannot establish Codex retirement fence; request was not sent: {exc}")
+            return False
+
+        def send_registered_followup():
+            with _followup_state_lock:
                 pending = _load_pending_followups(state_path)
                 for identity in identities:
                     key = hashlib.sha256(f"{task_id}\0{identity}".encode("utf-8")).hexdigest()
@@ -687,11 +709,13 @@ class CodexCloudClient(CloudTaskClientBase):
                         logical_identity=identity,
                     )
                 _save_pending_followups(state_path, pending)
-            except (OSError, ValueError, TypeError) as exc:
-                logger.warning(f"Cannot durably reserve Codex follow-up; request was not sent: {exc}")
-                return False
+            return wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=message)
 
-        result = wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=message)
+        try:
+            result = fence.execute(work_identity, send_registered_followup) if fence is not None and work_identity is not None else send_registered_followup()
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning(f"Cannot durably reserve Codex follow-up; request was not sent: {exc}")
+            return False
         with _followup_state_lock:
             pending = _load_pending_followups(state_path)
             if result.delivered:
@@ -710,6 +734,13 @@ class CodexCloudClient(CloudTaskClientBase):
                 for key in keys:
                     pending.pop(key, None)
             _save_pending_followups(state_path, pending)
+        if fence is not None and work_identity is not None:
+            fence.record_delivery(
+                work_identity,
+                accepted=result.delivered,
+                indeterminate=result.outcome is FollowUpDeliveryOutcome.INDETERMINATE,
+                evidence_id=f"wham:{result.status_code or result.outcome.value}",
+            )
         if result.delivered:
             self.active_tasks[task_id] = message
             logger.info(f"Assigned follow-up work to Codex Cloud task '{task_id}'")
