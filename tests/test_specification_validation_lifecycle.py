@@ -17,8 +17,15 @@ from auto_coder.issue_review_rerun import RerunAuthorityUnavailable
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.requirement_contract import build_normative_issue_manifest
-from auto_coder.specification_analyzer import IndividualRelationshipContext, SpecificationAnalysisResult, SpecificationFinding
-from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from auto_coder.specification_analyzer import (
+    FindingDisposition,
+    IncrementalReviewContext,
+    IndividualRelationshipContext,
+    SpecificationAnalysisResult,
+    SpecificationFinding,
+    parse_incremental_specification_response,
+)
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, _predecessor_evidence
 from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 
 BODY = "## Requirements\n- REQ-001: Return the current value."
@@ -1871,3 +1878,217 @@ def test_existing_comment_with_wrong_author_is_an_unconfirmed_conflict_not_a_rep
     assert len(github.comments) == 1, "must never repost over an unresolved conflict"
     saved = gate.store.get(decision.identity)
     assert saved.findings_published is False
+
+
+def test_changed_contract_uses_latest_durable_predecessor_and_retains_lossless_delta(tmp_path):
+    results = [SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")]
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: results.pop(0))
+    first = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    results.append(
+        SpecificationAnalysisResult(
+            "BLOCKED",
+            (FINDING,),
+            remediation="EDIT_IN_PLACE",
+            dispositions=(FindingDisposition(first.finding_ids[0], "STILL_VALID", "The same ambiguity remains."),),
+        )
+    )
+    changed = BODY.replace("current value", "stored value")
+    second = gate.decide(build_normative_issue_manifest(1728, "Title", changed), "Title", changed)
+
+    assert first.review_mode == "FULL"
+    assert second.review_mode == "INCREMENTAL"
+    assert second.predecessor_decision_key == first.identity.key
+    delta = json.loads(second.assessed_delta)
+    assert delta["body"] == {"before": BODY, "after": changed}
+    assert delta["manifest"]["before"]["requirements"][0]["text"] == "Return the current value."
+    assert delta["manifest"]["after"]["requirements"][0]["text"] == "Return the stored value."
+    assert second.finding_ids == first.finding_ids
+
+    restarted = lifecycle(tmp_path, "READY", Mock(side_effect=AssertionError("exact decision must reuse")))
+    reused = restarted.decide(build_normative_issue_manifest(1728, "Title", changed), "Title", changed)
+    assert reused.review_mode == "REUSED"
+    assert reused.predecessor_decision_key == first.identity.key
+
+
+def test_changed_parent_selects_full_review_instead_of_child_predecessor(tmp_path):
+    gate = lifecycle(tmp_path, "READY")
+    manifest = build_normative_issue_manifest(1728, "Title", BODY)
+    first_context = IndividualRelationshipContext("child", "[]", 10)
+    gate.decide(manifest, "Title", BODY, first_context)
+    second_context = IndividualRelationshipContext("child", "[]", 11)
+
+    decision = gate.decide(manifest, "Title", BODY, second_context)
+
+    assert decision.review_mode == "FULL"
+    assert decision.predecessor_decision_key is None
+
+
+def test_same_counterexample_retains_finding_id_across_category_and_prose_changes(tmp_path):
+    counterexample = "A read-only caller can still mutate live state."
+    first_finding = SpecificationFinding("material_ambiguity", ("REQ-001",), "The write boundary is unclear.", "Define it.", counterexample, "")
+    second_finding = SpecificationFinding("normative_contradiction", ("REQ-001",), "Reworded explanation.", "Reworded correction.", counterexample, "")
+    results = iter(
+        [
+            SpecificationAnalysisResult("BLOCKED", (first_finding,), remediation="EDIT_IN_PLACE"),
+            SpecificationAnalysisResult("BLOCKED", (second_finding,), remediation="EDIT_IN_PLACE"),
+            SpecificationAnalysisResult(
+                "BLOCKED",
+                (
+                    SpecificationFinding(
+                        "normative_contradiction",
+                        ("REQ-001",),
+                        "A different defect.",
+                        "Correct it.",
+                        "A writer can publish stale state.",
+                        "",
+                    ),
+                ),
+                remediation="EDIT_IN_PLACE",
+            ),
+        ]
+    )
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: next(results))
+    first = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    changed = BODY + "\n\n## Context\nClarified wording."
+    second = gate.decide(build_normative_issue_manifest(1728, "Title", changed), "Title", changed)
+
+    assert second.review_mode == "INCREMENTAL"
+    assert second.finding_ids == first.finding_ids
+    changed_again = changed + "\nAnother material edit."
+    third = gate.decide(build_normative_issue_manifest(1728, "Title", changed_again), "Title", changed_again)
+    assert third.finding_ids != first.finding_ids
+
+
+def test_empty_counterexample_reuses_id_only_when_disposition_keeps_finding_active(tmp_path):
+    first_finding = SpecificationFinding("material_ambiguity", ("REQ-001",), "Old wording.", "Define it.", "", "")
+    second_finding = SpecificationFinding("hidden_requirement", ("REQ-001",), "New wording.", "State it.", "", "")
+    results = [SpecificationAnalysisResult("BLOCKED", (first_finding,), remediation="EDIT_IN_PLACE")]
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: results.pop(0))
+    first = gate.decide(build_normative_issue_manifest(1729, "Title", BODY), "Title", BODY)
+    results.append(
+        SpecificationAnalysisResult(
+            "BLOCKED",
+            (second_finding,),
+            remediation="EDIT_IN_PLACE",
+            dispositions=(FindingDisposition(first.finding_ids[0], "STILL_VALID", "The same boundary remains undefined."),),
+        )
+    )
+    changed = BODY + "\n\n## Context\nEdited."
+    second = gate.decide(build_normative_issue_manifest(1729, "Title", changed), "Title", changed)
+
+    assert second.finding_ids == first.finding_ids
+
+
+def test_empty_counterexample_new_defect_does_not_inherit_resolved_identity(tmp_path):
+    ordering = SpecificationFinding("material_ambiguity", ("REQ-001",), "Ordering is undefined.", "Define ordering.", "", "")
+    authorization = SpecificationFinding("hidden_requirement", ("REQ-001",), "Authorization is undefined.", "Define authorization.", "", "")
+    results = [SpecificationAnalysisResult("BLOCKED", (ordering,), remediation="EDIT_IN_PLACE")]
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: results.pop(0))
+    first = gate.decide(build_normative_issue_manifest(1731, "Title", BODY), "Title", BODY)
+    results.append(
+        SpecificationAnalysisResult(
+            "BLOCKED",
+            (authorization,),
+            remediation="EDIT_IN_PLACE",
+            dispositions=(FindingDisposition(first.finding_ids[0], "RESOLVED", "Ordering is now explicit."),),
+        )
+    )
+    changed = BODY + "\n\n## Context\nOrdering fixed; authorization omitted."
+
+    second = gate.decide(build_normative_issue_manifest(1731, "Title", changed), "Title", changed)
+
+    assert second.finding_ids != first.finding_ids
+    retained = {item.finding_id: item for item in second.retained_findings}
+    assert retained[first.finding_ids[0]].disposition == "RESOLVED"
+
+
+def test_resolved_finding_evidence_is_retained_for_later_regression(tmp_path):
+    finding = SpecificationFinding("material_ambiguity", ("REQ-001",), "Ordering is undefined.", "Define ordering.", "", "")
+    results = [SpecificationAnalysisResult("BLOCKED", (finding,), remediation="EDIT_IN_PLACE")]
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: results.pop(0))
+    first = gate.decide(build_normative_issue_manifest(1732, "Title", BODY), "Title", BODY)
+    results.append(
+        SpecificationAnalysisResult(
+            "READY",
+            dispositions=(FindingDisposition(first.finding_ids[0], "RESOLVED", "Ordering is explicit."),),
+        )
+    )
+    fixed = BODY + "\n\n## Context\nOrdering fixed."
+    second = gate.decide(build_normative_issue_manifest(1732, "Title", fixed), "Title", fixed)
+    predecessor = json.loads(_predecessor_evidence(gate.store.compatible_predecessor(second.identity, 0, "standalone", None)))
+    assert predecessor["findings"][0]["finding_id"] == first.finding_ids[0]
+    assert predecessor["findings"][0]["explanation"] == "Ordering is undefined."
+    assert predecessor["findings"][0]["last_disposition"] == "RESOLVED"
+    results.append(
+        SpecificationAnalysisResult(
+            "BLOCKED",
+            (finding,),
+            remediation="EDIT_IN_PLACE",
+            dispositions=(FindingDisposition(first.finding_ids[0], "REGRESSED", "The omission is reachable again."),),
+        )
+    )
+    regressed = fixed + "\nRegression."
+    third = gate.decide(build_normative_issue_manifest(1732, "Title", regressed), "Title", regressed)
+    assert third.finding_ids == first.finding_ids
+
+
+def test_full_carried_ready_is_not_persisted_by_production_lifecycle(tmp_path):
+    manifest = build_normative_issue_manifest(1730, "Title", BODY)
+    response = json.dumps(
+        {
+            "verdict": "READY",
+            "remediation": "NONE",
+            "findings": [],
+            "finding_dispositions": [],
+            "coverage": [
+                {"boundary": "REQ-001", "status": "CARRIED", "no_impact_reason": "unchanged"},
+                {"boundary": "contract-wide", "status": "CARRIED", "no_impact_reason": "unchanged"},
+            ],
+        }
+    )
+
+    def analyze(_manifest, _body):
+        return parse_incremental_specification_response(response, manifest, IncrementalReviewContext("FULL"))
+
+    gate = lifecycle(tmp_path, "READY", analyze)
+    decision = gate.decide(manifest, "Title", BODY)
+
+    assert decision.verdict == "ERROR"
+    assert decision.remediation_reason == "A FULL review cannot carry predecessor coverage"
+    assert gate.store.get(decision.identity) is None
+
+
+def test_corrupt_newest_predecessor_forces_full_instead_of_using_older_record(tmp_path):
+    gate = lifecycle(tmp_path, "READY")
+    first = gate.decide(build_normative_issue_manifest(1733, "Title", BODY), "Title", BODY)
+    second_body = BODY + "\n\n## Context\nSecond."
+    second = gate.decide(build_normative_issue_manifest(1733, "Title", second_body), "Title", second_body)
+    state = json.loads(gate.store.path.read_text(encoding="utf-8"))
+    state[second.identity.key]["review_inputs"] = "{unreadable"
+    gate.store.path.write_text(json.dumps(state), encoding="utf-8")
+    third_body = second_body + "\nThird."
+
+    third = gate.decide(build_normative_issue_manifest(1733, "Title", third_body), "Title", third_body)
+
+    assert first.identity.key != second.identity.key
+    assert third.review_mode == "FULL"
+    assert third.predecessor_decision_key is None
+
+
+def test_incomplete_exact_ready_record_cannot_authorize_reuse(tmp_path):
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    gate = lifecycle(tmp_path, "READY", calls)
+    manifest = build_normative_issue_manifest(1734, "Title", BODY)
+    first = gate.decide(manifest, "Title", BODY)
+    state = json.loads(gate.store.path.read_text(encoding="utf-8"))
+    del state[first.identity.key]["coverage"]
+    gate.store.path.write_text(json.dumps(state), encoding="utf-8")
+    restarted_calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    restarted = lifecycle(tmp_path, "READY", restarted_calls)
+
+    replacement = restarted.decide(manifest, "Title", BODY)
+
+    assert replacement.verdict == "READY"
+    assert replacement.review_mode == "FULL"
+    assert replacement.evaluation_source == "model"
+    restarted_calls.assert_called_once()

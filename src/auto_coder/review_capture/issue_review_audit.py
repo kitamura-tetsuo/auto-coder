@@ -143,6 +143,12 @@ def normalize_decision_for_audit(decision: Any) -> Dict[str, Any]:
         "evaluation_source": getattr(decision, "evaluation_source", None),
         "execution_provenance": getattr(decision, "execution_provenance", None),
         "legacy_candidates_detected": getattr(decision, "legacy_candidates_detected", None),
+        "review_mode": getattr(decision, "review_mode", None),
+        "predecessor_decision_key": getattr(decision, "predecessor_decision_key", None),
+        "assessed_delta": getattr(decision, "assessed_delta", None),
+        "finding_ids": list(getattr(decision, "finding_ids", ()) or ()),
+        "finding_dispositions": _asdict_list(getattr(decision, "finding_dispositions", ()) or ()),
+        "coverage": _asdict_list(getattr(decision, "coverage", ()) or ()),
         "identity": identity_dict,
     }
 

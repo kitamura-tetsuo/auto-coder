@@ -49,7 +49,7 @@ def test_individual_production_lifecycle_keeps_original_and_current_separate(tmp
         return analyze_issue_specification(
             manifest,
             issue_body,
-            prompt_runner=lambda prompt: prompts.append(prompt) or '{"verdict":"READY","remediation":"NONE","findings":[]}',
+            prompt_runner=lambda prompt: prompts.append(prompt) or '{"verdict":"READY","remediation":"NONE","findings":[],"finding_dispositions":[],"coverage":[{"boundary":"REQ-001","status":"FRESH","no_impact_reason":""},{"boundary":"contract-wide","status":"FRESH","no_impact_reason":""}]}',
         )
 
     with patch("auto_coder.specification_validation_lifecycle.analyze_issue_specification", side_effect=analyze):

@@ -5,8 +5,9 @@ from auto_coder.automation_config import AutomationConfig, CandidateProcessingRe
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_implementation_worker import IssueImplementationWorker
 from auto_coder.issue_stage_routing import IMPLEMENTATION_STAGE, IssueStageRoutingStore, LaneClassification
+from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
-from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from tests.test_implementation_ownership import _ready_engine, _standalone_snapshot
 from tests.test_issue_stage_routing import REPO
 
@@ -93,8 +94,13 @@ def _production_lane(tmp_path, monkeypatch, snapshots, *, capacity=2):
 
 
 def _persist_ready(lifecycle, snapshot):
-    identity = lifecycle.identity(snapshot["number"], snapshot["title"], snapshot["body"])
-    lifecycle.store.save(ValidationDecision(identity, "READY"))
+    original = lifecycle.analyzer
+    lifecycle.analyzer = lambda *_args: SpecificationAnalysisResult("READY")
+    try:
+        manifest = build_normative_issue_manifest(snapshot["number"], snapshot["title"], snapshot["body"])
+        lifecycle.decide(manifest, snapshot["title"], snapshot["body"])
+    finally:
+        lifecycle.analyzer = original
 
 
 def test_production_lane_skips_pending_high_priority_review_and_dispatches_ready_lower_priority(tmp_path, monkeypatch):
