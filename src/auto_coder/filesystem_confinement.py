@@ -336,7 +336,14 @@ class PtraceDenialMonitor:
                 if pid == 0:
                     continue
                 made_progress = True
-                denials.extend(self._handle_stop(pid, status))
+                try:
+                    denials.extend(self._handle_stop(pid, status))
+                except OSError as exc:
+                    # A short-lived tracee can exit between waitpid reporting
+                    # its stop and a ptrace metadata read. Its later exit status
+                    # remains authoritative; the race is not lost observation.
+                    if exc.errno != errno.ESRCH:
+                        raise
         return tuple(denials)
 
     def _handle_stop(self, pid: int, status: int) -> tuple[str, ...]:
