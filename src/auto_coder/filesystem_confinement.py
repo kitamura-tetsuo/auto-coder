@@ -430,7 +430,7 @@ class PtraceDenialMonitor:
         target = _resolve_process_path(pid, directory_fd, requested)
         if target is None or any(_contains(root, target) for root in self.writable_roots):
             return None
-        return operation
+        return f"{operation} outside writable roots: {target}"
 
     def _path_is_outside(self, pid: int, directory_fd: int, pointer: int) -> bool:
         requested = _read_process_string(pid, pointer)
