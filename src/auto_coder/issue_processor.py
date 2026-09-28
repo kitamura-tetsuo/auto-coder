@@ -1016,8 +1016,11 @@ def _process_issue_codex_cloud_mode(
 
     try:
         if implementation_slots is None:
-            raise RuntimeError("implementation slot authority was not supplied")
-        fence, work_identity = production_codex_issue_fence(repo_name, issue_number, "submission", launch_identity)
+            implementation_slots = ImplementationSlotRepository(repo_name, config.MAX_CONCURRENT_IMPLEMENTATIONS)
+        owner = ImplementationOwner("issue", issue_number)
+        if implementation_slots.owner_incarnation(owner) is None and not implementation_slots.reserve(owner):
+            raise RuntimeError("implementation capacity is unavailable")
+        fence, work_identity = production_codex_issue_fence(repo_name, issue_number, "submission", launch_identity, implementation_slots)
     except Exception as exc:
         return [f"Deferred Codex Cloud task for issue #{issue_number}: retirement accounting is unavailable: {exc}"]
 
@@ -1039,6 +1042,8 @@ def _process_issue_codex_cloud_mode(
         fence.record_delivery(work_identity, accepted=False, indeterminate=False, evidence_id="usage-limit-before-submission")
         _record_dispatch_stage(issue_number, "issue.dispatch.codex-cloud", f"issue#{issue_number} Codex Cloud dispatch", Outcome.DEFERRED, {"backend": "codex-cloud", "reason": "usage limit"})
         raise
+    except OSError as exc:
+        return [f"Deferred Codex Cloud task for issue #{issue_number}: could not persist submission claim: {exc}"]
     except Exception as exc:
         return [f"Deferred Codex Cloud task for issue #{issue_number}: fenced submission failed: {exc}"]
     fence.record_delivery(

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, TypeVar
 
 from .codex_work_accounting import CodexWorkAccounting, CodexWorkPhase
-from .implementation_slots import ImplementationOwner, ImplementationSlotUnavailable
+from .implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotUnavailable
 
 T = TypeVar("T")
 
@@ -126,12 +126,17 @@ def production_codex_fence(repository: str, task_id: str, kind: str, source_requ
     return CodexWorkFence(accounting), identity
 
 
-def production_codex_issue_fence(repository: str, issue_number: int, kind: str, source_request_id: str) -> tuple[CodexWorkFence, CodexWorkIdentity]:
+def production_codex_issue_fence(
+    repository: str,
+    issue_number: int,
+    kind: str,
+    source_request_id: str,
+    slots: Optional[ImplementationSlotRepository] = None,
+) -> tuple[CodexWorkFence, CodexWorkIdentity]:
     """Prepare a pre-task fence for an already-reserved Issue owner."""
     from .codex_work_reconstruction import production_codex_reconstructor
-    from .implementation_slots import ImplementationSlotRepository
 
-    slots = ImplementationSlotRepository(repository, 1)
+    slots = slots or ImplementationSlotRepository(repository, 1)
     owner = ImplementationOwner("issue", issue_number)
     incarnation = slots.owner_incarnation(owner)
     if not incarnation:
