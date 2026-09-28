@@ -17,7 +17,13 @@ from auto_coder.issue_review_rerun import RerunAuthorityUnavailable
 from auto_coder.issue_stage_routing import IssueStageRoutingStore
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.requirement_contract import build_normative_issue_manifest
-from auto_coder.specification_analyzer import IndividualRelationshipContext, SpecificationAnalysisResult, SpecificationFinding
+from auto_coder.specification_analyzer import (
+    IncrementalReviewContext,
+    IndividualRelationshipContext,
+    SpecificationAnalysisResult,
+    SpecificationFinding,
+    parse_incremental_specification_response,
+)
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 
@@ -1905,3 +1911,82 @@ def test_changed_parent_selects_full_review_instead_of_child_predecessor(tmp_pat
 
     assert decision.review_mode == "FULL"
     assert decision.predecessor_decision_key is None
+
+
+def test_same_counterexample_retains_finding_id_across_category_and_prose_changes(tmp_path):
+    counterexample = "A read-only caller can still mutate live state."
+    first_finding = SpecificationFinding("material_ambiguity", ("REQ-001",), "The write boundary is unclear.", "Define it.", counterexample, "")
+    second_finding = SpecificationFinding("normative_contradiction", ("REQ-001",), "Reworded explanation.", "Reworded correction.", counterexample, "")
+    results = iter(
+        [
+            SpecificationAnalysisResult("BLOCKED", (first_finding,), remediation="EDIT_IN_PLACE"),
+            SpecificationAnalysisResult("BLOCKED", (second_finding,), remediation="EDIT_IN_PLACE"),
+            SpecificationAnalysisResult(
+                "BLOCKED",
+                (
+                    SpecificationFinding(
+                        "normative_contradiction",
+                        ("REQ-001",),
+                        "A different defect.",
+                        "Correct it.",
+                        "A writer can publish stale state.",
+                        "",
+                    ),
+                ),
+                remediation="EDIT_IN_PLACE",
+            ),
+        ]
+    )
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: next(results))
+    first = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    changed = BODY + "\n\n## Context\nClarified wording."
+    second = gate.decide(build_normative_issue_manifest(1728, "Title", changed), "Title", changed)
+
+    assert second.review_mode == "INCREMENTAL"
+    assert second.finding_ids == first.finding_ids
+    changed_again = changed + "\nAnother material edit."
+    third = gate.decide(build_normative_issue_manifest(1728, "Title", changed_again), "Title", changed_again)
+    assert third.finding_ids != first.finding_ids
+
+
+def test_empty_counterexample_retains_finding_id_when_explanation_changes(tmp_path):
+    first_finding = SpecificationFinding("material_ambiguity", ("REQ-001",), "Old wording.", "Define it.", "", "")
+    second_finding = SpecificationFinding("hidden_requirement", ("REQ-001",), "New wording.", "State it.", "", "")
+    results = iter(
+        [
+            SpecificationAnalysisResult("BLOCKED", (first_finding,), remediation="EDIT_IN_PLACE"),
+            SpecificationAnalysisResult("BLOCKED", (second_finding,), remediation="EDIT_IN_PLACE"),
+        ]
+    )
+    gate = lifecycle(tmp_path, "BLOCKED", lambda *_args: next(results))
+    first = gate.decide(build_normative_issue_manifest(1729, "Title", BODY), "Title", BODY)
+    changed = BODY + "\n\n## Context\nEdited."
+    second = gate.decide(build_normative_issue_manifest(1729, "Title", changed), "Title", changed)
+
+    assert second.finding_ids == first.finding_ids
+
+
+def test_full_carried_ready_is_not_persisted_by_production_lifecycle(tmp_path):
+    manifest = build_normative_issue_manifest(1730, "Title", BODY)
+    response = json.dumps(
+        {
+            "verdict": "READY",
+            "remediation": "NONE",
+            "findings": [],
+            "finding_dispositions": [],
+            "coverage": [
+                {"boundary": "REQ-001", "status": "CARRIED", "no_impact_reason": "unchanged"},
+                {"boundary": "contract-wide", "status": "CARRIED", "no_impact_reason": "unchanged"},
+            ],
+        }
+    )
+
+    def analyze(_manifest, _body):
+        return parse_incremental_specification_response(response, manifest, IncrementalReviewContext("FULL"))
+
+    gate = lifecycle(tmp_path, "READY", analyze)
+    decision = gate.decide(manifest, "Title", BODY)
+
+    assert decision.verdict == "ERROR"
+    assert decision.remediation_reason == "A FULL review cannot carry predecessor coverage"
+    assert gate.store.get(decision.identity) is None

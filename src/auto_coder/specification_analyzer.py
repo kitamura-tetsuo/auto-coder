@@ -280,6 +280,8 @@ def parse_incremental_specification_response(
             return _error("Specification analyzer coverage entry is invalid")
         seen_boundaries.add(boundary)
         coverage.append(ReviewCoverage(boundary, status, reason.strip()))
+    if context.mode == "FULL" and any(item.status == "CARRIED" for item in coverage):
+        return _error("A FULL review cannot carry predecessor coverage")
     if seen_boundaries != known_ids | {"contract-wide"} or any(item.status == "UNRESOLVED" for item in coverage):
         return _error("Specification analyzer did not establish complete current coverage")
 

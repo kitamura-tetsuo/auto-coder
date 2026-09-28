@@ -737,15 +737,14 @@ class SpecificationValidationLifecycle:
     @staticmethod
     def _finding_ids(decision: ValidationDecision, predecessor: Optional[ValidationDecision]) -> tuple[str, ...]:
         """Retain identity for the same counterexample; allocate only for new defects."""
-        prior: dict[tuple[str, tuple[str, ...], str], str] = {}
+        prior: dict[str, list[str]] = {}
         if predecessor is not None:
             for finding_id, finding in zip(predecessor.finding_ids, predecessor.findings):
-                key = (finding.category, finding.requirement_ids, finding.counterexample or finding.explanation)
-                prior[key] = finding_id
+                prior.setdefault(finding.counterexample, []).append(finding_id)
         values: list[str] = []
         for index, finding in enumerate(decision.findings, start=1):
-            key = (finding.category, finding.requirement_ids, finding.counterexample or finding.explanation)
-            values.append(prior.get(key, f"{decision.identity.key}:finding:{index}"))
+            matching_ids = prior.get(finding.counterexample, [])
+            values.append(matching_ids.pop(0) if matching_ids else f"{decision.identity.key}:finding:{index}")
         return tuple(values)
 
     def _settle_decision_checkpoint(self, decision: "ValidationDecision") -> "ValidationDecision":

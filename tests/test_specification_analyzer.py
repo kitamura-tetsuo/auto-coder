@@ -255,6 +255,27 @@ def test_incremental_parser_requires_complete_coverage_and_predecessor_dispositi
     assert refused.error == "Specification analyzer did not establish complete current coverage"
 
 
+def test_full_review_rejects_carried_coverage_without_a_predecessor():
+    response = json.dumps(
+        {
+            "verdict": "READY",
+            "remediation": "NONE",
+            "findings": [],
+            "finding_dispositions": [],
+            "coverage": [
+                {"boundary": "REQ-001", "status": "CARRIED", "no_impact_reason": "unchanged"},
+                {"boundary": "REQ-002", "status": "CARRIED", "no_impact_reason": "unchanged"},
+                {"boundary": "contract-wide", "status": "CARRIED", "no_impact_reason": "unchanged"},
+            ],
+        }
+    )
+
+    result = parse_incremental_specification_response(response, _manifest(), IncrementalReviewContext("FULL"))
+
+    assert result.verdict == "ERROR"
+    assert result.error == "A FULL review cannot carry predecessor coverage"
+
+
 @pytest.mark.parametrize(
     ("verdict", "remediation"),
     [("READY", "EDIT_IN_PLACE"), ("ERROR", "REISSUE_REQUIRED"), ("BLOCKED", "NONE"), ("BLOCKED", "UNKNOWN")],
