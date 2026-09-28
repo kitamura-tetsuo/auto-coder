@@ -113,6 +113,26 @@ def _perform_git_push(
     return result
 
 
+def _verify_remote_contains_head(cmd: CommandExecutor, remote: str, branch: Optional[str], cwd: Optional[str]) -> CommandResult:
+    """Verify that the controller's current commit is the exact remote ref."""
+    resolved_branch = branch
+    if resolved_branch is None:
+        branch_result = cmd.run_command(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], cwd=cwd)
+        if not branch_result.success or not branch_result.stdout.strip():
+            return CommandResult(False, "", "Cannot verify publication from detached HEAD", 1)
+        resolved_branch = branch_result.stdout.strip()
+    head_result = cmd.run_command(["git", "rev-parse", "HEAD"], cwd=cwd)
+    if not head_result.success:
+        return CommandResult(False, "", f"Cannot verify local publication commit: {head_result.stderr}", 1)
+    remote_result = cmd.run_command(["git", "ls-remote", "--heads", remote, f"refs/heads/{resolved_branch}"], cwd=cwd)
+    if not remote_result.success:
+        return CommandResult(False, "", f"Cannot verify remote publication ref: {remote_result.stderr}", 1)
+    fields = remote_result.stdout.strip().split()
+    if not fields or fields[0] != head_result.stdout.strip():
+        return CommandResult(False, "", "Remote publication ref does not contain the controller commit", 1)
+    return CommandResult(True, f"Verified {remote}/{resolved_branch} at {fields[0]}", "", 0)
+
+
 def _retry_with_set_upstream(
     cmd: CommandExecutor,
     remote: str,
@@ -284,13 +304,30 @@ def git_push(
         push_result.stderr,
     )
     if llm_success:
-        logger.info("LLM successfully resolved push failure")
-        return CommandResult(
-            success=True,
-            stdout="Successfully resolved push failure using LLM",
-            stderr="",
-            returncode=0,
+        logger.info("LLM supplied a local repair; retrying controller commit and push")
+        status_result = cmd.run_command(["git", "status", "--porcelain"], cwd=cwd)
+        if not status_result.success:
+            return push_result
+        if status_result.stdout.strip():
+            add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
+            if not add_result.success:
+                return add_result
+            if not commit_message:
+                return CommandResult(False, "", "Local push repair changed files but no controller commit message is available", 1)
+            from .git_branch import git_commit_with_retry
+
+            repair_commit = git_commit_with_retry(commit_message, cwd=cwd)
+            if not repair_commit.success:
+                return repair_commit
+        retry_result = _perform_git_push(
+            cwd=cwd,
+            remote=remote,
+            branch=branch,
+            skip_unpushed_check=True,
         )
+        if not retry_result.success:
+            return retry_result
+        return _verify_remote_contains_head(cmd, remote, branch, cwd)
     else:
         logger.error("LLM failed to resolve push failure")
 
@@ -435,23 +472,14 @@ def commit_and_push_changes(
             logger.error(f"Failed to push changes after retry: {push_result.stderr}")
             return f"Failed to commit and push changes: {push_result.stderr}"
     else:
-        logger.info("Attempting to resolve commit failure using LLM...")
-        from .git_branch import try_llm_commit_push
-
-        llm_success = try_llm_commit_push(
-            summary,
-            commit_result.stderr,
-        )
-        if llm_success:
-            return f"Successfully committed and pushed changes using LLM: {summary}"
-        else:
-            logger.error("LLM failed to resolve commit failure")
-            # Save history and exit immediately
-            context = {
-                "type": "issue",
-                "issue_number": issue_number,
-                "commit_message": summary,
-            }
-            save_commit_failure_history(commit_result.stderr, context, repo_name)
-            # This line will never be reached due to sys.exit in save_commit_failure_history
-            return f"Failed to commit changes: {commit_result.stderr}"
+        # git_commit_with_retry already owns its bounded local-repair attempt. A
+        # remaining controller failure cannot be upgraded by another model claim.
+        logger.error("Controller commit failed after bounded repair")
+        context = {
+            "type": "issue",
+            "issue_number": issue_number,
+            "commit_message": summary,
+        }
+        save_commit_failure_history(commit_result.stderr, context, repo_name)
+        # Reachable only when the history writer is replaced in tests.
+        return f"Failed to commit changes: {commit_result.stderr}"
