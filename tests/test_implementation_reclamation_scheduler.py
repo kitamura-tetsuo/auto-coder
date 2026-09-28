@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from auto_coder.implementation_reclamation_scheduler import (
     RECLAMATION_RECHECK_SECONDS,
@@ -183,6 +183,32 @@ def test_run_due_reclamation_checks_reschedules_retained_owner_60s_out(tmp_path)
     assert obligations[0].incarnation == incarnation
     assert obligations[0].next_due_at == now + RECLAMATION_RECHECK_SECONDS
     assert ISSUE_100 in slots.active_owners()
+
+
+def test_i2332_repeated_pending_cause_recollects_without_warning_spam(tmp_path):
+    """REQ-003/004: unchanged diagnostics are quiet, but checks and cadence continue."""
+    slots = _setup_slots(tmp_path)
+    store = ReclamationObligationStore.for_slots(slots)
+    _establish_owner_with_closed_pr(slots, ISSUE_100, 201, "gen-i2332")
+    schedule_reevaluation(ISSUE_100, slots, store, reason="initial", due_at=0.0)
+    github_client = _make_github_client(
+        pr_responses={201: {"number": 201, "state": "open"}},
+        connected_prs={100: [201]},
+        open_prs=[{"number": 201, "state": "open", "head": {"ref": "issue-100-work"}, "body": ""}],
+    )
+
+    with patch("auto_coder.implementation_reclamation_scheduler.logger") as test_logger:
+        for now in (1.0, 61.0, 121.0):
+            assert run_due_reclamation_checks(slots, store, github_client=github_client, now=now) == 0
+
+    assert github_client.get_pull_request_metadata_strict.call_count == 3
+    assert test_logger.warning.call_count == 1
+    assert test_logger.error.call_count == 0
+    assert test_logger.debug.call_count == 2
+    obligation = store.all()[0]
+    assert obligation.next_due_at == 181.0
+    assert obligation.last_reason is not None
+    assert obligation.last_reason.startswith("RETAINED_ACTIVE|")
 
 
 def test_run_due_reclamation_checks_skips_not_yet_due_obligations(tmp_path):

@@ -44,6 +44,19 @@ RECLAMATION_RECHECK_SECONDS = 60.0
 
 _SHARED_FILE_MODE = 0o660
 
+# Warning/error suppression is intentionally process-local.  Identity includes
+# repository, owner, and incarnation so unrelated work never silences a cause.
+_pending_diagnostic_lock = threading.Lock()
+_pending_diagnostic_identities: Dict[tuple[str, str, str], str] = {}
+
+
+def _pending_diagnostic_changed(obligation: "ReclamationObligation", cause: str) -> bool:
+    key = (obligation.repository, obligation.key, obligation.incarnation)
+    with _pending_diagnostic_lock:
+        changed = _pending_diagnostic_identities.get(key) != cause
+        _pending_diagnostic_identities[key] = cause
+    return changed
+
 
 @dataclass(frozen=True)
 class ReclamationObligation:
@@ -314,8 +327,13 @@ def run_due_reclamation_checks(
                     cloud_run_store,
                 )
             except Exception as exc:
-                logger.error(f"Reclamation evidence collection failed for {owner.key} " f"(incarnation={obligation.incarnation}): {exc}; keeping the pending obligation")
-                store.replace(_rescheduled(obligation, now, reason=f"observation-error:{type(exc).__name__}"))
+                cause = f"collection-failure:{type(exc).__name__}:{exc}"
+                message = f"Reclamation evidence collection failed for {owner.key} (incarnation={obligation.incarnation}): {exc}; keeping the pending obligation"
+                if _pending_diagnostic_changed(obligation, cause):
+                    logger.error(message)
+                else:
+                    logger.debug(message)
+                store.replace(_rescheduled(obligation, now, reason=cause))
                 continue
 
             if observation is None:
@@ -339,8 +357,13 @@ def run_due_reclamation_checks(
                 # the obligation alive for another pass. Expected outcomes
                 # (still active or unknown) are informational, not errors --
                 # a repeated unchanged pending check must not spam ERROR logs.
-                logger.info(f"Reclamation still pending for {owner.key}: {result.status.value} - {result.diagnostic}")
-                store.replace(_rescheduled(obligation, now, reason=result.status.value))
+                cause = "|".join((result.status.value, result.diagnostic or "", *result.responsible_members))
+                message = f"Reclamation still pending for {owner.key}: {result.status.value} - {result.diagnostic}"
+                if _pending_diagnostic_changed(obligation, cause):
+                    logger.warning(message)
+                else:
+                    logger.debug(message)
+                store.replace(_rescheduled(obligation, now, reason=cause))
     return released
 
 

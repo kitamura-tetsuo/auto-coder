@@ -325,6 +325,43 @@ def test_as002_unbound_cloudmanager_provider_blocks_observation(tmp_path: Path) 
     assert result.status is not RetirementStatus.RELEASED
 
 
+def test_i2332_unsupported_provider_preserves_real_pr_and_structured_cause(tmp_path: Path) -> None:
+    """REQ-001/002: blocked ownership is not represented as an empty PR set."""
+    from dataclasses import dataclass
+
+    from auto_coder.implementation_retirement import CollectionReasonKind, PRTerminalState
+
+    @dataclass
+    class FakeBinding:
+        provider: str = "codex-cloud"
+        task_id: str = "codex-task-2332"
+        backend_name: str = "codex"
+
+    slots = _setup_slots(tmp_path)
+    execution_id = slots.start_execution(ISSUE_100, generation="gen-2332")
+    assert execution_id is not None
+    assert slots.record_implementation_pr(ISSUE_100, 2332)
+    slots.finish_execution(ISSUE_100, execution_id)
+
+    observation = collect_retirement_observation(
+        ISSUE_100,
+        slots,
+        _make_github_client(pr_responses={2332: _closed_pr(2332)}),
+        cloud_manager=_make_cloud_manager(issue_bindings={100: FakeBinding()}),
+    )
+
+    assert observation is not None
+    assert [(pr.number, pr.state) for pr in observation.implementation_prs] == [(2332, PRTerminalState.UNKNOWN)]
+    assert [(session.session_id, session.state) for session in observation.provider_sessions] == [("codex-task-2332", SessionTerminalState.UNKNOWN)]
+    assert len(observation.collection_reasons) == 1
+    assert observation.collection_reasons[0].kind is CollectionReasonKind.UNSUPPORTED_PROVIDER
+    assert observation.collection_reasons[0].provider == "codex-cloud"
+    result = slots.retire_owner(observation)
+    assert result.status is RetirementStatus.RETAINED_UNKNOWN
+    assert "unsupported_provider:cloud-manager-binding:codex-cloud" in (result.diagnostic or "")
+    assert "Never-published" not in (result.diagnostic or "")
+
+
 # ---------------------------------------------------------------------------
 # AS-003: Publication wait and observation failure retain capacity
 # ---------------------------------------------------------------------------

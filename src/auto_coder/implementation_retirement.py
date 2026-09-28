@@ -75,6 +75,29 @@ class ExecutionTerminalState(str, Enum):
     UNKNOWN = "unknown"
 
 
+class CollectionReasonKind(str, Enum):
+    """Why retirement evidence could not be collected completely."""
+
+    UNSUPPORTED_PROVIDER = "unsupported_provider"
+    AMBIGUOUS_ATTRIBUTION = "ambiguous_attribution"
+    UNAVAILABLE_EVIDENCE = "unavailable_evidence"
+    INCOMPLETE_DISCOVERY = "incomplete_discovery"
+
+
+@dataclass(frozen=True)
+class RetirementCollectionReason:
+    """Machine-readable incomplete-observation cause, separate from membership."""
+
+    kind: CollectionReasonKind
+    boundary: str
+    provider: Optional[str] = None
+
+    @property
+    def identity(self) -> str:
+        provider = f":{self.provider}" if self.provider else ""
+        return f"{self.kind.value}:{self.boundary}{provider}"
+
+
 @dataclass(frozen=True)
 class LocalExecutionObservation:
     """Normalized observation of one local execution."""
@@ -119,6 +142,7 @@ class ImplementationRetirementObservation:
     continuing_obligations: ContinuingObligations = field(default_factory=ContinuingObligations)
     speculative: bool = False
     recurrent: bool = False
+    collection_reasons: tuple[RetirementCollectionReason, ...] = ()
 
 
 class RetirementStatus(str, Enum):
@@ -167,6 +191,14 @@ def evaluate_retirement_predicate(
         return RetirementResult(
             RetirementStatus.RETAINED_UNKNOWN,
             diagnostic="Recurrent owners are not eligible for PR-backed retirement",
+        )
+
+    if observation.collection_reasons:
+        reasons = tuple(reason.identity for reason in observation.collection_reasons)
+        return RetirementResult(
+            RetirementStatus.RETAINED_UNKNOWN,
+            responsible_members=tuple(f"pr:{pr.number}" for pr in observation.implementation_prs) + reasons,
+            diagnostic=f"Incomplete retirement evidence: {', '.join(reasons)}",
         )
 
     if not observation.implementation_prs:
