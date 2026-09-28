@@ -322,6 +322,11 @@ class _PRCandidateSet:
         if reason not in self.collection_reasons:
             self.collection_reasons.append(reason)
 
+    def mark_unavailable(self, boundary: str) -> None:
+        reason = RetirementCollectionReason(CollectionReasonKind.UNAVAILABLE_EVIDENCE, boundary)
+        if reason not in self.collection_reasons:
+            self.collection_reasons.append(reason)
+
 
 def _build_pr_candidate_set(
     owner: ImplementationOwner,
@@ -354,6 +359,8 @@ def _build_pr_candidate_set(
         for n in stored_prs_raw:
             if isinstance(n, int) and not isinstance(n, bool) and n > 0:
                 _add(n)
+    else:
+        result.mark_unavailable("slot-implementation-pr-membership")
 
     # 2. Native GitHub Development/closing associations
     try:
@@ -579,16 +586,16 @@ def _observe_pr(github_client: Any, repo_name: str, pr_number: int) -> Implement
             try:
                 pr_data = strict_getter(repo_name, pr_number)
             except Exception as exc:
-                logger.warning(f"Strict transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
+                logger.debug(f"Strict transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
                 return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
         else:
             getter = getattr(github_client, "get_pull_request", None)
             if not callable(getter):
-                logger.warning(f"github_client has no PR read method; PR #{pr_number} → UNKNOWN")
+                logger.debug(f"github_client has no PR read method; PR #{pr_number} → UNKNOWN")
                 return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
             pr_data = getter(repo_name, pr_number)
     except Exception as exc:
-        logger.warning(f"Transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
+        logger.debug(f"Transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     if pr_data is None:
@@ -596,19 +603,19 @@ def _observe_pr(github_client: Any, repo_name: str, pr_number: int) -> Implement
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     if not isinstance(pr_data, dict):
-        logger.warning(f"Malformed PR #{pr_number} response (not dict) → UNKNOWN")
+        logger.debug(f"Malformed PR #{pr_number} response (not dict) → UNKNOWN")
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     # Identity check: wrong number
     returned_number = pr_data.get("number")
     if returned_number != pr_number:
-        logger.warning(f"Identity mismatch for PR #{pr_number}: response.number={returned_number!r} → UNKNOWN")
+        logger.debug(f"Identity mismatch for PR #{pr_number}: response.number={returned_number!r} → UNKNOWN")
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     # Identity check: wrong repository
     returned_repo = _extract_repo_from_pr_dict(pr_data)
     if returned_repo is not None and returned_repo.lower() != repo_name.lower():
-        logger.warning(f"Repository mismatch for PR #{pr_number}: " f"expected {repo_name!r}, got {returned_repo!r} → UNKNOWN")
+        logger.debug(f"Repository mismatch for PR #{pr_number}: " f"expected {repo_name!r}, got {returned_repo!r} → UNKNOWN")
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     merged = pr_data.get("merged") is True or pr_data.get("merged_at") is not None
@@ -647,6 +654,7 @@ def _resolve_jules_session_ownership(
     cloud_manager: Optional[Any],
     cloud_run_store: Optional[Any],
     expected_repo: str,
+    cloud_provider_stores_available: bool = True,
 ) -> _JulesOwnershipResolution:
     """Resolve all Jules sessions positively attributed to *owner* (REQ-004).
 
@@ -675,6 +683,15 @@ def _resolve_jules_session_ownership(
 
     slot_sessions: List[str] = list(stored_sessions_raw)
     resolution.attributed_sessions = list(slot_sessions)
+
+    if not cloud_provider_stores_available:
+        resolution.blocked = True
+        resolution.blocked_reason = "Cloud provider stores were unavailable during due-check setup"
+        resolution.collection_reason = RetirementCollectionReason(
+            CollectionReasonKind.UNAVAILABLE_EVIDENCE,
+            "cloud-provider-store-setup",
+        )
+        return resolution
 
     # 2. CloudManager binding
     cm_session: Optional[str] = None
@@ -1106,6 +1123,7 @@ def collect_retirement_observation(
     jules_client: Optional[Any] = None,
     cloud_manager: Optional[Any] = None,
     cloud_run_store: Optional[Any] = None,
+    cloud_provider_stores_available: bool = True,
 ) -> Optional[ImplementationRetirementObservation]:
     """Derive an authoritative ImplementationRetirementObservation for *owner*.
 
@@ -1141,7 +1159,14 @@ def collect_retirement_observation(
     expected_repo = slots.repo_name
 
     # Check for unsupported provider conditions (REQ-004)
-    jules_resolution = _resolve_jules_session_ownership(owner, slots, cloud_manager, cloud_run_store, expected_repo)
+    jules_resolution = _resolve_jules_session_ownership(
+        owner,
+        slots,
+        cloud_manager,
+        cloud_run_store,
+        expected_repo,
+        cloud_provider_stores_available,
+    )
     if jules_resolution.blocked:
         logger.debug(f"Provider ownership resolution blocked for {owner.key}: " f"{jules_resolution.blocked_reason}")
         stored_prs = record.get("implementation_prs", [])

@@ -362,6 +362,26 @@ def test_i2332_unsupported_provider_preserves_real_pr_and_structured_cause(tmp_p
     assert "Never-published" not in (result.diagnostic or "")
 
 
+def test_i2332_malformed_durable_pr_membership_is_unavailable_evidence(tmp_path: Path) -> None:
+    """REQ-002: corrupt durable membership cannot establish an empty PR union."""
+    slots = _setup_slots(tmp_path)
+    assert slots.reserve_new(ISSUE_100)
+    with slots._state_lock():
+        records = slots._read()
+        records[ISSUE_100.key]["implementation_prs"] = "not-a-list"
+        slots._write(records)
+
+    observation = collect_retirement_observation(ISSUE_100, slots, _make_github_client())
+
+    assert observation is not None
+    assert observation.implementation_prs == ()
+    assert [reason.identity for reason in observation.collection_reasons] == ["unavailable_evidence:slot-implementation-pr-membership"]
+    result = slots.retire_owner(observation)
+    assert result.status is RetirementStatus.RETAINED_UNKNOWN
+    assert result.diagnostic == "Incomplete retirement evidence: unavailable_evidence:slot-implementation-pr-membership"
+    assert "Never-published" not in result.diagnostic
+
+
 # ---------------------------------------------------------------------------
 # AS-003: Publication wait and observation failure retain capacity
 # ---------------------------------------------------------------------------

@@ -116,6 +116,8 @@ ambiguous attribution, unavailable evidence boundary, or incomplete discovery;
 durably known PR identities remain present with unknown lifecycle rather than being
 replaced by an empty set or a synthetic member. Consequently, the predicate cannot
 misdescribe blocked provider evidence as a never-published reservation.
+An unreadable durable `implementation_prs` value and a provider-store construction
+failure are unavailable evidence boundaries, not authoritative empty membership.
 
 The due scheduler fingerprints the complete pending cause (status, structured
 boundary/provider reason, responsible members, repository, owner, and incarnation)
@@ -123,6 +125,8 @@ in process memory. The first occurrence and every change remains warning/error
 visible, while unchanged repeats are debug-only. This suppression affects logging
 only: every due check still recollects evidence and advances its durable obligation
 by 60 seconds, and suppression deliberately starts fresh after process restart.
+Expected per-member read failures log at debug level inside the collector so they
+cannot bypass the scheduler's warning/error suppression.
 
 ### Scope Boundary (REQ-007, REQ-009)
 

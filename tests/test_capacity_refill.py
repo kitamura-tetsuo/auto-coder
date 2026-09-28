@@ -1,11 +1,29 @@
 import asyncio
 import threading
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
+
+
+def test_reclamation_propagates_provider_store_construction_failure(tmp_path):
+    """REQ-002: daemon setup failure reaches the collector as unavailable evidence."""
+    github = MagicMock()
+    engine = AutomationEngine(github, AutomationConfig())
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    due_checks = MagicMock(return_value=0)
+
+    with (
+        patch("auto_coder.cloud_manager.CloudManager", return_value=MagicMock()),
+        patch("auto_coder.cloud_run.CloudRunRepository", side_effect=RuntimeError("store unavailable")),
+        patch("auto_coder.automation_engine.run_due_reclamation_checks", due_checks),
+    ):
+        assert asyncio.run(engine._run_due_reclamation_checks("owner/repo", slots)) == 0
+
+    assert due_checks.call_count == 1
+    assert due_checks.call_args.kwargs["cloud_provider_stores_available"] is False
 
 
 def test_external_capacity_release_refills_fresh_ranking_past_rejection(monkeypatch, tmp_path):

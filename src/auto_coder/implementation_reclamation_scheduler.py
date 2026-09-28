@@ -292,6 +292,7 @@ def run_due_reclamation_checks(
     jules_client: Optional[Any] = None,
     cloud_manager: Optional[Any] = None,
     cloud_run_store: Optional[Any] = None,
+    cloud_provider_stores_available: bool = True,
     on_capacity_freed: Optional[Callable[[], None]] = None,
     now: Optional[float] = None,
 ) -> int:
@@ -325,6 +326,7 @@ def run_due_reclamation_checks(
                     jules_client,
                     cloud_manager,
                     cloud_run_store,
+                    cloud_provider_stores_available,
                 )
             except Exception as exc:
                 cause = f"collection-failure:{type(exc).__name__}:{exc}"
