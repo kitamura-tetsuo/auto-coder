@@ -3152,11 +3152,13 @@ class AutomationEngine:
                     decomposition_decision.verdict if decomposition_decision is not None else None,
                 )
             )
+        for child in children:
+            if not self._is_authoritatively_open_issue(child):
+                self._withdraw_closed_individual_authority(repo_name, int(child["number"]))
         if self._is_issue_specification_validation_enabled(repo_name):
             individual_validator = self._get_specification_validator(repo_name)
             for child in children:
                 if not self._is_authoritatively_open_issue(child):
-                    self._withdraw_closed_individual_authority(repo_name, int(child["number"]))
                     continue
                 number = int(child["number"])
                 relationship = self._child_review_context(parent, children, number)
