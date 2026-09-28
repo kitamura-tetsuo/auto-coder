@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Dict, FrozenSet, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from .implementation_retirement import (
+    CollectionReasonKind,
     ContinuingObligations,
     ExecutionTerminalState,
     ImplementationPRObservation,
@@ -25,6 +26,7 @@ from .implementation_retirement import (
     LocalExecutionObservation,
     ProviderSessionObservation,
     PRTerminalState,
+    RetirementCollectionReason,
     SessionTerminalState,
 )
 from .implementation_slots import (
@@ -312,6 +314,18 @@ class _PRCandidateSet:
     contradicted_prs: List[int] = field(default_factory=list)
     # PR numbers with incomplete required enumeration
     incomplete_discovery: bool = False
+    collection_reasons: List[RetirementCollectionReason] = field(default_factory=list)
+
+    def mark_incomplete(self, boundary: str) -> None:
+        self.incomplete_discovery = True
+        reason = RetirementCollectionReason(CollectionReasonKind.INCOMPLETE_DISCOVERY, boundary)
+        if reason not in self.collection_reasons:
+            self.collection_reasons.append(reason)
+
+    def mark_unavailable(self, boundary: str) -> None:
+        reason = RetirementCollectionReason(CollectionReasonKind.UNAVAILABLE_EVIDENCE, boundary)
+        if reason not in self.collection_reasons:
+            self.collection_reasons.append(reason)
 
 
 def _build_pr_candidate_set(
@@ -345,6 +359,8 @@ def _build_pr_candidate_set(
         for n in stored_prs_raw:
             if isinstance(n, int) and not isinstance(n, bool) and n > 0:
                 _add(n)
+    else:
+        result.mark_unavailable("slot-implementation-pr-membership")
 
     # 2. Native GitHub Development/closing associations
     try:
@@ -352,8 +368,8 @@ def _build_pr_candidate_set(
         for pr_num in connected:
             _add(pr_num)
     except Exception as exc:
-        logger.warning(f"Cannot enumerate native GitHub associations for {owner.key}: {exc}; " "marking discovery incomplete")
-        result.incomplete_discovery = True
+        logger.debug(f"Cannot enumerate native GitHub associations for {owner.key}: {exc}; " "marking discovery incomplete")
+        result.mark_incomplete("github-native-associations")
 
     # 3. Every PR output from each bound Jules session
     for session_id, raw_session in jules_session_raws.items():
@@ -364,7 +380,7 @@ def _build_pr_candidate_set(
         if discovery_incomplete:
             logger.debug(f"Session {session_id} has an unresolvable or foreign-repository PR output; " "marking discovery incomplete")
             # Do not add the unresolved/foreign number to local_prs; mark investigation incomplete
-            result.incomplete_discovery = True
+            result.mark_incomplete(f"jules-output:{session_id}")
 
     # 4. Open PR discovery with restricted attribution
     try:
@@ -381,12 +397,18 @@ def _build_pr_candidate_set(
             elif attribution == "contradicted":
                 if pr_num_raw not in result.contradicted_prs:
                     result.contradicted_prs.append(pr_num_raw)
+                reason = RetirementCollectionReason(
+                    CollectionReasonKind.AMBIGUOUS_ATTRIBUTION,
+                    f"open-pr:{pr_num_raw}",
+                )
+                if reason not in result.collection_reasons:
+                    result.collection_reasons.append(reason)
     except _DiscoveryIncomplete as exc:
-        logger.warning(f"Open PR discovery incomplete for {owner.key}: {exc}; " "marking incomplete")
-        result.incomplete_discovery = True
+        logger.debug(f"Open PR discovery incomplete for {owner.key}: {exc}; " "marking incomplete")
+        result.mark_incomplete("github-open-pr-enumeration")
     except Exception as exc:
-        logger.warning(f"Open PR discovery failed for {owner.key}: {exc}; marking incomplete")
-        result.incomplete_discovery = True
+        logger.debug(f"Open PR discovery failed for {owner.key}: {exc}; marking incomplete")
+        result.mark_incomplete("github-open-pr-enumeration")
 
     return result
 
@@ -564,16 +586,16 @@ def _observe_pr(github_client: Any, repo_name: str, pr_number: int) -> Implement
             try:
                 pr_data = strict_getter(repo_name, pr_number)
             except Exception as exc:
-                logger.warning(f"Strict transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
+                logger.debug(f"Strict transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
                 return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
         else:
             getter = getattr(github_client, "get_pull_request", None)
             if not callable(getter):
-                logger.warning(f"github_client has no PR read method; PR #{pr_number} → UNKNOWN")
+                logger.debug(f"github_client has no PR read method; PR #{pr_number} → UNKNOWN")
                 return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
             pr_data = getter(repo_name, pr_number)
     except Exception as exc:
-        logger.warning(f"Transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
+        logger.debug(f"Transport/read failure for PR #{pr_number}: {exc} → UNKNOWN")
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     if pr_data is None:
@@ -581,19 +603,19 @@ def _observe_pr(github_client: Any, repo_name: str, pr_number: int) -> Implement
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     if not isinstance(pr_data, dict):
-        logger.warning(f"Malformed PR #{pr_number} response (not dict) → UNKNOWN")
+        logger.debug(f"Malformed PR #{pr_number} response (not dict) → UNKNOWN")
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     # Identity check: wrong number
     returned_number = pr_data.get("number")
     if returned_number != pr_number:
-        logger.warning(f"Identity mismatch for PR #{pr_number}: response.number={returned_number!r} → UNKNOWN")
+        logger.debug(f"Identity mismatch for PR #{pr_number}: response.number={returned_number!r} → UNKNOWN")
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     # Identity check: wrong repository
     returned_repo = _extract_repo_from_pr_dict(pr_data)
     if returned_repo is not None and returned_repo.lower() != repo_name.lower():
-        logger.warning(f"Repository mismatch for PR #{pr_number}: " f"expected {repo_name!r}, got {returned_repo!r} → UNKNOWN")
+        logger.debug(f"Repository mismatch for PR #{pr_number}: " f"expected {repo_name!r}, got {returned_repo!r} → UNKNOWN")
         return ImplementationPRObservation(pr_number, PRTerminalState.UNKNOWN)
 
     merged = pr_data.get("merged") is True or pr_data.get("merged_at") is not None
@@ -623,6 +645,7 @@ class _JulesOwnershipResolution:
     # Whether ownership resolution is blocked (unsupported/mixed/conflicting)
     blocked: bool = False
     blocked_reason: str = ""
+    collection_reason: Optional[RetirementCollectionReason] = None
 
 
 def _resolve_jules_session_ownership(
@@ -631,6 +654,7 @@ def _resolve_jules_session_ownership(
     cloud_manager: Optional[Any],
     cloud_run_store: Optional[Any],
     expected_repo: str,
+    cloud_provider_stores_available: bool = True,
 ) -> _JulesOwnershipResolution:
     """Resolve all Jules sessions positively attributed to *owner* (REQ-004).
 
@@ -647,15 +671,27 @@ def _resolve_jules_session_ownership(
     if not isinstance(stored_sessions_raw, list):
         resolution.blocked = True
         resolution.blocked_reason = "Cannot parse stored provider_sessions"
+        resolution.collection_reason = RetirementCollectionReason(CollectionReasonKind.UNAVAILABLE_EVIDENCE, "slot-provider-sessions")
         return resolution
 
     for sid in stored_sessions_raw:
         if not isinstance(sid, str) or not sid:
             resolution.blocked = True
             resolution.blocked_reason = f"Invalid session id in slot store: {sid!r}"
+            resolution.collection_reason = RetirementCollectionReason(CollectionReasonKind.AMBIGUOUS_ATTRIBUTION, "slot-provider-sessions")
             return resolution
 
     slot_sessions: List[str] = list(stored_sessions_raw)
+    resolution.attributed_sessions = list(slot_sessions)
+
+    if not cloud_provider_stores_available:
+        resolution.blocked = True
+        resolution.blocked_reason = "Cloud provider stores were unavailable during due-check setup"
+        resolution.collection_reason = RetirementCollectionReason(
+            CollectionReasonKind.UNAVAILABLE_EVIDENCE,
+            "cloud-provider-store-setup",
+        )
+        return resolution
 
     # 2. CloudManager binding
     cm_session: Optional[str] = None
@@ -663,16 +699,20 @@ def _resolve_jules_session_ownership(
         try:
             binding = cloud_manager.get_binding(owner.number)
             if binding is not None:
+                if binding.task_id and binding.task_id not in resolution.attributed_sessions:
+                    resolution.attributed_sessions.append(binding.task_id)
                 if binding.provider and binding.provider.lower() not in ("jules", ""):
                     # Non-Jules provider: blocks this early-release path (REQ-004)
                     resolution.blocked = True
                     resolution.blocked_reason = f"Unsupported provider {binding.provider!r} in CloudManager " f"for owner {owner.key}"
+                    resolution.collection_reason = RetirementCollectionReason(CollectionReasonKind.UNSUPPORTED_PROVIDER, "cloud-manager-binding", str(binding.provider))
                     return resolution
                 if binding.task_id:
                     cm_session = binding.task_id
         except Exception as exc:
             resolution.blocked = True
             resolution.blocked_reason = f"Cannot read CloudManager for owner {owner.key}: {exc}"
+            resolution.collection_reason = RetirementCollectionReason(CollectionReasonKind.UNAVAILABLE_EVIDENCE, "cloud-manager-binding")
             return resolution
 
     # 3. CloudRun records (non-Jules provider detection)
@@ -682,9 +722,12 @@ def _resolve_jules_session_ownership(
             for run in runs:
                 provider = getattr(run, "provider", "") or ""
                 task_id = getattr(run, "task_id", "") or ""
+                if task_id and task_id not in resolution.attributed_sessions:
+                    resolution.attributed_sessions.append(task_id)
                 if provider.lower() not in ("jules", ""):
                     resolution.blocked = True
                     resolution.blocked_reason = f"Non-Jules provider {provider!r} found in CloudRun " f"for owner {owner.key}"
+                    resolution.collection_reason = RetirementCollectionReason(CollectionReasonKind.UNSUPPORTED_PROVIDER, "cloud-run-provider", str(provider))
                     return resolution
                 # Include pending CloudRun sessions not yet in slot's session array
                 if task_id and task_id not in slot_sessions:
@@ -692,6 +735,7 @@ def _resolve_jules_session_ownership(
         except Exception as exc:
             resolution.blocked = True
             resolution.blocked_reason = f"Cannot read CloudRun store for owner {owner.key}: {exc}"
+            resolution.collection_reason = RetirementCollectionReason(CollectionReasonKind.UNAVAILABLE_EVIDENCE, "cloud-run-store")
             return resolution
 
     # Merge slot sessions and CloudManager session
@@ -757,16 +801,16 @@ def _observe_jules_session(
     try:
         raw_session = jules_client.get_session(session_id)
     except Exception as exc:
-        logger.warning(f"Cannot read Jules session {session_id} for {owner_key}: {exc} → UNKNOWN")
+        logger.debug(f"Cannot read Jules session {session_id} for {owner_key}: {exc} → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
     if not isinstance(raw_session, dict):
-        logger.warning(f"Malformed Jules session {session_id} for {owner_key}: " f"expected dict, got {type(raw_session).__name__} → UNKNOWN")
+        logger.debug(f"Malformed Jules session {session_id} for {owner_key}: " f"expected dict, got {type(raw_session).__name__} → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
     raw_state = raw_session.get("state")
     if not isinstance(raw_state, str):
-        logger.warning(f"Jules session {session_id} for {owner_key}: missing/invalid state → UNKNOWN")
+        logger.debug(f"Jules session {session_id} for {owner_key}: missing/invalid state → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
     # Explicitly supported active states retain capacity immediately (REQ-005).
@@ -783,7 +827,7 @@ def _observe_jules_session(
     if raw_state not in _JULES_TERMINAL_STATES:
         # Unsupported/unknown state (including an unknown AWAITING_* variant
         # not in the supported contract) → UNKNOWN, never implicitly ACTIVE.
-        logger.warning(f"Jules session {session_id} for {owner_key}: " f"unsupported state {raw_state!r} → UNKNOWN")
+        logger.debug(f"Jules session {session_id} for {owner_key}: " f"unsupported state {raw_state!r} → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
     # raw_state is COMPLETED or FAILED — extract PR publication evidence.
@@ -844,11 +888,11 @@ def _check_activity_causality(
     try:
         activities = activities_getter(session_id)
     except Exception as exc:
-        logger.warning(f"Cannot fetch activities for Jules session {session_id}: {exc} → UNKNOWN causality")
+        logger.debug(f"Cannot fetch activities for Jules session {session_id}: {exc} → UNKNOWN causality")
         return False
 
     if not isinstance(activities, (list, tuple)):
-        logger.warning(f"Malformed activities payload for Jules session {session_id} " f"(expected list, got {type(activities).__name__}) → UNKNOWN causality")
+        logger.debug(f"Malformed activities payload for Jules session {session_id} " f"(expected list, got {type(activities).__name__}) → UNKNOWN causality")
         return False
 
     # Look for sessionCompleted/sessionFailed event preceded by a
@@ -1079,6 +1123,7 @@ def collect_retirement_observation(
     jules_client: Optional[Any] = None,
     cloud_manager: Optional[Any] = None,
     cloud_run_store: Optional[Any] = None,
+    cloud_provider_stores_available: bool = True,
 ) -> Optional[ImplementationRetirementObservation]:
     """Derive an authoritative ImplementationRetirementObservation for *owner*.
 
@@ -1114,43 +1159,73 @@ def collect_retirement_observation(
     expected_repo = slots.repo_name
 
     # Check for unsupported provider conditions (REQ-004)
-    jules_resolution = _resolve_jules_session_ownership(owner, slots, cloud_manager, cloud_run_store, expected_repo)
+    jules_resolution = _resolve_jules_session_ownership(
+        owner,
+        slots,
+        cloud_manager,
+        cloud_run_store,
+        expected_repo,
+        cloud_provider_stores_available,
+    )
     if jules_resolution.blocked:
-        # Cannot safely determine provider scope — return UNKNOWN observation
-        logger.warning(f"Jules ownership resolution blocked for {owner.key}: " f"{jules_resolution.blocked_reason}")
-        # Return a minimal observation that will evaluate as RETAINED_UNKNOWN
+        logger.debug(f"Provider ownership resolution blocked for {owner.key}: " f"{jules_resolution.blocked_reason}")
+        stored_prs = record.get("implementation_prs", [])
+        known_prs = tuple(ImplementationPRObservation(number, PRTerminalState.UNKNOWN) for number in stored_prs if isinstance(number, int) and not isinstance(number, bool) and number > 0) if isinstance(stored_prs, list) else ()
+        reason = jules_resolution.collection_reason or RetirementCollectionReason(CollectionReasonKind.AMBIGUOUS_ATTRIBUTION, "provider-ownership")
+        known_sessions = tuple(
+            ProviderSessionObservation(
+                session_id=session_id,
+                provider=reason.provider or "unknown",
+                state=SessionTerminalState.UNKNOWN,
+            )
+            for session_id in jules_resolution.attributed_sessions
+        )
         return ImplementationRetirementObservation(
             repository=expected_repo,
             owner=owner,
             reservation_incarnation=incarnation,
             activity_revision=activity_revision,
-            implementation_prs=(),
-            provider_sessions=(
-                ProviderSessionObservation(
-                    session_id="__blocked__",
-                    provider="unknown",
-                    state=SessionTerminalState.UNKNOWN,
-                ),
-            ),
-            local_executions=(),
-            continuing_obligations=ContinuingObligations(has_unresolved_submission=True),
+            implementation_prs=known_prs,
+            provider_sessions=known_sessions,
+            local_executions=tuple(_observe_local_executions(slots, owner)),
+            continuing_obligations=_read_continuing_obligations(record),
+            collection_reasons=(reason,),
         )
 
     attributed_sessions = jules_resolution.attributed_sessions
 
     # Fetch raw Jules session data for PR candidate set construction
     jules_session_raws: Dict[str, Dict[str, Any]] = {}
+    session_collection_reasons: List[RetirementCollectionReason] = []
     if jules_client is not None:
         for session_id in attributed_sessions:
             try:
                 raw = jules_client.get_session(session_id)
                 if isinstance(raw, dict):
                     jules_session_raws[session_id] = raw
+                else:
+                    session_collection_reasons.append(
+                        RetirementCollectionReason(
+                            CollectionReasonKind.UNAVAILABLE_EVIDENCE,
+                            f"jules-session:{session_id}",
+                            "jules",
+                        )
+                    )
             except Exception as exc:
-                logger.warning(f"Cannot pre-fetch Jules session {session_id} for " f"PR candidate construction: {exc}")
+                logger.debug(f"Cannot pre-fetch Jules session {session_id} for " f"PR candidate construction: {exc}")
+                session_collection_reasons.append(RetirementCollectionReason(CollectionReasonKind.UNAVAILABLE_EVIDENCE, f"jules-session:{session_id}", "jules"))
 
     # Build PR candidate set (REQ-002)
     candidate_set = _build_pr_candidate_set(owner, slots, github_client, jules_session_raws, expected_repo)
+    if jules_client is None:
+        session_collection_reasons.extend(
+            RetirementCollectionReason(
+                CollectionReasonKind.UNAVAILABLE_EVIDENCE,
+                f"jules-session:{session_id}",
+                "jules",
+            )
+            for session_id in attributed_sessions
+        )
 
     # Observe each PR individually (REQ-003)
     pr_observations: List[ImplementationPRObservation] = []
@@ -1161,18 +1236,6 @@ def collect_retirement_observation(
     # Contradicted PRs → UNKNOWN blocker (REQ-002)
     for pr_num in candidate_set.contradicted_prs:
         pr_observations.append(ImplementationPRObservation(pr_num, PRTerminalState.UNKNOWN))
-
-    # Incomplete discovery → add a synthetic UNKNOWN PR blocker (REQ-002).
-    #
-    # This must block unconditionally, even when other known/local PR
-    # candidates exist and are all terminal: incomplete native-association or
-    # open-PR enumeration means an unobserved implementation PR could still
-    # exist for this owner, and evidence of *other* terminal PRs does not
-    # establish that no such PR exists. Only gating this on "no other known
-    # PRs" would let a stale/incomplete crash-recovery discovery authorize
-    # release merely because the already-known PR happened to be closed.
-    if candidate_set.incomplete_discovery:
-        pr_observations.append(ImplementationPRObservation(-1, PRTerminalState.UNKNOWN))
 
     # Observe each Jules session individually (REQ-005)
     session_observations: List[ProviderSessionObservation] = []
@@ -1211,6 +1274,7 @@ def collect_retirement_observation(
         provider_sessions=tuple(session_observations),
         local_executions=tuple(local_exec_observations),
         continuing_obligations=obligations,
+        collection_reasons=tuple(candidate_set.collection_reasons + session_collection_reasons),
     )
 
 

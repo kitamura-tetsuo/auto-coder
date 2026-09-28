@@ -110,6 +110,25 @@ This consumer is piggybacked onto the daemon's existing per-repository capacity-
 
 All scheduling and reclamation events log through `loguru` (`get_logger(__name__)`), reaching both stdout and the configured rotating log file per this project's standard logger configuration. An expected "still active" or "still unknown" outcome logs at `INFO`/`DEBUG`; only a genuinely unexpected failure (for example, a required persistence write failing) logs at `ERROR`, so a repeated unchanged pending check does not produce an unbounded `ERROR` log stream.
 
+Incomplete collection is represented independently from observed membership. The
+observation carries a structured reason identifying an unsupported provider,
+ambiguous attribution, unavailable evidence boundary, or incomplete discovery;
+durably known PR identities remain present with unknown lifecycle rather than being
+replaced by an empty set or a synthetic member. Consequently, the predicate cannot
+misdescribe blocked provider evidence as a never-published reservation.
+An unreadable durable `implementation_prs` value and a provider-store construction
+failure are unavailable evidence boundaries, not authoritative empty membership.
+
+The due scheduler fingerprints the complete pending cause (status, structured
+boundary/provider reason, responsible members, repository, owner, and incarnation)
+in process memory. The first occurrence and every change remains warning/error
+visible, while unchanged repeats are debug-only. This suppression affects logging
+only: every due check still recollects evidence and advances its durable obligation
+by 60 seconds, and suppression deliberately starts fresh after process restart.
+Expected per-member read failures log at debug level inside the collector so they
+cannot bypass the scheduler's warning/error suppression, including Jules session
+and activity reads that remain unavailable across repeated due checks.
+
 ### Scope Boundary (REQ-007, REQ-009)
 
 This scheduling layer never closes/reopens/merges Issues or PRs, changes labels, cancels remote work, starts a replacement implementation, or resets a generation tombstone. It reuses the existing per-owner `collect_retirement_observation` read set for each due check rather than performing a full Jules-session enumeration or a full-repository candidate scan, and it never runs anything when no reclamation obligation is pending.

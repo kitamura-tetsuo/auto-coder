@@ -3684,6 +3684,7 @@ class AutomationEngine:
 
         cloud_manager: Optional[Any] = None
         cloud_run_store: Optional[Any] = None
+        cloud_provider_stores_available = True
         try:
             from .cloud_manager import CloudManager
             from .cloud_run import CloudRunRepository
@@ -3691,6 +3692,7 @@ class AutomationEngine:
             cloud_manager = CloudManager(repo_name)
             cloud_run_store = CloudRunRepository(repo_name)
         except Exception as exc:
+            cloud_provider_stores_available = False
             logger.debug(f"Cloud provider stores unavailable for reclamation checks on {repo_name}: {exc}")
 
         def _on_capacity_freed() -> None:
@@ -3705,6 +3707,7 @@ class AutomationEngine:
                 jules_client=jules_client,
                 cloud_manager=cloud_manager,
                 cloud_run_store=cloud_run_store,
+                cloud_provider_stores_available=cloud_provider_stores_available,
                 on_capacity_freed=_on_capacity_freed,
             )
         except Exception as exc:

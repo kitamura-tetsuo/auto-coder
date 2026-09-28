@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from auto_coder.implementation_reclamation_scheduler import (
     RECLAMATION_RECHECK_SECONDS,
@@ -183,6 +183,119 @@ def test_run_due_reclamation_checks_reschedules_retained_owner_60s_out(tmp_path)
     assert obligations[0].incarnation == incarnation
     assert obligations[0].next_due_at == now + RECLAMATION_RECHECK_SECONDS
     assert ISSUE_100 in slots.active_owners()
+
+
+def test_i2332_repeated_pending_cause_recollects_without_warning_spam(tmp_path):
+    """REQ-003/004: unchanged diagnostics are quiet, but checks and cadence continue."""
+    slots = _setup_slots(tmp_path)
+    store = ReclamationObligationStore.for_slots(slots)
+    _establish_owner_with_closed_pr(slots, ISSUE_100, 201, "gen-i2332")
+    schedule_reevaluation(ISSUE_100, slots, store, reason="initial", due_at=0.0)
+    github_client = _make_github_client(
+        pr_responses={201: {"number": 201, "state": "open"}},
+        connected_prs={100: [201]},
+        open_prs=[{"number": 201, "state": "open", "head": {"ref": "issue-100-work"}, "body": ""}],
+    )
+
+    with patch("auto_coder.implementation_reclamation_scheduler.logger") as test_logger:
+        for now in (1.0, 61.0, 121.0):
+            assert run_due_reclamation_checks(slots, store, github_client=github_client, now=now) == 0
+
+    assert github_client.get_pull_request_metadata_strict.call_count == 3
+    assert test_logger.warning.call_count == 1
+    assert test_logger.error.call_count == 0
+    assert test_logger.debug.call_count == 2
+    obligation = store.all()[0]
+    assert obligation.next_due_at == 181.0
+    assert obligation.last_reason is not None
+    assert obligation.last_reason.startswith("RETAINED_ACTIVE|")
+
+
+def test_i2332_unavailable_provider_store_does_not_establish_empty_membership(tmp_path):
+    """REQ-002: failed provider-store setup remains an explicit pending cause."""
+    slots = _setup_slots(tmp_path)
+    store = ReclamationObligationStore.for_slots(slots)
+    assert slots.reserve_new(ISSUE_100)
+    schedule_reevaluation(ISSUE_100, slots, store, due_at=0.0)
+
+    assert (
+        run_due_reclamation_checks(
+            slots,
+            store,
+            github_client=_make_github_client(),
+            cloud_provider_stores_available=False,
+            now=1.0,
+        )
+        == 0
+    )
+
+    obligation = store.all()[0]
+    assert obligation.next_due_at == 1.0 + RECLAMATION_RECHECK_SECONDS
+    assert "unavailable_evidence:cloud-provider-store-setup" in (obligation.last_reason or "")
+    assert "Never-published" not in (obligation.last_reason or "")
+    assert ISSUE_100 in slots.active_owners()
+
+
+def test_i2332_repeated_strict_pr_read_failure_has_one_warning_across_loggers(tmp_path):
+    """REQ-003: observer details cannot bypass scheduler diagnostic suppression."""
+    slots = _setup_slots(tmp_path)
+    store = ReclamationObligationStore.for_slots(slots)
+    _establish_owner_with_closed_pr(slots, ISSUE_100, 201, "gen-read-failure")
+    schedule_reevaluation(ISSUE_100, slots, store, due_at=0.0)
+    github_client = _make_github_client(connected_prs={100: [201]})
+
+    with (
+        patch("auto_coder.implementation_retirement_observer.logger") as observer_logger,
+        patch("auto_coder.implementation_reclamation_scheduler.logger") as scheduler_logger,
+    ):
+        for now in (1.0, 61.0, 121.0):
+            assert run_due_reclamation_checks(slots, store, github_client=github_client, now=now) == 0
+
+    assert github_client.get_pull_request_metadata_strict.call_count == 3
+    assert observer_logger.warning.call_count + observer_logger.error.call_count == 0
+    assert scheduler_logger.warning.call_count == 1
+    assert scheduler_logger.error.call_count == 0
+    assert scheduler_logger.debug.call_count == 2
+
+
+def test_i2332_repeated_jules_read_failure_has_one_warning_across_loggers(tmp_path):
+    """REQ-003: Jules observer details cannot bypass cause suppression."""
+    slots = _setup_slots(tmp_path)
+    store = ReclamationObligationStore.for_slots(slots)
+    _establish_owner_with_closed_pr(slots, ISSUE_100, 201, "gen-jules-read-failure")
+    assert slots.record_provider_session(ISSUE_100, "session-unavailable")
+    schedule_reevaluation(ISSUE_100, slots, store, due_at=0.0)
+    github_client = _make_github_client(
+        pr_responses={201: {"number": 201, "state": "closed", "merged": False}},
+        connected_prs={100: [201]},
+    )
+    jules_client = MagicMock()
+    jules_client.get_session.side_effect = RuntimeError("Jules transport unavailable")
+
+    with (
+        patch("auto_coder.implementation_retirement_observer.logger") as observer_logger,
+        patch("auto_coder.implementation_reclamation_scheduler.logger") as scheduler_logger,
+    ):
+        for now in (1.0, 61.0, 121.0):
+            assert (
+                run_due_reclamation_checks(
+                    slots,
+                    store,
+                    github_client=github_client,
+                    jules_client=jules_client,
+                    now=now,
+                )
+                == 0
+            )
+
+    assert jules_client.get_session.call_count == 6
+    assert observer_logger.warning.call_count + observer_logger.error.call_count == 0
+    assert scheduler_logger.warning.call_count == 1
+    assert scheduler_logger.error.call_count == 0
+    assert scheduler_logger.debug.call_count == 2
+    obligation = store.all()[0]
+    assert obligation.next_due_at == 181.0
+    assert "unavailable_evidence:jules-session:session-unavailable:jules" in (obligation.last_reason or "")
 
 
 def test_run_due_reclamation_checks_skips_not_yet_due_obligations(tmp_path):
