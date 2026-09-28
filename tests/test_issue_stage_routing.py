@@ -26,7 +26,7 @@ from auto_coder.issue_stage_routing import (
 )
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
-from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
 
 REPO = "owner/repo"
