@@ -801,16 +801,16 @@ def _observe_jules_session(
     try:
         raw_session = jules_client.get_session(session_id)
     except Exception as exc:
-        logger.warning(f"Cannot read Jules session {session_id} for {owner_key}: {exc} → UNKNOWN")
+        logger.debug(f"Cannot read Jules session {session_id} for {owner_key}: {exc} → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
     if not isinstance(raw_session, dict):
-        logger.warning(f"Malformed Jules session {session_id} for {owner_key}: " f"expected dict, got {type(raw_session).__name__} → UNKNOWN")
+        logger.debug(f"Malformed Jules session {session_id} for {owner_key}: " f"expected dict, got {type(raw_session).__name__} → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
     raw_state = raw_session.get("state")
     if not isinstance(raw_state, str):
-        logger.warning(f"Jules session {session_id} for {owner_key}: missing/invalid state → UNKNOWN")
+        logger.debug(f"Jules session {session_id} for {owner_key}: missing/invalid state → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
     # Explicitly supported active states retain capacity immediately (REQ-005).
@@ -827,7 +827,7 @@ def _observe_jules_session(
     if raw_state not in _JULES_TERMINAL_STATES:
         # Unsupported/unknown state (including an unknown AWAITING_* variant
         # not in the supported contract) → UNKNOWN, never implicitly ACTIVE.
-        logger.warning(f"Jules session {session_id} for {owner_key}: " f"unsupported state {raw_state!r} → UNKNOWN")
+        logger.debug(f"Jules session {session_id} for {owner_key}: " f"unsupported state {raw_state!r} → UNKNOWN")
         return _JulesSessionEvidence(session_id=session_id, state=SessionTerminalState.UNKNOWN)
 
     # raw_state is COMPLETED or FAILED — extract PR publication evidence.
@@ -888,11 +888,11 @@ def _check_activity_causality(
     try:
         activities = activities_getter(session_id)
     except Exception as exc:
-        logger.warning(f"Cannot fetch activities for Jules session {session_id}: {exc} → UNKNOWN causality")
+        logger.debug(f"Cannot fetch activities for Jules session {session_id}: {exc} → UNKNOWN causality")
         return False
 
     if not isinstance(activities, (list, tuple)):
-        logger.warning(f"Malformed activities payload for Jules session {session_id} " f"(expected list, got {type(activities).__name__}) → UNKNOWN causality")
+        logger.debug(f"Malformed activities payload for Jules session {session_id} " f"(expected list, got {type(activities).__name__}) → UNKNOWN causality")
         return False
 
     # Look for sessionCompleted/sessionFailed event preceded by a

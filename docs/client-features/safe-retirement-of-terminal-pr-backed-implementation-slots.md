@@ -126,7 +126,8 @@ visible, while unchanged repeats are debug-only. This suppression affects loggin
 only: every due check still recollects evidence and advances its durable obligation
 by 60 seconds, and suppression deliberately starts fresh after process restart.
 Expected per-member read failures log at debug level inside the collector so they
-cannot bypass the scheduler's warning/error suppression.
+cannot bypass the scheduler's warning/error suppression, including Jules session
+and activity reads that remain unavailable across repeated due checks.
 
 ### Scope Boundary (REQ-007, REQ-009)
 

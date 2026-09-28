@@ -258,6 +258,46 @@ def test_i2332_repeated_strict_pr_read_failure_has_one_warning_across_loggers(tm
     assert scheduler_logger.debug.call_count == 2
 
 
+def test_i2332_repeated_jules_read_failure_has_one_warning_across_loggers(tmp_path):
+    """REQ-003: Jules observer details cannot bypass cause suppression."""
+    slots = _setup_slots(tmp_path)
+    store = ReclamationObligationStore.for_slots(slots)
+    _establish_owner_with_closed_pr(slots, ISSUE_100, 201, "gen-jules-read-failure")
+    assert slots.record_provider_session(ISSUE_100, "session-unavailable")
+    schedule_reevaluation(ISSUE_100, slots, store, due_at=0.0)
+    github_client = _make_github_client(
+        pr_responses={201: {"number": 201, "state": "closed", "merged": False}},
+        connected_prs={100: [201]},
+    )
+    jules_client = MagicMock()
+    jules_client.get_session.side_effect = RuntimeError("Jules transport unavailable")
+
+    with (
+        patch("auto_coder.implementation_retirement_observer.logger") as observer_logger,
+        patch("auto_coder.implementation_reclamation_scheduler.logger") as scheduler_logger,
+    ):
+        for now in (1.0, 61.0, 121.0):
+            assert (
+                run_due_reclamation_checks(
+                    slots,
+                    store,
+                    github_client=github_client,
+                    jules_client=jules_client,
+                    now=now,
+                )
+                == 0
+            )
+
+    assert jules_client.get_session.call_count == 6
+    assert observer_logger.warning.call_count + observer_logger.error.call_count == 0
+    assert scheduler_logger.warning.call_count == 1
+    assert scheduler_logger.error.call_count == 0
+    assert scheduler_logger.debug.call_count == 2
+    obligation = store.all()[0]
+    assert obligation.next_due_at == 181.0
+    assert "unavailable_evidence:jules-session:session-unavailable:jules" in (obligation.last_reason or "")
+
+
 def test_run_due_reclamation_checks_skips_not_yet_due_obligations(tmp_path):
     slots = _setup_slots(tmp_path)
     store = ReclamationObligationStore.for_slots(slots)
