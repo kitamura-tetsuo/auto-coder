@@ -56,6 +56,8 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     runtime.mkdir(parents=True, exist_ok=False)
     home = runtime / "home"
     home.mkdir()
+    temporary_directory = runtime / "tmp"
+    temporary_directory.mkdir()
     original_home = Path(environment.get("HOME", str(Path.home())))
     for relative in (Path(".codex/auth.json"), Path(".config/opencode"), Path(".local/share/opencode/auth.json")):
         source = original_home / relative
@@ -75,6 +77,10 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
                 for name in (*directories, *files):
                     os.chown(Path(current) / name, uid, gid, follow_symlinks=False)
     environment["HOME"] = str(home)
+    # Provider runtimes such as Bun create executable/cache state in TMPDIR.
+    # Keep that state inside the invocation-owned writable runtime rather than
+    # granting the worker access to the controller's shared /tmp.
+    environment["TMPDIR"] = str(temporary_directory)
     return runtime
 
 

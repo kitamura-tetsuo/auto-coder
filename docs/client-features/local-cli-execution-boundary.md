@@ -40,8 +40,8 @@ into a fresh call or a different-backend replacement.
 The checked-in `compose.channels.yml` production profile runs the controller with
 host cgroup-v2 access and supplies the image's dedicated UID/GID 65532 worker
 identity. Each turn receives a private provider home beneath
-`$AUTO_CODER_RUNTIME_ROOT/local-invocations`, with only required authentication
-inputs copied into it. Editable OpenCode turns may use ordinary private Git/index,
+`$AUTO_CODER_RUNTIME_ROOT/local-invocations`, with a private temporary directory
+and only required authentication inputs copied into it. Editable OpenCode turns may use ordinary private Git/index,
 commit, ref, and worktree operations; the caller checkout remains isolated.
 
 Explicit continuation compatibility failures are not redirected into fresh
