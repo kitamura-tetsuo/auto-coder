@@ -3,7 +3,7 @@
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Lock
+from threading import Barrier, Event, Lock, Thread
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, call, patch
 
@@ -16,6 +16,7 @@ from auto_coder.decomposition_validation_lifecycle import DecompositionValidatio
 from auto_coder.implementation_slots import ImplementationSlotRepository
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
+from auto_coder.specification_repair_rounds import AuthoritativeRepairState
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.util.gh_cache import GitHubClient, is_implementation_ready
 
@@ -903,8 +904,14 @@ def test_closed_parent_cannot_publish_pause_or_create_continuation_episode(tmp_p
         children = [issue(11, "Child", CHILD_BODY)]
         parent_input, child_inputs = decomposition_issues(parent, children)
         decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
-        applied = gate.authorize_automatic_repair(decision, lambda: True, lambda: None)
+        applied = gate.authorize_automatic_repair(
+            decision,
+            lambda: True,
+            lambda: None,
+            lambda parent=parent, binding=decision.identity.key: AuthoritativeRepairState(parent["body"], binding),
+        )
         assert applied.automatic_repair_authorized
+        assert applied.observation == "NO_CONTRACT_CHANGE"
 
     trigger_parent = issue(10, "Parent", PARENT_BODY + "\ntrigger", ready=True)
     children = [issue(11, "Child", CHILD_BODY)]
@@ -929,6 +936,82 @@ def test_closed_parent_cannot_publish_pause_or_create_continuation_episode(tmp_p
     assert gate.repair_rounds.count("decomposition", 10) == 3
     assert closed_github.add_comment_to_issue.call_count == 0
     assert closed_github.remove_labels.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("after_values", "expected"),
+    [
+        ((PARENT_BODY, False, True, True), "SUPERSEDED"),
+        ((PARENT_BODY + " changed", True, False, True), "SUPERSEDED"),
+        ((PARENT_BODY + " invalid", True, True, False), "UNVERIFIED"),
+        (None, "UNVERIFIED"),
+    ],
+)
+def test_decomposition_repair_authority_precedes_content_comparison(tmp_path, after_values, expected):
+    """REQ-005: ended set ownership and invalid manifests are not changes."""
+    blocked = DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE")
+    gate = DecompositionValidationLifecycle("owner/repo", "policy", tmp_path / "sets.json", lambda *_args: blocked)
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    binding = decision.identity.key
+    after = None if after_values is None else AuthoritativeRepairState(after_values[0], binding, *after_values[1:])
+    reads = iter((AuthoritativeRepairState(PARENT_BODY, binding), after))
+
+    result = gate.authorize_automatic_repair(decision, lambda: True, lambda: None, lambda: next(reads))
+
+    assert result.observation == expected
+    assert gate.repair_rounds.count("decomposition", 10) == 1
+
+
+def test_decomposition_repair_rejects_stale_set_binding(tmp_path):
+    blocked = DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE")
+    gate = DecompositionValidationLifecycle("owner/repo", "policy", tmp_path / "sets.json", lambda *_args: blocked)
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    editor = Mock()
+
+    result = gate.authorize_automatic_repair(
+        decision,
+        lambda: True,
+        editor,
+        lambda: AuthoritativeRepairState(PARENT_BODY + " changed", "stale-binding"),
+    )
+
+    assert result.automatic_repair_authorized is False
+    editor.assert_not_called()
+    assert gate.repair_rounds.count("decomposition", 10) == 0
+
+
+def test_decomposition_competing_worker_cannot_settle_live_editor(tmp_path):
+    blocked = DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE")
+    gate = DecompositionValidationLifecycle("owner/repo", "policy", tmp_path / "sets.json", lambda *_args: blocked)
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    entered, release = Event(), Event()
+    state = {"content": PARENT_BODY}
+    results = []
+
+    def edit() -> None:
+        entered.set()
+        assert release.wait(5)
+        state["content"] = PARENT_BODY + " changed"
+
+    reader = lambda: AuthoritativeRepairState(state["content"], decision.identity.key)
+    worker = Thread(target=lambda: results.append(gate.authorize_automatic_repair(decision, lambda: True, edit, reader)))
+    worker.start()
+    assert entered.wait(5)
+    competing = gate.authorize_automatic_repair(decision, lambda: True, Mock(), reader)
+    assert competing.invocation_in_progress is True
+    assert competing.observation is None
+    release.set()
+    worker.join(5)
+    assert results[0].observation == "CONTRACT_CHANGED"
 
 
 @pytest.mark.parametrize("blocked_sibling_state", ["open", "closed"])

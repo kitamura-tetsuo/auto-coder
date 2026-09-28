@@ -36,7 +36,12 @@ from .specification_analyzer import (
     individual_review_evidence,
     objective_integrity_result,
 )
-from .specification_repair_rounds import RepairRoundApplication, SpecificationRepairRoundStore
+from .specification_repair_rounds import (
+    AuthoritativeRepairState,
+    RepairRoundApplication,
+    SpecificationRepairRoundStore,
+    classify_repair_observation,
+)
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, is_implementation_ready
 from .util.github_request_outcome import GitHubRequestError
 
@@ -1220,13 +1225,22 @@ class SpecificationValidationLifecycle:
         decision: ValidationDecision,
         submission_is_current: Callable[[], bool],
         initiate: Callable[[], None],
+        read_authoritative_state: Optional[Callable[[], Optional[AuthoritativeRepairState]]] = None,
     ) -> RepairRoundApplication:
-        """Persist authorization before initiating an exact-current contract repair."""
+        """Initiate once and settle the operation from a fresh authoritative read.
+
+        The serialized state is caller-produced and must contain the exact title,
+        body, ordered manifest (including validity), and relationship ownership.
+        Omitting the reader means that no automatic repair can be initiated.
+        """
         from .llm_backend_config import get_specification_repair_round_limit_from_config
 
         with self.store.locked(decision.identity.key):
             current = self.store.get(decision.identity)
-            if current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not submission_is_current():
+            if read_authoritative_state is None or current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not submission_is_current():
+                return RepairRoundApplication(decision.remediation, self.repair_rounds.count("individual", decision.identity.issue_number))
+            before_state = read_authoritative_state()
+            if before_state is None or before_state.decision_binding != decision.identity.key or not before_state.submission_active or not before_state.ownership_valid or not before_state.manifest_valid:
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("individual", decision.identity.issue_number))
             applied = self.repair_rounds.authorize(
                 "individual",
@@ -1234,10 +1248,35 @@ class SpecificationValidationLifecycle:
                 decision.identity.specification_digest,
                 current.remediation,
                 get_specification_repair_round_limit_from_config(repo_name=self.repository),
+                before_state.content,
             )
-            if applied.automatic_repair_authorized:
-                initiate()
+        editor_error: Optional[str] = None
+        if applied.invocation_in_progress:
             return applied
+        observation_before = AuthoritativeRepairState(applied.before_state or before_state.content, decision.identity.key)
+        if applied.automatic_repair_authorized:
+            try:
+                initiate()
+            except Exception as exc:
+                editor_error = f"{type(exc).__name__}: {exc}"
+            finally:
+                self.repair_rounds.finish_invocation(applied.operation_identity)
+        try:
+            after_state = read_authoritative_state()
+            observation, after_content = classify_repair_observation(observation_before, after_state)
+            observed = self.repair_rounds.observe(
+                "individual",
+                decision.identity.issue_number,
+                decision.identity.specification_digest,
+                observation,
+                after_content,
+                editor_error,
+            )
+            return replace(observed, automatic_repair_authorized=applied.automatic_repair_authorized)
+        except Exception as exc:
+            # Authorization remains durable and non-replayable. A later recovery
+            # call can perform observation without invoking the editor again.
+            return replace(applied, observation="UNVERIFIED", editor_error=editor_error or f"{type(exc).__name__}: {exc}")
 
     def _record_applied_outcome(self, decision: ValidationDecision) -> None:
         outcome = json.dumps(

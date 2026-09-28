@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Event, Lock
+from threading import Barrier, Event, Lock, Thread
 from unittest.mock import Mock, call, patch
 
 import pytest
@@ -25,6 +25,7 @@ from auto_coder.specification_analyzer import (
     SpecificationFinding,
     parse_incremental_specification_response,
 )
+from auto_coder.specification_repair_rounds import AuthoritativeRepairState
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, _predecessor_evidence
 from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
 
@@ -250,7 +251,12 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
         gate = SpecificationValidationLifecycle("owner/repo", f"policy-{generation}", decisions_path, lambda *_args: blocked)
         decision = gate.decide(build_normative_issue_manifest(1728, "Title", body), "Title", body)
         initiated = []
-        authorization = gate.authorize_automatic_repair(decision, lambda: True, lambda: initiated.append(gate.repair_rounds.count("individual", 1728)))
+        authorization = gate.authorize_automatic_repair(
+            decision,
+            lambda: True,
+            lambda: initiated.append(gate.repair_rounds.count("individual", 1728)),
+            lambda body=body, binding=decision.identity.key: AuthoritativeRepairState(body, binding),
+        )
         assert authorization.automatic_repair_authorized
         assert initiated == [generation + 1]
         assert gate.apply_blocked(GitHubFlow([snapshot(body=body)] * 4), decision) is None
@@ -290,17 +296,157 @@ def test_repair_round_circuit_breaker_survives_restart_and_ready_keeps_final_cha
     assert duplicate_gate.repair_rounds.count("individual", 200) == 0
 
 
-def test_production_dispatch_authorizes_three_repair_rounds_then_pauses_uncounted(tmp_path):
-    """REQ-003, REQ-005, REQ-014: real production processing authorizes/counts rounds.
+def test_explicit_repair_observes_no_contract_change_and_never_replays_editor(tmp_path):
+    """REQ-002 through REQ-007: no-write repair is durably observed once."""
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "decisions.json"
+    gate = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    authoritative = {"state": json.dumps({"title": "Title", "body": BODY, "manifest": decision.identity.manifest_binding}, sort_keys=True)}
+    editor_calls = []
 
-    Drives ``AutomationEngine._process_single_candidate_unified`` -- the actual
-    normal-worker production boundary, not the lifecycle API directly -- through
-    three previously-unassociated BLOCKED + EDIT_IN_PLACE generations and asserts
-    each durably authorizes and counts exactly one automatic repair round before
-    its diagnostic/readiness effects publish. A fourth previously-unassociated
-    generation must then pause the episode at the durable limit, leaving the
-    count unchanged and issuing no automatic repair or reissue marker.
-    """
+    first = gate.authorize_automatic_repair(
+        decision,
+        lambda: True,
+        lambda: editor_calls.append("called"),
+        lambda: AuthoritativeRepairState(authoritative["state"], decision.identity.key),
+    )
+    assert first.automatic_repair_authorized is True
+    assert first.observation == "NO_CONTRACT_CHANGE"
+    assert first.operation_identity == f"individual:1728:{decision.identity.specification_digest}"
+    assert editor_calls == ["called"]
+    assert gate.repair_rounds.count("individual", 1728) == 1
+
+    restarted = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    duplicate = restarted.authorize_automatic_repair(
+        decision,
+        lambda: True,
+        lambda: editor_calls.append("replayed"),
+        lambda: AuthoritativeRepairState(authoritative["state"], decision.identity.key),
+    )
+    assert duplicate.automatic_repair_authorized is False
+    assert duplicate.observation == "NO_CONTRACT_CHANGE"
+    assert editor_calls == ["called"]
+    assert restarted.repair_rounds.count("individual", 1728) == 1
+
+
+def test_explicit_repair_observes_authoritative_contract_change(tmp_path):
+    """REQ-005/REQ-006: callback output is ignored in favor of a fresh read."""
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=blocked))
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    authoritative = {"state": BODY}
+
+    def edit() -> None:
+        authoritative["state"] = BODY + "\n\n## Context\nChanged"
+
+    result = gate.authorize_automatic_repair(decision, lambda: True, edit, lambda: AuthoritativeRepairState(authoritative["state"], decision.identity.key))
+    assert result.observation == "CONTRACT_CHANGED"
+    assert result.editor_error is None
+    assert gate.repair_rounds.count("individual", 1728) == 1
+
+
+@pytest.mark.parametrize(
+    ("after_values", "expected"),
+    [
+        ((BODY, False, True, True), "SUPERSEDED"),
+        ((BODY + " changed", True, False, True), "SUPERSEDED"),
+        ((BODY + " invalid", True, True, False), "UNVERIFIED"),
+        (None, "UNVERIFIED"),
+    ],
+)
+def test_individual_repair_authority_precedes_content_comparison(tmp_path, after_values, expected):
+    """REQ-005: ended ownership and invalid reads cannot become progress."""
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=blocked))
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    binding = decision.identity.key
+    after = None if after_values is None else AuthoritativeRepairState(after_values[0], binding, *after_values[1:])
+    reads = iter((AuthoritativeRepairState(BODY, binding), after))
+
+    result = gate.authorize_automatic_repair(decision, lambda: True, lambda: None, lambda: next(reads))
+
+    assert result.observation == expected
+    assert gate.repair_rounds.count("individual", 1728) == 1
+
+
+def test_individual_repair_rejects_stale_decision_content(tmp_path):
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    gate = lifecycle(tmp_path, "BLOCKED", Mock(return_value=blocked))
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    editor = Mock()
+
+    result = gate.authorize_automatic_repair(
+        decision,
+        lambda: True,
+        editor,
+        lambda: AuthoritativeRepairState(BODY + " changed", "stale-binding"),
+    )
+
+    assert result.automatic_repair_authorized is False
+    editor.assert_not_called()
+    assert gate.repair_rounds.count("individual", 1728) == 0
+
+
+def test_individual_competing_worker_cannot_settle_live_editor(tmp_path):
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "decisions.json"
+    gate = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    entered, release = Event(), Event()
+    state = {"content": BODY}
+    results = []
+
+    def edit() -> None:
+        entered.set()
+        assert release.wait(5)
+        state["content"] = BODY + " changed"
+
+    reader = lambda: AuthoritativeRepairState(state["content"], decision.identity.key)
+    worker = Thread(target=lambda: results.append(gate.authorize_automatic_repair(decision, lambda: True, edit, reader)))
+    worker.start()
+    assert entered.wait(5)
+    competing = gate.authorize_automatic_repair(decision, lambda: True, Mock(), reader)
+    assert competing.invocation_in_progress is True
+    assert competing.observation is None
+    release.set()
+    worker.join(5)
+    assert results[0].observation == "CONTRACT_CHANGED"
+
+
+def test_individual_unverified_observation_recovers_without_editor_replay(tmp_path):
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "decisions.json"
+    gate = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    editor = Mock()
+    reads = iter((AuthoritativeRepairState(BODY, decision.identity.key), None))
+    first = gate.authorize_automatic_repair(decision, lambda: True, editor, lambda: next(reads))
+    assert first.observation == "UNVERIFIED"
+
+    restarted = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    changed = AuthoritativeRepairState(BODY + " changed", decision.identity.key)
+    recovered = restarted.authorize_automatic_repair(decision, lambda: True, editor, lambda: changed)
+    assert recovered.observation == "CONTRACT_CHANGED"
+    assert editor.call_count == 1
+    assert restarted.repair_rounds.count("individual", 1728) == 1
+
+
+def test_repair_reservation_write_failure_cannot_leave_count_without_operation(tmp_path, monkeypatch):
+    """REQ-007: count and recoverable operation are one durable write."""
+    from auto_coder.specification_repair_rounds import SpecificationRepairRoundStore
+
+    rounds = SpecificationRepairRoundStore("owner/repo", tmp_path / "rounds.json")
+    monkeypatch.setattr(rounds, "_write", Mock(side_effect=OSError("disk unavailable")))
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        rounds.authorize("individual", 1728, "generation", "EDIT_IN_PLACE", 3, BODY)
+
+    assert rounds.count("individual", 1728) == 0
+
+
+def test_production_blocked_publication_never_consumes_repair_rounds(tmp_path):
+    """REQ-001/REQ-009: review effects are not placeholder repair initiation."""
     blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
     decisions_path = tmp_path / "production-decisions.json"
     gate = SpecificationValidationLifecycle("owner/repo", "policy", decisions_path, lambda *_args: blocked)
@@ -314,7 +460,7 @@ def test_production_dispatch_authorizes_three_repair_rounds_then_pauses_uncounte
         candidate = Candidate(type="issue", data={"number": 1728, "title": "Title", "body": body}, priority=0)
         result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
         assert result.actions == ["Rejected - blocked specification"]
-        assert gate.repair_rounds.count("individual", 1728) == generation + 1
+        assert gate.repair_rounds.count("individual", 1728) == 0
         decision = gate.store.get(gate.identity(1728, "Title", body))
         assert decision is not None and decision.remediation_reason is None
 
@@ -323,14 +469,13 @@ def test_production_dispatch_authorizes_three_repair_rounds_then_pauses_uncounte
     candidate = Candidate(type="issue", data={"number": 1728, "title": "Title", "body": final_body}, priority=0)
     result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
     assert result.actions == ["Rejected - blocked specification"]
-    # The circuit breaker pauses without consuming a fourth round.
-    assert gate.repair_rounds.count("individual", 1728) == 3
-    assert gate.repair_rounds.is_paused("individual", 1728, gate.identity(1728, "Title", final_body).specification_digest)
+    assert gate.repair_rounds.count("individual", 1728) == 0
+    assert not gate.repair_rounds.is_paused("individual", 1728, gate.identity(1728, "Title", final_body).specification_digest)
     assert not gate.is_reissue_required(1728)
     paused_decision = gate.store.get(gate.identity(1728, "Title", final_body))
     assert paused_decision is not None and paused_decision.remediation == "EDIT_IN_PLACE"
-    assert paused_decision.remediation_reason == "automatic_repair_paused(repair_round_limit_reached)"
-    assert "Automatic repair has paused" in engine.github.comments[-1]["body"]
+    assert paused_decision.remediation_reason is None
+    assert "Automatic repair has paused" not in engine.github.comments[-1]["body"]
 
 
 def test_concurrent_paths_coalesce_semantic_validation(tmp_path):
