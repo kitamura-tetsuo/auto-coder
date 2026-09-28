@@ -12,19 +12,22 @@ from pathlib import Path
 from typing import Optional
 
 from .codex_cli_args import build_codex_exec_command
-from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError, LocalWriterSettlementError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
+from .worktree_utils import get_current_local_workspace
 
 logger = get_logger(__name__)
 
 
 class CodexClient(LLMClientBase):
     """Codex CLI client for analyzing issues and generating solutions."""
+
+    supports_supervised_local_turn = True
 
     def __init__(
         self,
@@ -396,9 +399,11 @@ class CodexClient(LLMClientBase):
             # write that payload through its dedicated output channel so an
             # incidental non-JSON stdout line cannot corrupt a valid result.
             if self.capture_final_message and is_noedit and "--json" in cmd:
+                workspace_binding = get_current_local_workspace()
                 final_message_file = tempfile.NamedTemporaryFile(
                     prefix="auto-coder-codex-final-",
                     suffix=".txt",
+                    dir=workspace_binding.workspace if workspace_binding is not None else None,
                     delete=False,
                 )
                 final_message_path = Path(final_message_file.name)
@@ -445,6 +450,9 @@ class CodexClient(LLMClientBase):
             self._extract_session_id(full_output)
             response_output = stdout or stderr
             low = full_output.lower()
+
+            if result.writer_settled is False:
+                raise LocalWriterSettlementError("Codex writer settlement is uncertain; provider replacement is withheld")
 
             # Check for timeout (returncode -1 and "timed out" in stderr)
             if result.returncode == -1 and "timed out" in low:
@@ -500,6 +508,9 @@ class CodexClient(LLMClientBase):
         except AutoCoderRetryableBackendError as e:
             status = "error"
             error_message = str(e)
+            raise
+        except LocalWriterSettlementError:
+            status = "error"
             raise
         except Exception as e:
             status = "error"

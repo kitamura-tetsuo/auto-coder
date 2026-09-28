@@ -11,7 +11,6 @@ from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from auto_coder.decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.implementation_slots import ImplementationSlotRepository
-from auto_coder.issue_review_rerun import ReviewSubject
 from auto_coder.issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -25,11 +24,27 @@ from auto_coder.issue_stage_routing import (
     review_classification,
     standalone_review_generation,
 )
+from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
-from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
 
 REPO = "owner/repo"
+
+
+def persist_individual_ready(
+    lifecycle: SpecificationValidationLifecycle,
+    number: int,
+    title: str,
+    body: str,
+    relationship=None,
+) -> None:
+    original = lifecycle.analyzer
+    lifecycle.analyzer = lambda *_args: SpecificationAnalysisResult("READY")
+    try:
+        lifecycle.decide(build_normative_issue_manifest(number, title, body), title, body, relationship)
+    finally:
+        lifecycle.analyzer = original
 
 
 def contract(number: int, body: str = "body", role: str = "standalone") -> ContractIdentity:
@@ -216,8 +231,7 @@ async def test_invalidation_and_startup_recovery_route_authoritative_standalone_
     assert review[0].priority == 3
     assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
 
-    identity = validator.identity(1, snapshot["title"], snapshot["body"])
-    validator.store.save(ValidationDecision(identity, "READY"))
+    persist_individual_ready(validator, 1, snapshot["title"], snapshot["body"])
     first_review_arrival = review[0].arrival
     await engine._reconcile_open_github_entities(REPO)
     await asyncio.wait_for(engine.queue.join(), timeout=3)
@@ -467,7 +481,7 @@ async def test_running_engine_retains_standalone_classification_across_provider_
     engine, _github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
     validator_a = engine._get_specification_validator(REPO)
     identity_a = validator_a.identity(1, "Standalone", body)
-    validator_a.store.save(ValidationDecision(identity_a, "READY"))
+    persist_individual_ready(validator_a, 1, "Standalone", body)
 
     worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
     await engine.invalidate_entity(REPO, "issue", 1)
@@ -524,7 +538,7 @@ async def test_running_engine_retains_both_family_categories_across_policy_chang
     for child in family[1]:
         relationship = engine._child_review_context(*family, child["number"])
         identity = individual_a.identity(child["number"], child["title"], child["body"], relationship)
-        individual_a.store.save(ValidationDecision(identity, "READY"))
+        persist_individual_ready(individual_a, child["number"], child["title"], child["body"], relationship)
         individual_identities_a.append(identity)
 
     worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
@@ -575,7 +589,7 @@ async def test_close_reopen_requires_current_authority_before_relabel_reuse(tmp_
     engine, github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
     validator = engine._get_specification_validator(REPO)
     baseline_identity = validator.identity(1, "Standalone", body)
-    validator.store.save(ValidationDecision(baseline_identity, "READY"))
+    persist_individual_ready(validator, 1, "Standalone", body)
 
     worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
     await engine.invalidate_entity(REPO, "issue", 1)
@@ -599,8 +613,7 @@ async def test_close_reopen_requires_current_authority_before_relabel_reuse(tmp_
     assert len(pending) == 1 and pending[0].target_number == 1
     assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
 
-    authority, request_id, _state = validator.reruns.authority(ReviewSubject(REPO, "individual", 1))
-    validator.store.save(ValidationDecision(baseline_identity, "READY", rerun_authority=authority, rerun_request_id=request_id))
+    persist_individual_ready(validator, 1, "Standalone", body)
     await engine.invalidate_entity(REPO, "issue", 1)
     await asyncio.wait_for(engine.queue.join(), timeout=5)
     assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()

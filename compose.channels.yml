@@ -7,11 +7,16 @@ services:
       AUTO_CODER_ARTIFACT_DIGEST: ${RELEASE_DIGEST}
       AUTO_CODER_RUNTIME_ROOT: /runtime
       AUTO_CODER_OWNERSHIP_FILE: /routing/ownership.json
+      AUTO_CODER_LOCAL_WORKER_UID: "65532"
+      AUTO_CODER_LOCAL_WORKER_GID: "65532"
       HOME: /runtime/home
     volumes:
       - ./runtime/release:/runtime
       - ./runtime/workspaces/release:/workspace
       - ./runtime/routing:/routing
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    privileged: true
+    cgroup: host
     restart: unless-stopped
     stop_grace_period: 30m
 
@@ -23,10 +28,15 @@ services:
       AUTO_CODER_ARTIFACT_DIGEST: ${BETA_DIGEST}
       AUTO_CODER_RUNTIME_ROOT: /runtime
       AUTO_CODER_OWNERSHIP_FILE: /routing/ownership.json
+      AUTO_CODER_LOCAL_WORKER_UID: "65532"
+      AUTO_CODER_LOCAL_WORKER_GID: "65532"
       HOME: /runtime/home
     volumes:
       - ./runtime/beta:/runtime
       - ./runtime/workspaces/beta:/workspace
       - ./runtime/routing:/routing
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    privileged: true
+    cgroup: host
     restart: unless-stopped
     stop_grace_period: 30m

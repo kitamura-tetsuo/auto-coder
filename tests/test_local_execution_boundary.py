@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from src.auto_coder.backend_manager import BackendManager
+from src.auto_coder.invocation_process_supervisor import InvocationOutcome, SupervisedInvocationResult, WriterState
 from src.auto_coder.local_execution_boundary import (
     BackendOutcome,
     EvidenceStatus,
@@ -15,7 +16,7 @@ from src.auto_coder.local_execution_boundary import (
     bind_local_execution_boundary,
     get_current_local_execution_boundary,
 )
-from src.auto_coder.utils import bind_command_execution_cwd, reset_command_execution_cwd
+from src.auto_coder.utils import CommandExecutor, bind_command_execution_cwd, bind_supervised_command_execution, reset_command_execution_cwd
 from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
 
 
@@ -75,6 +76,87 @@ def test_complete_matching_evidence_authorizes_but_violation_is_sticky(tmp_path:
         boundary.require_promotable()
     assert boundary.evidence().policy_violation is True
     assert boundary.evidence().promotable is False
+
+
+def test_operational_success_does_not_require_retired_publication_certificate(tmp_path: Path) -> None:
+    boundary = LocalExecutionBoundary(_binding(tmp_path), "codex", editable=True)
+    invocation_id = boundary.binding.invocation_id
+    boundary.record_backend_success(invocation_id)
+    boundary.record_enforcement(
+        invocation_id,
+        filesystem=EvidenceStatus.ESTABLISHED,
+        publication=EvidenceStatus.UNKNOWN,
+        writers=EvidenceStatus.ESTABLISHED,
+        violations_observed=EvidenceStatus.ESTABLISHED,
+    )
+
+    evidence = boundary.require_confined_result(invocation_id)
+    assert evidence.confined_result_authorized is True
+    assert evidence.publication_enforcement is EvidenceStatus.UNKNOWN
+
+
+def test_provider_session_is_turn_scoped_metadata_not_edit_authority(tmp_path: Path) -> None:
+    boundary = LocalExecutionBoundary(_binding(tmp_path), "codex", editable=False)
+    invocation_id = boundary.binding.invocation_id
+    boundary.record_provider_session(invocation_id, " session-1 ")
+    boundary.record_backend_success(invocation_id)
+    boundary.record_enforcement(
+        invocation_id,
+        filesystem=EvidenceStatus.ESTABLISHED,
+        publication=EvidenceStatus.UNKNOWN,
+        writers=EvidenceStatus.ESTABLISHED,
+        violations_observed=EvidenceStatus.ESTABLISHED,
+    )
+
+    evidence = boundary.require_confined_result(invocation_id)
+    assert evidence.provider_session_id == "session-1"
+    assert evidence.turn_id != evidence.invocation_id
+    with pytest.raises(LocalBoundaryError, match="no-edit evidence"):
+        boundary.require_confined_result(invocation_id, for_edit_promotion=True)
+    with pytest.raises(LocalBoundaryError, match="session identity changed"):
+        boundary.record_provider_session(invocation_id, "session-2")
+
+
+def test_supervised_command_uses_bound_root_and_removes_git_overrides(tmp_path: Path) -> None:
+    boundary = LocalExecutionBoundary(_binding(tmp_path), "codex", editable=True)
+
+    class RecordingSupervisor:
+        def __init__(self) -> None:
+            self.request = None
+
+        def run(self, request, *, boundary):
+            self.request = request
+            boundary.record_filesystem_enforcement(request.invocation_id, EvidenceStatus.ESTABLISHED)
+            boundary.record_writer_completion(request.invocation_id)
+            boundary.record_violation_observation(request.invocation_id)
+            boundary.record_backend_success(request.invocation_id)
+            return SupervisedInvocationResult(
+                request.invocation_id,
+                InvocationOutcome.SUCCEEDED,
+                WriterState.POSITIVELY_STOPPED,
+                0,
+                "provider output",
+                "",
+            )
+
+    supervisor = RecordingSupervisor()
+    environment = {"PATH": "/bin", "GIT_DIR": str(boundary.binding.caller_git_dir), "GIT_WORK_TREE": str(boundary.binding.caller_root)}
+    with bind_supervised_command_execution(supervisor, boundary):  # type: ignore[arg-type]
+        result = CommandExecutor.run_command(["provider", "--flag"], cwd=str(boundary.binding.workspace), env=environment, stdin_text="full prompt")
+
+    assert result.success is True
+    assert result.stdout == "provider output"
+    assert supervisor.request is not None
+    assert supervisor.request.cwd == boundary.binding.workspace
+    assert supervisor.request.prompt == "full prompt"
+    assert supervisor.request.arguments == ("--flag",)
+    assert "GIT_DIR" not in supervisor.request.environment
+    assert "GIT_WORK_TREE" not in supervisor.request.environment
+    assert supervisor.request.protected_paths == (
+        boundary.binding.caller_root,
+        boundary.binding.caller_git_dir,
+        boundary.binding.caller_common_dir,
+    )
 
 
 def test_cross_invocation_and_late_evidence_are_rejected(tmp_path: Path) -> None:

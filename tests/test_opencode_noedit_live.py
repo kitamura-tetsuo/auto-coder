@@ -39,6 +39,12 @@ _PINNED_OPENCODE_VERSION = "1.18.31"
 pytestmark = [pytest.mark.opencode_live, pytest.mark.timeout(120)]
 
 
+@pytest.fixture(autouse=True)
+def _exercise_legacy_continuation_without_turn_supervision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep provider-session compatibility tests independent of Issue #2352 supervision."""
+    monkeypatch.setattr(OpenCodeClient, "supports_supervised_local_turn", False)
+
+
 def _find_or_install_opencode() -> Optional[str]:
     existing = shutil.which("opencode")
     if existing:
@@ -665,17 +671,12 @@ def _evidence_turns() -> Tuple[Turn, Turn, Turn]:
     return _create_turn, _read_tool_turn, _echo_turn
 
 
-def test_ac005_compatible_case_continuation_succeeds_in_a_stable_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_cli: str, scripted_provider, _use_real_commands) -> None:
-    """The normal, supported case: the operation-bound execution directory stays
-    the same real path across the fresh call and its continuation (exactly how
-    Auto-Coder's production flow runs -- already inside a dedicated per-task
-    linked worktree, so `isolated_local_llm_worktree` never nests a further
-    ephemeral temp worktree; see `test_ac001_linked_worktree_preserves_primary_checkout_and_shared_refs`
-    for the same non-nesting property under no-edit no-op mutation). Through
-    the real production `BackendManager`, a continuation must succeed and
-    read *current* file content, never a stale snapshot -- this is what makes
-    the explicit failure in the incompatible case below meaningful rather
-    than a blanket refusal."""
+def test_ac005_linked_caller_does_not_grant_private_root_continuation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_cli: str, scripted_provider, _use_real_commands) -> None:
+    """A linked caller still receives a fresh private result root per submitted turn.
+
+    A provider session ID therefore cannot authorize reusing the preceding root;
+    the manager may return a fresh-turn answer but must report non-continuity.
+    """
     repo = _repository(tmp_path)
     worktree_dir = tmp_path / "linked-worktree"
     subprocess.run(["git", "worktree", "add", "--detach", str(worktree_dir), "HEAD"], cwd=repo, check=True, capture_output=True)
@@ -715,7 +716,7 @@ def test_ac005_compatible_case_continuation_succeeds_in_a_stable_workspace(tmp_p
 
     assert "NEW_CONTENT_MARKER" in answer
     assert "OLD_CONTENT_MARKER" not in answer
-    assert manager._last_continue_session_resumed is True
+    assert manager._last_continue_session_resumed is False
 
 
 def test_ac005_incompatible_case_fails_explicitly_without_stale_content_or_recreated_worktree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_cli: str, scripted_provider, _use_real_commands) -> None:

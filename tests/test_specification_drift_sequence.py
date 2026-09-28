@@ -81,9 +81,33 @@ def submit(gate: SpecificationValidationLifecycle, number: int, body: str):
 
 def install_model(monkeypatch, runner) -> None:
     """Restore the real analyzer behind the suite-wide no-network test guard."""
+
+    def analyze(manifest, body):
+        from auto_coder.specification_analyzer import _REVIEW_EVIDENCE
+
+        evidence = _REVIEW_EVIDENCE.get()
+
+        def evidence_runner(prompt):
+            payload = json.loads(runner(prompt))
+            predecessor_findings = []
+            if evidence is not None and evidence.incremental.predecessor_evidence:
+                predecessor_findings = json.loads(evidence.incremental.predecessor_evidence)["findings"]
+            payload["finding_dispositions"] = [
+                {
+                    "finding_id": item["finding_id"],
+                    "disposition": "RESOLVED" if payload["verdict"] == "READY" else "STILL_VALID",
+                    "reasoning": "The deterministic fixture preserves the prior counterexample in this generation." if payload["verdict"] == "BLOCKED" else "The deterministic fixture resolves the prior counterexample.",
+                }
+                for item in predecessor_findings
+            ]
+            payload["coverage"] = [{"boundary": item.requirement_id, "status": "FRESH", "no_impact_reason": ""} for item in manifest.requirements] + [{"boundary": "contract-wide", "status": "FRESH", "no_impact_reason": ""}]
+            return json.dumps(payload)
+
+        return analyze_issue_specification(manifest, body, prompt_runner=evidence_runner)
+
     monkeypatch.setattr(
         "auto_coder.specification_validation_lifecycle.analyze_issue_specification",
-        lambda manifest, body: analyze_issue_specification(manifest, body, prompt_runner=runner),
+        analyze,
     )
 
 
@@ -121,7 +145,10 @@ def test_cumulative_drift_traverses_history_prompt_parser_and_reissue_applicatio
 
     def model(prompt: str, **_kwargs: object) -> str:
         prompts.append(prompt)
-        if "semantic pull-request labels fuzzily" in prompt:
+        current_body = prompt.split("Issue Markdown body", 1)[1].split("Parent Issue context", 1)[0]
+        if "block conflicting work for the entire retained lifecycle" in current_body:
+            return response("READY")
+        if "semantic pull-request labels fuzzily" in current_body:
             assert "manual-CI guard" in prompt
             assert "Durable first-review baseline" in prompt
             assert "urgent emergency capacity" in prompt
@@ -131,7 +158,7 @@ def test_cumulative_drift_traverses_history_prompt_parser_and_reissue_applicatio
                 "REISSUE_REQUIRED",
                 "Label resolution and prompt selection are independently testable semantic layers outside the baseline coordination-retirement responsibility.",
             )
-        if "urgent Issue obtains emergency" in prompt or "ownership across label removal" in prompt:
+        if "urgent Issue obtains emergency" in current_body or "ownership across label removal" in current_body:
             return response("BLOCKED", "EDIT_IN_PLACE")
         return response("READY")
 

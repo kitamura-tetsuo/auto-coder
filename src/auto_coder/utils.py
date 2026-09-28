@@ -2,6 +2,7 @@
 Utility classes for Auto-Coder automation engine.
 """
 
+import contextlib
 import os
 import queue
 import re
@@ -11,11 +12,17 @@ import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from .invocation_process_supervisor import InvocationProcessSupervisor
+    from .local_execution_boundary import LocalExecutionBoundary
 
 from .logger_config import get_logger
 from .progress_footer import get_progress_footer
@@ -30,6 +37,68 @@ logger = get_logger(__name__)
 # inherited subprocess working directory without changing the process-global
 # cwd (which would redirect every other worker in the service).
 _COMMAND_EXECUTION_CWD: ContextVar[Optional[str]] = ContextVar("auto_coder_command_execution_cwd", default=None)
+
+
+@dataclass(frozen=True)
+class _SupervisedCommandContext:
+    supervisor: "InvocationProcessSupervisor"
+    boundary: "LocalExecutionBoundary"
+
+
+_SUPERVISED_COMMAND: ContextVar[Optional[_SupervisedCommandContext]] = ContextVar("auto_coder_supervised_command", default=None)
+
+
+def _chown_tree(root: Path, uid: int, gid: int) -> None:
+    for current, directories, files in os.walk(root):
+        os.chown(current, uid, gid)
+        for name in (*directories, *files):
+            os.chown(Path(current) / name, uid, gid, follow_symlinks=False)
+
+
+def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment: Dict[str, str]) -> Path:
+    """Create private provider state beside the configured production runtime."""
+    binding = context.boundary.binding
+    runtime_base = Path(environment.get("AUTO_CODER_RUNTIME_ROOT", tempfile.gettempdir())) / "local-invocations"
+    runtime = runtime_base / binding.invocation_id
+    runtime.mkdir(parents=True, exist_ok=False)
+    home = runtime / "home"
+    home.mkdir()
+    temporary_directory = runtime / "tmp"
+    temporary_directory.mkdir()
+    original_home = Path(environment.get("HOME", str(Path.home())))
+    for relative in (Path(".codex/auth.json"), Path(".config/opencode"), Path(".local/share/opencode/auth.json")):
+        source = original_home / relative
+        destination = home / relative
+        if source.is_dir():
+            shutil.copytree(source, destination)
+        elif source.is_file():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+    owner = getattr(context.supervisor, "owner", None)
+    uid = getattr(owner, "worker_uid", None)
+    gid = getattr(owner, "worker_gid", None)
+    if uid is not None and gid is not None:
+        # ``tempfile.mkdtemp`` creates the invocation-private workspace parent
+        # with mode 0700. Transfer that parent as well as its repository so the
+        # dropped worker can traverse to the immutable bound result root.
+        for root in (binding.workspace.parent, runtime):
+            _chown_tree(root, uid, gid)
+    environment["HOME"] = str(home)
+    # Provider runtimes such as Bun create executable/cache state in TMPDIR.
+    # Keep that state inside the invocation-owned writable runtime rather than
+    # granting the worker access to the controller's shared /tmp.
+    environment["TMPDIR"] = str(temporary_directory)
+    return runtime
+
+
+@contextlib.contextmanager
+def bind_supervised_command_execution(supervisor: "InvocationProcessSupervisor", boundary: "LocalExecutionBoundary") -> Generator[None, None, None]:
+    """Route the provider's one top-level command through its finite writer owner."""
+    token = _SUPERVISED_COMMAND.set(_SupervisedCommandContext(supervisor, boundary))
+    try:
+        yield
+    finally:
+        _SUPERVISED_COMMAND.reset(token)
 
 
 def bind_command_execution_cwd(cwd: str):
@@ -308,6 +377,7 @@ class CommandResult:
     stdout: str
     stderr: str
     returncode: int
+    writer_settled: Optional[bool] = None
 
 
 class CommandExecutor:
@@ -811,6 +881,66 @@ class CommandExecutor:
             base_env = env.copy() if env is not None else os.environ.copy()
             base_env.update(env_overrides)
             effective_env = base_env
+
+        supervised = _SUPERVISED_COMMAND.get()
+        if supervised is not None:
+            from .invocation_process_supervisor import InvocationLaunch, InvocationOutcome, PromptTransport
+
+            boundary = supervised.boundary
+            binding = boundary.binding
+            launch_env = (effective_env or os.environ).copy()
+            # Ambient Git targeting can otherwise redirect an otherwise correctly
+            # selected cwd back into a caller or peer repository.
+            for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+                launch_env.pop(name, None)
+            selected_cwd = Path(cwd or str(binding.workspace)).resolve()
+            if selected_cwd != binding.workspace.resolve():
+                return CommandResult(False, "", "supervised provider cwd does not match the bound private result root", -1)
+            private_runtime: Optional[Path] = None
+            if boundary.editable:
+                try:
+                    private_runtime = _prepare_invocation_runtime(supervised, launch_env)
+                except OSError as exc:
+                    return CommandResult(False, "", f"private provider runtime preparation failed: {exc}", -1, False)
+            request = InvocationLaunch(
+                invocation_id=binding.invocation_id,
+                backend_type=boundary.backend_type,
+                effective_mode="editable" if boundary.editable else "no-edit",
+                result_root=binding.workspace,
+                runtime_paths=(private_runtime,) if private_runtime is not None else (),
+                executable=cmd[0],
+                arguments=tuple(cmd[1:]),
+                prompt_transport=PromptTransport.STDIN if stdin_text is not None else PromptTransport.INHERIT,
+                prompt=stdin_text,
+                timeout_seconds=float(idle_timeout or timeout) if (idle_timeout or timeout) is not None else None,
+                cwd=binding.workspace,
+                environment=launch_env,
+                protected_paths=(binding.caller_root, binding.caller_git_dir, binding.caller_common_dir),
+            )
+            result = supervised.supervisor.run(request, boundary=boundary)
+            if result.writer_complete:
+                # The controller owns result synchronization and disposal after
+                # all worker processes are positively stopped.
+                _chown_tree(binding.workspace.parent, os.geteuid(), os.getegid())
+            if result.writer_complete and private_runtime is not None:
+                shutil.rmtree(private_runtime, ignore_errors=True)
+            if on_stream is not None:
+                if result.stdout:
+                    on_stream("stdout", result.stdout)
+                if result.stderr:
+                    on_stream("stderr", result.stderr)
+            stderr = result.stderr
+            if result.detail:
+                stderr = f"{stderr}\n{result.detail}".strip()
+            if result.outcome is InvocationOutcome.TIMED_OUT:
+                stderr = f"{stderr}\ncommand timed out".strip()
+            return CommandResult(
+                result.outcome is InvocationOutcome.SUCCEEDED and result.writer_complete,
+                result.stdout,
+                stderr,
+                result.returncode if result.returncode is not None else -1,
+                result.writer_complete,
+            )
 
         try:
             if should_stream:

@@ -2,8 +2,9 @@
 
 Each Git-backed local backend call has controller-owned execution state bound to
 the private repository invocation. The state records the actual backend type,
-effective edit mode, private workspace identity, backend outcome, filesystem and
-publication enforcement, writer completion, and violation-observation status. Each
+effective edit mode, private workspace identity, unique turn identity, exact
+provider-session association, backend outcome, filesystem and publication
+enforcement, writer completion, and violation-observation status. Each
 runtime fact starts unknown and must be positively established by an authoritative
 producer for the same invocation. It is held outside model output and cannot be
 replaced by completion text or an agent-provided flag.
@@ -17,9 +18,31 @@ launcher, remain terminal even if the provider later exits successfully.
 
 An ordinary successful provider return records only successful backend completion.
 It remains a usable legacy result, but its enforcement and writer facts stay unknown
-and it cannot authorize a certified confined result. The aggregate authorization
-query succeeds only with matching positive evidence for every required fact; no-edit
-evidence can never authorize edit promotion.
+and it cannot authorize a certified confined result. The aggregate operational
+success query requires positive backend completion, filesystem enforcement, writer
+settlement, and violation observation. Publication enforcement remains descriptive
+legacy evidence but is not required for operational success. No-edit evidence can
+never authorize edit promotion, and a provider session identifier is metadata—not
+continuation admission or permission to reuse a result root.
+
+Codex and OpenCode turns use this boundary at the real command launch. The controller strips
+ambient Git target overrides, requires the command cwd to equal the immutable
+private result root, installs the Linux filesystem policy, and launches the CLI in
+its invocation-owned cgroup. A provider return is successful only after the cgroup
+is positively empty and the direct child is reaped. Production deployments provide
+the non-root child credentials with `AUTO_CODER_LOCAL_WORKER_UID` and
+`AUTO_CODER_LOCAL_WORKER_GID`; missing or unusable cgroup/Landlock prerequisites
+cause refusal before the CLI starts rather than an editable fallback.
+An uncertain settlement error is terminal for automatic and explicit session
+resume handling: it retains the prior session identity and cannot be converted
+into a fresh call or a different-backend replacement.
+
+The checked-in `compose.channels.yml` production profile runs the controller with
+host cgroup-v2 access and supplies the image's dedicated UID/GID 65532 worker
+identity. Each turn receives a private provider home beneath
+`$AUTO_CODER_RUNTIME_ROOT/local-invocations`, with a private temporary directory
+and only required authentication inputs copied into it. Editable OpenCode turns may use ordinary private Git/index,
+commit, ref, and worktree operations; the caller checkout remains isolated.
 
 Explicit continuation compatibility failures are not redirected into fresh
 invocations. Effective mode is resolved before boundary construction, including

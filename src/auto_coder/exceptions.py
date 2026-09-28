@@ -67,6 +67,12 @@ class AutoCoderTimeoutError(RuntimeError):
     pass
 
 
+class LocalWriterSettlementError(RuntimeError):
+    """A local turn ended without definitive settlement of its owned writers."""
+
+    pass
+
+
 class AutoCoderRetryableBackendError(RuntimeError):
     """A provider transport outage that should be deferred by the scheduler.
 

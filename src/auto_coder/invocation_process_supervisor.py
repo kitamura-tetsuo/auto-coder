@@ -392,6 +392,12 @@ class InvocationProcessSupervisor:
             with self._lock:
                 self._retained[request.invocation_id] = (process, group)
         self._set_state(request.invocation_id, writer_state)
+        if boundary is not None:
+            if outcome is InvocationOutcome.SUCCEEDED and writer_state is WriterState.POSITIVELY_STOPPED:
+                boundary.record_backend_success(request.invocation_id)
+                boundary.record_violation_observation(request.invocation_id)
+            else:
+                boundary.record_backend_failure(request.invocation_id, detail or outcome.value)
         if writer_state is WriterState.POSITIVELY_STOPPED:
             for thread in (*readers, input_writer):
                 if thread is not None:

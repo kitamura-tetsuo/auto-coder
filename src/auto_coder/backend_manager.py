@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import threading
 import time
@@ -17,13 +18,20 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from .backend_provider_manager import BackendProviderManager
 from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
 from .backend_state_manager import BackendStateManager
-from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
+from .exceptions import (
+    AutoCoderRetryableBackendError,
+    AutoCoderTimeoutError,
+    AutoCoderUsageLimitError,
+    LocalWriterSettlementError,
+    SessionWorkspaceCompatibilityError,
+)
 from .invocation_admission import (
     InvocationHandle,
     current_invocation_gate,
     current_invocation_target,
     set_pending_invocation_handle,
 )
+from .invocation_process_supervisor import CgroupV2Owner, InvocationProcessSupervisor
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
 from .local_execution_boundary import bind_local_execution_boundary
@@ -34,6 +42,7 @@ from .review_capture.context import bind_interaction_id, get_active_review_conte
 from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
+from .utils import bind_supervised_command_execution
 from .worktree_utils import LocalWorkspaceOwnership, get_current_local_workspace, isolated_local_llm_worktree
 
 logger = get_logger(__name__)
@@ -193,6 +202,19 @@ class BackendManager(LLMBackendManagerBase):
       and this triggers switching to the next backend for automatic retry.
     """
 
+    @staticmethod
+    def _production_local_supervisor() -> InvocationProcessSupervisor:
+        """Build the Linux writer owner from explicit deployment credentials."""
+        uid_text = os.environ.get("AUTO_CODER_LOCAL_WORKER_UID", "")
+        gid_text = os.environ.get("AUTO_CODER_LOCAL_WORKER_GID", "")
+        try:
+            uid = int(uid_text)
+            gid = int(gid_text)
+        except ValueError:
+            uid = None
+            gid = None
+        return InvocationProcessSupervisor(owner=CgroupV2Owner(worker_uid=uid, worker_gid=gid))
+
     def __init__(
         self,
         default_backend: str,
@@ -201,6 +223,7 @@ class BackendManager(LLMBackendManagerBase):
         order: Optional[List[str]] = None,
         provider_manager: Optional[BackendProviderManager] = None,
         automatic_session_resume: bool = True,
+        local_supervisor_factory: Optional[Callable[[], InvocationProcessSupervisor]] = None,
     ) -> None:
         # Backend order (circular)
         self._all_backends = order[:] if order else list(factories.keys())
@@ -217,6 +240,7 @@ class BackendManager(LLMBackendManagerBase):
         self._current_idx = 0
         self._default_backend = default_backend
         self._automatic_session_resume = automatic_session_resume
+        self._local_supervisor_factory = local_supervisor_factory or self._production_local_supervisor
 
         # Track recent prompt/model/backend for apply_workspace_test_fix
         self._last_prompt: Optional[str] = None
@@ -550,7 +574,12 @@ class BackendManager(LLMBackendManagerBase):
                         session_id=self._last_session_id if should_resume else None,
                         requested_noedit=requested_noedit,
                     )
-                except (AutoCoderUsageLimitError, AutoCoderTimeoutError, AutoCoderRetryableBackendError):
+                except (
+                    AutoCoderUsageLimitError,
+                    AutoCoderTimeoutError,
+                    AutoCoderRetryableBackendError,
+                    LocalWriterSettlementError,
+                ):
                     raise
                 except (ValueError, RuntimeError, NotImplementedError) as exc:
                     if not should_resume:
@@ -656,6 +685,9 @@ class BackendManager(LLMBackendManagerBase):
             self._last_continue_session_resumed = True
             return str(output)
         except SessionWorkspaceCompatibilityError:
+            self._last_continue_session_resumed = False
+            raise
+        except LocalWriterSettlementError:
             self._last_continue_session_resumed = False
             raise
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
@@ -821,6 +853,9 @@ class BackendManager(LLMBackendManagerBase):
                             else contextlib.nullcontext()
                         )
                         with boundary_ctx as local_boundary, bind_interaction_id(interaction_id):
+                            supervised_ctx: contextlib.AbstractContextManager[None] = contextlib.nullcontext()
+                            if local_boundary is not None and getattr(cli, "supports_supervised_local_turn", False) is True:
+                                supervised_ctx = bind_supervised_command_execution(self._local_supervisor_factory(), local_boundary)
                             # Issue #2010 REQ-004: only the controlled provider
                             # action itself (and any subprocess/tool tree it
                             # spawns) is marked protected, so graceful draining's
@@ -828,7 +863,7 @@ class BackendManager(LLMBackendManagerBase):
                             # unrelated command run outside this block remains
                             # interruptible.
                             try:
-                                with mark_invocation_active():
+                                with mark_invocation_active(), supervised_ctx:
                                     if session_id:
                                         out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
                                     else:
@@ -844,6 +879,12 @@ class BackendManager(LLMBackendManagerBase):
                                 # are integrated; legacy execution remains usable but
                                 # is not certified as confined.
                                 local_boundary.record_backend_success(local_boundary.binding.invocation_id)
+                                local_boundary.record_provider_session(
+                                    local_boundary.binding.invocation_id,
+                                    getattr(cli, "get_last_session_id", lambda: None)(),
+                                )
+                                if getattr(cli, "supports_supervised_local_turn", False) is True:
+                                    local_boundary.require_confined_result(local_boundary.binding.invocation_id)
                         self._settle_admitted_invocation(invocation_handle, success=True)
                         if workspace_ownership is not None:
                             workspace_ownership.release_execution()
