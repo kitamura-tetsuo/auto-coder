@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -13,8 +14,6 @@ from typing import Iterator, Optional
 from .runtime_locks import ensure_lock_directory, lock_path
 
 PAUSE_REASON = "automatic_repair_paused(repair_round_limit_reached)"
-_ACTIVE_INVOCATIONS: set[str] = set()
-_ACTIVE_INVOCATIONS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -197,6 +196,9 @@ class SpecificationRepairRoundStore:
                         "observation": None,
                         "after_state": None,
                         "editor_error": None,
+                        "owner_host": socket.gethostname(),
+                        "owner_pid": os.getpid(),
+                        "owner_start": self._process_start_token(os.getpid()),
                     }
                     operations[generation] = operation
                     counted.append(generation)
@@ -208,10 +210,7 @@ class SpecificationRepairRoundStore:
                 self._write(state)
             observation = operation.get("observation") if isinstance(operation, dict) else None
             editor_error = operation.get("editor_error") if isinstance(operation, dict) else None
-        with _ACTIVE_INVOCATIONS_LOCK:
-            if authorized:
-                _ACTIVE_INVOCATIONS.add(operation_identity)
-            active = operation_identity in _ACTIVE_INVOCATIONS
+            active = isinstance(operation, dict) and self._invocation_owner_is_live(operation)
         return RepairRoundApplication(
             remediation,
             previous,
@@ -226,13 +225,57 @@ class SpecificationRepairRoundStore:
             operation.get("before_state") if isinstance(operation, dict) and isinstance(operation.get("before_state"), str) else None,
         )
 
+    def finish_invocation(self, subject_kind: str, subject_number: int, generation: str) -> None:
+        """Durably release live-editor ownership before authoritative observation."""
+        key = f"{subject_kind}:{subject_number}"
+        with self._locked():
+            state = self._read()
+            subject = self._subject(state, key)
+            operations = subject.get("operations")
+            operation = operations.get(generation) if isinstance(operations, dict) else None
+            if not isinstance(operation, dict):
+                raise ValueError("Specification repair operation is unavailable")
+            operation.update({"phase": "VERIFYING", "owner_host": None, "owner_pid": None, "owner_start": None})
+            self._write(state)
+
+    def operation_exists(self, subject_kind: str, subject_number: int, generation: str) -> bool:
+        """Return whether a durable operation exists for this exact generation."""
+        key = f"{subject_kind}:{subject_number}"
+        with self._locked():
+            subject = self._read().get(key)
+            operations = subject.get("operations") if isinstance(subject, dict) else None
+            return isinstance(operations, dict) and isinstance(operations.get(generation), dict)
+
     @staticmethod
-    def finish_invocation(operation_identity: Optional[str]) -> None:
-        """Release process-local live-editor ownership before observation."""
-        if operation_identity is None:
-            return
-        with _ACTIVE_INVOCATIONS_LOCK:
-            _ACTIVE_INVOCATIONS.discard(operation_identity)
+    def _process_start_token(pid: int) -> Optional[str]:
+        """Read Linux's process start token to distinguish PID reuse."""
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            # The parenthesized command may contain spaces. Fields following its
+            # final ')' begin at proc field 3; starttime is field 22.
+            return stat.rsplit(")", 1)[1].split()[19]
+        except (FileNotFoundError, IndexError, OSError):
+            return None
+
+    @classmethod
+    def _invocation_owner_is_live(cls, operation: dict[str, object]) -> bool:
+        """Recognize a live durable owner, including one in another process."""
+        if operation.get("phase") != "AUTHORIZED":
+            return False
+        if operation.get("owner_host") != socket.gethostname():
+            return operation.get("owner_host") is not None
+        pid = operation.get("owner_pid")
+        start = operation.get("owner_start")
+        if not isinstance(pid, int):
+            return False
+        current_start = cls._process_start_token(pid)
+        if isinstance(start, str):
+            return current_start == start
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ValueError):
+            return False
 
     def observe(
         self,

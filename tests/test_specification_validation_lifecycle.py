@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import get_context
 from threading import Barrier, Event, Lock, Thread
 from unittest.mock import Mock, call, patch
 
@@ -414,6 +415,50 @@ def test_individual_competing_worker_cannot_settle_live_editor(tmp_path):
     assert results[0].observation == "CONTRACT_CHANGED"
 
 
+def test_individual_other_process_cannot_settle_live_editor(tmp_path):
+    """REQ-004: durable ownership prevents cross-process premature settlement."""
+    blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "decisions.json"
+    state_path = tmp_path / "authoritative.txt"
+    state_path.write_text(BODY, encoding="utf-8")
+    gate = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    decision = gate.decide(build_normative_issue_manifest(1728, "Title", BODY), "Title", BODY)
+    context = get_context("fork")
+    entered, release, outcomes = context.Event(), context.Event(), context.Queue()
+
+    def run_editor() -> None:
+        worker_gate = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+
+        def edit() -> None:
+            entered.set()
+            assert release.wait(5)
+            state_path.write_text(BODY + " changed", encoding="utf-8")
+
+        result = worker_gate.authorize_automatic_repair(
+            decision,
+            lambda: True,
+            edit,
+            lambda: AuthoritativeRepairState(state_path.read_text(encoding="utf-8"), decision.identity.key),
+        )
+        outcomes.put(result.observation)
+
+    worker = context.Process(target=run_editor)
+    worker.start()
+    assert entered.wait(5)
+    competing = gate.authorize_automatic_repair(
+        decision,
+        lambda: True,
+        Mock(),
+        lambda: AuthoritativeRepairState(state_path.read_text(encoding="utf-8"), decision.identity.key),
+    )
+    assert competing.invocation_in_progress is True
+    assert competing.observation is None
+    release.set()
+    worker.join(5)
+    assert worker.exitcode == 0
+    assert outcomes.get(timeout=1) == "CONTRACT_CHANGED"
+
+
 def test_individual_unverified_observation_recovers_without_editor_replay(tmp_path):
     blocked = SpecificationAnalysisResult("BLOCKED", (FINDING,), remediation="EDIT_IN_PLACE")
     path = tmp_path / "decisions.json"
@@ -425,8 +470,8 @@ def test_individual_unverified_observation_recovers_without_editor_replay(tmp_pa
     assert first.observation == "UNVERIFIED"
 
     restarted = SpecificationValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
-    changed = AuthoritativeRepairState(BODY + " changed", decision.identity.key)
-    recovered = restarted.authorize_automatic_repair(decision, lambda: True, editor, lambda: changed)
+    changed = AuthoritativeRepairState(BODY + " changed", "current-changed-binding")
+    recovered = restarted.authorize_automatic_repair(decision, lambda: False, editor, lambda: changed)
     assert recovered.observation == "CONTRACT_CHANGED"
     assert editor.call_count == 1
     assert restarted.repair_rounds.count("individual", 1728) == 1

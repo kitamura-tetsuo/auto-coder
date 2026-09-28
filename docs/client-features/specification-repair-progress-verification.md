@@ -25,11 +25,12 @@ Duplicate calls and restart recovery observe the same operation without
 dispatching the editor or incrementing the generation again. Neither an editor
 return value nor a comment is repair-progress evidence.
 
-The round count and recoverable operation record are committed atomically.
-Process-local live-editor ownership prevents a competing worker from settling
-the operation before that editor returns. A persisted `UNVERIFIED` observation
-may be replaced by later authoritative evidence during restart recovery, while
-terminal observations remain immutable.
+The round count, recoverable operation record, and live-editor owner are
+committed atomically. Durable process identity prevents a competing daemon from
+settling the operation before that editor returns. A persisted `UNVERIFIED`
+observation may be replaced by later authoritative evidence during restart
+recovery, including evidence whose current decision binding reflects the
+editor's changed content, while terminal observations remain immutable.
 
 This separation is observability-neutral for the dashboard: it removes a false
 internal repair authorization that emitted no structured dashboard event and

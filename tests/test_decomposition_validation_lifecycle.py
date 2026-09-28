@@ -3,6 +3,7 @@
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import get_context
 from threading import Barrier, Event, Lock, Thread
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, call, patch
@@ -1012,6 +1013,76 @@ def test_decomposition_competing_worker_cannot_settle_live_editor(tmp_path):
     release.set()
     worker.join(5)
     assert results[0].observation == "CONTRACT_CHANGED"
+
+
+def test_decomposition_other_process_cannot_settle_live_editor(tmp_path):
+    """REQ-004: durable ownership prevents cross-process premature settlement."""
+    blocked = DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "sets.json"
+    state_path = tmp_path / "authoritative-set.txt"
+    state_path.write_text(PARENT_BODY, encoding="utf-8")
+    gate = DecompositionValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    context = get_context("fork")
+    entered, release, outcomes = context.Event(), context.Event(), context.Queue()
+
+    def run_editor() -> None:
+        worker_gate = DecompositionValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+
+        def edit() -> None:
+            entered.set()
+            assert release.wait(5)
+            state_path.write_text(PARENT_BODY + " changed", encoding="utf-8")
+
+        result = worker_gate.authorize_automatic_repair(
+            decision,
+            lambda: True,
+            edit,
+            lambda: AuthoritativeRepairState(state_path.read_text(encoding="utf-8"), decision.identity.key),
+        )
+        outcomes.put(result.observation)
+
+    worker = context.Process(target=run_editor)
+    worker.start()
+    assert entered.wait(5)
+    competing = gate.authorize_automatic_repair(
+        decision,
+        lambda: True,
+        Mock(),
+        lambda: AuthoritativeRepairState(state_path.read_text(encoding="utf-8"), decision.identity.key),
+    )
+    assert competing.invocation_in_progress is True
+    assert competing.observation is None
+    release.set()
+    worker.join(5)
+    assert worker.exitcode == 0
+    assert outcomes.get(timeout=1) == "CONTRACT_CHANGED"
+
+
+def test_decomposition_unverified_observation_recovers_with_changed_binding(tmp_path):
+    """REQ-007: recovery observes changed content without replaying its editor."""
+    blocked = DecompositionAnalysisResult("BLOCKED", (SET_FINDING,), remediation="EDIT_IN_PLACE")
+    path = tmp_path / "sets.json"
+    gate = DecompositionValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    parent = issue(10, "Parent", PARENT_BODY, ready=True)
+    children = [issue(11, "Child", CHILD_BODY)]
+    parent_input, child_inputs = decomposition_issues(parent, children)
+    decision = gate.decide(gate.identity(parent, children), parent_input, child_inputs)
+    editor = Mock()
+    reads = iter((AuthoritativeRepairState(PARENT_BODY, decision.identity.key), None))
+    first = gate.authorize_automatic_repair(decision, lambda: True, editor, lambda: next(reads))
+    assert first.observation == "UNVERIFIED"
+
+    restarted = DecompositionValidationLifecycle("owner/repo", "policy", path, lambda *_args: blocked)
+    changed = AuthoritativeRepairState(PARENT_BODY + " changed", "current-changed-binding")
+    recovered = restarted.authorize_automatic_repair(decision, lambda: False, editor, lambda: changed)
+
+    assert recovered.observation == "CONTRACT_CHANGED"
+    assert editor.call_count == 1
+    assert restarted.repair_rounds.count("decomposition", 10) == 1
 
 
 @pytest.mark.parametrize("blocked_sibling_state", ["open", "closed"])

@@ -1235,17 +1235,19 @@ class SpecificationValidationLifecycle:
         """
         from .llm_backend_config import get_specification_repair_round_limit_from_config
 
+        generation = decision.identity.specification_digest
+        recovering = self.repair_rounds.operation_exists("individual", decision.identity.issue_number, generation)
         with self.store.locked(decision.identity.key):
             current = self.store.get(decision.identity)
-            if read_authoritative_state is None or current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or not submission_is_current():
+            if read_authoritative_state is None or current is None or current.verdict != "BLOCKED" or current.remediation != "EDIT_IN_PLACE" or (not recovering and not submission_is_current()):
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("individual", decision.identity.issue_number))
             before_state = read_authoritative_state()
-            if before_state is None or before_state.decision_binding != decision.identity.key or not before_state.submission_active or not before_state.ownership_valid or not before_state.manifest_valid:
+            if before_state is None or (not recovering and (before_state.decision_binding != decision.identity.key or not before_state.submission_active or not before_state.ownership_valid or not before_state.manifest_valid)):
                 return RepairRoundApplication(decision.remediation, self.repair_rounds.count("individual", decision.identity.issue_number))
             applied = self.repair_rounds.authorize(
                 "individual",
                 decision.identity.issue_number,
-                decision.identity.specification_digest,
+                generation,
                 current.remediation,
                 get_specification_repair_round_limit_from_config(repo_name=self.repository),
                 before_state.content,
@@ -1260,14 +1262,14 @@ class SpecificationValidationLifecycle:
             except Exception as exc:
                 editor_error = f"{type(exc).__name__}: {exc}"
             finally:
-                self.repair_rounds.finish_invocation(applied.operation_identity)
+                self.repair_rounds.finish_invocation("individual", decision.identity.issue_number, generation)
         try:
             after_state = read_authoritative_state()
             observation, after_content = classify_repair_observation(observation_before, after_state)
             observed = self.repair_rounds.observe(
                 "individual",
                 decision.identity.issue_number,
-                decision.identity.specification_digest,
+                generation,
                 observation,
                 after_content,
                 editor_error,
