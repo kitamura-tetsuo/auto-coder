@@ -48,10 +48,23 @@ class ReconstructionReceipt:
     receipt_id: str
     sources: tuple[str, ...]
     consistent_sources: tuple[str, ...]
+    source_operation_ids: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    operations: tuple["CodexWorkOperation", ...] = ()
 
     @property
     def complete(self) -> bool:
-        return bool(self.receipt_id and self.sources and set(self.sources) == set(self.consistent_sources))
+        source_ids = tuple(source for source, _operation_ids in self.source_operation_ids)
+        manifested_operation_ids = {operation_id for _source, operation_ids in self.source_operation_ids for operation_id in operation_ids}
+        supplied_operation_ids = {operation.logical_operation_id for operation in self.operations}
+        return bool(
+            self.receipt_id
+            and self.sources
+            and len(set(self.sources)) == len(self.sources)
+            and set(self.sources) == set(self.consistent_sources) == set(source_ids)
+            and len(source_ids) == len(set(source_ids))
+            and manifested_operation_ids == supplied_operation_ids
+            and len(supplied_operation_ids) == len(self.operations)
+        )
 
 
 @dataclass(frozen=True)
@@ -66,10 +79,13 @@ class CodexWorkOperation:
     publication_complete: bool
     tracking_complete: bool
     settlement_evidence_id: Optional[str]
+    accepted: bool = False
+    definite_non_delivery: bool = False
 
     @property
     def settled(self) -> bool:
-        return self.phase is CodexWorkPhase.SETTLED
+        completed = self.execution_complete and self.publication_complete and self.tracking_complete
+        return bool(self.phase is CodexWorkPhase.SETTLED and self.settlement_evidence_id and (completed or (self.definite_non_delivery and not self.accepted)))
 
 
 @dataclass(frozen=True)
@@ -129,7 +145,7 @@ class CodexWorkAccounting:
                 raise ImplementationSlotUnavailable("Fresh accounting cannot establish complete coverage for existing activity")
             record[self._FIELD] = {
                 "status": WorkAccountingStatus.COMPLETE.value,
-                "operations": {},
+                "operations": {operation.logical_operation_id: self._operation_record(operation) for operation in (receipt.operations if receipt else ())},
                 "reconstruction_receipt_id": receipt.receipt_id if receipt else None,
                 "reconstruction_sources": list(receipt.sources) if receipt else [],
             }
@@ -173,6 +189,8 @@ class CodexWorkAccounting:
                 "publication_complete": False,
                 "tracking_complete": False,
                 "settlement_evidence_id": None,
+                "accepted": task_id is not None,
+                "definite_non_delivery": False,
             }
             existing = operations.get(logical_operation_id)
             if existing is not None:
@@ -194,6 +212,7 @@ class CodexWorkAccounting:
         *,
         evidence_id: str,
         evidence_causal_baseline: Optional[str] = None,
+        evidence_source_request_id: Optional[str] = None,
         task_id: Optional[str] = None,
         execution_complete: bool = False,
         publication_complete: bool = False,
@@ -218,8 +237,15 @@ class CodexWorkAccounting:
                 raise ValueError("Evidence task identity does not match the operation")
             if task_id and not existing_task:
                 raw["task_id"] = task_id
-            accepted = existing_task is not None or raw.get("phase") == CodexWorkPhase.ACCEPTED.value
+                raw["accepted"] = True
+            if phase is CodexWorkPhase.ACCEPTED:
+                raw["accepted"] = True
+            accepted = raw.get("accepted") is True or existing_task is not None
             if phase is CodexWorkPhase.SETTLED:
+                if evidence_source_request_id != raw.get("source_request_id"):
+                    raise ValueError("Settlement evidence does not match the operation's source request")
+                if existing_task is not None and task_id != existing_task:
+                    raise ValueError("Settlement evidence must identify the operation's task")
                 admitted_baseline = raw.get("causal_baseline")
                 if admitted_baseline is not None and evidence_causal_baseline != admitted_baseline:
                     raise ValueError("Settlement evidence does not match the operation's causal baseline")
@@ -231,6 +257,7 @@ class CodexWorkAccounting:
                     publication_complete=publication_complete,
                     tracking_complete=tracking_complete,
                     settlement_evidence_id=evidence_id,
+                    definite_non_delivery=definite_non_delivery,
                 )
             raw["phase"] = phase.value
             if raw != old:
@@ -246,7 +273,7 @@ class CodexWorkAccounting:
             record = owners.get(snapshot.owner.key)
             status = RetirementValidation.STALE
             current = snapshot
-            if isinstance(record, dict) and record.get("incarnation") == snapshot.incarnation:
+            if snapshot.repository == self.slots.repo_name and isinstance(record, dict) and record.get("incarnation") == snapshot.incarnation:
                 current = self._snapshot_from_record(snapshot.owner, snapshot.incarnation, record)
                 if current.revision == snapshot.revision:
                     status = RetirementValidation.AUTHORIZED if current.releasable else RetirementValidation.NON_RELEASABLE
@@ -277,6 +304,30 @@ class CodexWorkAccounting:
     def _parse_operation(key: object, raw: object) -> CodexWorkOperation:
         if not isinstance(key, str) or not isinstance(raw, dict):
             raise ValueError("Malformed Codex operation")
+        required_strings = ("kind", "source_request_id", "phase")
+        if any(not isinstance(raw.get(field), str) or not raw[field] for field in required_strings):
+            raise ValueError("Malformed Codex operation identity")
+        optional_strings = ("causal_baseline", "task_id", "settlement_evidence_id")
+        if any(raw.get(field) is not None and (not isinstance(raw[field], str) or not raw[field]) for field in optional_strings):
+            raise ValueError("Malformed Codex operation evidence identity")
+        boolean_fields = (
+            "execution_complete",
+            "publication_complete",
+            "tracking_complete",
+            "accepted",
+            "definite_non_delivery",
+        )
+        if any(not isinstance(raw.get(field), bool) for field in boolean_fields):
+            raise ValueError("Malformed Codex operation completion evidence")
+        phase = CodexWorkPhase(raw["phase"])
+        accepted = raw["accepted"]
+        definite_non_delivery = raw["definite_non_delivery"]
+        settlement_evidence_id = raw.get("settlement_evidence_id")
+        completed = raw["execution_complete"] and raw["publication_complete"] and raw["tracking_complete"]
+        if raw.get("task_id") is not None and not accepted:
+            raise ValueError("Malformed Codex acceptance evidence")
+        if phase is CodexWorkPhase.SETTLED and (settlement_evidence_id is None or not (completed or (definite_non_delivery and not accepted))):
+            raise ValueError("Malformed Codex settlement evidence")
         return CodexWorkOperation(
             key,
             str(raw["kind"]),
@@ -284,11 +335,29 @@ class CodexWorkAccounting:
             raw.get("causal_baseline"),
             raw.get("task_id"),
             CodexWorkPhase(str(raw["phase"])),
-            bool(raw["execution_complete"]),
-            bool(raw["publication_complete"]),
-            bool(raw["tracking_complete"]),
-            raw.get("settlement_evidence_id"),
+            raw["execution_complete"],
+            raw["publication_complete"],
+            raw["tracking_complete"],
+            settlement_evidence_id,
+            accepted,
+            definite_non_delivery,
         )
+
+    @staticmethod
+    def _operation_record(operation: CodexWorkOperation) -> dict[str, object]:
+        return {
+            "kind": operation.kind,
+            "source_request_id": operation.source_request_id,
+            "causal_baseline": operation.causal_baseline,
+            "task_id": operation.task_id,
+            "phase": operation.phase.value,
+            "execution_complete": operation.execution_complete,
+            "publication_complete": operation.publication_complete,
+            "tracking_complete": operation.tracking_complete,
+            "settlement_evidence_id": operation.settlement_evidence_id,
+            "accepted": operation.accepted,
+            "definite_non_delivery": operation.definite_non_delivery,
+        }
 
     @staticmethod
     def _active_record(owners: dict[str, dict[str, object]], owner: ImplementationOwner, incarnation: str) -> dict[str, object]:

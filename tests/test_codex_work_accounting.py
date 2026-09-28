@@ -1,9 +1,11 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from auto_coder.codex_work_accounting import (
     CodexWorkAccounting,
+    CodexWorkOperation,
     CodexWorkPhase,
     ReconstructionReceipt,
     RetirementValidation,
@@ -46,6 +48,7 @@ def test_same_task_distinct_operation_invalidates_snapshot_and_replay_is_idempot
         CodexWorkPhase.SETTLED,
         evidence_id="terminal-task-one-head-a",
         evidence_causal_baseline="head-a",
+        evidence_source_request_id="attempt-0",
         task_id="task-one",
         execution_complete=True,
         publication_complete=True,
@@ -91,6 +94,7 @@ def test_same_task_distinct_operation_invalidates_snapshot_and_replay_is_idempot
             CodexWorkPhase.SETTLED,
             evidence_id="terminal-task-one-head-a",
             evidence_causal_baseline="head-a",
+            evidence_source_request_id="attempt-0/correction-1",
             task_id="task-one",
             execution_complete=True,
             publication_complete=True,
@@ -108,6 +112,7 @@ def test_same_task_distinct_operation_invalidates_snapshot_and_replay_is_idempot
         CodexWorkPhase.SETTLED,
         evidence_id="terminal-task-one-head-b",
         evidence_causal_baseline="head-b",
+        evidence_source_request_id="attempt-0/correction-1",
         task_id="task-one",
         execution_complete=True,
         publication_complete=True,
@@ -136,6 +141,8 @@ def test_ambiguous_delivery_and_accepted_handoff_remain_unsettled_after_reconstr
             "op",
             CodexWorkPhase.SETTLED,
             evidence_id="cancelled-followup",
+            evidence_source_request_id="request",
+            task_id="task",
             definite_non_delivery=True,
         )
 
@@ -151,11 +158,23 @@ def test_missing_inventory_is_unknown_and_receipt_controls_legacy_initialization
         accounting.initialize_fresh(OWNER, incarnation)
     with pytest.raises(ValueError, match="complete reconstruction"):
         accounting.initialize_from_receipt(OWNER, incarnation, ReconstructionReceipt("receipt", ("cloud", "retry"), ("cloud",)))
+    with pytest.raises(ValueError, match="complete reconstruction"):
+        accounting.initialize_from_receipt(
+            OWNER,
+            incarnation,
+            ReconstructionReceipt("receipt", ("cloud", "retry"), ("cloud", "retry")),
+        )
+    assert accounting.snapshot(OWNER, incarnation).accounting_status is WorkAccountingStatus.UNINITIALIZED
 
     initialized = accounting.initialize_from_receipt(
         OWNER,
         incarnation,
-        ReconstructionReceipt("receipt", ("cloud", "retry"), ("retry", "cloud")),
+        ReconstructionReceipt(
+            "receipt",
+            ("cloud", "retry"),
+            ("retry", "cloud"),
+            (("cloud", ()), ("retry", ())),
+        ),
     )
     assert initialized.accounting_status is WorkAccountingStatus.COMPLETE
     assert initialized.reconstruction_receipt_id == "receipt"
@@ -185,3 +204,124 @@ def test_retired_incarnation_cannot_be_recreated_or_changed_by_late_receipt(tmp_
             source_request_id="old-request",
         )
     assert slots.owner_incarnation(OWNER) == new_incarnation
+
+
+def test_accepted_responsibility_survives_ambiguous_delivery_and_cannot_become_non_delivery(tmp_path: Path) -> None:
+    slots, incarnation = _reservation(tmp_path)
+    accounting = CodexWorkAccounting(slots)
+    accounting.initialize_fresh(OWNER, incarnation)
+    accounting.register(OWNER, incarnation, logical_operation_id="op", kind="submission", source_request_id="request")
+    accounting.transition(OWNER, incarnation, "op", CodexWorkPhase.ACCEPTED, evidence_id="accepted")
+    accounting.transition(OWNER, incarnation, "op", CodexWorkPhase.DELIVERY_UNKNOWN, evidence_id="tracking-lost")
+
+    with pytest.raises(ValueError, match="Settlement requires"):
+        accounting.transition(
+            OWNER,
+            incarnation,
+            "op",
+            CodexWorkPhase.SETTLED,
+            evidence_id="not-delivered",
+            evidence_source_request_id="request",
+            definite_non_delivery=True,
+        )
+
+    operation = accounting.snapshot(OWNER, incarnation).operations[0]
+    assert operation.accepted is True
+    assert operation.phase is CodexWorkPhase.DELIVERY_UNKNOWN
+    assert operation.settled is False
+
+
+@pytest.mark.parametrize(
+    "malformed_update",
+    [
+        {"settlement_evidence_id": None},
+        {"execution_complete": "false"},
+    ],
+)
+def test_malformed_settlement_record_is_unavailable(tmp_path: Path, malformed_update: dict[str, object]) -> None:
+    slots, incarnation = _reservation(tmp_path)
+    accounting = CodexWorkAccounting(slots)
+    accounting.initialize_fresh(OWNER, incarnation)
+    accounting.register(OWNER, incarnation, logical_operation_id="op", kind="submission", source_request_id="request")
+    accounting.transition(
+        OWNER,
+        incarnation,
+        "op",
+        CodexWorkPhase.SETTLED,
+        evidence_id="terminal",
+        evidence_source_request_id="request",
+        execution_complete=True,
+        publication_complete=True,
+        tracking_complete=True,
+    )
+    with slots._state_lock():
+        owners = slots._read()
+        operation = owners[OWNER.key]["codex_work_accounting"]["operations"]["op"]
+        operation.update(malformed_update)
+        slots._write(owners)
+
+    snapshot = accounting.snapshot(OWNER, incarnation)
+    assert snapshot.accounting_status is WorkAccountingStatus.UNAVAILABLE
+    assert snapshot.releasable is False
+
+
+def test_reconstruction_receipt_preserves_unsettled_correlated_operation(tmp_path: Path) -> None:
+    slots, incarnation = _reservation(tmp_path)
+    operation = CodexWorkOperation(
+        logical_operation_id="publication",
+        kind="publication",
+        source_request_id="request",
+        causal_baseline="head-a",
+        task_id="task-a",
+        phase=CodexWorkPhase.ACCEPTED,
+        execution_complete=False,
+        publication_complete=False,
+        tracking_complete=False,
+        settlement_evidence_id=None,
+        accepted=True,
+    )
+    receipt = ReconstructionReceipt(
+        "receipt",
+        ("cloud", "retry"),
+        ("retry", "cloud"),
+        (("cloud", ("publication",)), ("retry", ())),
+        (operation,),
+    )
+
+    snapshot = CodexWorkAccounting(slots).initialize_from_receipt(OWNER, incarnation, receipt)
+    assert snapshot.accounting_status is WorkAccountingStatus.COMPLETE
+    assert snapshot.operations == (operation,)
+    assert snapshot.releasable is False
+
+
+def test_retirement_guard_rejects_foreign_repository_snapshot(tmp_path: Path) -> None:
+    slots, incarnation = _reservation(tmp_path)
+    accounting = CodexWorkAccounting(slots)
+    snapshot = accounting.initialize_fresh(OWNER, incarnation)
+
+    with accounting.retirement_guard(replace(snapshot, repository="another/repository")) as guard:
+        assert guard.status is RetirementValidation.STALE
+
+
+def test_settlement_requires_task_identity_when_no_baseline_exists(tmp_path: Path) -> None:
+    slots, incarnation = _reservation(tmp_path)
+    accounting = CodexWorkAccounting(slots)
+    accounting.initialize_fresh(OWNER, incarnation)
+    accounting.register(OWNER, incarnation, logical_operation_id="op", kind="submission", source_request_id="request-a", task_id="task-a")
+
+    with pytest.raises(ValueError, match="identify the operation's task"):
+        accounting.transition(
+            OWNER,
+            incarnation,
+            "op",
+            CodexWorkPhase.SETTLED,
+            evidence_id="terminal-task-b",
+            evidence_source_request_id="request-a",
+            execution_complete=True,
+            publication_complete=True,
+            tracking_complete=True,
+        )
+
+    snapshot = accounting.snapshot(OWNER, incarnation)
+    assert snapshot.operations[0].phase is CodexWorkPhase.RESERVED
+    assert snapshot.releasable is False
