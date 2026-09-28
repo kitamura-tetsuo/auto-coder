@@ -490,10 +490,9 @@ class TestAS005ChildSpecificationValidationRemainsIndependent:
         decomp_analyzer.assert_not_called()
         spec_analyzer.assert_called_once()
         engine._process_single_candidate_reserved.assert_not_called()
-        # This is the first time the generation crosses the production
-        # BLOCKED-application boundary, which durably authorizes and counts
-        # its first automatic repair round.
-        assert spec_gate.repair_rounds.count("individual", 11) == 1
+        # Publishing inherited-child findings is not an automatic repair
+        # initiation and must leave the repair allowance untouched.
+        assert spec_gate.repair_rounds.count("individual", 11) == 0
 
         # A blocked child preserves the parent submission.
         assert github.removed_labels == []
@@ -640,10 +639,9 @@ class TestAS008ReEnableUnchangedBlockedGeneration:
         assert res2.actions == ["Rejected - blocked parent/child decomposition"]
         assert "material defects" in (res2.error or "")
         engine2._process_single_candidate_reserved.assert_not_called()
-        # Re-enabling the category runs this generation through the ordinary
-        # production BLOCKED-application boundary for the first time, which
-        # durably authorizes and counts its first automatic repair round.
-        assert decomp_gate.repair_rounds.count("decomposition", 10) == 1
+        # Re-enabling the category publishes the stored decision, but with no
+        # editor configured it must not reserve a decomposition repair round.
+        assert decomp_gate.repair_rounds.count("decomposition", 10) == 0
 
 
 class TestSchedulerNonInterference:
