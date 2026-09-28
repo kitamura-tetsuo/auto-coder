@@ -25,13 +25,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError, SessionWorkspaceCompatibilityError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError, LocalWriterSettlementError, SessionWorkspaceCompatibilityError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
-from .utils import _COMMAND_EXECUTION_CWD
+from .utils import _COMMAND_EXECUTION_CWD, CommandExecutor
 
 logger = get_logger(__name__)
 
@@ -380,6 +380,8 @@ class _NoEditWorkspaceState:
 
 
 class OpenCodeClient(LLMClientBase):
+    supports_supervised_local_turn = True
+
     """Run a configured OpenCode provider/model while Auto-Coder keeps Git/GitHub ownership."""
 
     def __init__(self, backend_name: Optional[str] = None, use_noedit_options: bool = False) -> None:
@@ -955,8 +957,10 @@ class OpenCodeClient(LLMClientBase):
 
         env = os.environ.copy()
         self._inject_provider_credentials(env)
-        bin_dir = self._build_restricted_bin_dir(env.get("PATH"), cwd)
-        env["PATH"] = bin_dir + os.pathsep + (env.get("PATH") or "")
+        bin_dir: Optional[str] = None
+        if is_noedit:
+            bin_dir = self._build_restricted_bin_dir(env.get("PATH"), cwd)
+            env["PATH"] = bin_dir + os.pathsep + (env.get("PATH") or "")
 
         noedit_agent_name: Optional[str] = None
         if is_noedit:
@@ -967,7 +971,7 @@ class OpenCodeClient(LLMClientBase):
         if resume_session_id is not None:
             self._verify_resumable_session_in_current_workspace(session_id=resume_session_id, cwd=cwd, env=env)
 
-        before = self._snapshot_guard(cwd)
+        before = self._snapshot_guard(cwd) if is_noedit else None
         workspace_before = self._snapshot_noedit_workspace(cwd) if is_noedit else None
         rendered_prompt = render_prompt("opencode.noedit_execution" if is_noedit else "opencode.execution", task_prompt=prompt)
 
@@ -985,30 +989,31 @@ class OpenCodeClient(LLMClientBase):
             logger.warning("LLM invocation: OpenCode CLI is being called. Keep LLM calls minimized.")
             logger.info(f"Running OpenCode CLI with model {effective_model} in {cwd} (no-edit={is_noedit})")
 
-            process: Optional["subprocess.Popen[bytes]"] = None
-            try:
-                process = subprocess.Popen(command, cwd=str(cwd), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=True)
-            except OSError as exc:
-                raise RuntimeError(f"OpenCode CLI could not be executed: {exc}") from exc
-
-            try:
-                stdout_bytes, stderr_bytes = process.communicate(input=rendered_prompt.encode("utf-8"), timeout=self.timeout)
-            except subprocess.TimeoutExpired as exc:
-                self._kill_process_group(process)
+            result = CommandExecutor.run_command(
+                command,
+                cwd=str(cwd),
+                env=env,
+                timeout=self.timeout,
+                stdin_text=rendered_prompt,
+            )
+            if before is not None:
                 self._assert_git_lifecycle_preserved(before, cwd)
-                if workspace_before is not None:
-                    self._assert_noedit_workspace_preserved(workspace_before, cwd)
-                raise AutoCoderTimeoutError(f"OpenCode CLI timed out after {self.timeout} seconds") from exc
-
-            self._assert_git_lifecycle_preserved(before, cwd)
             if workspace_before is not None:
                 self._assert_noedit_workspace_preserved(workspace_before, cwd)
-
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
-            return self._extract_final_answer(stdout=stdout, stderr=stderr, returncode=process.returncode, is_noedit=is_noedit, expected_session_id=resume_session_id)
+            if result.writer_settled is False:
+                raise LocalWriterSettlementError("OpenCode writer settlement is uncertain; provider replacement is withheld")
+            if "timed out" in result.stderr.lower():
+                raise AutoCoderTimeoutError(f"OpenCode CLI timed out after {self.timeout} seconds")
+            return self._extract_final_answer(
+                stdout=result.stdout,
+                stderr=result.stderr.strip(),
+                returncode=result.returncode,
+                is_noedit=is_noedit,
+                expected_session_id=resume_session_id,
+            )
         finally:
-            shutil.rmtree(bin_dir, ignore_errors=True)
+            if bin_dir is not None:
+                shutil.rmtree(bin_dir, ignore_errors=True)
 
     def get_last_session_id(self) -> Optional[str]:
         return self._last_session_id

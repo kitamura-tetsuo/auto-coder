@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import signal
 import stat
 import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 from typing import Optional, Tuple
@@ -17,6 +20,7 @@ from click import ClickException
 
 from src.auto_coder.cli_helpers import build_backend_manager, check_backend_prerequisites
 from src.auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
+from src.auto_coder.invocation_process_supervisor import InstallationContext, InvocationProcessSupervisor, PolicyInstallation
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from src.auto_coder.opencode_client import OpenCodeClient
 from src.auto_coder.prompt_loader import render_prompt
@@ -135,7 +139,47 @@ def _event(event_type: str, session_id: str = "ses_root1", **data) -> str:
 def _manager(config: LLMBackendConfiguration, backend_name: str | None = None):
     name = backend_name or next(iter(config.backends))
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
-        return build_backend_manager([name], name, {})
+        manager = build_backend_manager([name], name, {})
+    return _install_test_supervisor(manager)
+
+
+def _install_test_supervisor(manager):
+    owner_root = Path(tempfile.mkdtemp(prefix="opencode-test-owners-"))
+
+    class Owner:
+        def prepare(self, invocation_id: str) -> Path:
+            group = owner_root / invocation_id
+            group.mkdir()
+            return group
+
+        @staticmethod
+        def child_joiner(group: Path):
+            def join() -> None:
+                os.setsid()
+                (group / "pid").write_text(str(os.getpid()))
+
+            return join
+
+        @staticmethod
+        def stop_and_confirm(group: Path, deadline: float) -> None:
+            try:
+                os.killpg(int((group / "pid").read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        @staticmethod
+        def discard(group: Path) -> None:
+            shutil.rmtree(group, ignore_errors=True)
+
+    class Policy:
+        def install(self, context: InstallationContext) -> PolicyInstallation:
+            return PolicyInstallation(True, establishes_filesystem_enforcement=True)
+
+        def close(self) -> None:
+            pass
+
+    manager._local_supervisor_factory = lambda: InvocationProcessSupervisor(owner=Owner(), filesystem_policy_factory=Policy)  # type: ignore[arg-type]
+    return manager
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +500,7 @@ def test_usage_limit_diagnostic_raises_and_routes_fallback(tmp_path: Path, monke
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config), patch("src.auto_coder.qwen_client.QwenClient", return_value=fallback_client):
         manager = build_backend_manager(["opencode", "fallback"], "opencode", {})
+        _install_test_supervisor(manager)
         assert manager._run_llm_cli("implement") == "fallback-success"
         assert manager.get_last_backend_and_model() == ("fallback", "fallback")
 
@@ -492,51 +537,19 @@ def test_nonzero_exit_without_events_fails_with_return_code(tmp_path: Path, monk
 # ---------------------------------------------------------------------------
 
 
-def test_git_and_gh_lifecycle_mutations_denied_before_effect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_editable_private_git_staging_is_retained_and_caller_is_preserved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
-    bare_remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", str(bare_remote)], check=True, capture_output=True)
-    _git(repo, "remote", "add", "origin", str(bare_remote))
-
-    # Pre-existing caller content that must survive regardless of outcome.
-    (repo / "untracked.txt").write_text("untracked-before\n")
-    (repo / "tracked.txt").write_text("staged-change\n")
-    _git(repo, "add", "tracked.txt")
-
     script = _driver(tmp_path)
-    report = tmp_path / "denials.json"
+    report = tmp_path / "staged.json"
     body = tmp_path / "body.py"
     body.write_text(
-        textwrap.dedent(
-            """
-            import json
-            import subprocess
-
-            results = {}
-            # Allowed: read-only inspection and a direct working-tree edit (not via git).
-            results["status"] = subprocess.run(["git", "status", "--short"], capture_output=True, text=True).returncode
-            open("agent_edit.txt", "w").write("edited by agent\\n")
-
-            for key, cmd in {
-                "add": ["git", "add", "agent_edit.txt"],
-                "commit": ["git", "commit", "-m", "forbidden"],
-                "shell_commit": ["sh", "-c", "git commit -m shellwrap"],
-                "checkout_new": ["git", "checkout", "-b", "tmp-branch"],
-                "push": ["git", "push", "origin", "HEAD:main"],
-            }.items():
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                results[key] = {"returncode": proc.returncode, "stderr": proc.stderr}
-
-            with open(%(report)r, "w") as fh:
-                json.dump(results, fh)
-            """
-            % {"report": str(report)}
-        )
+        "import json, subprocess\n"
+        "open('agent_edit.txt', 'w').write('edited by agent\\n')\n"
+        "subprocess.run(['git', 'add', 'agent_edit.txt'], check=True)\n"
+        f"json.dump({{'staged': subprocess.run(['git', 'diff', '--cached', '--name-only'], check=True, capture_output=True, text=True).stdout}}, open({str(report)!r}, 'w'))\n"
     )
-
     stdout_file = tmp_path / "stdout.jsonl"
-    stdout_file.write_text(_event("step_finish", part={"id": "sf1", "messageID": "m1", "reason": "stop"}) + "\n" + _event("text", part={"id": "t1", "messageID": "m1", "text": "done"}) + "\n")
-
+    stdout_file.write_text(_stdout_with_answer("done"))
     config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5")})
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(script))
@@ -546,62 +559,29 @@ def test_git_and_gh_lifecycle_mutations_denied_before_effect(tmp_path: Path, mon
     head_before = _git(repo, "rev-parse", "HEAD")
     assert _manager(config)._run_llm_cli("implement") == "done"
 
-    denials = json.loads(report.read_text())
-    for key in ("add", "commit", "shell_commit", "checkout_new", "push"):
-        assert denials[key]["returncode"] != 0, key
-        assert "reserved to Auto-Coder" in denials[key]["stderr"], key
-
-    # The working-tree edit (not via git) is allowed and persisted.
+    assert "agent_edit.txt" in json.loads(report.read_text())["staged"]
     assert (repo / "agent_edit.txt").read_text() == "edited by agent\n"
-    # Nothing reached the local "remote": it must still have zero refs.
-    remote_refs = subprocess.run(["git", "--git-dir", str(bare_remote), "for-each-ref"], capture_output=True, text=True).stdout
-    assert remote_refs.strip() == ""
     assert _git(repo, "rev-parse", "HEAD") == head_before
-    # Pre-existing caller content survives.
-    assert (repo / "untracked.txt").read_text() == "untracked-before\n"
-    assert _git(repo, "diff", "--cached", "--name-only") == "tracked.txt"
 
 
-def test_bypassed_git_commit_is_detected_restored_and_fails_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    """Backstop: if the wrapper boundary is somehow bypassed, Auto-Coder still detects and restores.
-
-    Exercises OpenCodeClient directly (not through BackendManager's worktree
-    isolation) so the pre/post Git state can be asserted precisely against
-    `repo` itself, complementing the full production-path denial test above.
-    """
+def test_editable_direct_client_accepts_private_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     real_git = subprocess.run(["which", "git"], capture_output=True, text=True, check=True).stdout.strip()
-
-    (repo / "untracked.txt").write_text("untracked-before\n")
-
     script = _driver(tmp_path)
-    body = tmp_path / "bypass_body.py"
-    body.write_text(
-        textwrap.dedent(
-            f"""
-            import subprocess
-
-            with open("bypassed.txt", "w") as fh:
-                fh.write("mutated\\n")
-            subprocess.run([{real_git!r}, "add", "bypassed.txt"], check=True)
-            subprocess.run([{real_git!r}, "commit", "-m", "bypassed commit"], check=True)
-            """
-        )
-    )
-
+    body = tmp_path / "commit.py"
+    body.write_text(f"open('committed.txt', 'w').write('content\\n')\n" f"import subprocess\nsubprocess.run([{real_git!r}, 'add', 'committed.txt'], check=True, capture_output=True)\n" f"subprocess.run([{real_git!r}, 'commit', '-m', 'private commit'], check=True, capture_output=True)\n")
+    stdout_file = tmp_path / "stdout.jsonl"
+    stdout_file.write_text(_stdout_with_answer("committed"))
     config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5")})
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(script))
     monkeypatch.setenv("OPENCODE_TEST_BODY_FILE", str(body))
-
+    monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(stdout_file))
     head_before = _git(repo, "rev-parse", "HEAD")
     with patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
         client = OpenCodeClient(backend_name="opencode")
-        with pytest.raises(RuntimeError, match="Git lifecycle"):
-            client._run_llm_cli("implement")
-
-    assert _git(repo, "rev-parse", "HEAD") == head_before
-    assert (repo / "untracked.txt").read_text() == "untracked-before\n"
+        assert client._run_llm_cli("implement") == "committed"
+    assert _git(repo, "rev-parse", "HEAD") != head_before
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +637,29 @@ def test_timeout_kills_process_group_before_any_late_write(tmp_path: Path, monke
     except FileNotFoundError:
         state = "gone"
     assert state in ("gone", "Z"), f"child process {child_pid} is still running (state={state!r})"
+
+
+def test_success_waits_for_descendant_writer_settlement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    script = _driver(tmp_path)
+    child_pid_file = tmp_path / "detached.pid"
+    body = tmp_path / "detached.py"
+    body.write_text("import subprocess, sys\n" f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n" f"open({str(child_pid_file)!r}, 'w').write(str(child.pid))\n")
+    stdout_file = tmp_path / "stdout.jsonl"
+    stdout_file.write_text(_stdout_with_answer("settled"))
+    config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(script))
+    monkeypatch.setenv("OPENCODE_TEST_BODY_FILE", str(body))
+    monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(stdout_file))
+
+    assert _manager(config)._run_llm_cli("implement") == "settled"
+    child_pid = int(child_pid_file.read_text())
+    try:
+        state = Path(f"/proc/{child_pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except FileNotFoundError:
+        state = "gone"
+    assert state in ("gone", "Z")
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +848,7 @@ def test_ac002_manager_local_fallback_after_missing_session_reports_non_continui
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
         manager = build_backend_manager(["opencode"], "opencode", {})
+        _install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
         result = manager.continue_session(session_id="ses_missing", prompt="continue please")
@@ -875,6 +879,7 @@ def test_ac002_manager_backend_switch_fallback_reports_non_continuity(tmp_path: 
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config), patch("src.auto_coder.qwen_client.QwenClient", return_value=fallback_client):
         manager = build_backend_manager(["opencode", "fallback"], "opencode", {})
+        _install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
         result = manager.continue_session(session_id="ses_x", prompt="continue please")
@@ -943,6 +948,7 @@ def test_ac003_manager_continuity_flag_resets_after_identity_mismatch(tmp_path: 
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
         manager = build_backend_manager(["opencode"], "opencode", {})
+        _install_test_supervisor(manager)
 
         monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(good))
         assert manager.continue_session(session_id="ses_good", prompt="first") == "first ok"

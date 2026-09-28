@@ -12,6 +12,7 @@ import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextvars import ContextVar
@@ -45,6 +46,36 @@ class _SupervisedCommandContext:
 
 
 _SUPERVISED_COMMAND: ContextVar[Optional[_SupervisedCommandContext]] = ContextVar("auto_coder_supervised_command", default=None)
+
+
+def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment: Dict[str, str]) -> Path:
+    """Create private provider state beside the configured production runtime."""
+    binding = context.boundary.binding
+    runtime_base = Path(environment.get("AUTO_CODER_RUNTIME_ROOT", tempfile.gettempdir())) / "local-invocations"
+    runtime = runtime_base / binding.invocation_id
+    runtime.mkdir(parents=True, exist_ok=False)
+    home = runtime / "home"
+    home.mkdir()
+    original_home = Path(environment.get("HOME", str(Path.home())))
+    for relative in (Path(".codex/auth.json"), Path(".config/opencode"), Path(".local/share/opencode/auth.json")):
+        source = original_home / relative
+        destination = home / relative
+        if source.is_dir():
+            shutil.copytree(source, destination)
+        elif source.is_file():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+    owner = getattr(context.supervisor, "owner", None)
+    uid = getattr(owner, "worker_uid", None)
+    gid = getattr(owner, "worker_gid", None)
+    if uid is not None and gid is not None:
+        for root in (binding.workspace, runtime):
+            for current, directories, files in os.walk(root):
+                os.chown(current, uid, gid)
+                for name in (*directories, *files):
+                    os.chown(Path(current) / name, uid, gid, follow_symlinks=False)
+    environment["HOME"] = str(home)
+    return runtime
 
 
 @contextlib.contextmanager
@@ -333,6 +364,7 @@ class CommandResult:
     stdout: str
     stderr: str
     returncode: int
+    writer_settled: Optional[bool] = None
 
 
 class CommandExecutor:
@@ -851,12 +883,16 @@ class CommandExecutor:
             selected_cwd = Path(cwd or str(binding.workspace)).resolve()
             if selected_cwd != binding.workspace.resolve():
                 return CommandResult(False, "", "supervised provider cwd does not match the bound private result root", -1)
+            try:
+                private_runtime = _prepare_invocation_runtime(supervised, launch_env)
+            except OSError as exc:
+                return CommandResult(False, "", f"private provider runtime preparation failed: {exc}", -1, False)
             request = InvocationLaunch(
                 invocation_id=binding.invocation_id,
                 backend_type=boundary.backend_type,
                 effective_mode="editable" if boundary.editable else "no-edit",
                 result_root=binding.workspace,
-                runtime_paths=(),
+                runtime_paths=(private_runtime,) if boundary.editable else (),
                 executable=cmd[0],
                 arguments=tuple(cmd[1:]),
                 prompt_transport=PromptTransport.STDIN if stdin_text is not None else PromptTransport.INHERIT,
@@ -867,6 +903,8 @@ class CommandExecutor:
                 protected_paths=(binding.caller_root, binding.caller_git_dir, binding.caller_common_dir),
             )
             result = supervised.supervisor.run(request, boundary=boundary)
+            if result.writer_complete:
+                shutil.rmtree(private_runtime, ignore_errors=True)
             if on_stream is not None:
                 if result.stdout:
                     on_stream("stdout", result.stdout)
@@ -882,6 +920,7 @@ class CommandExecutor:
                 result.stdout,
                 stderr,
                 result.returncode if result.returncode is not None else -1,
+                result.writer_complete,
             )
 
         try:

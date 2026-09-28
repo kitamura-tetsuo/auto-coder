@@ -172,6 +172,20 @@ def test_dockerfile_pins_opencode_release_and_explicit_architectures() -> None:
     # REQ-001: Binary copied to final image
     assert "COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode" in content
 
+
+def test_documented_channels_supply_local_supervisor_runtime() -> None:
+    root = Path(__file__).parents[1]
+    compose = (root / "compose.channels.yml").read_text()
+    dockerfile = (root / "Dockerfile").read_text()
+    content = dockerfile
+
+    assert compose.count('AUTO_CODER_LOCAL_WORKER_UID: "65532"') == 2
+    assert compose.count('AUTO_CODER_LOCAL_WORKER_GID: "65532"') == 2
+    assert compose.count("- /sys/fs/cgroup:/sys/fs/cgroup:rw") == 2
+    assert compose.count("privileged: true") == 2
+    assert compose.count("cgroup: host") == 2
+    assert "useradd --uid 65532 --gid 65532" in dockerfile
+
     # REQ-005: No embedded credentials or hardcoded tokens in image definitions
     forbidden_tokens = ["api_key", "secret", "token", "password", "ghp_", "sk-"]
     for line in content.splitlines():
@@ -199,8 +213,9 @@ def test_compose_channels_runtime_mounts_and_isolation() -> None:
     assert beta["environment"]["HOME"] == "/runtime/home"
 
     # REQ-004: Persistent runtime mounts are separated between channels
-    release_vols = {v.split(":")[0] for v in release["volumes"] if not v.endswith(":/routing")}
-    beta_vols = {v.split(":")[0] for v in beta["volumes"] if not v.endswith(":/routing")}
+    shared_infrastructure = {"/routing", "/sys/fs/cgroup"}
+    release_vols = {v.split(":")[0] for v in release["volumes"] if not any(f":{target}" in v for target in shared_infrastructure)}
+    beta_vols = {v.split(":")[0] for v in beta["volumes"] if not any(f":{target}" in v for target in shared_infrastructure)}
 
     assert "./runtime/release" in release_vols
     assert "./runtime/beta" in beta_vols

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from .codex_cli_args import build_codex_exec_command
-from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
+from .exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError, LocalWriterSettlementError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
@@ -451,6 +451,9 @@ class CodexClient(LLMClientBase):
             response_output = stdout or stderr
             low = full_output.lower()
 
+            if result.writer_settled is False:
+                raise LocalWriterSettlementError("Codex writer settlement is uncertain; provider replacement is withheld")
+
             # Check for timeout (returncode -1 and "timed out" in stderr)
             if result.returncode == -1 and "timed out" in low:
                 raise AutoCoderTimeoutError(full_output)
@@ -505,6 +508,9 @@ class CodexClient(LLMClientBase):
         except AutoCoderRetryableBackendError as e:
             status = "error"
             error_message = str(e)
+            raise
+        except LocalWriterSettlementError:
+            status = "error"
             raise
         except Exception as e:
             status = "error"

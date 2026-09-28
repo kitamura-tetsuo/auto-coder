@@ -25,7 +25,7 @@ legacy evidence but is not required for operational success. No-edit evidence ca
 never authorize edit promotion, and a provider session identifier is metadata—not
 continuation admission or permission to reuse a result root.
 
-Codex turns use this boundary at the real command launch. The controller strips
+Codex and OpenCode turns use this boundary at the real command launch. The controller strips
 ambient Git target overrides, requires the command cwd to equal the immutable
 private result root, installs the Linux filesystem policy, and launches the CLI in
 its invocation-owned cgroup. A provider return is successful only after the cgroup
@@ -33,6 +33,13 @@ is positively empty and the direct child is reaped. Production deployments provi
 the non-root child credentials with `AUTO_CODER_LOCAL_WORKER_UID` and
 `AUTO_CODER_LOCAL_WORKER_GID`; missing or unusable cgroup/Landlock prerequisites
 cause refusal before the CLI starts rather than an editable fallback.
+
+The checked-in `compose.channels.yml` production profile runs the controller with
+host cgroup-v2 access and supplies the image's dedicated UID/GID 65532 worker
+identity. Each turn receives a private provider home beneath
+`$AUTO_CODER_RUNTIME_ROOT/local-invocations`, with only required authentication
+inputs copied into it. Editable OpenCode turns may use ordinary private Git/index,
+commit, ref, and worktree operations; the caller checkout remains isolated.
 
 Explicit continuation compatibility failures are not redirected into fresh
 invocations. Effective mode is resolved before boundary construction, including
