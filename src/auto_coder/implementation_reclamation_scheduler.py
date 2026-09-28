@@ -284,6 +284,172 @@ def _rescheduled(obligation: ReclamationObligation, now: float, reason: str) -> 
     )
 
 
+def _has_codex_accounting(slots: ImplementationSlotRepository, owner: ImplementationOwner) -> bool:
+    """Return whether *owner* is governed by the Codex work fence.
+
+    Presence, rather than validity, selects this path.  Malformed or incomplete
+    accounting must fail closed instead of falling through to the less
+    restrictive local/Jules collector.
+    """
+    with slots._state_lock():
+        record = slots._read().get(owner.key)
+    return isinstance(record, dict) and "codex_work_accounting" in record
+
+
+def _codex_observation_for_retirement(codex: Any) -> Any:
+    """Translate the read-only Codex snapshot into the shared predicate model."""
+    from .codex_retirement_observer import CodexEvidenceState
+    from .implementation_retirement import (
+        CollectionReasonKind,
+        ImplementationRetirementObservation,
+        ProviderSessionObservation,
+        RetirementCollectionReason,
+        SessionTerminalState,
+    )
+
+    terminal = {
+        CodexEvidenceState.TERMINAL,
+        CodexEvidenceState.TERMINAL_FAILED,
+        CodexEvidenceState.TERMINAL_CANCELLED,
+    }
+    active = {
+        CodexEvidenceState.ACTIVE_RUNNING,
+        CodexEvidenceState.ACTIVE_QUEUED,
+        CodexEvidenceState.ACTIVE_PAUSED,
+    }
+    sessions = tuple(
+        ProviderSessionObservation(
+            evidence.task_id,
+            "codex-cloud",
+            SessionTerminalState.ENDED if evidence.state in terminal else (SessionTerminalState.ACTIVE if evidence.state in active else SessionTerminalState.UNKNOWN),
+            evidence.state in terminal,
+        )
+        for evidence in codex.task_evidence
+    )
+    reasons = tuple(RetirementCollectionReason(CollectionReasonKind.INCOMPLETE_DISCOVERY, reason) for reason in codex.incomplete_reasons)
+    return ImplementationRetirementObservation(
+        repository=codex.repository,
+        owner=codex.owner,
+        reservation_incarnation=codex.incarnation,
+        activity_revision=codex.activity_revision,
+        implementation_prs=codex.implementation_prs,
+        provider_sessions=sessions,
+        collection_reasons=reasons,
+    )
+
+
+def _with_local_retirement_evidence(observation: Any, slots: ImplementationSlotRepository) -> Any:
+    """Attach local execution and obligation evidence to a Codex snapshot."""
+    from dataclasses import replace
+
+    from .implementation_retirement_observer import _observe_local_executions, _read_continuing_obligations
+
+    with slots._state_lock():
+        record = slots._read().get(observation.owner.key)
+    if not isinstance(record, dict):
+        return observation
+    return replace(
+        observation,
+        local_executions=tuple(_observe_local_executions(slots, observation.owner)),
+        continuing_obligations=_read_continuing_obligations(record),
+    )
+
+
+def _collect_settle_and_retire_codex(
+    owner: ImplementationOwner,
+    slots: ImplementationSlotRepository,
+    github_client: Any,
+    cloud_run_store: Optional[Any],
+    wham_client: Optional[Any],
+    routing: Optional[Any],
+) -> Any:
+    """Compose reconstruction, observation, settlement, and guarded removal.
+
+    The caller holds the owner's serialization guard for this entire function.
+    All Codex senders use the same guard, so no new admitted work can cross the
+    final observation/removal boundary.  Source-consistency identities are
+    checked both by accounting and by the collector immediately before commit.
+    """
+    from .cloud_run import CloudRunRepository
+    from .codex_retirement_observer import collect_codex_retirement_observation
+    from .codex_work_accounting import CodexWorkAccounting, CodexWorkPhase
+    from .codex_work_reconstruction import production_codex_reconstructor
+    from .implementation_retirement import RetirementResult, evaluate_retirement_predicate
+
+    incarnation = slots.owner_incarnation(owner)
+    if incarnation is None:
+        return RetirementResult(RetirementStatus.STALE_OBSERVATION, diagnostic="Owner is no longer active")
+    reconstructor = production_codex_reconstructor(slots.repo_name, owner.number)
+    accounting = CodexWorkAccounting(slots, reconstructor.consistency_ids)
+    snapshot = accounting.snapshot(owner, incarnation)
+    runs = cloud_run_store if cloud_run_store is not None else CloudRunRepository(slots.repo_name)
+    observed = collect_codex_retirement_observation(
+        slots.repo_name,
+        owner,
+        incarnation,
+        slots,
+        snapshot,
+        runs,
+        github_client,
+        wham=wham_client,
+    )
+    shared = _with_local_retirement_evidence(_codex_observation_for_retirement(observed), slots)
+    preliminary = evaluate_retirement_predicate(shared)
+    if preliminary.status is not RetirementStatus.RELEASED:
+        return preliminary
+
+    operations = {operation.logical_operation_id: operation for operation in snapshot.operations}
+    for certificate in observed.settlement_certificates:
+        operation = operations.get(certificate.logical_operation_id)
+        if operation is None or operation.settled:
+            continue
+        accounting.transition(
+            owner,
+            incarnation,
+            operation.logical_operation_id,
+            CodexWorkPhase.SETTLED,
+            evidence_id=f"codex-retirement:{certificate.assistant_turn_id}",
+            evidence_causal_baseline=operation.causal_baseline,
+            evidence_source_request_id=operation.source_request_id,
+            task_id=certificate.task_id,
+            execution_complete=True,
+            publication_complete=True,
+            tracking_complete=True,
+        )
+
+    # Settlement is itself a durable mutation.  Recollect all evidence and
+    # consistency tokens rather than weakening the original observation or
+    # treating our own valid write as unrelated new work.
+    current = accounting.snapshot(owner, incarnation)
+    refreshed = collect_codex_retirement_observation(
+        slots.repo_name,
+        owner,
+        incarnation,
+        slots,
+        current,
+        runs,
+        github_client,
+        wham=wham_client,
+    )
+    converted = _with_local_retirement_evidence(_codex_observation_for_retirement(refreshed), slots)
+    if not current.releasable:
+        pending = tuple(f"operation:{operation.logical_operation_id}" for operation in current.operations if not operation.settled)
+        return RetirementResult(
+            RetirementStatus.RETAINED_UNKNOWN,
+            responsible_members=pending,
+            diagnostic="Codex work accounting is not completely settled",
+        )
+    if not refreshed.conclusive:
+        outcome = evaluate_retirement_predicate(converted)
+        if outcome.status is not RetirementStatus.RELEASED:
+            return outcome
+        return RetirementResult(
+            RetirementStatus.RETAINED_UNKNOWN,
+            diagnostic="Codex evidence is not conclusively terminal",
+        )
+    return retire_implementation_slot(slots, converted, routing)
+
+
 def run_due_reclamation_checks(
     slots: ImplementationSlotRepository,
     store: Optional[ReclamationObligationStore] = None,
@@ -293,6 +459,8 @@ def run_due_reclamation_checks(
     cloud_manager: Optional[Any] = None,
     cloud_run_store: Optional[Any] = None,
     cloud_provider_stores_available: bool = True,
+    codex_wham_client: Optional[Any] = None,
+    routing: Optional[Any] = None,
     on_capacity_freed: Optional[Callable[[], None]] = None,
     now: Optional[float] = None,
 ) -> int:
@@ -319,15 +487,27 @@ def run_due_reclamation_checks(
                 store.clear(owner, obligation.incarnation)
                 continue
             try:
-                observation = collect_retirement_observation(
-                    owner,
-                    slots,
-                    github_client,
-                    jules_client,
-                    cloud_manager,
-                    cloud_run_store,
-                    cloud_provider_stores_available,
-                )
+                if _has_codex_accounting(slots, owner):
+                    result = _collect_settle_and_retire_codex(
+                        owner,
+                        slots,
+                        github_client,
+                        cloud_run_store,
+                        codex_wham_client,
+                        routing,
+                    )
+                    observation = None
+                else:
+                    observation = collect_retirement_observation(
+                        owner,
+                        slots,
+                        github_client,
+                        jules_client,
+                        cloud_manager,
+                        cloud_run_store,
+                        cloud_provider_stores_available,
+                    )
+                    result = retire_implementation_slot(slots, observation, routing) if observation is not None else None
             except Exception as exc:
                 cause = f"collection-failure:{type(exc).__name__}:{exc}"
                 message = f"Reclamation evidence collection failed for {owner.key} (incarnation={obligation.incarnation}): {exc}; keeping the pending obligation"
@@ -344,7 +524,7 @@ def run_due_reclamation_checks(
                 store.clear(owner, obligation.incarnation)
                 continue
 
-            result = retire_implementation_slot(slots, observation)
+            assert result is not None
             if result.status is RetirementStatus.RELEASED:
                 logger.info(f"Reclaimed terminal implementation slot {owner.key} " f"(incarnation={obligation.incarnation}, reason={result.diagnostic})")
                 store.clear(owner, obligation.incarnation)

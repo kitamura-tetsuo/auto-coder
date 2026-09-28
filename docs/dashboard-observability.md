@@ -1338,3 +1338,12 @@ the direct initial-PR recovery sender, and active reservations are reconstructed
 before the recovery loop starts. These paths retain their existing stage and
 outcome emissions; accounting refusal is reported through the existing
 deferred/unknown diagnostics rather than a new dashboard event.
+
+Normal and startup reclamation now consume that same reconstructed accounting,
+fresh Codex/PR observations, and guarded settlement certificates before removing
+active capacity. This is observability-neutral: it introduces no processing
+origin, provider route, outcome, or structured event field. Retention and release
+continue through the existing loguru reclamation diagnostics and capacity-refill
+path; `tests/test_codex_reclamation_composition.py` exercises the production
+predicate/settlement/removal composition, while dashboard renderers have no new
+event to map.

@@ -219,7 +219,8 @@ def evaluate_retirement_predicate(
 
     # 2. Provider Sessions
     for session in observation.provider_sessions:
-        if session.provider.lower() != "jules":
+        provider = session.provider.lower()
+        if provider not in {"jules", "codex-cloud"}:
             unknown_blockers.append(f"session:{session.session_id}")
         elif session.state == SessionTerminalState.ACTIVE or not session.latest_activity_ended:
             active_blockers.append(f"session:{session.session_id}")
@@ -364,8 +365,12 @@ def retire_implementation_slot(
                 "kind": observation.owner.kind,
                 "number": observation.owner.number,
                 "incarnation": observation.reservation_incarnation,
-                "implementation_prs": sorted(stored_prs),
-                "provider_sessions": sorted(stored_sessions),
+                "implementation_prs": sorted(observed_prs),
+                "provider_sessions": sorted(observed_sessions),
+                # Preserve the exact settled Codex operation journal when
+                # present.  Retired history is evidence/fencing state only;
+                # it is never imported back into active capacity.
+                "codex_work_accounting": record.get("codex_work_accounting"),
                 "generation": generation if isinstance(generation, str) else None,
                 "retired_at": time.time(),
             }

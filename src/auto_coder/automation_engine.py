@@ -3694,12 +3694,15 @@ class AutomationEngine:
         cloud_manager: Optional[Any] = None
         cloud_run_store: Optional[Any] = None
         cloud_provider_stores_available = True
+        codex_wham_client: Optional[Any] = None
         try:
             from .cloud_manager import CloudManager
             from .cloud_run import CloudRunRepository
+            from .codex_wham_client import CodexWhamClient
 
             cloud_manager = CloudManager(repo_name)
             cloud_run_store = CloudRunRepository(repo_name)
+            codex_wham_client = CodexWhamClient()
         except Exception as exc:
             cloud_provider_stores_available = False
             logger.debug(f"Cloud provider stores unavailable for reclamation checks on {repo_name}: {exc}")
@@ -3717,6 +3720,8 @@ class AutomationEngine:
                 cloud_manager=cloud_manager,
                 cloud_run_store=cloud_run_store,
                 cloud_provider_stores_available=cloud_provider_stores_available,
+                codex_wham_client=codex_wham_client,
+                routing=self.issue_stage_routing,
                 on_capacity_freed=_on_capacity_freed,
             )
         except Exception as exc:
