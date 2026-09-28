@@ -180,5 +180,56 @@ def test_old_completion_cannot_settle_unmatched_new_admission(tmp_path: Path) ->
     )
 
     assert result.settlement_certificates == ()
-    assert "operation new-repair is unresolved" in result.incomplete_reasons
+    assert "operation new-repair lacks causal settlement evidence" in result.incomplete_reasons
+    assert result.conclusive is False
+
+
+def test_stored_settlement_without_matching_turn_history_remains_incomplete(tmp_path: Path) -> None:
+    slots, runs, incarnation = _stores(tmp_path)
+    accounting = CodexWorkAccounting(slots)
+    accounting.initialize_fresh(OWNER, incarnation)
+    assert slots.reserve(OWNER, implementation_pr=10)
+    accounting.register(
+        OWNER,
+        incarnation,
+        logical_operation_id="repair",
+        kind="repair",
+        source_request_id="missing-request",
+        causal_baseline=f"{TASK}~assttrn_baseline",
+        task_id=TASK,
+    )
+    snapshot = accounting.transition(
+        OWNER,
+        incarnation,
+        "repair",
+        CodexWorkPhase.SETTLED,
+        evidence_id="stored-claim",
+        evidence_causal_baseline=f"{TASK}~assttrn_baseline",
+        evidence_source_request_id="missing-request",
+        task_id=TASK,
+        execution_complete=True,
+        publication_complete=True,
+        tracking_complete=True,
+    )
+    task, turns = _terminal_task()
+    prs = {
+        10: {"number": 10, "state": "closed"},
+        11: {"number": 11, "state": "closed"},
+        12: {"number": 12, "state": "closed", "body": "unrelated"},
+    }
+
+    result = collect_codex_retirement_observation(
+        REPOSITORY,
+        OWNER,
+        incarnation,
+        slots,
+        snapshot,
+        runs,
+        GitHubReader(prs),  # type: ignore[arg-type]
+        wham=WhamReader(task, turns),  # type: ignore[arg-type]
+        attributions=CodexPrAttributionRepository(REPOSITORY, tmp_path / "attributions.json"),
+    )
+
+    assert result.settlement_certificates == ()
+    assert "operation repair lacks causal settlement evidence" in result.incomplete_reasons
     assert result.conclusive is False

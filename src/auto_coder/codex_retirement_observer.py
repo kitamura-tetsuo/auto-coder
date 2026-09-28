@@ -18,7 +18,7 @@ from .cloud_task_client_base import CloudTaskState
 from .codex_observation import ObservationBinding, execution_evidence
 from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, closes_issue, task_ids_from_text
 from .codex_wham_client import CodexWhamClient, WhamTask, WhamTurn
-from .codex_work_accounting import CodexWorkOperation, CodexWorkSnapshot, WorkAccountingStatus
+from .codex_work_accounting import CodexWorkAccounting, CodexWorkOperation, CodexWorkSnapshot, WorkAccountingStatus
 from .implementation_retirement import ImplementationPRObservation, PRTerminalState
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotSnapshot
 from .util.gh_cache import GitHubClient
@@ -74,7 +74,7 @@ class CodexRetirementObservation:
     @property
     def conclusive(self) -> bool:
         terminal = {CodexEvidenceState.TERMINAL, CodexEvidenceState.TERMINAL_FAILED, CodexEvidenceState.TERMINAL_CANCELLED}
-        return bool(not self.incomplete_reasons and self.implementation_prs and all(item.is_terminal for item in self.implementation_prs) and all(item.state in terminal for item in self.task_evidence))
+        return bool(not self.incomplete_reasons and self.implementation_prs and self.task_evidence and all(item.is_terminal for item in self.implementation_prs) and all(item.state in terminal for item in self.task_evidence))
 
 
 def _token(value: object) -> str:
@@ -113,7 +113,7 @@ def _request_matches(turn: WhamTurn, request_id: str) -> bool:
 
 
 def _settlement(operation: CodexWorkOperation, task: Optional[WhamTask], turns: list[WhamTurn]) -> Optional[OperationSettlementCertificate]:
-    if operation.task_id is None or task is None:
+    if operation.task_id is None or task is None or not operation.accepted or task.id != operation.task_id:
         return None
     current = task.current_assistant_turn
     if current is None or not current.id or current.status.lower() not in {"completed", "failed", "error", "cancelled", "canceled"}:
@@ -220,8 +220,9 @@ def collect_codex_retirement_observation(
     for operation in accounting_snapshot.operations:
         certificate = _settlement(operation, task_payloads.get(operation.task_id or ""), task_turns.get(operation.task_id or "", []))
         if certificate is None:
-            if not operation.settled:
-                reasons.append(f"operation {operation.logical_operation_id} is unresolved")
+            cancelled_before_delivery = operation.settled and operation.definite_non_delivery and not operation.accepted
+            if not cancelled_before_delivery:
+                reasons.append(f"operation {operation.logical_operation_id} lacks causal settlement evidence")
         else:
             certificates.append(certificate)
 
@@ -239,17 +240,21 @@ def collect_codex_retirement_observation(
         reasons.append(f"verified PR attribution inventory unavailable: {type(exc).__name__}")
         provenance.append(CandidateSourceProvenance("verified-pr-attributions", attribution_token, False))
     native_complete = True
+    native_identity = "unavailable"
     try:
         connected = github.get_connected_prs(repository, owner.number, strict=True)
         candidates.update(int(number) for number in connected)
+        native_identity = _token(sorted(connected))
     except Exception as exc:
         native_complete = False
         reasons.append(f"native PR association discovery incomplete: {type(exc).__name__}")
-    provenance.append(CandidateSourceProvenance("native-issue-associations", _token(sorted(candidates)) if native_complete else "unavailable", native_complete))
+    provenance.append(CandidateSourceProvenance("native-issue-associations", native_identity, native_complete))
 
     open_complete = True
+    open_identity = "incomplete"
     try:
         open_prs = github.get_open_pull_requests_strict(repository)
+        open_identity = _token(open_prs)
         for pr in open_prs:
             number = pr.get("number")
             if not isinstance(number, int):
@@ -272,7 +277,7 @@ def collect_codex_retirement_observation(
         reasons.append(f"open PR discovery incomplete: {type(exc).__name__}")
     if not open_complete:
         reasons.append("open PR attribution is incomplete")
-    provenance.append(CandidateSourceProvenance("strict-open-pr-discovery", _token(sorted(candidates)) if open_complete else "incomplete", open_complete))
+    provenance.append(CandidateSourceProvenance("strict-open-pr-discovery", open_identity, open_complete))
 
     prs: list[ImplementationPRObservation] = []
     for number in sorted(candidates):
@@ -305,6 +310,23 @@ def collect_codex_retirement_observation(
             reasons.append("verified PR attribution inventory changed during collection")
     except Exception as exc:
         reasons.append(f"verified PR attribution revalidation unavailable: {type(exc).__name__}")
+    try:
+        current_accounting = CodexWorkAccounting(slots).snapshot(owner, incarnation)
+        if _token(asdict(current_accounting)) != provenance[1].consistency_identity:
+            reasons.append("work accounting changed during collection")
+    except Exception as exc:
+        reasons.append(f"work accounting revalidation unavailable: {type(exc).__name__}")
+    try:
+        current_connected = github.get_connected_prs(repository, owner.number, strict=True)
+        if _token(sorted(current_connected)) != native_identity:
+            reasons.append("native PR associations changed during collection")
+    except Exception as exc:
+        reasons.append(f"native PR association revalidation unavailable: {type(exc).__name__}")
+    try:
+        if _token(github.get_open_pull_requests_strict(repository)) != open_identity:
+            reasons.append("open PR discovery changed during collection")
+    except Exception as exc:
+        reasons.append(f"open PR discovery revalidation unavailable: {type(exc).__name__}")
 
     return CodexRetirementObservation(
         repository,
