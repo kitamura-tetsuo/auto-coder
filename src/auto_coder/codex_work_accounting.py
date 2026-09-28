@@ -144,6 +144,40 @@ class CodexWorkAccounting:
             raise ValueError("A complete reconstruction receipt must identify every consistent durable source")
         return self._initialize(owner, incarnation, receipt)
 
+    def reconcile_from_receipt(self, owner: ImplementationOwner, incarnation: str, receipt: ReconstructionReceipt) -> CodexWorkSnapshot:
+        """Refresh source provenance without weakening already-accounted work."""
+        if not receipt.complete:
+            raise ValueError("A complete reconstruction receipt must identify every consistent durable source")
+        with self.slots.serialize(owner), self.slots._state_lock():
+            owners = self.slots._read()
+            record = self._active_record(owners, owner, incarnation)
+            raw = record.get(self._FIELD)
+            if raw is None:
+                record[self._FIELD] = {
+                    "status": WorkAccountingStatus.COMPLETE.value,
+                    "operations": {operation.logical_operation_id: self._operation_record(operation) for operation in receipt.operations},
+                    "reconstruction_receipt_id": receipt.receipt_id,
+                    "reconstruction_sources": list(receipt.sources),
+                    "reconstruction_consistency_ids": dict(receipt.source_consistency_ids),
+                }
+            else:
+                accounting = self._complete_accounting(record)
+                operations = accounting["operations"]
+                assert isinstance(operations, dict)
+                for operation in receipt.operations:
+                    encoded = self._operation_record(operation)
+                    existing = operations.get(operation.logical_operation_id)
+                    if existing is None:
+                        operations[operation.logical_operation_id] = encoded
+                    elif not isinstance(existing, dict) or any(existing.get(field) != encoded[field] for field in ("kind", "source_request_id", "causal_baseline", "task_id")):
+                        raise ImplementationSlotUnavailable("Reconstruction conflicts with accounted Codex work")
+                accounting["reconstruction_receipt_id"] = receipt.receipt_id
+                accounting["reconstruction_sources"] = list(receipt.sources)
+                accounting["reconstruction_consistency_ids"] = dict(receipt.source_consistency_ids)
+            self._advance_revision(record)
+            self.slots._write(owners)
+            return self._snapshot_from_record(owner, incarnation, record)
+
     def _initialize(self, owner: ImplementationOwner, incarnation: str, receipt: Optional[ReconstructionReceipt]) -> CodexWorkSnapshot:
         with self.slots.serialize(owner), self.slots._state_lock():
             owners = self.slots._read()

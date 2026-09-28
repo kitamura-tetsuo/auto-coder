@@ -38,3 +38,20 @@ conflicting identity, incomplete accounting inventory, or replay fails closed;
 a replay therefore cannot spend another POST. Delivery is projected without
 equating provider acceptance with execution/publication/tracking completion,
 and ambiguous delivery remains unresolved.
+
+Production initial submission now holds that owner fence across the durable
+CloudRun claim and CLI creation. Codex Cloud continuations (including repair
+callers that share the client) resolve their Issue owner from retained CloudRun
+task provenance and hold the fence across follow-up journaling and WHAM. The
+initial-PR recovery monitor applies the same boundary around its recovery-store
+reservation and direct WHAM request. Untracked tasks remain outside this
+Issue-owned policy, while a known task with missing, conflicting, or retired
+ownership fails before transport.
+
+Daemon startup reconstructs every active Issue reservation from the production
+CloudRun, CloudManager, retry-authorization, RetryDispatch, follow-up, repair,
+and PR-recovery stores. Store-native logical snapshots provide consistency
+identities for SQLite sources, while file journals use content identities. The
+same production readers are invoked before later sends and retirement reads,
+so a restart or material source mutation cannot silently preserve a stale
+complete receipt.

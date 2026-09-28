@@ -12,6 +12,10 @@ from .implementation_slots import ImplementationOwner, ImplementationSlotUnavail
 T = TypeVar("T")
 
 
+class CodexWorkOutsideScope(LookupError):
+    """The task has no durable ordinary Issue-owned Codex provenance."""
+
+
 @dataclass(frozen=True)
 class CodexWorkIdentity:
     """Authoritative identity carried from a durable producer to transport."""
@@ -85,3 +89,61 @@ def stable_codex_operation_id(kind: str, source_request_id: str) -> str:
     """Derive a replay-stable, non-secret accounting key."""
     digest = hashlib.sha256(f"{kind}\0{source_request_id}".encode("utf-8")).hexdigest()
     return f"{kind}:{digest}"
+
+
+def production_codex_fence(repository: str, task_id: str, kind: str, source_request_id: str, causal_baseline: Optional[str] = None) -> tuple[CodexWorkFence, CodexWorkIdentity]:
+    """Resolve a task through durable CloudRun and current slot evidence."""
+    from .cloud_run import CloudRunRepository
+    from .codex_work_reconstruction import production_codex_reconstructor
+    from .implementation_slots import ImplementationSlotRepository
+
+    if not repository:
+        raise CodexWorkOutsideScope("Codex client has no repository ownership context")
+    matches = [run for run in CloudRunRepository(repository).list_all() if run.provider == "codex-cloud" and run.task_id == task_id]
+    if not matches:
+        raise CodexWorkOutsideScope("Codex task is positively outside tracked Issue work")
+    if len(matches) != 1:
+        raise ImplementationSlotUnavailable("Codex task has no unique durable Issue ownership")
+    run = matches[0]
+    slots = ImplementationSlotRepository(repository, 1)
+    owner = ImplementationOwner("issue", run.issue_number)
+    incarnation = slots.owner_incarnation(owner)
+    if not incarnation:
+        raise ImplementationSlotUnavailable("Codex task owner has no active incarnation")
+    reconstructor = production_codex_reconstructor(repository, run.issue_number)
+    accounting = CodexWorkAccounting(slots, reconstructor.consistency_ids)
+    accounting.reconcile_from_receipt(owner, incarnation, reconstructor.reconstruct())
+    identity = CodexWorkIdentity(
+        repository,
+        run.issue_number,
+        incarnation,
+        stable_codex_operation_id(kind, source_request_id),
+        kind,
+        source_request_id,
+        task_id,
+        causal_baseline,
+    )
+    return CodexWorkFence(accounting), identity
+
+
+def production_codex_issue_fence(repository: str, issue_number: int, kind: str, source_request_id: str) -> tuple[CodexWorkFence, CodexWorkIdentity]:
+    """Prepare a pre-task fence for an already-reserved Issue owner."""
+    from .codex_work_reconstruction import production_codex_reconstructor
+    from .implementation_slots import ImplementationSlotRepository
+
+    slots = ImplementationSlotRepository(repository, 1)
+    owner = ImplementationOwner("issue", issue_number)
+    incarnation = slots.owner_incarnation(owner)
+    if not incarnation:
+        raise ImplementationSlotUnavailable("Codex Issue owner has no active incarnation")
+    reconstructor = production_codex_reconstructor(repository, issue_number)
+    accounting = CodexWorkAccounting(slots, reconstructor.consistency_ids)
+    accounting.reconcile_from_receipt(owner, incarnation, reconstructor.reconstruct())
+    return CodexWorkFence(accounting), CodexWorkIdentity(
+        repository,
+        issue_number,
+        incarnation,
+        stable_codex_operation_id(kind, source_request_id),
+        kind,
+        source_request_id,
+    )

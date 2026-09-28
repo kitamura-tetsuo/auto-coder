@@ -18,6 +18,7 @@ from auto_coder.codex_pr_recovery import (
     RecoveryOutcome,
 )
 from auto_coder.codex_wham_client import FollowUpDeliveryOutcome, FollowUpDeliveryResult
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 
 TASK = "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
 
@@ -73,7 +74,7 @@ def setup(tmp_path: Path, outcome: FollowUpDeliveryOutcome = FollowUpDeliveryOut
         handed_off.append(number)
         return True
 
-    monitor = CodexPRRecoveryMonitor(runs, observations, wham, store, enqueue, now=clock, poll_interval=60, grace_period=120)
+    monitor = CodexPRRecoveryMonitor(runs, observations, wham, store, enqueue, now=clock, poll_interval=60, grace_period=120, retirement_accounting=False)
     return run, observations, wham, store, clock, handed_off, monitor
 
 
@@ -96,7 +97,7 @@ def test_quiet_daemon_grace_exact_payload_and_restart_budget(tmp_path):
     assert store.get(run.repo_name, run.task_id).state is RecoveryOutcome.REMINDER_ACCEPTED
 
     # A fresh monitor/client after restart observes but cannot mint a new budget.
-    restarted = CodexPRRecoveryMonitor(monitor.runs, observations, wham, store, monitor.enqueue_pr, now=clock, poll_interval=60, grace_period=120)
+    restarted = CodexPRRecoveryMonitor(monitor.runs, observations, wham, store, monitor.enqueue_pr, now=clock, poll_interval=60, grace_period=120, retirement_accounting=False)
     poll(restarted)
     assert len(wham.posts) == 1
 
@@ -148,6 +149,37 @@ def test_rejected_post_spends_budget_and_needs_attention(tmp_path):
     poll(monitor)
     assert store.get(run.repo_name, run.task_id).state is RecoveryOutcome.REMINDER_REJECTED
     assert len(wham.posts) == 1
+
+
+def test_production_recovery_registers_before_direct_wham_send(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repository = "owner/repo"
+    owner = ImplementationOwner("issue", 1864)
+    slots = ImplementationSlotRepository(repository, 1)
+    assert slots.reserve(owner)
+    run = CloudRun(repository, 1864, 3, "codex-cloud", TASK, "codex-prod", "env-prod", "main", launch_identity="attempt-3")
+    runs = CloudRunRepository(repository)
+    runs.save(run)
+    observations = Observations(run)
+    wham = Wham()
+    clock = Clock()
+
+    async def enqueue(number: int) -> bool:
+        return True
+
+    monitor = CodexPRRecoveryMonitor(runs, observations, wham, CodexPRRecoveryStore(), enqueue, now=clock, grace_period=120)
+    poll(monitor)
+    clock.value += 120
+    monitor._next_due.clear()
+    poll(monitor)
+
+    assert len(wham.posts) == 1
+    with slots._state_lock():
+        accounting = slots._read()[owner.key]["codex_work_accounting"]
+    publications = [value for value in accounting["operations"].values() if value["kind"] == "publication"]
+    assert len(publications) == 1
+    assert publications[0]["task_id"] == TASK
+    assert publications[0]["causal_baseline"] == f"{TASK}~asst_1"
 
 
 def test_unresolved_and_superseded_runs_are_diagnostics_not_enrolled(tmp_path):

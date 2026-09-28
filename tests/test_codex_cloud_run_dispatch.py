@@ -13,10 +13,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.cloud_run import CloudRun, CloudRunEvent, CloudRunRepository
 from auto_coder.cloud_run_policies import MANUAL_RETRY_REASON, CodexCloudRunPolicy
 from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissionResult
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_processor import _process_issue_codex_cloud_mode
 from auto_coder.issue_stage_routing import ImplementationRetryRequest, IssueStageRoutingStore
 from auto_coder.retry_dispatch import RetryDispatchRepository
@@ -28,6 +31,12 @@ def _issue_data(number: int = 100) -> dict:
 
 class TestCodexCloudDispatchDuplicateProtection:
     """AC-001, AC-002, AC-003: durable CloudRun guards Codex Cloud dispatch."""
+
+    @pytest.fixture(autouse=True)
+    def _active_issue_slot(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        self.slots = ImplementationSlotRepository("owner/repo", 2)
+        assert self.slots.reserve(ImplementationOwner("issue", 100))
 
     @patch("auto_coder.issue_processor.CloudManager")
     @patch("auto_coder.codex_cloud_client.CodexCloudClient")
@@ -46,6 +55,7 @@ class TestCodexCloudDispatchDuplicateProtection:
                 AutomationConfig(),
                 github_client,
                 backend_name="codex-cloud-luna",
+                implementation_slots=self.slots,
             )
 
         client.submit_task.assert_called_once()
@@ -105,6 +115,7 @@ class TestCodexCloudDispatchDuplicateProtection:
                 AutomationConfig(),
                 MagicMock(),
                 backend_name="codex-cloud-luna",
+                implementation_slots=self.slots,
             )
 
         client.submit_task.assert_not_called()
@@ -130,6 +141,7 @@ class TestCodexCloudDispatchDuplicateProtection:
                 AutomationConfig(),
                 MagicMock(),
                 backend_name="codex-cloud-luna",
+                implementation_slots=self.slots,
             )
 
         client.submit_task.assert_not_called()
@@ -157,6 +169,7 @@ class TestCodexCloudDispatchDuplicateProtection:
                 AutomationConfig(),
                 MagicMock(),
                 backend_name="codex-cloud-luna",
+                implementation_slots=self.slots,
             )
 
         client.submit_task.assert_called_once()
@@ -188,8 +201,8 @@ class TestCodexCloudDispatchDuplicateProtection:
             patch("auto_coder.issue_processor.get_current_attempt", return_value=2),
             patch("auto_coder.issue_processor.increment_attempt", return_value=3) as increment,
         ):
-            first = _process_issue_codex_cloud_mode("owner/repo", _issue_data(100), AutomationConfig(), MagicMock(), "codex-alias", retry_authority=retry)
-            second = _process_issue_codex_cloud_mode("owner/repo", _issue_data(100), AutomationConfig(), MagicMock(), "codex-alias", retry_authority=retry)
+            first = _process_issue_codex_cloud_mode("owner/repo", _issue_data(100), AutomationConfig(), MagicMock(), "codex-alias", retry_authority=retry, implementation_slots=self.slots)
+            second = _process_issue_codex_cloud_mode("owner/repo", _issue_data(100), AutomationConfig(), MagicMock(), "codex-alias", retry_authority=retry, implementation_slots=self.slots)
 
         client.submit_task.assert_called_once()
         increment.assert_called_once_with("owner/repo", 100, attempt_number=3)
@@ -217,7 +230,7 @@ class TestCodexCloudDispatchDuplicateProtection:
         client.submit_task.return_value = CodexSubmissionResult(CodexSubmissionOutcome.ACCEPTED, "task_e_123")
 
         def dispatch() -> list[str]:
-            return _process_issue_codex_cloud_mode("owner/repo", _issue_data(), AutomationConfig(), MagicMock(), "codex-cloud-luna")
+            return _process_issue_codex_cloud_mode("owner/repo", _issue_data(), AutomationConfig(), MagicMock(), "codex-cloud-luna", implementation_slots=self.slots)
 
         with patch("auto_coder.issue_processor.get_commit_log", return_value=""), patch("auto_coder.issue_processor.get_current_attempt", return_value=0), ThreadPoolExecutor(max_workers=2) as executor:
             results = list(executor.map(lambda _: dispatch(), range(2)))
@@ -239,9 +252,9 @@ class TestCodexCloudDispatchDuplicateProtection:
         common = patch("auto_coder.issue_processor.get_commit_log", return_value="")
         attempt = patch("auto_coder.issue_processor.get_current_attempt", return_value=0)
         with common, attempt:
-            first = _process_issue_codex_cloud_mode("owner/repo", _issue_data(), AutomationConfig(), MagicMock(), "named")
+            first = _process_issue_codex_cloud_mode("owner/repo", _issue_data(), AutomationConfig(), MagicMock(), "named", implementation_slots=self.slots)
         with patch("auto_coder.issue_processor.get_commit_log", return_value=""), patch("auto_coder.issue_processor.get_current_attempt", return_value=0):
-            second = _process_issue_codex_cloud_mode("owner/repo", _issue_data(), AutomationConfig(), MagicMock(), "changed")
+            second = _process_issue_codex_cloud_mode("owner/repo", _issue_data(), AutomationConfig(), MagicMock(), "changed", implementation_slots=self.slots)
 
         client.submit_task.assert_called_once()
         assert "indeterminate" in first[0]
