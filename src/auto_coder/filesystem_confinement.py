@@ -428,6 +428,11 @@ class PtraceDenialMonitor:
         if requested is None:
             return None
         target = _resolve_process_path(pid, directory_fd, requested)
+        # Opening the kernel null sink does not mutate persistent filesystem
+        # state. Real CLI runtimes routinely use it for discarded diagnostics,
+        # so it is not a confinement violation.
+        if target == Path("/dev/null"):
+            return None
         if target is None or any(_contains(root, target) for root in self.writable_roots):
             return None
         return f"{operation} outside writable roots: {target}"
