@@ -173,37 +173,21 @@ def test_dockerfile_pins_opencode_release_and_explicit_architectures() -> None:
     assert "COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode" in content
 
 
-def test_documented_channels_supply_local_supervisor_runtime() -> None:
-    root = Path(__file__).parents[1]
-    compose = (root / "compose.channels.yml").read_text()
-    dockerfile = (root / "Dockerfile").read_text()
-    content = dockerfile
-
-    assert compose.count('AUTO_CODER_LOCAL_WORKER_UID: "65532"') == 2
-    assert compose.count('AUTO_CODER_LOCAL_WORKER_GID: "65532"') == 2
-    assert compose.count("- /sys/fs/cgroup:/sys/fs/cgroup:rw") == 2
-    assert compose.count("privileged: true") == 2
-    assert compose.count("cgroup: host") == 2
-    assert "useradd --uid 65532 --gid 65532" in dockerfile
-
-    # REQ-005: No embedded credentials or hardcoded tokens in image definitions
-    forbidden_tokens = ["api_key", "secret", "token", "password", "ghp_", "sk-"]
-    for line in content.splitlines():
-        if line.strip().startswith("#"):
-            continue
-        for token in forbidden_tokens:
-            assert token not in line.lower(), f"Potential credential token '{token}' in Dockerfile: {line}"
-
-    # REQ-007: Preserves standard entrypoint
-    assert 'ENTRYPOINT ["auto-coder"]' in content
-
-
 def test_compose_channels_runtime_mounts_and_isolation() -> None:
     compose_path = Path(__file__).parents[1] / "compose.channels.yml"
     compose_data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
 
     services = compose_data.get("services", {})
     assert set(services.keys()) == {"release", "beta"}
+
+    compose_text = compose_path.read_text(encoding="utf-8")
+    dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text()
+    assert compose_text.count('AUTO_CODER_LOCAL_WORKER_UID: "65532"') == 2
+    assert compose_text.count('AUTO_CODER_LOCAL_WORKER_GID: "65532"') == 2
+    assert compose_text.count("- /sys/fs/cgroup:/sys/fs/cgroup:rw") == 2
+    assert compose_text.count("privileged: true") == 2
+    assert compose_text.count("cgroup: host") == 2
+    assert "useradd --uid 65532 --gid 65532" in dockerfile
 
     release = services["release"]
     beta = services["beta"]

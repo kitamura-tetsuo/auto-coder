@@ -5,11 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
-import signal
 import stat
 import subprocess
-import tempfile
 import textwrap
 from pathlib import Path
 from typing import Optional, Tuple
@@ -20,10 +17,10 @@ from click import ClickException
 
 from src.auto_coder.cli_helpers import build_backend_manager, check_backend_prerequisites
 from src.auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
-from src.auto_coder.invocation_process_supervisor import InstallationContext, InvocationProcessSupervisor, PolicyInstallation
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from src.auto_coder.opencode_client import OpenCodeClient
 from src.auto_coder.prompt_loader import render_prompt
+from tests.utils.supervised_local import install_test_supervisor
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -140,46 +137,7 @@ def _manager(config: LLMBackendConfiguration, backend_name: str | None = None):
     name = backend_name or next(iter(config.backends))
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
         manager = build_backend_manager([name], name, {})
-    return _install_test_supervisor(manager)
-
-
-def _install_test_supervisor(manager):
-    owner_root = Path(tempfile.mkdtemp(prefix="opencode-test-owners-"))
-
-    class Owner:
-        def prepare(self, invocation_id: str) -> Path:
-            group = owner_root / invocation_id
-            group.mkdir()
-            return group
-
-        @staticmethod
-        def child_joiner(group: Path):
-            def join() -> None:
-                os.setsid()
-                (group / "pid").write_text(str(os.getpid()))
-
-            return join
-
-        @staticmethod
-        def stop_and_confirm(group: Path, deadline: float) -> None:
-            try:
-                os.killpg(int((group / "pid").read_text()), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-        @staticmethod
-        def discard(group: Path) -> None:
-            shutil.rmtree(group, ignore_errors=True)
-
-    class Policy:
-        def install(self, context: InstallationContext) -> PolicyInstallation:
-            return PolicyInstallation(True, establishes_filesystem_enforcement=True)
-
-        def close(self) -> None:
-            pass
-
-    manager._local_supervisor_factory = lambda: InvocationProcessSupervisor(owner=Owner(), filesystem_policy_factory=Policy)  # type: ignore[arg-type]
-    return manager
+    return install_test_supervisor(manager)
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +458,7 @@ def test_usage_limit_diagnostic_raises_and_routes_fallback(tmp_path: Path, monke
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config), patch("src.auto_coder.qwen_client.QwenClient", return_value=fallback_client):
         manager = build_backend_manager(["opencode", "fallback"], "opencode", {})
-        _install_test_supervisor(manager)
+        install_test_supervisor(manager)
         assert manager._run_llm_cli("implement") == "fallback-success"
         assert manager.get_last_backend_and_model() == ("fallback", "fallback")
 
@@ -848,7 +806,7 @@ def test_ac002_manager_local_fallback_after_missing_session_reports_non_continui
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
         manager = build_backend_manager(["opencode"], "opencode", {})
-        _install_test_supervisor(manager)
+        install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
         result = manager.continue_session(session_id="ses_missing", prompt="continue please")
@@ -879,7 +837,7 @@ def test_ac002_manager_backend_switch_fallback_reports_non_continuity(tmp_path: 
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config), patch("src.auto_coder.qwen_client.QwenClient", return_value=fallback_client):
         manager = build_backend_manager(["opencode", "fallback"], "opencode", {})
-        _install_test_supervisor(manager)
+        install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
         result = manager.continue_session(session_id="ses_x", prompt="continue please")
@@ -948,7 +906,7 @@ def test_ac003_manager_continuity_flag_resets_after_identity_mismatch(tmp_path: 
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
         manager = build_backend_manager(["opencode"], "opencode", {})
-        _install_test_supervisor(manager)
+        install_test_supervisor(manager)
 
         monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(good))
         assert manager.continue_session(session_id="ses_good", prompt="first") == "first ok"

@@ -883,16 +883,18 @@ class CommandExecutor:
             selected_cwd = Path(cwd or str(binding.workspace)).resolve()
             if selected_cwd != binding.workspace.resolve():
                 return CommandResult(False, "", "supervised provider cwd does not match the bound private result root", -1)
-            try:
-                private_runtime = _prepare_invocation_runtime(supervised, launch_env)
-            except OSError as exc:
-                return CommandResult(False, "", f"private provider runtime preparation failed: {exc}", -1, False)
+            private_runtime: Optional[Path] = None
+            if boundary.editable:
+                try:
+                    private_runtime = _prepare_invocation_runtime(supervised, launch_env)
+                except OSError as exc:
+                    return CommandResult(False, "", f"private provider runtime preparation failed: {exc}", -1, False)
             request = InvocationLaunch(
                 invocation_id=binding.invocation_id,
                 backend_type=boundary.backend_type,
                 effective_mode="editable" if boundary.editable else "no-edit",
                 result_root=binding.workspace,
-                runtime_paths=(private_runtime,) if boundary.editable else (),
+                runtime_paths=(private_runtime,) if private_runtime is not None else (),
                 executable=cmd[0],
                 arguments=tuple(cmd[1:]),
                 prompt_transport=PromptTransport.STDIN if stdin_text is not None else PromptTransport.INHERIT,
@@ -903,7 +905,7 @@ class CommandExecutor:
                 protected_paths=(binding.caller_root, binding.caller_git_dir, binding.caller_common_dir),
             )
             result = supervised.supervisor.run(request, boundary=boundary)
-            if result.writer_complete:
+            if result.writer_complete and private_runtime is not None:
                 shutil.rmtree(private_runtime, ignore_errors=True)
             if on_stream is not None:
                 if result.stdout:
