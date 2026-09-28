@@ -63,7 +63,7 @@ BLOCKED_JSON = json.dumps(
     }
 )
 
-NO_CONTRACT_BODY = "No formal Requirements section is present in this Issue body."
+NO_CONTRACT_BODY = "## Requirements\nREQ-001: Preserve the tested invocation behavior."
 
 
 class ScriptedClient:

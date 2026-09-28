@@ -154,7 +154,7 @@ def parse_specification_analysis_response(response: str, manifest: NormativeIssu
     raw_findings = payload["findings"]
     if not isinstance(verdict, str) or verdict not in {"READY", "BLOCKED", "ERROR"} or not isinstance(raw_findings, list):
         return _error("Specification analyzer output contains an invalid verdict or findings value")
-    if remediation not in {"NONE", "EDIT_IN_PLACE", "REISSUE_REQUIRED"}:
+    if not isinstance(remediation, str) or remediation not in {"NONE", "EDIT_IN_PLACE", "REISSUE_REQUIRED"}:
         return _error("Specification analyzer output contains an invalid remediation")
     if (verdict in {"READY", "ERROR"} and remediation != "NONE") or (verdict == "BLOCKED" and remediation not in {"EDIT_IN_PLACE", "REISSUE_REQUIRED"}):
         return _error("Specification analyzer verdict contradicts its remediation")

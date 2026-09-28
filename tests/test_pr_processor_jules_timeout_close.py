@@ -568,7 +568,7 @@ class TestUnlockAndRetryLinkedIssue:
             authoritative_issue = {
                 "number": 4636,
                 "title": issue_data["title"],
-                "body": "",
+                "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
                 "labels": [{"name": "implementation-ready"}, *source_labels],
             }
             github_client.get_item_type_strict.return_value = "issue"
@@ -977,7 +977,7 @@ class TestLinkedPRSkipUsesOpenPRs:
         github_client = Mock()
         github_client.get_pr_review_threads_strict.return_value = []
         config = AutomationConfig()
-        open_pr = {"number": 4643, "title": "Fix", "labels": [], "draft": False, "created_at": "2026-08-02T16:22:10Z", "head": {"ref": "b", "sha": "s"}, "body": ""}
+        open_pr = {"number": 4643, "title": "Fix", "labels": [], "draft": False, "created_at": "2026-08-02T16:22:10Z", "head": {"ref": "b", "sha": "s"}, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior."}
         github_client.get_open_prs_json.return_value = [open_pr]
         github_client.get_open_issues_json.return_value = [self._issue([4643])]
 

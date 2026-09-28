@@ -202,7 +202,13 @@ class IssueReviewService:
                 return None
             return decided if decided.verdict in TERMINAL_VERDICTS else None
         assert descriptor.manifest is not None
-        individual_identity = self._spec().identity(descriptor.number, descriptor.title, descriptor.body, descriptor.relationship)
+        individual_identity = self._spec().identity(
+            descriptor.number,
+            descriptor.title,
+            descriptor.body,
+            descriptor.relationship,
+            descriptor.manifest,
+        )
         individual_stored = self._spec().store.get(individual_identity)
         if individual_stored is None or individual_stored.verdict not in TERMINAL_VERDICTS:
             return None
@@ -447,7 +453,7 @@ def build_individual_descriptor(
         body=body,
         role=role,
         parent_number=parent_number,
-        identity_key=lifecycle.identity(number, title, body, relationship).key,
+        identity_key=lifecycle.identity(number, title, body, relationship, manifest).key,
         manifest=manifest,
         relationship=relationship,
     )

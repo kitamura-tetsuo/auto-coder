@@ -356,7 +356,7 @@ def test_stale_empty_parent_membership_hint_cannot_authorize_standalone_dispatch
     assert events[-1] == "dispatch:11"
 
 
-def test_child_added_during_individual_validation_invalidates_standalone_parent(tmp_path):
+def test_contract_free_standalone_parent_fails_before_relationship_mutation(tmp_path):
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     child = issue(11, "Child", CHILD_BODY)
     members = []
@@ -381,19 +381,10 @@ def test_child_added_during_individual_validation_invalidates_standalone_parent(
     candidate = Candidate("issue", GitHubClient.get_issue_details(github, parent), 0, issue_number=10)
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         first = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-    assert first.actions == ["Skipped - validated Issue generation is stale or no longer submitted"]
+    assert first.actions == ["Deferred - specification validation error"]
     dispatch.assert_not_called()
-    assert events == ["individual:10"]
-
-    with patch.object(
-        engine,
-        "_process_single_candidate_reserved",
-        return_value=CandidateProcessingResult("issue", 11, "Child", True, ["dispatched"], None),
-    ):
-        second = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
-    assert second.success
-    assert events[0] == "individual:10"
-    assert set(events[1:]) == {"set", "individual:11"}
+    assert events == []
+    assert members == []
 
 
 def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_path):
@@ -519,7 +510,7 @@ def test_stale_set_block_during_comment_lookup_has_no_effect_and_revalidates(tmp
     calls = Mock(side_effect=[DecompositionAnalysisResult("BLOCKED", (SET_FINDING,)), DecompositionAnalysisResult("READY")])
 
     def edit_sibling(*_args):
-        sibling["body"] += "\nEdited"
+        sibling["body"] += "\n\n## Context\nEdited"
         return []
 
     github.get_issue_comments_strict.side_effect = edit_sibling
@@ -547,7 +538,7 @@ def test_stale_child_block_during_comment_lookup_cannot_withdraw_revised_set(tmp
     github = relationship_github(parent, [child, sibling])
 
     def edit_sibling(*_args):
-        sibling["body"] += "\nEdited"
+        sibling["body"] += "\n\n## Context\nEdited"
         return []
 
     github.get_issue_comments_strict.side_effect = edit_sibling

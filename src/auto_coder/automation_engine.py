@@ -6087,6 +6087,9 @@ class AutomationEngine:
                 dispatch_relationship,
             )
             expected_identity = decision.identity if spec_validation_enabled and decision is not None else individual_identity
+            if spec_validation_enabled and decision is not None:
+                current_decision = validator.store.get(expected_identity)
+                submission_current = submission_current and current_decision is not None and current_decision.rerun_authority == decision.rerun_authority
             if not submission_current or dispatch_identity != expected_identity:
                 result.target_outcome = ExplicitTargetOutcome.SKIPPED
                 result.actions = ["Skipped - validated Issue generation is stale or no longer submitted"]

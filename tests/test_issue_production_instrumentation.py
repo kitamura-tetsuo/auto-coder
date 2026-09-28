@@ -99,7 +99,7 @@ class TestDispatchRouteRecorded:
         mock_github.get_item_type_strict.return_value = "issue"
         mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
             "number": number,
-            "body": "",
+            "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
             "labels": [{"name": "implementation-ready"}, {"name": "difficult"}],
         }
         mock_github.get_all_sub_issues.return_value = []
@@ -135,7 +135,7 @@ class TestDispatchRouteRecorded:
         mock_github.get_item_type_strict.return_value = "issue"
         mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
             "number": number,
-            "body": "",
+            "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.",
             "labels": [{"name": "implementation-ready"}, {"name": "difficult"}],
         }
         mock_github.get_all_sub_issues.return_value = []
@@ -169,7 +169,7 @@ class TestDispatchRouteRecorded:
 
         mock_github = MagicMock()
         mock_github.get_item_type_strict.return_value = "issue"
-        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [{"name": "implementation-ready"}]}
         mock_github.get_all_sub_issues.return_value = []
 
         config = AutomationConfig()
@@ -204,7 +204,7 @@ class TestDispatchRouteRecorded:
 
         mock_github = MagicMock()
         mock_github.get_item_type_strict.return_value = "issue"
-        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": "", "labels": [{"name": "implementation-ready"}]}
+        mock_github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior.", "labels": [{"name": "implementation-ready"}]}
         mock_github.get_all_sub_issues.return_value = []
 
         config = AutomationConfig()
@@ -320,8 +320,8 @@ class TestValidationJobsGetTheirOwnExecutionIdentity:
         engine = AutomationEngine(MagicMock(), config)
         engine._is_issue_decomposition_validation_enabled = Mock(return_value=False)  # type: ignore[method-assign]
         engine._is_issue_specification_validation_enabled = Mock(return_value=False)  # type: ignore[method-assign]
-        parent = {"number": 950, "title": "Parent", "body": ""}
-        children = [{"number": 951, "title": "Child", "body": ""}]
+        parent = {"number": 950, "title": "Parent", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior."}
+        children = [{"number": 951, "title": "Child", "body": "## Requirements\nREQ-001: Preserve the tested dispatch behavior."}]
 
         with get_trace_collector().start_execution("owner/repo", "issue", 950, origin="worker"):
             engine._schedule_parent_validations("owner/repo", (parent, children), config)
