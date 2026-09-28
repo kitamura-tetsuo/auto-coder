@@ -456,7 +456,7 @@ def test_pre_admission_authoritative_failure_requests_refill_retry(tmp_path):
     def fail_pre_admission(repo, number):
         nonlocal calls
         calls += 1
-        if calls == 3:
+        if calls == 4:
             raise RuntimeError("temporary pre-admission outage")
         return original(repo, number)
 

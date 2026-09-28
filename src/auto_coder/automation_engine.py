@@ -680,6 +680,10 @@ class _ValidationPublicationStageHandler:
             return StageOutcome(error=exc)
         if not isinstance(fresh_issue, dict) or fresh_issue.get("number") != issue_number or "pull_request" in fresh_issue:
             return StageOutcome(superseded=True)
+        if not engine._is_authoritatively_open_issue(fresh_issue):
+            # Closure withdraws undelivered individual effects. Confirmed
+            # receipts already completed in PendingWorkStore remain intact.
+            return StageOutcome(superseded=True)
         title = str(fresh_issue.get("title") or "")
         body = str(fresh_issue.get("body") or "")
         validator = engine._get_specification_validator(repo_name)
@@ -2080,6 +2084,8 @@ class AutomationEngine:
                 number = int(child["number"])
                 if selected_child_number is not None and number != selected_child_number:
                     continue
+                if not self._is_authoritatively_open_issue(child):
+                    continue
                 title = str(child.get("title") or "")
                 body = str(child.get("body") or "")
                 manifest = build_normative_issue_manifest(number, title, body)
@@ -2101,6 +2107,8 @@ class AutomationEngine:
             for child in children:
                 number = int(child["number"])
                 if selected_child_number is not None and number != selected_child_number:
+                    continue
+                if not self._is_authoritatively_open_issue(child):
                     continue
                 issue_review_audit.record_bypassed(
                     repository=repo_name,
@@ -2186,9 +2194,10 @@ class AutomationEngine:
     ) -> bool:
         """Require exact-current individual evidence for every direct child."""
         parent, children = current_set
-        if set(decisions) != {int(child["number"]) for child in children}:
+        open_children = [child for child in children if self._is_authoritatively_open_issue(child)]
+        if set(decisions) != {int(child["number"]) for child in open_children}:
             return False
-        for child in children:
+        for child in open_children:
             number = int(child["number"])
             relationship = self._child_review_context(parent, children, number)
             identity = validator.identity(number, str(child.get("title") or ""), str(child.get("body") or ""), relationship)
@@ -2991,6 +3000,17 @@ class AutomationEngine:
         # Issues; an explicit closed state is nevertheless authoritative.
         return str(issue.get("state") or "open").lower() == "open"
 
+    def _is_authoritatively_open_issue(self, issue: Dict[str, Any]) -> bool:
+        """Accept open-state evidence only when the strict snapshot supplies it."""
+        state = issue.get("state")
+        if state is None and not isinstance(self.github, GitHubClient):
+            # Small legacy/local adapters historically represent only
+            # successfully fetched open Issues and omit the REST state field.
+            return True
+        if not isinstance(state, str) or state.lower() not in {"open", "closed"}:
+            raise ParentOperationalError("authoritative Issue snapshot has unavailable or malformed state")
+        return state.lower() == "open"
+
     @staticmethod
     def _routing_contract(repo_name: str, snapshot: Dict[str, Any], role: str) -> ContractIdentity:
         number = snapshot.get("number")
@@ -3106,12 +3126,15 @@ class AutomationEngine:
         number = int(issue["number"])
         contract = self._routing_contract(repo_name, issue, "standalone")
         requirements: list[ReviewRequirement] = []
-        if self._is_issue_specification_validation_enabled(repo_name):
+        issue_is_open = self._is_authoritatively_open_issue(issue)
+        if not issue_is_open:
+            self._withdraw_closed_individual_authority(repo_name, number)
+        if issue_is_open and self._is_issue_specification_validation_enabled(repo_name):
             validator = self._get_specification_validator(repo_name)
             identity = validator.identity(number, contract.title, contract.body)
             decision = validator.store.get(identity)
             requirements.append(ReviewRequirement("individual", number, identity.key, decision.verdict if decision is not None else None))
-        admitted = self._is_open_issue(issue) and is_implementation_ready(issue) and self._routing_members_are_stable(repo_name, [issue])
+        admitted = issue_is_open and is_implementation_ready(issue) and self._routing_members_are_stable(repo_name, [issue])
         priority = self._issue_refill_priority(issue)
         review_generation = standalone_review_generation(contract, requirements)
         implementation_key = implementation_generation(contract)
@@ -3135,9 +3158,14 @@ class AutomationEngine:
                     decomposition_decision.verdict if decomposition_decision is not None else None,
                 )
             )
+        for child in children:
+            if not self._is_authoritatively_open_issue(child):
+                self._withdraw_closed_individual_authority(repo_name, int(child["number"]))
         if self._is_issue_specification_validation_enabled(repo_name):
             individual_validator = self._get_specification_validator(repo_name)
             for child in children:
+                if not self._is_authoritatively_open_issue(child):
+                    continue
                 number = int(child["number"])
                 relationship = self._child_review_context(parent, children, number)
                 individual_identity = individual_validator.identity(number, str(child.get("title") or ""), str(child.get("body") or ""), relationship)
@@ -3179,6 +3207,17 @@ class AutomationEngine:
             self.issue_stage_routing.remove(repo_name, REVIEW_STAGE, number)
         # Tracking parents never enter the Implementation lane.
         self.issue_stage_routing.remove(repo_name, IMPLEMENTATION_STAGE, parent_number)
+
+    def _withdraw_closed_individual_authority(self, repo_name: str, issue_number: int) -> None:
+        """Durably fence work admitted before authoritative closure was observed."""
+        reruns = self._get_specification_validator(repo_name).reruns
+        subject = ReviewSubject(repo_name, "individual", issue_number)
+        authority, request_id, state = reruns.authority(subject)
+        if state == "deferred":
+            return
+        closure_request = f"observed-closure:{subject.key}:{authority + 1}"
+        status = reruns.accept(closure_request, (subject,))[0]
+        reruns.defer(subject, status.authority, f"individual review for Issue #{issue_number} is deferred because the subject is closed")
 
     def _route_issue_stages_authoritatively(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> None:
         """Classify one invalidated Issue from current GitHub and decision stores."""
@@ -3320,6 +3359,10 @@ class AutomationEngine:
         snapshot = self.github.get_issue_dispatch_snapshot_strict(subject.repository, subject.issue_number)
         if not isinstance(snapshot, dict) or snapshot.get("number") != subject.issue_number or "pull_request" in snapshot:
             return f"authoritative Issue #{subject.issue_number} snapshot is unavailable"
+        if subject.kind == "individual" and not self._is_authoritatively_open_issue(snapshot):
+            if isinstance(snapshot.get("state"), str) and str(snapshot["state"]).lower() == "closed":
+                return f"individual review for Issue #{subject.issue_number} is deferred because the subject is closed"
+            return f"individual review for Issue #{subject.issue_number} is deferred because authoritative open-state evidence is unavailable"
         self._route_issue_stages_authoritatively(subject.repository, subject.issue_number, snapshot)
         target_number = subject.issue_number
         parent_number = self._get_authoritative_parent_number(subject.repository, subject.issue_number, snapshot)
@@ -3475,7 +3518,7 @@ class AutomationEngine:
             if family is None:
                 return None
             return self._family_review_descriptors(repo_name, family)
-        if not self._is_issue_specification_validation_enabled(repo_name):
+        if not self._is_authoritatively_open_issue(snapshot) or not self._is_issue_specification_validation_enabled(repo_name):
             return ()
         validator = self._get_specification_validator(repo_name)
         title = str(snapshot.get("title") or "")
@@ -3508,9 +3551,11 @@ class AutomationEngine:
                     child_inputs,
                 )
             )
-        if self._is_issue_specification_validation_enabled(repo_name):
+        if self._is_authoritatively_open_issue(parent) and self._is_issue_specification_validation_enabled(repo_name):
             individual = self._get_specification_validator(repo_name)
             for child in children:
+                if not self._is_authoritatively_open_issue(child):
+                    continue
                 number = int(child["number"])
                 title = str(child.get("title") or "")
                 body = str(child.get("body") or "")
@@ -5850,6 +5895,8 @@ class AutomationEngine:
                     eager_child_decisions = {}
                     if spec_validation_enabled:
                         for child in authoritative_set[1]:
+                            if not self._is_authoritatively_open_issue(child):
+                                continue
                             child_number = int(child["number"])
                             relationship = self._child_review_context(*authoritative_set, child_number)
                             child_identity = individual_validator.identity(
@@ -5861,7 +5908,8 @@ class AutomationEngine:
                             stored = individual_validator.store.get(child_identity)
                             if stored is not None:
                                 eager_child_decisions[child_number] = stored
-                    if (decomposition_enabled and decomposition_decision is None) or (spec_validation_enabled and len(eager_child_decisions) != len(authoritative_set[1])):
+                    open_child_count = sum(self._is_authoritatively_open_issue(child) for child in authoritative_set[1])
+                    if (decomposition_enabled and decomposition_decision is None) or (spec_validation_enabled and len(eager_child_decisions) != open_child_count):
                         result.target_outcome = ExplicitTargetOutcome.DEFERRED
                         result.actions = ["Deferred - exact current review evidence is unavailable"]
                         result.refill_retry_required = True

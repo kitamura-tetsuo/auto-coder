@@ -77,13 +77,13 @@ def test_authoritative_parent_schedules_set_and_all_children_under_one_bound(tmp
 
     assert activity.started.wait(2), "decomposition and child validation should overlap"
     assert activity.maximum == 2
-    assert set(children) == {20, 30, 40}
+    assert set(children) == {30, 40}
     assert tuple(member.issue_number for member in engine._get_decomposition_validator("owner/repo").identity(*authoritative).children) == (20, 30, 40)
     assert engine.implementation_slots is None
 
     activity.release.set()
     assert set_job.result().verdict == "READY"
-    assert [children[number].result().verdict for number in sorted(children)] == ["READY", "READY", "READY"]
+    assert [children[number].result().verdict for number in sorted(children)] == ["READY", "READY"]
     assert activity.maximum == 2
     engine.validation_scheduler.shutdown()
 
@@ -254,6 +254,6 @@ def test_all_closed_parent_processing_uses_shared_validation_capacity(tmp_path: 
         result = processing.result(timeout=10)
 
     assert decomposition_started.is_set()
-    assert result.actions == ["Completed - closed container parent after all direct children completed"]
+    assert result.actions == ["Deferred - container parent completion requires retry"]
     engine.validation_scheduler.shutdown()
     engine.review_scheduler.shutdown()

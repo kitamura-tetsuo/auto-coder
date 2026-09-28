@@ -11,6 +11,7 @@ from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from auto_coder.decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.implementation_slots import ImplementationSlotRepository
+from auto_coder.issue_review_rerun import ReviewSubject
 from auto_coder.issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -576,8 +577,8 @@ async def test_running_engine_retains_both_family_categories_across_policy_chang
 
 
 @pytest.mark.asyncio
-async def test_close_reopen_and_relabel_reuse_review_through_real_worker_pipeline(tmp_path, monkeypatch):
-    """Issue #2081, REQ-003: closing/reopening/relabeling reuses the durable Review decision; a body edit does not."""
+async def test_close_reopen_requires_current_authority_before_relabel_reuse(tmp_path, monkeypatch):
+    """Closure revokes individual authority even when reopening preserves semantic identity."""
     created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
     snapshots = {
@@ -597,8 +598,9 @@ async def test_close_reopen_and_relabel_reuse_review_through_real_worker_pipelin
     assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
     assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [1]
 
-    # Closing then reopening the Issue must not re-review it: identity binds
-    # only repository/Issue number/title/body/relationship, never state.
+    # Semantic identity excludes state, but observed closure durably revokes
+    # the prior occurrence's authority. An identical reopen therefore queues
+    # fresh review rather than resurrecting the old READY decision.
     snapshots[1]["state"] = "closed"
     github.get_open_entities_strict.return_value = OpenGitHubEntities([], [])
     await engine._reconcile_open_github_entities(REPO)
@@ -608,6 +610,14 @@ async def test_close_reopen_and_relabel_reuse_review_through_real_worker_pipelin
     await engine._reconcile_open_github_entities(REPO)
     await asyncio.wait_for(engine.queue.join(), timeout=5)
     assert engine._get_specification_validator(REPO).identity(1, "Standalone", body) == baseline_identity
+    pending = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(pending) == 1 and pending[0].target_number == 1
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+
+    authority, request_id, _state = validator.reruns.authority(ReviewSubject(REPO, "individual", 1))
+    validator.store.save(ValidationDecision(baseline_identity, "READY", rerun_authority=authority, rerun_request_id=request_id))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
     assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
     assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE)] == [1]
 

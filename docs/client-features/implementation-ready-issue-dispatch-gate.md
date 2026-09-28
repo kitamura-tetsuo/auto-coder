@@ -94,3 +94,14 @@ eligibility gates pass. It remains owned through isolated-worktree cleanup, dura
 attempt finalization, publication, and merge authority checks. Duplicate local triggers
 for one PR are coalesced, while durable attempt sequence fencing prevents an older
 same-head result from gaining authority after any newer attempt starts.
+
+Individual specification review is selected only for authoritative open Issues.
+Missing or malformed state is unavailable evidence and defers the affected
+family admission; it is never treated as a closed-subject exclusion.
+For a submitted family, closed direct children remain members of the complete
+decomposition identity and remain available as relationship and contract context,
+but they do not receive an individual review and their prior individual decision
+cannot gate open siblings. Reopening restores review consideration under the
+current submission and relationship authority; it does not manufacture or revive
+readiness. Explicit reruns use the same eligibility rule and durably report a
+closed individual subject as deferred rather than invoking or publishing review.

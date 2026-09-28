@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional, Union
 
 from .decomposition_analyzer import DecompositionIssue
 from .decomposition_validation_lifecycle import DecompositionDecision, DecompositionIdentity, DecompositionValidationLifecycle
+from .issue_review_rerun import ReviewSubject
 from .issue_review_worker import FreshReviewView, IssueReviewWorker
 from .issue_stage_routing import REVIEW_STAGE, IssueStageRoutingStore, PendingLaneItem
 from .requirement_contract import NormativeIssueManifest
@@ -285,6 +286,23 @@ class IssueReviewService:
                 lambda: self._decomp().decide(descriptor.identity, descriptor.parent_issue, descriptor.child_issues),
             )
         assert descriptor.manifest is not None
+        if not self._individual_start_is_eligible(descriptor):
+            identity = self._spec().identity(
+                descriptor.number,
+                descriptor.title,
+                descriptor.body,
+                descriptor.relationship,
+                descriptor.manifest,
+            )
+            authority, request_id, _state = self._spec().reruns.authority(ReviewSubject(self._repository, "individual", descriptor.number))
+            return ValidationDecision(
+                identity,
+                "ERROR",
+                remediation_reason="Individual review eligibility changed before model invocation",
+                evaluation_source="local-only",
+                rerun_authority=authority,
+                rerun_request_id=request_id,
+            )
         return self._trace_job(
             self._repository,
             descriptor.number,
@@ -293,6 +311,35 @@ class IssueReviewService:
             {"issue_number": descriptor.number, "review_kind": "individual", "validation_identity": descriptor.identity_key, "audit_identity": self._spec().identity(descriptor.number, descriptor.title, descriptor.body, descriptor.relationship), "caller_origin": origin},
             lambda: self._spec().decide(descriptor.manifest, descriptor.title, descriptor.body, descriptor.relationship),
         )
+
+    def _individual_start_is_eligible(self, descriptor: IndividualReviewDescriptor) -> bool:
+        """Recheck authoritative open/family evidence at the model-start boundary."""
+
+        def is_open(snapshot: object) -> bool:
+            if not isinstance(snapshot, dict) or snapshot.get("number") != descriptor.number:
+                return False
+            state = snapshot.get("state")
+            # Legacy/local adapters represent fetched Issues as open while
+            # strict production snapshots always supply state.
+            return state is None or (isinstance(state, str) and state.lower() == "open")
+
+        try:
+            snapshot = self._github_provider().get_issue_dispatch_snapshot_strict(self._repository, descriptor.number)
+            if not is_open(snapshot):
+                return False
+            if descriptor.role != "child" or descriptor.parent_number is None:
+                return True
+            family = self._fetch_set(descriptor.parent_number)
+            if family is None:
+                return False
+            parent, children = family
+            parent_state = parent.get("state")
+            if parent_state is not None and (not isinstance(parent_state, str) or parent_state.lower() != "open"):
+                return False
+            child = next((item for item in children if item.get("number") == descriptor.number), None)
+            return is_open(child)
+        except Exception:
+            return False
 
     def _apply_generation_effects(self, cell: dict[str, ReviewDescriptor], decisions: dict[str, ReviewDecision]) -> bool:
         """Apply BLOCKED effects with fresh-current authority; gate genuine reissue stops.
