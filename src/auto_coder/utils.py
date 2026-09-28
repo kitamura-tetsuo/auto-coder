@@ -71,7 +71,10 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     uid = getattr(owner, "worker_uid", None)
     gid = getattr(owner, "worker_gid", None)
     if uid is not None and gid is not None:
-        for root in (binding.workspace, runtime):
+        # ``tempfile.mkdtemp`` creates the invocation-private workspace parent
+        # with mode 0700. Transfer that parent as well as its repository so the
+        # dropped worker can traverse to the immutable bound result root.
+        for root in (binding.workspace.parent, runtime):
             for current, directories, files in os.walk(root):
                 os.chown(current, uid, gid)
                 for name in (*directories, *files):
