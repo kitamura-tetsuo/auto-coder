@@ -42,10 +42,20 @@ def issue(number: int, state: str = "open", body: str = "", ready: bool = True) 
     return {"number": number, "state": state, "body": body, "title": str(number), "labels": [{"name": "implementation-ready"}] if ready else []}
 
 
-def test_family_scope_retains_closed_child_and_has_no_parent_individual() -> None:
+def test_family_scope_retains_closed_child_as_context_without_individual_subject() -> None:
     github = FakeGitHub({10: issue(10), 11: issue(11, body="Parent Issue: #10"), 12: issue(12, "closed", "parent_issue: 10")}, {11: 10, 12: 10}, {10: [11, 12]})
     scope = IssueReviewRerunScopeResolver(github, REPO).family(10)
-    assert [(item.kind, item.issue_number) for item in scope.subjects] == [("decomposition", 10), ("individual", 11), ("individual", 12)]
+    assert [(item.kind, item.issue_number) for item in scope.subjects] == [("decomposition", 10), ("individual", 11)]
+    assert scope.exclusions == ("Issue #12: individual review is not required while the subject is closed",)
+
+
+def test_family_scope_rejects_malformed_child_state_as_unavailable() -> None:
+    malformed = issue(12, body="Parent-Issue: #10")
+    malformed["state"] = "unknown"
+    github = FakeGitHub({10: issue(10), 12: malformed}, {12: 10}, {10: [12]})
+
+    with pytest.raises(ValueError, match="state is malformed"):
+        IssueReviewRerunScopeResolver(github, REPO).family(10)
 
 
 def test_issue_rejects_family_member_and_unmaterialized_declaration() -> None:
@@ -64,7 +74,7 @@ def test_all_deduplicates_family_and_excludes_open_child_of_closed_parent() -> N
         {10: [11, 12], 20: [21]},
     )
     scope = IssueReviewRerunScopeResolver(github, REPO).all()
-    assert [(item.kind, item.issue_number) for item in scope.subjects] == [("decomposition", 10), ("individual", 1), ("individual", 11), ("individual", 12)]
+    assert [(item.kind, item.issue_number) for item in scope.subjects] == [("decomposition", 10), ("individual", 1), ("individual", 11)]
     assert scope.exclusions == ("Issue #21: native parent #20 is closed",)
 
 

@@ -424,8 +424,8 @@ def test_daemon_normalization_with_closed_children_routes_parent_submission(tmp_
     )
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", normalized[0], 0, issue_number=10), engine.config)
-    assert result.actions == ["Completed - closed container parent after all direct children completed"]
-    assert set(events) == {"set", "individual"}
+    assert result.actions == ["Deferred - container parent completion requires retry"]
+    assert events == ["set"]
     dispatch.assert_not_called()
     GitHubClient.reset_singleton()
 
@@ -933,7 +933,7 @@ def test_closed_parent_cannot_publish_pause_or_create_continuation_episode(tmp_p
 
 @pytest.mark.parametrize("blocked_sibling_state", ["open", "closed"])
 def test_blocked_sibling_prevents_ready_child_dispatch(tmp_path, blocked_sibling_state):
-    """REQ-006/011: the complete current family needs individual READY evidence."""
+    """Only an open sibling's individual BLOCKED decision gates dispatch."""
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     parent["sub_issues_summary"] = {"total": 2}
     ready_child = issue(11, "Ready", CHILD_BODY)
@@ -954,11 +954,13 @@ def test_blocked_sibling_prevents_ready_child_dispatch(tmp_path, blocked_sibling
     candidate = Candidate(type="issue", data=dict(ready_child), priority=0, issue_number=11)
     result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config)
 
-    assert result.actions == ["Rejected - blocked child specification prerequisite"]
-    assert result.target_outcome.value == "blocked"
-    assert engine.implementation_slots.active_owners() == ()
-    assert github.publish_issue_review_comment.call_count == 1
-    assert github.publish_issue_review_comment.call_args.args[1] == 12
+    expected = ["Rejected - blocked child specification prerequisite"] if blocked_sibling_state == "open" else []
+    assert result.actions == expected
+    assert result.target_outcome.value == ("blocked" if blocked_sibling_state == "open" else "failed")
+    assert tuple(owner.number for owner in engine.implementation_slots.active_owners()) == (() if blocked_sibling_state == "open" else (11,))
+    assert github.publish_issue_review_comment.call_count == (1 if blocked_sibling_state == "open" else 0)
+    if blocked_sibling_state == "open":
+        assert github.publish_issue_review_comment.call_args.args[1] == 12
 
 
 # ---------------------------------------------------------------------------

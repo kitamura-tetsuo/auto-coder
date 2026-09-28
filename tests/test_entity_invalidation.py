@@ -1450,15 +1450,15 @@ def test_child_edit_webhook_validates_submitted_generation_before_eligibility_fi
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         asyncio.run(scenario())
 
-    assert set(events) == {"set", "child:11"}
+    assert set(events) == ({"set", "child:11"} if child_state == "open" else {"set"})
     dispatch.assert_not_called()
     assert slots.active_execution_ids(owner) == ()
     assert slots.has_provider_sessions(owner) is (child_state == "open")
     assert engine.invalidations.pending_count("owner/repo") == 0
 
 
-def test_child_edit_validation_error_retains_invalidation_for_identity_retry(tmp_path: Path, monkeypatch):
-    """A child ERROR is not evidence and cannot acknowledge its durable trigger."""
+def test_closed_child_edit_does_not_start_individual_retry(tmp_path: Path, monkeypatch):
+    """A closed child edit refreshes decomposition without individual review work."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     body = "## Requirements\n- REQ-001: Preserve the edited behavior."
     parent = {"id": 100, "number": 10, "title": "Parent", "body": body, "state": "open", "labels": [{"name": "implementation-ready"}], "user": {"id": 1}}
@@ -1479,7 +1479,6 @@ def test_child_edit_validation_error_retains_invalidation_for_identity_retry(tmp
     github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [dict(child)] if number == 10 else []
     github.get_parent_issue_details_strict.side_effect = lambda _repo, number: dict(parent) if number == 11 else None
     set_calls = []
-    child_verdicts = iter(("ERROR", "READY"))
     child_calls = []
     engine = AutomationEngine(github, AutomationConfig())
     decomposition = DecompositionValidationLifecycle(
@@ -1491,7 +1490,7 @@ def test_child_edit_validation_error_retains_invalidation_for_identity_retry(tmp
 
     def analyze_child(manifest, _body):
         child_calls.append(manifest.issue_number)
-        return SpecificationAnalysisResult(next(child_verdicts))
+        return SpecificationAnalysisResult("ERROR")
 
     individual = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "children.json", analyze_child)
     engine._decomposition_validators["owner/repo"] = decomposition
@@ -1507,28 +1506,24 @@ def test_child_edit_validation_error_retains_invalidation_for_identity_retry(tmp
 
     async def scenario() -> None:
         await process_github_payload("issues", {"action": "edited", "issue": {"number": 11}}, engine, "owner/repo", "edited-error")
-        await run_attempt(expect_pending=True)
+        await run_attempt(expect_pending=False)
 
         relationship = engine._child_review_context(parent, [child], 11)
         child_identity = individual.identity(11, child["title"], child["body"], relationship)
         assert individual.store.get(child_identity) is None
         assert set_calls == ["set"]
-        assert child_calls == [11]
+        assert child_calls == []
         assert parent["labels"] == [{"name": "implementation-ready"}]
         github.remove_labels.assert_not_called()
         github.add_comment_to_issue.assert_not_called()
 
-        await engine._enqueue_pending_invalidations("owner/repo")
-        await run_attempt(expect_pending=False)
-
     asyncio.run(scenario())
 
     assert set_calls == ["set"]
-    assert child_calls == [11, 11]
+    assert child_calls == []
     relationship = engine._child_review_context(parent, [child], 11)
     child_identity = individual.identity(11, child["title"], child["body"], relationship)
-    assert individual.store.get(child_identity) is not None
-    assert individual.store.get(child_identity).verdict == "READY"
+    assert individual.store.get(child_identity) is None
     assert parent["labels"] == [{"name": "implementation-ready"}]
 
 
@@ -1573,7 +1568,7 @@ def test_explicit_child_processing_validates_submitted_generation_before_eligibi
     with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
         result = engine.process_single("owner/repo", "issue", 11, explicit_only=True)
 
-    assert set(events) == {"set", "child:11"}
+    assert set(events) == ({"set", "child:11"} if child_state == "open" else {"set"})
     dispatch.assert_not_called()
     assert result["errors"] == []
     assert slots.active_execution_ids(owner) == ()

@@ -386,7 +386,7 @@ def test_ordinary_child_validation_discovers_all_declared_siblings(tmp_path: Pat
 
     assert sorted(github.children[1]) == [2, 3, 4, 5]
     assert decompositions == [(2, 3, 4, 5)]
-    assert sorted(individuals) == [2, 3, 4, 5]
+    assert sorted(individuals) == [2, 3, 4]
 
 
 def test_invalid_marker_blocks_common_dispatch_without_side_effects():
@@ -508,7 +508,7 @@ def test_explicit_new_parent_waits_for_creation_window_and_uses_latest_body(tmp_
     monkeypatch.setattr("src.auto_coder.automation_engine.time.time", lambda: (created + timedelta(seconds=61)).timestamp())
     second = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(issues[1]), 0), engine.config)
     assert analyzed == [issues[1]["body"]]
-    assert second.actions == ["Completed - closed container parent after all direct children completed"]
+    assert second.actions == ["Deferred - container parent completion requires retry"]
 
 
 def test_ready_native_leaf_under_unready_parent_starts_no_analyzer(tmp_path: Path):
@@ -550,9 +550,9 @@ def test_standalone_blocked_completion_cannot_act_after_child_is_added(tmp_path:
     assert github.issues[1]["labels"] == [{"name": "implementation-ready"}]
 
     second = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[1]), 0), engine.config)
-    assert analyzed.count("individual") == 2
+    assert analyzed.count("individual") == 1
     assert analyzed.count("set") == 1
-    assert second.actions == ["Rejected - blocked child specification"]
+    assert second.actions == ["Deferred - container parent completion requires retry"]
 
 
 def test_ambiguous_422_is_operational_and_preserves_submission(monkeypatch):
@@ -828,8 +828,8 @@ def test_late_marker_for_new_ready_parent_defers_until_latest_generation(tmp_pat
     second = engine._process_single_candidate_unified("o/r", Candidate("issue", dict(github.issues[3]), 0), engine.config)
 
     assert ("set", github.issues[3]["body"]) in analyzed
-    assert ("individual", 1) in analyzed
-    assert second.actions == ["Completed - closed container parent after all direct children completed"]
+    assert ("individual", 1) not in analyzed
+    assert second.actions == ["Deferred - container parent completion requires retry"]
 
 
 def test_ready_completion_defers_parent_discovered_during_analysis(tmp_path: Path, monkeypatch):
@@ -873,10 +873,10 @@ def test_ready_completion_defers_parent_discovered_during_analysis(tmp_path: Pat
 
     # Other tests may have already populated the process-wide validation caches,
     # which can change whether child revalidation runs before or after set review.
-    # The lifecycle guarantee here is that both reviews occur, not their ordering.
-    assert analyzed.count(("individual", 1)) == 2
+    # Closure removes the child from individual review while preserving set review.
+    assert analyzed.count(("individual", 1)) == 1
     assert analyzed.count(("set", github.issues[3]["body"])) == 1
-    assert second.actions == ["Completed - closed container parent after all direct children completed"]
+    assert second.actions == ["Deferred - container parent completion requires retry"]
 
 
 @pytest.mark.parametrize("body", ["Blocked-By:", "", "blocked-by:   "])

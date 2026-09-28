@@ -47,14 +47,18 @@ class IssueReviewRerunScopeResolver:
             raise ValueError(f"Issue #{number} is not an open parent with direct children")
         snapshots = [parent]
         subjects = [ReviewSubject(self.repository, "decomposition", number)]
+        exclusions: list[str] = []
         for child_summary in children:
             child_number = self._number(child_summary)
             child = self._issue(child_number, require_open=False)
             if self._parent(child) != number:
                 raise ValueError(f"native membership for child #{child_number} is unstable or conflicting")
             snapshots.append(child)
+            if str(child.get("state", "")).lower() != "open":
+                exclusions.append(f"Issue #{child_number}: individual review is not required while the subject is closed")
+                continue
             subjects.append(ReviewSubject(self.repository, "individual", child_number))
-        return self._scope(subjects, (), snapshots)
+        return self._scope(subjects, exclusions, snapshots)
 
     def all(self) -> RerunScope:
         entities = self.github.get_open_entities_strict(self.repository)  # type: ignore[attr-defined]
@@ -96,7 +100,7 @@ class IssueReviewRerunScopeResolver:
                 raise ValueError(f"authoritative Issue #{number} snapshot is unavailable")
             self._snapshots[number] = snapshot
         state = snapshot.get("state")
-        if not isinstance(state, str):
+        if not isinstance(state, str) or state.lower() not in {"open", "closed"}:
             raise ValueError(f"authoritative Issue #{number} state is malformed")
         if require_open and state.lower() != "open":
             raise ValueError(f"Issue #{number} is closed")

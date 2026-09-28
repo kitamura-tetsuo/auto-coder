@@ -45,9 +45,10 @@ request.
 Operators request this operation with `auto-coder review rerun --repo
 OWNER/REPO` and exactly one of `--issue NUMBER`, `--family PARENT_NUMBER`, or
 `--all`. The standalone selector rejects parents and children rather than
-expanding them. The family selector includes decomposition review and each
-native direct child's individual review, including closed retained children,
-but never a parent individual review. `--all` exhaustively selects current
+expanding them. The family selector includes decomposition review and each open
+native direct child's individual review, but never a parent individual review.
+Closed children remain in the family snapshot supplied to decomposition and are
+reported as individual-review exclusions. `--all` exhaustively selects current
 open standalone Issues and open native families in that repository; pull
 requests, closed standalones, closed families, and open children of closed
 parents are excluded and reported.

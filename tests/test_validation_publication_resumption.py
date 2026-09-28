@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import (
@@ -81,8 +82,9 @@ def _blocked_decision(gate, issue_number=1728, body=BODY):
 class _FakeGitHub:
     """Controlled GitHub adapter: independently fails comment posting and label removal."""
 
-    def __init__(self, ready=True):
+    def __init__(self, ready=True, state="open"):
         self.ready = ready
+        self.state = state
         self.comments: list[dict[str, object]] = []
         self.removals = 0
         self.comment_error: Exception | None = None
@@ -90,7 +92,7 @@ class _FakeGitHub:
 
     def get_issue_dispatch_snapshot_strict(self, _repo, _number):
         labels = [{"name": "implementation-ready"}] if self.ready else []
-        return {"number": 1728, "title": "Title", "body": BODY, "labels": labels}
+        return {"number": 1728, "title": "Title", "body": BODY, "state": self.state, "labels": labels}
 
     def get_issue_comments_strict(self, _repo, _number):
         return list(self.comments)
@@ -310,6 +312,33 @@ def test_stage_handler_supersedes_when_issue_body_changed_while_waiting(tmp_path
     outcome = handler.dispatch(obligation)
 
     assert outcome == StageOutcome(superseded=True)
+    assert github.comments == []
+    assert github.removals == 0
+
+
+def test_closed_subject_supersedes_undelivered_effects_and_preserves_confirmed_receipt(tmp_path, monkeypatch):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
+    gate = _blocked_gate(tmp_path)
+    decision = _blocked_decision(gate)
+    identity = validation_publication_identity("owner/repo", 1728, decision.identity.key)
+    github = _FakeGitHub(state="closed")
+    engine = AutomationEngine(github, AutomationConfig())
+    engine._specification_validators["owner/repo"] = gate
+    handler = _ValidationPublicationStageHandler(engine, "owner/repo")
+
+    undelivered = PendingObligation(identity, PendingReason.THROTTLED, 0.0, (DIAGNOSTIC_EFFECT, READINESS_WITHDRAWAL_EFFECT))
+    assert handler.dispatch(undelivered) == StageOutcome(superseded=True)
+    assert github.comments == []
+    assert github.removals == 0
+
+    receipt = {"comment_id": 42, "publisher_login": REVIEWER_LOGIN, "publisher_app_id": REVIEWER_APP_ID}
+    confirmed = replace(decision, findings_published=True, publication_schema_version=1, publication_receipt=receipt)
+    gate.store.save(confirmed)
+    delivered = PendingObligation(identity, PendingReason.THROTTLED, 0.0, (READINESS_WITHDRAWAL_EFFECT,))
+    assert handler.dispatch(delivered) == StageOutcome(superseded=True)
+    retained = gate.store.get(decision.identity)
+    assert retained is not None and retained.publication_receipt == receipt
     assert github.comments == []
     assert github.removals == 0
 

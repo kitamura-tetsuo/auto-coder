@@ -7,8 +7,12 @@ the model transport faked. They cover REQ-011 slices mapping to AS-001,
 AS-002, AS-004, AS-005, AS-006, AS-007, AS-008, AS-010, AS-011, and AS-013.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import Mock
+
+import pytest
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
@@ -17,8 +21,10 @@ from auto_coder.decomposition_validation_lifecycle import DecompositionValidatio
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_review_rerun import ReviewSubject
 from auto_coder.issue_stage_routing import REVIEW_STAGE
+from auto_coder.parent_issue_reconciliation import ParentOperationalError
 from auto_coder.specification_analyzer import SpecificationAnalysisResult, SpecificationFinding
 from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from auto_coder.validation_scheduler import ValidationScheduler
 
 REPO = "owner/repo"
 BODY = "## Objective\n\nShip the widget.\n\n## Requirements\n- REQ-001: Return the current value."
@@ -186,6 +192,134 @@ def test_closed_issue_removes_review_work_without_invoking_analyzer(tmp_path, mo
     assert calls.call_count == 0
     assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
     assert all(outcome.status == "stale" for outcome in outcomes)
+
+
+def test_closed_child_is_decomposition_context_but_not_an_individual_review_gate(tmp_path, monkeypatch):
+    github = FakeGitHub([], parents={2: 1, 3: 1})
+    github.issues[1] = github.snapshot(1, title="Parent", body="## Objective\n\nCoordinate.")
+    github.issues[2] = github.snapshot(2, title="Open child")
+    github.issues[3] = github.snapshot(3, title="Closed child", state="closed")
+    individual_calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    decomposition_calls = Mock(return_value=DecompositionAnalysisResult("READY"))
+    engine = engine_with_lane(tmp_path, github, individual_calls, decomposition_calls, monkeypatch=monkeypatch)
+
+    descriptors = engine._family_review_descriptors(
+        REPO,
+        (dict(github.issues[1]), [dict(github.issues[2]), dict(github.issues[3])]),
+    )
+
+    assert [(descriptor.kind, getattr(descriptor, "number", None)) for descriptor in descriptors] == [
+        ("decomposition", None),
+        ("individual", 2),
+    ]
+    decomposition = descriptors[0]
+    assert decomposition.identity is not None
+    assert {member.issue_number for member in decomposition.identity.children} == {2, 3}
+
+
+def test_closed_child_rerun_is_durably_deferred_without_review_work(tmp_path, monkeypatch):
+    github = FakeGitHub([], parents={2: 1})
+    github.issues[1] = github.snapshot(1, title="Parent", body="## Objective\n\nCoordinate.")
+    github.issues[2] = github.snapshot(2, state="closed")
+    calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine = engine_with_lane(tmp_path, github, calls, monkeypatch=monkeypatch)
+
+    statuses = engine.accept_issue_review_rerun("closed-rerun", [ReviewSubject(REPO, "individual", 2)])
+
+    assert [(status.state, status.reason) for status in statuses] == [("deferred", "individual review for Issue #2 is deferred because the subject is closed")]
+    assert calls.call_count == 0
+
+
+def test_malformed_child_state_defers_family_without_revoking_authority(tmp_path, monkeypatch):
+    github = FakeGitHub([], parents={2: 1, 3: 1})
+    github.issues[1] = github.snapshot(1, title="Parent", body="## Objective\n\nCoordinate.")
+    github.issues[2] = github.snapshot(2)
+    github.issues[3] = github.snapshot(3)
+    github.issues[3]["state"] = "unknown"
+    engine = engine_with_lane(tmp_path, github, Mock(return_value=SpecificationAnalysisResult("READY")), monkeypatch=monkeypatch)
+    subject = ReviewSubject(REPO, "individual", 3)
+
+    with pytest.raises(ParentOperationalError, match="unavailable or malformed state"):
+        engine._route_issue_family(REPO, dict(github.issues[1]), [dict(github.issues[2]), dict(github.issues[3])])
+
+    assert engine._get_specification_validator(REPO).reruns.authority(subject) == (0, None, "none")
+    assert engine.issue_stage_routing.pending(REPO, REVIEW_STAGE) == ()
+
+
+def test_queued_individual_review_rechecks_closure_before_model_invocation(tmp_path, monkeypatch):
+    github = FakeGitHub([])
+    github.issues[1] = github.snapshot(1)
+    analyzer = Mock(return_value=SpecificationAnalysisResult("READY"))
+    engine = engine_with_lane(tmp_path, github, analyzer, monkeypatch=monkeypatch)
+    engine.review_scheduler.shutdown()
+    engine.review_scheduler = ValidationScheduler(1)
+    occupied = Event()
+    release = Event()
+    blocker = engine.review_scheduler.submit("occupied", lambda: occupied.set() or release.wait(5))
+    assert occupied.wait(5)
+    service = engine._get_review_service(REPO)
+    queued = Event()
+    original_scheduler_identity = service._scheduler_identity
+
+    def observe_queue(descriptor):
+        queued.set()
+        return original_scheduler_identity(descriptor)
+
+    service._scheduler_identity = observe_queue
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(service.pump_target, 1, "queued-before-close")
+        assert queued.wait(5)
+        github.issues[1] = github.snapshot(1, state="closed")
+        engine._route_issue_stages_authoritatively(REPO, 1, dict(github.issues[1]))
+        release.set()
+        assert blocker.result() is True
+        outcome = pending.result(timeout=5)
+
+    assert outcome is not None
+    assert next(iter(outcome.decisions.values())).verdict == "ERROR"
+    assert analyzer.call_count == 0
+    assert github.comments == []
+    assert github.removals == []
+
+
+def test_closure_invalidates_in_flight_decision_across_reopen_and_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", str(tmp_path / "authority"))
+    github = FakeGitHub([])
+    github.issues[1] = github.snapshot(1)
+    started = Event()
+    release = Event()
+    calls = 0
+
+    def held_analysis(*_args):
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(5)
+        return SpecificationAnalysisResult("READY")
+
+    engine = engine_with_lane(tmp_path, github, held_analysis, monkeypatch=monkeypatch)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        late = pool.submit(engine._get_review_service(REPO).pump_target, 1, "held-before-close")
+        assert started.wait(5)
+        github.issues[1] = github.snapshot(1, state="closed")
+        engine._route_issue_stages_authoritatively(REPO, 1, dict(github.issues[1]))
+        github.issues[1] = github.snapshot(1)
+        release.set()
+        outcome = late.result(timeout=5)
+
+    assert outcome is not None
+    assert next(iter(outcome.decisions.values())).verdict == "ERROR"
+    assert github.comments == []
+    assert github.removals == []
+    assert calls == 1
+    identity = engine._get_specification_validator(REPO).identity(1, "Title", BODY)
+    assert engine._get_specification_validator(REPO).store.get(identity) is None
+
+    fresh_calls = Mock(return_value=SpecificationAnalysisResult("READY"))
+    restarted = engine_with_lane(tmp_path, github, fresh_calls, monkeypatch=monkeypatch)
+    current = restarted._get_review_service(REPO).pump_target(1, "after-reopen-restart")
+    assert current is not None and next(iter(current.decisions.values())).verdict == "READY"
+    assert fresh_calls.call_count == 1
 
 
 def test_blocked_standalone_publishes_once_and_withdraws_readiness(tmp_path, monkeypatch):
