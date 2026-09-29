@@ -44,7 +44,7 @@ from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
 from .utils import bind_supervised_command_execution
-from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, get_current_local_workspace, isolated_local_llm_worktree
+from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, get_current_local_workspace, isolated_local_llm_worktree, refresh_local_workspace_binding
 
 logger = get_logger(__name__)
 
@@ -855,6 +855,7 @@ class BackendManager(LLMBackendManagerBase):
                 # backend/provider rotation attempt (Issue #2009, REQ-001/002).
                 invocation_handle = self._admit_invocation(is_noedit=is_noedit, has_session=session_id is not None)
                 try:
+                    completed_turn_evidence = None
                     config_backend = getattr(cli, "config_backend", None)
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
@@ -874,7 +875,7 @@ class BackendManager(LLMBackendManagerBase):
                     workspace_ownership = retained_session.binding.ownership if retained_session is not None else (LocalWorkspaceOwnership() if is_local else None)
                     worktree_ctx: contextlib.AbstractContextManager[Any]
                     if retained_session is not None:
-                        worktree_ctx = bind_retained_local_workspace(retained_session.binding)
+                        worktree_ctx = bind_retained_local_workspace(retained_session.binding, is_noedit=is_noedit)
                     else:
                         worktree_ctx = (
                             isolated_local_llm_worktree(
@@ -928,9 +929,8 @@ class BackendManager(LLMBackendManagerBase):
                                     getattr(cli, "get_last_session_id", lambda: None)(),
                                 )
                                 turn_evidence = local_boundary.evidence()
-                                if retained_session is not None:
-                                    retained_session.finish(turn_evidence)
-                                elif supports_retained and turn_evidence.provider_session_id and workspace_ownership is not None:
+                                completed_turn_evidence = turn_evidence
+                                if retained_session is None and supports_retained and turn_evidence.provider_session_id and workspace_ownership is not None:
                                     workspace_ownership.retain_session()
                                     self._retained_local_sessions[turn_evidence.provider_session_id] = RetainedLocalSession(
                                         backend_name=backend_name,
@@ -947,13 +947,20 @@ class BackendManager(LLMBackendManagerBase):
                                             handoff_evidence.turn_id,
                                             local_boundary.binding.invocation_id,
                                         )
-                                        if session_id is None and handoff_evidence.provider_session_id:
-                                            self._released_local_workspace_sessions.add(handoff_evidence.provider_session_id)
                         self._settle_admitted_invocation(invocation_handle, success=True)
                         if workspace_ownership is not None:
                             workspace_ownership.release_execution()
 
                     end_dt = datetime.now(timezone.utc)
+                    completed_session_id = getattr(cli, "get_last_session_id", lambda: None)()
+                    completed_retained = self._retained_local_sessions.get(completed_session_id) if completed_session_id else None
+                    if completed_retained is not None:
+                        advanced_binding = refresh_local_workspace_binding(completed_retained.binding)
+                        if retained_session is not None:
+                            if completed_turn_evidence is None:
+                                raise LocalContinuationError("continued turn produced no controller-owned evidence")
+                            completed_retained.finish(completed_turn_evidence)
+                        completed_retained.advance_binding(advanced_binding)
                     end_time_iso = end_dt.isoformat()
                     duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
 

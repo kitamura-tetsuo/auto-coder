@@ -50,6 +50,7 @@ from auto_coder.review_audit import EvaluationLifecycle, ExecutionMode, ReviewAu
 from auto_coder.review_capture import recorder as review_recorder
 from auto_coder.two_tier_pr_gate import TwoTierPrGate
 from auto_coder.util.github_action import GitHubActionsStatusResult
+from auto_coder.utils import bind_command_execution_cwd, reset_command_execution_cwd
 
 REPO_NAME = "owner/repo"
 PR_NUMBER = 4242
@@ -161,7 +162,11 @@ def _build_config() -> AutomationConfig:
 
 @contextmanager
 def _static_worktree(path: Path):
-    yield str(path)
+    token = bind_command_execution_cwd(str(path))
+    try:
+        yield str(path)
+    finally:
+        reset_command_execution_cwd(token)
 
 
 class MockReviewerClient:

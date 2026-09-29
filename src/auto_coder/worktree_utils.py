@@ -126,8 +126,12 @@ def get_current_local_workspace() -> Optional[LocalWorkspaceBinding]:
 
 
 @contextlib.contextmanager
-def bind_retained_local_workspace(binding: LocalWorkspaceBinding) -> Generator[str, None, None]:
-    """Re-enter the exact retained root; no clone, redirect, or cleanup occurs."""
+def bind_retained_local_workspace(
+    binding: LocalWorkspaceBinding,
+    *,
+    is_noedit: bool,
+) -> Generator[str, None, None]:
+    """Re-enter the exact retained root and hand off this turn's editable delta."""
     if not binding.workspace.is_dir():
         raise WorkspacePreparationError("retained local workspace is unavailable")
     if _CURRENT_LOCAL_WORKSPACE.get() is not None:
@@ -136,9 +140,50 @@ def bind_retained_local_workspace(binding: LocalWorkspaceBinding) -> Generator[s
     execution_token = bind_command_execution_cwd(str(binding.workspace))
     try:
         yield str(binding.workspace)
+        if not is_noedit:
+            sync_worktree_changes_back(binding.workspace, binding.caller_root, binding)
     finally:
         reset_command_execution_cwd(execution_token)
         _CURRENT_LOCAL_WORKSPACE.reset(binding_token)
+
+
+def refresh_local_workspace_binding(binding: LocalWorkspaceBinding) -> LocalWorkspaceBinding:
+    """Advance a retained binding to the exact post-handoff caller checkpoint.
+
+    The invocation and private-root identities remain unchanged.  Both roots must
+    have identical supported file state, otherwise no next-generation binding can
+    be issued.
+    """
+    caller = binding.caller_root.resolve()
+    workspace = binding.workspace.resolve()
+    tracked = _listed_paths(caller, "--cached")
+    untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    token, index_checksum, git_dir_text = _source_token(caller, tracked, untracked)
+    private_paths = set(_listed_paths(workspace, "--cached"))
+    private_paths.update(path for path in _listed_paths(workspace, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    caller_states = _capture_file_states(caller, set(tracked) | set(untracked))
+    private_states = _capture_file_states(workspace, private_paths)
+    if caller_states != private_states:
+        raise WorkspaceHandoffError("retained private root does not match the post-handoff caller checkpoint")
+    git_dir = Path(git_dir_text).resolve()
+    common_dir = Path(_git(caller, "rev-parse", "--git-common-dir").stdout.strip().decode())
+    if not common_dir.is_absolute():
+        common_dir = (caller / common_dir).resolve()
+    return LocalWorkspaceBinding(
+        invocation_id=binding.invocation_id,
+        caller_root=caller,
+        caller_git_dir=git_dir,
+        caller_common_dir=common_dir,
+        initial_head=binding.initial_head,
+        initial_commit=_git(caller, "rev-parse", "HEAD").stdout.strip().decode(),
+        index_checksum=index_checksum,
+        file_snapshot_checksum=token,
+        workspace=workspace,
+        ownership=binding.ownership,
+        initial_files=private_states,
+        caller_git_identity=(git_dir.stat().st_dev, git_dir.stat().st_ino),
+        caller_common_identity=(common_dir.stat().st_dev, common_dir.stat().st_ino),
+    )
 
 
 @dataclass(frozen=True)

@@ -47,6 +47,8 @@ class RetainedLocalSession:
                 raise LocalContinuationError("retained local workspace has been disposed")
             if decision.invocation_id != self.binding.invocation_id or decision.workspace != str(self.binding.workspace.resolve()) or decision.predecessor_turn_id != self.predecessor.turn_id:
                 raise LocalContinuationError("live-root reuse decision does not match the retained generation")
+            if decision.caller_checkpoint != self.binding.file_snapshot_checksum:
+                raise LocalContinuationError("live-root reuse decision has the wrong caller checkpoint")
             self.reuse_decision = decision
 
     def admit(self, *, backend_name: str, session_id: str, caller_identity: str) -> LocalWorkspaceBinding:
@@ -65,6 +67,8 @@ class RetainedLocalSession:
                 raise LocalContinuationError("positive live-root reuse permission is required")
             if decision.invocation_id != self.binding.invocation_id or decision.workspace != str(self.binding.workspace.resolve()) or decision.predecessor_turn_id != self.predecessor.turn_id:
                 raise LocalContinuationError("live-root reuse permission is stale")
+            if decision.caller_checkpoint != self.binding.file_snapshot_checksum:
+                raise LocalContinuationError("live-root reuse permission has a stale caller checkpoint")
             self.active_turn_id = decision.decision_id
             self.reuse_decision = None
             return self.binding
@@ -77,6 +81,13 @@ class RetainedLocalSession:
                 raise LocalContinuationError("continued turn evidence does not match its retained session")
             self.predecessor = evidence
             self.active_turn_id = None
+
+    def advance_binding(self, binding: LocalWorkspaceBinding) -> None:
+        """Install the controller-produced post-handoff checkpoint."""
+        with self._lock:
+            if binding.invocation_id != self.binding.invocation_id or binding.workspace.resolve() != self.binding.workspace.resolve():
+                raise LocalContinuationError("advanced checkpoint changed the retained binding identity")
+            self.binding = binding
 
     def fail(self) -> None:
         with self._lock:

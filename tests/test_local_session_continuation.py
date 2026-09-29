@@ -42,7 +42,7 @@ def _session(tmp_path: Path, *, writers: EvidenceStatus = EvidenceStatus.ESTABLI
 
 
 def _decision(session: RetainedLocalSession, *, allowed: bool = True, turn: str = "turn-1") -> LiveRootReuseDecision:
-    return LiveRootReuseDecision("inv-1", str(session.binding.workspace.resolve()), turn, "checkpoint-1", allowed, "decision-1")
+    return LiveRootReuseDecision("inv-1", str(session.binding.workspace.resolve()), turn, session.binding.file_snapshot_checksum, allowed, "decision-1")
 
 
 def test_continuation_requires_positive_exact_generation_permission(tmp_path: Path) -> None:
@@ -60,6 +60,9 @@ def test_stale_decision_and_unsettled_writers_cannot_submit(tmp_path: Path) -> N
     session = _session(tmp_path)
     with pytest.raises(LocalContinuationError, match="does not match"):
         session.authorize_reuse(_decision(session, turn="another-turn"))
+    wrong_checkpoint = LiveRootReuseDecision("inv-1", str(session.binding.workspace.resolve()), "turn-1", "unrelated", True, "decision-2")
+    with pytest.raises(LocalContinuationError, match="wrong caller checkpoint"):
+        session.authorize_reuse(wrong_checkpoint)
 
     unsettled = _session(tmp_path / "other", writers=EvidenceStatus.UNKNOWN)
     unsettled.authorize_reuse(_decision(unsettled))
