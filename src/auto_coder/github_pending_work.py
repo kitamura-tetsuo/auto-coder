@@ -7,6 +7,7 @@ application question: whether unfinished semantic work may be forgotten.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import sqlite3
@@ -16,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Protocol
+from urllib.parse import quote
 
 from .logger_config import get_logger
 from .util.github_request_outcome import GitHubApiOutcome, GitHubRequestError
@@ -78,12 +80,36 @@ def default_pending_work_path() -> Path:
     return Path.home() / ".auto-coder" / "github_pending_work.db"
 
 
+def repository_pending_work_path(repository: str, *, home: Path | None = None) -> Path:
+    """Return the collision-resistant database path for one repository owner."""
+    key = repository_ownership_key(repository)
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    root = home if home is not None else Path.home()
+    return root / ".auto-coder" / "repositories" / digest / "github_pending_work.db"
+
+
 class PendingWorkPersistenceError(RuntimeError):
     """Persistence uncertainty; dependent effects must stop (fail closed)."""
 
 
 class PendingWorkOwnershipError(PendingWorkPersistenceError):
     """The configured repository does not own the requested obligation."""
+
+
+class PendingWorkReadiness(str, Enum):
+    READY = "READY"
+    MIGRATION_REQUIRED = "MIGRATION_REQUIRED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass(frozen=True)
+class PendingWorkResolution:
+    repository: str
+    source: Path
+    destination: Path
+    readiness: PendingWorkReadiness
+    detail: str
+    store: PendingWorkStore | None = None
 
 
 _REPOSITORY_COMPONENT = re.compile(r"^[^/\\\x00\s]+$")
@@ -97,6 +123,200 @@ def repository_ownership_key(repository: str) -> str:
     if len(parts) != 2 or any(not part or part in {".", ".."} for part in parts) or any(_REPOSITORY_COMPONENT.fullmatch(part) is None for part in parts) or any(character in stripped for character in "@:"):
         raise PendingWorkOwnershipError(f"Invalid pending-work repository binding: {repository!r}")
     return "/".join(part.translate(_ASCII_UPPER_TO_LOWER) for part in parts)
+
+
+_WORK_COLUMNS = (
+    "work_key",
+    "repository",
+    "entity",
+    "stage",
+    "revision",
+    "reason",
+    "not_before",
+    "unfinished_effects",
+    "throttle_attempts",
+    "last_error",
+    "updated_at",
+    "status",
+)
+
+
+def _create_work_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS github_pending_work (
+        work_key TEXT PRIMARY KEY, repository TEXT NOT NULL, entity TEXT NOT NULL,
+        stage TEXT NOT NULL, revision TEXT NOT NULL, reason TEXT NOT NULL,
+        not_before REAL NOT NULL, unfinished_effects TEXT NOT NULL,
+        throttle_attempts INTEGER NOT NULL, last_error TEXT NOT NULL,
+        updated_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'waiting')"""
+    )
+
+
+def _create_owner_schema(connection: sqlite3.Connection) -> None:
+    connection.execute("CREATE TABLE IF NOT EXISTS pending_work_owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), repository_key TEXT NOT NULL)")
+    connection.execute("CREATE TABLE IF NOT EXISTS pending_work_initialization (singleton INTEGER PRIMARY KEY CHECK(singleton=1), kind TEXT NOT NULL, source_path TEXT NOT NULL, completed_at REAL NOT NULL)")
+
+
+def _readonly_connection(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"file:{quote(str(path.resolve()), safe='/')}?mode=ro", uri=True, timeout=1)
+
+
+def _validated_source_rows(path: Path, repository_key: str) -> list[tuple[object, ...]]:
+    """Read and strictly validate selected committed rows without changing source."""
+    with _readonly_connection(path) as connection:
+        tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "github_pending_work" not in tables:
+            raise PendingWorkPersistenceError("Legacy database has no pending-work table")
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(github_pending_work)")}
+        required = set(_WORK_COLUMNS) - {"status"}
+        if not required.issubset(columns):
+            raise PendingWorkPersistenceError("Legacy pending-work schema is unsupported")
+        status_expression = "status" if "status" in columns else "'waiting' AS status"
+        rows = connection.execute(f"SELECT {','.join(_WORK_COLUMNS[:-1])},{status_expression} FROM github_pending_work").fetchall()
+    selected: list[tuple[object, ...]] = []
+    for row in rows:
+        try:
+            row_key = repository_ownership_key(str(row[1]))
+        except PendingWorkOwnershipError:
+            # A foreign malformed row remains part of the untouched backup, but
+            # cannot match the valid requested key and is not selected for import.
+            continue
+        if row_key != repository_key:
+            continue
+        identity = WorkIdentity(str(row[1]), str(row[2]), str(row[3]), str(row[4]))
+        if row[0] != identity.key():
+            raise PendingWorkPersistenceError("Legacy selected row has an inconsistent work key")
+        try:
+            PendingReason(str(row[5]))
+            effects = json.loads(str(row[7]))
+            if not isinstance(effects, list) or not all(isinstance(effect, str) for effect in effects):
+                raise ValueError("unfinished effects are not a string list")
+            if str(row[11]) not in {status.value for status in ObligationStatus}:
+                raise ValueError("unsupported status")
+            float(row[6])
+            int(row[8])
+            float(row[10])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise PendingWorkPersistenceError(f"Legacy selected row {row[0]!r} is malformed") from exc
+        selected.append(tuple(row))
+    return selected
+
+
+def _destination_state(path: Path, repository_key: str) -> tuple[bool, bool]:
+    """Return (ready, conflicting) without creating or repairing the database."""
+    if not path.exists():
+        return False, False
+    try:
+        with _readonly_connection(path) as connection:
+            tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not tables:
+                return False, False
+            if not {"pending_work_owner", "pending_work_initialization", "github_pending_work"}.issubset(tables):
+                return False, True
+            owner = connection.execute("SELECT repository_key FROM pending_work_owner WHERE singleton=1").fetchone()
+            receipt = connection.execute("SELECT kind FROM pending_work_initialization WHERE singleton=1").fetchone()
+            work_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(github_pending_work)")}
+            if not set(_WORK_COLUMNS).issubset(work_columns):
+                return False, True
+            count = int(connection.execute("SELECT COUNT(*) FROM github_pending_work").fetchone()[0])
+            if owner is not None and owner[0] != repository_key:
+                return False, True
+            if receipt is not None:
+                return owner is not None and owner[0] == repository_key, owner is None
+            return False, owner is not None or count != 0
+    except (OSError, sqlite3.Error) as exc:
+        raise PendingWorkPersistenceError(f"Destination database cannot be validated: {exc}") from exc
+
+
+def resolve_pending_work_store(repository: str, *, home: Path | None = None) -> PendingWorkResolution:
+    """Resolve readiness without silently importing legacy work."""
+    key = repository_ownership_key(repository)
+    root = home if home is not None else Path.home()
+    source = root / ".auto-coder" / "github_pending_work.db"
+    destination = repository_pending_work_path(repository, home=root)
+    try:
+        ready, conflict = _destination_state(destination, key)
+        if conflict:
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, "destination has incompatible or uninitialized state")
+        if ready:
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "destination is initialized", PendingWorkStore(destination, repository=repository))
+        rows = _validated_source_rows(source, key) if source.exists() else []
+        if rows:
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.MIGRATION_REQUIRED, f"legacy source contains {len(rows)} owned row(s)")
+        return _initialize_destination(repository, source, destination, kind="empty")
+    except (OSError, sqlite3.Error, PendingWorkPersistenceError) as exc:
+        return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, str(exc))
+
+
+def _initialize_destination(repository: str, source: Path, destination: Path, *, kind: str, rows: list[tuple[object, ...]] | None = None) -> PendingWorkResolution:
+    key = repository_ownership_key(repository)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        connection = sqlite3.connect(destination, timeout=1, isolation_level=None)
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("BEGIN IMMEDIATE")
+            existing_tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if existing_tables and not existing_tables.issubset({"github_pending_work", "pending_work_owner", "pending_work_initialization", "sqlite_sequence"}):
+                raise PendingWorkPersistenceError("Destination contains incompatible state")
+            _create_work_schema(connection)
+            _create_owner_schema(connection)
+            owner = connection.execute("SELECT repository_key FROM pending_work_owner WHERE singleton=1").fetchone()
+            receipt = connection.execute("SELECT kind FROM pending_work_initialization WHERE singleton=1").fetchone()
+            count = int(connection.execute("SELECT COUNT(*) FROM github_pending_work").fetchone()[0])
+            if receipt is not None:
+                if owner is None or owner[0] != key:
+                    raise PendingWorkOwnershipError("Destination owner conflicts with requested repository")
+                connection.commit()
+            else:
+                if owner is not None or count:
+                    raise PendingWorkPersistenceError("Destination has state without a completed initialization record")
+                connection.execute("INSERT INTO pending_work_owner VALUES (1, ?)", (key,))
+                for row in rows or []:
+                    connection.execute(f"INSERT INTO github_pending_work ({','.join(_WORK_COLUMNS)}) VALUES ({','.join('?' for _ in _WORK_COLUMNS)})", row)
+                connection.execute("INSERT INTO pending_work_initialization VALUES (1, ?, ?, ?)", (kind, str(source), time.time()))
+                connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        ready, conflict = _destination_state(destination, key)
+        if not ready or conflict:
+            raise PendingWorkPersistenceError("Destination commit result could not be confirmed")
+        return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "migration completed" if kind == "legacy" else "empty initialization completed", PendingWorkStore(destination, repository=repository))
+    except (OSError, sqlite3.Error, PendingWorkPersistenceError) as exc:
+        # A failed commit call can have an unknown result. Durable reopened
+        # state, rather than control flow, is authoritative.
+        try:
+            ready, conflict = _destination_state(destination, key)
+            if ready and not conflict:
+                return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "migration commit confirmed after uncertain result", PendingWorkStore(destination, repository=repository))
+        except PendingWorkPersistenceError:
+            pass
+        return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, str(exc))
+
+
+def migrate_pending_work_store(repository: str, *, offline: bool, home: Path | None = None) -> PendingWorkResolution:
+    """Perform the explicitly acknowledged, source-preserving legacy cutover."""
+    key = repository_ownership_key(repository)
+    root = home if home is not None else Path.home()
+    source = root / ".auto-coder" / "github_pending_work.db"
+    destination = repository_pending_work_path(repository, home=root)
+    try:
+        ready, conflict = _destination_state(destination, key)
+        if ready:
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "already initialized", PendingWorkStore(destination, repository=repository))
+        if conflict:
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, "destination has incompatible or uninitialized state")
+        if not offline:
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.MIGRATION_REQUIRED, "legacy transfer requires --offline acknowledgement")
+        if not source.exists():
+            return _initialize_destination(repository, source, destination, kind="empty")
+        rows = _validated_source_rows(source, key)
+        return _initialize_destination(repository, source, destination, kind="legacy" if rows else "empty", rows=rows)
+    except (OSError, sqlite3.Error, PendingWorkPersistenceError) as exc:
+        return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, str(exc))
 
 
 class PendingWorkStore:
@@ -151,15 +371,7 @@ class PendingWorkStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self._db_path, timeout=30)
         connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute(
-            """CREATE TABLE IF NOT EXISTS github_pending_work (
-            work_key TEXT PRIMARY KEY, repository TEXT NOT NULL, entity TEXT NOT NULL,
-            stage TEXT NOT NULL, revision TEXT NOT NULL, reason TEXT NOT NULL,
-            not_before REAL NOT NULL, unfinished_effects TEXT NOT NULL,
-            throttle_attempts INTEGER NOT NULL, last_error TEXT NOT NULL,
-            updated_at REAL NOT NULL,
-            status TEXT NOT NULL DEFAULT 'waiting')"""
-        )
+        _create_work_schema(connection)
         # Preflight-schema databases predate the status column. A pre-existing
         # row cannot be safely interpreted as anything but eligible for
         # resumption, so it defaults to waiting rather than being dropped.

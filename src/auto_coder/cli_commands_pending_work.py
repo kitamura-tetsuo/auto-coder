@@ -11,7 +11,7 @@ import json
 
 import click
 
-from .github_pending_work import PendingWorkStore, WorkIdentity, default_pending_work_path
+from .github_pending_work import PendingWorkReadiness, PendingWorkStore, WorkIdentity, default_pending_work_path, migrate_pending_work_store
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -74,3 +74,14 @@ def pending_work_retry(repository: str, entity: str, stage: str, revision: str) 
         click.echo(f"No retained obligation found for {identity.key()}")
         raise SystemExit(1)
     click.echo(f"Obligation for {identity.key()} is eligible for retry (reason={obligation.reason.value}, effects={list(obligation.unfinished_effects)}).")
+
+
+@pending_work_group.command(name="migrate")
+@click.option("--repository", required=True, help="Repository in owner/repo form, e.g. acme/widgets")
+@click.option("--offline", is_flag=True, help="Acknowledge that all controllers using the legacy shared database are stopped")
+def pending_work_migrate(repository: str, offline: bool) -> None:
+    """Cut over one repository from the preserved shared legacy database."""
+    result = migrate_pending_work_store(repository, offline=offline)
+    click.echo(f"repository={result.repository} source={result.source} destination={result.destination} " f"outcome={result.readiness.value} detail={result.detail}")
+    if result.readiness is not PendingWorkReadiness.READY:
+        raise click.ClickException(result.detail)
