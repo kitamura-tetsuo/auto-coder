@@ -626,7 +626,7 @@ def test_success_waits_for_descendant_writer_settlement(tmp_path: Path, monkeypa
 # ---------------------------------------------------------------------------
 
 
-def test_ordinary_invocation_never_resumes_a_stale_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_ordinary_invocation_refuses_implicit_stale_session_without_fresh_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _driver(tmp_path)
     report = tmp_path / "report.json"
@@ -643,11 +643,9 @@ def test_ordinary_invocation_never_resumes_a_stale_session(tmp_path: Path, monke
     # Simulate a stale session left over from a previous, unrelated run.
     manager._last_session_id = "stale-session-from-another-task"
 
-    assert manager._run_llm_cli("implement") == "ok"
-
-    observed = json.loads(report.read_text())
-    for forbidden in ("--session", "--continue", "-c", "--fork"):
-        assert forbidden not in observed["argv"]
+    with pytest.raises(LocalContinuationError, match="implicit last-session"):
+        manager._run_llm_cli("implement")
+    assert not report.exists()
 
 
 def test_client_exposes_no_session_id_before_any_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

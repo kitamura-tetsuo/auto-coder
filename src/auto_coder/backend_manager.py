@@ -567,8 +567,13 @@ class BackendManager(LLMBackendManagerBase):
                 attempts += 1
                 continue
 
+            should_resume = self._automatic_session_resume and backend_name == self._last_backend and bool(self._last_session_id)
+            if should_resume:
+                config_backend = getattr(cli, "config_backend", None)
+                backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
+                if backend_type not in _CLOUD_BACKEND_TYPES:
+                    raise LocalContinuationError("implicit last-session continuation is unsupported; request an explicit generation-authorized continuation")
             try:
-                should_resume = self._automatic_session_resume and backend_name == self._last_backend and bool(self._last_session_id)
                 try:
                     result = self._execute_backend_with_providers(
                         backend_name=backend_name,

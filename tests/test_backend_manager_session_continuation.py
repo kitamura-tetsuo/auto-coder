@@ -13,6 +13,7 @@ from src.auto_coder.exceptions import (
     LocalWriterSettlementError,
     SessionWorkspaceCompatibilityError,
 )
+from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.opencode_client import OpenCodeClient
 
 
@@ -56,15 +57,17 @@ def _manager(tmp_path: Path, clients: dict[str, SessionClient], automatic_sessio
         )
 
 
-def test_consecutive_implementation_prompts_continue_the_first_session(tmp_path):
+def test_consecutive_implementation_prompt_refuses_implicit_last_session_without_fresh_task(tmp_path):
     client = SessionClient(fresh_session_id="implementation-session")
     manager = _manager(tmp_path, {"claude": client})
 
     assert manager._run_llm_cli("first") == "fresh response"
-    assert manager._run_llm_cli("second") == "continued response"
+    with pytest.raises(LocalContinuationError, match="implicit last-session"):
+        manager._run_llm_cli("second")
 
     assert client.fresh_prompts == ["first"]
-    assert client.continued == [("implementation-session", "second", False)]
+    assert client.continued == []
+    assert manager._last_session_id == "implementation-session"
 
 
 def test_incompatible_explicit_session_fails_without_fresh_submission(tmp_path):
@@ -81,44 +84,46 @@ def test_incompatible_explicit_session_fails_without_fresh_submission(tmp_path):
     assert manager._last_session_id == "stale-session"
 
 
-def test_stale_implementation_session_fallback_clears_cached_client_id(tmp_path):
+def test_stale_implicit_session_is_not_cleared_or_replaced(tmp_path):
     client = SessionClient(fresh_session_id="stale-session")
     client.continue_error = RuntimeError("session not found")
     manager = _manager(tmp_path, {"claude": client})
     manager._last_session_id = "stale-session"
 
-    assert manager._run_llm_cli("implementation context") == "fresh response"
+    with pytest.raises(LocalContinuationError, match="implicit last-session"):
+        manager._run_llm_cli("implementation context")
 
-    assert client.fresh_prompts == ["implementation context"]
-    assert client.get_last_session_id() is None
-    assert manager._last_session_id is None
+    assert client.fresh_prompts == []
+    assert client.continued == []
+    assert client.get_last_session_id() == "stale-session"
+    assert manager._last_session_id == "stale-session"
 
 
-def test_retryable_outage_during_automatic_resume_does_not_start_fresh_execution(tmp_path):
+def test_implicit_resume_is_refused_before_retryable_provider_call(tmp_path):
     client = SessionClient(fresh_session_id="persisted-session")
     client.continue_error = AutoCoderRetryableBackendError("Codex transport reconnects exhausted")
     manager = _manager(tmp_path, {"codex": client})
     manager._last_backend = "codex"
     manager._last_session_id = "persisted-session"
 
-    with pytest.raises(AutoCoderRetryableBackendError, match="reconnects exhausted"):
+    with pytest.raises(LocalContinuationError, match="implicit last-session"):
         manager._run_llm_cli("implementation context")
 
-    assert client.continued == [("persisted-session", "implementation context", False)]
+    assert client.continued == []
     assert client.fresh_prompts == []
 
 
-def test_uncertain_writer_during_automatic_resume_does_not_start_fresh_execution(tmp_path):
+def test_implicit_resume_is_refused_before_writer_uncertain_provider_call(tmp_path):
     client = SessionClient(fresh_session_id="persisted-session")
     client.continue_error = LocalWriterSettlementError("writer settlement is uncertain")
     manager = _manager(tmp_path, {"opencode": client})
     manager._last_backend = "opencode"
     manager._last_session_id = "persisted-session"
 
-    with pytest.raises(LocalWriterSettlementError, match="settlement is uncertain"):
+    with pytest.raises(LocalContinuationError, match="implicit last-session"):
         manager._run_llm_cli("implementation context")
 
-    assert client.continued == [("persisted-session", "implementation context", False)]
+    assert client.continued == []
     assert client.fresh_prompts == []
     assert manager._last_session_id == "persisted-session"
 

@@ -401,7 +401,7 @@ def test_successful_edit_session_is_refused_after_its_private_root_is_released(t
     token = bind_command_execution_cwd(str(repository))
     try:
         assert manager._run_llm_cli("first") == "fresh result"
-        with pytest.raises(SessionWorkspaceCompatibilityError, match="original private workspace"):
+        with pytest.raises(LocalContinuationError, match="implicit last-session"):
             manager._run_llm_cli("second")
     finally:
         reset_command_execution_cwd(token)
