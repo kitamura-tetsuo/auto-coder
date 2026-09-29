@@ -18,6 +18,7 @@ from click import ClickException
 from src.auto_coder.cli_helpers import build_backend_manager, check_backend_prerequisites
 from src.auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.opencode_client import OpenCodeClient
 from src.auto_coder.prompt_loader import render_prompt
 from tests.utils.supervised_local import install_test_supervisor
@@ -913,7 +914,8 @@ def test_ac003_manager_continuity_flag_resets_after_identity_mismatch(tmp_path: 
         assert manager._last_continue_session_resumed is True
 
         monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(mismatched))
-        manager.continue_session(session_id="ses_good", prompt="second")
+        with pytest.raises(LocalContinuationError, match="positive live-root reuse permission"):
+            manager.continue_session(session_id="ses_good", prompt="second")
 
     assert manager._last_continue_session_resumed is False
 

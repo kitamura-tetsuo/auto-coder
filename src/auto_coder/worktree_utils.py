@@ -48,6 +48,7 @@ class LocalWorkspaceOwnership:
 
     execution_released: bool = False
     handoff_released: bool = False
+    session_released: bool = True
     handoff_authorized: bool = False
     authorized_turn_id: Optional[str] = None
     _disposer: Optional[Callable[[], None]] = field(default=None, init=False, repr=False)
@@ -61,6 +62,16 @@ class LocalWorkspaceOwnership:
     def release_handoff(self) -> None:
         with self._lock:
             self.handoff_released = True
+            self._dispose_if_released()
+
+    def retain_session(self) -> None:
+        """Keep the private root alive for an explicitly owned provider session."""
+        with self._lock:
+            self.session_released = False
+
+    def release_session(self) -> None:
+        with self._lock:
+            self.session_released = True
             self._dispose_if_released()
 
     def authorize_handoff(self, invocation_id: str, turn_id: str, expected_invocation_id: str) -> None:
@@ -77,14 +88,14 @@ class LocalWorkspaceOwnership:
             self._dispose_if_released()
 
     def _dispose_if_released(self) -> None:
-        if self.execution_released and self.handoff_released and self._disposer is not None:
+        if self.execution_released and self.handoff_released and self.session_released and self._disposer is not None:
             disposer = self._disposer
             self._disposer = None
             disposer()
 
     @property
     def can_dispose(self) -> bool:
-        return self.execution_released and self.handoff_released
+        return self.execution_released and self.handoff_released and self.session_released
 
 
 @dataclass(frozen=True)
@@ -112,6 +123,22 @@ _CURRENT_LOCAL_WORKSPACE: contextvars.ContextVar[Optional[LocalWorkspaceBinding]
 def get_current_local_workspace() -> Optional[LocalWorkspaceBinding]:
     """Return the binding owned by the current local invocation, if any."""
     return _CURRENT_LOCAL_WORKSPACE.get()
+
+
+@contextlib.contextmanager
+def bind_retained_local_workspace(binding: LocalWorkspaceBinding) -> Generator[str, None, None]:
+    """Re-enter the exact retained root; no clone, redirect, or cleanup occurs."""
+    if not binding.workspace.is_dir():
+        raise WorkspacePreparationError("retained local workspace is unavailable")
+    if _CURRENT_LOCAL_WORKSPACE.get() is not None:
+        raise WorkspacePreparationError("a local workspace is already bound")
+    binding_token = _CURRENT_LOCAL_WORKSPACE.set(binding)
+    execution_token = bind_command_execution_cwd(str(binding.workspace))
+    try:
+        yield str(binding.workspace)
+    finally:
+        reset_command_execution_cwd(execution_token)
+        _CURRENT_LOCAL_WORKSPACE.reset(binding_token)
 
 
 @dataclass(frozen=True)
