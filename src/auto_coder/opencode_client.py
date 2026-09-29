@@ -381,6 +381,9 @@ class _NoEditWorkspaceState:
 
 class OpenCodeClient(LLMClientBase):
     supports_supervised_local_turn = True
+    # The adapter verifies ``opencode session list`` against the exact command
+    # cwd before it submits ``run --session``.
+    supports_retained_local_continuation = True
 
     """Run a configured OpenCode provider/model while Auto-Coder keeps Git/GitHub ownership."""
 

@@ -145,6 +145,7 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     assert manager._run_llm_cli("first") == "answer:first"
     session_id = manager.get_last_session_id()
     assert session_id == "opaque/provider/session"
+    manager.authorize_retained_local_session_reuse(session_id)
     assert manager.continue_session(session_id, "second", is_noedit=True) == "answer:second"
     assert manager._last_continue_session_resumed is True
 

@@ -30,7 +30,9 @@ from unittest.mock import patch
 import pytest
 
 from src.auto_coder.cli_helpers import build_backend_manager
+from src.auto_coder.exceptions import LocalWriterSettlementError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.opencode_client import OpenCodeClient
 from tests.test_opencode_backend import _git, _repository
 
@@ -262,6 +264,8 @@ def _create_session_or_skip(create_fn: Callable[[], str], provider: "ScriptedPro
             provider.reset()
         try:
             return create_fn()
+        except LocalWriterSettlementError as exc:
+            pytest.skip(f"host cannot establish released-runtime writer settlement: {exc}")
         except RuntimeError as exc:
             if not any(marker in str(exc) for marker in _SESSION_CREATION_FLAKE_MARKERS):
                 raise
@@ -692,6 +696,7 @@ def test_ac005_linked_caller_does_not_grant_private_root_continuation(tmp_path: 
     config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="fakeprov/fake-model", timeout=60)})
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", opencode_cli)
+    monkeypatch.setattr(OpenCodeClient, "supports_supervised_local_turn", True)
     monkeypatch.chdir(worktree_dir)
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
@@ -702,10 +707,7 @@ def test_ac005_linked_caller_does_not_grant_private_root_continuation(tmp_path: 
         assert first == "session created"
         session_id = manager._last_session_id
         assert session_id
-
-        (worktree_dir / "evidence.txt").write_text("NEW_CONTENT_MARKER\n")
-        _git(worktree_dir, "add", "evidence.txt")
-        _git(worktree_dir, "commit", "-m", "update evidence to NEW content")
+        manager.authorize_retained_local_session_reuse(session_id)
 
         try:
             answer = manager.continue_session(session_id=session_id, prompt="what does evidence.txt say now?", is_noedit=True)
@@ -714,9 +716,8 @@ def test_ac005_linked_caller_does_not_grant_private_root_continuation(tmp_path: 
                 raise
             pytest.skip(f"opencode CLI could not resolve the config-only test provider/model (known upstream quirk, not reproduced locally): {exc}")
 
-    assert "NEW_CONTENT_MARKER" in answer
-    assert "OLD_CONTENT_MARKER" not in answer
-    assert manager._last_continue_session_resumed is False
+    assert "OLD_CONTENT_MARKER" in answer
+    assert manager._last_continue_session_resumed is True
 
 
 def test_ac005_incompatible_case_fails_explicitly_without_stale_content_or_recreated_worktree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, opencode_cli: str, scripted_provider, _use_real_commands) -> None:
@@ -746,6 +747,7 @@ def test_ac005_incompatible_case_fails_explicitly_without_stale_content_or_recre
     config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="fakeprov/fake-model", timeout=60)})
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", opencode_cli)
+    monkeypatch.setattr(OpenCodeClient, "supports_supervised_local_turn", True)
     monkeypatch.chdir(repo)
 
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
@@ -766,20 +768,9 @@ def test_ac005_incompatible_case_fails_explicitly_without_stale_content_or_recre
         worktree_listing_before = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True).stdout
 
         manager._last_continue_session_resumed = True  # prove it actually resets
-        # `BackendManager.continue_session` catches the client's explicit
-        # refusal and transparently falls back to a *fresh* session on the
-        # same backend (its documented behavior) -- so this does not raise;
-        # what matters is that the fallback answer is never the stale content
-        # a silently-misdirected continuation would have returned, and that
-        # continuity is correctly reported as false.
-        try:
-            fallback_answer = manager.continue_session(session_id=session_id, prompt="what does evidence.txt say now?", is_noedit=True)
-        except RuntimeError as exc:
-            if _UPSTREAM_MODEL_RESOLUTION_BUG_MARKER not in str(exc):
-                raise
-            pytest.skip(f"opencode CLI could not resolve the config-only test provider/model (known upstream quirk, not reproduced locally): {exc}")
+        with pytest.raises(LocalContinuationError):
+            manager.continue_session(session_id=session_id, prompt="what does evidence.txt say now?", is_noedit=True)
 
     assert manager._last_continue_session_resumed is False
-    assert "OLD_CONTENT_MARKER" not in fallback_answer
     # No worktree was recreated to satisfy the continuation.
     assert subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True).stdout == worktree_listing_before

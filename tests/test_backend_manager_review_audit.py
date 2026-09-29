@@ -46,6 +46,8 @@ def mock_llm_config():
 
 
 class MockClient:
+    supports_retained_local_continuation = True
+
     def __init__(self, name, throws=None, model="test-model"):
         self.name = name
         self.throws = throws
@@ -202,14 +204,16 @@ def test_as_003_explicit_continuation_preserves_correlation(backend_manager, tem
                 raise ValueError("Session rejected")
 
         backend_manager._clients["backend-A"] = RejectContinueClient("backend-A")
-        backend_manager.continue_session("sess-123", "third")
+        with pytest.raises(ValueError, match="Session rejected"):
+            backend_manager.continue_session("sess-123", "third")
 
     conn = sqlite3.connect(temp_audit_db._get_db_path("org/repo"))
     conn.row_factory = sqlite3.Row
     interactions = conn.execute("SELECT * FROM interaction WHERE review_id = 'rev-3' ORDER BY seq ASC").fetchall()
 
-    # first call, continue call, continue failure call, fallback fresh call
-    assert len(interactions) == 4
+    # First call, continuation, and explicit continuation failure. No fresh
+    # replacement interaction is allowed for the failed continuation.
+    assert len(interactions) == 3
 
     assert interactions[0]["invocation_mode"] == "fresh"
     # First call was fresh so no session was passed in initially, but it returned sess-123
@@ -222,9 +226,6 @@ def test_as_003_explicit_continuation_preserves_correlation(backend_manager, tem
 
     assert interactions[2]["invocation_mode"] == "continuation"
     assert interactions[2]["completion_status"] == "RAISED"
-
-    assert interactions[3]["invocation_mode"] == "fresh"
-    assert interactions[3]["completion_status"] == "RETURNED"
 
 
 def test_as_004_logging_disabled_permits_metadata(backend_manager, temp_audit_db, tmp_path, mock_llm_config):

@@ -34,7 +34,8 @@ from .invocation_admission import (
 from .invocation_process_supervisor import CgroupV2Owner, InvocationProcessSupervisor
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
-from .local_execution_boundary import bind_local_execution_boundary
+from .local_execution_boundary import EvidenceStatus, bind_local_execution_boundary
+from .local_session_continuation import LiveRootReuseDecision, LocalContinuationError, LocalResultLifecycleAuthority, RetainedLocalSession
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .review_audit import ReviewInteractionRecord
@@ -43,7 +44,7 @@ from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
 from .utils import bind_supervised_command_execution
-from .worktree_utils import LocalWorkspaceOwnership, get_current_local_workspace, isolated_local_llm_worktree
+from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, current_local_caller_checkpoint, current_local_caller_identity, get_current_local_workspace, isolated_local_llm_worktree, refresh_local_workspace_binding, sync_worktree_changes_back
 
 logger = get_logger(__name__)
 
@@ -266,6 +267,8 @@ class BackendManager(LLMBackendManagerBase):
         # Sessions produced by an accepted editable generation whose private
         # root has since been released cannot be resumed in a newly cloned root.
         self._released_local_workspace_sessions: set[str] = set()
+        self._retained_local_sessions: dict[str, RetainedLocalSession] = {}
+        self._local_result_lifecycle = LocalResultLifecycleAuthority()
 
         # Whether the most recent continue_session() call actually resumed the
         # requested session, or fell back to a fresh session/backend. Callers
@@ -565,8 +568,13 @@ class BackendManager(LLMBackendManagerBase):
                 attempts += 1
                 continue
 
+            should_resume = self._automatic_session_resume and backend_name == self._last_backend and bool(self._last_session_id)
+            if should_resume:
+                config_backend = getattr(cli, "config_backend", None)
+                backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
+                if backend_type not in _CLOUD_BACKEND_TYPES:
+                    raise LocalContinuationError("implicit last-session continuation is unsupported; request an explicit generation-authorized continuation")
             try:
-                should_resume = self._automatic_session_resume and backend_name == self._last_backend and bool(self._last_session_id)
                 try:
                     result = self._execute_backend_with_providers(
                         backend_name=backend_name,
@@ -645,6 +653,30 @@ class BackendManager(LLMBackendManagerBase):
         """Return the provider-issued identity from the last successful call."""
         return self._last_session_id
 
+    def authorize_local_session_continuation(self, session_id: str, decision: LiveRootReuseDecision) -> None:
+        """Attach the result-lifecycle authority's exact reuse decision."""
+        retained = self._retained_local_sessions.get(session_id)
+        if retained is None:
+            raise LocalContinuationError("no retained controller-owned binding exists for this session")
+        retained.authorize_reuse(decision)
+
+    def authorize_retained_local_session_reuse(self, session_id: str) -> LiveRootReuseDecision:
+        """Ask the controller result-lifecycle owner for exact one-turn authority."""
+        retained = self._retained_local_sessions.get(session_id)
+        if retained is None:
+            raise LocalContinuationError("no retained controller-owned binding exists for this session")
+        decision = self._local_result_lifecycle.authorize_reuse(retained, caller_checkpoint=retained.binding.file_snapshot_checksum)
+        retained.authorize_reuse(decision)
+        return decision
+
+    def release_local_session(self, session_id: str) -> None:
+        """Release only the named session lease and its exact private root."""
+        retained = self._retained_local_sessions.get(session_id)
+        if retained is not None:
+            retained.dispose()
+            del self._retained_local_sessions[session_id]
+            self._released_local_workspace_sessions.add(session_id)
+
     def get_current_backend_identity(self) -> Tuple[str, str, str]:
         """Return the current alias, resolved type, and model for registry keys."""
         backend_name = self._current_backend_name()
@@ -661,20 +693,21 @@ class BackendManager(LLMBackendManagerBase):
     def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
         """Ask the current client to continue an opaque session explicitly.
 
-        A workspace/session compatibility rejection remains an explicit failure
-        instead of making a fresh provider call look resumed. Muse MSP exact-session
-        failures also remain explicit because a fresh call cannot preserve the
-        requested conversation. Other established provider failures retain the
-        existing fallback behavior.
+        Every explicit continuation is fail-closed. A fresh task or another
+        backend cannot truthfully substitute for the requested session.
         """
         self._last_continue_session_resumed = False
         if not session_id.strip():
             raise ValueError("Session ID must be nonempty for explicit continuation")
         backend_name = self._current_backend_name()
         client = self._get_or_create_client(backend_name)
+        if session_id in self._released_local_workspace_sessions:
+            raise SessionWorkspaceCompatibilityError("local continuation refused because its original private workspace and generation checkpoint are no longer retained")
         config_backend = getattr(client, "config_backend", None)
         backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
-        is_muse_backend = backend_type == "muse"
+        is_local_backend = backend_type not in _CLOUD_BACKEND_TYPES
+        if is_local_backend and getattr(client, "supports_retained_local_continuation", False) is not True:
+            raise LocalContinuationError("selected local adapter cannot prove retained-workspace continuation compatibility")
         self._is_noedit = is_noedit
         try:
             # Re-use _execute_backend_with_providers to capture interaction
@@ -697,22 +730,11 @@ class BackendManager(LLMBackendManagerBase):
             raise
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
             self._last_continue_session_resumed = False
-            if is_muse_backend:
-                raise
-            self.switch_to_next_backend()
-            return self._run_llm_cli(prompt, is_noedit=is_noedit)
+            raise
         except Exception as exc:
             if not isinstance(exc, (ValueError, RuntimeError, NotImplementedError)):
                 raise
-            if is_muse_backend:
-                raise
-            logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
-            self._last_continue_session_resumed = False
-            self._last_session_id = None
-            self._save_session_state(backend_name, None)
-            if hasattr(client, "clear_last_session_id"):
-                client.clear_last_session_id()
-            return self._run_llm_cli(prompt, is_noedit=is_noedit)
+            raise
 
     def run_prompt(self, prompt: str) -> str:
         """
@@ -841,21 +863,39 @@ class BackendManager(LLMBackendManagerBase):
                 # backend/provider rotation attempt (Issue #2009, REQ-001/002).
                 invocation_handle = self._admit_invocation(is_noedit=is_noedit, has_session=session_id is not None)
                 try:
+                    completed_turn_evidence = None
                     config_backend = getattr(cli, "config_backend", None)
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
+                    retained_session: Optional[RetainedLocalSession] = None
                     if session_id is not None and is_local and session_id in self._released_local_workspace_sessions:
                         raise SessionWorkspaceCompatibilityError("local continuation refused because its original private workspace and generation checkpoint are no longer retained")
-                    workspace_ownership = LocalWorkspaceOwnership() if is_local else None
-                    worktree_ctx = (
-                        isolated_local_llm_worktree(
-                            is_noedit=is_noedit,
-                            ownership=workspace_ownership,
-                            require_handoff_authorization=not is_noedit,
+                    supports_retained = getattr(cli, "supports_retained_local_continuation", False) is True
+                    if session_id is not None and is_local and supports_retained and (session_id in self._retained_local_sessions or session_id in self._released_local_workspace_sessions):
+                        retained_session = self._retained_local_sessions.get(session_id)
+                        if retained_session is None:
+                            raise LocalContinuationError("local continuation has no retained controller-owned binding")
+                        retained_session.admit(
+                            backend_name=backend_name,
+                            session_id=session_id,
+                            caller_identity=current_local_caller_identity(),
+                            caller_checkpoint=current_local_caller_checkpoint(retained_session.binding),
+                            lifecycle=self._local_result_lifecycle,
                         )
-                        if is_local
-                        else contextlib.nullcontext()
-                    )
+                    workspace_ownership = retained_session.binding.ownership if retained_session is not None else (LocalWorkspaceOwnership() if is_local else None)
+                    worktree_ctx: contextlib.AbstractContextManager[Any]
+                    if retained_session is not None:
+                        worktree_ctx = bind_retained_local_workspace(retained_session.binding, is_noedit=is_noedit)
+                    else:
+                        worktree_ctx = (
+                            isolated_local_llm_worktree(
+                                is_noedit=is_noedit,
+                                ownership=workspace_ownership,
+                                require_handoff_authorization=not is_noedit,
+                            )
+                            if is_local
+                            else contextlib.nullcontext()
+                        )
                     with worktree_ctx:
                         workspace_binding = get_current_local_workspace()
                         boundary_ctx = (
@@ -898,6 +938,20 @@ class BackendManager(LLMBackendManagerBase):
                                     local_boundary.binding.invocation_id,
                                     getattr(cli, "get_last_session_id", lambda: None)(),
                                 )
+                                turn_evidence = local_boundary.evidence()
+                                completed_turn_evidence = turn_evidence
+                                if retained_session is None and supports_retained and turn_evidence.provider_session_id and workspace_ownership is not None:
+                                    workspace_ownership.retain_session()
+                                    retained = RetainedLocalSession(
+                                        backend_name=backend_name,
+                                        provider_session_id=turn_evidence.provider_session_id,
+                                        binding=local_boundary.binding,
+                                        predecessor=turn_evidence,
+                                        caller_identity=current_local_caller_identity(local_boundary.binding.caller_root),
+                                        workspace_identity=(local_boundary.binding.workspace.stat().st_dev, local_boundary.binding.workspace.stat().st_ino),
+                                        workspace_fd=os.open(local_boundary.binding.workspace, os.O_RDONLY),
+                                    )
+                                    self._retained_local_sessions[turn_evidence.provider_session_id] = retained
                                 if not is_noedit and workspace_ownership is not None:
                                     handoff_evidence = local_boundary.evidence()
                                     if handoff_evidence.handoff_authorized:
@@ -906,13 +960,30 @@ class BackendManager(LLMBackendManagerBase):
                                             handoff_evidence.turn_id,
                                             local_boundary.binding.invocation_id,
                                         )
-                                        if session_id is None and handoff_evidence.provider_session_id:
+                                        if not supports_retained and session_id is None and handoff_evidence.provider_session_id:
                                             self._released_local_workspace_sessions.add(handoff_evidence.provider_session_id)
                         self._settle_admitted_invocation(invocation_handle, success=True)
                         if workspace_ownership is not None:
                             workspace_ownership.release_execution()
 
                     end_dt = datetime.now(timezone.utc)
+                    completed_session_id = getattr(cli, "get_last_session_id", lambda: None)()
+                    completed_retained = self._retained_local_sessions.get(completed_session_id) if completed_session_id else None
+                    if completed_retained is not None:
+                        if retained_session is not None:
+                            if completed_turn_evidence is None:
+                                raise LocalContinuationError("continued turn produced no controller-owned evidence")
+                            if completed_turn_evidence.writer_completion is not EvidenceStatus.ESTABLISHED:
+                                raise LocalWriterSettlementError("continued turn writer settlement is uncertain")
+                            if completed_turn_evidence.editable:
+                                sync_worktree_changes_back(completed_retained.binding.workspace, completed_retained.binding.caller_root, completed_retained.binding)
+                        advanced_binding = refresh_local_workspace_binding(completed_retained.binding)
+                        if retained_session is not None:
+                            assert completed_turn_evidence is not None
+                            completed_retained.finish(completed_turn_evidence)
+                        completed_retained.advance_binding(advanced_binding)
+                        if completed_turn_evidence is not None:
+                            self._local_result_lifecycle.record_generation(completed_turn_evidence)
                     end_time_iso = end_dt.isoformat()
                     duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
 
@@ -945,6 +1016,8 @@ class BackendManager(LLMBackendManagerBase):
                     self._save_session_state(backend_name, self._last_session_id)
                     return out
                 except Exception as exc:
+                    if "retained_session" in locals() and retained_session is not None:
+                        retained_session.fail()
                     self._settle_admitted_invocation(invocation_handle, success=False)
                     end_dt = datetime.now(timezone.utc)
                     end_time_iso = end_dt.isoformat()

@@ -18,6 +18,7 @@ from click import ClickException
 from src.auto_coder.cli_helpers import build_backend_manager, check_backend_prerequisites
 from src.auto_coder.exceptions import AutoCoderRetryableBackendError, AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.opencode_client import OpenCodeClient
 from src.auto_coder.prompt_loader import render_prompt
 from tests.utils.supervised_local import install_test_supervisor
@@ -625,7 +626,7 @@ def test_success_waits_for_descendant_writer_settlement(tmp_path: Path, monkeypa
 # ---------------------------------------------------------------------------
 
 
-def test_ordinary_invocation_never_resumes_a_stale_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_ordinary_invocation_refuses_implicit_stale_session_without_fresh_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _driver(tmp_path)
     report = tmp_path / "report.json"
@@ -642,11 +643,9 @@ def test_ordinary_invocation_never_resumes_a_stale_session(tmp_path: Path, monke
     # Simulate a stale session left over from a previous, unrelated run.
     manager._last_session_id = "stale-session-from-another-task"
 
-    assert manager._run_llm_cli("implement") == "ok"
-
-    observed = json.loads(report.read_text())
-    for forbidden in ("--session", "--continue", "-c", "--fork"):
-        assert forbidden not in observed["argv"]
+    with pytest.raises(LocalContinuationError, match="implicit last-session"):
+        manager._run_llm_cli("implement")
+    assert not report.exists()
 
 
 def test_client_exposes_no_session_id_before_any_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -788,9 +787,7 @@ def test_ac002_missing_session_reports_explicit_failure_without_exposing_new_id(
         assert client.get_last_session_id() is None
 
 
-def test_ac002_manager_local_fallback_after_missing_session_reports_non_continuity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    """The adapter itself never resubmits; only `BackendManager.continue_session`'s
-    documented fallback does, and it must report the fallback as non-continuity."""
+def test_ac002_manager_missing_session_fails_without_fresh_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _driver(tmp_path)
     missing_line = _event("error", session_id="ses_missing", error={"name": "SessionNotFoundError", "data": {"message": "not found"}})
@@ -809,15 +806,13 @@ def test_ac002_manager_local_fallback_after_missing_session_reports_non_continui
         install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
-        result = manager.continue_session(session_id="ses_missing", prompt="continue please")
+        with pytest.raises(RuntimeError, match="session error"):
+            manager.continue_session(session_id="ses_missing", prompt="continue please")
 
-    assert result == "fresh fallback answer"
     assert manager._last_continue_session_resumed is False
 
 
-def test_ac002_manager_backend_switch_fallback_reports_non_continuity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    """A configured backend-switch fallback returning a plausible answer under
-    another backend/session is still reported as non-continuity."""
+def test_ac002_manager_usage_failure_does_not_switch_backend_or_claim_continuity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _driver(tmp_path)
     stdout_file = tmp_path / "stdout.jsonl"
@@ -840,11 +835,11 @@ def test_ac002_manager_backend_switch_fallback_reports_non_continuity(tmp_path: 
         install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
-        result = manager.continue_session(session_id="ses_x", prompt="continue please")
+        with pytest.raises(AutoCoderUsageLimitError):
+            manager.continue_session(session_id="ses_x", prompt="continue please")
 
-    assert result == "fallback-success"
     assert manager._last_continue_session_resumed is False
-    assert manager.get_last_backend_and_model() == ("fallback", "fallback")
+    assert manager.get_current_backend_identity()[0] == "opencode"
 
 
 # -- AC-003: a same-looking answer with the wrong identity is not continuity
@@ -913,7 +908,8 @@ def test_ac003_manager_continuity_flag_resets_after_identity_mismatch(tmp_path: 
         assert manager._last_continue_session_resumed is True
 
         monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(mismatched))
-        manager.continue_session(session_id="ses_good", prompt="second")
+        with pytest.raises(LocalContinuationError, match="positive live-root reuse permission"):
+            manager.continue_session(session_id="ses_good", prompt="second")
 
     assert manager._last_continue_session_resumed is False
 

@@ -48,6 +48,7 @@ class LocalWorkspaceOwnership:
 
     execution_released: bool = False
     handoff_released: bool = False
+    session_released: bool = True
     handoff_authorized: bool = False
     authorized_turn_id: Optional[str] = None
     _disposer: Optional[Callable[[], None]] = field(default=None, init=False, repr=False)
@@ -61,6 +62,16 @@ class LocalWorkspaceOwnership:
     def release_handoff(self) -> None:
         with self._lock:
             self.handoff_released = True
+            self._dispose_if_released()
+
+    def retain_session(self) -> None:
+        """Keep the private root alive for an explicitly owned provider session."""
+        with self._lock:
+            self.session_released = False
+
+    def release_session(self) -> None:
+        with self._lock:
+            self.session_released = True
             self._dispose_if_released()
 
     def authorize_handoff(self, invocation_id: str, turn_id: str, expected_invocation_id: str) -> None:
@@ -77,14 +88,14 @@ class LocalWorkspaceOwnership:
             self._dispose_if_released()
 
     def _dispose_if_released(self) -> None:
-        if self.execution_released and self.handoff_released and self._disposer is not None:
+        if self.execution_released and self.handoff_released and self.session_released and self._disposer is not None:
             disposer = self._disposer
             self._disposer = None
             disposer()
 
     @property
     def can_dispose(self) -> bool:
-        return self.execution_released and self.handoff_released
+        return self.execution_released and self.handoff_released and self.session_released
 
 
 @dataclass(frozen=True)
@@ -112,6 +123,99 @@ _CURRENT_LOCAL_WORKSPACE: contextvars.ContextVar[Optional[LocalWorkspaceBinding]
 def get_current_local_workspace() -> Optional[LocalWorkspaceBinding]:
     """Return the binding owned by the current local invocation, if any."""
     return _CURRENT_LOCAL_WORKSPACE.get()
+
+
+def current_local_caller_identity(cwd: Optional[Union[Path, str]] = None) -> str:
+    """Return an inode-bound identity for the caller repository at this boundary."""
+    target = _resolve_target(cwd)
+    root = Path(_git(target, "rev-parse", "--show-toplevel").stdout.strip().decode()).resolve()
+    git_dir = Path(_git(root, "rev-parse", "--absolute-git-dir").stdout.strip().decode()).resolve()
+    common_dir = Path(_git(root, "rev-parse", "--git-common-dir").stdout.strip().decode())
+    if not common_dir.is_absolute():
+        common_dir = (root / common_dir).resolve()
+    root_stat = root.stat()
+    git_stat = git_dir.stat()
+    common_stat = common_dir.stat()
+    return f"{root}:{root_stat.st_dev}:{root_stat.st_ino}:{git_stat.st_dev}:{git_stat.st_ino}:{common_stat.st_dev}:{common_stat.st_ino}"
+
+
+def current_local_caller_checkpoint(binding: LocalWorkspaceBinding) -> str:
+    """Return the current caller checkpoint after validating its Git identity."""
+    caller = binding.caller_root.resolve()
+    git_dir = Path(_git(caller, "rev-parse", "--absolute-git-dir").stdout.strip().decode()).resolve()
+    common_dir = Path(_git(caller, "rev-parse", "--git-common-dir").stdout.strip().decode())
+    if not common_dir.is_absolute():
+        common_dir = (caller / common_dir).resolve()
+    if (
+        git_dir != binding.caller_git_dir.resolve()
+        or common_dir != binding.caller_common_dir.resolve()
+        or (binding.caller_git_identity is not None and (git_dir.stat().st_dev, git_dir.stat().st_ino) != binding.caller_git_identity)
+        or (binding.caller_common_identity is not None and (common_dir.stat().st_dev, common_dir.stat().st_ino) != binding.caller_common_identity)
+    ):
+        raise WorkspaceHandoffError("caller Git identity changed; refusing continuation")
+    tracked = _listed_paths(caller, "--cached")
+    untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    checkpoint, _, _ = _source_token(caller, tracked, untracked)
+    return checkpoint
+
+
+@contextlib.contextmanager
+def bind_retained_local_workspace(
+    binding: LocalWorkspaceBinding,
+    *,
+    is_noedit: bool,
+) -> Generator[str, None, None]:
+    """Re-enter the exact retained root without granting result handoff."""
+    if not binding.workspace.is_dir():
+        raise WorkspacePreparationError("retained local workspace is unavailable")
+    if _CURRENT_LOCAL_WORKSPACE.get() is not None:
+        raise WorkspacePreparationError("a local workspace is already bound")
+    binding_token = _CURRENT_LOCAL_WORKSPACE.set(binding)
+    execution_token = bind_command_execution_cwd(str(binding.workspace))
+    try:
+        yield str(binding.workspace)
+    finally:
+        reset_command_execution_cwd(execution_token)
+        _CURRENT_LOCAL_WORKSPACE.reset(binding_token)
+
+
+def refresh_local_workspace_binding(binding: LocalWorkspaceBinding) -> LocalWorkspaceBinding:
+    """Advance a retained binding to the exact post-handoff caller checkpoint.
+
+    The invocation and private-root identities remain unchanged.  Both roots must
+    have identical supported file state, otherwise no next-generation binding can
+    be issued.
+    """
+    caller = binding.caller_root.resolve()
+    workspace = binding.workspace.resolve()
+    tracked = _listed_paths(caller, "--cached")
+    untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    token, index_checksum, git_dir_text = _source_token(caller, tracked, untracked)
+    private_paths = set(_listed_paths(workspace, "--cached"))
+    private_paths.update(path for path in _listed_paths(workspace, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    caller_states = _capture_file_states(caller, set(tracked) | set(untracked))
+    private_states = _capture_file_states(workspace, private_paths)
+    if caller_states != private_states:
+        raise WorkspaceHandoffError("retained private root does not match the post-handoff caller checkpoint")
+    git_dir = Path(git_dir_text).resolve()
+    common_dir = Path(_git(caller, "rev-parse", "--git-common-dir").stdout.strip().decode())
+    if not common_dir.is_absolute():
+        common_dir = (caller / common_dir).resolve()
+    return LocalWorkspaceBinding(
+        invocation_id=binding.invocation_id,
+        caller_root=caller,
+        caller_git_dir=git_dir,
+        caller_common_dir=common_dir,
+        initial_head=binding.initial_head,
+        initial_commit=_git(caller, "rev-parse", "HEAD").stdout.strip().decode(),
+        index_checksum=index_checksum,
+        file_snapshot_checksum=token,
+        workspace=workspace,
+        ownership=binding.ownership,
+        initial_files=private_states,
+        caller_git_identity=(git_dir.stat().st_dev, git_dir.stat().st_ino),
+        caller_common_identity=(common_dir.stat().st_dev, common_dir.stat().st_ino),
+    )
 
 
 @dataclass(frozen=True)
