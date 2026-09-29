@@ -19,10 +19,11 @@ deferrals, cancellation, persistence failures, and an earlier unresolved
 processing error retain their existing retry or recovery behavior even if final
 routing later discovers a specification refusal.
 
-Typed refusal propagation includes the ordinary live-family refresh after
-initial routing. If submitted-parent validation has already failed or been
-cancelled, its unfinished disposition remains authoritative when the mandatory
-post-validation routing pass subsequently observes a relationship refusal.
+Typed refusal propagation includes both the ordinary live-family refresh and
+the later inherited-authority family refresh after initial routing. If
+submitted-parent validation has already failed or been cancelled, its
+unfinished disposition remains authoritative when the mandatory post-validation
+routing pass subsequently observes a relationship refusal.
 
 A settled refusal emits a BLOCKED worker diagnostic containing repository,
 Issue number, claimed generation, relationship reason, and the actual

@@ -5965,6 +5965,19 @@ class AutomationEngine:
                 inherited_parent_number = int(parent_details["number"])
                 try:
                     authoritative_set = self._fetch_authoritative_decomposition_set(repo_name, inherited_parent_number)
+                except ParentSpecificationError as exc:
+                    result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                    result.target_outcome = ExplicitTargetOutcome.BLOCKED
+                    result.definitive_parent_refusal = True
+                    result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
+                    _record_issue_stage_result(
+                        item_number,
+                        "issue.parent-reconciliation",
+                        f"issue#{item_number} parent reconciliation",
+                        Outcome.BLOCKED,
+                        {"reason": str(exc)},
+                    )
+                    return result
                 except Exception as exc:
                     deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
                     if deferred_result is not None:
