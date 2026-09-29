@@ -25,6 +25,12 @@ only on an in-memory retry flag. Later refill passes leave that retained Issue t
 pending-work scheduler, so capacity polling and unrelated slot transitions
 cannot shorten the retained deadline.
 
+Candidate dispatch applies the same conversion to native-parent discovery and
+the later hierarchy rechecks, including discovery repeated after entering the
+per-Issue generation lock. A definitely-unsent refusal therefore yields the
+lock and returns a durable Deferred result to capacity refill; it cannot escape
+through the synchronous worker boundary and terminate the refill service.
+
 Durable-invalidation stage routing also recognizes an explicitly caused
 reconciliation deferral and stores its reason, API origin, and effective retry
 deadline on the invalidation record. Only explicit reconciliation cause chains

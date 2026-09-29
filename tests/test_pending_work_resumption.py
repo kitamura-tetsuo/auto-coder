@@ -532,6 +532,77 @@ def test_early_live_parent_family_refresh_retains_wrapped_admission_deferral(tmp
     implementation.assert_not_called()
 
 
+def test_capacity_dispatch_retains_bare_native_parent_admission_deferral(tmp_path, monkeypatch):
+    """A refusal after candidate selection must not escape the refill worker."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    deferred = _admission_deferral()
+    engine._get_authoritative_parent_number = MagicMock(side_effect=deferred)
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+            origin="capacity-refill-intake",
+        )
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    assert "request_in_flight" in (result.target_reason or "")
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
+
+
+def test_generation_serialized_reentry_retains_wrapped_native_parent_deferral(tmp_path, monkeypatch):
+    """The second lookup under the owner lock uses the same durable boundary."""
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    deferred = _admission_deferral()
+    wrapped = ParentOperationalError("native parent unavailable after serialization")
+    wrapped.__cause__ = deferred
+    engine._get_authoritative_parent_number = MagicMock(side_effect=[None, wrapped])
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+            origin="capacity-refill-intake",
+        )
+
+    identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))
+    obligation = store.get(identity)
+    assert engine._get_authoritative_parent_number.call_count == 2
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert obligation is not None
+    assert obligation.reason is PendingReason.ADMISSION_DEFERRED
+    assert obligation.not_before >= deferred.retry_at
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
+
+
 def test_early_live_parent_family_refresh_preserves_definitive_refusal_type(tmp_path, monkeypatch):
     issue = {
         "id": 70,

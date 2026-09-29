@@ -688,6 +688,19 @@ reason, API origin, generation, and deadline are operational queue diagnostics, 
 drives the production worker and strict-read adapter and verifies that processing is
 not dispatched.
 
+Late native-parent admission deferrals after capacity-refill candidate selection
+reuse the existing `capacity-refill-intake` execution origin and
+`issue-processing` pending-work stage. They change durable resumption and the
+execution's outcome from an escaped failure to `deferred`, but add no processing
+origin, event field, provider route, or dashboard renderer. The operational
+diagnostic and pending record remain authoritative for the reason, API origin,
+Issue identity, and retry deadline. Runnable coverage in
+`tests/test_pending_work_resumption.py::test_capacity_dispatch_retains_bare_native_parent_admission_deferral`
+and
+`tests/test_pending_work_resumption.py::test_generation_serialized_reentry_retains_wrapped_native_parent_deferral`
+exercises the initial and generation-serialized lookup boundaries and verifies
+that implementation is not dispatched.
+
 Shared-governor incarnation ownership changes the existing HTTP admission gate but is
 dashboard-observability neutral. Governor admission still occurs before an Issue or PR
 processing execution outcome becomes known, and the durable pending-work paths still
