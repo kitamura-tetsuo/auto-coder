@@ -28,7 +28,7 @@ from auto_coder.issue_stage_routing import (
 )
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
-from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
 
 REPO = "owner/repo"
@@ -710,6 +710,65 @@ async def test_close_reopen_requires_current_authority_before_relabel_reuse(tmp_
     # the same production `identity()` method fed by the real snapshot.
     edited_identity = engine._get_specification_validator(REPO).identity(1, "Standalone", body + "\nEdited.")
     assert edited_identity != baseline_identity
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_late_preclosure_ready_is_rejected_after_same_content_reopen(tmp_path, monkeypatch):
+    """REQ-004: stale reviewer authority cannot satisfy the reopened occurrence."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = {
+        1: {
+            "id": 101,
+            "number": 1,
+            "title": "Standalone",
+            "body": body,
+            "state": "open",
+            "created_at": created_at,
+            "labels": [{"name": "implementation-ready"}],
+        },
+    }
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
+    validator = engine._get_specification_validator(REPO)
+    subject = ReviewSubject(REPO, "individual", 1)
+    preclosure_authority, preclosure_request, state = validator.reruns.authority(subject)
+    assert (preclosure_authority, preclosure_request, state) == (0, None, "none")
+    identity = validator.identity(1, "Standalone", body)
+    late_ready = ValidationDecision(
+        identity,
+        "READY",
+        evaluation_source="fresh",
+        rerun_authority=preclosure_authority,
+        rerun_request_id=preclosure_request,
+    )
+
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "closed"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "open"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([OpenGitHubIssue(1, created_at)], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+
+    rejected = validator._settle_decision_checkpoint(late_ready)
+    assert rejected.verdict == "ERROR"
+    assert rejected.remediation_reason == "review occurrence was revoked by a newer explicit rerun"
+    authority, _request_id, authority_state = validator.reruns.authority(subject)
+    assert authority == 1 and authority_state == "deferred"
+    pending = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(pending) == 1 and pending[0].target_number == 1
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+    assert validator.store.get(identity) is None
+
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)
 
