@@ -541,6 +541,25 @@ class IssueStageRoutingStore:
                 (repository, target_number),
             )
 
+    def revoke_closed_target(self, repository: str, target_number: int) -> None:
+        """Atomically retire pending eligibility owned by a closed Issue.
+
+        Besides the Issue's own Review and Implementation roles, a tracking
+        parent owns the pending Implementation arrivals whose family binding
+        still names it.  Active execution ownership and owned-start tombstones
+        live outside ``issue_lane_arrivals`` and are deliberately untouched.
+        """
+        with self._lock, self._connection:
+            self._connection.execute(
+                "DELETE FROM issue_lane_arrivals WHERE repository=? AND target_number=?",
+                (repository, target_number),
+            )
+            self._connection.execute(
+                """DELETE FROM issue_lane_arrivals
+                WHERE repository=? AND stage='implementation' AND family_parent_number=?""",
+                (repository, target_number),
+            )
+
     def targets(self, repository: str) -> tuple[int, ...]:
         """Return durable target identities which startup must re-authorize."""
         with self._lock:

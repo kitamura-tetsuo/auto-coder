@@ -3210,8 +3210,25 @@ class AutomationEngine:
         status = reruns.accept(closure_request, (subject,))[0]
         reruns.defer(subject, status.authority, f"individual review for Issue #{issue_number} is deferred because the subject is closed")
 
+    def _revoke_closed_issue_eligibility(self, repo_name: str, issue_number: int) -> None:
+        """Persist every locally owned closure effect before hierarchy work.
+
+        The authority withdrawal and lane cleanup are individually idempotent.
+        If either durable write fails, the invalidation remains incomplete and
+        a later retry finishes the outstanding effect without requiring parent
+        metadata to be readable or consistent.
+        """
+        self._withdraw_closed_individual_authority(repo_name, issue_number)
+        self.issue_stage_routing.revoke_closed_target(repo_name, issue_number)
+
     def _route_issue_stages_authoritatively(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> None:
         """Classify one invalidated Issue from current GitHub and decision stores."""
+        # Closure is authority from this exact strict snapshot.  Revoke local
+        # eligibility before declaration reconciliation or hierarchy reads can
+        # fail, while continuing below so a closed child can still update an
+        # open submitted family's decomposition classification.
+        if snapshot.get("state") == "closed":
+            self._revoke_closed_issue_eligibility(repo_name, issue_number)
         current = self._reconcile_validation_snapshot(repo_name, issue_number, snapshot)
         parent_number = self._get_authoritative_parent_number(repo_name, issue_number, current)
         if parent_number is not None:
@@ -8339,6 +8356,11 @@ class AutomationEngine:
                 issue_data = self.github.get_issue_details(issue)
                 if not issue_data or not issue_data.get("number"):
                     return None
+                if propagate_errors and issue_data.get("state") == "closed":
+                    # This data came from the matching strict snapshot above.
+                    # Commit closure effects before allowlist/admission filters
+                    # can turn the candidate into an early successful absence.
+                    self._revoke_closed_issue_eligibility(repo_name, number)
                 if not self._is_issue_author_allowed(issue_data):
                     logger.info(f"Skipping issue #{number} - author not in issue allowlist")
                     return None

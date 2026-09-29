@@ -28,6 +28,14 @@ target, including targets absent from the open-Issue enumeration, so closure
 removes pending work and unchanged reopening receives a new arrival.
 An empty authoritative child set also retires every Implementation row owned by
 the former family before the former parent is reclassified as standalone.
+An explicitly closed strict Issue snapshot first withdraws its durable
+individual-review authority and atomically removes its own pending lane roles
+plus Implementation arrivals still bound to it as family parent. This local
+revocation precedes Parent-Issue reconciliation, so malformed or contradictory
+relationship metadata cannot preserve stale eligibility; routing nevertheless
+continues afterward so a closed child can remain current decomposition evidence
+for an open submitted parent. Failed persistence leaves the durable invalidation
+retryable, and an unchanged reopen must earn current review authority again.
 Engine-owned validation lifecycles are rebound when the effective provider/model
 route changes. Authoritative routing therefore requires decisions for the new
 policy identity, while an exact route restoration can reuse its earlier durable

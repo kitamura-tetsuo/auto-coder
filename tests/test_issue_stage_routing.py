@@ -11,6 +11,7 @@ from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from auto_coder.decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.implementation_slots import ImplementationSlotRepository
+from auto_coder.issue_review_rerun import ReviewSubject
 from auto_coder.issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -73,6 +74,83 @@ def test_review_generation_excludes_status_priority_and_filters_terminal_work(tm
     assert updated.arrival == first.arrival
     assert updated.priority == 7
     assert updated.remaining_identity_keys == ("individual-4",)
+
+
+def test_closed_target_revocation_is_repository_scoped_and_retires_owned_children(tmp_path):
+    store = IssueStageRoutingStore(tmp_path / "routing.sqlite3")
+    requirements = ()
+    store.reconcile(review_classification(REPO, 10, "parent-review", 0, True, (requirement(10),)))
+    store.reconcile(implementation_classification(REPO, 10, "parent-implementation", 0, True, requirements))
+    store.reconcile(implementation_classification(REPO, 11, "owned-child", 0, True, requirements, family_parent_number=10))
+    store.reconcile(implementation_classification(REPO, 12, "rebound-child", 0, True, requirements, family_parent_number=20))
+    store.reconcile(implementation_classification("other/repo", 11, "other-repository", 0, True, requirements, family_parent_number=10))
+
+    store.revoke_closed_target(REPO, 10)
+
+    assert store.get(REPO, REVIEW_STAGE, 10) is None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 10) is None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 11) is None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 12) is not None
+    assert store.get("other/repo", IMPLEMENTATION_STAGE, 11) is not None
+
+
+def test_closed_target_revocation_rolls_back_partial_lane_cleanup_on_write_failure(tmp_path):
+    store = IssueStageRoutingStore(tmp_path / "routing.sqlite3")
+    store.reconcile(review_classification(REPO, 10, "parent-review", 0, True, (requirement(10),)))
+    store.reconcile(implementation_classification(REPO, 11, "owned-child", 0, True, (), family_parent_number=10))
+    store._connection.execute(
+        """CREATE TRIGGER fail_closed_family_cleanup
+        BEFORE DELETE ON issue_lane_arrivals
+        WHEN OLD.stage = 'implementation' AND OLD.family_parent_number = 10
+        BEGIN SELECT RAISE(ABORT, 'injected closure persistence failure'); END"""
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected closure persistence failure"):
+        store.revoke_closed_target(REPO, 10)
+
+    assert store.get(REPO, REVIEW_STAGE, 10) is not None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 11) is not None
+    store._connection.execute("DROP TRIGGER fail_closed_family_cleanup")
+    store.revoke_closed_target(REPO, 10)
+    assert store.get(REPO, REVIEW_STAGE, 10) is None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 11) is None
+
+
+def test_closed_snapshot_revokes_local_eligibility_before_relationship_failure(tmp_path, monkeypatch):
+    config = AutomationConfig(repo_name=REPO)
+    engine, _github = _routing_engine(tmp_path, monkeypatch, {}, [], config)
+    engine.issue_stage_routing.reconcile(review_classification(REPO, 11, "old-review", 0, True, (requirement(11),)))
+    engine.issue_stage_routing.reconcile(implementation_classification(REPO, 11, "old-implementation", 0, True, ()))
+    engine.issue_stage_routing.reconcile(implementation_classification(REPO, 12, "owned-by-closed-parent", 0, True, (), family_parent_number=11))
+    relationship_error = RuntimeError("Parent-Issue declaration conflicts with native parent")
+    monkeypatch.setattr(engine, "_reconcile_validation_snapshot", MagicMock(side_effect=relationship_error))
+
+    with pytest.raises(RuntimeError, match="conflicts with native parent"):
+        engine._route_issue_stages_authoritatively(REPO, 11, {"number": 11, "state": "closed"})
+
+    assert engine.issue_stage_routing.get(REPO, REVIEW_STAGE, 11) is None
+    assert engine.issue_stage_routing.get(REPO, IMPLEMENTATION_STAGE, 11) is None
+    assert engine.issue_stage_routing.get(REPO, IMPLEMENTATION_STAGE, 12) is None
+    authority, _request_id, state = engine._get_specification_validator(REPO).reruns.authority(ReviewSubject(REPO, "individual", 11))
+    assert authority == 1
+    assert state == "deferred"
+
+
+def test_strict_closed_candidate_revokes_before_author_allowlist_shortcut(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(tmp_path / "routing.sqlite3"))
+    github = MagicMock()
+    snapshot = {"id": 110, "number": 11, "title": "Closed", "body": "", "state": "closed", "labels": []}
+    github.get_issue_dispatch_snapshot_strict.return_value = snapshot
+    github.get_issue_details.return_value = dict(snapshot)
+    engine = AutomationEngine(github, AutomationConfig(repo_name=REPO))
+    monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda _issue: False)
+    engine.issue_stage_routing.reconcile(implementation_classification(REPO, 11, "old", 0, True, ()))
+
+    assert engine._create_candidate_from_single(REPO, "issue", 11, propagate_errors=True) is None
+
+    assert engine.issue_stage_routing.get(REPO, IMPLEMENTATION_STAGE, 11) is None
+    assert engine._get_specification_validator(REPO).reruns.authority(ReviewSubject(REPO, "individual", 11))[2] == "deferred"
 
 
 def test_family_generation_changes_for_contract_policy_and_membership_not_verdict():
