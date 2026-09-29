@@ -62,6 +62,17 @@ class ControlledProviderServer:
                     except Exception:
                         parsed = {}
 
+                    # The Codex readiness oracle needs only an authoritative
+                    # observation after its Git startup check. A controlled
+                    # terminal provider rejection keeps that later task failed
+                    # and prevents transport retries from extending the test.
+                    if self.path.endswith("/responses"):
+                        self.send_response(401)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(b'{"error":{"message":"controlled downstream rejection"}}')
+                        return
+
                     # OpenCode session-title requests carry no tools
                     if not parsed.get("tools"):
                         self._stream_response("text", "untitled")
