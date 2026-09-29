@@ -35,6 +35,7 @@ from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfigura
 from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.opencode_client import OpenCodeClient
 from tests.test_opencode_backend import _git, _repository
+from tests.utils.supervised_local import install_test_supervisor
 
 _PINNED_OPENCODE_VERSION = "1.18.31"
 
@@ -606,13 +607,20 @@ def test_ac004_editable_session_continued_as_noedit_denies_mutation(tmp_path: Pa
     home_config_path = home / ".config" / "opencode" / "opencode.json"
     home_config_before = home_config_path.read_text()
 
-    client = _client(repo, home, opencode_cli, monkeypatch)
-    assert _create_edit_session_or_skip(client, "create the session", provider) == "edit-mode session created"
-    session_id = client.get_last_session_id()
-    assert session_id
+    config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="fakeprov/fake-model", timeout=60)})
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", opencode_cli)
+    monkeypatch.setattr(OpenCodeClient, "supports_supervised_local_turn", True)
+    monkeypatch.chdir(repo)
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
+        manager = install_test_supervisor(build_backend_manager(["opencode"], "opencode", {}))
+        assert _create_session_or_skip(lambda: manager._run_llm_cli("create the session"), provider) == "edit-mode session created"
+        session_id = manager.get_last_session_id()
+        assert session_id
+        manager.authorize_retained_local_session_reuse(session_id)
 
-    with pytest.raises(RuntimeError, match="forbidden tool 'write'"):
-        _continue_or_skip(client, session_id, "please write the file")
+        with pytest.raises(RuntimeError, match="forbidden tool 'write'"):
+            manager.continue_session(session_id=session_id, prompt="please write the file", is_noedit=True)
 
     assert not target_file.exists()
     # Persistent user settings were never rewritten to implement the mode change.

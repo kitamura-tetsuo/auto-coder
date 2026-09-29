@@ -22,7 +22,7 @@ import pytest
 from src.auto_coder.exceptions import AutoCoderTimeoutError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from src.auto_coder.opencode_client import OpenCodeClient
-from tests.test_opencode_backend import _driver, _event, _git, _manager, _repository, _set_known_sessions
+from tests.test_opencode_backend import _driver, _editable_boundary, _event, _git, _manager, _repository, _set_known_sessions
 
 
 def _locked_down_debug_agent_response() -> str:
@@ -380,7 +380,8 @@ def test_continuation_reapplies_noedit_enforcement_regardless_of_session_history
 
         # The session is first created as an ordinary, editable execution.
         monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(stdout_edit))
-        assert client._run_llm_cli("edit task", is_noedit=False) == "edited"
+        with _editable_boundary(repo):
+            assert client._run_llm_cli("edit task", is_noedit=False) == "edited"
         session_id = client.get_last_session_id()
         assert session_id == "ses_edit1"
 
