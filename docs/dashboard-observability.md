@@ -1374,3 +1374,16 @@ Recovery-linked PR candidates, first-check settlement from durable handoff
 evidence, final guarded token revalidation, and provider-selective startup
 reconstruction remain internal safety decisions on that same reclamation path;
 they do not introduce a dashboard origin, outcome, route, or event schema.
+
+## Definitive Parent-Issue refusal settlement
+
+The durable invalidation worker emits a `Worker` BLOCKED diagnostic when an
+authoritative, typed Parent-Issue specification refusal is durably settled. Its
+details identify `repository`, `generation`, `reason`, `outcome=blocked`, and
+the generation-aware `acknowledgement` (`cleared`, `followup_pending`, or
+`stale_no_op`). This uses the existing worker trace schema and dashboard
+projection; no new outcome or provider-routing value is introduced. Regression
+coverage in `tests/test_entity_invalidation.py` drives raised and returned
+worker boundaries, generation-followup service without restart, cleanup
+failure recovery, and the real GitHubClient relationship reconciler. It
+verifies that a completed refusal is not reported as `worker_error`.

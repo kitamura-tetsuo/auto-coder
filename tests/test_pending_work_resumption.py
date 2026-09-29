@@ -34,7 +34,7 @@ from auto_coder.github_pending_work import (
     WorkIdentity,
 )
 from auto_coder.github_request_governor import GitHubRequestDeferred
-from auto_coder.parent_issue_reconciliation import ParentOperationalError
+from auto_coder.parent_issue_reconciliation import ParentOperationalError, ParentSpecificationError
 from auto_coder.pr_processor import PR_PROCESSING_STAGE
 from auto_coder.sibling_dependencies import DependencySatisfaction
 from auto_coder.util.gh_cache import GitHubClient, OpenGitHubEntities, OpenGitHubIssue
@@ -529,6 +529,72 @@ def test_early_live_parent_family_refresh_retains_wrapped_admission_deferral(tmp
         DeliveryCertainty.DEFINITELY_NOT_SENT.value,
     )
     engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
+
+
+def test_early_live_parent_family_refresh_preserves_definitive_refusal_type(tmp_path, monkeypatch):
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "Parent-Issue: #6\n## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    parent = {**issue, "id": 60, "number": 6, "body": "## Objective\nCoordinate work.", "labels": [{"name": "implementation-ready"}]}
+    engine, _store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._get_authoritative_parent_number = MagicMock(return_value=6)
+    refusal = ParentSpecificationError("sibling declaration conflicts with its native parent")
+    # Admission sees a valid family. Ordinary processing then observes the
+    # newly contradictory sibling while refreshing the live family.
+    engine._fetch_authoritative_decomposition_set = MagicMock(side_effect=[(parent, [dict(issue)]), refusal])
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+        )
+
+    assert result.target_outcome is ExplicitTargetOutcome.BLOCKED
+    assert result.definitive_parent_refusal is True
+    assert result.error == "Parent-Issue reconciliation blocked processing: sibling declaration conflicts with its native parent"
+    assert result.actions == ["Blocked - invalid Parent-Issue relationship metadata"]
+    implementation.assert_not_called()
+
+
+def test_inherited_family_refresh_preserves_definitive_refusal_type(tmp_path, monkeypatch):
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": "Parent-Issue: #6\n## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    parent = {**issue, "id": 60, "number": 6, "body": "## Objective\nCoordinate work.", "labels": [{"name": "implementation-ready"}]}
+    family = (parent, [dict(issue)])
+    engine, _store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._get_authoritative_parent_number = MagicMock(return_value=6)
+    refusal = ParentSpecificationError("sibling declaration conflicts with its native parent")
+    # Admission and the early live-parent refresh see a consistent family.
+    # The inherited-authority refresh then observes the sibling contradiction.
+    engine._fetch_authoritative_decomposition_set = MagicMock(side_effect=[family, family, refusal])
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate(type="issue", data=dict(issue), priority=0, issue_number=7),
+            engine.config,
+        )
+
+    assert engine._fetch_authoritative_decomposition_set.call_count == 3
+    assert result.target_outcome is ExplicitTargetOutcome.BLOCKED
+    assert result.definitive_parent_refusal is True
+    assert result.error == "Parent-Issue reconciliation blocked processing: sibling declaration conflicts with its native parent"
+    assert result.actions == ["Blocked - invalid Parent-Issue relationship metadata"]
     implementation.assert_not_called()
 
 

@@ -567,6 +567,15 @@ class IssueStageRoutingStore:
                 (repository, target_number),
             )
 
+    def retire_refused_target(self, repository: str, target_number: int) -> None:
+        """Retire pending roles made obsolete by a definitive relationship refusal.
+
+        Relationship metadata is deliberately not consulted here: only roles
+        owned by the refused target, including child Implementation arrivals
+        still bound to it as family parent, are removed.
+        """
+        self.revoke_closed_target(repository, target_number)
+
     def observe_lifecycle_state(self, repository: str, target_number: int, state: str) -> int:
         """Persist lifecycle state and return the stable closed-period sequence."""
         if state not in {"open", "closed"}:
