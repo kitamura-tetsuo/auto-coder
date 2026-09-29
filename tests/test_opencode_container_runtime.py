@@ -388,7 +388,7 @@ def test_ac002_effective_home_and_runtime_authentication() -> None:
         script_auth_store = f"""
 import os, subprocess, json
 from pathlib import Path
-from auto_coder.cli_helpers import build_backend_manager
+from auto_coder.opencode_client import OpenCodeClient
 
 home = Path("/runtime/home")
 home.mkdir(parents=True, exist_ok=True)
@@ -430,8 +430,8 @@ model = "controlled/test-model"
 ''')
 
 os.chdir(str(repo))
-manager = build_backend_manager(["opencode"], "opencode", {{}})
-answer = manager._run_llm_cli("Task with auth store")
+client = OpenCodeClient(backend_name="opencode")
+answer = client._run_llm_cli("Task with auth store", is_noedit=True)
 print("ANSWER:" + answer)
 """
         cmd_store = [
@@ -461,7 +461,7 @@ print("ANSWER:" + answer)
         script_auth_env = f"""
 import os, subprocess, json
 from pathlib import Path
-from auto_coder.cli_helpers import build_backend_manager
+from auto_coder.opencode_client import OpenCodeClient
 
 home = Path("/runtime/home")
 home.mkdir(parents=True, exist_ok=True)
@@ -497,8 +497,8 @@ model = "controlled/test-model"
 ''')
 
 os.chdir(str(repo))
-manager = build_backend_manager(["opencode"], "opencode", {{}})
-answer = manager._run_llm_cli("Task with env auth")
+client = OpenCodeClient(backend_name="opencode")
+answer = client._run_llm_cli("Task with env auth", is_noedit=True)
 print("ANSWER:" + answer)
 """
         cmd_env = [
@@ -526,7 +526,7 @@ print("ANSWER:" + answer)
     script_missing = """
 import os, subprocess, json
 from pathlib import Path
-from auto_coder.cli_helpers import build_backend_manager
+from auto_coder.opencode_client import OpenCodeClient
 
 home = Path("/runtime/home")
 home.mkdir(parents=True, exist_ok=True)
@@ -562,8 +562,8 @@ model = "unauthenticated/test-model"
 ''')
 
 os.chdir(str(repo))
-manager = build_backend_manager(["opencode"], "opencode", {})
-manager._run_llm_cli("Task missing auth")
+client = OpenCodeClient(backend_name="opencode")
+client._run_llm_cli("Task missing auth", is_noedit=True)
 """
     cmd_missing = [
         "docker",
@@ -607,7 +607,7 @@ def test_ac003_retained_and_isolated_native_state_between_channels() -> None:
         script_task_1 = f"""
 import os, subprocess, json
 from pathlib import Path
-from auto_coder.cli_helpers import build_backend_manager
+from auto_coder.opencode_client import OpenCodeClient
 
 home = Path("/runtime/home")
 home.mkdir(parents=True, exist_ok=True)
@@ -644,9 +644,9 @@ api_key = "tok"
 ''')
 
 os.chdir(str(repo))
-manager = build_backend_manager(["opencode"], "opencode", {{}})
-manager._run_llm_cli("Task 1")
-print("SESSION_ID:" + (manager.get_last_session_id() or ""))
+client = OpenCodeClient(backend_name="opencode")
+client._run_llm_cli("Task 1", is_noedit=True)
+print("SESSION_ID:" + (client.get_last_session_id() or ""))
 """
         cmd_run_1 = [
             "docker",
@@ -721,12 +721,12 @@ print("SESSION_ID:" + (manager.get_last_session_id() or ""))
         script_task_2 = """
 import os
 from pathlib import Path
-from auto_coder.cli_helpers import build_backend_manager
+from auto_coder.opencode_client import OpenCodeClient
 
 os.chdir("/runtime/workspace/repo")
-manager = build_backend_manager(["opencode"], "opencode", {})
-manager._run_llm_cli("Task 2 fresh")
-print("SESSION_ID_2:" + (manager.get_last_session_id() or ""))
+client = OpenCodeClient(backend_name="opencode")
+client._run_llm_cli("Task 2 fresh", is_noedit=True)
+print("SESSION_ID_2:" + (client.get_last_session_id() or ""))
 """
         cmd_run_2 = [
             "docker",
@@ -831,7 +831,7 @@ def test_ac005_documentation_matches_production_compose_and_route() -> None:
         script_doc_verification = f"""
 import os, subprocess, json
 from pathlib import Path
-from auto_coder.cli_helpers import build_backend_manager
+from auto_coder.opencode_client import OpenCodeClient
 
 home = Path("/runtime/home")
 home.mkdir(parents=True, exist_ok=True)
@@ -877,9 +877,9 @@ api_key = "test-substituted-key"
 ''')
 
 os.chdir(str(repo))
-manager = build_backend_manager(["substituted_alias"], "substituted_alias", {{}})
-assert manager._clients["substituted_alias"].model_name == "substituted-provider/substituted-model"
-answer = manager._run_llm_cli("Documented workflow test")
+client = OpenCodeClient(backend_name="substituted_alias")
+assert client.model_name == "substituted-provider/substituted-model"
+answer = client._run_llm_cli("Documented workflow test", is_noedit=True)
 print("RESULT:" + answer)
 """
         cmd = [
