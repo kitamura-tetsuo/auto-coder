@@ -145,7 +145,7 @@ def bind_retained_local_workspace(
     *,
     is_noedit: bool,
 ) -> Generator[str, None, None]:
-    """Re-enter the exact retained root and hand off this turn's editable delta."""
+    """Re-enter the exact retained root without granting result handoff."""
     if not binding.workspace.is_dir():
         raise WorkspacePreparationError("retained local workspace is unavailable")
     if _CURRENT_LOCAL_WORKSPACE.get() is not None:
@@ -154,8 +154,6 @@ def bind_retained_local_workspace(
     execution_token = bind_command_execution_cwd(str(binding.workspace))
     try:
         yield str(binding.workspace)
-        if not is_noedit:
-            sync_worktree_changes_back(binding.workspace, binding.caller_root, binding)
     finally:
         reset_command_execution_cwd(execution_token)
         _CURRENT_LOCAL_WORKSPACE.reset(binding_token)

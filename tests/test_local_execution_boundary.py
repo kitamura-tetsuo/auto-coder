@@ -17,7 +17,7 @@ from src.auto_coder.local_execution_boundary import (
     bind_local_execution_boundary,
     get_current_local_execution_boundary,
 )
-from src.auto_coder.local_session_continuation import LiveRootReuseDecision, LocalContinuationError
+from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.utils import CommandExecutor, bind_command_execution_cwd, bind_supervised_command_execution, reset_command_execution_cwd
 from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
 
@@ -457,18 +457,7 @@ def test_retained_continuation_rejects_a_different_current_caller_before_submiss
     token = bind_command_execution_cwd(str(caller_a))
     try:
         assert manager._run_llm_cli("first") == "fresh"
-        retained = manager._retained_local_sessions["retained-session"]
-        manager.authorize_local_session_continuation(
-            "retained-session",
-            LiveRootReuseDecision(
-                retained.binding.invocation_id,
-                str(retained.binding.workspace.resolve()),
-                retained.predecessor.turn_id,
-                retained.binding.file_snapshot_checksum,
-                True,
-                "decision-1",
-            ),
-        )
+        manager.authorize_retained_local_session_reuse("retained-session")
     finally:
         reset_command_execution_cwd(token)
 
@@ -496,6 +485,9 @@ def test_retained_continuation_with_unknown_current_writer_settlement_is_incompl
             return "fresh"
 
         def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            (boundary.binding.workspace / "tracked.txt").write_text("unsettled edit\n")
             return "textually successful but unsettled"
 
         def get_last_session_id(self) -> str:
@@ -517,20 +509,10 @@ def test_retained_continuation_with_unknown_current_writer_settlement_is_incompl
     token = bind_command_execution_cwd(str(repository))
     try:
         assert manager._run_llm_cli("first") == "fresh"
-        retained = manager._retained_local_sessions["retained-session"]
-        manager.authorize_local_session_continuation(
-            "retained-session",
-            LiveRootReuseDecision(
-                retained.binding.invocation_id,
-                str(retained.binding.workspace.resolve()),
-                retained.predecessor.turn_id,
-                retained.binding.file_snapshot_checksum,
-                True,
-                "decision-1",
-            ),
-        )
+        manager.authorize_retained_local_session_reuse("retained-session")
         with pytest.raises(LocalWriterSettlementError, match="settlement is uncertain"):
             manager.continue_session("retained-session", "second")
     finally:
         reset_command_execution_cwd(token)
     assert manager._last_continue_session_resumed is False
+    assert (repository / "tracked.txt").read_text() == "initial\n"

@@ -13,7 +13,6 @@ import pytest
 from src.auto_coder.cli_helpers import build_backend_manager
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
-from src.auto_coder.local_session_continuation import LiveRootReuseDecision
 
 
 def _repository(path: Path) -> Path:
@@ -146,18 +145,7 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     assert manager._run_llm_cli("first") == "answer:first"
     session_id = manager.get_last_session_id()
     assert session_id == "opaque/provider/session"
-    retained = manager._retained_local_sessions[session_id]
-    manager.authorize_local_session_continuation(
-        session_id,
-        LiveRootReuseDecision(
-            retained.binding.invocation_id,
-            str(retained.binding.workspace.resolve()),
-            retained.predecessor.turn_id,
-            retained.binding.file_snapshot_checksum,
-            True,
-            "reuse-second-turn",
-        ),
-    )
+    manager.authorize_retained_local_session_reuse(session_id)
     assert manager.continue_session(session_id, "second", is_noedit=True) == "answer:second"
     assert manager._last_continue_session_resumed is True
 

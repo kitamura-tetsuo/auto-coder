@@ -35,7 +35,7 @@ from .invocation_process_supervisor import CgroupV2Owner, InvocationProcessSuper
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
 from .local_execution_boundary import EvidenceStatus, bind_local_execution_boundary
-from .local_session_continuation import LiveRootReuseDecision, LocalContinuationError, RetainedLocalSession
+from .local_session_continuation import LiveRootReuseDecision, LocalContinuationError, LocalResultLifecycleAuthority, RetainedLocalSession
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .review_audit import ReviewInteractionRecord
@@ -44,7 +44,7 @@ from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
 from .utils import bind_supervised_command_execution
-from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, current_local_caller_identity, get_current_local_workspace, isolated_local_llm_worktree, refresh_local_workspace_binding
+from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, current_local_caller_identity, get_current_local_workspace, isolated_local_llm_worktree, refresh_local_workspace_binding, sync_worktree_changes_back
 
 logger = get_logger(__name__)
 
@@ -268,6 +268,7 @@ class BackendManager(LLMBackendManagerBase):
         # root has since been released cannot be resumed in a newly cloned root.
         self._released_local_workspace_sessions: set[str] = set()
         self._retained_local_sessions: dict[str, RetainedLocalSession] = {}
+        self._local_result_lifecycle = LocalResultLifecycleAuthority()
 
         # Whether the most recent continue_session() call actually resumed the
         # requested session, or fell back to a fresh session/backend. Callers
@@ -659,11 +660,21 @@ class BackendManager(LLMBackendManagerBase):
             raise LocalContinuationError("no retained controller-owned binding exists for this session")
         retained.authorize_reuse(decision)
 
+    def authorize_retained_local_session_reuse(self, session_id: str) -> LiveRootReuseDecision:
+        """Ask the controller result-lifecycle owner for exact one-turn authority."""
+        retained = self._retained_local_sessions.get(session_id)
+        if retained is None:
+            raise LocalContinuationError("no retained controller-owned binding exists for this session")
+        decision = self._local_result_lifecycle.authorize_reuse(retained, caller_checkpoint=retained.binding.file_snapshot_checksum)
+        retained.authorize_reuse(decision)
+        return decision
+
     def release_local_session(self, session_id: str) -> None:
         """Release only the named session lease and its exact private root."""
-        retained = self._retained_local_sessions.pop(session_id, None)
+        retained = self._retained_local_sessions.get(session_id)
         if retained is not None:
             retained.dispose()
+            del self._retained_local_sessions[session_id]
             self._released_local_workspace_sessions.add(session_id)
 
     def get_current_backend_identity(self) -> Tuple[str, str, str]:
@@ -868,6 +879,7 @@ class BackendManager(LLMBackendManagerBase):
                             backend_name=backend_name,
                             session_id=session_id,
                             caller_identity=current_local_caller_identity(),
+                            lifecycle=self._local_result_lifecycle,
                         )
                     workspace_ownership = retained_session.binding.ownership if retained_session is not None else (LocalWorkspaceOwnership() if is_local else None)
                     worktree_ctx: contextlib.AbstractContextManager[Any]
@@ -929,13 +941,16 @@ class BackendManager(LLMBackendManagerBase):
                                 completed_turn_evidence = turn_evidence
                                 if retained_session is None and supports_retained and turn_evidence.provider_session_id and workspace_ownership is not None:
                                     workspace_ownership.retain_session()
-                                    self._retained_local_sessions[turn_evidence.provider_session_id] = RetainedLocalSession(
+                                    retained = RetainedLocalSession(
                                         backend_name=backend_name,
                                         provider_session_id=turn_evidence.provider_session_id,
                                         binding=local_boundary.binding,
                                         predecessor=turn_evidence,
                                         caller_identity=current_local_caller_identity(local_boundary.binding.caller_root),
+                                        workspace_identity=(local_boundary.binding.workspace.stat().st_dev, local_boundary.binding.workspace.stat().st_ino),
+                                        workspace_fd=os.open(local_boundary.binding.workspace, os.O_RDONLY),
                                     )
+                                    self._retained_local_sessions[turn_evidence.provider_session_id] = retained
                                 if not is_noedit and workspace_ownership is not None:
                                     handoff_evidence = local_boundary.evidence()
                                     if handoff_evidence.handoff_authorized:
@@ -954,14 +969,20 @@ class BackendManager(LLMBackendManagerBase):
                     completed_session_id = getattr(cli, "get_last_session_id", lambda: None)()
                     completed_retained = self._retained_local_sessions.get(completed_session_id) if completed_session_id else None
                     if completed_retained is not None:
-                        advanced_binding = refresh_local_workspace_binding(completed_retained.binding)
                         if retained_session is not None:
                             if completed_turn_evidence is None:
                                 raise LocalContinuationError("continued turn produced no controller-owned evidence")
                             if completed_turn_evidence.writer_completion is not EvidenceStatus.ESTABLISHED:
                                 raise LocalWriterSettlementError("continued turn writer settlement is uncertain")
+                            if completed_turn_evidence.editable:
+                                sync_worktree_changes_back(completed_retained.binding.workspace, completed_retained.binding.caller_root, completed_retained.binding)
+                        advanced_binding = refresh_local_workspace_binding(completed_retained.binding)
+                        if retained_session is not None:
+                            assert completed_turn_evidence is not None
                             completed_retained.finish(completed_turn_evidence)
                         completed_retained.advance_binding(advanced_binding)
+                        if completed_turn_evidence is not None:
+                            self._local_result_lifecycle.record_generation(completed_turn_evidence)
                     end_time_iso = end_dt.isoformat()
                     duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
 
