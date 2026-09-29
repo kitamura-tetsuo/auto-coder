@@ -332,6 +332,7 @@ def test_local_continuations_are_refused_before_rebinding_session_workspace(tmp_
     binding = _binding(tmp_path)
     with patch("pathlib.Path.home", return_value=tmp_path):
         manager = BackendManager(default_backend="alias", default_client=client, factories={"alias": lambda: client}, order=["alias"])
+    manager._released_local_workspace_sessions.update({"read-only", "editable"})
 
     errors: list[BaseException] = []
 
@@ -355,3 +356,55 @@ def test_local_continuations_are_refused_before_rebinding_session_workspace(tmp_
     assert len(errors) == 2
     assert all(isinstance(error, SessionWorkspaceCompatibilityError) for error in errors)
     assert client.calls == {}
+
+
+def test_successful_edit_session_is_refused_after_its_private_root_is_released(tmp_path: Path, _use_real_commands: None) -> None:
+    class EditingClient:
+        use_noedit_options = False
+        model_name = "test-model"
+        config_backend = SimpleNamespace(backend_type="opencode")
+
+        def __init__(self) -> None:
+            self.fresh_calls = 0
+            self.continued_calls = 0
+
+        def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+            self.fresh_calls += 1
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            (boundary.binding.workspace / "result.txt").write_text("accepted result\n")
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.record_violation_observation(boundary.binding.invocation_id)
+            return "fresh result"
+
+        def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+            self.continued_calls += 1
+            return "incorrect continuation"
+
+        def get_last_session_id(self) -> str:
+            return "released-session"
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("initial\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    client = EditingClient()
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(default_backend="alias", default_client=client, factories={"alias": lambda: client}, order=["alias"])
+    token = bind_command_execution_cwd(str(repository))
+    try:
+        assert manager._run_llm_cli("first") == "fresh result"
+        with pytest.raises(SessionWorkspaceCompatibilityError, match="original private workspace"):
+            manager._run_llm_cli("second")
+    finally:
+        reset_command_execution_cwd(token)
+
+    assert client.fresh_calls == 1
+    assert client.continued_calls == 0
+    assert (repository / "result.txt").read_text() == "accepted result\n"
