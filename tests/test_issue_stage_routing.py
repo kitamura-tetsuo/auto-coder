@@ -773,6 +773,110 @@ async def test_late_preclosure_ready_is_rejected_after_same_content_reopen(tmp_p
     await asyncio.gather(worker, return_exceptions=True)
 
 
+@pytest.mark.asyncio
+async def test_second_closed_period_revokes_review_started_after_first_reopen(tmp_path, monkeypatch):
+    """REQ-004: each open-to-closed transition advances review authority."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = {
+        1: {"id": 101, "number": 1, "title": "Standalone", "body": body, "state": "open", "created_at": created_at, "labels": [{"name": "implementation-ready"}]},
+    }
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
+    validator = engine._get_specification_validator(REPO)
+    subject = ReviewSubject(REPO, "individual", 1)
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "closed"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "open"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([OpenGitHubIssue(1, created_at)], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    authority, request_id, state = validator.reruns.authority(subject)
+    assert authority == 1 and state == "deferred"
+    late_ready = ValidationDecision(
+        validator.identity(1, "Standalone", body),
+        "READY",
+        evaluation_source="fresh",
+        rerun_authority=authority,
+        rerun_request_id=request_id,
+    )
+
+    snapshots[1]["state"] = "closed"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "open"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([OpenGitHubIssue(1, created_at)], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+
+    rejected = validator._settle_decision_checkpoint(late_ready)
+    assert rejected.verdict == "ERROR"
+    assert rejected.remediation_reason == "review occurrence was revoked by a newer explicit rerun"
+    current_authority, _request_id, current_state = validator.reruns.authority(subject)
+    assert current_authority == 2 and current_state == "deferred"
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)] == [1]
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_worker_closed_read_serializes_with_newer_open_refresh(tmp_path, monkeypatch):
+    """REQ-004: a worker's strict closed read and effects precede open refresh."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    closed = {"id": 101, "number": 1, "title": "Standalone", "body": body, "state": "closed", "created_at": created_at, "labels": []}
+    reopened = {**closed, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, {1: closed}, [], config)
+    closed_read = threading.Event()
+    open_read = threading.Event()
+    release_worker = threading.Event()
+
+    def strict_snapshot(_repo, _number):
+        if not release_worker.is_set():
+            return dict(closed)
+        open_read.set()
+        return dict(reopened)
+
+    def issue_details(snapshot):
+        if snapshot["state"] == "closed":
+            closed_read.set()
+            assert release_worker.wait(3)
+        return dict(snapshot)
+
+    github.get_issue_dispatch_snapshot_strict.side_effect = strict_snapshot
+    github.get_issue_details.side_effect = issue_details
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    assert await asyncio.to_thread(closed_read.wait, 3)
+    refresh = asyncio.create_task(asyncio.to_thread(engine._refresh_issue_stage_routing, REPO, 1))
+    await asyncio.sleep(0.05)
+    assert not open_read.is_set()
+    release_worker.set()
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    await asyncio.wait_for(refresh, timeout=5)
+
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)] == [1]
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+    authority, _request_id, state = engine._get_specification_validator(REPO).reruns.authority(ReviewSubject(REPO, "individual", 1))
+    assert authority == 1 and state == "deferred"
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
 def test_overlapping_closed_and_reopened_refreshes_serialize_at_effect_boundary(tmp_path, monkeypatch):
     """REQ-004: a newer open refresh waits for and then supersedes closure."""
     created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()

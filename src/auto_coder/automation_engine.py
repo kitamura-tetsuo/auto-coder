@@ -3121,7 +3121,7 @@ class AutomationEngine:
         requirements: list[ReviewRequirement] = []
         issue_is_open = self._is_authoritatively_open_issue(issue)
         if not issue_is_open:
-            self._withdraw_closed_individual_authority(repo_name, number)
+            self._revoke_closed_issue_eligibility(repo_name, number)
         if issue_is_open and self._is_issue_specification_validation_enabled(repo_name):
             validator = self._get_specification_validator(repo_name)
             identity = validator.identity(number, contract.title, contract.body)
@@ -3153,7 +3153,7 @@ class AutomationEngine:
             )
         for child in children:
             if not self._is_authoritatively_open_issue(child):
-                self._withdraw_closed_individual_authority(repo_name, int(child["number"]))
+                self._revoke_closed_issue_eligibility(repo_name, int(child["number"]))
         if self._is_issue_specification_validation_enabled(repo_name):
             individual_validator = self._get_specification_validator(repo_name)
             for child in children:
@@ -3201,14 +3201,11 @@ class AutomationEngine:
         # Tracking parents never enter the Implementation lane.
         self.issue_stage_routing.remove(repo_name, IMPLEMENTATION_STAGE, parent_number)
 
-    def _withdraw_closed_individual_authority(self, repo_name: str, issue_number: int) -> None:
+    def _withdraw_closed_individual_authority(self, repo_name: str, issue_number: int, closed_period: int) -> None:
         """Durably fence work admitted before authoritative closure was observed."""
         reruns = self._get_specification_validator(repo_name).reruns
         subject = ReviewSubject(repo_name, "individual", issue_number)
-        authority, request_id, state = reruns.authority(subject)
-        if state == "deferred":
-            return
-        closure_request = f"observed-closure:{subject.key}:{authority + 1}"
+        closure_request = f"observed-closure:{subject.key}:{closed_period}"
         status = reruns.accept(closure_request, (subject,))[0]
         reruns.defer(subject, status.authority, f"individual review for Issue #{issue_number} is deferred because the subject is closed")
 
@@ -3227,15 +3224,19 @@ class AutomationEngine:
         metadata to be readable or consistent.
         """
         with self._issue_routing_lock(repo_name, issue_number):
-            self._withdraw_closed_individual_authority(repo_name, issue_number)
+            closed_period = self.issue_stage_routing.observe_lifecycle_state(repo_name, issue_number, "closed")
+            self._withdraw_closed_individual_authority(repo_name, issue_number, closed_period)
             self.issue_stage_routing.revoke_closed_target(repo_name, issue_number)
 
     def _route_issue_stages_authoritatively(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> None:
         """Classify one invalidated Issue from current GitHub and decision stores."""
         with self._issue_routing_lock(repo_name, issue_number):
+            state = snapshot.get("state")
+            if state == "open":
+                self.issue_stage_routing.observe_lifecycle_state(repo_name, issue_number, "open")
             # Closure is authority from this exact strict snapshot. Revoke local
             # eligibility before declaration reconciliation or hierarchy reads.
-            if snapshot.get("state") == "closed":
+            if state == "closed":
                 self._revoke_closed_issue_eligibility(repo_name, issue_number)
             current = self._reconcile_validation_snapshot(repo_name, issue_number, snapshot)
             parent_number = self._get_authoritative_parent_number(repo_name, issue_number, current)
@@ -3274,6 +3275,21 @@ class AutomationEngine:
             if not isinstance(snapshot, dict) or snapshot.get("number") != issue_number or "pull_request" in snapshot:
                 raise ParentOperationalError(f"cannot refresh Issue #{issue_number} routing from ambiguous authority")
             self._route_issue_stages_authoritatively(repo_name, issue_number, snapshot)
+
+    def _create_and_prepare_closed_issue_candidate(self, repo_name: str, issue_number: int) -> tuple[Optional[Candidate], bool]:
+        """Bind a worker's strict closed read to all closure/family effects."""
+        with self._issue_routing_lock(repo_name, issue_number):
+            candidate = self._create_candidate_from_single(repo_name, "issue", issue_number, True)
+            if candidate is None or candidate.data.get("state") != "closed":
+                return candidate, False
+            self.issue_admission_cache.observe(repo_name, candidate.data, authoritative=True)
+            self._route_issue_stages_authoritatively(repo_name, issue_number, candidate.data)
+            if self._get_authoritative_parent_number(repo_name, issue_number, candidate.data) is not None:
+                try:
+                    self._validate_submitted_parent_generation_for_child(repo_name, issue_number, candidate.data)
+                finally:
+                    self._route_issue_stages_authoritatively(repo_name, issue_number, candidate.data)
+            return candidate, True
 
     def _get_review_service(self, repo_name: str) -> IssueReviewService:
         """Build the Review-lane execution owner for one repository.
@@ -3837,6 +3853,7 @@ class AutomationEngine:
                 stop_after_persistence_failure = False
                 invalidation_claim: Optional[ClaimedInvalidation] = None
                 repo_job_scope: Optional[RepoJobExecutionScope] = None
+                closed_issue_prepared = False
 
                 # Ownership starts at dequeue, including authoritative refresh
                 # and submitted-parent validation before ordinary dispatch.
@@ -3866,7 +3883,21 @@ class AutomationEngine:
                                 if self._invalidation_wake_event is not None:
                                     self._invalidation_wake_event.set()
                                 continue
-                        authoritative_candidate = await asyncio.to_thread(self._create_candidate_from_single, repo_name, candidate.type, int(item_number), True)
+                        if candidate.type == "issue":
+                            authoritative_candidate, closed_issue_prepared = await self._run_local_critical(
+                                f"worker {worker_id} strict closed preparation for issue #{item_number}",
+                                self._create_and_prepare_closed_issue_candidate,
+                                repo_name,
+                                int(item_number),
+                            )
+                        else:
+                            authoritative_candidate = await asyncio.to_thread(
+                                self._create_candidate_from_single,
+                                repo_name,
+                                candidate.type,
+                                int(item_number),
+                                True,
+                            )
                         if authoritative_candidate is None:
                             # A successful authoritative read can decide that an
                             # absent or ineligible entity needs no processing.
@@ -3879,7 +3910,7 @@ class AutomationEngine:
                         candidate = authoritative_candidate
                         self.active_workers[worker_id] = candidate
 
-                        if candidate.type == "issue":
+                        if candidate.type == "issue" and not closed_issue_prepared:
                             self.issue_admission_cache.observe(repo_name, candidate.data, authoritative=True)
                             refusal = await asyncio.to_thread(self._cached_issue_refusal, repo_name, int(item_number), self.config)
                             if refusal is not None:

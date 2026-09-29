@@ -38,6 +38,11 @@ for an open submitted parent. Failed persistence leaves the durable invalidation
 retryable, and an unchanged reopen must earn current review authority again.
 Strict refresh and closure effects are serialized per repository and Issue so
 an older closed refresh cannot erase a reopened classification that follows it.
+The durable lifecycle marker assigns a stable sequence to each distinct closed
+period: retries reuse that sequence, while an intervening strict open observation
+causes the next closure to revoke review authority again. Durable workers hold
+the same per-Issue boundary from their strict closed read through local cleanup,
+family validation, and final routing, so a later open refresh is applied last.
 Engine-owned validation lifecycles are rebound when the effective provider/model
 route changes. Authoritative routing therefore requires decisions for the new
 policy identity, while an exact route restoration can reuse its earlier durable
