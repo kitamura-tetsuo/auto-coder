@@ -225,6 +225,13 @@ class IssueStageRoutingStore:
                 );
                 CREATE INDEX IF NOT EXISTS implementation_retry_target
                     ON implementation_retry_requests(repository, target_number);
+                CREATE TABLE IF NOT EXISTS issue_observed_lifecycles (
+                    repository TEXT NOT NULL,
+                    target_number INTEGER NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('open', 'closed')),
+                    closed_period INTEGER NOT NULL,
+                    PRIMARY KEY(repository, target_number)
+                );
                 """
             )
             columns = {row[1] for row in self._connection.execute("PRAGMA table_info(issue_lane_arrivals)")}
@@ -540,6 +547,45 @@ class IssueStageRoutingStore:
                 "DELETE FROM issue_lane_arrivals WHERE repository=? AND target_number=?",
                 (repository, target_number),
             )
+
+    def revoke_closed_target(self, repository: str, target_number: int) -> None:
+        """Atomically retire pending eligibility owned by a closed Issue.
+
+        Besides the Issue's own Review and Implementation roles, a tracking
+        parent owns the pending Implementation arrivals whose family binding
+        still names it.  Active execution ownership and owned-start tombstones
+        live outside ``issue_lane_arrivals`` and are deliberately untouched.
+        """
+        with self._lock, self._connection:
+            self._connection.execute(
+                "DELETE FROM issue_lane_arrivals WHERE repository=? AND target_number=?",
+                (repository, target_number),
+            )
+            self._connection.execute(
+                """DELETE FROM issue_lane_arrivals
+                WHERE repository=? AND stage='implementation' AND family_parent_number=?""",
+                (repository, target_number),
+            )
+
+    def observe_lifecycle_state(self, repository: str, target_number: int, state: str) -> int:
+        """Persist lifecycle state and return the stable closed-period sequence."""
+        if state not in {"open", "closed"}:
+            raise ValueError("Issue lifecycle state must be open or closed")
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT state,closed_period FROM issue_observed_lifecycles WHERE repository=? AND target_number=?",
+                (repository, target_number),
+            ).fetchone()
+            period = int(row[1]) if row is not None else 0
+            if state == "closed" and (row is None or row[0] != "closed"):
+                period += 1
+            self._connection.execute(
+                """INSERT INTO issue_observed_lifecycles(repository,target_number,state,closed_period)
+                VALUES(?,?,?,?) ON CONFLICT(repository,target_number) DO UPDATE SET
+                state=excluded.state,closed_period=excluded.closed_period""",
+                (repository, target_number, state, period),
+            )
+            return period
 
     def targets(self, repository: str) -> tuple[int, ...]:
         """Return durable target identities which startup must re-authorize."""

@@ -198,6 +198,18 @@ That production suite also covers partial family validation ending in ERROR,
 departed-child membership cleanup, and offline closure followed by reopening;
 these routing-only state transitions remain intentionally absent from the
 execution timeline until a stage worker actually claims them.
+Closure revocation now runs at that same routing-only boundary before
+Parent-Issue reconciliation and removes pending local eligibility, including
+Implementation arrivals still owned by a closed family parent. This changes no
+trace origin, outcome, event schema, provider routing, or dashboard projection:
+failed persistence or later relationship failure retains the existing durable
+invalidation retry, while successful cleanup only changes which lane records
+remain available for a future stage worker. The scoped cleanup and
+pre-reconciliation ordering regressions live in `tests/test_issue_stage_routing.py`.
+Per-Issue refresh serialization only orders those existing durable routing
+effects; it adds no trace event, dashboard state, or provider-routing signal.
+Closed-period sequencing and the worker's read-through-effect serialization are
+likewise routing durability details with no new production event shape or view.
 Dependency-cache waits now refresh semantic routing before emitting the existing
 `issue.cached-dependency-wait` event. The event schema and operational meaning
 are unchanged: it still reports only an Implementation prerequisite wait and

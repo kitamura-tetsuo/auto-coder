@@ -28,6 +28,21 @@ target, including targets absent from the open-Issue enumeration, so closure
 removes pending work and unchanged reopening receives a new arrival.
 An empty authoritative child set also retires every Implementation row owned by
 the former family before the former parent is reclassified as standalone.
+An explicitly closed strict Issue snapshot first withdraws its durable
+individual-review authority and atomically removes its own pending lane roles
+plus Implementation arrivals still bound to it as family parent. This local
+revocation precedes Parent-Issue reconciliation, so malformed or contradictory
+relationship metadata cannot preserve stale eligibility; routing nevertheless
+continues afterward so a closed child can remain current decomposition evidence
+for an open submitted parent. Failed persistence leaves the durable invalidation
+retryable, and an unchanged reopen must earn current review authority again.
+Strict refresh and closure effects are serialized per repository and Issue so
+an older closed refresh cannot erase a reopened classification that follows it.
+The durable lifecycle marker assigns a stable sequence to each distinct closed
+period: retries reuse that sequence, while an intervening strict open observation
+causes the next closure to revoke review authority again. Durable workers hold
+the same per-Issue boundary from their strict closed read through local cleanup,
+family validation, and final routing, so a later open refresh is applied last.
 Engine-owned validation lifecycles are rebound when the effective provider/model
 route changes. Authoritative routing therefore requires decisions for the new
 policy identity, while an exact route restoration can reuse its earlier durable

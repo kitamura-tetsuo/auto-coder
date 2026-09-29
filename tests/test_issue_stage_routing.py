@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -11,6 +12,7 @@ from auto_coder.decomposition_analyzer import DecompositionAnalysisResult
 from auto_coder.decomposition_validation_lifecycle import DecompositionDecision, DecompositionValidationLifecycle
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.implementation_slots import ImplementationSlotRepository
+from auto_coder.issue_review_rerun import ReviewSubject
 from auto_coder.issue_stage_routing import (
     IMPLEMENTATION_STAGE,
     REVIEW_STAGE,
@@ -26,7 +28,7 @@ from auto_coder.issue_stage_routing import (
 )
 from auto_coder.requirement_contract import build_normative_issue_manifest
 from auto_coder.specification_analyzer import SpecificationAnalysisResult
-from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle
+from auto_coder.specification_validation_lifecycle import SpecificationValidationLifecycle, ValidationDecision
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
 
 REPO = "owner/repo"
@@ -73,6 +75,83 @@ def test_review_generation_excludes_status_priority_and_filters_terminal_work(tm
     assert updated.arrival == first.arrival
     assert updated.priority == 7
     assert updated.remaining_identity_keys == ("individual-4",)
+
+
+def test_closed_target_revocation_is_repository_scoped_and_retires_owned_children(tmp_path):
+    store = IssueStageRoutingStore(tmp_path / "routing.sqlite3")
+    requirements = ()
+    store.reconcile(review_classification(REPO, 10, "parent-review", 0, True, (requirement(10),)))
+    store.reconcile(implementation_classification(REPO, 10, "parent-implementation", 0, True, requirements))
+    store.reconcile(implementation_classification(REPO, 11, "owned-child", 0, True, requirements, family_parent_number=10))
+    store.reconcile(implementation_classification(REPO, 12, "rebound-child", 0, True, requirements, family_parent_number=20))
+    store.reconcile(implementation_classification("other/repo", 11, "other-repository", 0, True, requirements, family_parent_number=10))
+
+    store.revoke_closed_target(REPO, 10)
+
+    assert store.get(REPO, REVIEW_STAGE, 10) is None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 10) is None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 11) is None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 12) is not None
+    assert store.get("other/repo", IMPLEMENTATION_STAGE, 11) is not None
+
+
+def test_closed_target_revocation_rolls_back_partial_lane_cleanup_on_write_failure(tmp_path):
+    store = IssueStageRoutingStore(tmp_path / "routing.sqlite3")
+    store.reconcile(review_classification(REPO, 10, "parent-review", 0, True, (requirement(10),)))
+    store.reconcile(implementation_classification(REPO, 11, "owned-child", 0, True, (), family_parent_number=10))
+    store._connection.execute(
+        """CREATE TRIGGER fail_closed_family_cleanup
+        BEFORE DELETE ON issue_lane_arrivals
+        WHEN OLD.stage = 'implementation' AND OLD.family_parent_number = 10
+        BEGIN SELECT RAISE(ABORT, 'injected closure persistence failure'); END"""
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected closure persistence failure"):
+        store.revoke_closed_target(REPO, 10)
+
+    assert store.get(REPO, REVIEW_STAGE, 10) is not None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 11) is not None
+    store._connection.execute("DROP TRIGGER fail_closed_family_cleanup")
+    store.revoke_closed_target(REPO, 10)
+    assert store.get(REPO, REVIEW_STAGE, 10) is None
+    assert store.get(REPO, IMPLEMENTATION_STAGE, 11) is None
+
+
+def test_closed_snapshot_revokes_local_eligibility_before_relationship_failure(tmp_path, monkeypatch):
+    config = AutomationConfig(repo_name=REPO)
+    engine, _github = _routing_engine(tmp_path, monkeypatch, {}, [], config)
+    engine.issue_stage_routing.reconcile(review_classification(REPO, 11, "old-review", 0, True, (requirement(11),)))
+    engine.issue_stage_routing.reconcile(implementation_classification(REPO, 11, "old-implementation", 0, True, ()))
+    engine.issue_stage_routing.reconcile(implementation_classification(REPO, 12, "owned-by-closed-parent", 0, True, (), family_parent_number=11))
+    relationship_error = RuntimeError("Parent-Issue declaration conflicts with native parent")
+    monkeypatch.setattr(engine, "_reconcile_validation_snapshot", MagicMock(side_effect=relationship_error))
+
+    with pytest.raises(RuntimeError, match="conflicts with native parent"):
+        engine._route_issue_stages_authoritatively(REPO, 11, {"number": 11, "state": "closed"})
+
+    assert engine.issue_stage_routing.get(REPO, REVIEW_STAGE, 11) is None
+    assert engine.issue_stage_routing.get(REPO, IMPLEMENTATION_STAGE, 11) is None
+    assert engine.issue_stage_routing.get(REPO, IMPLEMENTATION_STAGE, 12) is None
+    authority, _request_id, state = engine._get_specification_validator(REPO).reruns.authority(ReviewSubject(REPO, "individual", 11))
+    assert authority == 1
+    assert state == "deferred"
+
+
+def test_strict_closed_candidate_revokes_before_author_allowlist_shortcut(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(tmp_path / "routing.sqlite3"))
+    github = MagicMock()
+    snapshot = {"id": 110, "number": 11, "title": "Closed", "body": "", "state": "closed", "labels": []}
+    github.get_issue_dispatch_snapshot_strict.return_value = snapshot
+    github.get_issue_details.return_value = dict(snapshot)
+    engine = AutomationEngine(github, AutomationConfig(repo_name=REPO))
+    monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda _issue: False)
+    engine.issue_stage_routing.reconcile(implementation_classification(REPO, 11, "old", 0, True, ()))
+
+    assert engine._create_candidate_from_single(REPO, "issue", 11, propagate_errors=True) is None
+
+    assert engine.issue_stage_routing.get(REPO, IMPLEMENTATION_STAGE, 11) is None
+    assert engine._get_specification_validator(REPO).reruns.authority(ReviewSubject(REPO, "individual", 11))[2] == "deferred"
 
 
 def test_family_generation_changes_for_contract_policy_and_membership_not_verdict():
@@ -633,3 +712,211 @@ async def test_close_reopen_requires_current_authority_before_relabel_reuse(tmp_
     assert edited_identity != baseline_identity
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_late_preclosure_ready_is_rejected_after_same_content_reopen(tmp_path, monkeypatch):
+    """REQ-004: stale reviewer authority cannot satisfy the reopened occurrence."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = {
+        1: {
+            "id": 101,
+            "number": 1,
+            "title": "Standalone",
+            "body": body,
+            "state": "open",
+            "created_at": created_at,
+            "labels": [{"name": "implementation-ready"}],
+        },
+    }
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
+    validator = engine._get_specification_validator(REPO)
+    subject = ReviewSubject(REPO, "individual", 1)
+    preclosure_authority, preclosure_request, state = validator.reruns.authority(subject)
+    assert (preclosure_authority, preclosure_request, state) == (0, None, "none")
+    identity = validator.identity(1, "Standalone", body)
+    late_ready = ValidationDecision(
+        identity,
+        "READY",
+        evaluation_source="fresh",
+        rerun_authority=preclosure_authority,
+        rerun_request_id=preclosure_request,
+    )
+
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "closed"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "open"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([OpenGitHubIssue(1, created_at)], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+
+    rejected = validator._settle_decision_checkpoint(late_ready)
+    assert rejected.verdict == "ERROR"
+    assert rejected.remediation_reason == "review occurrence was revoked by a newer explicit rerun"
+    authority, _request_id, authority_state = validator.reruns.authority(subject)
+    assert authority == 1 and authority_state == "deferred"
+    pending = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(pending) == 1 and pending[0].target_number == 1
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+    assert validator.store.get(identity) is None
+
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_second_closed_period_revokes_review_started_after_first_reopen(tmp_path, monkeypatch):
+    """REQ-004: each open-to-closed transition advances review authority."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = {
+        1: {"id": 101, "number": 1, "title": "Standalone", "body": body, "state": "open", "created_at": created_at, "labels": [{"name": "implementation-ready"}]},
+    }
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, snapshots, [], config)
+    validator = engine._get_specification_validator(REPO)
+    subject = ReviewSubject(REPO, "individual", 1)
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+
+    await engine.invalidate_entity(REPO, "issue", 1)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "closed"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "open"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([OpenGitHubIssue(1, created_at)], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    authority, request_id, state = validator.reruns.authority(subject)
+    assert authority == 1 and state == "deferred"
+    late_ready = ValidationDecision(
+        validator.identity(1, "Standalone", body),
+        "READY",
+        evaluation_source="fresh",
+        rerun_authority=authority,
+        rerun_request_id=request_id,
+    )
+
+    snapshots[1]["state"] = "closed"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    snapshots[1]["state"] = "open"
+    github.get_open_entities_strict.return_value = OpenGitHubEntities([OpenGitHubIssue(1, created_at)], [])
+    await engine._reconcile_open_github_entities(REPO)
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+
+    rejected = validator._settle_decision_checkpoint(late_ready)
+    assert rejected.verdict == "ERROR"
+    assert rejected.remediation_reason == "review occurrence was revoked by a newer explicit rerun"
+    current_authority, _request_id, current_state = validator.reruns.authority(subject)
+    assert current_authority == 2 and current_state == "deferred"
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)] == [1]
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_worker_closed_read_serializes_with_newer_open_refresh(tmp_path, monkeypatch):
+    """REQ-004: a worker's strict closed read and effects precede open refresh."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    closed = {"id": 101, "number": 1, "title": "Standalone", "body": body, "state": "closed", "created_at": created_at, "labels": []}
+    reopened = {**closed, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, {1: closed}, [], config)
+    closed_read = threading.Event()
+    open_read = threading.Event()
+    release_worker = threading.Event()
+
+    def strict_snapshot(_repo, _number):
+        if not release_worker.is_set():
+            return dict(closed)
+        open_read.set()
+        return dict(reopened)
+
+    def issue_details(snapshot):
+        if snapshot["state"] == "closed":
+            closed_read.set()
+            assert release_worker.wait(3)
+        return dict(snapshot)
+
+    github.get_issue_dispatch_snapshot_strict.side_effect = strict_snapshot
+    github.get_issue_details.side_effect = issue_details
+    worker = asyncio.create_task(engine._worker_loop(REPO, 0, "issue"))
+    await engine.invalidate_entity(REPO, "issue", 1)
+    assert await asyncio.to_thread(closed_read.wait, 3)
+    refresh = asyncio.create_task(asyncio.to_thread(engine._refresh_issue_stage_routing, REPO, 1))
+    await asyncio.sleep(0.05)
+    assert not open_read.is_set()
+    release_worker.set()
+    await asyncio.wait_for(engine.queue.join(), timeout=5)
+    await asyncio.wait_for(refresh, timeout=5)
+
+    assert [item.target_number for item in engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)] == [1]
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+    authority, _request_id, state = engine._get_specification_validator(REPO).reruns.authority(ReviewSubject(REPO, "individual", 1))
+    assert authority == 1 and state == "deferred"
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
+
+
+def test_overlapping_closed_and_reopened_refreshes_serialize_at_effect_boundary(tmp_path, monkeypatch):
+    """REQ-004: a newer open refresh waits for and then supersedes closure."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = [{"id": 101, "number": 1, "title": "Standalone", "body": body, "state": "closed", "created_at": created_at, "labels": []}, {"id": 101, "number": 1, "title": "Standalone", "body": body, "state": "open", "created_at": created_at, "labels": [{"name": "implementation-ready"}]}]
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, {}, [], config)
+    first_fetched = threading.Event()
+    release_closed = threading.Event()
+    fetch_count = 0
+    fetch_guard = threading.Lock()
+
+    def strict_snapshot(_repo, _number):
+        nonlocal fetch_count
+        with fetch_guard:
+            index = fetch_count
+            fetch_count += 1
+        if index == 0:
+            first_fetched.set()
+            assert release_closed.wait(3)
+        return dict(snapshots[index])
+
+    github.get_issue_dispatch_snapshot_strict.side_effect = strict_snapshot
+    closed = threading.Thread(target=engine._refresh_issue_stage_routing, args=(REPO, 1))
+    reopened = threading.Thread(target=engine._refresh_issue_stage_routing, args=(REPO, 1))
+    closed.start()
+    assert first_fetched.wait(3)
+    reopened.start()
+    assert fetch_count == 1
+    release_closed.set()
+    closed.join(3)
+    reopened.join(3)
+    assert not closed.is_alive() and not reopened.is_alive()
+    assert fetch_count == 2
+
+    pending = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(pending) == 1 and pending[0].target_number == 1
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+    subject = ReviewSubject(REPO, "individual", 1)
+    authority, _request_id, state = engine._get_specification_validator(REPO).reruns.authority(subject)
+    assert authority == 1 and state == "deferred"
