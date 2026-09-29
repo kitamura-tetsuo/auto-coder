@@ -3930,6 +3930,7 @@ class AutomationEngine:
                             # inline validator runs. Missing/ERROR/in-flight
                             # identities therefore remain recoverable even if
                             # validation raises or the process stops.
+                            validation_error: Optional[BaseException] = None
                             try:
                                 await self._run_local_critical(
                                     f"worker {worker_id} submitted-parent validation for issue #{item_number}",
@@ -3938,7 +3939,14 @@ class AutomationEngine:
                                     int(item_number),
                                     candidate.data,
                                 )
-                            finally:
+                            except (Exception, asyncio.CancelledError) as exc:
+                                # Post-validation reconciliation must not
+                                # replace an already unfinished validation (or
+                                # cancellation) with a terminal metadata
+                                # refusal. Preserve the earlier disposition as
+                                # the authority for this claimed generation.
+                                validation_error = exc
+                            try:
                                 # Validation may have persisted only a subset
                                 # before ERROR. Re-read durable decisions so the
                                 # lane retains exactly the retryable identities.
@@ -3949,6 +3957,12 @@ class AutomationEngine:
                                     int(item_number),
                                     candidate.data,
                                 )
+                            except (Exception, asyncio.CancelledError):
+                                if validation_error is not None:
+                                    raise validation_error
+                                raise
+                            if validation_error is not None:
+                                raise validation_error
                             if self.is_draining:
                                 return
 
@@ -5765,6 +5779,19 @@ class AutomationEngine:
             if isinstance(self.github, GitHubClient) and isinstance(live_parent_number, int):
                 try:
                     live_parent_set = self._fetch_authoritative_decomposition_set(repo_name, live_parent_number)
+                except ParentSpecificationError as exc:
+                    result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
+                    result.target_outcome = ExplicitTargetOutcome.BLOCKED
+                    result.definitive_parent_refusal = True
+                    result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
+                    _record_issue_stage_result(
+                        item_number,
+                        "issue.parent-reconciliation",
+                        f"issue#{item_number} parent reconciliation",
+                        Outcome.BLOCKED,
+                        {"reason": str(exc)},
+                    )
+                    return result
                 except Exception as exc:
                     deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
                     if deferred_result is not None:

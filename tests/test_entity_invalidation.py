@@ -280,6 +280,52 @@ def test_later_parent_refusal_does_not_consume_prior_processing_failure(tmp_path
     assert engine.invalidations.pending_count("owner/repo") == 1
 
 
+def test_post_validation_parent_refusal_does_not_mask_incomplete_validation(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    candidate = Candidate(type="issue", data={"number": 7, "state": "open"}, priority=0, issue_number=7)
+    monkeypatch.setattr(engine, "_create_and_prepare_closed_issue_candidate", lambda *_args: (candidate, False))
+    monkeypatch.setattr(engine, "_cached_issue_refusal", lambda *_args: None)
+    monkeypatch.setattr(engine, "_defer_observed_dependency_wait", lambda *_args: False)
+    monkeypatch.setattr(
+        engine,
+        "_route_issue_stages_authoritatively",
+        MagicMock(side_effect=[None, ParentSpecificationError("new contradiction")]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_validate_submitted_parent_generation_for_child",
+        MagicMock(side_effect=RuntimeError("validation batch incomplete")),
+    )
+    retire = MagicMock()
+    monkeypatch.setattr(engine.issue_stage_routing, "retire_refused_target", retire)
+    engine._process_single_candidate = MagicMock()
+    output = io.StringIO()
+    sink = loguru_logger.add(output, format="{level}|{message}")
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "issue", 7)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0, "issue"))
+        for _ in range(200):
+            if engine._validate_submitted_parent_generation_for_child.call_count == 1 and engine.active_workers.get(0) is None and engine.invalidations.pending_count("owner/repo") == 1:
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        loguru_logger.remove(sink)
+
+    assert engine.invalidations.pending_count("owner/repo") == 1
+    retire.assert_not_called()
+    engine._process_single_candidate.assert_not_called()
+    assert "validation batch incomplete" in output.getvalue()
+    assert "Completed BLOCKED Parent-Issue evaluation" not in output.getvalue()
+
+
 def test_parent_refusal_acknowledgement_services_newer_generation_without_restart(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     engine = AutomationEngine(MagicMock(), AutomationConfig())
