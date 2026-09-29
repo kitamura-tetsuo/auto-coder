@@ -121,6 +121,8 @@ for line in sys.stdin:
         if terminal == "failed":
             terminal_params["reason"] = "rate limit exceeded"
         emit({"jsonrpc":"2.0","method":"turn/completed","params":terminal_params})
+if os.environ.get("MSP_EXIT_NONZERO"):
+    raise SystemExit(7)
 """
     )
     host.chmod(0o700)
@@ -396,6 +398,40 @@ def test_muse_failed_post_turn_invariant_does_not_expose_session(tmp_path, monke
 
     assert client.get_last_session_id() is None
     assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+def test_muse_editable_git_state_is_preserved_for_shared_handoff(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_MUTATE", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+
+    assert _manager(config)._run_llm_cli("edit the source") == "answer:first"
+    assert (repo / "tracked.txt").read_text() == "mutated\n"
+
+    turn = next(json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "turn/start")
+    prompt = turn["frame"]["params"]["input"][0]["text"]
+    assert "local Git operations" in prompt
+    assert "original result root" in prompt
+
+
+def test_muse_nonzero_exit_invalidates_completed_protocol(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_EXIT_NONZERO", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+
+    with pytest.raises(RuntimeError, match="nonzero status 7"):
+        manager._run_llm_cli("edit the source")
+    assert manager.get_last_session_id() is None
 
 
 def test_muse_timeout_classification_survives_invariant_failure(tmp_path, monkeypatch, _use_real_commands):

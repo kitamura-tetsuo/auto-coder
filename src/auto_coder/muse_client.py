@@ -1,4 +1,4 @@
-"""Non-interactive Muse Code CLI client with Git lifecycle enforcement."""
+"""Non-interactive Muse Code CLI client using the shared local boundary."""
 
 from __future__ import annotations
 
@@ -735,14 +735,21 @@ class MuseClient(LLMClientBase):
         before = self._snapshot_at(cwd)
         effective_noedit = is_noedit or self.use_noedit_options
         msp_options = self._msp_options(effective_noedit)
-        rendered_prompt = render_prompt("muse.execution", task_prompt=prompt, mode="no-edit" if effective_noedit else "edit")
+        rendered_prompt = render_prompt(
+            "muse.execution",
+            task_prompt=prompt,
+            mode="no-edit" if effective_noedit else "edit",
+            result_root=str(cwd),
+        )
         env = os.environ.copy()
         if self.config_backend and self.config_backend.api_key and "MUSE_API_KEY" not in env:
             env["MUSE_API_KEY"] = self.config_backend.api_key
-        trace = tempfile.NamedTemporaryFile(prefix="auto-coder-muse-git-trace-", delete=False)
-        trace_path = trace.name
-        trace.close()
-        env["GIT_TRACE2_EVENT"] = trace_path
+        trace_path: Optional[str] = None
+        if effective_noedit:
+            trace = tempfile.NamedTemporaryFile(prefix="auto-coder-muse-git-trace-", delete=False)
+            trace_path = trace.name
+            trace.close()
+            env["GIT_TRACE2_EVENT"] = trace_path
         command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse")) + msp_options.host_arguments
         process: Optional[subprocess.Popen[bytes]] = None
         deadline = time.monotonic() + self.timeout
@@ -890,9 +897,18 @@ class MuseClient(LLMClientBase):
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
+                if process.returncode != 0 and invocation_error is None:
+                    invocation_error = RuntimeError(f"Muse MSP host exited with nonzero status {process.returncode}")
             try:
-                mutation_observed = self._trace_contains_git_mutation(trace_path)
-                self._assert_invariants(before, effective_noedit, mutation_observed)
+                # Editable work executes in the controller-owned private repository.
+                # Its Git index, HEAD, refs, branches, stashes, and worktrees are
+                # implementation state and must survive for generation handoff.
+                # Only no-edit turns retain the mutation audit and exact snapshot
+                # invariant.
+                if effective_noedit:
+                    assert trace_path is not None
+                    mutation_observed = self._trace_contains_git_mutation(trace_path)
+                    self._assert_invariants(before, True, mutation_observed)
             except BaseException as invariant_error:
                 self._last_session_id = None
                 if invocation_error is None:
@@ -900,7 +916,8 @@ class MuseClient(LLMClientBase):
                 else:
                     invocation_error.add_note(f"Muse repository invariant check also failed: {invariant_error}")
             finally:
-                os.unlink(trace_path)
+                if trace_path is not None:
+                    os.unlink(trace_path)
 
         if invocation_error is not None:
             self._last_session_id = None
