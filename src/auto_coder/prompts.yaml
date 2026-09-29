@@ -56,13 +56,19 @@ policies:
 muse:
   execution: |-
     Operate in $mode mode and complete this task in one execution:
+    In edit mode, local Git operations (including staging, commits, branches, stashes,
+    rebases, and private worktrees) are permitted implementation tools. Leave all
+    intended final files integrated in the original result root `$result_root`;
+    Auto-Coder will validate and publish the accepted result through its normal
+    handoff workflow. In no-edit mode, do not modify files or Git state and do not
+    use write-capable shell or delegated tools.
     $task_prompt
 
-    You may inspect the repository and run read-only Git commands. In edit mode,
-    edit the working tree and run tests as needed. In no-edit mode, do not alter
-    files or the index. Never change branches or HEAD, stage files, commit, push,
-    merge, rebase, create or update pull requests, or perform any other Git or
-    GitHub lifecycle mutation. Auto-Coder owns that lifecycle after you return.
+    You may inspect the repository and run tests as needed. In edit mode, you may
+    edit files and use the permitted private Git operations above. In no-edit mode,
+    only read-only repository and Git inspection is permitted. Never push or create,
+    update, or comment on pull requests; Auto-Coder owns remote publication after
+    you return.
 
 opencode:
   execution: |-

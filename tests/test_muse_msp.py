@@ -33,7 +33,7 @@ def _host(path: Path) -> Path:
     host = path / "muse"
     host.write_text(
         r"""#!/usr/bin/env python3
-import json, os, sys, time
+import json, os, subprocess, sys, time
 from pathlib import Path
 if sys.argv[1:] == ["--version"]:
     print("Muse Code 1.3.0")
@@ -95,6 +95,8 @@ for line in sys.stdin:
             ack["effectiveMode"] = {"mode":"allowAll"}
         emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
     elif method == "turn/start":
+        if os.environ.get("MSP_CHILD_WRITER"):
+            subprocess.Popen([sys.executable, "-c", "import os,time; from pathlib import Path; time.sleep(1); Path(os.environ['MSP_CHILD_SENTINEL']).write_text('late write')"])
         if os.environ.get("MSP_ATTEMPT_EFFECTS"):
             required = {"--disable-write", "--disable-shell"}
             if not required.issubset(set(sys.argv[1:])):
@@ -120,7 +122,13 @@ for line in sys.stdin:
         terminal_params = {"sessionId":event_session,"turnId":turn,"terminal":terminal}
         if terminal == "failed":
             terminal_params["reason"] = "rate limit exceeded"
+        if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
+            terminal_params["turnId"] = "wrong-turn"
         emit({"jsonrpc":"2.0","method":"turn/completed","params":terminal_params})
+        if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
+            time.sleep(10)
+if os.environ.get("MSP_EXIT_NONZERO"):
+    raise SystemExit(7)
 """
     )
     host.chmod(0o700)
@@ -171,7 +179,7 @@ def test_muse_msp_explicit_disable_approval_uses_only_wire_mode(tmp_path, monkey
     monkeypatch.setenv("MSP_LOG", str(log))
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--disable-approval"])})
 
-    assert _manager(config)._clients["muse"]._run_llm_cli("first") == "answer:first"
+    assert _manager(config)._run_llm_cli("first") == "answer:first"
     start = next(json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "session/start")
     assert start["argv"] == ["serve"]
     assert start["frame"]["params"]["approvalMode"] == "denyUnmatched"
@@ -186,7 +194,7 @@ def test_muse_msp_configured_no_edit_maps_all_restrictions_for_editable_caller(t
     monkeypatch.setenv("MSP_LOG", str(log))
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--no-edit"])})
 
-    assert _manager(config)._clients["muse"]._run_llm_cli("first") == "answer:first"
+    assert _manager(config)._run_llm_cli("first") == "answer:first"
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     start = next(entry for entry in entries if entry["frame"].get("method") == "session/start")
     assert start["argv"] == ["serve", "--disable-write", "--disable-shell"]
@@ -264,7 +272,8 @@ def test_muse_msp_resume_reestablishes_approval_denial(tmp_path, monkeypatch, _u
     monkeypatch.setenv("MSP_APPROVAL_ACK_CASE", apply_outcome)
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
-    client = _manager(config)._clients["muse"]
+    manager = _manager(config)
+    client = manager._clients["muse"]
     assert client.continue_session("opaque/provider/session", "second", is_noedit=True) == "answer:second"
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     resume = next(entry for entry in entries if entry["frame"].get("method") == "session/resume")
@@ -321,7 +330,7 @@ def test_muse_msp_rejects_unmapped_semantics_before_host(tmp_path, monkeypatch, 
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=options)})
 
     with pytest.raises(RuntimeError, match=message):
-        _manager(config)._clients["muse"]._run_llm_cli("prompt")
+        _manager(config)._run_llm_cli("prompt")
     assert not log.exists()
 
 
@@ -361,7 +370,7 @@ def test_muse_msp_rejects_incompatible_initialization_before_session(tmp_path, m
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
     with pytest.raises(RuntimeError, match=message):
-        _manager(config)._clients["muse"]._run_llm_cli("prompt")
+        _manager(config)._run_llm_cli("prompt")
     methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert methods == ["initialize"]
 
@@ -377,7 +386,7 @@ def test_muse_msp_rejects_invalid_turn_acknowledgement(tmp_path, monkeypatch, _u
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
     with pytest.raises(RuntimeError, match="acknowledgement|acknowledge"):
-        _manager(config)._clients["muse"]._run_llm_cli("prompt")
+        _manager(config)._run_llm_cli("prompt")
 
 
 def test_muse_failed_post_turn_invariant_does_not_expose_session(tmp_path, monkeypatch, _use_real_commands):
@@ -396,6 +405,117 @@ def test_muse_failed_post_turn_invariant_does_not_expose_session(tmp_path, monke
 
     assert client.get_last_session_id() is None
     assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+def test_muse_editable_git_state_is_preserved_for_shared_handoff(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_MUTATE", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+
+    assert _manager(config)._run_llm_cli("edit the source") == "answer:first"
+    assert (repo / "tracked.txt").read_text() == "mutated\n"
+
+    turn = next(json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "turn/start")
+    prompt = turn["frame"]["params"]["input"][0]["text"]
+    assert "local Git operations" in prompt
+    assert "original result root" in prompt
+
+
+def test_muse_direct_edit_refuses_before_provider_submission(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_MUTATE", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    client = manager._clients["muse"]
+
+    with pytest.raises(RuntimeError, match="controller-owned local workspace binding"):
+        client._run_llm_cli("edit the source")
+
+    assert not log.exists()
+    assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+@pytest.mark.parametrize("times_out", [False, True])
+def test_muse_settles_descendant_writer_before_return(tmp_path, monkeypatch, _use_real_commands, times_out):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    sentinel = tmp_path / "late-child-write"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_CHILD_WRITER", "1")
+    monkeypatch.setenv("MSP_CHILD_SENTINEL", str(sentinel))
+    if times_out:
+        monkeypatch.setenv("MSP_SLEEP", "2")
+    config = LLMBackendConfiguration(
+        backends={
+            "muse": BackendConfig(
+                name="muse",
+                backend_type="muse",
+                model="muse-spark-1.3",
+                timeout=1 if times_out else 30,
+            )
+        }
+    )
+    manager = _manager(config)
+
+    if times_out:
+        with pytest.raises(AutoCoderTimeoutError):
+            manager._run_llm_cli("edit the source")
+    else:
+        assert manager._run_llm_cli("edit the source") == "answer:first"
+
+    time.sleep(1.2)
+    assert not sentinel.exists()
+
+
+def test_muse_wrong_terminal_turn_is_immediate_protocol_failure(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_WRONG_TERMINAL_TURN", "1")
+    config = LLMBackendConfiguration(
+        backends={
+            "muse": BackendConfig(
+                name="muse",
+                backend_type="muse",
+                model="muse-spark-1.3",
+                timeout=10,
+            )
+        }
+    )
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="terminal belongs to an incompatible turn"):
+        _manager(config)._run_llm_cli("inspect", is_noedit=True)
+    assert time.monotonic() - started < 5
+
+
+def test_muse_nonzero_exit_invalidates_completed_protocol(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_EXIT_NONZERO", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+
+    with pytest.raises(RuntimeError, match="nonzero status 7"):
+        manager._run_llm_cli("edit the source")
+    assert manager.get_last_session_id() is None
 
 
 def test_muse_timeout_classification_survives_invariant_failure(tmp_path, monkeypatch, _use_real_commands):
@@ -429,7 +549,7 @@ def test_muse_pre_host_option_failure_clears_previous_session(tmp_path, monkeypa
     manager = _manager(config)
     client = manager._clients["muse"]
 
-    assert client._run_llm_cli("first") == "answer:first"
+    assert manager._run_llm_cli("first") == "answer:first"
     assert client.get_last_session_id() == "opaque/provider/session"
     frames_before_failure = log.read_text()
     client.set_extra_args(["--unsupported-msp-option"])
@@ -452,12 +572,13 @@ def test_muse_transport_io_obeys_deadline(tmp_path, monkeypatch, _use_real_comma
     pid_file = tmp_path / "host.pid"
     monkeypatch.setenv("MSP_PID_FILE", str(pid_file))
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", timeout=1)})
-    client = _manager(config)._clients["muse"]
+    manager = _manager(config)
+    client = manager._clients["muse"]
     prompt = "x" * (2 * 1024 * 1024) if mode == "MSP_STOP_READING" else "first"
 
     started = time.monotonic()
     with pytest.raises(AutoCoderTimeoutError):
-        client._run_llm_cli(prompt)
+        manager._run_llm_cli(prompt)
     assert time.monotonic() - started < 5
     assert client.get_last_session_id() is None
     host_pid = int(pid_file.read_text())
@@ -474,10 +595,11 @@ def test_muse_protocol_quota_failure_preserves_usage_classification(tmp_path, mo
     monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
     monkeypatch.setenv(mode, "1")
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
-    client = _manager(config)._clients["muse"]
+    manager = _manager(config)
+    client = manager._clients["muse"]
 
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_llm_cli("first")
+        manager._run_llm_cli("first")
     assert client.get_last_session_id() is None
 
 
@@ -493,7 +615,7 @@ def test_muse_resume_rejects_missing_model_before_turn(tmp_path, monkeypatch, _u
     client = _manager(config)._clients["muse"]
 
     with pytest.raises(RuntimeError, match="omitted or uses an incompatible model"):
-        client.continue_session("opaque/provider/session", "second")
+        client.continue_session("opaque/provider/session", "second", is_noedit=True)
     methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert "session/resume" in methods
     assert "turn/start" not in methods
@@ -512,7 +634,7 @@ def test_muse_rejects_unverified_final_answer_events(tmp_path, monkeypatch, _use
     client = _manager(config)._clients["muse"]
 
     with pytest.raises(RuntimeError):
-        client.continue_session("opaque/provider/session", "second")
+        client.continue_session("opaque/provider/session", "second", is_noedit=True)
     assert client.get_last_session_id() is None
 
 
@@ -560,7 +682,7 @@ def test_muse_foreign_or_removed_workspace_fails_without_fresh_fallback(tmp_path
     client = manager._clients["muse"]
 
     with pytest.raises(RuntimeError, match="incompatible workspace"):
-        client.continue_session("opaque/provider/session", "second")
+        client.continue_session("opaque/provider/session", "second", is_noedit=True)
     assert client.get_last_session_id() is None
     failed_methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert failed_methods.count("session/resume") == 1
@@ -593,7 +715,7 @@ def test_muse_noedit_continuation_prevents_write_and_shell_effects(tmp_path, mon
     manager = _manager(config)
     client = manager._clients["muse"]
 
-    assert client._run_llm_cli("first") == "answer:first"
+    assert manager._run_llm_cli("first") == "answer:first"
     session_id = client.get_last_session_id()
     assert session_id == "opaque/provider/session"
     before = client._snapshot_at(repo)
@@ -632,7 +754,7 @@ def test_muse_incompatible_resume_state_fails_without_fresh_fallback(tmp_path, m
 
     started = time.monotonic()
     with pytest.raises(RuntimeError, match=error_pattern):
-        client.continue_session("opaque/provider/session", "second")
+        client.continue_session("opaque/provider/session", "second", is_noedit=True)
     assert time.monotonic() - started < 5
     assert client.get_last_session_id() is None
     failed_methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
