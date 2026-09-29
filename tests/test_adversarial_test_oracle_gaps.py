@@ -36,6 +36,8 @@ from auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
 
 
 class FallbackReviewerClient:
+    supports_retained_local_continuation = True
+
     def __init__(self, response: str, session_id: str, continue_error: Exception | None = None) -> None:
         self.model_name = "strong"
         self.config_backend = SimpleNamespace(backend_type="codex")
@@ -618,7 +620,7 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
 
 
 @pytest.mark.parametrize("switch_backend", [False, True])
-def test_fresh_continuation_fallback_hydrates_and_persists_compact_gap_resolution(tmp_path, switch_backend) -> None:
+def test_failed_continuation_does_not_fallback_or_falsely_resolve_gap(tmp_path, switch_backend) -> None:
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
     validation_context = context()
     validation_context.issue_context = "Linked Issue requires independent server validation."
@@ -645,29 +647,28 @@ def test_fresh_continuation_fallback_hydrates_and_persists_compact_gap_resolutio
     registry.save(prior_session(initial, "sha-a"))
 
     with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
-        result = run_adversarial_validation(
-            "owner/repo",
-            {"number": 1, "head": {"sha": "sha-b"}},
-            AutomationConfig(),
-            backend_manager=manager,
-            session_registry=registry,
-        )
+        with pytest.raises(type(primary_error), match=str(primary_error)):
+            run_adversarial_validation(
+                "owner/repo",
+                {"number": 1, "head": {"sha": "sha-b"}},
+                AutomationConfig(),
+                backend_manager=manager,
+                session_registry=registry,
+            )
 
-    used_backend = "fallback" if switch_backend else "reviewer"
-    saved = registry.get("owner/repo", 1, used_backend, "codex", "strong")
+    saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
     assert primary.continued[0][0] == "session-1"
     assert len(primary.continued) == 1
     assert manager._last_continue_session_resumed is False
-    assert result.result == "PASS"
     assert saved is not None
-    assert result.test_oracle_gaps == [saved.test_oracle_gaps[0]]
-    assert saved.session_id == "fresh-session"
-    assert saved.last_head_sha == "sha-b"
+    assert saved.session_id == "session-1"
+    assert saved.last_head_sha == "sha-a"
     assert saved.test_oracle_gaps[0].gap_id == initial.gap_id
     assert saved.test_oracle_gaps[0].authoritative_boundary == initial.authoritative_boundary
-    assert saved.test_oracle_gaps[0].status == "RESOLVED"
-    assert saved.test_oracle_gaps[0].resolution_head_sha == "sha-b"
-    assert (fallback if switch_backend else primary).fresh_prompts
+    assert saved.test_oracle_gaps[0].status == "OPEN"
+    assert saved.test_oracle_gaps[0].resolution_head_sha == ""
+    assert primary.fresh_prompts == []
+    assert fallback.fresh_prompts == []
 
 
 def test_fresh_continuation_fallback_parse_failure_retains_accepted_gap(tmp_path) -> None:

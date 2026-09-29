@@ -19,6 +19,7 @@ from typing import Optional, Sequence
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
+from .local_execution_boundary import get_current_local_execution_boundary
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
@@ -148,6 +149,8 @@ def _uuid7() -> str:
 
 
 class MuseClient(LLMClientBase):
+    supports_retained_local_continuation = True
+
     """Run Muse Code while retaining Auto-Coder's ownership of Git state."""
 
     def __init__(self, backend_name: Optional[str] = None, use_noedit_options: bool = False) -> None:
@@ -906,6 +909,10 @@ class MuseClient(LLMClientBase):
             self._last_session_id = None
             raise RuntimeError("Muse MSP invocation ended without a completed result")
         self._last_session_id = completed_session_id
+        boundary = get_current_local_execution_boundary()
+        if boundary is not None:
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.record_violation_observation(boundary.binding.invocation_id)
         return final_output
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
