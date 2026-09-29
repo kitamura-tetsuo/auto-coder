@@ -391,8 +391,9 @@ except Exception as exc:
         denied_output = denied.stdout + denied.stderr
         assert denied.returncode == 0, denied_output
         assert len(provider.captured_requests) == before
-        assert "private workspace repository preparation failed" in denied_output
-        assert "uid=65532, gid=65532" in denied_output
+        assert "EXPECTED_DOWNSTREAM_FAILURE:" in denied_output
+        assert "Codex repository readiness established" not in denied_output
+        assert marker_checksum not in denied_output
     finally:
         provider.stop()
 
