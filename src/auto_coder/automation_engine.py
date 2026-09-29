@@ -3851,6 +3851,8 @@ class AutomationEngine:
                 decision_completed = False
                 deferral_committed = False
                 stop_after_persistence_failure = False
+                definitive_refusal_reason: Optional[str] = None
+                unfinished_processing_disposition = False
                 invalidation_claim: Optional[ClaimedInvalidation] = None
                 repo_job_scope: Optional[RepoJobExecutionScope] = None
                 closed_issue_prepared = False
@@ -3986,6 +3988,7 @@ class AutomationEngine:
                                 repo_name,
                                 candidate,
                             )
+                            unfinished_processing_disposition = bool(result.error) and not result.definitive_parent_refusal
                         finally:
                             # Ordinary standalone validation occurs inside the
                             # processing path. Consume any newly durable READY
@@ -4005,7 +4008,18 @@ class AutomationEngine:
                             repo_name,
                             candidate,
                         )
-                    decision_completed = (not bool(result.error) or result.blocked_cacheable) and not (candidate.urgent_admission and result.capacity_deferred)
+                    if result.definitive_parent_refusal and result.error:
+                        # A relationship refusal completes the evaluation only
+                        # after all obsolete target-owned lane work is durably
+                        # retired.  This cleanup is independent of repairing or
+                        # even parsing the rejected declaration.
+                        await asyncio.to_thread(
+                            self.issue_stage_routing.retire_refused_target,
+                            repo_name,
+                            int(item_number),
+                        )
+                        definitive_refusal_reason = result.error
+                    decision_completed = (not bool(result.error) or result.blocked_cacheable or result.definitive_parent_refusal) and not (candidate.urgent_admission and result.capacity_deferred)
 
                     if invalidation_claim is not None and candidate.type == "pr" and result.outcome is PRProcessingOutcome.DEFERRED and result.retry_not_before is not None:
                         retained = await asyncio.to_thread(
@@ -4069,6 +4083,26 @@ class AutomationEngine:
                             log("Authoritative refresh safely deferred " f"repository={repo_name} entity={candidate.type}#{item_number} " f"reason={retained.reason} retry_at={retained.retry_not_before} " f"api_origin={retained.api_origin or 'unknown'}")
                             if self._invalidation_wake_event is not None:
                                 self._invalidation_wake_event.set()
+                    elif isinstance(e, ParentSpecificationError) and invalidation_claim is not None and candidate.type == "issue" and not unfinished_processing_disposition:
+                        # Typed production reconciliation failures are
+                        # definitive.  Arbitrary BLOCKED results and exception
+                        # message text never enter this path.
+                        try:
+                            await asyncio.to_thread(
+                                self.issue_stage_routing.retire_refused_target,
+                                repo_name,
+                                int(item_number),
+                            )
+                        except Exception:
+                            logger.opt(exception=True).error(
+                                "Failed to retire refused Issue work repository={} issue={} generation={}",
+                                repo_name,
+                                item_number,
+                                invalidation_claim.generation,
+                            )
+                        else:
+                            definitive_refusal_reason = str(e)
+                            decision_completed = True
                     else:
                         logger.opt(exception=True).error(f"Worker {worker_id} error processing candidate: {e}")
                         get_health_monitor().record_event("worker_error", f"worker {worker_id}: {type(e).__name__}: {e}", f"{candidate.type} #{item_number}")
@@ -4079,7 +4113,7 @@ class AutomationEngine:
                             if candidate.type == "dependency":
                                 completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
                             else:
-                                self.invalidations.complete(invalidation_claim)
+                                completion_transition = self.invalidations.complete_with_outcome(invalidation_claim)
                         elif not deferral_committed and not stop_after_persistence_failure:
                             self.invalidations.release(invalidation_claim)
                             # Retry transient authoritative-fetch/processing
@@ -4089,6 +4123,30 @@ class AutomationEngine:
                                 asyncio.get_running_loop().call_later(60, self._invalidation_wake_event.set)
                     if repo_job_scope is not None:
                         self._record_dependency_claim_acknowledgement(repo_name, repo_job_scope, invalidation_claim, decision_completed, completion_transition)
+                    if definitive_refusal_reason is not None and invalidation_claim is not None:
+                        acknowledgement = completion_transition.outcome.value if completion_transition is not None else "not-attempted"
+                        logger.warning(
+                            "Completed BLOCKED Parent-Issue evaluation repository={} issue={} generation={} reason={} acknowledgement={}",
+                            repo_name,
+                            item_number,
+                            invalidation_claim.generation,
+                            definitive_refusal_reason,
+                            acknowledgement,
+                        )
+                        get_trace_logger().log(
+                            "Worker",
+                            f"Issue #{item_number} Parent-Issue evaluation blocked",
+                            item_type="issue",
+                            item_number=item_number,
+                            details={
+                                "worker_id": worker_id,
+                                "repository": repo_name,
+                                "generation": invalidation_claim.generation,
+                                "reason": definitive_refusal_reason,
+                                "acknowledgement": acknowledgement,
+                                "outcome": "blocked",
+                            },
+                        )
                     self.active_workers[worker_id] = None
                     self.queue.task_done()
                     if decision_completed:
@@ -5536,6 +5594,7 @@ class AutomationEngine:
                 except ParentSpecificationError as exc:
                     result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
                     result.target_outcome = ExplicitTargetOutcome.BLOCKED
+                    result.definitive_parent_refusal = True
                     result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                     _record_issue_stage_result(item_number, "issue.parent-reconciliation", f"issue#{item_number} parent reconciliation", Outcome.BLOCKED, {"reason": str(exc)})
                     return result
@@ -5589,6 +5648,7 @@ class AutomationEngine:
                     except ParentSpecificationError as exc:
                         result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
                         result.target_outcome = ExplicitTargetOutcome.BLOCKED
+                        result.definitive_parent_refusal = True
                         result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                         return result
                     except ParentOperationalError as exc:
@@ -5749,6 +5809,7 @@ class AutomationEngine:
                     except ParentSpecificationError as exc:
                         result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
                         result.target_outcome = ExplicitTargetOutcome.BLOCKED
+                        result.definitive_parent_refusal = True
                         result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                         return result
                     except ParentOperationalError as exc:
@@ -5837,6 +5898,7 @@ class AutomationEngine:
             except ParentSpecificationError as exc:
                 result.error = f"Parent-Issue reconciliation blocked processing: {exc}"
                 result.target_outcome = ExplicitTargetOutcome.BLOCKED
+                result.definitive_parent_refusal = True
                 result.actions = ["Blocked - invalid Parent-Issue relationship metadata"]
                 return result
             except ParentOperationalError as exc:

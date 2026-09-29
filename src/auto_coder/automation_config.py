@@ -949,6 +949,7 @@ class CandidateProcessingResult:
     target_outcome: Optional[ExplicitTargetOutcome] = None
     target_reason: Optional[str] = None
     blocked_cacheable: bool = False
+    definitive_parent_refusal: bool = False
     retry_not_before: Optional[float] = None
     dispatch_result: Optional[DispatchResult] = None
 
