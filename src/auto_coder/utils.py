@@ -907,11 +907,22 @@ class CommandExecutor:
                     private_runtime = _prepare_invocation_runtime(supervised, launch_env)
                 if boundary.backend_type.lower() == "codex" and Path(cmd[0]).name == "codex":
                     validate_codex_effective_directory(cmd[1:], binding.workspace)
-                    verify_worker_repository(
+                    readiness = verify_worker_repository(
                         binding.workspace,
                         worker_uid=worker_uid,
                         worker_gid=worker_gid,
                         environment=launch_env,
+                    )
+                    logger.info(
+                        "Codex repository readiness established under uid={}, gid={} at {} " "(git_dir={}, common_dir={}, head={}, tracked_files={}, tracked_contents_checksum={})",
+                        readiness.worker_uid,
+                        readiness.worker_gid,
+                        readiness.root,
+                        readiness.git_dir,
+                        readiness.common_dir,
+                        readiness.head,
+                        readiness.readable_regular_files,
+                        readiness.tracked_contents_checksum,
                     )
             except (OSError, RepositoryReadinessError) as exc:
                 if private_runtime is not None:

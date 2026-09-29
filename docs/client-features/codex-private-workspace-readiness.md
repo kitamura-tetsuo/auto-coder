@@ -18,3 +18,11 @@ workspace and effective numeric worker identity. Codex is not started and its
 prompt is not delivered. An explicit `--skip-git-repo-check` does not bypass this
 decision, and Auto-Coder does not inject that flag or modify persistent Git/Codex
 trust configuration.
+
+The production container pins Codex CLI `0.159.0`. Its live regression uses a
+controlled provider request as the post-checkpoint observation: in that version,
+the `exec` implementation performs Git-root validation before starting the model
+turn, so receipt of the request establishes progress beyond repository startup
+without claiming that the later model turn succeeded. The same regression checks
+the worker-produced private-root, Git-metadata, HEAD, and tracked-content checksum
+evidence emitted by repository preparation.

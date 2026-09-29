@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -24,6 +25,7 @@ class RepositoryReadiness:
     common_dir: Path
     head: str
     readable_regular_files: int
+    tracked_contents_checksum: str
 
 
 _DIRECTORY_OPTIONS = ("-C", "--cd")
@@ -63,7 +65,7 @@ def validate_codex_effective_directory(arguments: Sequence[str], workspace: Path
 
 
 _WORKER_PROBE = r"""
-import json, os, pathlib, stat, subprocess, sys
+import hashlib, json, os, pathlib, stat, subprocess, sys
 root = pathlib.Path(sys.argv[1]).resolve(strict=True)
 def git(*args):
     result = subprocess.run(["git", "-C", str(root), *args], capture_output=True)
@@ -87,6 +89,7 @@ for label, path in (("Git directory", git_dir), ("Git common directory", common_
     if not os.access(path, os.R_OK | os.X_OK):
         raise RuntimeError(f"{label} is not readable and traversable: {path}")
 count = 0
+contents = hashlib.sha256()
 for raw in git("ls-files", "-z").split(b"\0"):
     if not raw:
         continue
@@ -97,9 +100,12 @@ for raw in git("ls-files", "-z").split(b"\0"):
         continue
     if stat.S_ISREG(mode):
         with path.open("rb") as stream:
-            stream.read(1)
+            data = stream.read()
+        contents.update(raw)
+        contents.update(b"\0")
+        contents.update(data)
         count += 1
-print(json.dumps({"root": str(root), "git_dir": str(git_dir), "common_dir": str(common_dir), "head": head, "readable_regular_files": count}))
+print(json.dumps({"root": str(root), "git_dir": str(git_dir), "common_dir": str(common_dir), "head": head, "readable_regular_files": count, "tracked_contents_checksum": contents.hexdigest()}))
 """
 
 
@@ -147,6 +153,7 @@ def verify_worker_repository(
             common_dir=Path(observation["common_dir"]),
             head=str(observation["head"]),
             readable_regular_files=int(observation["readable_regular_files"]),
+            tracked_contents_checksum=str(observation["tracked_contents_checksum"]),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise RepositoryReadinessError("worker repository probe returned invalid evidence") from exc

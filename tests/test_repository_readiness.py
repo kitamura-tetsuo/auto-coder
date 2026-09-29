@@ -1,3 +1,4 @@
+import hashlib
 import os
 import pwd
 import shutil
@@ -67,6 +68,8 @@ def test_worker_probe_establishes_private_root_and_tracked_file_readability(priv
     assert evidence.common_dir == (repository / ".git").resolve()
     assert len(evidence.head) == 40
     assert evidence.readable_regular_files == 1
+    expected = hashlib.sha256(b"marker.txt\0private marker\n").hexdigest()
+    assert evidence.tracked_contents_checksum == expected
 
 
 @pytest.mark.parametrize(
