@@ -230,8 +230,6 @@ def test_full_prompt_transported_via_stdin_only(tmp_path: Path, monkeypatch: pyt
 
     config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5")})
     task = (("Unicode ☃ @ ' \" ; $(false)\r\n" * ((size // 30) + 1))[:size]).rstrip("\n")
-    expected = render_prompt("opencode.execution", task_prompt=task).encode("utf-8")
-
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(script))
     monkeypatch.setenv("OPENCODE_TEST_REPORT_FILE", str(report))
@@ -240,6 +238,7 @@ def test_full_prompt_transported_via_stdin_only(tmp_path: Path, monkeypatch: pyt
     assert _manager(config)._run_llm_cli(task) == "ok"
 
     observed = json.loads(report.read_text())
+    expected = render_prompt("opencode.execution", task_prompt=task, result_root=observed["cwd"]).encode("utf-8")
     assert observed["prompt_digest"] == hashlib.sha256(expected).hexdigest()
     assert observed["prompt_len"] == len(expected)
     assert observed["prompt_in_argv"] is False
@@ -301,10 +300,9 @@ def test_legitimate_variant_override_reaches_the_executable(tmp_path: Path, monk
     monkeypatch.setenv("OPENCODE_TEST_REPORT_FILE", str(report))
     monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(stdout_file))
 
-    with patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
-        client = OpenCodeClient(backend_name="opencode")
-        client.set_extra_args(["--variant", "high"])
-        assert client._run_llm_cli("implement") == "ok"
+    manager = _manager(config)
+    manager._clients["opencode"].set_extra_args(["--variant", "high"])
+    assert manager._run_llm_cli("implement") == "ok"
 
     observed = json.loads(report.read_text())
     assert observed["argv"][observed["argv"].index("--variant") + 1] == "high"
@@ -323,13 +321,28 @@ def test_model_override_takes_precedence_and_preserves_slashes(tmp_path: Path, m
     monkeypatch.setenv("OPENCODE_TEST_REPORT_FILE", str(report))
     monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(stdout_file))
 
-    with patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
-        client = OpenCodeClient(backend_name="opencode")
-        client.set_extra_args(["--model", "openrouter/anthropic/claude-3.5-sonnet"])
-        assert client._run_llm_cli("implement") == "ok"
+    manager = _manager(config)
+    manager._clients["opencode"].set_extra_args(["--model", "openrouter/anthropic/claude-3.5-sonnet"])
+    assert manager._run_llm_cli("implement") == "ok"
 
     observed = json.loads(report.read_text())
     assert observed["argv"][observed["argv"].index("--model") + 1] == "openrouter/anthropic/claude-3.5-sonnet"
+
+
+@pytest.mark.parametrize("model", ["provider/model name", " provider/model", "provider/model\n"])
+def test_model_with_whitespace_is_rejected_before_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, model: str) -> None:
+    repo = _repository(tmp_path)
+    script = _driver(tmp_path)
+    sentinel = tmp_path / "launched.marker"
+    config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model=model)})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(script))
+    monkeypatch.setenv("OPENCODE_TEST_SENTINEL_FILE", str(sentinel))
+
+    with patch("src.auto_coder.opencode_client.get_llm_config", return_value=config), pytest.raises(RuntimeError, match="provider/model"):
+        OpenCodeClient(backend_name="opencode")
+
+    assert not sentinel.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +509,7 @@ def test_nonzero_exit_without_events_fails_with_return_code(tmp_path: Path, monk
 # ---------------------------------------------------------------------------
 
 
-def test_editable_private_git_staging_is_retained_and_caller_is_preserved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_editable_private_commit_delivers_files_and_preserves_caller_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _driver(tmp_path)
     report = tmp_path / "staged.json"
@@ -505,6 +518,7 @@ def test_editable_private_git_staging_is_retained_and_caller_is_preserved(tmp_pa
         "import json, subprocess\n"
         "open('agent_edit.txt', 'w').write('edited by agent\\n')\n"
         "subprocess.run(['git', 'add', 'agent_edit.txt'], check=True)\n"
+        "subprocess.run(['git', 'commit', '-m', 'private checkpoint'], check=True, capture_output=True)\n"
         f"json.dump({{'staged': subprocess.run(['git', 'diff', '--cached', '--name-only'], check=True, capture_output=True, text=True).stdout}}, open({str(report)!r}, 'w'))\n"
     )
     stdout_file = tmp_path / "stdout.jsonl"
@@ -518,12 +532,12 @@ def test_editable_private_git_staging_is_retained_and_caller_is_preserved(tmp_pa
     head_before = _git(repo, "rev-parse", "HEAD")
     assert _manager(config)._run_llm_cli("implement") == "done"
 
-    assert "agent_edit.txt" in json.loads(report.read_text())["staged"]
+    assert json.loads(report.read_text())["staged"] == ""
     assert (repo / "agent_edit.txt").read_text() == "edited by agent\n"
     assert _git(repo, "rev-parse", "HEAD") == head_before
 
 
-def test_editable_direct_client_accepts_private_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_editable_direct_client_refuses_without_shared_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     real_git = subprocess.run(["which", "git"], capture_output=True, text=True, check=True).stdout.strip()
     script = _driver(tmp_path)
@@ -536,11 +550,11 @@ def test_editable_direct_client_accepts_private_commit(tmp_path: Path, monkeypat
     monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(script))
     monkeypatch.setenv("OPENCODE_TEST_BODY_FILE", str(body))
     monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(stdout_file))
-    head_before = _git(repo, "rev-parse", "HEAD")
     with patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
         client = OpenCodeClient(backend_name="opencode")
-        assert client._run_llm_cli("implement") == "committed"
-    assert _git(repo, "rev-parse", "HEAD") != head_before
+        with pytest.raises(RuntimeError, match="controller-owned local workspace binding"):
+            client._run_llm_cli("implement")
+    assert not (repo / "committed.txt").exists()
 
 
 # ---------------------------------------------------------------------------
