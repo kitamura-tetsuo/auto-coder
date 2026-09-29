@@ -7,6 +7,7 @@ import json
 import os
 import select
 import shlex
+import signal
 import stat
 import subprocess
 import tempfile
@@ -726,15 +727,77 @@ class MuseClient(LLMClientBase):
             if not isinstance(effective_mode, dict) or effective_mode.get("mode") != "denyUnmatched":
                 raise RuntimeError("Muse MSP did not confirm effective approval denial")
 
+    @staticmethod
+    def _process_group_exists(process_group: int) -> bool:
+        """Return whether any writer remains in an owned POSIX process group."""
+        proc = Path("/proc")
+        if proc.is_dir():
+            try:
+                for entry in proc.iterdir():
+                    if not entry.name.isdigit():
+                        continue
+                    raw = (entry / "stat").read_text()
+                    fields = raw[raw.rfind(")") + 2 :].split()
+                    if len(fields) > 2 and int(fields[2]) == process_group and fields[0] != "Z":
+                        return True
+                return False
+            except (OSError, ValueError):
+                pass
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError as exc:
+            raise RuntimeError("Muse writer settlement could not inspect its process group") from exc
+        return True
+
+    @classmethod
+    def _settle_process_group(cls, process: subprocess.Popen[bytes]) -> None:
+        """Stop every process in the invocation-owned session before handoff."""
+        if os.name != "posix":
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            return
+
+        process_group = process.pid
+        if not cls._process_group_exists(process_group):
+            return
+        os.killpg(process_group, signal.SIGTERM)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            process.poll()
+            if not cls._process_group_exists(process_group):
+                return
+            time.sleep(0.01)
+        os.killpg(process_group, signal.SIGKILL)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            process.poll()
+            if not cls._process_group_exists(process_group):
+                return
+            time.sleep(0.01)
+        raise RuntimeError("Muse process group did not terminate after SIGKILL; writer settlement is unknown")
+
     def _run_msp_turn(self, prompt: str, is_noedit: bool, session_id: Optional[str]) -> str:
         # An invocation owns only the identity it establishes successfully.
         # Clear before snapshot/configuration/rendering so any pre-host failure
         # cannot expose a previous invocation's session as its own result.
         self._last_session_id = None
-        cwd = self._execution_cwd().resolve()
-        before = self._snapshot_at(cwd)
         effective_noedit = is_noedit or self.use_noedit_options
+        cwd = self._execution_cwd().resolve()
         msp_options = self._msp_options(effective_noedit)
+        boundary = get_current_local_execution_boundary()
+        if not effective_noedit:
+            if boundary is None:
+                raise RuntimeError("Editable Muse execution requires a controller-owned local workspace binding")
+            if not boundary.editable or boundary.backend_type.lower() != "muse" or boundary.binding.workspace.resolve() != cwd:
+                raise RuntimeError("Editable Muse execution has an incompatible local workspace binding")
+        before = self._snapshot_at(cwd)
         rendered_prompt = render_prompt(
             "muse.execution",
             task_prompt=prompt,
@@ -855,11 +918,14 @@ class MuseClient(LLMClientBase):
                     continue
                 for event in notifications[before_count:]:
                     params_obj = event.get("params")
-                    if event.get("method") == "turn/completed" and isinstance(params_obj, dict) and params_obj.get("turnId") == turn_id:
-                        if params_obj.get("sessionId") != canonical_id:
-                            raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
-                        terminal = params_obj
-                        break
+                    if event.get("method") != "turn/completed":
+                        continue
+                    if not isinstance(params_obj, dict) or params_obj.get("turnId") != turn_id:
+                        raise RuntimeError("Muse MSP terminal belongs to an incompatible turn")
+                    if params_obj.get("sessionId") != canonical_id:
+                        raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
+                    terminal = params_obj
+                    break
             if terminal.get("terminal") != "completed":
                 self._raise_msp_failure("Muse MSP turn did not complete successfully", terminal)
             answers: list[str] = []
@@ -888,15 +954,20 @@ class MuseClient(LLMClientBase):
                         process.stdin.close()
                     except OSError:
                         pass
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.terminate()
+                if invocation_error is None:
                     try:
                         process.wait(timeout=2)
                     except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
+                        pass
+                try:
+                    self._settle_process_group(process)
+                    if process.poll() is None:
+                        process.wait(timeout=2)
+                except BaseException as settlement_error:
+                    if invocation_error is None:
+                        invocation_error = settlement_error
+                    else:
+                        invocation_error.add_note(f"Muse writer settlement also failed: {settlement_error}")
                 if process.returncode != 0 and invocation_error is None:
                     invocation_error = RuntimeError(f"Muse MSP host exited with nonzero status {process.returncode}")
             try:
@@ -926,7 +997,6 @@ class MuseClient(LLMClientBase):
             self._last_session_id = None
             raise RuntimeError("Muse MSP invocation ended without a completed result")
         self._last_session_id = completed_session_id
-        boundary = get_current_local_execution_boundary()
         if boundary is not None:
             boundary.record_writer_completion(boundary.binding.invocation_id)
             boundary.record_violation_observation(boundary.binding.invocation_id)

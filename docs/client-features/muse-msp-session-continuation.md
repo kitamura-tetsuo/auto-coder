@@ -20,7 +20,9 @@ operations—including staging, commits, branches, stashes, rebases, and private
 worktrees—are valid coding state and are not audited, reset, unstaged, or rejected
 merely because private Git state changed. The accepted generation is delivered by
 the shared local-result handoff rather than by selecting files from the final private
-HEAD.
+HEAD. An editable client call without the matching controller-owned local execution
+boundary is refused before the MSP host starts, so callers cannot execute directly in
+their checkout.
 
 No-edit is applied independently to every host by passing only
 `--disable-write` and `--disable-shell` to `muse serve`, then establishing
@@ -36,5 +38,8 @@ continues. Model selection belongs to fresh-session setup, reasoning effort
 belongs to turn submission, and editable sessions omit an approval-mode default.
 Workspace-trust requests are rejected because PR review has no independent
 authorization that can grant that trust. Every successful turn also requires the
-owned Muse host to exit successfully; a completed-looking protocol exchange followed
-by a nonzero process status is a failed invocation.
+owned Muse host to exit successfully and every process in its owned process group to
+be positively stopped; a completed-looking protocol exchange followed by a nonzero
+process status or unsettled descendant writer is a failed invocation. A terminal
+notification for a different turn is rejected immediately as a protocol error rather
+than being allowed to age into a timeout.
