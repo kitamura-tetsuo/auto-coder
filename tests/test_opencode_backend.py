@@ -362,6 +362,24 @@ def test_model_override_takes_precedence_and_preserves_slashes(tmp_path: Path, m
     assert observed["argv"][observed["argv"].index("--model") + 1] == "openrouter/anthropic/claude-3.5-sonnet"
 
 
+@pytest.mark.parametrize("model_option", ["--model=", "-m="])
+def test_empty_inline_model_override_is_rejected_before_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, model_option: str) -> None:
+    repo = _repository(tmp_path)
+    script = _driver(tmp_path)
+    sentinel = tmp_path / "launched.marker"
+    config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(script))
+    monkeypatch.setenv("OPENCODE_TEST_SENTINEL_FILE", str(sentinel))
+    manager = _manager(config)
+    manager._clients["opencode"].set_extra_args([model_option])
+
+    with pytest.raises(RuntimeError, match="provider/model"):
+        manager._run_llm_cli("implement")
+
+    assert not sentinel.exists()
+
+
 @pytest.mark.parametrize("model", ["provider/model name", " provider/model", "provider/model\n"])
 def test_model_with_whitespace_is_rejected_before_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands, model: str) -> None:
     repo = _repository(tmp_path)

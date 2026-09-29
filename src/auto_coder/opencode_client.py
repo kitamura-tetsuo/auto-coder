@@ -774,12 +774,14 @@ class OpenCodeClient(LLMClientBase):
                 if not allow_model_override:
                     raise RuntimeError("The OpenCode model must be set via the backend's 'model' configuration value, not via 'options'")
                 if has_inline_value:
+                    cls._validate_model(inline_value)
                     model_override = inline_value
                     index += 1
                     continue
                 if index + 1 >= len(tokens):
                     raise RuntimeError(f"OpenCode option '{name}' is missing its value")
                 model_override = tokens[index + 1]
+                cls._validate_model(model_override)
                 index += 2
                 continue
             if not name.startswith("-"):
