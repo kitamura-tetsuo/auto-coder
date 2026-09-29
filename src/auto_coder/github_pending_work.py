@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -81,11 +82,53 @@ class PendingWorkPersistenceError(RuntimeError):
     """Persistence uncertainty; dependent effects must stop (fail closed)."""
 
 
+class PendingWorkOwnershipError(PendingWorkPersistenceError):
+    """The configured repository does not own the requested obligation."""
+
+
+_REPOSITORY_COMPONENT = re.compile(r"^[^/\\\x00\s]+$")
+
+
+def repository_ownership_key(repository: str) -> str:
+    """Return the strict, case-insensitive owner/repository ownership key."""
+    stripped = repository.strip(" \t\n\r\v\f")
+    parts = stripped.split("/")
+    if len(parts) != 2 or any(not part or part in {".", ".."} for part in parts) or any(_REPOSITORY_COMPONENT.fullmatch(part) is None for part in parts) or "://" in stripped:
+        raise PendingWorkOwnershipError(f"Invalid pending-work repository binding: {repository!r}")
+    return "/".join(part.lower() for part in parts)
+
+
 class PendingWorkStore:
     """SQLite-backed semantic retry queue, shared across workers and restarts."""
 
-    def __init__(self, db_path: Path | None = None) -> None:
+    def __init__(self, db_path: Path | None = None, *, repository: str | None = None) -> None:
         self._db_path = db_path or default_pending_work_path()
+        self._repository = repository
+        self._repository_key = repository_ownership_key(repository) if repository is not None else None
+
+    def scoped(self, repository: str) -> "PendingWorkStore":
+        """Return an immutable repository-authorized view of this database."""
+        return PendingWorkStore(self._db_path, repository=repository)
+
+    def _owns(self, identity: WorkIdentity) -> bool:
+        if self._repository_key is None:
+            return True
+        try:
+            return repository_ownership_key(identity.repository) == self._repository_key
+        except PendingWorkOwnershipError:
+            return False
+
+    def _require_owned(self, identity: WorkIdentity) -> None:
+        if not self._owns(identity):
+            logger.error(
+                "Pending-work ownership refused: configured repository={!r}, obligation repository={!r}",
+                self._repository,
+                identity.repository,
+            )
+            raise PendingWorkOwnershipError(f"Pending-work repository {identity.repository!r} is not owned by {self._repository!r}")
+
+    def _owned_only(self, obligations: list[PendingObligation]) -> list[PendingObligation]:
+        return [obligation for obligation in obligations if self._owns(obligation.identity)]
 
     def _connect(self) -> sqlite3.Connection:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +161,7 @@ class PendingWorkStore:
         now: float | None = None,
     ) -> PendingObligation:
         """Atomically retain work; only actual throttle responses spend retries."""
+        self._require_owned(identity)
         current_time = time.time() if now is None else now
         classification = error.outcome.classification
         if classification is GitHubApiOutcome.REFUSED:
@@ -198,7 +242,7 @@ class PendingWorkStore:
                     "SELECT repository,entity,stage,revision,reason,not_before,unfinished_effects,throttle_attempts,last_error " "FROM github_pending_work WHERE status=? AND not_before > 0 AND not_before <= ? ORDER BY not_before",
                     (ObligationStatus.WAITING.value, current_time),
                 ).fetchall()
-            return [PendingObligation(WorkIdentity(*row[:4]), PendingReason(row[4]), row[5], tuple(json.loads(row[6])), row[7], row[8]) for row in rows]
+            return self._owned_only([PendingObligation(WorkIdentity(*row[:4]), PendingReason(row[4]), row[5], tuple(json.loads(row[6])), row[7], row[8]) for row in rows])
         except Exception as exc:
             logger.error("Could not read GitHub pending obligations: {}", exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be read") from exc
@@ -211,7 +255,10 @@ class PendingWorkStore:
                     "SELECT MIN(not_before) FROM github_pending_work WHERE status=? AND not_before > 0",
                     (ObligationStatus.WAITING.value,),
                 ).fetchone()
-            return float(row[0]) if row and row[0] is not None else None
+            if self._repository_key is None:
+                return float(row[0]) if row and row[0] is not None else None
+            deadlines = [item.not_before for item in self.due(float("inf"))]
+            return min(deadlines) if deadlines else None
         except Exception as exc:
             logger.error("Could not read next GitHub pending obligation deadline: {}", exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be read") from exc
@@ -224,7 +271,7 @@ class PendingWorkStore:
                     "SELECT repository,entity,stage,revision,reason,not_before,unfinished_effects,throttle_attempts,last_error " "FROM github_pending_work WHERE status=?",
                     (ObligationStatus.RUNNING.value,),
                 ).fetchall()
-            return [PendingObligation(WorkIdentity(*row[:4]), PendingReason(row[4]), row[5], tuple(json.loads(row[6])), row[7], row[8], ObligationStatus.RUNNING.value) for row in rows]
+            return self._owned_only([PendingObligation(WorkIdentity(*row[:4]), PendingReason(row[4]), row[5], tuple(json.loads(row[6])), row[7], row[8], ObligationStatus.RUNNING.value) for row in rows])
         except Exception as exc:
             logger.error("Could not read interrupted GitHub pending obligations: {}", exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be read") from exc
@@ -234,13 +281,14 @@ class PendingWorkStore:
         try:
             with _LOCK, self._connect() as connection:
                 rows = connection.execute("SELECT repository,entity,stage,revision,reason,not_before,unfinished_effects,throttle_attempts,last_error,status " "FROM github_pending_work ORDER BY updated_at").fetchall()
-            return [PendingObligation(WorkIdentity(*row[:4]), PendingReason(row[4]), row[5], tuple(json.loads(row[6])), row[7], row[8], row[9]) for row in rows]
+            return self._owned_only([PendingObligation(WorkIdentity(*row[:4]), PendingReason(row[4]), row[5], tuple(json.loads(row[6])), row[7], row[8], row[9]) for row in rows])
         except Exception as exc:
             logger.error("Could not read GitHub pending obligations: {}", exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be read") from exc
 
     def get(self, identity: WorkIdentity) -> PendingObligation | None:
         """Current state of one obligation, regardless of status or deadline."""
+        self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
                 row = connection.execute(
@@ -256,6 +304,7 @@ class PendingWorkStore:
 
     def mark_running(self, identity: WorkIdentity) -> None:
         """Claim an obligation for an in-progress handler dispatch."""
+        self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
                 connection.execute(
@@ -268,6 +317,7 @@ class PendingWorkStore:
 
     def mark_waiting(self, identity: WorkIdentity) -> None:
         """Release a running claim without changing its schedule or effects."""
+        self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
                 connection.execute(
@@ -287,6 +337,7 @@ class PendingWorkStore:
         obligation to its stage handler again, which still goes through the
         shared governor for admission.
         """
+        self._require_owned(identity)
         current_time = time.time() if now is None else now
         try:
             with _LOCK, self._connect() as connection:
@@ -316,6 +367,7 @@ class PendingWorkStore:
         Ensures the obligation is in WAITING status with not_before <= current_time,
         making it immediately due for dispatch without requiring a new commit or --force.
         """
+        self._require_owned(identity)
         current_time = time.time() if now is None else now
         try:
             with _LOCK, self._connect() as connection:
@@ -358,6 +410,7 @@ class PendingWorkStore:
 
     def complete_effect(self, identity: WorkIdentity, effect: str) -> bool:
         """Confirm one durable effect without completing its independent siblings."""
+        self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
                 row = connection.execute("SELECT unfinished_effects FROM github_pending_work WHERE work_key=?", (identity.key(),)).fetchone()
@@ -378,6 +431,7 @@ class PendingWorkStore:
 
     def supersede(self, identity: WorkIdentity) -> None:
         """Discard effects after an authoritative refresh proves the revision stale."""
+        self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
                 connection.execute("DELETE FROM github_pending_work WHERE work_key=?", (identity.key(),))
@@ -441,10 +495,13 @@ class PendingWorkScheduler:
         self,
         store: PendingWorkStore,
         *,
+        repository: str | None,
         poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        self._store = store
+        self._repository = repository
+        self._repository_key = repository_ownership_key(repository) if repository is not None else None
+        self._store = store.scoped(repository) if repository is not None else store
         self._poll_interval = poll_interval
         self._clock = clock
         self._handlers: dict[str, StageHandler] = {}
@@ -508,6 +565,8 @@ class PendingWorkScheduler:
         waiting or complete, so a genuine crash and a cooperative shutdown are
         recovered identically on the next start.
         """
+        if self._repository_key is None:
+            raise PendingWorkOwnershipError("Pending-work scheduler cannot run without a repository binding")
         self._wake_event = asyncio.Event()
         try:
             await self._recover_interrupted()
@@ -602,6 +661,13 @@ class PendingWorkScheduler:
         identity = obligation.identity
         key = identity.key()
         try:
+            if repository_ownership_key(identity.repository) != self._repository_key:
+                logger.error(
+                    "Pending-work dispatch ownership refused: configured repository={!r}, obligation repository={!r}",
+                    self._repository,
+                    identity.repository,
+                )
+                return
             try:
                 await asyncio.to_thread(self._store.mark_running, identity)
             except PendingWorkPersistenceError as exc:
@@ -640,10 +706,13 @@ class PendingWorkScheduler:
             self._store.mark_waiting(identity)
 
 
-def get_pending_work_scheduler() -> PendingWorkScheduler:
-    """Return the process-wide pending-work scheduling service."""
+def get_pending_work_scheduler(repository: str) -> PendingWorkScheduler:
+    """Return the process-wide pending-work service bound to ``repository``."""
     global _DEFAULT_SCHEDULER
+    key = repository_ownership_key(repository)
     with _LOCK:
         if _DEFAULT_SCHEDULER is None:
-            _DEFAULT_SCHEDULER = PendingWorkScheduler(get_pending_work_store())
+            _DEFAULT_SCHEDULER = PendingWorkScheduler(get_pending_work_store(), repository=repository)
+        elif _DEFAULT_SCHEDULER._repository_key != key:
+            raise PendingWorkOwnershipError("The process-wide pending-work scheduler is already repository-bound")
         return _DEFAULT_SCHEDULER

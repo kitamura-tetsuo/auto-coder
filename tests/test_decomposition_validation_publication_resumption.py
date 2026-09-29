@@ -205,7 +205,7 @@ def test_decomposition_publication_stage_handler_resumes_after_restart(tmp_path,
 
     engine = AutomationEngine(github, AutomationConfig())
     engine._decomposition_validators["owner/repo"] = gate
-    engine.pending_work_scheduler = PendingWorkScheduler(store, poll_interval=0.02)
+    engine.pending_work_scheduler = PendingWorkScheduler(store, repository="owner/repo", poll_interval=0.02)
     engine.pending_work_scheduler.register_handler(DECOMPOSITION_PUBLICATION_STAGE, _DecompositionPublicationStageHandler(engine, "owner/repo"))
 
     async def scenario():

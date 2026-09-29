@@ -1389,3 +1389,16 @@ coverage in `tests/test_entity_invalidation.py` drives raised and returned
 worker boundaries, generation-followup service without restart, cleanup
 failure recovery, and the real GitHubClient relationship reconciler. It
 verifies that a completed refusal is not reported as `worker_error`.
+
+### Pending-work repository ownership boundary
+
+Pending-work ownership is an execution admission boundary rather than a new processing
+origin or outcome. A repository-bound scheduler's snapshot excludes foreign rows, so
+foreign obligations cannot appear as executable work in that repository's dashboard
+status. Ownership refusals happen before claim and before handler entry and are emitted
+to the configured Loguru console/file sinks with both repository names; they do not
+create a stage-result event because no repository execution was authorized.
+
+Runnable regression coverage: `tests/test_github_pending_work.py` exercises scoped
+snapshots/deadlines and alternate-entry refusal, while the production resumption suites
+exercise the registered stage handlers.

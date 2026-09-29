@@ -50,7 +50,16 @@ from .git_branch import extract_number_from_branch, git_commit_with_retry, git_p
 from .git_commit import git_push
 from .git_info import get_current_branch
 from .github_ci_observer import ci_read_phase_method, end_ci_read_phase
-from .github_pending_work import PendingObligation, PendingReason, PendingWorkScheduler, StageOutcome, WorkIdentity, get_pending_work_store
+from .github_pending_work import (
+    PendingObligation,
+    PendingReason,
+    PendingWorkOwnershipError,
+    PendingWorkScheduler,
+    StageOutcome,
+    WorkIdentity,
+    get_pending_work_store,
+    repository_ownership_key,
+)
 from .github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from .health_monitor import get_health_monitor, heartbeat, install_asyncio_diagnostics
 from .implementation_ownership import (
@@ -322,6 +331,17 @@ def _map_candidate_result_outcome(result: "CandidateProcessingResult") -> Outcom
     return Outcome.UNKNOWN
 
 
+def _require_handler_repository(repo_name: str, obligation: PendingObligation) -> None:
+    """Fence every production handler before it can derive an external action."""
+    if repository_ownership_key(obligation.identity.repository) != repository_ownership_key(repo_name):
+        logger.error(
+            "Pending-work handler ownership refused: configured repository={!r}, obligation repository={!r}",
+            repo_name,
+            obligation.identity.repository,
+        )
+        raise PendingWorkOwnershipError("Pending-work handler received a foreign obligation")
+
+
 class _StartupReconciliationHandler:
     """Retries the durable startup-recovery obligation via the pending-work scheduler.
 
@@ -337,9 +357,11 @@ class _StartupReconciliationHandler:
         self._repo_name = repo_name
 
     def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run()
 
     def recover(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run()
 
     def _run(self) -> StageOutcome:
@@ -372,9 +394,11 @@ class _PrProcessingStageHandler:
         self._repo_name = repo_name
 
     def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def recover(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def _run(self, obligation: PendingObligation) -> StageOutcome:
@@ -544,9 +568,11 @@ class _IssueProcessingStageHandler:
         self._repo_name = repo_name
 
     def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def recover(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def _run(self, obligation: PendingObligation) -> StageOutcome:
@@ -587,9 +613,11 @@ class _CodexRetryHandoffStageHandler:
         self._repo_name = repo_name
 
     def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def recover(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def _run(self, obligation: PendingObligation) -> StageOutcome:
@@ -627,9 +655,11 @@ class _ValidationPublicationStageHandler:
         self._repo_name = repo_name
 
     def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def recover(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def _run(self, obligation: PendingObligation) -> StageOutcome:
@@ -766,9 +796,11 @@ class _DecompositionPublicationStageHandler:
         self._repo_name = repo_name
 
     def dispatch(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def recover(self, obligation: PendingObligation) -> StageOutcome:
+        _require_handler_repository(self._repo_name, obligation)
         return self._run(obligation)
 
     def _run(self, obligation: PendingObligation) -> StageOutcome:
@@ -874,7 +906,10 @@ class AutomationEngine:
         # several workers against one origin, so its own pacing deferrals must
         # delay a request rather than fail it.
         configure_github_request_boundary(self.github_request_governor.admit_blocking, self.github_request_governor.observe)
-        self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store())
+        # Construction is deliberately non-serving. ``start_automation`` replaces
+        # this with an immutable repository-bound scheduler before recovery.
+        self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store(), repository=None)
+        self._pending_work_repository_key: str | None = None
         self.merge_operation_scheduler = get_merge_operation_scheduler()
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
@@ -2535,6 +2570,10 @@ class AutomationEngine:
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start independent Issue and PR pools with ``concurrency`` workers each."""
+        repository_key = repository_ownership_key(repo_name)
+        if self._pending_work_repository_key not in {None, repository_key}:
+            raise PendingWorkOwnershipError("AutomationEngine pending work is already repository-bound")
+        self._pending_work_repository_key = repository_key
         if concurrency is None:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
@@ -2556,7 +2595,7 @@ class AutomationEngine:
         # that stopped mid-dispatch) before startup reconciliation finishes,
         # so retained work from a previous run is never orphaned by a fresh
         # enumeration that only marks entities dirty again.
-        pending_work_task = asyncio.create_task(self.pending_work_scheduler.run(self._shutdown_event), name="pending-work-scheduler")
+        self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store(), repository=repo_name)
         # Registered before any await so an obligation left 'running' by a
         # crashed prior process can never be recovered while unregistered.
         self._startup_reconciliation_event = asyncio.Event()
@@ -2566,6 +2605,7 @@ class AutomationEngine:
         self.pending_work_scheduler.register_handler(CODEX_RETRY_HANDOFF_STAGE, _CodexRetryHandoffStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(VALIDATION_PUBLICATION_STAGE, _ValidationPublicationStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(DECOMPOSITION_PUBLICATION_STAGE, _DecompositionPublicationStageHandler(self, repo_name))
+        pending_work_task = asyncio.create_task(self.pending_work_scheduler.run(self._shutdown_event), name="pending-work-scheduler")
 
         # Provider projection acknowledgements written by older releases do
         # not prove the enclosing logical-slot write happened. Discover every

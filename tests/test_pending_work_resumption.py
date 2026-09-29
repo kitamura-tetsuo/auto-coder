@@ -134,13 +134,13 @@ def test_pr_processing_scheduler_snapshot_no_longer_reports_missing_handler(tmp_
     identity = WorkIdentity("owner/repo", "pr:1", PR_PROCESSING_STAGE, "sha1")
     store.defer(identity, _github_error(GitHubApiOutcome.SECONDARY_THROTTLED), ("authoritative-refresh", "pr-processing"))
 
-    unregistered_scheduler = PendingWorkScheduler(store)
+    unregistered_scheduler = PendingWorkScheduler(store, repository="owner/repo")
     unregistered_snapshot = next(item for item in unregistered_scheduler.snapshot() if item["stage"] == PR_PROCESSING_STAGE)
     assert unregistered_snapshot["blocked"] == "no registered stage handler"
 
     github = _FakePrGithub({})
     engine = AutomationEngine(github, AutomationConfig())
-    engine.pending_work_scheduler = PendingWorkScheduler(store)
+    engine.pending_work_scheduler = PendingWorkScheduler(store, repository="owner/repo")
     engine.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(engine, "owner/repo"))
 
     registered_snapshot = next(item for item in engine.pending_work_scheduler.snapshot() if item["stage"] == PR_PROCESSING_STAGE)
@@ -155,7 +155,7 @@ def test_pr_processing_resumes_automatically_without_new_webhook(tmp_path):
     fresh_pr = {"number": 42, "head": {"ref": "work", "sha": "headsha1"}, "body": "", "title": "t", "user": {"id": 999}}
     github = _FakePrGithub({42: [fresh_pr]})
     engine = AutomationEngine(github, _skip_all_prs_config())
-    engine.pending_work_scheduler = PendingWorkScheduler(store, poll_interval=0.02)
+    engine.pending_work_scheduler = PendingWorkScheduler(store, repository="owner/repo", poll_interval=0.02)
     engine.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(engine, "owner/repo"))
 
     identity = WorkIdentity("owner/repo", "pr:42", PR_PROCESSING_STAGE, "headsha1")
@@ -186,7 +186,7 @@ def test_issue_processing_resumes_automatically_without_new_webhook(tmp_path):
     fresh_issue = {"number": 7, "title": "Title", "body": "Body", "labels": [], "user": {"id": 999}}
     github = _FakeIssueGithub({7: [fresh_issue]})
     engine = AutomationEngine(github, _skip_all_issues_config())
-    engine.pending_work_scheduler = PendingWorkScheduler(store, poll_interval=0.02)
+    engine.pending_work_scheduler = PendingWorkScheduler(store, repository="owner/repo", poll_interval=0.02)
     engine.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(engine, "owner/repo"))
 
     revision = _issue_content_revision(fresh_issue)
