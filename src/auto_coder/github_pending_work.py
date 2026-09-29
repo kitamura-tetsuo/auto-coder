@@ -393,7 +393,8 @@ class PendingWorkStore:
     def _verify_owner(self, connection: sqlite3.Connection) -> None:
         tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         owner = connection.execute("SELECT repository_key FROM pending_work_owner WHERE singleton=1").fetchone() if "pending_work_owner" in tables else None
-        if "pending_work_initialization" not in tables or owner is None or owner[0] != self._repository_key:
+        receipt = connection.execute("SELECT kind FROM pending_work_initialization WHERE singleton=1").fetchone() if "pending_work_initialization" in tables else None
+        if receipt is None or owner is None or owner[0] != self._repository_key:
             logger.error("Pending-work storage refused: repository={!r} storage={} has no matching durable owner/initialization record", self._repository, self._db_path)
             raise PendingWorkOwnershipError(f"Pending-work storage {self._db_path} is not initialized for {self._repository!r}")
 
@@ -748,7 +749,22 @@ def get_pending_work_store(repository: str) -> PendingWorkStore:
     with _REGISTRY_LOCK:
         cached = _READY_STORES.get(destination)
         if cached is not None:
-            return cached
+            # A cached store is not proof of readiness: re-verify the durable
+            # owner and initialization record for every invocation, and never
+            # re-initialize a destination that has since disappeared.
+            key = repository_ownership_key(repository)
+            source = default_pending_work_path()
+            try:
+                ready, conflict = _destination_state(destination, key)
+                detail = "destination has incompatible state" if conflict else "destination is no longer initialized"
+            except PendingWorkPersistenceError as exc:
+                ready, detail = False, str(exc)
+            if ready:
+                return cached
+            del _READY_STORES[destination]
+            resolution = PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, detail)
+            logger.error("Pending-work readiness refused: repository={} readiness={} storage={} detail={}", key, resolution.readiness.value, destination, detail)
+            raise PendingWorkNotReadyError(resolution)
         resolution = resolve_pending_work_store(repository)
         if resolution.readiness is not PendingWorkReadiness.READY or resolution.store is None:
             logger.error("Pending-work readiness refused: repository={} readiness={} storage={} detail={}", resolution.repository, resolution.readiness.value, resolution.destination, resolution.detail)
@@ -856,7 +872,10 @@ def inspect_pending_work(repository: str | None = None, *, home: Path | None = N
                 owner_key = str(owner[0])
                 if hashlib.sha256(owner_key.encode("utf-8")).hexdigest() != path.parent.name:
                     raise PendingWorkPersistenceError(f"destination owner {owner_key!r} does not match its storage location")
-                obligations = tuple(item for item in _read_obligations(connection) if _repository_bucket(item.identity.repository) == owner_key)
+                all_rows = _read_obligations(connection)
+                obligations = tuple(item for item in all_rows if _repository_bucket(item.identity.repository) == owner_key)
+                if len(obligations) != len(all_rows):
+                    raise PendingWorkPersistenceError(f"destination owned by {owner_key!r} retains {len(all_rows) - len(obligations)} obligation(s) for another repository")
         except (OSError, sqlite3.Error, PendingWorkPersistenceError, ValueError) as exc:
             errors.append(f"storage {path} is unavailable or inconsistent: {exc}")
             continue

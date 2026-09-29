@@ -390,3 +390,51 @@ def test_scoped_ready_store_does_not_claim_or_change_foreign_row(home):
     assert calls == []
     assert _rows(repository_pending_work_path(R)) == before
     assert store.all_pending() == [] and store.due() == [] and store.interrupted() == []
+
+
+def _insert_row(path: Path, identity: WorkIdentity, status: str = "waiting") -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO github_pending_work VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (identity.key(), identity.repository, identity.entity, identity.stage, identity.revision, "throttled", 9e12, '["effect"]', 0, "", 1.0, status),
+        )
+
+
+def test_list_reports_foreign_row_in_initialized_destination_with_nonzero_exit(home):
+    get_pending_work_store(R)
+    _insert_row(repository_pending_work_path(R), _identity(S, 9))
+    before = _snapshot(home)
+    for args in ([], ["--repository", R]):
+        result = CliRunner().invoke(main, ["pending-work", "list", *args])
+        assert result.exit_code != 0
+        assert "another repository" in result.output and str(repository_pending_work_path(R)) in result.output
+        assert "No pending GitHub work" not in result.output
+    assert _snapshot(home) == before
+
+
+def test_cached_store_is_reverified_on_every_processing_invocation(home):
+    """A vanished or downgraded destination refuses before any target request."""
+    github = _RecordingGithub({})
+    engine = _engine(R, github)
+    get_pending_work_store(R)
+    repository_pending_work_path(R).unlink()
+    result = engine.process_single(R, "issue", 7, explicit_only=True)
+    assert result["target_outcome"] == ExplicitTargetOutcome.FAILED.value
+    assert github.calls == []
+    assert not repository_pending_work_path(R).exists()
+
+
+def test_cached_store_refuses_after_initialization_receipt_is_removed(home):
+    store = get_pending_work_store(R)
+    store.defer(_identity(R), _throttle(), ("effect",))
+    path = repository_pending_work_path(R)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM pending_work_initialization")
+    before = _rows(path)
+    with pytest.raises(PendingWorkPersistenceError):
+        store.defer(_identity(R, 2), _throttle(), ("effect",))
+    with pytest.raises(PendingWorkPersistenceError):
+        store.complete_effect(_identity(R), "effect")
+    with pytest.raises(PendingWorkNotReadyError):
+        get_pending_work_store(R)
+    assert _rows(path) == before
