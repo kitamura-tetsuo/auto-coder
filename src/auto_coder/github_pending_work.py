@@ -87,15 +87,16 @@ class PendingWorkOwnershipError(PendingWorkPersistenceError):
 
 
 _REPOSITORY_COMPONENT = re.compile(r"^[^/\\\x00\s]+$")
+_ASCII_UPPER_TO_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 def repository_ownership_key(repository: str) -> str:
     """Return the strict, case-insensitive owner/repository ownership key."""
     stripped = repository.strip(" \t\n\r\v\f")
     parts = stripped.split("/")
-    if len(parts) != 2 or any(not part or part in {".", ".."} for part in parts) or any(_REPOSITORY_COMPONENT.fullmatch(part) is None for part in parts) or "://" in stripped:
+    if len(parts) != 2 or any(not part or part in {".", ".."} for part in parts) or any(_REPOSITORY_COMPONENT.fullmatch(part) is None for part in parts) or any(character in stripped for character in "@:"):
         raise PendingWorkOwnershipError(f"Invalid pending-work repository binding: {repository!r}")
-    return "/".join(part.lower() for part in parts)
+    return "/".join(part.translate(_ASCII_UPPER_TO_LOWER) for part in parts)
 
 
 class PendingWorkStore:
@@ -129,6 +130,22 @@ class PendingWorkStore:
 
     def _owned_only(self, obligations: list[PendingObligation]) -> list[PendingObligation]:
         return [obligation for obligation in obligations if self._owns(obligation.identity)]
+
+    def _require_stored_row_owned(self, connection: sqlite3.Connection, identity: WorkIdentity) -> None:
+        """Reject a row whose repository column disagrees with scoped authority."""
+        if self._repository_key is None:
+            return
+        row = connection.execute(
+            "SELECT repository FROM github_pending_work WHERE work_key=?",
+            (identity.key(),),
+        ).fetchone()
+        if row is not None and repository_ownership_key(str(row[0])) != self._repository_key:
+            logger.error(
+                "Pending-work stored-row ownership refused: configured repository={!r}, obligation repository={!r}",
+                self._repository,
+                row[0],
+            )
+            raise PendingWorkOwnershipError(f"Stored pending-work repository {row[0]!r} is not owned by {self._repository!r}")
 
     def _connect(self) -> sqlite3.Connection:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,6 +207,7 @@ class PendingWorkStore:
             due = max(due, current_time + MIN_LOCAL_RETRY_INTERVAL_SECONDS)
         try:
             with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
                 row = connection.execute(
                     "SELECT throttle_attempts, not_before, unfinished_effects FROM github_pending_work WHERE work_key=?",
                     (identity.key(),),
@@ -229,6 +247,8 @@ class PendingWorkStore:
                     ),
                 )
                 return obligation
+        except PendingWorkOwnershipError:
+            raise
         except Exception as exc:
             logger.error("Could not persist GitHub pending obligation {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be persisted") from exc
@@ -291,6 +311,7 @@ class PendingWorkStore:
         self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
                 row = connection.execute(
                     "SELECT reason,not_before,unfinished_effects,throttle_attempts,last_error,status FROM github_pending_work WHERE work_key=?",
                     (identity.key(),),
@@ -298,6 +319,8 @@ class PendingWorkStore:
             if row is None:
                 return None
             return PendingObligation(identity, PendingReason(row[0]), row[1], tuple(json.loads(row[2])), row[3], row[4], row[5])
+        except PendingWorkOwnershipError:
+            raise
         except Exception as exc:
             logger.error("Could not read GitHub pending obligation {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be read") from exc
@@ -307,10 +330,13 @@ class PendingWorkStore:
         self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
                 connection.execute(
                     "UPDATE github_pending_work SET status=?, updated_at=? WHERE work_key=?",
                     (ObligationStatus.RUNNING.value, time.time(), identity.key()),
                 )
+        except PendingWorkOwnershipError:
+            raise
         except Exception as exc:
             logger.error("Could not mark GitHub pending obligation running {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be updated") from exc
@@ -320,10 +346,13 @@ class PendingWorkStore:
         self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
                 connection.execute(
                     "UPDATE github_pending_work SET status=?, updated_at=? WHERE work_key=?",
                     (ObligationStatus.WAITING.value, time.time(), identity.key()),
                 )
+        except PendingWorkOwnershipError:
+            raise
         except Exception as exc:
             logger.error("Could not mark GitHub pending obligation waiting {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be updated") from exc
@@ -341,6 +370,7 @@ class PendingWorkStore:
         current_time = time.time() if now is None else now
         try:
             with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
                 row = connection.execute(
                     "SELECT reason,unfinished_effects,last_error FROM github_pending_work WHERE work_key=?",
                     (identity.key(),),
@@ -352,6 +382,8 @@ class PendingWorkStore:
                     (current_time, ObligationStatus.WAITING.value, current_time, identity.key()),
                 )
                 return PendingObligation(identity, PendingReason(row[0]), current_time, tuple(json.loads(row[1])), 0, row[2], ObligationStatus.WAITING.value)
+        except PendingWorkOwnershipError:
+            raise
         except Exception as exc:
             logger.error("Could not manually retry GitHub pending obligation {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be updated") from exc
@@ -371,6 +403,7 @@ class PendingWorkStore:
         current_time = time.time() if now is None else now
         try:
             with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
                 row = connection.execute(
                     "SELECT unfinished_effects FROM github_pending_work WHERE work_key=?",
                     (identity.key(),),
@@ -404,6 +437,8 @@ class PendingWorkStore:
                     ),
                 )
                 return obligation
+        except PendingWorkOwnershipError:
+            raise
         except Exception as exc:
             logger.error("Could not schedule GitHub reevaluation obligation {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be persisted") from exc
@@ -413,6 +448,7 @@ class PendingWorkStore:
         self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
                 row = connection.execute("SELECT unfinished_effects FROM github_pending_work WHERE work_key=?", (identity.key(),)).fetchone()
                 if row is None:
                     return False
@@ -425,6 +461,8 @@ class PendingWorkStore:
                 else:
                     connection.execute("DELETE FROM github_pending_work WHERE work_key=?", (identity.key(),))
                 return True
+        except PendingWorkOwnershipError:
+            raise
         except Exception as exc:
             logger.error("Could not complete GitHub pending effect {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending effect could not be persisted") from exc
@@ -434,7 +472,10 @@ class PendingWorkStore:
         self._require_owned(identity)
         try:
             with _LOCK, self._connect() as connection:
+                self._require_stored_row_owned(connection, identity)
                 connection.execute("DELETE FROM github_pending_work WHERE work_key=?", (identity.key(),))
+        except PendingWorkOwnershipError:
+            raise
         except Exception as exc:
             logger.error("Could not supersede GitHub pending obligation {}: {}", identity.key(), exc)
             raise PendingWorkPersistenceError("GitHub pending work could not be updated") from exc

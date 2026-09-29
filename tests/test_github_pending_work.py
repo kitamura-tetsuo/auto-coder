@@ -425,7 +425,16 @@ async def test_scheduler_stage_error_redefers_remaining_effects(tmp_path):
 
 @pytest.mark.parametrize(
     "repository",
-    ["owner", "owner/repo/extra", "owner\\repo", "https://host/owner/repo", "owner/..", "owner/re po", "owner/\x00repo"],
+    [
+        "owner",
+        "owner/repo/extra",
+        "owner\\repo",
+        "https://host/owner/repo",
+        "git@github.com:owner/repo",
+        "owner/..",
+        "owner/re po",
+        "owner/\x00repo",
+    ],
 )
 def test_repository_binding_rejects_invalid_names(tmp_path, repository):
     from auto_coder.github_pending_work import PendingWorkOwnershipError
@@ -464,3 +473,68 @@ def test_scheduler_rejects_foreign_alternate_entry_before_claim(tmp_path):
 
     assert handler.dispatched == []
     assert store.get(foreign) == saved
+
+
+def test_repository_key_lowercases_ascii_only_during_dispatch(tmp_path):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    owned = WorkIdentity("k/repo", "issue:7", "validation", "owned")
+    kelvin = WorkIdentity("K/repo", "issue:7", "validation", "foreign")
+    for identity in (kelvin, owned):
+        store.defer(
+            identity,
+            _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=0),
+            ("effect",),
+            now=100,
+        )
+    scheduler = PendingWorkScheduler(store, repository="K/REPO")
+    handler = _RecordingHandler()
+    scheduler.register_handler("validation", handler)
+
+    async def dispatch():
+        await scheduler._dispatch_due()
+        await asyncio.gather(*tuple(scheduler._tasks))
+
+    asyncio.run(dispatch())
+
+    assert handler.dispatched == [owned]
+    assert store.get(owned) is None
+    assert store.get(kelvin) is not None
+
+
+def test_scoped_mutations_reject_mismatched_stored_repository(tmp_path):
+    from auto_coder.github_pending_work import PendingWorkOwnershipError
+
+    path = tmp_path / "pending.db"
+    unscoped = PendingWorkStore(path)
+    owned = WorkIdentity("acme/widgets", "issue:8", "validation", "owned")
+    valid = WorkIdentity("acme/widgets", "issue:9", "validation", "valid")
+    error = _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=5)
+    unscoped.defer(owned, error, ("effect",), now=100)
+    unscoped.defer(valid, error, ("effect",), now=100)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE github_pending_work SET repository=? WHERE work_key=?",
+            ("other/widgets", owned.key()),
+        )
+        before = connection.execute("SELECT * FROM github_pending_work WHERE work_key=?", (owned.key(),)).fetchone()
+
+    scoped = unscoped.scoped("acme/widgets")
+    operations = (
+        lambda: scoped.get(owned),
+        lambda: scoped.defer(owned, error, ("second",), now=200),
+        lambda: scoped.schedule_reevaluation(owned, ("second",), now=200),
+        lambda: scoped.mark_running(owned),
+        lambda: scoped.mark_waiting(owned),
+        lambda: scoped.manual_retry(owned, now=200),
+        lambda: scoped.complete_effect(owned, "effect"),
+        lambda: scoped.supersede(owned),
+    )
+    for operation in operations:
+        with pytest.raises(PendingWorkOwnershipError):
+            operation()
+        with sqlite3.connect(path) as connection:
+            after = connection.execute("SELECT * FROM github_pending_work WHERE work_key=?", (owned.key(),)).fetchone()
+        assert after == before
+
+    scoped.mark_running(valid)
+    assert unscoped.get(valid).status == ObligationStatus.RUNNING.value

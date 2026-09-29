@@ -31,6 +31,7 @@ from auto_coder.automation_engine import (
 from auto_coder.github_pending_work import (
     PendingObligation,
     PendingReason,
+    PendingWorkOwnershipError,
     PendingWorkScheduler,
     PendingWorkStore,
     StageOutcome,
@@ -317,6 +318,19 @@ def test_production_binding_isolates_equal_issue_due_and_overlapping_recovery(tm
     for repo in repositories:
         wire_targets = [call[1:] for call in github_by_repo[repo].calls]
         assert wire_targets == [(repo, 5411), (repo, 5411)]
+
+
+def test_production_binding_rejects_scp_style_git_remote(tmp_path, monkeypatch):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    engine = AutomationEngine(_FakeIssueGithub({}), AutomationConfig())
+    original_scheduler = engine.pending_work_scheduler
+
+    with pytest.raises(PendingWorkOwnershipError):
+        engine._bind_pending_work_scheduler("git@github.com:acme/repo")
+
+    assert engine.pending_work_scheduler is original_scheduler
+    assert engine._pending_work_repository_key is None
 
 
 # ---------------------------------------------------------------------------
