@@ -36,6 +36,8 @@ relationship metadata cannot preserve stale eligibility; routing nevertheless
 continues afterward so a closed child can remain current decomposition evidence
 for an open submitted parent. Failed persistence leaves the durable invalidation
 retryable, and an unchanged reopen must earn current review authority again.
+Strict refresh and closure effects are serialized per repository and Issue so
+an older closed refresh cannot erase a reopened classification that follows it.
 Engine-owned validation lifecycles are rebound when the effective provider/model
 route changes. Authoritative routing therefore requires decisions for the new
 policy identity, while an exact route restoration can reuse its earlier durable

@@ -22,6 +22,8 @@ from src.auto_coder.entity_invalidation import CIWebhookDelivery, ClaimedInvalid
 from src.auto_coder.github_pending_work import PendingWorkScheduler, PendingWorkStore
 from src.auto_coder.github_request_governor import GitHubRequestDeferred, GitHubRequestGovernor
 from src.auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from src.auto_coder.issue_review_rerun import ReviewSubject
+from src.auto_coder.issue_stage_routing import IMPLEMENTATION_STAGE, REVIEW_STAGE
 from src.auto_coder.parent_issue_reconciliation import ParentOperationalError
 from src.auto_coder.pr_processor import _handle_pr_merge
 from src.auto_coder.specification_analyzer import SpecificationAnalysisResult
@@ -1399,6 +1401,240 @@ def test_dependency_close_http_delivery_discovers_dependent_through_worker(tmp_p
     asyncio.run(scenario())
     assert processed == [205]
     assert engine.invalidations.pending_count("owner/repo") == 0
+
+
+@pytest.mark.parametrize(
+    ("closed_body", "parent_unavailable"),
+    [
+        ("Parent-Issue: #99\n\n## Requirements\n\nREQ-001: Ship child.", False),
+        ("Parent-Issue: not-a-number\n\n## Requirements\n\nREQ-001: Ship child.", False),
+        ("Parent-Issue: #10\n\n## Requirements\n\nREQ-001: Ship child.", True),
+    ],
+)
+def test_real_github_worker_revokes_closed_child_before_relationship_failure(tmp_path: Path, monkeypatch, closed_body: str, parent_unavailable: bool):
+    """REQ-002: strict GitHubClient authority revokes before real reconciliation."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(tmp_path / "routing.sqlite3"))
+    monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", str(tmp_path / "validation"))
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    parent = {
+        "id": 100,
+        "number": 10,
+        "title": "Parent",
+        "body": "## Objective\n\nCoordinate children.",
+        "state": "open",
+        "created_at": created_at,
+        "labels": [{"name": "implementation-ready"}],
+        "user": {"id": 1, "login": "owner"},
+    }
+    child = {
+        "id": 110,
+        "number": 11,
+        "title": "Child",
+        "body": "Parent-Issue: #10\n\n## Requirements\n\nREQ-001: Ship child.",
+        "state": "open",
+        "created_at": created_at,
+        "labels": [],
+        "user": {"id": 1, "login": "owner"},
+    }
+    resources = {10: parent, 11: child}
+    github = GitHubClient("test-token")
+
+    def read_resource(_repo, number, relation="", **_kwargs):
+        if relation == "parent":
+            if number == 11 and parent_unavailable and child["state"] == "closed":
+                raise httpx.ReadTimeout("parent unavailable")
+            return dict(parent) if number == 11 else None
+        if relation == "sub_issues":
+            return [dict(child)] if number == 10 else []
+        return dict(resources[number])
+
+    monkeypatch.setattr(github, "_read_issue_resource", read_resource)
+    monkeypatch.setattr(github, "get_open_issue_declarations", lambda _repo: [dict(value) for value in resources.values() if value["state"] == "open"])
+    github.add_sub_issue_strict = MagicMock()
+    github.remove_labels = MagicMock()
+    github.add_comment_to_issue = MagicMock()
+    config = AutomationConfig(repo_name="owner/repo")
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = True
+    engine = AutomationEngine(github, config)
+    engine._decomposition_validators["owner/repo"] = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "decomposition.json", lambda *_args: DecompositionAnalysisResult("READY"))
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle("owner/repo", "provider/model", tmp_path / "individual.json", lambda *_args: SpecificationAnalysisResult("READY"))
+    monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda _issue: True)
+    dispatches = []
+    monkeypatch.setattr(
+        engine,
+        "_process_single_candidate",
+        lambda _repo, candidate, **_kwargs: dispatches.append(candidate.data["number"]) or CandidateProcessingResult(type="issue", number=candidate.data["number"], success=True),
+    )
+
+    async def run_one(delivery: str) -> None:
+        await process_github_payload("issues", {"action": "edited", "issue": {"number": 11}}, engine, "owner/repo", delivery)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        await asyncio.wait_for(engine.queue.join(), timeout=3)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    async def scenario() -> None:
+        await run_one("open-child")
+        assert engine.issue_stage_routing.get("owner/repo", IMPLEMENTATION_STAGE, 11) is not None
+        child.update(state="closed", body=closed_body)
+        await run_one("closed-child")
+
+    asyncio.run(scenario())
+
+    subject = ReviewSubject("owner/repo", "individual", 11)
+    assert engine._get_specification_validator("owner/repo").reruns.authority(subject)[2] == "deferred"
+    assert engine.issue_stage_routing.get("owner/repo", REVIEW_STAGE, 11) is None
+    assert engine.issue_stage_routing.get("owner/repo", IMPLEMENTATION_STAGE, 11) is None
+    assert dispatches == [11]
+    assert engine.invalidations.pending_count("owner/repo") == 1
+    github.add_sub_issue_strict.assert_not_called()
+    github.remove_labels.assert_not_called()
+    github.add_comment_to_issue.assert_not_called()
+
+
+def test_closed_revocation_failure_recovers_across_engine_reconstruction(tmp_path: Path, monkeypatch):
+    """REQ-003: cross-store partial progress cannot acknowledge invalidation."""
+    invalidations = tmp_path / "invalidations.sqlite3"
+    routing = tmp_path / "routing.sqlite3"
+    validation = tmp_path / "validation"
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(invalidations))
+    monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(routing))
+    monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", str(validation))
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    snapshot = {
+        "id": 70,
+        "number": 7,
+        "title": "Standalone",
+        "body": "## Requirements\n\nREQ-001: Ship.",
+        "state": "open",
+        "created_at": created_at,
+        "labels": [{"name": "implementation-ready"}],
+        "user": {"id": 1, "login": "owner"},
+    }
+
+    def build_engine() -> AutomationEngine:
+        github = GitHubClient("test-token")
+        monkeypatch.setattr(
+            github,
+            "_read_issue_resource",
+            lambda _repo, _number, relation="", **_kwargs: ([] if relation == "sub_issues" else None) if relation else dict(snapshot),
+        )
+        monkeypatch.setattr(github, "get_open_issue_declarations", lambda _repo: [dict(snapshot)] if snapshot["state"] == "open" else [])
+        config = AutomationConfig(repo_name="owner/repo")
+        config.issue_specification_validation = False
+        config.issue_decomposition_validation = False
+        engine = AutomationEngine(github, config)
+        monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda _issue: True)
+        engine._process_single_candidate = MagicMock(return_value=CandidateProcessingResult(type="issue", number=7, success=True))
+        return engine
+
+    async def run_claim(engine: AutomationEngine, *, enqueue: bool) -> None:
+        if enqueue:
+            await engine.invalidate_entity("owner/repo", "issue", 7)
+        else:
+            engine.invalidations.recover("owner/repo")
+            await engine._enqueue_pending_invalidations("owner/repo")
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        await asyncio.wait_for(engine.queue.join(), timeout=3)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    first = build_engine()
+    subject = ReviewSubject("owner/repo", "individual", 7)
+
+    async def fail_after_authority_commit() -> None:
+        await run_claim(first, enqueue=True)
+        assert first.issue_stage_routing.get("owner/repo", IMPLEMENTATION_STAGE, 7) is not None
+        first._get_specification_validator("owner/repo").reruns.accept("pre-closure", (subject,))
+        snapshot["state"] = "closed"
+        first.issue_stage_routing._connection.execute(
+            """CREATE TRIGGER fail_closure_cleanup BEFORE DELETE ON issue_lane_arrivals
+            WHEN OLD.target_number = 7 BEGIN SELECT RAISE(ABORT, 'injected closure failure'); END"""
+        )
+        await run_claim(first, enqueue=True)
+
+    asyncio.run(fail_after_authority_commit())
+    assert first.invalidations.pending_count("owner/repo") == 1
+    assert first.issue_stage_routing.get("owner/repo", IMPLEMENTATION_STAGE, 7) is not None
+    assert first._get_specification_validator("owner/repo").reruns.authority(subject)[2] == "deferred"
+    first._process_single_candidate.assert_called_once()
+    first.issue_stage_routing._connection.execute("DROP TRIGGER fail_closure_cleanup")
+
+    restarted = build_engine()
+    asyncio.run(run_claim(restarted, enqueue=False))
+    assert restarted.invalidations.pending_count("owner/repo") == 0
+    assert restarted.issue_stage_routing.get("owner/repo", IMPLEMENTATION_STAGE, 7) is None
+    assert restarted._get_specification_validator("owner/repo").reruns.authority(subject)[2] == "deferred"
+    restarted._process_single_candidate.assert_not_called()
+
+    reconstructed = build_engine()
+    assert reconstructed.issue_stage_routing.get("owner/repo", IMPLEMENTATION_STAGE, 7) is None
+    assert reconstructed._get_specification_validator("owner/repo").reruns.authority(subject)[2] == "deferred"
+
+
+def test_real_closed_child_webhook_supplies_edited_contract_to_family_review(tmp_path: Path, monkeypatch):
+    """REQ-005: closure cleanup preserves current closed-child family evidence."""
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(tmp_path / "routing.sqlite3"))
+    monkeypatch.setenv("AUTO_CODER_SPECIFICATION_VALIDATION_ROOT", str(tmp_path / "validation"))
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    parent = {"id": 100, "number": 10, "title": "Parent", "body": "## Objective\n\nCoordinate.", "state": "open", "created_at": created_at, "labels": [{"name": "implementation-ready"}], "user": {"id": 1, "login": "owner"}}
+    closed_child = {"id": 110, "number": 11, "title": "Closed", "body": "Parent-Issue: #10\n\n## Requirements\n\nREQ-001: New contract.", "state": "closed", "created_at": created_at, "labels": [], "user": {"id": 1, "login": "owner"}}
+    sibling = {"id": 120, "number": 12, "title": "Sibling", "body": "Parent-Issue: #10\n\n## Requirements\n\nREQ-001: Sibling contract.", "state": "open", "created_at": created_at, "labels": [], "user": {"id": 1, "login": "owner"}}
+    resources = {10: parent, 11: closed_child, 12: sibling}
+    github = GitHubClient("test-token")
+
+    def read_resource(_repo, number, relation="", **_kwargs):
+        if relation == "parent":
+            return dict(parent) if number in {11, 12} else None
+        if relation == "sub_issues":
+            return [dict(closed_child), dict(sibling)] if number == 10 else []
+        return dict(resources[number])
+
+    monkeypatch.setattr(github, "_read_issue_resource", read_resource)
+    monkeypatch.setattr(github, "get_open_issue_declarations", lambda _repo: [dict(parent), dict(sibling)])
+    config = AutomationConfig(repo_name="owner/repo")
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = True
+    engine = AutomationEngine(github, config)
+    reviewed_bodies = []
+
+    def analyze_family(_parent_manifest, child_manifests, *_args):
+        reviewed_bodies.append(tuple(child.body for child in child_manifests))
+        return DecompositionAnalysisResult("READY")
+
+    engine._decomposition_validators["owner/repo"] = DecompositionValidationLifecycle("owner/repo", "provider/model", tmp_path / "decomposition.json", analyze_family)
+    individual_calls = []
+    engine._specification_validators["owner/repo"] = SpecificationValidationLifecycle(
+        "owner/repo",
+        "provider/model",
+        tmp_path / "individual.json",
+        lambda manifest, _body: individual_calls.append(manifest.issue_number) or SpecificationAnalysisResult("READY"),
+    )
+    monkeypatch.setattr(engine, "_is_issue_author_allowed", lambda _issue: True)
+    engine._process_single_candidate = MagicMock(return_value=CandidateProcessingResult(type="issue", number=11, success=True))
+
+    async def scenario() -> None:
+        await process_github_payload("issues", {"action": "edited", "issue": {"number": 11}}, engine, "owner/repo", "closed-edit")
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))
+        await asyncio.wait_for(engine.queue.join(), timeout=3)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    asyncio.run(scenario())
+
+    assert reviewed_bodies == [(closed_child["body"], sibling["body"])]
+    assert individual_calls == [12]
+    assert engine.issue_stage_routing.get("owner/repo", REVIEW_STAGE, 11) is None
+    assert engine.issue_stage_routing.get("owner/repo", IMPLEMENTATION_STAGE, 11) is None
+    assert parent["labels"] == [{"name": "implementation-ready"}]
+    assert engine.invalidations.pending_count("owner/repo") == 0
+    engine._process_single_candidate.assert_not_called()
 
 
 @pytest.mark.parametrize("child_state", ["open", "closed"])

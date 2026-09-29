@@ -885,6 +885,8 @@ class AutomationEngine:
         self.review_adjudications = ReviewAdjudicationService(self.github, AdjudicationContextStore(adjudication_path))
         routing_path = Path(os.environ.get("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", "~/.auto-coder/issue-stage-routing.sqlite3")).expanduser()
         self.issue_stage_routing = IssueStageRoutingStore(routing_path)
+        self._issue_routing_locks_guard = threading.Lock()
+        self._issue_routing_locks: dict[tuple[str, int], threading.RLock] = {}
         self._lane_context = threading.local()
         self.issue_admission_cache = IssueAdmissionCache()
         self.dependency_observations = DependencyObservationCache()
@@ -3210,6 +3212,12 @@ class AutomationEngine:
         status = reruns.accept(closure_request, (subject,))[0]
         reruns.defer(subject, status.authority, f"individual review for Issue #{issue_number} is deferred because the subject is closed")
 
+    def _issue_routing_lock(self, repo_name: str, issue_number: int) -> threading.RLock:
+        """Serialize strict classification and closure effects for one Issue."""
+        key = (repo_name, issue_number)
+        with self._issue_routing_locks_guard:
+            return self._issue_routing_locks.setdefault(key, threading.RLock())
+
     def _revoke_closed_issue_eligibility(self, repo_name: str, issue_number: int) -> None:
         """Persist every locally owned closure effect before hierarchy work.
 
@@ -3218,58 +3226,54 @@ class AutomationEngine:
         a later retry finishes the outstanding effect without requiring parent
         metadata to be readable or consistent.
         """
-        self._withdraw_closed_individual_authority(repo_name, issue_number)
-        self.issue_stage_routing.revoke_closed_target(repo_name, issue_number)
+        with self._issue_routing_lock(repo_name, issue_number):
+            self._withdraw_closed_individual_authority(repo_name, issue_number)
+            self.issue_stage_routing.revoke_closed_target(repo_name, issue_number)
 
     def _route_issue_stages_authoritatively(self, repo_name: str, issue_number: int, snapshot: Dict[str, Any]) -> None:
         """Classify one invalidated Issue from current GitHub and decision stores."""
-        # Closure is authority from this exact strict snapshot.  Revoke local
-        # eligibility before declaration reconciliation or hierarchy reads can
-        # fail, while continuing below so a closed child can still update an
-        # open submitted family's decomposition classification.
-        if snapshot.get("state") == "closed":
-            self._revoke_closed_issue_eligibility(repo_name, issue_number)
-        current = self._reconcile_validation_snapshot(repo_name, issue_number, snapshot)
-        parent_number = self._get_authoritative_parent_number(repo_name, issue_number, current)
-        if parent_number is not None:
-            family = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
-            if family is None or issue_number not in {child.get("number") for child in family[1]}:
-                raise ParentOperationalError("authoritative child family is unavailable")
-            self._route_issue_family(repo_name, *family)
-            return
-        members = self._native_direct_children(repo_name, issue_number)
-        if members is None:
-            # Small legacy adapters have no native hierarchy surface. They can
-            # represent only standalone Issues; they must never synthesize a
-            # family from body declarations.
-            members = []
-        if not isinstance(members, list):
-            if isinstance(self.github, GitHubClient):
-                raise ParentOperationalError("authoritative direct-child membership is unavailable")
-            members = []
-        if members:
-            family = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
-            if family is None:
-                raise ParentOperationalError("authoritative parent family is unavailable")
-            self._route_issue_family(repo_name, *family)
-            return
-        # An empty native set is positive evidence that rows authorized by a
-        # previous parent generation have all become stale.
-        self.issue_stage_routing.remove_departed_family_children(repo_name, issue_number, ())
-        self._route_standalone_issue(repo_name, current)
+        with self._issue_routing_lock(repo_name, issue_number):
+            # Closure is authority from this exact strict snapshot. Revoke local
+            # eligibility before declaration reconciliation or hierarchy reads.
+            if snapshot.get("state") == "closed":
+                self._revoke_closed_issue_eligibility(repo_name, issue_number)
+            current = self._reconcile_validation_snapshot(repo_name, issue_number, snapshot)
+            parent_number = self._get_authoritative_parent_number(repo_name, issue_number, current)
+            if parent_number is not None:
+                family = self._fetch_authoritative_decomposition_set(repo_name, parent_number)
+                if family is None or issue_number not in {child.get("number") for child in family[1]}:
+                    raise ParentOperationalError("authoritative child family is unavailable")
+                self._route_issue_family(repo_name, *family)
+                return
+            members = self._native_direct_children(repo_name, issue_number)
+            if members is None:
+                members = []
+            if not isinstance(members, list):
+                if isinstance(self.github, GitHubClient):
+                    raise ParentOperationalError("authoritative direct-child membership is unavailable")
+                members = []
+            if members:
+                family = self._fetch_authoritative_decomposition_set(repo_name, issue_number)
+                if family is None:
+                    raise ParentOperationalError("authoritative parent family is unavailable")
+                self._route_issue_family(repo_name, *family)
+                return
+            self.issue_stage_routing.remove_departed_family_children(repo_name, issue_number, ())
+            self._route_standalone_issue(repo_name, current)
 
     def _refresh_issue_stage_routing(self, repo_name: str, issue_number: int) -> None:
         """Reclassify after processing from a new strict GitHub snapshot."""
-        try:
-            snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code == 404:
-                self.issue_stage_routing.remove_target(repo_name, issue_number)
-                return
-            raise
-        if not isinstance(snapshot, dict) or snapshot.get("number") != issue_number or "pull_request" in snapshot:
-            raise ParentOperationalError(f"cannot refresh Issue #{issue_number} routing from ambiguous authority")
-        self._route_issue_stages_authoritatively(repo_name, issue_number, snapshot)
+        with self._issue_routing_lock(repo_name, issue_number):
+            try:
+                snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code == 404:
+                    self.issue_stage_routing.remove_target(repo_name, issue_number)
+                    return
+                raise
+            if not isinstance(snapshot, dict) or snapshot.get("number") != issue_number or "pull_request" in snapshot:
+                raise ParentOperationalError(f"cannot refresh Issue #{issue_number} routing from ambiguous authority")
+            self._route_issue_stages_authoritatively(repo_name, issue_number, snapshot)
 
     def _get_review_service(self, repo_name: str) -> IssueReviewService:
         """Build the Review-lane execution owner for one repository.

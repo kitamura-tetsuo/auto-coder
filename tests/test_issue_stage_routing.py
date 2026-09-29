@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -711,3 +712,48 @@ async def test_close_reopen_requires_current_authority_before_relabel_reuse(tmp_
     assert edited_identity != baseline_identity
     worker.cancel()
     await asyncio.gather(worker, return_exceptions=True)
+
+
+def test_overlapping_closed_and_reopened_refreshes_serialize_at_effect_boundary(tmp_path, monkeypatch):
+    """REQ-004: a newer open refresh waits for and then supersedes closure."""
+    created_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    body = "## Objective\n\nShip.\n\n## Requirements\n\nREQ-001: Ship."
+    snapshots = [{"id": 101, "number": 1, "title": "Standalone", "body": body, "state": "closed", "created_at": created_at, "labels": []}, {"id": 101, "number": 1, "title": "Standalone", "body": body, "state": "open", "created_at": created_at, "labels": [{"name": "implementation-ready"}]}]
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _routing_engine(tmp_path, monkeypatch, {}, [], config)
+    first_fetched = threading.Event()
+    release_closed = threading.Event()
+    fetch_count = 0
+    fetch_guard = threading.Lock()
+
+    def strict_snapshot(_repo, _number):
+        nonlocal fetch_count
+        with fetch_guard:
+            index = fetch_count
+            fetch_count += 1
+        if index == 0:
+            first_fetched.set()
+            assert release_closed.wait(3)
+        return dict(snapshots[index])
+
+    github.get_issue_dispatch_snapshot_strict.side_effect = strict_snapshot
+    closed = threading.Thread(target=engine._refresh_issue_stage_routing, args=(REPO, 1))
+    reopened = threading.Thread(target=engine._refresh_issue_stage_routing, args=(REPO, 1))
+    closed.start()
+    assert first_fetched.wait(3)
+    reopened.start()
+    assert fetch_count == 1
+    release_closed.set()
+    closed.join(3)
+    reopened.join(3)
+    assert not closed.is_alive() and not reopened.is_alive()
+    assert fetch_count == 2
+
+    pending = engine.issue_stage_routing.pending(REPO, REVIEW_STAGE)
+    assert len(pending) == 1 and pending[0].target_number == 1
+    assert engine.issue_stage_routing.pending(REPO, IMPLEMENTATION_STAGE) == ()
+    subject = ReviewSubject(REPO, "individual", 1)
+    authority, _request_id, state = engine._get_specification_validator(REPO).reruns.authority(subject)
+    assert authority == 1 and state == "deferred"

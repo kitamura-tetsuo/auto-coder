@@ -206,6 +206,8 @@ failed persistence or later relationship failure retains the existing durable
 invalidation retry, while successful cleanup only changes which lane records
 remain available for a future stage worker. The scoped cleanup and
 pre-reconciliation ordering regressions live in `tests/test_issue_stage_routing.py`.
+Per-Issue refresh serialization only orders those existing durable routing
+effects; it adds no trace event, dashboard state, or provider-routing signal.
 Dependency-cache waits now refresh semantic routing before emitting the existing
 `issue.cached-dependency-wait` event. The event schema and operational meaning
 are unchanged: it still reports only an Implementation prerequisite wait and
