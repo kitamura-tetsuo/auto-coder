@@ -280,6 +280,77 @@ def test_later_parent_refusal_does_not_consume_prior_processing_failure(tmp_path
     assert engine.invalidations.pending_count("owner/repo") == 1
 
 
+def test_parent_refusal_acknowledgement_services_newer_generation_without_restart(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    candidate = Candidate(type="issue", data={"number": 7, "state": "open"}, priority=0, issue_number=7)
+    monkeypatch.setattr(engine, "_create_and_prepare_closed_issue_candidate", lambda *_args: (candidate, False))
+    monkeypatch.setattr(engine, "_cached_issue_refusal", lambda *_args: None)
+    monkeypatch.setattr(engine, "_defer_observed_dependency_wait", lambda *_args: False)
+    monkeypatch.setattr(engine, "_route_issue_stages_authoritatively", lambda *_args: None)
+    monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *_args: None)
+    monkeypatch.setattr(engine, "_refresh_issue_stage_routing", lambda *_args: None)
+    processed_generations = []
+
+    def process(_repo, current, **_kwargs):
+        processed_generations.append(current.invalidation_generation)
+        if len(processed_generations) == 1:
+            transition = engine.invalidations.invalidate_with_transition(EntityIdentity("owner/repo", "issue", 7))
+            assert transition.disposition is InvalidationDisposition.FOLLOWUP_REQUIRED
+            return CandidateProcessingResult(
+                type="issue",
+                number=7,
+                error="Parent-Issue reconciliation blocked processing: contradiction",
+                definitive_parent_refusal=True,
+            )
+        return CandidateProcessingResult(type="issue", number=7, success=True)
+
+    engine._process_single_candidate = process
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "issue", 7)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0, "issue"))
+        for _ in range(300):
+            if processed_generations == [1, 2] and engine.invalidations.pending_count("owner/repo") == 0:
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    asyncio.run(scenario())
+    assert processed_generations == [1, 2]
+    assert engine.invalidations.pending_count("owner/repo") == 0
+
+
+def test_parent_refusal_cleanup_failure_remains_recoverable(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    candidate = Candidate(type="issue", data={"number": 7, "state": "open"}, priority=0, issue_number=7)
+    monkeypatch.setattr(engine, "_create_and_prepare_closed_issue_candidate", lambda *_args: (candidate, False))
+    monkeypatch.setattr(engine, "_cached_issue_refusal", lambda *_args: None)
+    monkeypatch.setattr(engine, "_defer_observed_dependency_wait", lambda *_args: False)
+    monkeypatch.setattr(engine, "_route_issue_stages_authoritatively", MagicMock(side_effect=ParentSpecificationError("contradiction")))
+    monkeypatch.setattr(engine.issue_stage_routing, "retire_refused_target", MagicMock(side_effect=sqlite3.OperationalError("disk unavailable")))
+    engine._process_single_candidate = MagicMock()
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "issue", 7)
+        worker = asyncio.create_task(engine._worker_loop("owner/repo", 0, "issue"))
+        for _ in range(200):
+            if engine.active_workers.get(0) is None and engine.invalidations.pending_count("owner/repo") == 1:
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await worker
+
+    asyncio.run(scenario())
+    assert engine.invalidations.pending_count("owner/repo") == 1
+    engine.invalidations.recover("owner/repo")
+    assert engine.invalidations.claim("owner/repo") is not None
+
+
 def test_malformed_strict_pr_metadata_remains_pending_error(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     github = GitHubClient("test-token")

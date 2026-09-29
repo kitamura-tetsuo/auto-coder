@@ -1383,7 +1383,7 @@ details identify `repository`, `generation`, `reason`, `outcome=blocked`, and
 the generation-aware `acknowledgement` (`cleared`, `followup_pending`, or
 `stale_no_op`). This uses the existing worker trace schema and dashboard
 projection; no new outcome or provider-routing value is introduced. Regression
-coverage in
-`tests/test_entity_invalidation.py::test_worker_terminally_acknowledges_typed_parent_refusal`
-drives both raised and returned production-worker boundaries and verifies the
-refusal is not reported as `worker_error`.
+coverage in `tests/test_entity_invalidation.py` drives raised and returned
+worker boundaries, generation-followup service without restart, cleanup
+failure recovery, and the real GitHubClient relationship reconciler. It
+verifies that a completed refusal is not reported as `worker_error`.
