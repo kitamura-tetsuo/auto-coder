@@ -94,7 +94,7 @@ class RetainedLocalSession:
                 raise LocalContinuationError("live-root reuse decision has the wrong caller checkpoint")
             self.reuse_decision = decision
 
-    def admit(self, *, backend_name: str, session_id: str, caller_identity: str, lifecycle: LocalResultLifecycleAuthority) -> LocalWorkspaceBinding:
+    def admit(self, *, backend_name: str, session_id: str, caller_identity: str, caller_checkpoint: str, lifecycle: LocalResultLifecycleAuthority) -> LocalWorkspaceBinding:
         """Atomically consume positive predecessor evidence for one new turn."""
         with self._lock:
             if self.disposed or not self.binding.workspace.is_dir():
@@ -121,6 +121,8 @@ class RetainedLocalSession:
                 raise LocalContinuationError("live-root reuse permission is stale")
             if decision.caller_checkpoint != self.binding.file_snapshot_checksum:
                 raise LocalContinuationError("live-root reuse permission has a stale caller checkpoint")
+            if caller_checkpoint != decision.caller_checkpoint:
+                raise LocalContinuationError("caller checkpoint changed after reuse authorization")
             if not lifecycle.consume(decision):
                 raise LocalContinuationError("live-root reuse permission lacks lifecycle authority")
             self.active_turn_id = decision.decision_id

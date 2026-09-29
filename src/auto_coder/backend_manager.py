@@ -44,7 +44,7 @@ from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
 from .utils import bind_supervised_command_execution
-from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, current_local_caller_identity, get_current_local_workspace, isolated_local_llm_worktree, refresh_local_workspace_binding, sync_worktree_changes_back
+from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, current_local_caller_checkpoint, current_local_caller_identity, get_current_local_workspace, isolated_local_llm_worktree, refresh_local_workspace_binding, sync_worktree_changes_back
 
 logger = get_logger(__name__)
 
@@ -879,6 +879,7 @@ class BackendManager(LLMBackendManagerBase):
                             backend_name=backend_name,
                             session_id=session_id,
                             caller_identity=current_local_caller_identity(),
+                            caller_checkpoint=current_local_caller_checkpoint(retained_session.binding),
                             lifecycle=self._local_result_lifecycle,
                         )
                     workspace_ownership = retained_session.binding.ownership if retained_session is not None else (LocalWorkspaceOwnership() if is_local else None)

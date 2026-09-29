@@ -58,11 +58,11 @@ def test_continuation_requires_positive_exact_generation_permission(tmp_path: Pa
     authority = _authority(session)
 
     with pytest.raises(LocalContinuationError, match="positive live-root reuse"):
-        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), lifecycle=authority)
+        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), caller_checkpoint=session.binding.file_snapshot_checksum, lifecycle=authority)
 
     session.authorize_reuse(_decision(session, allowed=False))
     with pytest.raises(LocalContinuationError, match="positive live-root reuse"):
-        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), lifecycle=authority)
+        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), caller_checkpoint=session.binding.file_snapshot_checksum, lifecycle=authority)
 
 
 def test_stale_decision_and_unsettled_writers_cannot_submit(tmp_path: Path) -> None:
@@ -76,22 +76,22 @@ def test_stale_decision_and_unsettled_writers_cannot_submit(tmp_path: Path) -> N
     unsettled = _session(tmp_path / "other", writers=EvidenceStatus.UNKNOWN)
     unsettled.authorize_reuse(_decision(unsettled))
     with pytest.raises(LocalContinuationError, match="writers"):
-        unsettled.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "other/caller"), lifecycle=_authority(unsettled))
+        unsettled.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "other/caller"), caller_checkpoint=unsettled.binding.file_snapshot_checksum, lifecycle=_authority(unsettled))
 
 
 def test_exact_binding_admits_once_and_current_turn_replaces_predecessor(tmp_path: Path) -> None:
     session = _session(tmp_path)
     authority = _authority(session)
     session.authorize_reuse(authority.authorize_reuse(session, caller_checkpoint=session.binding.file_snapshot_checksum))
-    assert session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), lifecycle=authority) is session.binding
+    assert session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), caller_checkpoint=session.binding.file_snapshot_checksum, lifecycle=authority) is session.binding
     with pytest.raises(LocalContinuationError, match="already active"):
-        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), lifecycle=authority)
+        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), caller_checkpoint=session.binding.file_snapshot_checksum, lifecycle=authority)
 
     current = LocalBoundaryEvidence(**{**session.predecessor.__dict__, "boundary_id": "boundary-2", "turn_id": "turn-2"})
     session.finish(current)
     assert session.predecessor.turn_id == "turn-2"
     with pytest.raises(LocalContinuationError, match="positive live-root reuse"):
-        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), lifecycle=authority)
+        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), caller_checkpoint=session.binding.file_snapshot_checksum, lifecycle=authority)
 
 
 def test_same_path_recreated_while_retained_is_not_the_binding(tmp_path: Path) -> None:
@@ -101,21 +101,21 @@ def test_same_path_recreated_while_retained_is_not_the_binding(tmp_path: Path) -
     session.binding.workspace.rmdir()
     session.binding.workspace.mkdir()
     with pytest.raises(LocalContinuationError, match="identity changed"):
-        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), lifecycle=authority)
+        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), caller_checkpoint=session.binding.file_snapshot_checksum, lifecycle=authority)
 
 
 def test_caller_constructed_decision_lacks_lifecycle_authority(tmp_path: Path) -> None:
     session = _session(tmp_path)
     session.authorize_reuse(_decision(session))
     with pytest.raises(LocalContinuationError, match="lacks lifecycle authority"):
-        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), lifecycle=_authority(session))
+        session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), caller_checkpoint=session.binding.file_snapshot_checksum, lifecycle=_authority(session))
 
 
 def test_active_turn_cannot_be_disposed(tmp_path: Path) -> None:
     session = _session(tmp_path)
     authority = _authority(session)
     session.authorize_reuse(authority.authorize_reuse(session, caller_checkpoint=session.binding.file_snapshot_checksum))
-    session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), lifecycle=authority)
+    session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), caller_checkpoint=session.binding.file_snapshot_checksum, lifecycle=authority)
     with pytest.raises(LocalContinuationError, match="turn is active"):
         session.dispose()
     assert session.binding.workspace.is_dir()

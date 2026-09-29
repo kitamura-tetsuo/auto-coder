@@ -139,6 +139,26 @@ def current_local_caller_identity(cwd: Optional[Union[Path, str]] = None) -> str
     return f"{root}:{root_stat.st_dev}:{root_stat.st_ino}:{git_stat.st_dev}:{git_stat.st_ino}:{common_stat.st_dev}:{common_stat.st_ino}"
 
 
+def current_local_caller_checkpoint(binding: LocalWorkspaceBinding) -> str:
+    """Return the current caller checkpoint after validating its Git identity."""
+    caller = binding.caller_root.resolve()
+    git_dir = Path(_git(caller, "rev-parse", "--absolute-git-dir").stdout.strip().decode()).resolve()
+    common_dir = Path(_git(caller, "rev-parse", "--git-common-dir").stdout.strip().decode())
+    if not common_dir.is_absolute():
+        common_dir = (caller / common_dir).resolve()
+    if (
+        git_dir != binding.caller_git_dir.resolve()
+        or common_dir != binding.caller_common_dir.resolve()
+        or (binding.caller_git_identity is not None and (git_dir.stat().st_dev, git_dir.stat().st_ino) != binding.caller_git_identity)
+        or (binding.caller_common_identity is not None and (common_dir.stat().st_dev, common_dir.stat().st_ino) != binding.caller_common_identity)
+    ):
+        raise WorkspaceHandoffError("caller Git identity changed; refusing continuation")
+    tracked = _listed_paths(caller, "--cached")
+    untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    checkpoint, _, _ = _source_token(caller, tracked, untracked)
+    return checkpoint
+
+
 @contextlib.contextmanager
 def bind_retained_local_workspace(
     binding: LocalWorkspaceBinding,

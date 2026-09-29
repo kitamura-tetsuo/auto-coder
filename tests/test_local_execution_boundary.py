@@ -458,6 +458,9 @@ def test_retained_continuation_rejects_a_different_current_caller_before_submiss
     try:
         assert manager._run_llm_cli("first") == "fresh"
         manager.authorize_retained_local_session_reuse("retained-session")
+        (caller_a / "tracked.txt").write_text("unrelated caller change\n")
+        with pytest.raises(LocalContinuationError, match="checkpoint changed"):
+            manager.continue_session("retained-session", "must not submit")
     finally:
         reset_command_execution_cwd(token)
 
