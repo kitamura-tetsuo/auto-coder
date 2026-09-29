@@ -13,10 +13,13 @@ not through a preselected processing result.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
-from auto_coder.automation_config import AutomationConfig, Candidate, ExplicitTargetOutcome
+import pytest
+
+from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
 from auto_coder.automation_engine import (
     ISSUE_PROCESSING_STAGE,
     AutomationEngine,
@@ -109,6 +112,26 @@ class _FakeIssueGithub:
 
     def get_direct_sub_issues_strict(self, repo_name, issue_number):
         return []
+
+
+class _BarrierIssueGithub(_FakeIssueGithub):
+    """Wire-target recorder that can hold the real production handler entry."""
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.block = False
+
+    def get_issue_dispatch_snapshot_strict(self, repo_name, issue_number):
+        self.calls.append(("get_issue_dispatch_snapshot_strict", repo_name, issue_number))
+        if self.block:
+            self.entered.set()
+            assert self.release.wait(5), "barrier-held production handler was not released"
+        value = self._responses[issue_number].pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
 
 
 def _skip_all_prs_config() -> AutomationConfig:
@@ -209,6 +232,91 @@ def test_issue_processing_resumes_automatically_without_new_webhook(tmp_path):
 
     assert store.get(identity) is None, "obligation was never resumed and completed"
     assert ("get_issue_dispatch_snapshot_strict", "owner/repo", 7) in github.calls
+
+
+@pytest.mark.parametrize("active_repository", ["acme/alpha", "acme/beta"])
+def test_production_binding_isolates_equal_issue_due_and_overlapping_recovery(tmp_path, monkeypatch, active_repository):
+    """REQ-009: shared persistence cannot cross production handler ownership."""
+    repositories = ("acme/alpha", "acme/beta")
+    passive_repository = next(repo for repo in repositories if repo != active_repository)
+    issue = {"number": 5411, "title": "Same", "body": "Same", "labels": [], "user": {"id": 999}}
+    revision = _issue_content_revision(issue)
+    store = PendingWorkStore(tmp_path / "shared-pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+
+    github_by_repo = {repo: _BarrierIssueGithub({5411: [dict(issue), dict(issue)]}) for repo in repositories}
+    engines = {repo: AutomationEngine(github_by_repo[repo], _skip_all_issues_config()) for repo in repositories}
+    for repo, engine in engines.items():
+        engine._bind_pending_work_scheduler(repo)
+        assert set(engine.pending_work_scheduler._handlers) == {
+            "startup-reconciliation",
+            "pr-processing",
+            "issue-processing",
+            "codex-retry-handoff",
+            "validation-publication",
+            "decomposition-validation-publication",
+        }
+
+    def retain_through_production(repo):
+        result = CandidateProcessingResult(type="issue", number=5411, title="Same")
+        engines[repo]._defer_issue_evaluation(
+            repo,
+            5411,
+            issue,
+            _github_error(GitHubApiOutcome.PRIMARY_THROTTLED),
+            result,
+        )
+        return WorkIdentity(repo, "issue:5411", ISSUE_PROCESSING_STAGE, revision)
+
+    identities = {repo: retain_through_production(repo) for repo in repositories}
+    foreign_before = store.get(identities[active_repository])
+
+    async def dispatch_one_repository():
+        scheduler = engines[passive_repository].pending_work_scheduler
+        await scheduler._dispatch_due()
+        await asyncio.gather(*tuple(scheduler._tasks))
+
+    asyncio.run(dispatch_one_repository())
+
+    assert github_by_repo[passive_repository].calls == [("get_issue_dispatch_snapshot_strict", passive_repository, 5411)]
+    assert github_by_repo[active_repository].calls == []
+    assert store.get(identities[passive_repository]) is None
+    assert store.get(identities[active_repository]) == foreign_before
+
+    # Clear the retained foreign due row through its owner, then recreate both
+    # identities as interrupted work to exercise restart recovery overlap.
+    async def dispatch_owner():
+        scheduler = engines[active_repository].pending_work_scheduler
+        await scheduler._dispatch_due()
+        await asyncio.gather(*tuple(scheduler._tasks))
+
+    asyncio.run(dispatch_owner())
+    identities = {repo: retain_through_production(repo) for repo in repositories}
+    for identity in identities.values():
+        store.mark_running(identity)
+
+    active_github = github_by_repo[active_repository]
+    active_github.block = True
+
+    async def overlap_recovery():
+        active_scheduler = engines[active_repository].pending_work_scheduler
+        passive_scheduler = engines[passive_repository].pending_work_scheduler
+        active_task = asyncio.create_task(active_scheduler._recover_interrupted())
+        assert await asyncio.to_thread(active_github.entered.wait, 2)
+        assert store.get(identities[active_repository]).status == "running"
+
+        await passive_scheduler._recover_interrupted()
+        assert store.get(identities[passive_repository]) is None
+        assert store.get(identities[active_repository]) is not None
+        active_github.release.set()
+        await asyncio.wait_for(active_task, 2)
+
+    asyncio.run(overlap_recovery())
+
+    assert store.get(identities[active_repository]) is None
+    for repo in repositories:
+        wire_targets = [call[1:] for call in github_by_repo[repo].calls]
+        assert wire_targets == [(repo, 5411), (repo, 5411)]
 
 
 # ---------------------------------------------------------------------------

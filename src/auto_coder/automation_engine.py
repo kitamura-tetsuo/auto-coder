@@ -2568,12 +2568,23 @@ class AutomationEngine:
                 return None
         return refreshed
 
-    async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
-        """Start independent Issue and PR pools with ``concurrency`` workers each."""
+    def _bind_pending_work_scheduler(self, repo_name: str) -> None:
+        """Install the repository boundary and every production stage handler."""
         repository_key = repository_ownership_key(repo_name)
         if self._pending_work_repository_key not in {None, repository_key}:
             raise PendingWorkOwnershipError("AutomationEngine pending work is already repository-bound")
         self._pending_work_repository_key = repository_key
+        self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store(), repository=repo_name)
+        self.pending_work_scheduler.register_handler(STARTUP_RECONCILIATION_STAGE, _StartupReconciliationHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(CODEX_RETRY_HANDOFF_STAGE, _CodexRetryHandoffStageHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(VALIDATION_PUBLICATION_STAGE, _ValidationPublicationStageHandler(self, repo_name))
+        self.pending_work_scheduler.register_handler(DECOMPOSITION_PUBLICATION_STAGE, _DecompositionPublicationStageHandler(self, repo_name))
+
+    async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
+        """Start independent Issue and PR pools with ``concurrency`` workers each."""
+        self._bind_pending_work_scheduler(repo_name)
         if concurrency is None:
             concurrency = self.config.MAX_CONCURRENT_TASKS
 
@@ -2595,16 +2606,7 @@ class AutomationEngine:
         # that stopped mid-dispatch) before startup reconciliation finishes,
         # so retained work from a previous run is never orphaned by a fresh
         # enumeration that only marks entities dirty again.
-        self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store(), repository=repo_name)
-        # Registered before any await so an obligation left 'running' by a
-        # crashed prior process can never be recovered while unregistered.
         self._startup_reconciliation_event = asyncio.Event()
-        self.pending_work_scheduler.register_handler(STARTUP_RECONCILIATION_STAGE, _StartupReconciliationHandler(self, repo_name))
-        self.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(self, repo_name))
-        self.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(self, repo_name))
-        self.pending_work_scheduler.register_handler(CODEX_RETRY_HANDOFF_STAGE, _CodexRetryHandoffStageHandler(self, repo_name))
-        self.pending_work_scheduler.register_handler(VALIDATION_PUBLICATION_STAGE, _ValidationPublicationStageHandler(self, repo_name))
-        self.pending_work_scheduler.register_handler(DECOMPOSITION_PUBLICATION_STAGE, _DecompositionPublicationStageHandler(self, repo_name))
         pending_work_task = asyncio.create_task(self.pending_work_scheduler.run(self._shutdown_event), name="pending-work-scheduler")
 
         # Provider projection acknowledgements written by older releases do
