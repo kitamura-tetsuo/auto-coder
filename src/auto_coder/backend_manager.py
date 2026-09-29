@@ -34,7 +34,7 @@ from .invocation_admission import (
 from .invocation_process_supervisor import CgroupV2Owner, InvocationProcessSupervisor
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
-from .local_execution_boundary import bind_local_execution_boundary
+from .local_execution_boundary import EvidenceStatus, bind_local_execution_boundary
 from .local_session_continuation import LiveRootReuseDecision, LocalContinuationError, RetainedLocalSession
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
@@ -44,7 +44,7 @@ from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
 from .utils import bind_supervised_command_execution
-from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, get_current_local_workspace, isolated_local_llm_worktree, refresh_local_workspace_binding
+from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, current_local_caller_identity, get_current_local_workspace, isolated_local_llm_worktree, refresh_local_workspace_binding
 
 logger = get_logger(__name__)
 
@@ -677,19 +677,21 @@ class BackendManager(LLMBackendManagerBase):
     def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
         """Ask the current client to continue an opaque session explicitly.
 
-        Compatibility and writer-settlement failures remain explicit. Legacy
-        adapters retain their established fallback behavior; adapters opting
-        into retained local continuation are always fail-closed.
+        Every explicit continuation is fail-closed. A fresh task or another
+        backend cannot truthfully substitute for the requested session.
         """
         self._last_continue_session_resumed = False
         if not session_id.strip():
             raise ValueError("Session ID must be nonempty for explicit continuation")
         backend_name = self._current_backend_name()
         client = self._get_or_create_client(backend_name)
-        strict_retained_continuation = session_id in self._retained_local_sessions or session_id in self._released_local_workspace_sessions
+        if session_id in self._released_local_workspace_sessions:
+            raise SessionWorkspaceCompatibilityError("local continuation refused because its original private workspace and generation checkpoint are no longer retained")
         config_backend = getattr(client, "config_backend", None)
         backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
-        is_muse_backend = backend_type == "muse"
+        is_local_backend = backend_type not in _CLOUD_BACKEND_TYPES
+        if is_local_backend and getattr(client, "supports_retained_local_continuation", False) is not True:
+            raise LocalContinuationError("selected local adapter cannot prove retained-workspace continuation compatibility")
         self._is_noedit = is_noedit
         try:
             # Re-use _execute_backend_with_providers to capture interaction
@@ -712,21 +714,11 @@ class BackendManager(LLMBackendManagerBase):
             raise
         except (AutoCoderUsageLimitError, AutoCoderTimeoutError):
             self._last_continue_session_resumed = False
-            if strict_retained_continuation or is_muse_backend:
-                raise
-            self.switch_to_next_backend()
-            return self._run_llm_cli(prompt, is_noedit=is_noedit)
+            raise
         except Exception as exc:
             if not isinstance(exc, (ValueError, RuntimeError, NotImplementedError)):
                 raise
-            if strict_retained_continuation or is_muse_backend:
-                raise
-            logger.warning("Could not resume explicit session on backend '%s'; starting fresh: %s", backend_name, exc)
-            self._last_session_id = None
-            self._save_session_state(backend_name, None)
-            if hasattr(client, "clear_last_session_id"):
-                client.clear_last_session_id()
-            return self._run_llm_cli(prompt, is_noedit=is_noedit)
+            raise
 
     def run_prompt(self, prompt: str) -> str:
         """
@@ -870,7 +862,7 @@ class BackendManager(LLMBackendManagerBase):
                         retained_session.admit(
                             backend_name=backend_name,
                             session_id=session_id,
-                            caller_identity=str(retained_session.binding.caller_root.resolve()),
+                            caller_identity=current_local_caller_identity(),
                         )
                     workspace_ownership = retained_session.binding.ownership if retained_session is not None else (LocalWorkspaceOwnership() if is_local else None)
                     worktree_ctx: contextlib.AbstractContextManager[Any]
@@ -937,7 +929,7 @@ class BackendManager(LLMBackendManagerBase):
                                         provider_session_id=turn_evidence.provider_session_id,
                                         binding=local_boundary.binding,
                                         predecessor=turn_evidence,
-                                        caller_identity=str(local_boundary.binding.caller_root.resolve()),
+                                        caller_identity=current_local_caller_identity(local_boundary.binding.caller_root),
                                     )
                                 if not is_noedit and workspace_ownership is not None:
                                     handoff_evidence = local_boundary.evidence()
@@ -961,6 +953,8 @@ class BackendManager(LLMBackendManagerBase):
                         if retained_session is not None:
                             if completed_turn_evidence is None:
                                 raise LocalContinuationError("continued turn produced no controller-owned evidence")
+                            if completed_turn_evidence.writer_completion is not EvidenceStatus.ESTABLISHED:
+                                raise LocalWriterSettlementError("continued turn writer settlement is uncertain")
                             completed_retained.finish(completed_turn_evidence)
                         completed_retained.advance_binding(advanced_binding)
                     end_time_iso = end_dt.isoformat()

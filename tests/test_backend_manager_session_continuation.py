@@ -17,6 +17,8 @@ from src.auto_coder.opencode_client import OpenCodeClient
 
 
 class SessionClient:
+    supports_retained_local_continuation = True
+
     def __init__(self, fresh_session_id: str | None = None) -> None:
         self.model_name = "test-model"
         self.session_id = fresh_session_id
@@ -137,16 +139,30 @@ def test_uncertain_writer_during_explicit_resume_does_not_launch_replacement(tmp
     assert manager._last_continue_session_resumed is False
 
 
-def test_resume_usage_limit_rotates_backend_without_same_client_fresh_retry(tmp_path):
+def test_explicit_resume_usage_limit_does_not_rotate_or_start_fresh(tmp_path):
     claude = SessionClient(fresh_session_id="claude-session")
     claude.continue_error = AutoCoderUsageLimitError("usage limit")
     codex = SessionClient(fresh_session_id="codex-session")
     manager = _manager(tmp_path, {"claude": claude, "codex": codex}, automatic_session_resume=False)
 
-    assert manager.continue_session("claude-session", "review", is_noedit=True) == "fresh response"
+    with pytest.raises(AutoCoderUsageLimitError, match="usage limit"):
+        manager.continue_session("claude-session", "review", is_noedit=True)
 
     assert claude.fresh_prompts == []
-    assert codex.fresh_prompts == ["review"]
+    assert codex.fresh_prompts == []
+
+
+def test_unsupported_explicit_continuation_fails_before_provider_or_fresh_submission(tmp_path):
+    client = SessionClient(fresh_session_id="session")
+    client.supports_retained_local_continuation = False
+    manager = _manager(tmp_path, {"codex": client}, automatic_session_resume=False)
+
+    with pytest.raises(RuntimeError, match="cannot prove retained-workspace"):
+        manager.continue_session("session", "continue")
+
+    assert client.continued == []
+    assert client.fresh_prompts == []
+    assert manager._last_continue_session_resumed is False
 
 
 @pytest.mark.parametrize(

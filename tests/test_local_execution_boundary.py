@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from src.auto_coder.backend_manager import BackendManager
-from src.auto_coder.exceptions import SessionWorkspaceCompatibilityError
+from src.auto_coder.exceptions import LocalWriterSettlementError, SessionWorkspaceCompatibilityError
 from src.auto_coder.invocation_process_supervisor import InvocationOutcome, SupervisedInvocationResult, WriterState
 from src.auto_coder.local_execution_boundary import (
     BackendOutcome,
@@ -17,6 +17,7 @@ from src.auto_coder.local_execution_boundary import (
     bind_local_execution_boundary,
     get_current_local_execution_boundary,
 )
+from src.auto_coder.local_session_continuation import LiveRootReuseDecision, LocalContinuationError
 from src.auto_coder.utils import CommandExecutor, bind_command_execution_cwd, bind_supervised_command_execution, reset_command_execution_cwd
 from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
 
@@ -408,3 +409,128 @@ def test_successful_edit_session_is_refused_after_its_private_root_is_released(t
     assert client.fresh_calls == 1
     assert client.continued_calls == 0
     assert (repository / "result.txt").read_text() == "accepted result\n"
+
+
+def test_retained_continuation_rejects_a_different_current_caller_before_submission(tmp_path: Path, _use_real_commands: None) -> None:
+    class RetainedClient:
+        supports_retained_local_continuation = True
+        use_noedit_options = False
+        model_name = "test-model"
+        config_backend = SimpleNamespace(backend_type="opencode")
+
+        def __init__(self) -> None:
+            self.continued_calls = 0
+
+        def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.record_violation_observation(boundary.binding.invocation_id)
+            return "fresh"
+
+        def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+            self.continued_calls += 1
+            return "must not run"
+
+        def get_last_session_id(self) -> str:
+            return "retained-session"
+
+    def repository(path: Path) -> None:
+        path.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+        (path / "tracked.txt").write_text("initial\n")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
+        subprocess.run(["git", "commit", "-qm", "initial"], cwd=path, check=True)
+
+    import subprocess
+
+    caller_a = tmp_path / "caller-a"
+    caller_b = tmp_path / "caller-b"
+    repository(caller_a)
+    repository(caller_b)
+    client = RetainedClient()
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(default_backend="alias", default_client=client, factories={"alias": lambda: client}, order=["alias"])
+
+    token = bind_command_execution_cwd(str(caller_a))
+    try:
+        assert manager._run_llm_cli("first") == "fresh"
+        retained = manager._retained_local_sessions["retained-session"]
+        manager.authorize_local_session_continuation(
+            "retained-session",
+            LiveRootReuseDecision(
+                retained.binding.invocation_id,
+                str(retained.binding.workspace.resolve()),
+                retained.predecessor.turn_id,
+                retained.binding.file_snapshot_checksum,
+                True,
+                "decision-1",
+            ),
+        )
+    finally:
+        reset_command_execution_cwd(token)
+
+    token = bind_command_execution_cwd(str(caller_b))
+    try:
+        with pytest.raises(LocalContinuationError, match="controller ownership"):
+            manager.continue_session("retained-session", "second")
+    finally:
+        reset_command_execution_cwd(token)
+    assert client.continued_calls == 0
+
+
+def test_retained_continuation_with_unknown_current_writer_settlement_is_incomplete(tmp_path: Path, _use_real_commands: None) -> None:
+    class UnsettledContinuationClient:
+        supports_retained_local_continuation = True
+        use_noedit_options = False
+        model_name = "test-model"
+        config_backend = SimpleNamespace(backend_type="opencode")
+
+        def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.record_violation_observation(boundary.binding.invocation_id)
+            return "fresh"
+
+        def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+            return "textually successful but unsettled"
+
+        def get_last_session_id(self) -> str:
+            return "retained-session"
+
+    import subprocess
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("initial\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    client = UnsettledContinuationClient()
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(default_backend="alias", default_client=client, factories={"alias": lambda: client}, order=["alias"])
+    token = bind_command_execution_cwd(str(repository))
+    try:
+        assert manager._run_llm_cli("first") == "fresh"
+        retained = manager._retained_local_sessions["retained-session"]
+        manager.authorize_local_session_continuation(
+            "retained-session",
+            LiveRootReuseDecision(
+                retained.binding.invocation_id,
+                str(retained.binding.workspace.resolve()),
+                retained.predecessor.turn_id,
+                retained.binding.file_snapshot_checksum,
+                True,
+                "decision-1",
+            ),
+        )
+        with pytest.raises(LocalWriterSettlementError, match="settlement is uncertain"):
+            manager.continue_session("retained-session", "second")
+    finally:
+        reset_command_execution_cwd(token)
+    assert manager._last_continue_session_resumed is False

@@ -789,9 +789,7 @@ def test_ac002_missing_session_reports_explicit_failure_without_exposing_new_id(
         assert client.get_last_session_id() is None
 
 
-def test_ac002_manager_local_fallback_after_missing_session_reports_non_continuity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    """The adapter itself never resubmits; only `BackendManager.continue_session`'s
-    documented fallback does, and it must report the fallback as non-continuity."""
+def test_ac002_manager_missing_session_fails_without_fresh_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _driver(tmp_path)
     missing_line = _event("error", session_id="ses_missing", error={"name": "SessionNotFoundError", "data": {"message": "not found"}})
@@ -810,15 +808,13 @@ def test_ac002_manager_local_fallback_after_missing_session_reports_non_continui
         install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
-        result = manager.continue_session(session_id="ses_missing", prompt="continue please")
+        with pytest.raises(RuntimeError, match="session error"):
+            manager.continue_session(session_id="ses_missing", prompt="continue please")
 
-    assert result == "fresh fallback answer"
     assert manager._last_continue_session_resumed is False
 
 
-def test_ac002_manager_backend_switch_fallback_reports_non_continuity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
-    """A configured backend-switch fallback returning a plausible answer under
-    another backend/session is still reported as non-continuity."""
+def test_ac002_manager_usage_failure_does_not_switch_backend_or_claim_continuity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _driver(tmp_path)
     stdout_file = tmp_path / "stdout.jsonl"
@@ -841,11 +837,11 @@ def test_ac002_manager_backend_switch_fallback_reports_non_continuity(tmp_path: 
         install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
-        result = manager.continue_session(session_id="ses_x", prompt="continue please")
+        with pytest.raises(AutoCoderUsageLimitError):
+            manager.continue_session(session_id="ses_x", prompt="continue please")
 
-    assert result == "fallback-success"
     assert manager._last_continue_session_resumed is False
-    assert manager.get_last_backend_and_model() == ("fallback", "fallback")
+    assert manager.get_current_backend_identity()[0] == "opencode"
 
 
 # -- AC-003: a same-looking answer with the wrong identity is not continuity
