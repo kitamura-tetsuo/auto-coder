@@ -1402,3 +1402,10 @@ create a stage-result event because no repository execution was authorized.
 Runnable regression coverage: `tests/test_github_pending_work.py` exercises scoped
 snapshots/deadlines and alternate-entry refusal, while the production resumption suites
 exercise the registered stage handlers.
+
+The repository-store cutover command is an offline storage administration boundary,
+not an execution or resumption origin: it never invokes a scheduler handler, provider,
+or GitHub request. It therefore adds no production trace event, outcome, routing field,
+or dashboard projection. `tests/test_pending_work_migration.py` exercises the shipped
+command and real SQLite readiness/migration boundary, including source retention,
+durable receipts, owner rejection, WAL-backed committed state, and replay prevention.
