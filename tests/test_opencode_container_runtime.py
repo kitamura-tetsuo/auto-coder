@@ -431,7 +431,7 @@ model = "controlled/test-model"
 
 os.chdir(str(repo))
 client = OpenCodeClient(backend_name="opencode")
-answer = client._run_llm_cli("Task with auth store")
+answer = client._run_llm_cli("Task with auth store", is_noedit=True)
 print("ANSWER:" + answer)
 """
         cmd_store = [
@@ -498,7 +498,7 @@ model = "controlled/test-model"
 
 os.chdir(str(repo))
 client = OpenCodeClient(backend_name="opencode")
-answer = client._run_llm_cli("Task with env auth")
+answer = client._run_llm_cli("Task with env auth", is_noedit=True)
 print("ANSWER:" + answer)
 """
         cmd_env = [
@@ -563,7 +563,7 @@ model = "unauthenticated/test-model"
 
 os.chdir(str(repo))
 client = OpenCodeClient(backend_name="opencode")
-client._run_llm_cli("Task missing auth")
+client._run_llm_cli("Task missing auth", is_noedit=True)
 """
     cmd_missing = [
         "docker",
@@ -645,7 +645,7 @@ api_key = "tok"
 
 os.chdir(str(repo))
 client = OpenCodeClient(backend_name="opencode")
-client._run_llm_cli("Task 1")
+client._run_llm_cli("Task 1", is_noedit=True)
 print("SESSION_ID:" + (client.get_last_session_id() or ""))
 """
         cmd_run_1 = [
@@ -725,7 +725,7 @@ from auto_coder.opencode_client import OpenCodeClient
 
 os.chdir("/runtime/workspace/repo")
 client = OpenCodeClient(backend_name="opencode")
-client._run_llm_cli("Task 2 fresh")
+client._run_llm_cli("Task 2 fresh", is_noedit=True)
 print("SESSION_ID_2:" + (client.get_last_session_id() or ""))
 """
         cmd_run_2 = [
@@ -879,7 +879,7 @@ api_key = "test-substituted-key"
 os.chdir(str(repo))
 client = OpenCodeClient(backend_name="substituted_alias")
 assert client.model_name == "substituted-provider/substituted-model"
-answer = client._run_llm_cli("Documented workflow test")
+answer = client._run_llm_cli("Documented workflow test", is_noedit=True)
 print("RESULT:" + answer)
 """
         cmd = [

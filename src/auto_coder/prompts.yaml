@@ -73,17 +73,16 @@ muse:
 opencode:
   execution: |-
     Complete this task in one execution:
+    Local Git operations (including staging, commits, branches, stashes, rebases,
+    cherry-picks, and private worktrees) are permitted implementation tools.
+    Leave all intended final files integrated in the original bound result root
+    `$result_root`; Auto-Coder will validate and publish the accepted source tree
+    through its normal controller-owned handoff workflow.
     $task_prompt
 
-    You may inspect the repository, edit the working tree, and run tests or
-    other implementation/build commands as needed. Do not run `git` or `gh`
-    yourself for anything beyond read-only inspection (status, diff, log,
-    show, and similar): never stage files, commit, change branches or HEAD,
-    merge, rebase, reset, push, or create/update/comment on a pull request or
-    issue. Auto-Coder owns the Git and GitHub lifecycle and will stage,
-    commit, and publish your working-tree changes after you return. Any
-    attempt to perform one of these reserved operations will be blocked and
-    will make this execution unusable for publication.
+    You may inspect and edit the repository, run tests, and use private local Git
+    operations as needed. Do not push or create, update, or comment on pull
+    requests or issues; Auto-Coder owns remote publication after you return.
 
   noedit_execution: |-
     Complete this task in one execution using only read-only inspection:

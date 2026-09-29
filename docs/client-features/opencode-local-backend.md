@@ -22,28 +22,20 @@ before the task launches, whether they come from the backend's configured
 similar model-specific option) is still honored. No-edit (read-only)
 execution is described separately below.
 
-OpenCode may inspect files, edit the working tree, and run tests or other
-implementation/build commands, but Auto-Coder exclusively owns staging,
-commits, branches/HEAD, merges/rebases, pushes, and GitHub Issue/PR lifecycle
-operations. While OpenCode runs, its `git` and `gh` executables are replaced
-(via a `PATH`-prepended, per-invocation directory) with wrappers that deny
-every subcommand except a small read-only allowlist (status, diff, log,
-show, and similar) before the real executable ever runs; `gh` is denied
-outright. This denial is scoped to the invocation's own repository/worktree
-metadata: an invocation whose resolved `--git-dir` (explicit, or discovered
-from its effective directory) is neither that Git metadata nor its shared
-`--git-common-dir` is let through unrestricted, because it cannot affect the
-protected repository regardless of subcommand — this is what lets OpenCode's
-own internal checkpoint/tracking feature (which runs `init`/`config`/`add`/
-`write-tree` against a private, detached Git store under its own data
-directory on every step) function at all.
+Editable OpenCode tasks run only in a controller-owned private Git repository
+through the shared local execution boundary. OpenCode may stage and unstage,
+commit and amend, create private branches/refs/stashes/worktrees, and use reset,
+restore, merge, rebase, or cherry-pick while implementing the task. Those Git
+changes are private implementation state: they are neither rejected nor copied
+as publication history. The intended final source files must remain integrated
+in the original bound result root, where the generation-specific shared handoff
+validates and synchronizes them before Auto-Coder performs its normal commit,
+push, and pull-request workflow. A direct editable client call without the
+matching controller binding is refused before provider submission.
 
-Auto-Coder additionally snapshots the branch, HEAD, refs, and
-staged index before the run and re-asserts them afterward (and on timeout),
-restoring and failing the invocation if anything still changed. A denied or
-detected lifecycle mutation makes the invocation unusable for publication;
-Auto-Coder only stages, commits, and pushes the working-tree result after
-the run succeeds and this boundary is confirmed intact.
+The Git/GitHub command wrapper and branch/HEAD/ref/index snapshots are installed
+only for no-edit execution. OpenCode's checkpoint/session repositories outside
+the result repository remain provider runtime state and are not source results.
 
 ### No-edit (read-only) execution
 
@@ -70,8 +62,7 @@ is honored the same way `options` is for an edit call.
 During the run, any `tool_use` event naming a tool outside `read`/`glob`/
 `grep` — whether OpenCode reports it denied or, contrary to that policy,
 lets it through — rejects the whole result, even if a later step still
-produces a plausible final answer. Beyond the branch/HEAD/refs/index guard
-shared with edit mode, a no-edit call additionally snapshots the complete
+produces a plausible final answer. In addition to the branch/HEAD/refs/index guard, a no-edit call snapshots the complete
 working tree (tracked file contents and modes, the staged and unstaged
 diff, untracked and ignored file contents, and directory modes, excluding
 `.git` and conventional disposable caches) before running and compares it
@@ -146,15 +137,12 @@ launched — unless the requested session ID appears in that directory's own
 list. This keeps a continuation from ever silently operating against, or
 crashing on, a workspace other than the caller's current one: if the
 provider session was created in a different temporary worktree that has
-since been replaced or removed (for example when `BackendManager` is not
-already running inside a dedicated per-task linked worktree, so its
-isolated-local-LLM-worktree wrapper creates and destroys its own fresh temp
-worktree per call), the continuation fails closed and `BackendManager`
-transparently falls back to a fresh session on the same backend, reporting
-non-continuity, rather than recreate the old worktree or return content from
-it. A continuation between calls that keep the same real execution directory
-(the normal case for Auto-Coder's own per-task worktree) is unaffected and
-succeeds, reading current file content.
+since been replaced or removed, replaced, or recreated at the same path, continuation fails closed
+before provider submission rather than redirecting, reconstructing a binding,
+or silently starting fresh. Controller-retained continuations reuse the exact
+original invocation/workspace association, receive a new turn/result generation,
+and cannot start until the preceding generation's writers and required handoff
+state are settled.
 
 One-shot resume state is always consumed at the start of the next
 invocation on the same client instance, whether that invocation succeeds or
@@ -255,4 +243,3 @@ credential injection is performed non-interactively via environment variables
 Available models may be discovered via `docker compose run --rm release opencode models`,
 and aliases may configure any explicit `provider/model` without dependency on
 Union Alpha.
-
