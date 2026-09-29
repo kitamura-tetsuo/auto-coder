@@ -35,6 +35,10 @@ jobs:
         run: |
           npm install -g opencode-ai@1.18.31
 
+      - name: Record pinned Codex CLI
+        run: |
+          echo "Codex live repository oracle uses @openai/codex 0.159.0"
+
       - name: Prepare OpenCode runtime image
         timeout-minutes: 10
         run: |

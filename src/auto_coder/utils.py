@@ -78,11 +78,7 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     uid = getattr(owner, "worker_uid", None)
     gid = getattr(owner, "worker_gid", None)
     if uid is not None and gid is not None:
-        # ``tempfile.mkdtemp`` creates the invocation-private workspace parent
-        # with mode 0700. Transfer that parent as well as its repository so the
-        # dropped worker can traverse to the immutable bound result root.
-        for root in (binding.workspace.parent, runtime):
-            _chown_tree(root, uid, gid)
+        _chown_tree(runtime, uid, gid)
     environment["HOME"] = str(home)
     # Provider runtimes such as Bun create executable/cache state in TMPDIR.
     # Keep that state inside the invocation-owned writable runtime rather than
@@ -885,6 +881,7 @@ class CommandExecutor:
         supervised = _SUPERVISED_COMMAND.get()
         if supervised is not None:
             from .invocation_process_supervisor import InvocationLaunch, InvocationOutcome, PromptTransport
+            from .repository_readiness import RepositoryReadinessError, validate_codex_effective_directory, verify_worker_repository
 
             boundary = supervised.boundary
             binding = boundary.binding
@@ -896,12 +893,48 @@ class CommandExecutor:
             selected_cwd = Path(cwd or str(binding.workspace)).resolve()
             if selected_cwd != binding.workspace.resolve():
                 return CommandResult(False, "", "supervised provider cwd does not match the bound private result root", -1)
+            owner = getattr(supervised.supervisor, "owner", None)
+            worker_uid = getattr(owner, "worker_uid", None)
+            worker_gid = getattr(owner, "worker_gid", None)
             private_runtime: Optional[Path] = None
-            if boundary.editable:
-                try:
+            try:
+                if worker_uid is not None and worker_gid is not None:
+                    # The private temporary parent is normally mode 0700. This is
+                    # invocation-owned state, so transfer it without touching the
+                    # caller or peer repositories.
+                    _chown_tree(binding.workspace.parent, worker_uid, worker_gid)
+                if boundary.editable:
                     private_runtime = _prepare_invocation_runtime(supervised, launch_env)
-                except OSError as exc:
-                    return CommandResult(False, "", f"private provider runtime preparation failed: {exc}", -1, False)
+                if boundary.backend_type.lower() == "codex" and Path(cmd[0]).name == "codex":
+                    validate_codex_effective_directory(cmd[1:], binding.workspace)
+                    readiness = verify_worker_repository(
+                        binding.workspace,
+                        worker_uid=worker_uid,
+                        worker_gid=worker_gid,
+                        environment=launch_env,
+                    )
+                    logger.info(
+                        "Codex repository readiness established under uid={}, gid={} at {} " "(git_dir={}, common_dir={}, head={}, tracked_files={}, tracked_contents_checksum={})",
+                        readiness.worker_uid,
+                        readiness.worker_gid,
+                        readiness.root,
+                        readiness.git_dir,
+                        readiness.common_dir,
+                        readiness.head,
+                        readiness.readable_regular_files,
+                        readiness.tracked_contents_checksum,
+                    )
+            except (OSError, RepositoryReadinessError) as exc:
+                if private_runtime is not None:
+                    shutil.rmtree(private_runtime, ignore_errors=True)
+                identity = f"uid={worker_uid}, gid={worker_gid}"
+                return CommandResult(
+                    False,
+                    "",
+                    f"private workspace repository preparation failed for {binding.workspace} ({identity}): {exc}",
+                    -1,
+                    False,
+                )
             request = InvocationLaunch(
                 invocation_id=binding.invocation_id,
                 backend_type=boundary.backend_type,

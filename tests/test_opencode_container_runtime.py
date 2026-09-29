@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import http.server
 import json
 import os
@@ -16,6 +17,7 @@ import pytest
 import yaml
 
 _PINNED_OPENCODE_VERSION = "1.18.31"
+_PINNED_CODEX_VERSION = "0.159.0"
 _IMAGE_TAG = "auto-coder:opencode"
 
 
@@ -59,6 +61,17 @@ class ControlledProviderServer:
                         parsed = json.loads(raw_body.decode("utf-8")) if raw_body else {}
                     except Exception:
                         parsed = {}
+
+                    # The Codex readiness oracle needs only an authoritative
+                    # observation after its Git startup check. A controlled
+                    # terminal provider rejection keeps that later task failed
+                    # and prevents transport retries from extending the test.
+                    if self.path.endswith("/responses"):
+                        self.send_response(401)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(b'{"error":{"message":"controlled downstream rejection"}}')
+                        return
 
                     # OpenCode session-title requests carry no tools
                     if not parsed.get("tools"):
@@ -161,8 +174,8 @@ def test_dockerfile_pins_opencode_release_and_explicit_architectures() -> None:
     assert f"ARG OPENCODE_VERSION={_PINNED_OPENCODE_VERSION}" in content
 
     # REQ-001: Explicit platform mapping for Linux amd64 and arm64
-    assert 'amd64) OPENCODE_ARCH="x64" ;;' in content
-    assert 'arm64) OPENCODE_ARCH="arm64" ;;' in content
+    assert 'amd64) OPENCODE_ARCH="x64"; CODEX_ARCH="x86_64" ;;' in content
+    assert 'arm64) OPENCODE_ARCH="arm64"; CODEX_ARCH="aarch64" ;;' in content
     assert "Unsupported architecture for OpenCode: $ARCH" in content
 
     # REQ-001: Required OS packages in runtime image
@@ -171,6 +184,9 @@ def test_dockerfile_pins_opencode_release_and_explicit_architectures() -> None:
 
     # REQ-001: Binary copied to final image
     assert "COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode" in content
+    assert f"ARG CODEX_VERSION={_PINNED_CODEX_VERSION}" in content
+    assert "releases/download/rust-v${CODEX_VERSION}/codex-${CODEX_ARCH}-unknown-linux-musl.tar.gz" in content
+    assert "COPY --from=build /usr/local/bin/codex /usr/local/bin/codex" in content
 
 
 def test_compose_channels_runtime_mounts_and_isolation() -> None:
@@ -271,6 +287,118 @@ def test_documentation_describes_opencode_container_runtime() -> None:
 # -----------------------------------------------------------------------------
 # Live container verification scenarios (AC-001 through AC-005)
 # -----------------------------------------------------------------------------
+
+
+@pytest.mark.opencode_live
+def test_codex_private_repository_checkpoint_uses_production_worker_boundary() -> None:
+    """REQ-007: real Codex progresses beyond its Git check only for a worker-usable private clone."""
+    image = _ensure_image_built()
+    version = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "codex", image, "--version"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert _PINNED_CODEX_VERSION in version.stdout
+
+    provider = ControlledProviderServer()
+    marker = "codex-worker-private-marker-v1\n"
+    marker_checksum = hashlib.sha256(f"tracked.txt\0{marker}".encode()).hexdigest()
+    try:
+        script = f'''
+import os, subprocess
+from pathlib import Path
+from auto_coder.cli_helpers import build_backend_manager
+
+home = Path("/runtime/home")
+(home / ".auto-coder").mkdir(parents=True, exist_ok=True)
+(home / ".auto-coder" / "llm_config.toml").write_text("""
+[backends.codex-live]
+backend_type = "codex"
+model = "gpt-5-codex"
+options = [
+  "--dangerously-bypass-approvals-and-sandbox", "--json",
+  "-c", 'model_provider="controlled"',
+  "-c", 'model_providers.controlled.name="Controlled"',
+  "-c", 'model_providers.controlled.base_url="http://127.0.0.1:{provider.port}/v1"',
+  "-c", 'model_providers.controlled.env_key="OPENAI_API_KEY"',
+  "-c", 'model_providers.controlled.wire_api="responses"',
+  "-c", "features.responses_websockets=false"
+]
+openai_api_key = "controlled-key"
+openai_base_url = "http://127.0.0.1:{provider.port}/v1"
+""")
+repo = Path("/tmp/codex-readiness-caller")
+repo.mkdir()
+subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+(repo / "tracked.txt").write_text({marker!r})
+subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+subprocess.run(["git", "commit", "-qm", "initial"], cwd=repo, check=True)
+os.chdir(repo)
+manager = build_backend_manager(["codex-live"], "codex-live", {{}})
+try:
+    manager._run_llm_cli("Return only checkpoint-probe", is_noedit=False)
+except Exception as exc:
+    print("EXPECTED_DOWNSTREAM_FAILURE:" + str(exc))
+else:
+    raise AssertionError("controlled provider rejection was incorrectly reported as task success")
+'''
+        command = [
+            "docker",
+            "run",
+            "--rm",
+            "--privileged",
+            "--cgroupns=host",
+            "--volume",
+            "/sys/fs/cgroup:/sys/fs/cgroup:rw",
+            *_container_network_args(),
+            "-e",
+            "HOME=/runtime/home",
+            "-e",
+            "AUTO_CODER_RUNTIME_ROOT=/runtime",
+            "-e",
+            "AUTO_CODER_LOCAL_WORKER_UID=65532",
+            "-e",
+            "AUTO_CODER_LOCAL_WORKER_GID=65532",
+            "-e",
+            "OPENAI_API_KEY=controlled-key",
+            "-e",
+            f"OPENAI_BASE_URL=http://127.0.0.1:{provider.port}/v1",
+            "-e",
+            "CODEX_API_KEY=controlled-key",
+            "-e",
+            f"CODEX_BASE_URL=http://127.0.0.1:{provider.port}/v1",
+            "--entrypoint",
+            "python3",
+            image,
+            "-c",
+            script,
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert provider.captured_requests, output
+        assert "EXPECTED_DOWNSTREAM_FAILURE:" in output
+        assert "Codex repository readiness established under uid=65532, gid=65532" in output
+        assert marker_checksum in output
+        assert "Not inside a trusted directory" not in output
+
+        before = len(provider.captured_requests)
+        denied_script = script.replace(
+            "os.chdir(repo)",
+            "import auto_coder.utils as command_utils\ncommand_utils._chown_tree = lambda root, uid, gid: None\nos.chdir(repo)",
+        )
+        denied = subprocess.run([*command[:-1], denied_script], capture_output=True, text=True)
+        denied_output = denied.stdout + denied.stderr
+        assert denied.returncode == 0, denied_output
+        assert len(provider.captured_requests) == before
+        assert "EXPECTED_DOWNSTREAM_FAILURE:" in denied_output
+        assert "Codex repository readiness established" not in denied_output
+        assert marker_checksum not in denied_output
+    finally:
+        provider.stop()
 
 
 @pytest.mark.opencode_live

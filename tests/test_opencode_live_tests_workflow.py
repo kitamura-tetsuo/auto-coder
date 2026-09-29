@@ -24,6 +24,7 @@ PR_WORKFLOW = ROOT / ".github/workflows/pr-tests.yml"
 PREPARE_SCRIPT = ROOT / "scripts/prepare_opencode_image.py"
 
 MIGRATED_CONTAINER_SCENARIOS = {
+    "test_codex_private_repository_checkpoint_uses_production_worker_boundary",
     "test_ac001_container_executes_opencode_task_against_controlled_provider",
     "test_ac002_effective_home_and_runtime_authentication",
     "test_ac003_retained_and_isolated_native_state_between_channels",

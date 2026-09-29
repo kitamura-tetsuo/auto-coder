@@ -256,12 +256,17 @@ def test_cancelling_one_owner_does_not_stop_peer_or_delete_results(tmp_path: Pat
     one = threading.Thread(target=lambda: results.append(supervisor.run(first)))
     two = threading.Thread(target=lambda: results.append(supervisor.run(second)))
     one.start()
+    first_deadline = time.monotonic() + 15
+    while supervisor.state("first") is not WriterState.ACTIVE:
+        assert time.monotonic() < first_deadline
+        time.sleep(0.01)
+    # Serialize only the fork/pre-exec setup. The two owned provider processes
+    # still overlap, which is the boundary this test exercises, while avoiding
+    # a test-only concurrent preexec_fn deadlock under coverage instrumentation.
     two.start()
-    # Coverage shards can delay both worker threads while thousands of tests
-    # compete for CPU. This waits only for bounded startup, not process output.
-    deadline = time.monotonic() + 15
-    while supervisor.state("first") is not WriterState.ACTIVE or supervisor.state("second") is not WriterState.ACTIVE:
-        assert time.monotonic() < deadline
+    second_deadline = time.monotonic() + 15
+    while supervisor.state("second") is not WriterState.ACTIVE:
+        assert time.monotonic() < second_deadline
         time.sleep(0.01)
     cancel.set()
     one.join(3)
