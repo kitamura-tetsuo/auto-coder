@@ -698,8 +698,12 @@ Issue identity, and retry deadline. Runnable coverage in
 `tests/test_pending_work_resumption.py::test_capacity_dispatch_retains_bare_native_parent_admission_deferral`
 and
 `tests/test_pending_work_resumption.py::test_generation_serialized_reentry_retains_wrapped_native_parent_deferral`
-exercises the initial and generation-serialized lookup boundaries and verifies
-that implementation is not dispatched.
+exercises the initial and generation-serialized lookup boundaries.
+`test_final_ownership_freshness_retains_native_parent_deferral` and
+`test_retained_owner_family_recheck_retains_admission_deferral` cover the final
+ownership-freshness and retained-family boundaries. Each verifies durable
+deferral without implementation dispatch; the existing event schema remains
+unchanged.
 
 Shared-governor incarnation ownership changes the existing HTTP admission gate but is
 dashboard-observability neutral. Governor admission still occurs before an Issue or PR

@@ -5879,7 +5879,13 @@ class AutomationEngine:
                     if deferred_result is not None:
                         return deferred_result
                     if owned_parent is not None:
-                        self._validate_submitted_parent_generation_for_child(repo_name, item_number, owned_snapshot)
+                        try:
+                            self._validate_submitted_parent_generation_for_child(repo_name, item_number, owned_snapshot)
+                        except Exception as exc:
+                            deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                            if deferred_result is not None:
+                                return deferred_result
+                            raise
                     owned_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
                     owned_children = owned_child_reader(repo_name, item_number) if callable(owned_child_reader) else []
                     if is_implementation_ready(owned_snapshot) and owned_parent is None and isinstance(owned_children, list) and not owned_children:
@@ -6324,9 +6330,15 @@ class AutomationEngine:
                 # An Issue classified as standalone can become a parent without
                 # changing its own text or labels. Recheck membership before any
                 # ownership-facing operation and require a new set pass instead.
-                direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
-                latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
-                submission_current = not (isinstance(latest_children, list) and latest_children) and self._standalone_relationship_is_current(repo_name, item_number, dispatch_snapshot)
+                try:
+                    direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
+                    latest_children = direct_child_reader(repo_name, item_number) if callable(direct_child_reader) else []
+                    submission_current = not (isinstance(latest_children, list) and latest_children) and self._standalone_relationship_is_current(repo_name, item_number, dispatch_snapshot)
+                except Exception as exc:
+                    deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                    if deferred_result is not None:
+                        return deferred_result
+                    raise
             dispatch_identity = validator.identity(
                 item_number,
                 str(dispatch_snapshot.get("title") or ""),
@@ -6420,7 +6432,9 @@ class AutomationEngine:
                 if isinstance(self.github, GitHubClient) and hasattr(self.github, "token"):
                     try:
                         return self._reconcile_sibling_dependencies(repo_name, item_number, latest) is DependencySatisfaction.SATISFIED
-                    except Exception:
+                    except Exception as exc:
+                        if _reconciliation_admission_deferral(exc) is not None:
+                            raise
                         return False
                 return True
             direct_child_reader = getattr(self.github, "get_direct_sub_issues_strict", None)
@@ -6435,6 +6449,9 @@ class AutomationEngine:
             try:
                 generation_is_current = issue_generation_is_current()
             except Exception as exc:
+                deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                if deferred_result is not None:
+                    return deferred_result
                 result.error = f"Cannot confirm Issue generation before ownership admission: {exc}"
                 result.refill_retry_required = True
                 return result
@@ -6522,6 +6539,9 @@ class AutomationEngine:
                     try:
                         generation_is_current = issue_generation_is_current()
                     except Exception as exc:
+                        deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                        if deferred_result is not None:
+                            return deferred_result
                         result.error = f"Cannot confirm Issue generation during capacity reconciliation: {exc}"
                         result.refill_retry_required = True
                         return result

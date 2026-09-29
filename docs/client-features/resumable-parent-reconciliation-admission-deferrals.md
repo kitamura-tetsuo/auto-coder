@@ -30,6 +30,10 @@ the later hierarchy rechecks, including discovery repeated after entering the
 per-Issue generation lock. A definitely-unsent refusal therefore yields the
 lock and returns a durable Deferred result to capacity refill; it cannot escape
 through the synchronous worker boundary and terminate the refill service.
+The final relationship/generation freshness check before ownership admission
+and a retained owner's submitted-family recheck use this boundary as well, so
+neither can silently downgrade a refusal to stale evidence or lose the pending
+evaluation after earlier validation succeeds.
 
 Durable-invalidation stage routing also recognizes an explicitly caused
 reconciliation deferral and stores its reason, API origin, and effective retry
