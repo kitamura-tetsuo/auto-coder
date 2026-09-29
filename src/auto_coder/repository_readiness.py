@@ -81,6 +81,9 @@ common_dir = pathlib.Path(common_text)
 if not common_dir.is_absolute():
     common_dir = (root / common_dir).resolve(strict=True)
 head = os.fsdecode(git("rev-parse", "--verify", "HEAD").strip())
+head_type = os.fsdecode(git("cat-file", "-t", "HEAD").strip())
+if head_type != "commit":
+    raise RuntimeError(f"current HEAD is not a readable commit object: {head_type}")
 if git_root != root:
     raise RuntimeError(f"Git discovery selected {git_root} instead of {root}")
 for label, path in (("Git directory", git_dir), ("Git common directory", common_dir)):

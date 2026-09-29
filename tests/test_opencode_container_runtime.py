@@ -342,6 +342,8 @@ try:
     manager._run_llm_cli("Return only checkpoint-probe", is_noedit=False)
 except Exception as exc:
     print("EXPECTED_DOWNSTREAM_FAILURE:" + str(exc))
+else:
+    raise AssertionError("controlled provider rejection was incorrectly reported as task success")
 '''
         command = [
             "docker",
@@ -378,6 +380,7 @@ except Exception as exc:
         output = result.stdout + result.stderr
         assert result.returncode == 0, output
         assert provider.captured_requests, output
+        assert "EXPECTED_DOWNSTREAM_FAILURE:" in output
         assert "Codex repository readiness established under uid=65532, gid=65532" in output
         assert marker_checksum in output
         assert "Not inside a trusted directory" not in output

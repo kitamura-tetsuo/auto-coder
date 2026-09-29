@@ -72,6 +72,25 @@ def test_worker_probe_establishes_private_root_and_tracked_file_readability(priv
     assert evidence.tracked_contents_checksum == expected
 
 
+def test_worker_probe_rejects_head_whose_commit_object_is_missing(private_parent: Path) -> None:
+    uid, gid = _worker_identity()
+    repository = _repository(private_parent / "result")
+    head = subprocess.run(
+        ["/usr/bin/git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repository / ".git" / "objects" / head[:2] / head[2:]).unlink()
+    for current, directories, files in os.walk(private_parent):
+        os.chown(current, uid, gid)
+        for name in (*directories, *files):
+            os.chown(Path(current) / name, uid, gid, follow_symlinks=False)
+
+    with pytest.raises(RepositoryReadinessError, match="git cat-file: could not get object info"):
+        verify_worker_repository(repository, worker_uid=uid, worker_gid=gid, environment=os.environ)
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
