@@ -1426,3 +1426,12 @@ or GitHub request. It therefore adds no production trace event, outcome, routing
 or dashboard projection. `tests/test_pending_work_migration.py` exercises the shipped
 command and real SQLite readiness/migration boundary, including source retention,
 durable receipts, owner rejection, WAL-backed committed state, and replay prevention.
+
+Repository-specific pending-work adoption (Issue #2377) changes only which SQLite file
+each existing production writer and consumer uses. The stage names, obligation identity
+fields, outcomes, and trace events are unchanged, and the operator `list`/`retry`
+commands and the refusal of a non-READY repository are storage-administration and
+admission boundaries that emit no new dashboard event. `AutomationEngine` status still
+reports its bound repository's `pending_work` snapshot. Runnable regression coverage:
+`tests/test_repository_pending_work_adoption.py` drives the real deferral writers, the
+normal store factory, the shipped CLI, and the scheduler consumers under a temporary home.

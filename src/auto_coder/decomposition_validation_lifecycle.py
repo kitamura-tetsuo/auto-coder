@@ -572,7 +572,7 @@ class DecompositionValidationLifecycle:
         """
         parent_number = decision.identity.parent.issue_number
         publication_identity = decomposition_publication_identity(self.repository, parent_number, decision.identity.key)
-        pending_work_store = get_pending_work_store()
+        pending_work_store = get_pending_work_store(self.repository)
         with self.store.locked(decision.identity.key):
             failures: list[str] = []
             current = self.store.get(decision.identity)

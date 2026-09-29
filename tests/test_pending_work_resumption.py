@@ -244,7 +244,7 @@ def test_production_binding_isolates_equal_issue_due_and_overlapping_recovery(tm
     issue = {"number": 5411, "title": "Same", "body": "Same", "labels": [], "user": {"id": 999}}
     revision = _issue_content_revision(issue)
     store = PendingWorkStore(tmp_path / "shared-pending.db")
-    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: store)
 
     github_by_repo = {repo: _BarrierIssueGithub({5411: [dict(issue), dict(issue)]}) for repo in repositories}
     engines = {repo: AutomationEngine(github_by_repo[repo], _skip_all_issues_config()) for repo in repositories}
@@ -323,7 +323,7 @@ def test_production_binding_isolates_equal_issue_due_and_overlapping_recovery(tm
 
 def test_production_binding_rejects_scp_style_git_remote(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: store)
     engine = AutomationEngine(_FakeIssueGithub({}), AutomationConfig())
     original_scheduler = engine.pending_work_scheduler
 
@@ -411,7 +411,7 @@ def test_issue_stage_handler_redefers_on_second_operational_failure():
 
 def test_process_single_candidate_defers_issue_hierarchy_observation_failure(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: store)
 
     class _ThrottledDirectChildGithub:
         def get_direct_sub_issues_strict(self, repo_name, issue_number):
@@ -435,7 +435,7 @@ def test_process_single_candidate_defers_issue_hierarchy_observation_failure(tmp
 
 def test_wrapped_reconciliation_admission_deferral_is_durably_retained(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: store)
 
     context = GitHubRequestContext("op", "attempt", "parent", "https://api.github.com", "GET", "read", "/repos/{repo}/issues/{number}/parent", "owner/repo", "issue:7", strict_read=True)
     deferred = GitHubRequestDeferred(context, "request_in_flight", retry_at=time.time() + 20)
@@ -511,7 +511,7 @@ def _admission_deferral() -> GitHubRequestDeferred:
 
 def _admitted_issue_engine(monkeypatch, tmp_path, issue):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: store)
     GitHubClient.reset_singleton()
     github = GitHubClient.get_instance("token")
     github.get_issue_dispatch_snapshot_strict = MagicMock(return_value=dict(issue))
@@ -529,7 +529,7 @@ def _admitted_issue_engine(monkeypatch, tmp_path, issue):
     decomposition_validator = MagicMock()
     decomposition_validator.is_reissue_required.return_value = False
     engine._get_decomposition_validator = MagicMock(return_value=decomposition_validator)
-    engine.pending_work_scheduler.wake = MagicMock()
+    engine.pending_work_scheduler = MagicMock()
     return engine, store
 
 

@@ -54,6 +54,7 @@ from .github_pending_work import (
     PendingObligation,
     PendingReason,
     PendingWorkOwnershipError,
+    PendingWorkPersistenceError,
     PendingWorkScheduler,
     StageOutcome,
     WorkIdentity,
@@ -772,7 +773,7 @@ class _ValidationPublicationStageHandler:
         if side_effect_error:
             logger.warning("Validation publication effects remain incomplete for Issue #{}: {}", issue_number, side_effect_error)
             return StageOutcome()
-        current = get_pending_work_store().get(obligation.identity)
+        current = get_pending_work_store(repo_name).get(obligation.identity)
         if current is None:
             # Every effect this obligation named has been durably completed
             # via complete_effect() from inside apply_blocked/apply_inherited_blocked.
@@ -874,7 +875,7 @@ class _DecompositionPublicationStageHandler:
         if side_effect_error:
             logger.warning("Decomposition publication effects remain incomplete for parent Issue #{}: {}", parent_number, side_effect_error)
             return StageOutcome()
-        current = get_pending_work_store().get(obligation.identity)
+        current = get_pending_work_store(repo_name).get(obligation.identity)
         if current is None:
             # Every effect this obligation named has been durably completed
             # via complete_effect() from inside apply_blocked.
@@ -908,7 +909,7 @@ class AutomationEngine:
         configure_github_request_boundary(self.github_request_governor.admit_blocking, self.github_request_governor.observe)
         # Construction is deliberately non-serving. ``start_automation`` replaces
         # this with an immutable repository-bound scheduler before recovery.
-        self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store(), repository=None)
+        self.pending_work_scheduler: PendingWorkScheduler | None = None
         self._pending_work_repository_key: str | None = None
         self.merge_operation_scheduler = get_merge_operation_scheduler()
         self.config = config or AutomationConfig()
@@ -2591,13 +2592,21 @@ class AutomationEngine:
                 return None
         return refreshed
 
+    def _wake_pending_work(self) -> None:
+        if self.pending_work_scheduler is not None:
+            self.pending_work_scheduler.wake()
+
     def _bind_pending_work_scheduler(self, repo_name: str) -> None:
         """Install the repository boundary and every production stage handler."""
         repository_key = repository_ownership_key(repo_name)
         if self._pending_work_repository_key not in {None, repository_key}:
             raise PendingWorkOwnershipError("AutomationEngine pending work is already repository-bound")
+        # READY is established from the repository's own durable destination
+        # before any dependent work; a non-ready store refuses here and never
+        # falls back to shared storage or an empty queue.
+        store = get_pending_work_store(repo_name)
         self._pending_work_repository_key = repository_key
-        self.pending_work_scheduler = PendingWorkScheduler(get_pending_work_store(), repository=repo_name)
+        self.pending_work_scheduler = PendingWorkScheduler(store, repository=repo_name)
         self.pending_work_scheduler.register_handler(STARTUP_RECONCILIATION_STAGE, _StartupReconciliationHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(PR_PROCESSING_STAGE, _PrProcessingStageHandler(self, repo_name))
         self.pending_work_scheduler.register_handler(ISSUE_PROCESSING_STAGE, _IssueProcessingStageHandler(self, repo_name))
@@ -2630,6 +2639,7 @@ class AutomationEngine:
         # so retained work from a previous run is never orphaned by a fresh
         # enumeration that only marks entities dirty again.
         self._startup_reconciliation_event = asyncio.Event()
+        assert self.pending_work_scheduler is not None
         pending_work_task = asyncio.create_task(self.pending_work_scheduler.run(self._shutdown_event), name="pending-work-scheduler")
 
         # Provider projection acknowledgements written by older releases do
@@ -2802,12 +2812,12 @@ class AutomationEngine:
             # this fresh inline attempt succeeded outright; clear it so the
             # scheduler never repeats a full enumeration for already-completed
             # recovery merely because that old obligation's deadline arrives.
-            await asyncio.to_thread(get_pending_work_store().supersede, identity)
+            await asyncio.to_thread(get_pending_work_store(repo_name).supersede, identity)
             return
         except GitHubRequestError as exc:
-            obligation = await asyncio.to_thread(get_pending_work_store().defer, identity, exc, (STARTUP_RECONCILIATION_EFFECT,))
+            obligation = await asyncio.to_thread(get_pending_work_store(repo_name).defer, identity, exc, (STARTUP_RECONCILIATION_EFFECT,))
             logger.warning(f"Startup GitHub reconciliation for {repo_name} deferred ({obligation.reason.value}); " f"the daemon stays up and the pending-work scheduler will retry automatically " f"(next eligible at {obligation.not_before})")
-            self.pending_work_scheduler.wake()
+            self._wake_pending_work()
 
         assert self._startup_reconciliation_event is not None and self._shutdown_event is not None
         wait_ready = asyncio.ensure_future(self._startup_reconciliation_event.wait())
@@ -3737,7 +3747,7 @@ class AutomationEngine:
                     if "pull_request" in snapshot or not self._is_open_issue(snapshot):
                         continue
                     pending_identity = WorkIdentity(repo_name, f"issue:{observed.number}", ISSUE_PROCESSING_STAGE, _issue_content_revision(snapshot))
-                    pending_reconciliation = get_pending_work_store().get(pending_identity)
+                    pending_reconciliation = get_pending_work_store(repo_name).get(pending_identity)
                     if pending_reconciliation is not None and pending_reconciliation.reason is PendingReason.ADMISSION_DEFERRED:
                         blocked_issue_numbers.add(observed.number)
                         continue
@@ -4799,7 +4809,7 @@ class AutomationEngine:
                 for wid, c in self.active_workers.items()
             },
             "open_items": open_items_status,
-            "pending_work": self.pending_work_scheduler.snapshot(),
+            "pending_work": self.pending_work_scheduler.snapshot() if self.pending_work_scheduler is not None else [],
             "merge_operations": self.merge_operation_scheduler.snapshot(),
         }
         return status
@@ -7005,7 +7015,7 @@ class AutomationEngine:
         """
         revision = _issue_content_revision(issue_data)
         identity = WorkIdentity(repo_name, f"issue:{item_number}", ISSUE_PROCESSING_STAGE, revision)
-        obligation = get_pending_work_store().defer(
+        obligation = get_pending_work_store(repo_name).defer(
             identity,
             error,
             (ISSUE_PROCESSING_REFRESH_EFFECT, ISSUE_PROCESSING_STAGE),
@@ -7020,7 +7030,7 @@ class AutomationEngine:
             obligation.not_before,
             error.outcome.delivery.value,
         )
-        self.pending_work_scheduler.wake()
+        self._wake_pending_work()
         result.error = str(error)
         result.target_outcome = ExplicitTargetOutcome.DEFERRED
         result.target_reason = (
@@ -7074,14 +7084,14 @@ class AutomationEngine:
             unfinished += (DIAGNOSTIC_EFFECT,)
         if current is None or not current.readiness_removed:
             unfinished += (READINESS_WITHDRAWAL_EFFECT,)
-        obligation = get_pending_work_store().defer(identity, error, unfinished)
+        obligation = get_pending_work_store(repo_name).defer(identity, error, unfinished)
         logger.warning(
             "Deferred BLOCKED publication for Issue #{} after GitHub operational failure {}; next eligible at {}",
             item_number,
             obligation.reason.value,
             obligation.not_before,
         )
-        self.pending_work_scheduler.wake()
+        self._wake_pending_work()
         result.error = str(error)
         result.target_outcome = ExplicitTargetOutcome.DEFERRED
         result.actions = [f"Deferred BLOCKED publication: {obligation.reason.value}"]
@@ -7110,8 +7120,8 @@ class AutomationEngine:
 
     def _schedule_codex_retry_handoff(self, repo_name: str, request_id: str, issue_number: int) -> None:
         identity = WorkIdentity(repo_name, f"issue:{issue_number}:retry:{request_id}", CODEX_RETRY_HANDOFF_STAGE, request_id)
-        get_pending_work_store().schedule_reevaluation(identity, (CODEX_RETRY_HANDOFF_EFFECT,))
-        self.pending_work_scheduler.wake()
+        get_pending_work_store(repo_name).schedule_reevaluation(identity, (CODEX_RETRY_HANDOFF_EFFECT,))
+        self._wake_pending_work()
 
     def _complete_codex_retry_handoff(self, repo_name: str, request_id: str) -> tuple[ExplicitTargetOutcome, str]:
         """Repair and confirm one accepted receipt across its durable projections."""
@@ -7440,9 +7450,32 @@ class AutomationEngine:
             origin=origin,
         )
 
+    def _pending_work_refusal(self, repo_name: str) -> Optional[str]:
+        """Return a refusal message unless ``repo_name``'s pending-work storage is READY.
+
+        Establishes READY (including atomic fresh initialization when no
+        legacy work exists) before any repository work that could depend on
+        pending-work retention or resumption.
+        """
+        try:
+            get_pending_work_store(repo_name)
+        except PendingWorkPersistenceError as exc:
+            logger.error("Refusing repository work for {}: {}", repo_name, exc)
+            return str(exc)
+        return None
+
     def run(self, repo_name: str) -> Dict[str, Any]:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
+        refusal = self._pending_work_refusal(repo_name)
+        if refusal is not None:
+            return {
+                "repository": repo_name,
+                "timestamp": datetime.now().isoformat(),
+                "issues_processed": [],
+                "prs_processed": [],
+                "errors": [refusal],
+            }
 
         # Check if current branch corresponds to a closed PR/Issue
         if not self._check_and_handle_closed_branch(repo_name):
@@ -7598,6 +7631,24 @@ class AutomationEngine:
         """
         if retry and not (explicit_only and force):
             raise ValueError("retry requires explicit_only and force")
+        refusal = self._pending_work_refusal(repo_name)
+        if refusal is not None:
+            refused: Dict[str, Any] = {
+                "repository": repo_name,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "issues_processed": [],
+                "prs_processed": [],
+                "errors": [refusal],
+            }
+            if explicit_only:
+                refused.update(
+                    target_number=number,
+                    target_type=target_type if target_type in {"issue", "pr"} else None,
+                    target_outcome=ExplicitTargetOutcome.FAILED.value,
+                    target_actions=[],
+                    target_reason=refusal,
+                )
+            return refused
         with active_repo_context(repo_name):
             os.environ["REPO_NAME"] = repo_name
             self.config.repo_name = repo_name

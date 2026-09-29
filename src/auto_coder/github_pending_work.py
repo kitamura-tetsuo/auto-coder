@@ -24,8 +24,10 @@ from .util.github_request_outcome import GitHubApiOutcome, GitHubRequestError
 
 logger = get_logger(__name__)
 _LOCK = threading.Lock()
-_DEFAULT_STORE: PendingWorkStore | None = None
-_DEFAULT_SCHEDULER: PendingWorkScheduler | None = None
+_REGISTRY_LOCK = threading.Lock()
+# Ready stores are cached by their repository-specific destination path, so a
+# store constructed for one repository can never be handed out for another.
+_READY_STORES: dict[Path, PendingWorkStore] = {}
 MAX_THROTTLED_RETRIES = 3
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 # The minimum interval between this process's own re-executions of the same
@@ -77,6 +79,7 @@ class PendingObligation:
 
 
 def default_pending_work_path() -> Path:
+    """Return the preserved legacy shared database path (a migration source only)."""
     return Path.home() / ".auto-coder" / "github_pending_work.db"
 
 
@@ -100,6 +103,17 @@ class PendingWorkReadiness(str, Enum):
     READY = "READY"
     MIGRATION_REQUIRED = "MIGRATION_REQUIRED"
     UNAVAILABLE = "UNAVAILABLE"
+
+
+class PendingWorkNotReadyError(PendingWorkPersistenceError):
+    """The repository's pending-work destination is not READY; dependent work must not run."""
+
+    def __init__(self, resolution: "PendingWorkResolution") -> None:
+        self.resolution = resolution
+        message = f"Pending-work storage for repository {resolution.repository} is {resolution.readiness.value} " f"(destination={resolution.destination}, legacy source={resolution.source}): {resolution.detail}."
+        if resolution.readiness is PendingWorkReadiness.MIGRATION_REQUIRED:
+            message += f" Stop every legacy controller, then run: auto-coder pending-work migrate --repository {resolution.repository} --offline"
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -239,7 +253,7 @@ def resolve_pending_work_store(repository: str, *, home: Path | None = None) -> 
         if conflict:
             return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, "destination has incompatible or uninitialized state")
         if ready:
-            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "destination is initialized", PendingWorkStore(destination, repository=repository))
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "destination is initialized", PendingWorkStore(destination, repository=repository, require_owner=True))
         rows = _validated_source_rows(source, key) if source.exists() else []
         if rows:
             return PendingWorkResolution(key, source, destination, PendingWorkReadiness.MIGRATION_REQUIRED, f"legacy source contains {len(rows)} owned row(s)")
@@ -284,14 +298,14 @@ def _initialize_destination(repository: str, source: Path, destination: Path, *,
         ready, conflict = _destination_state(destination, key)
         if not ready or conflict:
             raise PendingWorkPersistenceError("Destination commit result could not be confirmed")
-        return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "migration completed" if kind == "legacy" else "empty initialization completed", PendingWorkStore(destination, repository=repository))
+        return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "migration completed" if kind == "legacy" else "empty initialization completed", PendingWorkStore(destination, repository=repository, require_owner=True))
     except (OSError, sqlite3.Error, PendingWorkPersistenceError) as exc:
         # A failed commit call can have an unknown result. Durable reopened
         # state, rather than control flow, is authoritative.
         try:
             ready, conflict = _destination_state(destination, key)
             if ready and not conflict:
-                return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "migration commit confirmed after uncertain result", PendingWorkStore(destination, repository=repository))
+                return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "migration commit confirmed after uncertain result", PendingWorkStore(destination, repository=repository, require_owner=True))
         except PendingWorkPersistenceError:
             pass
         return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, str(exc))
@@ -306,7 +320,7 @@ def migrate_pending_work_store(repository: str, *, offline: bool, home: Path | N
     try:
         ready, conflict = _destination_state(destination, key)
         if ready:
-            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "already initialized", PendingWorkStore(destination, repository=repository))
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "already initialized", PendingWorkStore(destination, repository=repository, require_owner=True))
         if conflict:
             return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, "destination has incompatible or uninitialized state")
         if not offline:
@@ -322,14 +336,23 @@ def migrate_pending_work_store(repository: str, *, offline: bool, home: Path | N
 class PendingWorkStore:
     """SQLite-backed semantic retry queue, shared across workers and restarts."""
 
-    def __init__(self, db_path: Path | None = None, *, repository: str | None = None) -> None:
-        self._db_path = db_path or default_pending_work_path()
+    def __init__(self, db_path: Path, *, repository: str | None = None, require_owner: bool = False) -> None:
+        self._db_path = db_path
         self._repository = repository
         self._repository_key = repository_ownership_key(repository) if repository is not None else None
+        # A store opened through the readiness resolver never creates or
+        # repairs its database and re-verifies the durable owner on every use.
+        self._require_owner = require_owner
+        if require_owner and self._repository_key is None:
+            raise PendingWorkOwnershipError("An owner-verified pending-work store requires a repository binding")
+
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
 
     def scoped(self, repository: str) -> "PendingWorkStore":
         """Return an immutable repository-authorized view of this database."""
-        return PendingWorkStore(self._db_path, repository=repository)
+        return PendingWorkStore(self._db_path, repository=repository, require_owner=self._require_owner)
 
     def _owns(self, identity: WorkIdentity) -> bool:
         if self._repository_key is None:
@@ -367,7 +390,26 @@ class PendingWorkStore:
             )
             raise PendingWorkOwnershipError(f"Stored pending-work repository {row[0]!r} is not owned by {self._repository!r}")
 
+    def _verify_owner(self, connection: sqlite3.Connection) -> None:
+        tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        owner = connection.execute("SELECT repository_key FROM pending_work_owner WHERE singleton=1").fetchone() if "pending_work_owner" in tables else None
+        if "pending_work_initialization" not in tables or owner is None or owner[0] != self._repository_key:
+            logger.error("Pending-work storage refused: repository={!r} storage={} has no matching durable owner/initialization record", self._repository, self._db_path)
+            raise PendingWorkOwnershipError(f"Pending-work storage {self._db_path} is not initialized for {self._repository!r}")
+
     def _connect(self) -> sqlite3.Connection:
+        if self._require_owner:
+            if not self._db_path.exists():
+                logger.error("Pending-work storage refused: repository={!r} storage={} is missing", self._repository, self._db_path)
+                raise PendingWorkOwnershipError(f"Pending-work storage {self._db_path} is missing for {self._repository!r}")
+            connection = sqlite3.connect(self._db_path, timeout=30)
+            try:
+                self._verify_owner(connection)
+            except BaseException:
+                connection.close()
+                raise
+            connection.execute("PRAGMA journal_mode=WAL")
+            return connection
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self._db_path, timeout=30)
         connection.execute("PRAGMA journal_mode=WAL")
@@ -693,13 +735,152 @@ class PendingWorkStore:
             raise PendingWorkPersistenceError("GitHub pending work could not be updated") from exc
 
 
-def get_pending_work_store() -> PendingWorkStore:
-    """Return the process-wide durable obligation store."""
-    global _DEFAULT_STORE
-    with _LOCK:
-        if _DEFAULT_STORE is None:
-            _DEFAULT_STORE = PendingWorkStore()
-        return _DEFAULT_STORE
+def get_pending_work_store(repository: str) -> PendingWorkStore:
+    """Return the READY store owned by ``repository`` or refuse.
+
+    The repository must be the explicit engine/invocation target or the
+    identity of the obligation being processed; there is no ambient default.
+    A destination that is not READY raises :class:`PendingWorkNotReadyError`
+    rather than falling back to any other database.
+    """
+    repository_ownership_key(repository)
+    destination = repository_pending_work_path(repository)
+    with _REGISTRY_LOCK:
+        cached = _READY_STORES.get(destination)
+        if cached is not None:
+            return cached
+        resolution = resolve_pending_work_store(repository)
+        if resolution.readiness is not PendingWorkReadiness.READY or resolution.store is None:
+            logger.error("Pending-work readiness refused: repository={} readiness={} storage={} detail={}", resolution.repository, resolution.readiness.value, resolution.destination, resolution.detail)
+            raise PendingWorkNotReadyError(resolution)
+        _READY_STORES[destination] = resolution.store
+        return resolution.store
+
+
+def resolve_existing_pending_work_store(repository: str, *, home: Path | None = None) -> PendingWorkResolution:
+    """Like :func:`resolve_pending_work_store` but never creates a destination.
+
+    Operator commands that only mutate retained work use this so that a
+    missing or unmigrated repository is reported instead of initialized.
+    """
+    key = repository_ownership_key(repository)
+    root = home if home is not None else Path.home()
+    source = root / ".auto-coder" / "github_pending_work.db"
+    destination = repository_pending_work_path(repository, home=root)
+    try:
+        ready, conflict = _destination_state(destination, key)
+        if conflict:
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, "destination has incompatible or uninitialized state")
+        if ready:
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.READY, "destination is initialized", PendingWorkStore(destination, repository=repository, require_owner=True))
+        rows = _validated_source_rows(source, key) if source.exists() else []
+        if rows:
+            return PendingWorkResolution(key, source, destination, PendingWorkReadiness.MIGRATION_REQUIRED, f"legacy source contains {len(rows)} owned row(s)")
+        return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, "no initialized destination exists")
+    except (OSError, sqlite3.Error, PendingWorkPersistenceError) as exc:
+        return PendingWorkResolution(key, source, destination, PendingWorkReadiness.UNAVAILABLE, str(exc))
+
+
+class PendingWorkStorageState(str, Enum):
+    INITIALIZED = "initialized"
+    MIGRATION_REQUIRED = "migration-required"
+
+
+@dataclass(frozen=True)
+class PendingWorkView:
+    """Retained work observed in one storage location by read-only inspection."""
+
+    repository: str
+    storage: Path
+    state: PendingWorkStorageState
+    obligations: tuple[PendingObligation, ...] = ()
+
+
+@dataclass(frozen=True)
+class PendingWorkInspection:
+    views: tuple[PendingWorkView, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+def _read_obligations(connection: sqlite3.Connection, repository_key: str | None = None) -> list[PendingObligation]:
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(github_pending_work)")}
+    if not (set(_WORK_COLUMNS) - {"status"}).issubset(columns):
+        raise PendingWorkPersistenceError("pending-work schema is unsupported")
+    status_expression = "status" if "status" in columns else "'waiting'"
+    rows = connection.execute(f"SELECT repository,entity,stage,revision,reason,not_before,unfinished_effects,throttle_attempts,last_error,{status_expression} FROM github_pending_work ORDER BY updated_at").fetchall()
+    obligations = [PendingObligation(WorkIdentity(*row[:4]), PendingReason(row[4]), row[5], tuple(json.loads(row[6])), row[7], row[8], row[9]) for row in rows]
+    return obligations
+
+
+def _repository_bucket(repository: str) -> str:
+    try:
+        return repository_ownership_key(repository)
+    except PendingWorkOwnershipError:
+        return repository
+
+
+def inspect_pending_work(repository: str | None = None, *, home: Path | None = None) -> PendingWorkInspection:
+    """Read-only aggregate view of retained work; it grants no execution authority.
+
+    Initialized repository stores are shown from their destinations. Legacy
+    rows are shown only for repositories without a valid completed
+    destination record, so an initialized repository's preserved backup is
+    never presented as live work. Nothing is created, imported, or modified.
+    """
+    root = home if home is not None else Path.home()
+    filter_key = repository_ownership_key(repository) if repository is not None else None
+    repositories_dir = root / ".auto-coder" / "repositories"
+    legacy = root / ".auto-coder" / "github_pending_work.db"
+    views: list[PendingWorkView] = []
+    errors: list[str] = []
+    initialized: set[str] = set()
+
+    if filter_key is not None:
+        candidates = [repository_pending_work_path(filter_key, home=root)]
+    else:
+        candidates = sorted(repositories_dir.glob("*/github_pending_work.db")) if repositories_dir.is_dir() else []
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            with _readonly_connection(path) as connection:
+                tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if not tables:
+                    continue
+                if not {"pending_work_owner", "pending_work_initialization", "github_pending_work"}.issubset(tables):
+                    raise PendingWorkPersistenceError("destination has incompatible or uninitialized state")
+                owner = connection.execute("SELECT repository_key FROM pending_work_owner WHERE singleton=1").fetchone()
+                receipt = connection.execute("SELECT kind FROM pending_work_initialization WHERE singleton=1").fetchone()
+                if owner is None or receipt is None:
+                    raise PendingWorkPersistenceError("destination has no completed owner/initialization record")
+                owner_key = str(owner[0])
+                if hashlib.sha256(owner_key.encode("utf-8")).hexdigest() != path.parent.name:
+                    raise PendingWorkPersistenceError(f"destination owner {owner_key!r} does not match its storage location")
+                obligations = tuple(item for item in _read_obligations(connection) if _repository_bucket(item.identity.repository) == owner_key)
+        except (OSError, sqlite3.Error, PendingWorkPersistenceError, ValueError) as exc:
+            errors.append(f"storage {path} is unavailable or inconsistent: {exc}")
+            continue
+        initialized.add(owner_key)
+        if filter_key is None or owner_key == filter_key:
+            views.append(PendingWorkView(owner_key, path, PendingWorkStorageState.INITIALIZED, obligations))
+
+    if legacy.exists():
+        try:
+            with _readonly_connection(legacy) as connection:
+                tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                legacy_obligations = _read_obligations(connection) if "github_pending_work" in tables else []
+        except (OSError, sqlite3.Error, PendingWorkPersistenceError, ValueError) as exc:
+            errors.append(f"legacy storage {legacy} is unavailable or inconsistent: {exc}")
+            legacy_obligations = []
+        buckets: dict[str, list[PendingObligation]] = {}
+        for obligation in legacy_obligations:
+            bucket = _repository_bucket(obligation.identity.repository)
+            if bucket in initialized or (filter_key is not None and bucket != filter_key):
+                continue
+            buckets.setdefault(bucket, []).append(obligation)
+        for bucket, items in sorted(buckets.items()):
+            views.append(PendingWorkView(bucket, legacy, PendingWorkStorageState.MIGRATION_REQUIRED, tuple(items)))
+    return PendingWorkInspection(tuple(views), tuple(errors))
 
 
 @dataclass(frozen=True)
@@ -957,15 +1138,3 @@ class PendingWorkScheduler:
             self._store.defer(identity, outcome.error, remaining, governor_deadline=outcome.governor_deadline)
         elif self._store.get(identity) is not None:
             self._store.mark_waiting(identity)
-
-
-def get_pending_work_scheduler(repository: str) -> PendingWorkScheduler:
-    """Return the process-wide pending-work service bound to ``repository``."""
-    global _DEFAULT_SCHEDULER
-    key = repository_ownership_key(repository)
-    with _LOCK:
-        if _DEFAULT_SCHEDULER is None:
-            _DEFAULT_SCHEDULER = PendingWorkScheduler(get_pending_work_store(), repository=repository)
-        elif _DEFAULT_SCHEDULER._repository_key != key:
-            raise PendingWorkOwnershipError("The process-wide pending-work scheduler is already repository-bound")
-        return _DEFAULT_SCHEDULER

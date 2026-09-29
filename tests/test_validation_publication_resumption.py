@@ -135,7 +135,7 @@ class _FakeGitHub:
 
 def test_comment_succeeds_label_removal_deferred_completes_independently(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: store)
 
     gate = _blocked_gate(tmp_path)
     decision = _blocked_decision(gate)
@@ -184,7 +184,7 @@ def test_comment_succeeds_label_removal_deferred_survives_restart(tmp_path, monk
     db_path = tmp_path / "pending.db"
     decisions_path = tmp_path / "decisions.json"
     store = PendingWorkStore(db_path)
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: store)
 
     gate = SpecificationValidationLifecycle("owner/repo", "policy-a", decisions_path, lambda *_a: SpecificationAnalysisResult("BLOCKED", (FINDING,)))
     decision = _blocked_decision(gate)
@@ -199,7 +199,7 @@ def test_comment_succeeds_label_removal_deferred_survives_restart(tmp_path, monk
 
     # "Restart": brand-new store/gate/engine instances backed by the same files.
     restarted_store = PendingWorkStore(db_path)
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: restarted_store)
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: restarted_store)
     restarted_gate = SpecificationValidationLifecycle("owner/repo", "policy-a", decisions_path)
     github.label_error = None
     engine = AutomationEngine(github, AutomationConfig())
@@ -225,7 +225,7 @@ def test_comment_succeeds_label_removal_deferred_survives_restart(tmp_path, monk
 
 def test_readiness_withdrawn_before_diagnostic_still_delivers_diagnostic(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: store)
 
     gate = _blocked_gate(tmp_path)
     decision = _blocked_decision(gate)
@@ -249,8 +249,8 @@ def test_readiness_withdrawn_before_diagnostic_still_delivers_diagnostic(tmp_pat
 
 def test_validation_publication_stage_handler_resumes_after_restart_without_readiness_label(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
-    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: store)
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: store)
 
     gate = _blocked_gate(tmp_path)
     decision = _blocked_decision(gate)
@@ -293,7 +293,7 @@ def test_validation_publication_stage_handler_resumes_after_restart_without_read
 
 def test_stage_handler_supersedes_when_issue_body_changed_while_waiting(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: store)
 
     gate = _blocked_gate(tmp_path)
     decision = _blocked_decision(gate)
@@ -318,7 +318,7 @@ def test_stage_handler_supersedes_when_issue_body_changed_while_waiting(tmp_path
 
 def test_closed_subject_supersedes_undelivered_effects_and_preserves_confirmed_receipt(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: store)
     gate = _blocked_gate(tmp_path)
     decision = _blocked_decision(gate)
     identity = validation_publication_identity("owner/repo", 1728, decision.identity.key)
@@ -359,7 +359,7 @@ def test_stage_handler_supersedes_malformed_entity():
 
 def test_authentication_failure_during_publication_defers_not_supersedes(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: store)
 
     gate = _blocked_gate(tmp_path)
     decision = _blocked_decision(gate)
@@ -387,7 +387,7 @@ def test_authentication_failure_during_publication_defers_not_supersedes(tmp_pat
 
 def test_apply_blocked_completes_both_effects_via_production_pending_work_store(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: store)
     gate = _blocked_gate(tmp_path)
     decision = _blocked_decision(gate)
     identity = validation_publication_identity("owner/repo", 1728, decision.identity.key)

@@ -400,7 +400,7 @@ def _blocked_individual_gate(tmp_path):
 
 def test_individual_specification_blocked_publishes_and_withdraws_via_real_client(tmp_path, monkeypatch, reviewer_app_env):
     """Origin 1 (AS-002 table row 1): SpecificationValidationLifecycle.apply_blocked."""
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: PendingWorkStore(tmp_path / "pending.db"))
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: PendingWorkStore(tmp_path / "pending.db"))
 
     repo = "owner/individual-repo"
     issue_number = 87001
@@ -432,7 +432,7 @@ def test_individual_specification_blocked_publishes_and_withdraws_via_real_clien
 
 def test_inherited_child_specification_blocked_publishes_and_withdraws_via_real_client(tmp_path, monkeypatch, reviewer_app_env):
     """Origin 2 (AS-002 table row 2): SpecificationValidationLifecycle.apply_inherited_blocked."""
-    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: PendingWorkStore(tmp_path / "pending.db"))
+    monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: PendingWorkStore(tmp_path / "pending.db"))
 
     repo = "owner/inherited-repo"
     child_number = 87211
@@ -472,7 +472,7 @@ def _decomposition_inputs(parent: dict, children: list[dict]) -> tuple[Decomposi
 
 def test_decomposition_blocked_publishes_and_withdraws_via_real_client(tmp_path, monkeypatch, reviewer_app_env):
     """Origin 3 (AS-002 table row 3): DecompositionValidationLifecycle.apply_blocked."""
-    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda: PendingWorkStore(tmp_path / "pending.db"))
+    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda repository: PendingWorkStore(tmp_path / "pending.db"))
 
     repo = "owner/decomposition-repo"
     parent_number = 87301
@@ -511,7 +511,7 @@ def test_decomposition_blocked_publishes_and_withdraws_via_real_client(tmp_path,
 def test_decomposition_reviewer_identity_failure_leaves_blocked_and_withdraws_nothing(tmp_path, monkeypatch, reviewer_app_env):
     """AS-003 at the decomposition origin: an unavailable reviewer identity
     must not fall back to the ordinary credential or clear the BLOCKED verdict."""
-    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda: PendingWorkStore(tmp_path / "pending.db"))
+    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda repository: PendingWorkStore(tmp_path / "pending.db"))
 
     repo = "owner/decomposition-repo-failure"
     parent_number = 87401
