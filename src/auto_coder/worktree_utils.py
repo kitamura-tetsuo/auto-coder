@@ -102,6 +102,8 @@ class LocalWorkspaceBinding:
     workspace: Path
     ownership: LocalWorkspaceOwnership
     initial_files: tuple[WorkspaceFileState, ...] = ()
+    caller_git_identity: Optional[tuple[int, int]] = None
+    caller_common_identity: Optional[tuple[int, int]] = None
 
 
 _CURRENT_LOCAL_WORKSPACE: contextvars.ContextVar[Optional[LocalWorkspaceBinding]] = contextvars.ContextVar("auto_coder_local_workspace", default=None)
@@ -274,6 +276,8 @@ def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWork
         ),
         workspace=workspace,
         ownership=ownership or LocalWorkspaceOwnership(),
+        caller_git_identity=(Path(git_dir_text).resolve().stat().st_dev, Path(git_dir_text).resolve().stat().st_ino),
+        caller_common_identity=(common_dir.stat().st_dev, common_dir.stat().st_ino),
     )
     return _SourceSnapshot(
         binding=binding,
@@ -418,7 +422,20 @@ def sync_worktree_changes_back(
     with _handoff_lock(target):
         tracked = _listed_paths(target, "--cached")
         context_untracked = tuple(path for path in _listed_paths(target, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
-        current_token, _, _ = _source_token(target, tracked, context_untracked)
+        current_token, _, current_git_dir = _source_token(target, tracked, context_untracked)
+        current_common_dir = Path(_git(target, "rev-parse", "--git-common-dir").stdout.strip().decode())
+        if not current_common_dir.is_absolute():
+            current_common_dir = (target / current_common_dir).resolve()
+        current_git_path = Path(current_git_dir).resolve()
+        current_git_identity = (current_git_path.stat().st_dev, current_git_path.stat().st_ino)
+        current_common_identity = (current_common_dir.stat().st_dev, current_common_dir.stat().st_ino)
+        if (
+            current_git_path != binding.caller_git_dir.resolve()
+            or current_common_dir != binding.caller_common_dir.resolve()
+            or (binding.caller_git_identity is not None and current_git_identity != binding.caller_git_identity)
+            or (binding.caller_common_identity is not None and current_common_identity != binding.caller_common_identity)
+        ):
+            raise WorkspaceHandoffError("caller Git identity changed; refusing stale result")
         if current_token != binding.file_snapshot_checksum:
             raise WorkspaceHandoffError("caller checkpoint changed; refusing stale result")
 
@@ -436,8 +453,8 @@ def sync_worktree_changes_back(
         applied: list[str] = []
         try:
             for relative in changed:
-                _restore_path(destinations[relative], final_states.get(relative))
                 applied.append(relative)
+                _restore_path(destinations[relative], final_states.get(relative))
         except OSError as exc:
             for relative in reversed(applied):
                 _restore_path(destinations[relative], before[relative])

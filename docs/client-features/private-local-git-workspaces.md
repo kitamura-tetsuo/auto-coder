@@ -22,7 +22,8 @@ working directory.
 Editable results are computed from the invocation's captured working-file baseline
 to the bound private root's final working-file state. Private commits, branch names,
 staging, and clean status do not control the delta. Before applying it, the
-controller revalidates the caller HEAD, index, and supported files under a
+controller revalidates the caller Git-directory/common-directory identity, HEAD,
+index, and supported files under a
 per-target writer lock; stale targets, unsafe paths, symlink ancestors, or partial
 application failures are refused without overwriting caller work. Failed and
 no-edit turns never enter this handoff.

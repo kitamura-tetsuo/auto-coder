@@ -839,6 +839,8 @@ class BackendManager(LLMBackendManagerBase):
                     config_backend = getattr(cli, "config_backend", None)
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
+                    if session_id is not None and is_local:
+                        raise SessionWorkspaceCompatibilityError("local continuation refused because its original private workspace and generation checkpoint are no longer retained")
                     workspace_ownership = LocalWorkspaceOwnership() if is_local else None
                     worktree_ctx = (
                         isolated_local_llm_worktree(

@@ -50,3 +50,7 @@ Explicit continuation compatibility failures are not redirected into fresh
 invocations. Effective mode is resolved before boundary construction, including
 clients constructed for no-edit operation, so controller evidence cannot advertise
 editable authority for a read-only invocation.
+Local sessions are refused once their invocation-owned private workspace has been
+released; an opaque provider session ID is never resumed in a newly cloned root and
+reported as a continuation. A future continuation implementation must retain or
+capture the prior generation and establish the next caller checkpoint explicitly.

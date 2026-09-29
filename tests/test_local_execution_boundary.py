@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from src.auto_coder.backend_manager import BackendManager
+from src.auto_coder.exceptions import SessionWorkspaceCompatibilityError
 from src.auto_coder.invocation_process_supervisor import InvocationOutcome, SupervisedInvocationResult, WriterState
 from src.auto_coder.local_execution_boundary import (
     BackendOutcome,
@@ -307,7 +308,7 @@ def test_dynamic_client_attribute_does_not_invent_noedit_mode(tmp_path: Path) ->
     client._run_llm_cli.assert_called_once_with("implement", is_noedit=False)
 
 
-def test_concurrent_manager_continuations_keep_invocation_modes(tmp_path: Path) -> None:
+def test_local_continuations_are_refused_before_rebinding_session_workspace(tmp_path: Path) -> None:
     class ConcurrentClient:
         use_noedit_options = False
         model_name = "test-model"
@@ -351,5 +352,6 @@ def test_concurrent_manager_continuations_keep_invocation_modes(tmp_path: Path) 
         first.join(timeout=5)
         second.join(timeout=5)
 
-    assert errors == []
-    assert client.calls == {"read-only": (True, False), "editable": (False, True)}
+    assert len(errors) == 2
+    assert all(isinstance(error, SessionWorkspaceCompatibilityError) for error in errors)
+    assert client.calls == {}

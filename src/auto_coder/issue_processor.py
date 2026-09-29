@@ -2222,7 +2222,7 @@ def _apply_issue_actions_directly(
                     _record_dispatch_stage(issue_number, "issue.local-commit-push", f"issue#{issue_number} local commit/push", commit_outcome, {"message": commit_action})
 
                     # Create PR if this is a regular issue (not a PR)
-                    if "head_branch" not in issue_data and target_branch:
+                    if "head_branch" not in issue_data and target_branch and commit_outcome is Outcome.COMPLETED:
                         with ProgressStage("Creating PR"):
                             pr_creation_result = _create_pr_for_issue(
                                 repo_name=repo_name,

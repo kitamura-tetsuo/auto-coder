@@ -135,6 +135,45 @@ def test_stale_caller_checkpoint_refuses_entire_private_result(tmp_path: Path) -
     assert not (repo / "addition.txt").exists()
 
 
+def test_rebound_caller_git_identity_refuses_matching_filesystem(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+
+    with pytest.raises(WorkspacePreparationError, match="caller Git identity changed"):
+        with isolated_local_llm_worktree(repo, is_noedit=False) as wt_path:
+            (Path(wt_path) / "tracked.txt").write_text("private result\n")
+            original_git = tmp_path / "original-git"
+            (repo / ".git").rename(original_git)
+            # Recreate matching metadata at the same path with a distinct
+            # directory identity.
+            shutil.copytree(original_git, repo / ".git")
+
+    assert (repo / "tracked.txt").read_text() == "initial content\n"
+
+
+def test_failing_replacement_path_is_included_in_handoff_rollback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _init_repo(tmp_path)
+    original_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    original_index = (repo / ".git" / "index").read_bytes()
+    real_write_bytes = Path.write_bytes
+    failed = False
+
+    def fail_once(path: Path, data: bytes) -> int:
+        nonlocal failed
+        if path == repo / "tracked.txt" and data == b"private result\n" and not failed:
+            failed = True
+            raise OSError("disk full")
+        return real_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_once)
+    with pytest.raises(WorkspacePreparationError, match="rolled back"):
+        with isolated_local_llm_worktree(repo, is_noedit=False) as wt_path:
+            (Path(wt_path) / "tracked.txt").write_text("private result\n")
+
+    assert (repo / "tracked.txt").read_text() == "initial content\n"
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip() == original_head
+    assert (repo / ".git" / "index").read_bytes() == original_index
+
+
 def test_changed_result_requires_positive_generation_authority(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     ownership = LocalWorkspaceOwnership()
