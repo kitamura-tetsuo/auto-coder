@@ -2,12 +2,13 @@
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder.git_commit import git_push, save_commit_failure_history
+from src.auto_coder.git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from src.auto_coder.utils import CommandResult
 
 
@@ -175,31 +176,105 @@ class TestSaveCommitFailureHistory:
             assert data["context"] == context
             assert "timestamp" in data
 
-    def test_save_commit_failure_history_without_repo_name(self, tmp_path):
-        """Test saving commit failure history without repo name."""
-        original_cwd = os.getcwd()
-        try:
-            os.chdir(tmp_path)
 
-            error_message = "Test error message"
-            context = {"type": "test", "pr_number": 456}
+def test_model_repair_claim_cannot_publish_when_controller_push_still_fails(tmp_path: Path, _use_real_commands: None) -> None:
+    """REQ-007/008: only the controller's real remote outcome proves publication."""
+    remote = tmp_path / "remote.git"
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "main", str(repository)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    (repository / "result.txt").write_text("baseline\n")
+    subprocess.run(["git", "add", "result.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repository, check=True)
+    subprocess.run(["git", "push", "origin", "main"], cwd=repository, check=True, capture_output=True)
+    remote_before = subprocess.check_output(["git", "rev-parse", "refs/heads/main"], cwd=remote, text=True).strip()
 
-            with pytest.raises(SystemExit) as exc_info:
-                save_commit_failure_history(error_message, context, None)
+    (repository / "result.txt").write_text("unpublished\n")
+    subprocess.run(["git", "commit", "-am", "result"], cwd=repository, check=True, capture_output=True)
+    hook = remote / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
 
-            assert exc_info.value.code == 1
+    with patch("src.auto_coder.git_branch.try_llm_commit_push", return_value=True):
+        result = git_push(cwd=str(repository), branch="main", commit_message="repair")
 
-            history_dir = tmp_path / ".auto-coder"
-            assert history_dir.exists()
+    assert result.success is False
+    assert subprocess.check_output(["git", "rev-parse", "refs/heads/main"], cwd=remote, text=True).strip() == remote_before
 
-            history_files = list(history_dir.glob("commit_failure_*.json"))
-            assert len(history_files) == 1
 
-            with open(history_files[0], "r") as f:
-                data = json.load(f)
+def test_model_repair_requires_controller_retry_and_exact_remote_verification(tmp_path: Path, _use_real_commands: None) -> None:
+    remote = tmp_path / "remote.git"
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "main", str(repository)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    (repository / "result.txt").write_text("baseline\n")
+    subprocess.run(["git", "add", "result.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repository, check=True)
+    subprocess.run(["git", "push", "origin", "main"], cwd=repository, check=True, capture_output=True)
+    (repository / "result.txt").write_text("published after retry\n")
+    subprocess.run(["git", "commit", "-am", "result"], cwd=repository, check=True, capture_output=True)
+    local_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
 
-            assert data["error_message"] == error_message
-            assert data["context"] == context
-            assert "timestamp" in data
-        finally:
-            os.chdir(original_cwd)
+    hook = remote / "hooks" / "pre-receive"
+    marker = remote / "rejected-once"
+    hook.write_text(f'#!/bin/sh\nif [ ! -e "{marker}" ]; then touch "{marker}"; exit 1; fi\nexit 0\n')
+    hook.chmod(0o755)
+    with patch("src.auto_coder.git_branch.try_llm_commit_push", return_value=True):
+        result = git_push(cwd=str(repository), branch="main", commit_message="repair")
+
+    assert result.success is True
+    assert result.stdout == f"Verified origin/main at {local_head}"
+    assert subprocess.check_output(["git", "rev-parse", "refs/heads/main"], cwd=remote, text=True).strip() == local_head
+
+
+def test_commit_failure_is_not_reported_as_model_published_success() -> None:
+    failure = CommandResult(False, "", "commit rejected", 1)
+    with (
+        patch("src.auto_coder.git_commit.CommandExecutor") as executor,
+        patch("src.auto_coder.git_branch.git_commit_with_retry", return_value=failure),
+        patch("src.auto_coder.git_commit.save_commit_failure_history") as save_history,
+    ):
+        executor.return_value.run_command.side_effect = [
+            CommandResult(True, " M result.txt\n", "", 0),
+            CommandResult(True, "", "", 0),
+        ]
+        result = commit_and_push_changes({"summary": "repair"}, repo_name="owner/repo", issue_number=7)
+
+    assert result == "Failed to commit changes: commit rejected"
+    save_history.assert_called_once()
+
+
+def test_save_commit_failure_history_without_repo_name(tmp_path: Path) -> None:
+    """Test saving commit failure history without repo name."""
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+
+        error_message = "Test error message"
+        context = {"type": "test", "pr_number": 456}
+
+        with pytest.raises(SystemExit) as exc_info:
+            save_commit_failure_history(error_message, context, None)
+
+        assert exc_info.value.code == 1
+
+        history_dir = tmp_path / ".auto-coder"
+        assert history_dir.exists()
+
+        history_files = list(history_dir.glob("commit_failure_*.json"))
+        assert len(history_files) == 1
+
+        with open(history_files[0], "r") as f:
+            data = json.load(f)
+
+        assert data["error_message"] == error_message
+        assert data["context"] == context
+        assert "timestamp" in data
+    finally:
+        os.chdir(original_cwd)

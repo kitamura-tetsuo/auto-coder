@@ -104,6 +104,94 @@ def test_isolated_worktree_edit_mode_syncs_changes_back(tmp_path: Path) -> None:
     assert not Path(wt_path).exists()
 
 
+def test_clean_private_commit_is_promoted_from_final_files(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+
+    with isolated_local_llm_worktree(repo, is_noedit=False) as wt_path:
+        wt = Path(wt_path)
+        (wt / "tracked.txt").write_text("committed privately\n")
+        (wt / "private-addition.bin").write_bytes(b"\x00result\xff")
+        subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
+        subprocess.run(["git", "commit", "-m", "private result"], cwd=wt, check=True, capture_output=True)
+        assert subprocess.check_output(["git", "status", "--porcelain"], cwd=wt) == b""
+
+    assert (repo / "tracked.txt").read_text() == "committed privately\n"
+    assert (repo / "private-addition.bin").read_bytes() == b"\x00result\xff"
+    assert subprocess.check_output(["git", "log", "-1", "--format=%s"], cwd=repo, text=True).strip() == "initial commit"
+
+
+def test_stale_caller_checkpoint_refuses_entire_private_result(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    workspace_path: Path | None = None
+
+    with pytest.raises(WorkspacePreparationError, match="caller checkpoint changed"):
+        with isolated_local_llm_worktree(repo, is_noedit=False) as wt_path:
+            workspace_path = Path(wt_path)
+            (workspace_path / "tracked.txt").write_text("private result\n")
+            (workspace_path / "addition.txt").write_text("new result\n")
+            (repo / "tracked.txt").write_text("newer caller work\n")
+
+    assert (repo / "tracked.txt").read_text() == "newer caller work\n"
+    assert not (repo / "addition.txt").exists()
+
+
+def test_rebound_caller_git_identity_refuses_matching_filesystem(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+
+    with pytest.raises(WorkspacePreparationError, match="caller Git identity changed"):
+        with isolated_local_llm_worktree(repo, is_noedit=False) as wt_path:
+            (Path(wt_path) / "tracked.txt").write_text("private result\n")
+            original_git = tmp_path / "original-git"
+            (repo / ".git").rename(original_git)
+            # Recreate matching metadata at the same path with a distinct
+            # directory identity.
+            shutil.copytree(original_git, repo / ".git")
+
+    assert (repo / "tracked.txt").read_text() == "initial content\n"
+
+
+def test_failing_replacement_path_is_included_in_handoff_rollback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _init_repo(tmp_path)
+    original_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    original_index = (repo / ".git" / "index").read_bytes()
+    real_write_bytes = Path.write_bytes
+    failed = False
+
+    def fail_once(path: Path, data: bytes) -> int:
+        nonlocal failed
+        if path == repo / "tracked.txt" and data == b"private result\n" and not failed:
+            failed = True
+            raise OSError("disk full")
+        return real_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_once)
+    with pytest.raises(WorkspacePreparationError, match="rolled back"):
+        with isolated_local_llm_worktree(repo, is_noedit=False) as wt_path:
+            (Path(wt_path) / "tracked.txt").write_text("private result\n")
+
+    assert (repo / "tracked.txt").read_text() == "initial content\n"
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip() == original_head
+    assert (repo / ".git" / "index").read_bytes() == original_index
+
+
+def test_changed_result_requires_positive_generation_authority(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    ownership = LocalWorkspaceOwnership()
+
+    with pytest.raises(WorkspacePreparationError, match="handoff evidence is missing"):
+        with isolated_local_llm_worktree(
+            repo,
+            is_noedit=False,
+            ownership=ownership,
+            require_handoff_authorization=True,
+        ) as wt_path:
+            (Path(wt_path) / "tracked.txt").write_text("unauthorized\n")
+            ownership.release_execution()
+
+    assert (repo / "tracked.txt").read_text() == "initial content\n"
+    ownership.release_handoff()
+
+
 def test_isolated_worktree_noedit_mode_discards_changes(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
 

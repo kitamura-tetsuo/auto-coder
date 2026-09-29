@@ -257,7 +257,9 @@ def test_cancelling_one_owner_does_not_stop_peer_or_delete_results(tmp_path: Pat
     two = threading.Thread(target=lambda: results.append(supervisor.run(second)))
     one.start()
     two.start()
-    deadline = time.monotonic() + 3
+    # Coverage shards can delay both worker threads while thousands of tests
+    # compete for CPU. This waits only for bounded startup, not process output.
+    deadline = time.monotonic() + 15
     while supervisor.state("first") is not WriterState.ACTIVE or supervisor.state("second") is not WriterState.ACTIVE:
         assert time.monotonic() < deadline
         time.sleep(0.01)

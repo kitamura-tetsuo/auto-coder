@@ -2059,23 +2059,22 @@ tests:
        * If it's a hook failure, fix the underlying issue that the hook detected
        * Stage any additional changes with `git add`
 
-    4. After resolving the issue, commit and push the changes:
-       * Use `git commit -m "$commit_message"` with the original commit message if exist
-       * Use `git push` to push the changes
+    4. Leave the corrected files in the bound workspace. Private local Git operations
+       are allowed when useful, but do not push or mutate GitHub state. Auto-Coder
+       will accept the final file result and retry commit/push itself.
 
-    5. Verify the operation succeeded:
-       * Check `git status` to ensure there are no uncommitted changes
-       * Confirm the push was successful
+    5. Verify the local correction with the relevant formatter or check. Do not
+       claim that controller commit or remote publication succeeded.
 
     **Important:**
     * Do NOT modify the commit message if exist
     * Create a new commit message if commit message does not exist
     * Do NOT skip or bypass pre-commit hooks
-    * Do NOT force push unless explicitly required
-    * Ensure all changes are properly staged before committing
+    * Do NOT push, force push, or change the publication destination
+    * Final working files in the bound root are authoritative; a private commit is optional
     * If the issue cannot be resolved automatically, provide a clear error message
 
-    After completing the operation, output a single line starting with "COMMIT_PUSH_RESULT:" followed by either "SUCCESS" or "FAILED: <reason>".
+    After completing the local repair, output a single line starting with "COMMIT_PUSH_RESULT:" followed by either "SUCCESS" or "FAILED: <reason>". SUCCESS means only that the local correction is ready for controller acceptance.
 
   dprint_fallback: |-
     You are an expert dprint formatter troubleshooting assistant.

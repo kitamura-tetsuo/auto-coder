@@ -18,3 +18,12 @@ configuration, objects, and worktree registrations are therefore private to one
 invocation. Cleanup removes only that invocation's temporary clone after execution
 and edit handoff have finished; non-Git operations continue to use their original
 working directory.
+
+Editable results are computed from the invocation's captured working-file baseline
+to the bound private root's final working-file state. Private commits, branch names,
+staging, and clean status do not control the delta. Before applying it, the
+controller revalidates the caller Git-directory/common-directory identity, HEAD,
+index, and supported files under a
+per-target writer lock; stale targets, unsafe paths, symlink ancestors, or partial
+application failures are refused without overwriting caller work. Failed and
+no-edit turns never enter this handoff.

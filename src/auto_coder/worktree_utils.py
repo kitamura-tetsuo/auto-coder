@@ -28,12 +28,28 @@ class WorkspacePreparationError(RuntimeError):
     """Raised when a private execution workspace cannot be prepared safely."""
 
 
+class WorkspaceHandoffError(WorkspacePreparationError):
+    """Raised when a completed private result cannot be applied atomically."""
+
+
+@dataclass(frozen=True)
+class WorkspaceFileState:
+    """A non-dereferencing snapshot of one supported working-tree path."""
+
+    relative_path: str
+    contents: bytes
+    mode: int
+    symlink: bool
+
+
 @dataclass
 class LocalWorkspaceOwnership:
     """Explicit execution and handoff releases required before disposal."""
 
     execution_released: bool = False
     handoff_released: bool = False
+    handoff_authorized: bool = False
+    authorized_turn_id: Optional[str] = None
     _disposer: Optional[Callable[[], None]] = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
@@ -46,6 +62,14 @@ class LocalWorkspaceOwnership:
         with self._lock:
             self.handoff_released = True
             self._dispose_if_released()
+
+    def authorize_handoff(self, invocation_id: str, turn_id: str, expected_invocation_id: str) -> None:
+        """Authorize copying only for the exact successfully settled generation."""
+        with self._lock:
+            if invocation_id != expected_invocation_id or not turn_id:
+                raise WorkspaceHandoffError("handoff evidence belongs to a different result generation")
+            self.handoff_authorized = True
+            self.authorized_turn_id = turn_id
 
     def retain_until_released(self, disposer: Callable[[], None]) -> None:
         with self._lock:
@@ -77,6 +101,9 @@ class LocalWorkspaceBinding:
     file_snapshot_checksum: str
     workspace: Path
     ownership: LocalWorkspaceOwnership
+    initial_files: tuple[WorkspaceFileState, ...] = ()
+    caller_git_identity: Optional[tuple[int, int]] = None
+    caller_common_identity: Optional[tuple[int, int]] = None
 
 
 _CURRENT_LOCAL_WORKSPACE: contextvars.ContextVar[Optional[LocalWorkspaceBinding]] = contextvars.ContextVar("auto_coder_local_workspace", default=None)
@@ -142,6 +169,18 @@ def _path_bytes(path: Path) -> tuple[bytes, int, bool]:
     if path.is_symlink():
         return os.fsencode(os.readlink(path)), stat.S_IMODE(path.lstat().st_mode), True
     return path.read_bytes(), stat.S_IMODE(path.stat().st_mode), False
+
+
+def _capture_file_states(root: Path, paths: set[str]) -> tuple[WorkspaceFileState, ...]:
+    states: list[WorkspaceFileState] = []
+    for relative in sorted(paths):
+        path = root / relative
+        try:
+            contents, mode, symlink = _path_bytes(path)
+        except (FileNotFoundError, IsADirectoryError):
+            continue
+        states.append(WorkspaceFileState(relative, contents, mode, symlink))
+    return tuple(states)
 
 
 def _listed_paths(root: Path, *args: str) -> tuple[str, ...]:
@@ -231,8 +270,14 @@ def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWork
         initial_commit=commit,
         index_checksum=index_digest,
         file_snapshot_checksum=token,
+        initial_files=_capture_file_states(
+            root,
+            set(tracked) | {path for path in _listed_paths(root, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts)},
+        ),
         workspace=workspace,
         ownership=ownership or LocalWorkspaceOwnership(),
+        caller_git_identity=(Path(git_dir_text).resolve().stat().st_dev, Path(git_dir_text).resolve().stat().st_ino),
+        caller_common_identity=(common_dir.stat().st_dev, common_dir.stat().st_ino),
     )
     return _SourceSnapshot(
         binding=binding,
@@ -293,37 +338,127 @@ def _seed_private_repository(snapshot: _SourceSnapshot) -> None:
         raise WorkspacePreparationError("caller Git identity, index, or files changed during workspace preparation")
 
 
-def sync_worktree_changes_back(source_worktree: Union[Path, str], target_repo: Union[Path, str], baseline: str = "HEAD") -> None:
-    """Copy the private repository's final file state back without copying Git state."""
-    source = Path(source_worktree)
-    target = Path(target_repo)
-    del baseline  # The caller's dirty starting state is the file-copy baseline.
-    source_tracked = set(_listed_paths(source, "--cached"))
-    target_tracked = set(_listed_paths(target, "--cached"))
-    source_untracked = {path for path in _listed_paths(source, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts)}
-    for relative in sorted(source_tracked | target_tracked | source_untracked):
-        src = source / relative
-        dst = target / relative
-        if not src.exists() and not src.is_symlink():
-            if relative in target_tracked and (dst.exists() or dst.is_symlink()):
-                dst.unlink()
-            continue
-        source_value = _path_bytes(src)
-        try:
-            target_value = _path_bytes(dst)
-        except (FileNotFoundError, IsADirectoryError):
-            target_value = None
-        if source_value == target_value:
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.exists() or dst.is_symlink():
-            dst.unlink()
-        contents, mode, symlink = source_value
-        if symlink:
-            dst.symlink_to(os.fsdecode(contents))
+_HANDOFF_LOCKS: dict[Path, threading.Lock] = {}
+_HANDOFF_LOCKS_GUARD = threading.Lock()
+
+
+def _handoff_lock(root: Path) -> threading.Lock:
+    with _HANDOFF_LOCKS_GUARD:
+        return _HANDOFF_LOCKS.setdefault(root.resolve(), threading.Lock())
+
+
+def _assert_safe_destination(root: Path, relative: str) -> Path:
+    candidate = Path(relative)
+    if candidate.is_absolute() or ".." in candidate.parts or relative in {"", ".git"}:
+        raise WorkspaceHandoffError(f"unsafe result path: {relative}")
+    destination = root / candidate
+    current = root
+    for part in candidate.parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            raise WorkspaceHandoffError(f"destination ancestor is a symlink: {relative}")
+        if current.exists() and not current.is_dir():
+            raise WorkspaceHandoffError(f"destination ancestor is not a directory: {relative}")
+    return destination
+
+
+def _restore_path(path: Path, state: Optional[WorkspaceFileState]) -> None:
+    if path.exists() or path.is_symlink():
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
         else:
-            dst.write_bytes(contents)
-            dst.chmod(mode)
+            path.unlink()
+    if state is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if state.symlink:
+        path.symlink_to(os.fsdecode(state.contents))
+    else:
+        path.write_bytes(state.contents)
+        path.chmod(state.mode)
+
+
+def _result_has_file_delta(source: Path, binding: LocalWorkspaceBinding) -> bool:
+    baseline_states = {item.relative_path: item for item in binding.initial_files}
+    final_paths = set(_listed_paths(source, "--cached"))
+    final_paths.update(path for path in _listed_paths(source, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    final_paths.update(baseline_states)
+    final_states = {item.relative_path: item for item in _capture_file_states(source, final_paths)}
+    return baseline_states != final_states
+
+
+def sync_worktree_changes_back(
+    source_worktree: Union[Path, str],
+    target_repo: Union[Path, str],
+    baseline: Union[str, LocalWorkspaceBinding] = "HEAD",
+) -> None:
+    """Apply the final file delta while the immutable caller checkpoint still matches.
+
+    Git history and the private index are deliberately irrelevant: the baseline and
+    final working-file snapshots determine the result.
+    """
+    source = Path(source_worktree)
+    target = Path(target_repo).resolve()
+    if not isinstance(baseline, LocalWorkspaceBinding):
+        raise WorkspaceHandoffError("an immutable workspace binding is required for handoff")
+    binding = baseline
+    if source.resolve() != binding.workspace.resolve() or target != binding.caller_root.resolve():
+        raise WorkspaceHandoffError("result root or caller target does not match its binding")
+    if _git(source, "ls-files", "-u").stdout:
+        raise WorkspaceHandoffError("private result has an unresolved index")
+    private_git_dir = Path(_git(source, "rev-parse", "--absolute-git-dir").stdout.strip().decode())
+    unfinished = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply", "sequencer")
+    if any((private_git_dir / marker).exists() for marker in unfinished):
+        raise WorkspaceHandoffError("private result has an unfinished Git operation")
+
+    baseline_states = {item.relative_path: item for item in binding.initial_files}
+    final_paths = set(_listed_paths(source, "--cached"))
+    final_paths.update(path for path in _listed_paths(source, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    # A baseline source file remains in scope even when the result adds an ignore rule.
+    final_paths.update(baseline_states)
+    final_states = {item.relative_path: item for item in _capture_file_states(source, final_paths)}
+    changed = sorted(path for path in baseline_states.keys() | final_states.keys() if baseline_states.get(path) != final_states.get(path))
+
+    with _handoff_lock(target):
+        tracked = _listed_paths(target, "--cached")
+        context_untracked = tuple(path for path in _listed_paths(target, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+        current_token, _, current_git_dir = _source_token(target, tracked, context_untracked)
+        current_common_dir = Path(_git(target, "rev-parse", "--git-common-dir").stdout.strip().decode())
+        if not current_common_dir.is_absolute():
+            current_common_dir = (target / current_common_dir).resolve()
+        current_git_path = Path(current_git_dir).resolve()
+        current_git_identity = (current_git_path.stat().st_dev, current_git_path.stat().st_ino)
+        current_common_identity = (current_common_dir.stat().st_dev, current_common_dir.stat().st_ino)
+        if (
+            current_git_path != binding.caller_git_dir.resolve()
+            or current_common_dir != binding.caller_common_dir.resolve()
+            or (binding.caller_git_identity is not None and current_git_identity != binding.caller_git_identity)
+            or (binding.caller_common_identity is not None and current_common_identity != binding.caller_common_identity)
+        ):
+            raise WorkspaceHandoffError("caller Git identity changed; refusing stale result")
+        if current_token != binding.file_snapshot_checksum:
+            raise WorkspaceHandoffError("caller checkpoint changed; refusing stale result")
+
+        destinations = {path: _assert_safe_destination(target, path) for path in changed}
+        before: dict[str, Optional[WorkspaceFileState]] = {}
+        for relative, destination in destinations.items():
+            try:
+                contents, mode, symlink = _path_bytes(destination)
+                before[relative] = WorkspaceFileState(relative, contents, mode, symlink)
+            except (FileNotFoundError, IsADirectoryError):
+                before[relative] = None
+            if destination.exists() and destination.is_dir() and not destination.is_symlink():
+                raise WorkspaceHandoffError(f"destination path/type conflict: {relative}")
+
+        applied: list[str] = []
+        try:
+            for relative in changed:
+                applied.append(relative)
+                _restore_path(destinations[relative], final_states.get(relative))
+        except OSError as exc:
+            for relative in reversed(applied):
+                _restore_path(destinations[relative], before[relative])
+            raise WorkspaceHandoffError(f"result application failed and was rolled back: {exc}") from exc
 
 
 @contextlib.contextmanager
@@ -331,6 +466,7 @@ def isolated_local_llm_worktree(
     base_cwd: Optional[Union[Path, str]] = None,
     is_noedit: bool = False,
     ownership: Optional[LocalWorkspaceOwnership] = None,
+    require_handoff_authorization: bool = False,
 ) -> Generator[str, None, None]:
     """Bind a Git-backed invocation to an independently cloned private repository."""
     target = _resolve_target(base_cwd)
@@ -361,7 +497,9 @@ def isolated_local_llm_worktree(
         if ownership is None:
             snapshot.binding.ownership.release_execution()
         if not is_noedit:
-            sync_worktree_changes_back(workspace, snapshot.binding.caller_root, snapshot.binding.initial_commit)
+            if require_handoff_authorization and not snapshot.binding.ownership.handoff_authorized and _result_has_file_delta(workspace, snapshot.binding):
+                raise WorkspaceHandoffError("successful generation-bound handoff evidence is missing")
+            sync_worktree_changes_back(workspace, snapshot.binding.caller_root, snapshot.binding)
         snapshot.binding.ownership.release_handoff()
     finally:
         if execution_token is not None:

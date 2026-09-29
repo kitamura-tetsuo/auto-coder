@@ -18,12 +18,14 @@ launcher, remain terminal even if the provider later exits successfully.
 
 An ordinary successful provider return records only successful backend completion.
 It remains a usable legacy result, but its enforcement and writer facts stay unknown
-and it cannot authorize a certified confined result. The aggregate operational
-success query requires positive backend completion, filesystem enforcement, writer
-settlement, and violation observation. Publication enforcement remains descriptive
-legacy evidence but is not required for operational success. No-edit evidence can
-never authorize edit promotion, and a provider session identifier is metadata—not
-continuation admission or permission to reuse a result root.
+and it cannot authorize a certified confined result. The legacy confined-result
+query requires positive backend completion, filesystem enforcement, writer
+settlement, and violation observation. Default editable handoff instead requires
+the exact editable turn, successful backend completion, positive writer settlement,
+and completed violation observation; filesystem and publication confinement
+certificates are not prerequisites. No-edit evidence can never authorize edit
+promotion, and a provider session identifier is metadata—not continuation
+admission or permission to reuse a result root.
 
 Codex and OpenCode turns use this boundary at the real command launch. The controller strips
 ambient Git target overrides, requires the command cwd to equal the immutable
@@ -48,3 +50,7 @@ Explicit continuation compatibility failures are not redirected into fresh
 invocations. Effective mode is resolved before boundary construction, including
 clients constructed for no-edit operation, so controller evidence cannot advertise
 editable authority for a read-only invocation.
+Local sessions are refused once their invocation-owned private workspace has been
+released; an opaque provider session ID is never resumed in a newly cloned root and
+reported as a continuation. A future continuation implementation must retain or
+capture the prior generation and establish the next caller checkpoint explicitly.

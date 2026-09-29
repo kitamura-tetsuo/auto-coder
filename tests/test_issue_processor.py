@@ -972,8 +972,15 @@ class TestLabelBasedIssueProcessing:
 class TestKeepLabelOnPRCreation:
     """Test that keep_label() is called on successful PR creation."""
 
-    def test_apply_issue_actions_calls_keep_label_on_successful_pr(self):
-        """Test that _apply_issue_actions_directly calls keep_label when PR is successfully created."""
+    @pytest.mark.parametrize(
+        ("commit_action", "expects_pr"),
+        [
+            ("Successfully committed and pushed changes: issue", True),
+            ("Failed to commit and push changes: rejected", False),
+            ("No changes to commit", False),
+        ],
+    )
+    def test_apply_issue_actions_creates_pr_only_after_published_change(self, commit_action, expects_pr):
         repo_name = "owner/repo"
         issue_number = 123
         issue_data = {"number": issue_number, "title": "Test Issue", "body": "Test body"}
@@ -1011,7 +1018,7 @@ class TestKeepLabelOnPRCreation:
             with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
                 with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                     with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
-                        with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
+                        with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value=commit_action):
                             with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
                                 with patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0):
                                     # Mock _create_pr_for_issue to return success message
@@ -1036,8 +1043,8 @@ class TestKeepLabelOnPRCreation:
                                                 github_client,
                                             )
 
-        # Verify keep_label was called
-        assert len(keep_label_called) == 1, "keep_label should be called once on successful PR creation"
+        assert mock_create_pr.called is expects_pr
+        assert len(keep_label_called) == (1 if expects_pr else 0)
 
     def test_apply_issue_actions_does_not_call_keep_label_on_failed_pr(self):
         """Test that _apply_issue_actions_directly does not call keep_label when PR creation fails."""
@@ -1079,7 +1086,10 @@ class TestKeepLabelOnPRCreation:
                 with patch("src.auto_coder.issue_processor.BranchManager", fake_branch_context):
                     with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
                         with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
-                            with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
+                            with patch(
+                                "src.auto_coder.issue_processor.commit_and_push_changes",
+                                return_value="Successfully committed and pushed changes: issue",
+                            ):
                                 # Mock _create_pr_for_issue to return failure message
                                 with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
                                     mock_create_pr.return_value = f"Failed to create PR for issue #{issue_number}: Error"

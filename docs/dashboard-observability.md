@@ -1324,6 +1324,17 @@ merged pull request. No structured event schema changes are introduced.
 Backend-unavailable, allowance-not-admitted, and terminal-failure reasons use the
 same stage and existing reason/route fields; no dashboard event schema changes are
 required.
+
+## Local Issue publication admission
+
+Local Issue implementation continues to emit `issue.local-commit-push` as
+`COMPLETED`, `SKIPPED`, or `FAILED` from the controller publication result. New-PR
+creation is now admitted only after `COMPLETED`; skipped no-change and failed
+publication outcomes do not emit a later `issue.pr-publication` attempt. This
+changes no event schema or dashboard projection and prevents the existing view
+from displaying a stale/empty PR as the successor of an unpublished result.
+`tests/test_issue_processor.py::TestKeepLabelOnPRCreation::test_apply_issue_actions_creates_pr_only_after_published_change`
+drives all three outcomes through the production Issue-processing boundary.
 # Codex retirement-accounting fence
 
 Codex retirement registration and reconstruction are safety gates within the

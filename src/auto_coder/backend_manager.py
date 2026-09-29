@@ -263,6 +263,9 @@ class BackendManager(LLMBackendManagerBase):
 
         # Track session ID of the last executed backend
         self._last_session_id: Optional[str] = None
+        # Sessions produced by an accepted editable generation whose private
+        # root has since been released cannot be resumed in a newly cloned root.
+        self._released_local_workspace_sessions: set[str] = set()
 
         # Whether the most recent continue_session() call actually resumed the
         # requested session, or fell back to a fresh session/backend. Callers
@@ -584,6 +587,8 @@ class BackendManager(LLMBackendManagerBase):
                 except (ValueError, RuntimeError, NotImplementedError) as exc:
                     if not should_resume:
                         raise
+                    if isinstance(exc, SessionWorkspaceCompatibilityError) and self._last_session_id in self._released_local_workspace_sessions:
+                        raise
                     logger.warning("Could not resume implementation session on backend '%s'; starting fresh: %s", backend_name, exc)
                     self._last_session_id = None
                     self._save_session_state(backend_name, None)
@@ -839,8 +844,18 @@ class BackendManager(LLMBackendManagerBase):
                     config_backend = getattr(cli, "config_backend", None)
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
+                    if session_id is not None and is_local and session_id in self._released_local_workspace_sessions:
+                        raise SessionWorkspaceCompatibilityError("local continuation refused because its original private workspace and generation checkpoint are no longer retained")
                     workspace_ownership = LocalWorkspaceOwnership() if is_local else None
-                    worktree_ctx = isolated_local_llm_worktree(is_noedit=is_noedit, ownership=workspace_ownership) if is_local else contextlib.nullcontext()
+                    worktree_ctx = (
+                        isolated_local_llm_worktree(
+                            is_noedit=is_noedit,
+                            ownership=workspace_ownership,
+                            require_handoff_authorization=not is_noedit,
+                        )
+                        if is_local
+                        else contextlib.nullcontext()
+                    )
                     with worktree_ctx:
                         workspace_binding = get_current_local_workspace()
                         boundary_ctx = (
@@ -883,8 +898,16 @@ class BackendManager(LLMBackendManagerBase):
                                     local_boundary.binding.invocation_id,
                                     getattr(cli, "get_last_session_id", lambda: None)(),
                                 )
-                                if getattr(cli, "supports_supervised_local_turn", False) is True:
-                                    local_boundary.require_confined_result(local_boundary.binding.invocation_id)
+                                if not is_noedit and workspace_ownership is not None:
+                                    handoff_evidence = local_boundary.evidence()
+                                    if handoff_evidence.handoff_authorized:
+                                        workspace_ownership.authorize_handoff(
+                                            handoff_evidence.invocation_id,
+                                            handoff_evidence.turn_id,
+                                            local_boundary.binding.invocation_id,
+                                        )
+                                        if session_id is None and handoff_evidence.provider_session_id:
+                                            self._released_local_workspace_sessions.add(handoff_evidence.provider_session_id)
                         self._settle_admitted_invocation(invocation_handle, success=True)
                         if workspace_ownership is not None:
                             workspace_ownership.release_execution()
