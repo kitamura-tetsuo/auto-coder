@@ -866,12 +866,18 @@ class OpenCodeClient(LLMClientBase):
             raise RuntimeError(f"OpenCode CLI reported a session error: {classification_text or '(no diagnostic detail)'}")
 
         if returncode != 0:
-            classification_text = diagnostic_text or combined_output
+            # Only process stderr and structured root-session errors are trusted
+            # provider diagnostics. Stdout contains assistant/tool/source text
+            # and must never establish quota or transport classification.
+            classification_text = diagnostic_text
             if has_usage_marker_match(classification_text, markers) or has_http_429_marker(classification_text):
                 raise AutoCoderUsageLimitError(classification_text or "OpenCode usage limit reached")
             if self._looks_retryable(classification_text):
                 raise AutoCoderRetryableBackendError(classification_text or "OpenCode transport failure")
             raise RuntimeError(f"OpenCode CLI failed with return code {returncode}\n{combined_output}")
+
+        if root_session is None:
+            raise RuntimeError("OpenCode did not emit a root session identity; rejecting the result")
 
         # Issue #2126 REQ-003: a continuation may be reported as resumed only
         # when root-session identity equals the requested ID. This is checked

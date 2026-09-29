@@ -519,3 +519,54 @@ def test_retained_continuation_with_unknown_current_writer_settlement_is_incompl
         reset_command_execution_cwd(token)
     assert manager._last_continue_session_resumed is False
     assert (repository / "tracked.txt").read_text() == "initial\n"
+
+
+def test_retained_continuation_policy_violation_blocks_caller_handoff(tmp_path: Path, _use_real_commands: None) -> None:
+    class ViolatingContinuationClient:
+        supports_retained_local_continuation = True
+        use_noedit_options = False
+        model_name = "test-model"
+        config_backend = SimpleNamespace(backend_type="opencode")
+
+        def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.record_violation_observation(boundary.binding.invocation_id)
+            return "fresh"
+
+        def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            (boundary.binding.workspace / "tracked.txt").write_text("denied continuation edit\n")
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.report_policy_violation(boundary.binding.invocation_id, "filesystem policy denied an operation")
+            return "textually successful but policy-invalid"
+
+        def get_last_session_id(self) -> str:
+            return "retained-session"
+
+    import subprocess
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("initial\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    client = ViolatingContinuationClient()
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(default_backend="alias", default_client=client, factories={"alias": lambda: client}, order=["alias"])
+    token = bind_command_execution_cwd(str(repository))
+    try:
+        assert manager._run_llm_cli("first") == "fresh"
+        manager.authorize_retained_local_session_reuse("retained-session")
+        with pytest.raises(LocalContinuationError, match="lacks authorized result-handoff evidence"):
+            manager.continue_session("retained-session", "second")
+    finally:
+        reset_command_execution_cwd(token)
+
+    assert manager._last_continue_session_resumed is False
+    assert (repository / "tracked.txt").read_text() == "initial\n"

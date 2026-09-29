@@ -555,6 +555,15 @@ def test_nonzero_exit_without_events_fails_with_return_code(tmp_path: Path, monk
         _final_answer_via_driver(tmp_path, monkeypatch, "", exit_code=17)
 
 
+def test_nonzero_exit_does_not_classify_quota_from_tool_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    stdout = _event("tool_use", part={"id": "tool-1", "messageID": "m1", "state": {"status": "completed", "output": "source says HTTP 429 quota exceeded"}}) + "\n"
+
+    with pytest.raises(RuntimeError, match="return code 17") as raised:
+        _final_answer_via_driver(tmp_path, monkeypatch, stdout, exit_code=17)
+
+    assert not isinstance(raised.value, AutoCoderUsageLimitError)
+
+
 # ---------------------------------------------------------------------------
 # AC-005: agent vs publisher ownership
 # ---------------------------------------------------------------------------
@@ -606,6 +615,25 @@ def test_editable_direct_client_refuses_without_shared_binding(tmp_path: Path, m
         with pytest.raises(RuntimeError, match="controller-owned local workspace binding"):
             client._run_llm_cli("implement")
     assert not (repo / "committed.txt").exists()
+
+
+def test_sessionless_fresh_result_does_not_synchronize_changed_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    repo = _repository(tmp_path)
+    script = _driver(tmp_path)
+    body = tmp_path / "edit.py"
+    body.write_text("open('tracked.txt', 'w').write('unattributed edit\\n')\n")
+    stdout_file = tmp_path / "stdout.jsonl"
+    stdout_file.write_text(json.dumps({"type": "step_finish", "part": {"id": "sf1", "messageID": "m1", "reason": "stop"}}) + "\n" + json.dumps({"type": "text", "part": {"id": "t1", "messageID": "m1", "text": "done"}}) + "\n")
+    config = LLMBackendConfiguration(backends={"opencode": BackendConfig(name="opencode", backend_type="opencode", model="anthropic/claude-sonnet-4-5")})
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_OPENCODE_CLI", str(script))
+    monkeypatch.setenv("OPENCODE_TEST_BODY_FILE", str(body))
+    monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(stdout_file))
+
+    with pytest.raises(RuntimeError, match="root session identity"):
+        _manager(config)._run_llm_cli("implement")
+
+    assert (repo / "tracked.txt").read_text() == "before\n"
 
 
 # ---------------------------------------------------------------------------
@@ -926,7 +954,7 @@ def test_ac002_manager_usage_failure_does_not_switch_backend_or_claim_continuity
                 {"type": "step_finish", "part": {"id": "sf1", "messageID": "m1", "reason": "stop"}},
                 {"type": "text", "part": {"id": "t1", "messageID": "m1", "text": "no session emitted"}},
             ],
-            "did not continue the requested session",
+            "root session identity",
         ),
         (
             [

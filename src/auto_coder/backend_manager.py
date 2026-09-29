@@ -976,6 +976,8 @@ class BackendManager(LLMBackendManagerBase):
                             if completed_turn_evidence.writer_completion is not EvidenceStatus.ESTABLISHED:
                                 raise LocalWriterSettlementError("continued turn writer settlement is uncertain")
                             if completed_turn_evidence.editable:
+                                if not completed_turn_evidence.handoff_authorized:
+                                    raise LocalContinuationError("continued turn lacks authorized result-handoff evidence")
                                 sync_worktree_changes_back(completed_retained.binding.workspace, completed_retained.binding.caller_root, completed_retained.binding)
                         advanced_binding = refresh_local_workspace_binding(completed_retained.binding)
                         if retained_session is not None:
