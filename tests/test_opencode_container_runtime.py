@@ -316,7 +316,15 @@ home = Path("/runtime/home")
 [backends.codex-live]
 backend_type = "codex"
 model = "gpt-5-codex"
-options = ["--dangerously-bypass-approvals-and-sandbox", "--json"]
+options = [
+  "--dangerously-bypass-approvals-and-sandbox", "--json",
+  "-c", 'model_provider="controlled"',
+  "-c", 'model_providers.controlled.name="Controlled"',
+  "-c", 'model_providers.controlled.base_url="http://127.0.0.1:{provider.port}/v1"',
+  "-c", 'model_providers.controlled.env_key="OPENAI_API_KEY"',
+  "-c", 'model_providers.controlled.wire_api="responses"',
+  "-c", "features.responses_websockets=false"
+]
 openai_api_key = "controlled-key"
 openai_base_url = "http://127.0.0.1:{provider.port}/v1"
 """)
@@ -356,6 +364,10 @@ except Exception as exc:
             "OPENAI_API_KEY=controlled-key",
             "-e",
             f"OPENAI_BASE_URL=http://127.0.0.1:{provider.port}/v1",
+            "-e",
+            "CODEX_API_KEY=controlled-key",
+            "-e",
+            f"CODEX_BASE_URL=http://127.0.0.1:{provider.port}/v1",
             "--entrypoint",
             "python3",
             image,
