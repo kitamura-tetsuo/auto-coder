@@ -187,7 +187,7 @@ async def test_scheduler_dispatches_due_obligation_to_registered_handler(tmp_pat
     now = time.time()
     store.defer(identity, _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=0.05), ("effect",), now=now)
 
-    scheduler = PendingWorkScheduler(store, poll_interval=0.05)
+    scheduler = PendingWorkScheduler(store, repository="acme/widgets", poll_interval=0.05)
     handler = _RecordingHandler()
     scheduler.register_handler("validation", handler)
 
@@ -208,7 +208,7 @@ async def test_scheduler_leaves_unknown_stage_visibly_blocked(tmp_path):
     identity = WorkIdentity("acme/widgets", "issue:2", "unknown-stage", "rev-a")
     store.defer(identity, _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=0), ("effect",), now=time.time())
 
-    scheduler = PendingWorkScheduler(store, poll_interval=0.05)
+    scheduler = PendingWorkScheduler(store, repository="acme/widgets", poll_interval=0.05)
     shutdown = asyncio.Event()
     task = asyncio.create_task(scheduler.run(shutdown))
     try:
@@ -231,7 +231,7 @@ async def test_scheduler_recovers_interrupted_work_on_restart_instead_of_dispatc
     store.defer(identity, _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=0), ("effect",), now=time.time())
     store.mark_running(identity)  # simulate a controller that crashed mid-dispatch
 
-    scheduler = PendingWorkScheduler(store, poll_interval=0.05)
+    scheduler = PendingWorkScheduler(store, repository="acme/widgets", poll_interval=0.05)
     handler = _RecordingHandler()
     scheduler.register_handler("validation", handler)
     shutdown = asyncio.Event()
@@ -251,7 +251,7 @@ async def test_scheduler_shutdown_leaves_in_flight_obligation_running_for_recove
     identity = WorkIdentity("acme/widgets", "issue:4", "validation", "rev-a")
     store.defer(identity, _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=0), ("effect",), now=time.time())
 
-    scheduler = PendingWorkScheduler(store, poll_interval=0.05)
+    scheduler = PendingWorkScheduler(store, repository="acme/widgets", poll_interval=0.05)
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -328,7 +328,7 @@ async def test_scheduler_self_notification_does_not_skip_the_local_retry_floor(t
     # itself (rather than the ordinary poll cadence) and would busy-loop
     # every poll_interval without the fix, since defer() re-arms the
     # obligation to due-now and _run_claimed() always calls self.wake().
-    scheduler = PendingWorkScheduler(store, poll_interval=0.05)
+    scheduler = PendingWorkScheduler(store, repository="acme/widgets", poll_interval=0.05)
     handler = _AlwaysDeferredHandler()
     scheduler.register_handler("ci", handler)
     shutdown = asyncio.Event()
@@ -370,7 +370,7 @@ async def test_scheduler_manual_retry_wakes_idle_loop(tmp_path):
         store.defer(identity, _error(GitHubApiOutcome.PRIMARY_THROTTLED), ("effect",), now=100 + attempt)
     assert store.due(now=10_000) == []
 
-    scheduler = PendingWorkScheduler(store, poll_interval=30.0)
+    scheduler = PendingWorkScheduler(store, repository="acme/widgets", poll_interval=30.0)
     handler = _RecordingHandler()
     scheduler.register_handler("validation", handler)
     shutdown = asyncio.Event()
@@ -402,7 +402,7 @@ async def test_scheduler_stage_error_redefers_remaining_effects(tmp_path):
         def recover(self, obligation):
             raise AssertionError("not expected")
 
-    scheduler = PendingWorkScheduler(store, poll_interval=0.05)
+    scheduler = PendingWorkScheduler(store, repository="acme/widgets", poll_interval=0.05)
     handler = _PartialHandler()
     scheduler.register_handler("validation", handler)
     shutdown = asyncio.Event()
@@ -421,3 +421,120 @@ async def test_scheduler_stage_error_redefers_remaining_effects(tmp_path):
     finally:
         shutdown.set()
         await task
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        "owner",
+        "owner/repo/extra",
+        "owner\\repo",
+        "https://host/owner/repo",
+        "git@github.com:owner/repo",
+        "owner/..",
+        "owner/re po",
+        "owner/\x00repo",
+    ],
+)
+def test_repository_binding_rejects_invalid_names(tmp_path, repository):
+    from auto_coder.github_pending_work import PendingWorkOwnershipError
+
+    with pytest.raises(PendingWorkOwnershipError):
+        PendingWorkScheduler(PendingWorkStore(tmp_path / "pending.db"), repository=repository)
+
+
+def test_repository_scoped_store_isolates_enumeration_deadline_and_mutations(tmp_path):
+    from auto_coder.github_pending_work import PendingWorkOwnershipError
+
+    store = PendingWorkStore(tmp_path / "pending.db")
+    owned = WorkIdentity(" ACME/Widgets ", "issue:7", "validation", "owned")
+    foreign = WorkIdentity("other/widgets", "issue:7", "validation", "foreign")
+    store.defer(owned, _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=20), ("effect",), now=100)
+    foreign_saved = store.defer(foreign, _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=1), ("effect",), now=100)
+    scoped = store.scoped("acme/widgets")
+
+    assert scoped.due(now=200)[0].identity == owned
+    assert len(scoped.due(now=200)) == 1
+    assert scoped.next_due_at() == 120
+    assert [item.identity for item in scoped.all_pending()] == [owned]
+    with pytest.raises(PendingWorkOwnershipError):
+        scoped.manual_retry(foreign, now=50)
+    assert store.get(foreign) == foreign_saved
+
+
+def test_scheduler_rejects_foreign_alternate_entry_before_claim(tmp_path):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    foreign = WorkIdentity("other/widgets", "issue:7", "validation", "foreign")
+    saved = store.defer(foreign, _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=0), ("effect",), now=100)
+    scheduler = PendingWorkScheduler(store, repository="acme/widgets")
+    handler = _RecordingHandler()
+
+    asyncio.run(scheduler._run_claimed(saved, handler.dispatch))
+
+    assert handler.dispatched == []
+    assert store.get(foreign) == saved
+
+
+def test_repository_key_lowercases_ascii_only_during_dispatch(tmp_path):
+    store = PendingWorkStore(tmp_path / "pending.db")
+    owned = WorkIdentity("k/repo", "issue:7", "validation", "owned")
+    kelvin = WorkIdentity("K/repo", "issue:7", "validation", "foreign")
+    for identity in (kelvin, owned):
+        store.defer(
+            identity,
+            _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=0),
+            ("effect",),
+            now=100,
+        )
+    scheduler = PendingWorkScheduler(store, repository="K/REPO")
+    handler = _RecordingHandler()
+    scheduler.register_handler("validation", handler)
+
+    async def dispatch():
+        await scheduler._dispatch_due()
+        await asyncio.gather(*tuple(scheduler._tasks))
+
+    asyncio.run(dispatch())
+
+    assert handler.dispatched == [owned]
+    assert store.get(owned) is None
+    assert store.get(kelvin) is not None
+
+
+def test_scoped_mutations_reject_mismatched_stored_repository(tmp_path):
+    from auto_coder.github_pending_work import PendingWorkOwnershipError
+
+    path = tmp_path / "pending.db"
+    unscoped = PendingWorkStore(path)
+    owned = WorkIdentity("acme/widgets", "issue:8", "validation", "owned")
+    valid = WorkIdentity("acme/widgets", "issue:9", "validation", "valid")
+    error = _error(GitHubApiOutcome.SECONDARY_THROTTLED, retry_after=5)
+    unscoped.defer(owned, error, ("effect",), now=100)
+    unscoped.defer(valid, error, ("effect",), now=100)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE github_pending_work SET repository=? WHERE work_key=?",
+            ("other/widgets", owned.key()),
+        )
+        before = connection.execute("SELECT * FROM github_pending_work WHERE work_key=?", (owned.key(),)).fetchone()
+
+    scoped = unscoped.scoped("acme/widgets")
+    operations = (
+        lambda: scoped.get(owned),
+        lambda: scoped.defer(owned, error, ("second",), now=200),
+        lambda: scoped.schedule_reevaluation(owned, ("second",), now=200),
+        lambda: scoped.mark_running(owned),
+        lambda: scoped.mark_waiting(owned),
+        lambda: scoped.manual_retry(owned, now=200),
+        lambda: scoped.complete_effect(owned, "effect"),
+        lambda: scoped.supersede(owned),
+    )
+    for operation in operations:
+        with pytest.raises(PendingWorkOwnershipError):
+            operation()
+        with sqlite3.connect(path) as connection:
+            after = connection.execute("SELECT * FROM github_pending_work WHERE work_key=?", (owned.key(),)).fetchone()
+        assert after == before
+
+    scoped.mark_running(valid)
+    assert unscoped.get(valid).status == ObligationStatus.RUNNING.value

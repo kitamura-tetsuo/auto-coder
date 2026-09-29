@@ -984,7 +984,7 @@ def test_startup_admission_deferral_retries_durably_without_terminating_daemon(t
     github = MagicMock()
     github.get_open_entities_strict.side_effect = enumerate_entities
     engine = AutomationEngine(github, AutomationConfig())
-    engine.pending_work_scheduler = PendingWorkScheduler(store, poll_interval=0.02)
+    engine.pending_work_scheduler = PendingWorkScheduler(store, repository="owner/repo", poll_interval=0.02)
     processed = []
     monkeypatch.setattr(engine, "_create_candidate_from_single", _candidate)
     monkeypatch.setattr(engine, "_get_implementation_slots", lambda repo: MagicMock())

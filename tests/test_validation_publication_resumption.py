@@ -263,7 +263,7 @@ def test_validation_publication_stage_handler_resumes_after_restart_without_read
 
     engine = AutomationEngine(github, AutomationConfig())
     engine._specification_validators["owner/repo"] = gate
-    engine.pending_work_scheduler = PendingWorkScheduler(store, poll_interval=0.02)
+    engine.pending_work_scheduler = PendingWorkScheduler(store, repository="owner/repo", poll_interval=0.02)
     engine.pending_work_scheduler.register_handler(VALIDATION_PUBLICATION_STAGE, _ValidationPublicationStageHandler(engine, "owner/repo"))
 
     async def scenario():
