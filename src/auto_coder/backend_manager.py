@@ -947,6 +947,8 @@ class BackendManager(LLMBackendManagerBase):
                                             handoff_evidence.turn_id,
                                             local_boundary.binding.invocation_id,
                                         )
+                                        if not supports_retained and session_id is None and handoff_evidence.provider_session_id:
+                                            self._released_local_workspace_sessions.add(handoff_evidence.provider_session_id)
                         self._settle_admitted_invocation(invocation_handle, success=True)
                         if workspace_ownership is not None:
                             workspace_ownership.release_execution()
