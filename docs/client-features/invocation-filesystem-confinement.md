@@ -12,8 +12,9 @@ the child exists, so replacing a checked symlink cannot retarget a rule.
 On Linux, the child joins its invocation-owned cgroup and then installs a Landlock
 ruleset with `no_new_privs` before `exec`. Editable calls may mutate only the private
 result and owned runtime roots. No-edit calls can inspect the repository but cannot
-mutate repository, Git, scratch, or runtime paths; trusted bookkeeping remains in
-the controller rather than granting the provider a writable root. The kernel
+mutate repository, Git, or shared scratch paths. They may write only to explicitly
+provided invocation-owned runtime roots, which Codex needs for startup state.
+The provider and its descendants share that runtime allowance. The kernel
 applies the policy to shells, interpreters, absolute
 executables, Git alternate-directory options, hooks, and every descendant. Writes
 through path traversal, symlinks, hard-link creation, rename/refer operations, and

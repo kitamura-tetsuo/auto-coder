@@ -66,7 +66,14 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     temporary_directory = runtime / "tmp"
     temporary_directory.mkdir()
     original_home = Path(environment.get("HOME", str(Path.home())))
-    for relative in (Path(".codex/auth.json"), Path(".config/opencode"), Path(".local/share/opencode/auth.json")):
+    codex_home = Path(environment.get("CODEX_HOME", str(original_home / ".codex")))
+    for name in ("auth.json", "config.toml"):
+        source = codex_home / name
+        if source.is_file():
+            destination = home / ".codex" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+    for relative in (Path(".config/opencode"), Path(".local/share/opencode/auth.json")):
         source = original_home / relative
         destination = home / relative
         if source.is_dir():
@@ -80,6 +87,7 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     if uid is not None and gid is not None:
         _chown_tree(runtime, uid, gid)
     environment["HOME"] = str(home)
+    environment["CODEX_HOME"] = str(home / ".codex")
     # Provider runtimes such as Bun create executable/cache state in TMPDIR.
     # Keep that state inside the invocation-owned writable runtime rather than
     # granting the worker access to the controller's shared /tmp.
@@ -897,16 +905,31 @@ class CommandExecutor:
             worker_uid = getattr(owner, "worker_uid", None)
             worker_gid = getattr(owner, "worker_gid", None)
             private_runtime: Optional[Path] = None
+            final_message_copy: Optional[tuple[Path, Path]] = None
             try:
                 if worker_uid is not None and worker_gid is not None:
                     # The private temporary parent is normally mode 0700. This is
                     # invocation-owned state, so transfer it without touching the
                     # caller or peer repositories.
                     _chown_tree(binding.workspace.parent, worker_uid, worker_gid)
-                if boundary.editable:
+                # Codex creates PATH aliases and starts an in-process app-server
+                # before processing a read-only review. Keep that bookkeeping in
+                # an invocation-owned home and temporary directory.
+                if boundary.editable or boundary.backend_type.lower() == "codex":
                     private_runtime = _prepare_invocation_runtime(supervised, launch_env)
                 if boundary.backend_type.lower() == "codex" and Path(cmd[0]).name == "codex":
                     validate_codex_effective_directory(cmd[1:], binding.workspace)
+                    if not boundary.editable and private_runtime is not None and "--output-last-message" in cmd:
+                        option_index = cmd.index("--output-last-message")
+                        if option_index + 1 >= len(cmd):
+                            raise RepositoryReadinessError("Codex final-message option has no path")
+                        destination = Path(cmd[option_index + 1])
+                        if not destination.is_file() or destination.is_symlink() or binding.workspace.resolve() not in destination.resolve().parents:
+                            raise RepositoryReadinessError("Codex final-message destination must be a private repository file")
+                        provider_output = private_runtime / "tmp" / "final-message.txt"
+                        cmd = [*cmd]
+                        cmd[option_index + 1] = str(provider_output)
+                        final_message_copy = (provider_output, destination)
                     readiness = verify_worker_repository(
                         binding.workspace,
                         worker_uid=worker_uid,
@@ -955,6 +978,16 @@ class CommandExecutor:
                 # The controller owns result synchronization and disposal after
                 # all worker processes are positively stopped.
                 _chown_tree(binding.workspace.parent, os.geteuid(), os.getegid())
+            final_message_error: Optional[str] = None
+            if result.writer_complete and final_message_copy is not None:
+                provider_output, destination = final_message_copy
+                if provider_output.is_symlink() or (provider_output.exists() and not provider_output.is_file()):
+                    final_message_error = "Codex final-message transfer rejected an unsafe output path"
+                elif provider_output.is_file():
+                    try:
+                        shutil.copyfile(provider_output, destination)
+                    except OSError as exc:
+                        final_message_error = f"Codex final-message transfer failed: {exc}"
             if result.writer_complete and private_runtime is not None:
                 shutil.rmtree(private_runtime, ignore_errors=True)
             if on_stream is not None:
@@ -963,12 +996,14 @@ class CommandExecutor:
                 if result.stderr:
                     on_stream("stderr", result.stderr)
             stderr = result.stderr
+            if final_message_error is not None:
+                stderr = f"{stderr}\n{final_message_error}".strip()
             if result.detail:
                 stderr = f"{stderr}\n{result.detail}".strip()
             if result.outcome is InvocationOutcome.TIMED_OUT:
                 stderr = f"{stderr}\ncommand timed out".strip()
             return CommandResult(
-                result.outcome is InvocationOutcome.SUCCEEDED and result.writer_complete,
+                result.outcome is InvocationOutcome.SUCCEEDED and result.writer_complete and final_message_error is None,
                 result.stdout,
                 stderr,
                 result.returncode if result.returncode is not None else -1,

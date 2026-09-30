@@ -161,6 +161,100 @@ def test_supervised_command_uses_bound_root_and_removes_git_overrides(tmp_path: 
     )
 
 
+def test_noedit_codex_receives_invocation_owned_home_and_temp(tmp_path: Path) -> None:
+    boundary = LocalExecutionBoundary(_binding(tmp_path), "codex", editable=False)
+    original_codex_home = tmp_path / "shared-codex-home"
+    original_codex_home.mkdir()
+    (original_codex_home / "auth.json").write_text("credential copy")
+    (original_codex_home / "config.toml").write_text("model = 'test-model'\n")
+
+    class RecordingSupervisor:
+        request = None
+
+        def run(self, request, *, boundary):
+            self.request = request
+            assert Path(request.environment["HOME"]).is_dir()
+            assert Path(request.environment["TMPDIR"]).is_dir()
+            assert Path(request.environment["CODEX_HOME"]).parent == Path(request.environment["HOME"])
+            assert (Path(request.environment["CODEX_HOME"]) / "auth.json").read_text() == "credential copy"
+            assert (Path(request.environment["CODEX_HOME"]) / "config.toml").read_text() == "model = 'test-model'\n"
+            return SupervisedInvocationResult(
+                request.invocation_id,
+                InvocationOutcome.SUCCEEDED,
+                WriterState.POSITIVELY_STOPPED,
+                0,
+                "review output",
+                "",
+            )
+
+    supervisor = RecordingSupervisor()
+    environment = {"PATH": "/bin", "HOME": str(tmp_path), "CODEX_HOME": str(original_codex_home), "AUTO_CODER_RUNTIME_ROOT": str(tmp_path)}
+    with bind_supervised_command_execution(supervisor, boundary):  # type: ignore[arg-type]
+        result = CommandExecutor.run_command(["provider"], cwd=str(boundary.binding.workspace), env=environment)
+
+    assert result.success is True
+    assert supervisor.request is not None
+    assert len(supervisor.request.runtime_paths) == 1
+    runtime = supervisor.request.runtime_paths[0]
+    assert supervisor.request.environment["HOME"] == str(runtime / "home")
+    assert supervisor.request.environment["TMPDIR"] == str(runtime / "tmp")
+    assert supervisor.request.environment["CODEX_HOME"] == str(runtime / "home" / ".codex")
+    assert not runtime.exists()
+
+
+@pytest.mark.parametrize("unsafe_output", [False, True])
+def test_noedit_codex_final_message_is_written_outside_read_only_repository(tmp_path: Path, unsafe_output: bool) -> None:
+    boundary = LocalExecutionBoundary(_binding(tmp_path), "codex", editable=False)
+    destination = boundary.binding.workspace / "final.txt"
+    destination.touch()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside content")
+
+    class RecordingSupervisor:
+        def run(self, request, *, boundary):
+            index = request.arguments.index("--output-last-message")
+            provider_output = Path(request.arguments[index + 1])
+            assert provider_output.parent == request.runtime_paths[0] / "tmp"
+            assert provider_output != destination
+            if unsafe_output:
+                provider_output.symlink_to(outside)
+            else:
+                provider_output.write_text("final answer")
+            return SupervisedInvocationResult(
+                request.invocation_id,
+                InvocationOutcome.SUCCEEDED,
+                WriterState.POSITIVELY_STOPPED,
+                0,
+                "",
+                "",
+            )
+
+    evidence = SimpleNamespace(
+        worker_uid=65532,
+        worker_gid=65532,
+        root=boundary.binding.workspace,
+        git_dir=boundary.binding.workspace / ".git",
+        common_dir=boundary.binding.workspace / ".git",
+        head="a" * 40,
+        readable_regular_files=1,
+        tracked_contents_checksum="checksum",
+    )
+    environment = {"PATH": "/bin", "HOME": str(tmp_path), "AUTO_CODER_RUNTIME_ROOT": str(tmp_path)}
+    with (
+        patch("src.auto_coder.repository_readiness.verify_worker_repository", return_value=evidence),
+        bind_supervised_command_execution(RecordingSupervisor(), boundary),  # type: ignore[arg-type]
+    ):
+        result = CommandExecutor.run_command(
+            ["codex", "exec", "--output-last-message", str(destination), "-"],
+            cwd=str(boundary.binding.workspace),
+            env=environment,
+        )
+
+    assert result.success is not unsafe_output
+    assert destination.read_text() == ("" if unsafe_output else "final answer")
+    assert outside.read_text() == "outside content"
+
+
 def test_cross_invocation_and_late_evidence_are_rejected(tmp_path: Path) -> None:
     boundary = LocalExecutionBoundary(_binding(tmp_path), "opencode", editable=True)
     with pytest.raises(LocalBoundaryError, match="different local invocation"):

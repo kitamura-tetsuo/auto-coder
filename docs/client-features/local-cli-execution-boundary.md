@@ -43,7 +43,16 @@ The checked-in `compose.channels.yml` production profile runs the controller wit
 host cgroup-v2 access and supplies the image's dedicated UID/GID 65532 worker
 identity. Each turn receives a private provider home beneath
 `$AUTO_CODER_RUNTIME_ROOT/local-invocations`, with a private temporary directory
-and only required authentication inputs copied into it. Editable OpenCode turns may use ordinary private Git/index,
+and only required provider configuration and authentication files copied into it.
+Codex also receives this
+runtime for no-edit turns because its CLI initializes writable app-server state
+before the review starts. `CODEX_HOME` is rebound to the private home, with its
+original `auth.json` and `config.toml` copied there. The filesystem policy permits
+writes there while keeping the private repository and caller checkout read-only
+for the no-edit turn.
+Codex's final-message output is written inside that runtime and copied to the
+controller-created private repository file only after the worker has stopped.
+Editable OpenCode turns may use ordinary private Git/index,
 commit, ref, and worktree operations; the caller checkout remains isolated.
 
 Explicit continuation compatibility failures are not redirected into fresh

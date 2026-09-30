@@ -139,11 +139,10 @@ class LandlockFilesystemPolicy:
             editable = context.effective_mode == "editable"
             if context.effective_mode not in {"editable", "no-edit"}:
                 raise FilesystemConfinementUnavailable("effective mode is not a supported controller mode")
-            # A provider and its delegated commands share one kernel domain. Giving
-            # a no-edit provider a writable bookkeeping directory would therefore
-            # also give model-requested shells that capability. Trusted no-edit
-            # bookkeeping stays controller-side rather than becoming a child root.
-            writable = (context.result_root, *context.runtime_paths) if editable else ()
+            # No-edit providers may write invocation-owned runtime state, such as
+            # Codex's app-server home, but never the repository. Delegated
+            # commands share this narrow runtime allowance.
+            writable = ((context.result_root,) if editable else ()) + context.runtime_paths
             writable_roots = tuple(_canonical_existing(path, "writable root") for path in writable)
             protected = tuple(_canonical_existing(path, "protected path") for path in context.protected_paths)
             runtime_inputs = tuple(_canonical_existing(path, "runtime input") for path in context.runtime_inputs)

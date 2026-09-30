@@ -164,6 +164,31 @@ except PermissionError:
     assert not (private / "edit.txt").exists()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Landlock is Linux-specific")
+def test_no_edit_policy_allows_private_runtime_but_denies_repository_write(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    code = f"""from pathlib import Path
+Path({str(runtime / 'provider-state')!r}).write_text('started')
+try:
+    Path('edit.txt').write_text('forbidden')
+except PermissionError:
+    print('repository-denied')
+"""
+    request = _launch(tmp_path, code, mode="no-edit")
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+
+    result = supervisor.run(request, policies=(LandlockFilesystemPolicy(),))
+
+    if result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(f"supported CI confinement profile unavailable: {result.detail}")
+        pytest.skip(result.detail)
+    assert result.outcome is InvocationOutcome.SUCCEEDED
+    assert result.stdout == "repository-denied\n"
+    assert (runtime / "provider-state").read_text() == "started"
+    assert not (request.result_root / "edit.txt").exists()
+
+
 def test_policy_rejects_protected_alias_before_task_submission(tmp_path: Path) -> None:
     private = tmp_path / "private"
     private.mkdir()
