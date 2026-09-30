@@ -3668,6 +3668,9 @@ def run_adversarial_validation(
 
     backend_name, backend_type, model_name = manager_identity()
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
+    # A Muse session can be resumed only while this manager still owns the
+    # exact private worktree in which the provider created it.
+    can_continue_stored_session = backend_type.lower() != "muse" or (stored_session is not None and backend_manager.has_retained_local_session(stored_session.session_id))
     if stored_session is not None:
         _populate_test_oracle_gap_requirement_text(stored_session.test_oracle_gaps, context.issue_requirements)
         persisted_resolved_paths = {entry.path for entry in _reusable_recovered_evidence(stored_session, context, head_sha)}
@@ -3678,7 +3681,7 @@ def run_adversarial_validation(
             coverage_prefix = "INCOMPLETE: PASS is forbidden. Partial/unavailable file evidence after equivalent-evidence reuse:\n"
             coverage_status = coverage_prefix + _format_path_manifest(unresolved_paths, "(Unverified path metadata unavailable)")
     lifecycle_session = stored_session if stored_session is not None and stored_session.last_head_sha else None
-    if lifecycle_session is not None:
+    if lifecycle_session is not None and can_continue_stored_session:
         review_policy = render_prompt(
             "pr.adversarial_validation_rereview",
             previous_head_sha=lifecycle_session.last_head_sha,
@@ -3718,7 +3721,7 @@ def run_adversarial_validation(
     # 4. Invoke the strong model
     with ProgressStage("Adversarial validation"):
         verify_execution_target("LLM invocation")
-        if stored_session and stored_session.session_id:
+        if stored_session and stored_session.session_id and can_continue_stored_session:
             response = backend_manager.continue_session(stored_session.session_id, prompt, is_noedit=True)
             was_resumed = getattr(backend_manager, "_last_continue_session_resumed", False)
         else:

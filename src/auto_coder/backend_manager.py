@@ -653,6 +653,10 @@ class BackendManager(LLMBackendManagerBase):
         """Return the provider-issued identity from the last successful call."""
         return self._last_session_id
 
+    def has_retained_local_session(self, session_id: str) -> bool:
+        """Whether this manager still owns the private root for a local session."""
+        return session_id in self._retained_local_sessions
+
     def authorize_local_session_continuation(self, session_id: str, decision: LiveRootReuseDecision) -> None:
         """Attach the result-lifecycle authority's exact reuse decision."""
         retained = self._retained_local_sessions.get(session_id)

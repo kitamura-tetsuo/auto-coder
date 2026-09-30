@@ -2659,6 +2659,61 @@ class TestRunAdversarialValidation:
 
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
+    def test_muse_rereview_starts_fresh_when_private_workspace_was_released(self, mock_run_prompt, mock_build_ctx, tmp_path):
+        mock_build_ctx.return_value = AdversarialValidationContext(
+            repo_name="owner/repo",
+            pr_number=5419,
+            pr_title="Muse rereview",
+            pr_diff="diff --git a/feature.py b/feature.py\n+fixed = True",
+            all_changed_files=["feature.py"],
+            issue_context="Issue requires a working feature.",
+            issue_requirements=[IssueRequirement(requirement_id="REQ-001", text="The feature works.")],
+        )
+        registry = ReviewerSessionRegistry(tmp_path / "reviewer-sessions.json")
+        registry.save(
+            ReviewerSession(
+                repository="owner/repo",
+                pr_number=5419,
+                backend_name="reviewer",
+                backend_type="muse",
+                model_name="muse-spark-1.3",
+                session_id="session-from-previous-worktree",
+                last_head_sha="previous-head",
+            )
+        )
+        manager = MagicMock()
+        manager.get_current_backend_identity.return_value = ("reviewer", "muse", "muse-spark-1.3")
+        manager.has_retained_local_session.return_value = False
+        manager._last_session_id = "session-in-current-worktree"
+        mock_run_prompt.return_value = json.dumps(
+            {
+                "result": "PASS",
+                "summary": "Current head satisfies the requirement",
+                "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "Inspected feature.py at current head"}],
+                "findings": [],
+            }
+        )
+
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 5419, "head": {"sha": "current-head"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
+
+        assert result.result == "PASS"
+        manager.has_retained_local_session.assert_called_once_with("session-from-previous-worktree")
+        manager.continue_session.assert_not_called()
+        mock_run_prompt.assert_called_once()
+        assert result.reviewer_session_checkpoint is not None
+        assert result.reviewer_session_checkpoint.session_id == "session-in-current-worktree"
+        assert result.reviewer_session_checkpoint.last_head_sha == "current-head"
+        assert "Your mission: Falsify the implementation" in mock_run_prompt.call_args.args[0]
+        assert "Use the previous review response in this persistent session" not in mock_run_prompt.call_args.args[0]
+
+    @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
+    @patch("auto_coder.adversarial_validator.run_llm_prompt")
     def test_run_adversarial_validation_pass(self, mock_run_prompt, mock_build_ctx):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",

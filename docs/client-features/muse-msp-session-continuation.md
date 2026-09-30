@@ -11,6 +11,14 @@ identifier containing only lowercase ASCII letters and an underscore. An
 initialization refusal is surfaced with the host's error details and prevents
 all session and turn messages; it also clears any prior last-session result.
 
+PR adversarial reviews may retain a durable session association after the
+reviewer's private worktree has been released. A later review starts a fresh
+Muse session when its backend manager no longer owns that exact worktree;
+the new reviewer receives the full initial-review policy, while the prior
+review's durable lifecycle and evidence records remain available. Explicit
+continuation still requires the retained worktree and fails
+closed if the workspace is incompatible.
+
 Auto-Coder accepts only the final assistant message belonging to a successfully
 completed new turn. Protocol failures, identity or workspace mismatches,
 pending interactive requests, rejected or unverifiable approval changes, host
