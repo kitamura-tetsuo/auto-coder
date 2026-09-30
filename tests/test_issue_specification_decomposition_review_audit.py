@@ -756,7 +756,7 @@ class TestRequiredFailureAndOrderingRegressions:
         engine._get_specification_validator.return_value = lifecycle
         engine._get_authoritative_parent_number.return_value = None
         lifecycle.apply_blocked = MagicMock(return_value=None)
-        monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: MagicMock(get=lambda _identity: None))
+        monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: MagicMock(get=lambda _identity: None))
         obligation = PendingObligation(
             WorkIdentity(REPO, "issue:1103", "validation-publication", identity.key),
             PendingReason.THROTTLED,

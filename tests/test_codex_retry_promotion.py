@@ -215,7 +215,7 @@ def test_run_mismatch_schedules_live_handoff_and_next_turn_repairs(tmp_path, mon
     engine = AutomationEngine(MagicMock(), config=AutomationConfig())
     engine.implementation_slots = slots
     pending = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: pending)
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: pending)
 
     outcome, reason = engine._complete_codex_retry_handoff("owner/repo", authority.request_id)
 

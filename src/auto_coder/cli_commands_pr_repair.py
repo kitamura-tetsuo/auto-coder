@@ -19,7 +19,7 @@ from .durable_repair_allowance import (
     RepairAllowanceStatus,
     reconcile_unfulfilled_grant_reevaluations,
 )
-from .github_pending_work import PendingWorkStore, WorkIdentity
+from .github_pending_work import PendingWorkPersistenceError, WorkIdentity, get_pending_work_store
 from .llm_backend_config import get_pr_repair_max_failed_corrections
 from .logger_config import get_logger
 from .pr_repair_guard import check_pr_repair_exhaustion
@@ -175,10 +175,19 @@ def pr_repair_resume(
     """Grant fresh repair allowance and schedule immediate re-evaluation (REQ-007)."""
     norm_origin = normalize_api_origin("https://api.github.com")
     allowance_ledger = RepairAllowanceLedger()
-    pending_store = PendingWorkStore()
+    # The grant is only recorded when the repository's own READY pending-work
+    # store can retain its re-evaluation; never fall back to shared storage.
+    try:
+        pending_store = get_pending_work_store(repo)
+    except PendingWorkPersistenceError as exc:
+        if json_output:
+            click.echo(json.dumps({"error": str(exc), "granted": False}))
+        else:
+            click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
 
     # Reconcile unfulfilled grant reevaluations if any exist from prior runs (REQ-012)
-    reconcile_unfulfilled_grant_reevaluations(allowance_ledger, pending_store)
+    reconcile_unfulfilled_grant_reevaluations(repo, allowance_ledger, pending_store)
 
     effective_limit = new_limit if new_limit is not None else get_pr_repair_max_failed_corrections(repo_name=repo)
     targets = [target_blocker_id] if target_blocker_id else None
@@ -201,8 +210,10 @@ def pr_repair_resume(
         sys.exit(1)
 
     # Schedule immediate re-evaluation in pending work store
-    identity = WorkIdentity(repo, f"pr:{pr}", "pr_processing", "")
-    obligation = pending_store.schedule_reevaluation(identity, effects=("pr_processing",))
+    from .pr_processor import PR_PROCESSING_REFRESH_EFFECT, PR_PROCESSING_STAGE
+
+    identity = WorkIdentity(repo, f"pr:{pr}", PR_PROCESSING_STAGE, "")
+    obligation = pending_store.schedule_reevaluation(identity, effects=(PR_PROCESSING_REFRESH_EFFECT, PR_PROCESSING_STAGE))
 
     # Mark re-evaluation delivered
     allowance_ledger.mark_grant_reevaluation_delivered(request_id)

@@ -1472,19 +1472,24 @@ class RepairAllowanceLedger:
             finally:
                 conn.close()
 
-    def reconcile_unfulfilled_grant_reevaluations(self, pending_work_store: Any = None) -> int:
-        """Deliver durable normal PR re-evaluation obligations for unfulfilled operator grants (REQ-010, AS-006)."""
-        from .github_pending_work import WorkIdentity, get_pending_work_store
+    def reconcile_unfulfilled_grant_reevaluations(self, repository: str, pending_work_store: Any = None) -> int:
+        """Deliver durable normal PR re-evaluation obligations for unfulfilled operator grants (REQ-010, AS-006).
+
+        Only ``repository``'s grants are delivered, and only to that repository's
+        READY pending-work store; a grant that cannot be retained there stays
+        unfulfilled instead of being written to another database.
+        """
+        from .github_pending_work import WorkIdentity, get_pending_work_store, repository_ownership_key
         from .pr_processor import PR_PROCESSING_REFRESH_EFFECT, PR_PROCESSING_STAGE
 
-        store = pending_work_store or get_pending_work_store()
-        unfulfilled = self.get_unfulfilled_operator_grants()
+        store = pending_work_store or get_pending_work_store(repository)
+        target_key = repository_ownership_key(repository)
         delivered_count = 0
-        for item in unfulfilled:
+        for item in self.get_unfulfilled_operator_grants():
             repo = item["repository"]
             pr_num = item["pr_number"]
             req_id = item["request_id"]
-            if repo and pr_num:
+            if repo and pr_num and repository_ownership_key(repo) == target_key:
                 identity = WorkIdentity(repo, f"pr:{pr_num}", PR_PROCESSING_STAGE, revision="")
                 store.schedule_reevaluation(identity, effects=(PR_PROCESSING_REFRESH_EFFECT, PR_PROCESSING_STAGE))
                 self.mark_grant_reevaluation_delivered(req_id)
@@ -1493,9 +1498,10 @@ class RepairAllowanceLedger:
 
 
 def reconcile_unfulfilled_grant_reevaluations(
+    repository: str,
     allowance_ledger: Optional[RepairAllowanceLedger] = None,
     pending_work_store: Any = None,
 ) -> int:
     """Deliver durable normal PR re-evaluation obligations for unfulfilled operator grants (REQ-010, AS-006)."""
     ledger = allowance_ledger or RepairAllowanceLedger()
-    return ledger.reconcile_unfulfilled_grant_reevaluations(pending_work_store=pending_work_store)
+    return ledger.reconcile_unfulfilled_grant_reevaluations(repository, pending_work_store=pending_work_store)

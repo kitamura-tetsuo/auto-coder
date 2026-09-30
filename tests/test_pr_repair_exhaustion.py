@@ -329,7 +329,7 @@ def test_as004_explicit_operator_resumption(
 
     # Monkeypatch get_pending_work_store and default ledger
     monkeypatch.setattr("auto_coder.cli_commands_pr_repair.RepairAllowanceLedger", lambda: allowance_store)
-    monkeypatch.setattr("auto_coder.cli_commands_pr_repair.PendingWorkStore", lambda: pending_work_store)
+    monkeypatch.setattr("auto_coder.cli_commands_pr_repair.get_pending_work_store", lambda repository: pending_work_store)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -431,7 +431,7 @@ def test_as006_crash_recovery_for_operator_grants(
     assert len(pending_work_store.all_pending()) == 0
 
     # Crash recovery runs
-    count = reconcile_unfulfilled_grant_reevaluations(allowance_store, pending_work_store)
+    count = reconcile_unfulfilled_grant_reevaluations(REPO, allowance_store, pending_work_store)
     assert count == 1
 
     # Now pending work is scheduled

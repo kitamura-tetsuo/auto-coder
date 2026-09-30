@@ -104,7 +104,7 @@ def engine_with_lane(tmp_path: Path, github, spec_analyzer, decomp_analyzer=None
 
     store = PendingWorkStore(tmp_path / "pending-work.sqlite3")
     if monkeypatch is not None:
-        monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda: store)
+        monkeypatch.setattr("auto_coder.specification_validation_lifecycle.get_pending_work_store", lambda repository: store)
         monkeypatch.setenv("AUTO_CODER_ISSUE_STAGE_ROUTING_DB", str(tmp_path / "routing.sqlite3"))
         monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     config = AutomationConfig(repo_name=REPO)

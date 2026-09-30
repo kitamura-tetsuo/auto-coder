@@ -988,7 +988,7 @@ class SpecificationValidationLifecycle:
         issue_number = decision.identity.issue_number
         expected_identity = decision.identity
         publication_identity = validation_publication_identity(self.repository, issue_number, decision.identity.key)
-        pending_work_store = get_pending_work_store()
+        pending_work_store = get_pending_work_store(self.repository)
         with self.store.locked(decision.identity.key):
             current_decision = self.store.get(decision.identity)
             if current_decision is None or current_decision.verdict != "BLOCKED":
@@ -1107,7 +1107,7 @@ class SpecificationValidationLifecycle:
         """
         issue_number = decision.identity.issue_number
         publication_identity = validation_publication_identity(self.repository, issue_number, decision.identity.key)
-        pending_work_store = get_pending_work_store()
+        pending_work_store = get_pending_work_store(self.repository)
         with self.store.locked(decision.identity.key):
             failures: list[str] = []
             current = self.store.get(decision.identity)

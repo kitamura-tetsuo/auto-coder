@@ -1260,7 +1260,7 @@ def _process_pull_request_impl(
         try:
             from .durable_repair_allowance import reconcile_unfulfilled_grant_reevaluations
 
-            reconcile_unfulfilled_grant_reevaluations()
+            reconcile_unfulfilled_grant_reevaluations(repo_name)
         except Exception as exc:
             logger.debug(f"Could not reconcile unfulfilled grant reevaluations: {exc}")
 
@@ -1419,7 +1419,7 @@ def _process_pull_request_impl(
     except GitHubRequestError as e:
         pr_number = pr_data.get("number", "unknown")
         revision = str(pr_data.get("head", {}).get("sha") or "")
-        obligation = get_pending_work_store().defer(
+        obligation = get_pending_work_store(repo_name).defer(
             WorkIdentity(repo_name, f"pr:{pr_number}", PR_PROCESSING_STAGE, revision),
             e,
             (PR_PROCESSING_REFRESH_EFFECT, PR_PROCESSING_STAGE),

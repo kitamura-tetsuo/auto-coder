@@ -969,7 +969,7 @@ def test_startup_admission_deferral_retries_durably_without_terminating_daemon(t
     of terminating the daemon; ordinary workers only start once it succeeds."""
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("src.auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("src.auto_coder.automation_engine.get_pending_work_store", lambda repository: store)
 
     attempts = []
     allow_retry = threading.Event()

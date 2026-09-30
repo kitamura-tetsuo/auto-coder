@@ -153,7 +153,7 @@ def _blocked_decision(gate, parent, children):
 
 def test_comment_succeeds_label_removal_deferred_completes_independently(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda repository: store)
 
     gate = _blocked_gate(tmp_path)
     parent, children = _parent(), [_child()]
@@ -187,8 +187,8 @@ def test_comment_succeeds_label_removal_deferred_completes_independently(tmp_pat
 
 def test_decomposition_publication_stage_handler_resumes_after_restart(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda: store)
-    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda repository: store)
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: store)
 
     gate = _blocked_gate(tmp_path)
     parent, children = _parent(), [_child()]
@@ -229,7 +229,7 @@ def test_decomposition_publication_stage_handler_resumes_after_restart(tmp_path,
 
 def test_stage_handler_supersedes_when_parent_body_changed_while_waiting(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda repository: store)
 
     gate = _blocked_gate(tmp_path)
     parent, children = _parent(), [_child()]
@@ -260,7 +260,7 @@ def test_stage_handler_supersedes_malformed_entity():
 
 def test_authentication_failure_during_publication_defers_not_supersedes(tmp_path, monkeypatch):
     store = PendingWorkStore(tmp_path / "pending.db")
-    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda: store)
+    monkeypatch.setattr("auto_coder.decomposition_validation_lifecycle.get_pending_work_store", lambda repository: store)
 
     gate = _blocked_gate(tmp_path)
     parent, children = _parent(), [_child()]
