@@ -6,6 +6,10 @@ resolved execution worktree, sends exactly one rendered user turn, and exposes
 the host-issued session ID. Explicit continuation starts a replacement host,
 resumes exactly the requested durable session, verifies its session identity,
 workspace, model, and pending-request state, and then sends one new turn.
+Every host handshake identifies Auto-Coder as `auto_coder`, a protocol machine
+identifier containing only lowercase ASCII letters and an underscore. An
+initialization refusal is surfaced with the host's error details and prevents
+all session and turn messages; it also clears any prior last-session result.
 
 Auto-Coder accepts only the final assistant message belonging to a successfully
 completed new turn. Protocol failures, identity or workspace mismatches,

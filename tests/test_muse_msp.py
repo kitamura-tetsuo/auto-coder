@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -18,8 +19,6 @@ from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfigura
 def _repository(path: Path) -> Path:
     repo = path / "repo"
     repo.mkdir()
-    import subprocess
-
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
@@ -33,7 +32,7 @@ def _host(path: Path) -> Path:
     host = path / "muse"
     host.write_text(
         r"""#!/usr/bin/env python3
-import json, os, subprocess, sys, time
+import json, os, re, subprocess, sys, time
 from pathlib import Path
 if sys.argv[1:] == ["--version"]:
     print("Muse Code 1.3.0")
@@ -50,6 +49,12 @@ for line in sys.stdin:
         output.write(json.dumps({"argv": sys.argv[1:], "frame": frame}) + "\n")
     method = frame.get("method")
     if method == "initialize":
+        params = frame.get("params")
+        client_info = params.get("clientInfo") if isinstance(params, dict) else None
+        client_name = client_info.get("name") if isinstance(client_info, dict) else None
+        if os.environ.get("MSP_REJECT_INITIALIZE") or not isinstance(client_name, str) or re.fullmatch(r"[a-z0-9_]+", client_name) is None:
+            emit({"jsonrpc":"2.0","id":frame["id"],"error":{"code":-32602,"data":{"kind":"invalidParams"},"message":"invalid initialize params: clientInfo.name must be a machine identifier matching ^[a-z0-9_]+$ (SS1.4.1)"}})
+            continue
         if os.environ.get("MSP_PARTIAL"):
             sys.stdout.write("{")
             sys.stdout.flush()
@@ -135,9 +140,66 @@ if os.environ.get("MSP_EXIT_NONZERO"):
     return host
 
 
-def _manager(config: LLMBackendConfiguration):
+def _manager(
+    config: LLMBackendConfiguration,
+    backend_name: str = "muse",
+    automatic_session_resume: bool = True,
+):
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config):
-        return build_backend_manager(["muse"], "muse", {"muse": "muse-spark-1.3"})
+        return build_backend_manager(
+            [backend_name],
+            backend_name,
+            {backend_name: "muse-spark-1.3"},
+            automatic_session_resume=automatic_session_resume,
+        )
+
+
+def _initialize_host(host: Path, log: Path, client_info: object) -> dict[str, object]:
+    env = os.environ.copy()
+    env["MSP_LOG"] = str(log)
+    process = subprocess.Popen(
+        [str(host), "serve"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": client_info}}
+    stdout, _ = process.communicate(json.dumps(request) + "\n", timeout=5)
+    assert process.returncode == 0
+    return json.loads(stdout)
+
+
+@pytest.mark.parametrize(
+    "client_info",
+    [
+        {"name": "auto-coder", "version": "1"},
+        {"name": "", "version": "1"},
+        {"version": "1"},
+        {"name": None, "version": "1"},
+        {"name": 2, "version": "1"},
+        {"name": "Auto_coder", "version": "1"},
+        {"name": "auto_coder\n", "version": "1"},
+    ],
+)
+def test_muse_msp_strict_host_rejects_invalid_client_names(tmp_path, client_info):
+    response = _initialize_host(_host(tmp_path), tmp_path / "msp.jsonl", client_info)
+
+    assert response["error"] == {
+        "code": -32602,
+        "data": {"kind": "invalidParams"},
+        "message": "invalid initialize params: clientInfo.name must be a machine identifier matching ^[a-z0-9_]+$ (SS1.4.1)",
+    }
+
+
+def test_muse_msp_strict_host_accepts_compliant_control_name(tmp_path):
+    response = _initialize_host(
+        _host(tmp_path),
+        tmp_path / "msp.jsonl",
+        {"name": "another_client_2", "version": "1"},
+    )
+
+    assert response["result"]["serverInfo"] == {"name": "fixture", "version": "1.3.0"}
 
 
 def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_commands):
@@ -158,9 +220,11 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     assert manager._last_continue_session_resumed is True
 
     frames = [json.loads(line) for line in log.read_text().splitlines()]
+    initializations = [entry for entry in frames if entry["frame"].get("method") == "initialize"]
     starts = [entry for entry in frames if entry["frame"].get("method") == "session/start"]
     resumes = [entry for entry in frames if entry["frame"].get("method") == "session/resume"]
     turns = [entry for entry in frames if entry["frame"].get("method") == "turn/start"]
+    assert [entry["frame"]["params"]["clientInfo"]["name"] for entry in initializations] == ["auto_coder", "auto_coder"]
     assert len(starts) == 1
     assert "approvalMode" not in starts[0]["frame"]["params"]
     assert [entry["frame"]["params"]["sessionId"] for entry in resumes] == [session_id]
@@ -168,6 +232,78 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     assert turns[1]["argv"] == ["serve", "--disable-write", "--disable-shell"]
     assert turns[1]["frame"]["params"]["input"][0]["type"] == "text"
     assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+def test_muse_msp_named_backend_uses_protocol_client_name(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(
+        backends={
+            "muse-review": BackendConfig(
+                name="muse-review",
+                backend_type="muse",
+                model="muse-spark-1.3",
+            )
+        }
+    )
+    manager = _manager(config, "muse-review")
+
+    assert manager._run_llm_cli("first") == "answer:first"
+    session_id = manager.get_last_session_id()
+    assert session_id == "opaque/provider/session"
+    manager.authorize_retained_local_session_reuse(session_id)
+    assert manager.continue_session(session_id, "second", is_noedit=True) == "answer:second"
+
+    frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
+    initializations = [frame for frame in frames if frame.get("method") == "initialize"]
+    assert [frame["params"]["clientInfo"]["name"] for frame in initializations] == ["auto_coder", "auto_coder"]
+    assert [frame["method"] for frame in frames].count("session/start") == 1
+    assert [frame["params"]["sessionId"] for frame in frames if frame.get("method") == "session/resume"] == [session_id]
+    assert [frame["method"] for frame in frames].count("turn/start") == 2
+
+
+@pytest.mark.parametrize("continuation", [False, True])
+def test_muse_msp_initialize_refusal_clears_prior_session_and_stops_protocol(
+    tmp_path,
+    monkeypatch,
+    _use_real_commands,
+    continuation,
+):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config, automatic_session_resume=False)
+    client = manager._clients["muse"]
+    assert manager._run_llm_cli("first") == "answer:first"
+    session_id = client.get_last_session_id()
+    assert session_id == "opaque/provider/session"
+    if continuation:
+        manager.authorize_retained_local_session_reuse(session_id)
+
+    log.unlink()
+    monkeypatch.setenv("MSP_REJECT_INITIALIZE", "1")
+    with pytest.raises(RuntimeError) as raised:
+        if continuation:
+            manager.continue_session(session_id, "second", is_noedit=True)
+        else:
+            manager._run_llm_cli("second", is_noedit=True)
+
+    error = str(raised.value)
+    assert "-32602" in error
+    assert "invalidParams" in error
+    assert "clientInfo.name must be a machine identifier" in error
+    assert client.get_last_session_id() is None
+    assert manager.get_last_session_id() is None
+    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
+    assert methods == ["initialize"]
 
 
 def test_muse_msp_explicit_disable_approval_uses_only_wire_mode(tmp_path, monkeypatch, _use_real_commands):

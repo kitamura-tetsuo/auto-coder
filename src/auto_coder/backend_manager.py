@@ -1021,6 +1021,12 @@ class BackendManager(LLMBackendManagerBase):
                     if "retained_session" in locals() and retained_session is not None:
                         retained_session.fail()
                     self._settle_admitted_invocation(invocation_handle, success=False)
+                    # The client owns whether a failed invocation established a
+                    # usable session. Mirror that result on failure as well as
+                    # success so a fail-closed client cannot leave an earlier
+                    # manager-level session looking like the failed call's result.
+                    self._last_session_id = getattr(cli, "get_last_session_id", lambda: None)()
+                    self._save_session_state(backend_name, self._last_session_id)
                     end_dt = datetime.now(timezone.utc)
                     end_time_iso = end_dt.isoformat()
                     duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
