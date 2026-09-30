@@ -31,6 +31,7 @@ logger = get_logger(__name__)
 _MUSE_MSP_SCHEMA_FINGERPRINT = "sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"
 _MUSE_MSP_SERVER_VERSION = "1.3.0"
 _MUSE_MSP_SCHEMA_VERSION = 1
+_MUSE_MSP_CLIENT_NAME = "auto_coder"
 _MUSE_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 
 _READ_ONLY_GIT_COMMANDS = {
@@ -837,7 +838,16 @@ class MuseClient(LLMClientBase):
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     os.set_blocking(stream.fileno(), False)
-            self._msp_send(process, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"clientInfo": {"name": "auto-coder", "version": "1"}}}, deadline)
+            self._msp_send(
+                process,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"clientInfo": {"name": _MUSE_MSP_CLIENT_NAME, "version": "1"}},
+                },
+                deadline,
+            )
             initialized = self._msp_wait(process, 1, deadline, notifications)
             server_info = initialized.get("serverInfo")
             schema = initialized.get("schema")
