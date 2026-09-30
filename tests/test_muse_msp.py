@@ -65,6 +65,8 @@ for line in sys.stdin:
             result["schemaInfo"] = result.pop("schema")
         if os.environ.get("MSP_SCHEMA_VERSION"):
             schema["version"] = os.environ["MSP_SCHEMA_VERSION"]
+        if os.environ.get("MSP_SCHEMA_BOOLEAN"):
+            schema["version"] = True
         if os.environ.get("MSP_SCHEMA_FINGERPRINT"):
             schema["fingerprint"] = os.environ["MSP_SCHEMA_FINGERPRINT"]
         emit({"jsonrpc":"2.0","id":frame["id"],"result":result})
@@ -118,11 +120,16 @@ for line in sys.stdin:
         ack = {"commandId":frame["params"]["commandId"],"status":"accepted","turnId":turn,"startedNewTurn":True,"disposition":"started"}
         if os.environ.get("MSP_BAD_TURN_ACK"):
             ack[os.environ["MSP_BAD_TURN_ACK"]] = None
-        emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
+        if not os.environ.get("MSP_EVENTS_BEFORE_ACK"):
+            emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
         event_session = "wrong-session" if os.environ.get("MSP_WRONG_EVENT_SESSION") else frame["params"]["sessionId"]
         item_method = "item/updated" if os.environ.get("MSP_UNFINISHED_ITEM") else "item/completed"
         item_status = "inProgress" if os.environ.get("MSP_UNFINISHED_ITEM") else "completed"
-        emit({"jsonrpc":"2.0","method":item_method,"params":{"sessionId":event_session,"item":{"itemId":"answer","kind":"message","revision":1,"status":item_status,"turnId":turn,"role":"assistant","text":"answer:" + ("second" if "second" in frame["params"]["input"][0]["text"] else "first")}}})  # noqa: E501
+        item_kind = os.environ.get("MSP_ITEM_KIND", "message")
+        item = {"itemId":"answer","kind":item_kind,"revision":1,"status":item_status,"turnId":turn,"text":"answer:" + ("second" if "second" in frame["params"]["input"][0]["text"] else "first")}
+        if item_kind == "message":
+            item["role"] = "assistant"
+        emit({"jsonrpc":"2.0","method":item_method,"params":{"sessionId":event_session,"item":item}})
         terminal = "failed" if os.environ.get("MSP_QUOTA_TERMINAL") else "completed"
         terminal_params = {"sessionId":event_session,"turnId":turn,"terminal":terminal}
         if terminal == "failed":
@@ -130,6 +137,8 @@ for line in sys.stdin:
         if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
             terminal_params["turnId"] = "wrong-turn"
         emit({"jsonrpc":"2.0","method":"turn/completed","params":terminal_params})
+        if os.environ.get("MSP_EVENTS_BEFORE_ACK"):
+            emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
         if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
             time.sleep(10)
 if os.environ.get("MSP_EXIT_NONZERO"):
@@ -488,9 +497,9 @@ def test_muse_msp_continuation_rejects_workspace_trust_before_protocol_setup(tmp
 @pytest.mark.parametrize(
     ("environment", "message"),
     [
-        ({"MSP_SERVER_VERSION": "1.3.1"}, "host version"),
         ({"MSP_SCHEMA_ALIAS": "1"}, "omitted schema"),
         ({"MSP_SCHEMA_VERSION": "1"}, "schema is incompatible"),
+        ({"MSP_SCHEMA_BOOLEAN": "1"}, "schema is incompatible"),
         ({"MSP_SCHEMA_FINGERPRINT": "sha256:deadbeef"}, "schema is incompatible"),
     ],
 )
@@ -509,6 +518,34 @@ def test_muse_msp_rejects_incompatible_initialization_before_session(tmp_path, m
         _manager(config)._run_llm_cli("prompt")
     methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert methods == ["initialize"]
+
+
+@pytest.mark.parametrize("host_version", ["1.3.0", "1.4.1", "9.8.7-diagnostic-only"])
+def test_muse_msp_host_version_does_not_control_schema_admission(tmp_path, monkeypatch, _use_real_commands, host_version):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_SERVER_VERSION", host_version)
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+
+    assert _manager(config)._run_llm_cli("first", is_noedit=True) == "answer:first"
+
+
+def test_muse_141_schema_agent_message_and_buffered_terminal_reach_caller(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.1")
+    monkeypatch.setenv("MSP_SCHEMA_FINGERPRINT", "sha256:e0e163db6ccf00dbe68402ce55d6319b3edc33c421f31e9583b587b2de8a118f")
+    monkeypatch.setenv("MSP_ITEM_KIND", "agentMessage")
+    monkeypatch.setenv("MSP_EVENTS_BEFORE_ACK", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+
+    assert _manager(config)._run_llm_cli("first", is_noedit=True) == "answer:first"
 
 
 @pytest.mark.parametrize("field", ["commandId", "status", "turnId", "startedNewTurn", "disposition"])
