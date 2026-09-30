@@ -78,7 +78,7 @@ for line in sys.stdin:
         session = {"sessionId":sid,"workspaceRoot":workspace}
         missing_model = os.environ.get("MSP_MISSING_MODEL") or (os.environ.get("MSP_MISSING_MODEL_RESUME") and method == "session/resume")
         if not missing_model:
-            session["modelId"] = "muse-spark-1.3"
+            session["modelId"] = os.environ.get("MSP_RESUME_MODEL", "muse-spark-1.3") if method == "session/resume" else "muse-spark-1.3"
         requested_denial = method == "session/start" and frame["params"].get("approvalMode") == "denyUnmatched"
         approval_mode = os.environ.get("MSP_APPROVAL_MODE")
         if approval_mode != "omit" and (requested_denial or (method == "session/resume" and os.environ.get("MSP_RESUME_DENIED"))):
@@ -521,16 +521,52 @@ def test_muse_msp_rejects_incompatible_initialization_before_session(tmp_path, m
 
 
 @pytest.mark.parametrize("host_version", ["1.3.0", "1.4.1", "9.8.7-diagnostic-only"])
-def test_muse_msp_host_version_does_not_control_schema_admission(tmp_path, monkeypatch, _use_real_commands, host_version):
+@pytest.mark.parametrize(
+    "fingerprint",
+    [
+        "sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f",
+        "sha256:e0e163db6ccf00dbe68402ce55d6319b3edc33c421f31e9583b587b2de8a118f",
+    ],
+)
+def test_muse_msp_host_version_does_not_control_schema_admission(tmp_path, monkeypatch, _use_real_commands, host_version, fingerprint):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
     monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
     monkeypatch.setenv("MSP_SERVER_VERSION", host_version)
+    monkeypatch.setenv("MSP_SCHEMA_FINGERPRINT", fingerprint)
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
     assert _manager(config)._run_llm_cli("first", is_noedit=True) == "answer:first"
+
+
+@pytest.mark.parametrize("resumed_model, accepted", [("muse-spark-1.3-contributor", True), ("other-model", False)])
+def test_muse_141_resume_accepts_only_observed_effective_model_alias(tmp_path, monkeypatch, _use_real_commands, resumed_model, accepted):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.1")
+    monkeypatch.setenv("MSP_SCHEMA_FINGERPRINT", "sha256:e0e163db6ccf00dbe68402ce55d6319b3edc33c421f31e9583b587b2de8a118f")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config, automatic_session_resume=False)
+
+    assert manager._run_llm_cli("first", is_noedit=True) == "answer:first"
+    session_id = manager.get_last_session_id()
+    manager.authorize_retained_local_session_reuse(session_id)
+    monkeypatch.setenv("MSP_RESUME_MODEL", resumed_model)
+    if accepted:
+        assert manager.continue_session(session_id, "second", is_noedit=True) == "answer:second"
+        assert manager.get_last_session_id() == session_id
+    else:
+        with pytest.raises(RuntimeError, match="incompatible model"):
+            manager.continue_session(session_id, "second", is_noedit=True)
+        assert manager.get_last_session_id() is None
+        methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
+        assert methods.count("turn/start") == 1
 
 
 def test_muse_141_schema_agent_message_and_buffered_terminal_reach_caller(tmp_path, monkeypatch, _use_real_commands):

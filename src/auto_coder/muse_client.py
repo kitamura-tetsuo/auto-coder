@@ -28,13 +28,15 @@ from .utils import _COMMAND_EXECUTION_CWD
 
 logger = get_logger(__name__)
 
+_MUSE_141_SCHEMA = (1, "sha256:e0e163db6ccf00dbe68402ce55d6319b3edc33c421f31e9583b587b2de8a118f")
 _MUSE_MSP_SUPPORTED_SCHEMAS = frozenset(
     {
         (1, "sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"),
-        (1, "sha256:e0e163db6ccf00dbe68402ce55d6319b3edc33c421f31e9583b587b2de8a118f"),
+        _MUSE_141_SCHEMA,
     }
 )
 _MUSE_MSP_CLIENT_NAME = "auto_coder"
+_MUSE_141_MODEL_ALIASES = {"muse-spark-1.3": "muse-spark-1.3-contributor"}
 _MUSE_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 
 _READ_ONLY_GIT_COMMANDS = {
@@ -886,7 +888,11 @@ class MuseClient(LLMClientBase):
             if not isinstance(workspace, str) or workspace != str(cwd):
                 raise RuntimeError("Muse MSP session belongs to an incompatible workspace")
             effective_model = metadata.get("modelId")
-            if effective_model != self.model_name:
+            model_matches = effective_model == self.model_name
+            if session_id is not None and observed_schema == _MUSE_141_SCHEMA:
+                resolved_model = _MUSE_141_MODEL_ALIASES.get(self.model_name)
+                model_matches = model_matches or (resolved_model is not None and effective_model == resolved_model)
+            if not model_matches:
                 raise RuntimeError("Muse MSP session omitted or uses an incompatible model")
             pending = opened.get("pendingRequests")
             if pending not in (None, []):

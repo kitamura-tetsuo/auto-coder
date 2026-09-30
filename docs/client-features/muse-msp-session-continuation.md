@@ -43,11 +43,18 @@ sha256:e0e163db6ccf00dbe68402ce55d6319b3edc33c421f31e9583b587b2de8a118f)`.
 The latter was captured from the official Muse Code 1.4.1 build
 `1.4.1-R4503.1` (`muse-build` commit
 `35815c253477406321e3f5595195becc25e3907a`), in its `initialize.schema`
-response. Host version strings are retained for diagnostics but are not
+response, corroborated by the same binary's stable `muse schema
+generate-json-schema` manifest. The observed Linux x86-64 binary has SHA-256
+`c6db294799a190ca380da274beb3b9c0e160e0da9681a3d364ce8b0e5fa3a4bc`.
+Host version strings are retained for diagnostics but are not
 compatibility authority. Session and turn commands carry UUIDv7 command
 identities; their returned state and acknowledgements are checked before work
 continues. Model selection belongs to fresh-session setup, reasoning effort
 belongs to turn submission, and editable sessions omit an approval-mode default.
+The 1.4.1 host may record the selected `muse-spark-1.3` model as its effective
+`muse-spark-1.3-contributor` model after the first turn. Resume accepts that
+specific observed alias resolution for the 1.4.1 schema; other model changes
+remain incompatible.
 Completed assistant output uses the admitted schema's `agentMessage` item shape;
 the legacy supported profile's `message`/`assistant` shape remains accepted.
 Workspace-trust requests are rejected because PR review has no independent
