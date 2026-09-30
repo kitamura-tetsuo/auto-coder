@@ -140,9 +140,18 @@ if os.environ.get("MSP_EXIT_NONZERO"):
     return host
 
 
-def _manager(config: LLMBackendConfiguration, backend_name: str = "muse"):
+def _manager(
+    config: LLMBackendConfiguration,
+    backend_name: str = "muse",
+    automatic_session_resume: bool = True,
+):
     with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config):
-        return build_backend_manager([backend_name], backend_name, {backend_name: "muse-spark-1.3"})
+        return build_backend_manager(
+            [backend_name],
+            backend_name,
+            {backend_name: "muse-spark-1.3"},
+            automatic_session_resume=automatic_session_resume,
+        )
 
 
 def _initialize_host(host: Path, log: Path, client_info: object) -> dict[str, object]:
@@ -271,25 +280,28 @@ def test_muse_msp_initialize_refusal_clears_prior_session_and_stops_protocol(
     monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
     monkeypatch.setenv("MSP_LOG", str(log))
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
-    manager = _manager(config)
+    manager = _manager(config, automatic_session_resume=False)
     client = manager._clients["muse"]
     assert manager._run_llm_cli("first") == "answer:first"
     session_id = client.get_last_session_id()
     assert session_id == "opaque/provider/session"
+    if continuation:
+        manager.authorize_retained_local_session_reuse(session_id)
 
     log.unlink()
     monkeypatch.setenv("MSP_REJECT_INITIALIZE", "1")
     with pytest.raises(RuntimeError) as raised:
         if continuation:
-            client.continue_session(session_id, "second", is_noedit=True)
+            manager.continue_session(session_id, "second", is_noedit=True)
         else:
-            client._run_llm_cli("second", is_noedit=True)
+            manager._run_llm_cli("second", is_noedit=True)
 
     error = str(raised.value)
     assert "-32602" in error
     assert "invalidParams" in error
     assert "clientInfo.name must be a machine identifier" in error
     assert client.get_last_session_id() is None
+    assert manager.get_last_session_id() is None
     methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert methods == ["initialize"]
 
