@@ -302,6 +302,34 @@ for the production lifecycle regressions, including
 `test_inherited_blocked_preserves_parent_with_restart_retry` and
 `test_inherited_blocked_edit_after_comment_preserves_both_labels`.
 
+## Implementation workspace tests and Muse interactive refusal
+
+`local.workspace-tests` emits a start and a result for the target repository's
+initial `scripts/test.sh` run in each newly created editable clone. Its facts
+identify the invocation and script; the result adds the exit code and the private
+log's relative path. Ordinary test failures are baseline evidence for repair,
+whereas launch failure or timeout prevents provider submission. Neither a passed
+baseline nor a failed baseline asserts implementation completion. No-edit roots
+and retained-root continuation emit no new initial-test stage.
+
+`llm.muse-interactive-request` emits a blocked result when an unattended MSP host
+requests approval or user input, or resumes with pending requests. It preserves
+only bounded correlation identifiers and the request method/reason. Raw commands,
+approval subjects, and prompt text are excluded. Fresh editable sessions now
+require confirmed `denyUnmatched`, and resume restores the same mode before a
+turn starts; permission denial is not silently converted into blanket approval.
+
+Both producers use schema version 1 and the current caller execution scope. The
+generic mounted detail renderer displays their new stages without a renderer or
+schema change. `tests/test_dashboard_observability.py::test_muse_initial_tests_and_interactive_refusal_reach_mounted_detail`
+drives a failed baseline followed by a real executable MSP host's approval
+notification and asserts exact outcomes, shared identity, exit code, omission of
+subject text, and visibility in the mounted detail page.
+`tests/test_muse_msp.py` additionally covers before/after-ack interactive requests,
+editable/read-only policy confirmation, dependency preparation before provider
+launch, read-only exclusion, and launch failure with zero provider submission.
+Run `bash scripts/test.sh tests/test_muse_msp.py tests/test_local_execution_boundary.py tests/test_dashboard_observability.py`.
+
 ## Updating observable processing
 
 Codex Cloud adversarial redelivery now derives each finding's remediation generation

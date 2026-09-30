@@ -70,6 +70,14 @@ muse:
     update, or comment on pull requests; Auto-Coder owns remote publication after
     you return.
 
+    This unattended Muse session denies operations outside its configured permission
+    rules instead of waiting for approval. Do not wait for a human decision or a
+    controller update. Initial implementation tests, when run, are recorded in
+    `.agent-tmp/initial-tests.log`; inspect that baseline and use installed local
+    tools before attempting network downloads. Complete verification before
+    reporting implementation success. If a required operation cannot be performed,
+    report inability according to the task's requested output contract.
+
 opencode:
   execution: |-
     Complete this task in one execution:

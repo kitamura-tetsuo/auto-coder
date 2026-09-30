@@ -20,6 +20,7 @@ from src.auto_coder.local_execution_boundary import (
 from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.utils import CommandExecutor, bind_command_execution_cwd, bind_supervised_command_execution, reset_command_execution_cwd
 from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
+from tests.utils.workspace import write_target_test_script
 
 
 def _binding(tmp_path: Path) -> LocalWorkspaceBinding:
@@ -28,6 +29,7 @@ def _binding(tmp_path: Path) -> LocalWorkspaceBinding:
     git_dir = caller / ".git"
     workspace.mkdir(parents=True)
     git_dir.mkdir(parents=True)
+    write_target_test_script(workspace)
     return LocalWorkspaceBinding(
         invocation_id="invocation-1",
         caller_root=caller,
@@ -288,6 +290,7 @@ def test_normal_manager_return_remains_legacy_and_uncertified(tmp_path: Path, _u
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    write_target_test_script(repository)
     (repository / "tracked.txt").write_text("initial\n")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
@@ -364,6 +367,7 @@ def test_noedit_constructed_client_creates_read_only_boundary(tmp_path: Path) ->
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    write_target_test_script(repository)
     (repository / "tracked.txt").write_text("initial\n")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
@@ -486,6 +490,7 @@ def test_successful_edit_session_is_refused_after_its_private_root_is_released(t
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    write_target_test_script(repository)
     (repository / "tracked.txt").write_text("initial\n")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
@@ -534,6 +539,7 @@ def test_retained_continuation_rejects_a_different_current_caller_before_submiss
         subprocess.run(["git", "init", "-q"], cwd=path, check=True)
         subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+        write_target_test_script(path)
         (path / "tracked.txt").write_text("initial\n")
         subprocess.run(["git", "add", "tracked.txt"], cwd=path, check=True)
         subprocess.run(["git", "commit", "-qm", "initial"], cwd=path, check=True)
@@ -584,6 +590,7 @@ def test_retained_continuation_with_unknown_current_writer_settlement_is_incompl
         def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
             boundary = get_current_local_execution_boundary()
             assert boundary is not None
+            assert (boundary.binding.workspace / "node_modules" / "initial-test-runs").read_text() == "initial\n"
             (boundary.binding.workspace / "tracked.txt").write_text("unsettled edit\n")
             return "textually successful but unsettled"
 
@@ -597,6 +604,7 @@ def test_retained_continuation_with_unknown_current_writer_settlement_is_incompl
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    write_target_test_script(repository, "#!/bin/bash\nmkdir -p node_modules\nprintf 'initial\\n' >> node_modules/initial-test-runs\n")
     (repository / "tracked.txt").write_text("initial\n")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
@@ -647,6 +655,7 @@ def test_retained_continuation_policy_violation_blocks_caller_handoff(tmp_path: 
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    write_target_test_script(repository)
     (repository / "tracked.txt").write_text("initial\n")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)

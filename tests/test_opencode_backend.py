@@ -25,6 +25,7 @@ from src.auto_coder.opencode_client import OpenCodeClient
 from src.auto_coder.prompt_loader import render_prompt
 from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
 from tests.utils.supervised_local import install_test_supervisor
+from tests.utils.workspace import write_target_test_script
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -38,7 +39,8 @@ def _repository(tmp_path: Path) -> Path:
     _git(repo, "config", "user.email", "tests@example.com")
     _git(repo, "config", "user.name", "OpenCode Tests")
     (repo / "tracked.txt").write_text("before\n")
-    _git(repo, "add", "tracked.txt")
+    write_target_test_script(repo)
+    _git(repo, "add", "tracked.txt", "scripts/test.sh")
     _git(repo, "commit", "-m", "initial")
     return repo
 

@@ -47,6 +47,45 @@ def _assert_required_stage_visible(diagram: str, display_text: str) -> None:
 
 
 @patch("auto_coder.dashboard.ui")
+def test_muse_initial_tests_and_interactive_refusal_reach_mounted_detail(mock_ui, tmp_path, monkeypatch, _use_real_commands):
+    from auto_coder.cli_helpers import build_backend_manager
+    from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+    from tests.test_muse_msp import _host, _repository
+    from tests.utils.workspace import write_target_test_script
+
+    repo = _repository(tmp_path)
+    write_target_test_script(repo, "#!/bin/bash\nprintf baseline-failed\nexit 1\n")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(_host(tmp_path)))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_INTERACTIVE_METHOD", "approval/requested")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    collector = get_trace_collector()
+    with (
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=config),
+        patch("auto_coder.muse_client.get_llm_config", return_value=config),
+        collector.start_execution("owner/repo", "issue", 5407, origin="worker") as execution,
+    ):
+        with pytest.raises(RuntimeError, match="cannot wait for interactive request"):
+            manager = build_backend_manager(["muse"], "muse", {"muse": "muse-spark-1.3"})
+            manager._run_llm_cli("first")
+        execution.finish(Outcome.FAILED)
+    snapshot = collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=5407)
+    events = [event for event in snapshot.events if event.kind == EventKind.STAGE_RESULT.value]
+    assert [(event.stage_id, event.outcome) for event in events] == [("local.workspace-tests", "failed"), ("llm.muse-interactive-request", "blocked")]
+    assert events[0].facts["exit_code"] == 1
+    assert events[1].facts == {"method": "approval/requested", "approval_mode": "denyUnmatched", "sessionId": "opaque/provider/session", "approvalId": "pending-1"}
+    assert len({event.execution_id for event in events}) == 1
+    assert "do-not-log-this-command" not in str(events)
+    diagram = _mounted_detail(mock_ui, "issue", 5407)
+    _assert_required_stage_visible(diagram, "Implementation workspace initial tests")
+    _assert_required_stage_visible(diagram, "Muse interactive request blocked")
+    assert "failed" in diagram
+    assert "blocked" in diagram
+    assert "outcome: completed" not in diagram
+
+
+@patch("auto_coder.dashboard.ui")
 def test_family_discovery_scope_reaches_mounted_detail(mock_ui):
     github = MagicMock()
     github.get_open_issue_declarations.return_value = [{"number": 900, "body": "Parent-Issue: #899"}]

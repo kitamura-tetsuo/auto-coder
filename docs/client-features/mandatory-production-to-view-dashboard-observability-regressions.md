@@ -9,6 +9,17 @@ view, and independently assert business outcomes. Negative controls reject missi
 emissions, scope reattribution, evidence coercion, and false completion while the
 generic renderer continues to accept new or repeated stages without a node map.
 
+Initial implementation-clone tests emit `local.workspace-tests` before the
+provider runs. Unexpected Muse approval or user-input requests emit
+`llm.muse-interactive-request` with a blocked outcome instead of remaining hidden
+until the invocation timeout. The mounted detail view presents these observed
+stages under the caller's execution identity. Initial-test completion never means
+implementation completion; a failed test baseline and a blocked provider request
+remain distinct. Raw command and approval-subject text is excluded from these
+facts. `test_muse_initial_tests_and_interactive_refusal_reach_mounted_detail`
+drives both real producers through an executable MSP host and checks the mounted
+view, outcomes, exact identity, exit code, and absence of sensitive subject text.
+
 Two inventory rows previously cited pre-existing tests that never actually
 exercised the diagnostic trace they were listed against: validation-publication
 resumption pointed at a durable-effect test that does not touch `TraceCollector`,

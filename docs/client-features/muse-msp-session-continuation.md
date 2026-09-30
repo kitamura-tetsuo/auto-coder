@@ -58,7 +58,8 @@ Host version strings are retained for diagnostics but are not
 compatibility authority. Session and turn commands carry UUIDv7 command
 identities; their returned state and acknowledgements are checked before work
 continues. Model selection belongs to fresh-session setup, reasoning effort
-belongs to turn submission, and editable sessions omit an approval-mode default.
+belongs to turn submission, and all sessions start with verified `denyUnmatched`
+approval mode. Editable resume also restores that mode before turn submission.
 The 1.4.1 host may record the selected `muse-spark-1.3` model as its effective
 `muse-spark-1.3-contributor` model after the first turn. Resume accepts that
 specific observed alias resolution for the 1.4.1 schema; other model changes

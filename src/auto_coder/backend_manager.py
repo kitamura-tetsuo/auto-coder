@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .automation_config import AutomationConfig
 from .backend_provider_manager import BackendProviderManager
 from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
 from .backend_state_manager import BackendStateManager
@@ -44,7 +45,17 @@ from .review_capture.recorder import get_review_audit_store
 from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
 from .utils import bind_supervised_command_execution
-from .worktree_utils import LocalWorkspaceOwnership, bind_retained_local_workspace, current_local_caller_checkpoint, current_local_caller_identity, get_current_local_workspace, isolated_local_llm_worktree, refresh_local_workspace_binding, sync_worktree_changes_back
+from .worktree_utils import (
+    LocalWorkspaceOwnership,
+    bind_retained_local_workspace,
+    current_local_caller_checkpoint,
+    current_local_caller_identity,
+    get_current_local_workspace,
+    isolated_local_llm_worktree,
+    refresh_local_workspace_binding,
+    run_implementation_workspace_tests,
+    sync_worktree_changes_back,
+)
 
 logger = get_logger(__name__)
 
@@ -866,6 +877,7 @@ class BackendManager(LLMBackendManagerBase):
                 # runs, at the final invocation boundary shared by every
                 # backend/provider rotation attempt (Issue #2009, REQ-001/002).
                 invocation_handle = self._admit_invocation(is_noedit=is_noedit, has_session=session_id is not None)
+                provider_started = False
                 try:
                     completed_turn_evidence = None
                     config_backend = getattr(cli, "config_backend", None)
@@ -902,6 +914,8 @@ class BackendManager(LLMBackendManagerBase):
                         )
                     with worktree_ctx:
                         workspace_binding = get_current_local_workspace()
+                        if is_local and workspace_binding is not None and not is_noedit and retained_session is None:
+                            run_implementation_workspace_tests(workspace_binding, AutomationConfig().TEST_SCRIPT_PATH)
                         boundary_ctx = (
                             bind_local_execution_boundary(
                                 workspace_binding,
@@ -923,6 +937,7 @@ class BackendManager(LLMBackendManagerBase):
                             # interruptible.
                             try:
                                 with mark_invocation_active(), supervised_ctx:
+                                    provider_started = True
                                     if session_id:
                                         out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
                                     else:
@@ -1029,7 +1044,7 @@ class BackendManager(LLMBackendManagerBase):
                     # usable session. Mirror that result on failure as well as
                     # success so a fail-closed client cannot leave an earlier
                     # manager-level session looking like the failed call's result.
-                    self._last_session_id = getattr(cli, "get_last_session_id", lambda: None)()
+                    self._last_session_id = getattr(cli, "get_last_session_id", lambda: None)() if provider_started else None
                     self._save_session_state(backend_name, self._last_session_id)
                     end_dt = datetime.now(timezone.utc)
                     end_time_iso = end_dt.isoformat()

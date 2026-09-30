@@ -14,6 +14,7 @@ import pytest
 from src.auto_coder.cli_helpers import build_backend_manager
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from tests.utils.workspace import write_target_test_script
 
 
 def _repository(path: Path) -> Path:
@@ -23,7 +24,8 @@ def _repository(path: Path) -> Path:
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
     (repo / "tracked.txt").write_text("unchanged\n")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    write_target_test_script(repo)
+    subprocess.run(["git", "add", "tracked.txt", "scripts/test.sh"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
     return repo
 
@@ -38,6 +40,9 @@ if sys.argv[1:] == ["--version"]:
     print("Muse Code 1.3.0")
     raise SystemExit
 assert sys.argv[1] == "serve"
+if os.environ.get("MSP_REQUIRE_INITIAL_TESTS"):
+    assert Path("node_modules/prepared.txt").read_text() == "dependencies-ready"
+    assert Path(".agent-tmp/initial-tests.log").read_text().startswith("exit_code=1\ninitial-tests-complete")
 if os.environ.get("MSP_PID_FILE"):
     Path(os.environ["MSP_PID_FILE"]).write_text(str(os.getpid()))
 log = Path(os.environ["MSP_LOG"])
@@ -122,6 +127,13 @@ for line in sys.stdin:
             ack[os.environ["MSP_BAD_TURN_ACK"]] = None
         if not os.environ.get("MSP_EVENTS_BEFORE_ACK"):
             emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
+        if os.environ.get("MSP_INTERACTIVE_METHOD"):
+            request = {"jsonrpc":"2.0","method":os.environ["MSP_INTERACTIVE_METHOD"],"params":{"sessionId":frame["params"]["sessionId"],"approvalId":"pending-1","subject":{"command":"do-not-log-this-command"}}}
+            if os.environ.get("MSP_INTERACTIVE_REQUEST_ID"):
+                request["id"] = "server-request"
+            emit(request)
+            time.sleep(30)
+            continue
         event_session = "wrong-session" if os.environ.get("MSP_WRONG_EVENT_SESSION") else frame["params"]["sessionId"]
         item_method = "item/updated" if os.environ.get("MSP_UNFINISHED_ITEM") else "item/completed"
         item_status = "inProgress" if os.environ.get("MSP_UNFINISHED_ITEM") else "completed"
@@ -177,6 +189,126 @@ def _initialize_host(host: Path, log: Path, client_info: object) -> dict[str, ob
     stdout, _ = process.communicate(json.dumps(request) + "\n", timeout=5)
     assert process.returncode == 0
     return json.loads(stdout)
+
+
+@pytest.mark.parametrize("is_noedit", [False, True])
+@pytest.mark.parametrize("events_before_ack", [False, True])
+@pytest.mark.parametrize("method", ["approval/requested", "approval/updated", "userInput/requested"])
+@pytest.mark.parametrize("server_request", [False, True])
+def test_muse_interactive_notification_fails_without_waiting(tmp_path, monkeypatch, _use_real_commands, is_noedit, events_before_ack, method, server_request):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_INTERACTIVE_METHOD", method)
+    if server_request:
+        monkeypatch.setenv("MSP_INTERACTIVE_REQUEST_ID", "1")
+    if events_before_ack:
+        monkeypatch.setenv("MSP_EVENTS_BEFORE_ACK", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    client = manager._clients["muse"]
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="cannot wait for interactive request"):
+        manager._run_llm_cli("first", is_noedit=is_noedit)
+    assert time.monotonic() - started < 5
+    assert client.get_last_session_id() is None
+    assert manager.get_last_session_id() is None
+    frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
+    assert sum(frame.get("method") == "turn/start" for frame in frames) == 1
+    assert not any(frame.get("method") == "approval/decide" for frame in frames)
+
+
+def test_implementation_workspace_runs_target_tests_before_muse(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    write_target_test_script(repo, '#!/bin/bash\nset -eu\ntest "$INSIDE_TARGET_EXECUTION" = true\ntest "$AM_I_AUTOCODER_CONTAINER" = false\nmkdir -p node_modules\nprintf dependencies-ready > node_modules/prepared.txt\nprintf initial-tests-complete\nexit 1\n')
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_REQUIRE_INITIAL_TESTS", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    assert _manager(config)._run_llm_cli("first") == "answer:first"
+    assert not (repo / "node_modules").exists()
+    assert not (repo / ".agent-tmp").exists()
+    frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
+    assert sum(frame.get("method") == "turn/start" for frame in frames) == 1
+
+
+@pytest.mark.parametrize("configured_noedit", [False, True])
+def test_noedit_workspace_never_runs_initial_tests(tmp_path, monkeypatch, _use_real_commands, configured_noedit):
+    repo = _repository(tmp_path)
+    write_target_test_script(repo, "#!/bin/bash\nprintf mutated > tracked.txt\nexit 127\n")
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--no-edit"] if configured_noedit else [])})
+    assert _manager(config)._run_llm_cli("first", is_noedit=not configured_noedit) == "answer:first"
+    assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+def test_initial_test_launch_failure_prevents_provider_submission(tmp_path, monkeypatch, _use_real_commands):
+    from src.auto_coder.worktree_utils import WorkspacePreparationError
+
+    repo = _repository(tmp_path)
+    write_target_test_script(repo, "#!/bin/bash\nexit 127\n")
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    with pytest.raises(WorkspacePreparationError, match="test script could not complete"):
+        _manager(config)._run_llm_cli("first")
+    assert not log.exists()
+
+
+def test_initial_test_failure_cannot_report_a_previous_session(tmp_path, monkeypatch, _use_real_commands):
+    from src.auto_coder.worktree_utils import WorkspacePreparationError
+
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config, automatic_session_resume=False)
+    assert manager._run_llm_cli("first") == "answer:first"
+    previous_session = manager.get_last_session_id()
+    assert previous_session == "opaque/provider/session"
+    previous_protocol = log.read_text()
+    write_target_test_script(repo, "#!/bin/bash\nexit 127\n")
+    with pytest.raises(WorkspacePreparationError, match="test script could not complete"):
+        manager._run_llm_cli("second")
+    assert manager.get_last_session_id() is None
+    assert manager.has_retained_local_session(previous_session)
+    assert log.read_text() == previous_protocol
+
+
+@pytest.mark.parametrize("returncode", [-1, 126, 127])
+def test_initial_test_runner_failure_records_failure_without_launching_muse(tmp_path, monkeypatch, _use_real_commands, returncode):
+    from src.auto_coder.utils import CommandResult
+    from src.auto_coder.worktree_utils import WorkspacePreparationError
+
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    with patch("src.auto_coder.worktree_utils.CommandExecutor.run_command", return_value=CommandResult(False, "", "runner failed", returncode)) as run:
+        with pytest.raises(WorkspacePreparationError, match=f"exit_code={returncode}"):
+            _manager(config)._run_llm_cli("first")
+    assert run.call_count == 1
+    assert run.call_args.args == (["bash", "scripts/test.sh"],)
+    assert Path(run.call_args.kwargs["cwd"]) != repo
+    assert not log.exists()
 
 
 @pytest.mark.parametrize(
@@ -235,7 +367,7 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     turns = [entry for entry in frames if entry["frame"].get("method") == "turn/start"]
     assert [entry["frame"]["params"]["clientInfo"]["name"] for entry in initializations] == ["auto_coder", "auto_coder"]
     assert len(starts) == 1
-    assert "approvalMode" not in starts[0]["frame"]["params"]
+    assert starts[0]["frame"]["params"]["approvalMode"] == "denyUnmatched"
     assert [entry["frame"]["params"]["sessionId"] for entry in resumes] == [session_id]
     assert len(turns) == 2
     assert turns[1]["argv"] == ["serve", "--disable-write", "--disable-shell"]
@@ -349,7 +481,8 @@ def test_muse_msp_configured_no_edit_maps_all_restrictions_for_editable_caller(t
 
 
 @pytest.mark.parametrize("approval_mode", ["omit", "allowAll"])
-def test_muse_msp_fresh_noedit_rejects_unconfirmed_approval_before_turn(tmp_path, monkeypatch, _use_real_commands, approval_mode):
+@pytest.mark.parametrize("is_noedit", [False, True])
+def test_muse_msp_fresh_noedit_rejects_unconfirmed_approval_before_turn(tmp_path, monkeypatch, _use_real_commands, approval_mode, is_noedit):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -360,7 +493,7 @@ def test_muse_msp_fresh_noedit_rejects_unconfirmed_approval_before_turn(tmp_path
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
     with pytest.raises(RuntimeError, match="fresh session did not confirm approval denial"):
-        _manager(config)._clients["muse"]._run_llm_cli("first", is_noedit=True)
+        _manager(config)._run_llm_cli("first", is_noedit=is_noedit)
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     assert any(entry["frame"].get("method") == "session/start" for entry in entries)
     assert not any(entry["frame"].get("method") == "turn/start" for entry in entries)

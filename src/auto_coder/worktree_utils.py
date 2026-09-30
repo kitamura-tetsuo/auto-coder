@@ -16,8 +16,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Generator, Optional, Union
 
+from .execution_trace import EventKind, Outcome, get_trace_collector
 from .logger_config import get_logger
-from .utils import _COMMAND_EXECUTION_CWD, bind_command_execution_cwd, reset_command_execution_cwd
+from .security_utils import redact_string
+from .utils import _COMMAND_EXECUTION_CWD, CommandExecutor, bind_command_execution_cwd, reset_command_execution_cwd
 
 logger = get_logger(__name__)
 
@@ -30,6 +32,34 @@ class WorkspacePreparationError(RuntimeError):
 
 class WorkspaceHandoffError(WorkspacePreparationError):
     """Raised when a completed private result cannot be applied atomically."""
+
+
+def run_implementation_workspace_tests(binding: LocalWorkspaceBinding, test_script_path: str) -> None:
+    """Prepare a new editable root through the target's startup-validated script.
+
+    Ordinary test failures are baseline evidence for the implementation task.
+    Launch failures and timeouts refuse provider submission. Do not probe for
+    the script again or redirect execution into another repository/container.
+    """
+    collector = get_trace_collector()
+    facts = {"invocation_id": binding.invocation_id, "test_script": test_script_path}
+    collector.record_event(EventKind.STAGE_STARTED, "local.workspace-tests", "local-backend", label="Implementation workspace initial tests", facts=facts)
+    logger.info("Running initial tests in private implementation workspace {}", binding.workspace)
+    result = CommandExecutor.run_command(
+        ["bash", test_script_path],
+        cwd=str(binding.workspace),
+        timeout=CommandExecutor.DEFAULT_TIMEOUTS["test"],
+        env_overrides={"INSIDE_TARGET_EXECUTION": "true", "AM_I_AUTOCODER_CONTAINER": "false"},
+        stdin_text="",
+    )
+    log_path = binding.workspace / ".agent-tmp" / "initial-tests.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(redact_string(f"exit_code={result.returncode}\n{result.stdout}\n{result.stderr}"), encoding="utf-8")
+    collector.record_event(EventKind.STAGE_RESULT, "local.workspace-tests", "local-backend", label="Implementation workspace initial tests", outcome=Outcome.COMPLETED if result.success else Outcome.FAILED, facts={**facts, "exit_code": result.returncode, "log_path": ".agent-tmp/initial-tests.log"})
+    if result.returncode < 0 or result.returncode in {126, 127}:
+        raise WorkspacePreparationError(f"implementation workspace test script could not complete (exit_code={result.returncode}); see {log_path}")
+    if not result.success:
+        logger.warning("Initial implementation tests failed (exit_code={}); baseline log: {}", result.returncode, log_path)
 
 
 @dataclass(frozen=True)
