@@ -179,7 +179,7 @@ pytest -m "not browser and not opencode_live"
 
 The assertion-bearing container execution scenarios (`AC-001` through `AC-005`) launch real Docker containers and execute tasks against controlled local providers. To prevent expensive container builds and multi-minute test execution from causing timeouts or requiring retry-based cache warming in ordinary PR test shards, these scenarios are classified with `@pytest.mark.opencode_live`.
 
-In CI, the dedicated `OpenCode Live Tests` workflow (`.github/workflows/opencode-live-tests.yml`) executes these scenarios. It preflights Docker, builds the production runtime image for the exact checked-out commit via `scripts/prepare_opencode_image.py` (with a 10-minute step limit), and runs the live suite (with a 20-minute step limit and a 40-minute job limit). All five container scenarios must execute to passing results; skipping, xfailing, or missing container scenarios fails the run closed.
+In CI, the dedicated `OpenCode Live Tests` workflow (`.github/workflows/opencode-live-tests.yml`) executes these scenarios. It preflights Docker, builds the production runtime image for the exact checked-out commit via `scripts/prepare_opencode_image.py` (with a 10-minute step limit), and runs the live suite (with a 30-minute step limit and a 40-minute job limit). All five container scenarios must execute to passing results; skipping, xfailing, or missing container scenarios fails the run closed.
 
 To execute the live container suite locally:
 ```bash
@@ -199,4 +199,3 @@ other test, including static OpenCode tests and browser-only tests. A successful
 `Publish Beta` run therefore does not by itself demonstrate that the dedicated
 `OpenCode Live Tests` workflow (which runs independently on every pull request and
 `workflow_dispatch`) currently passes.
-

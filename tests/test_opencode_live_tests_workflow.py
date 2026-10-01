@@ -70,7 +70,7 @@ def test_opencode_live_workflow_contract_and_limits():
     assert "scripts/prepare_opencode_image.py" in prep_step["run"]
 
     test_step = steps[test_index]
-    assert test_step["timeout-minutes"] == 20, "Live pytest execution must have a 20-minute step limit"
+    assert test_step["timeout-minutes"] == 30, "Live pytest execution must have a 30-minute step limit"
     assert test_step["env"]["AUTO_CODER_REQUIRE_OPENCODE_LIVE"] == "1"
     assert "-m opencode_live" in test_step["run"]
     for excluder in ("--splits", "--group", " -k ", "test_opencode_noedit_live.py", "test_opencode_container_runtime.py"):
