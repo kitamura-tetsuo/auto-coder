@@ -163,6 +163,16 @@ for line in sys.stdin:
         if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
             terminal_params["turnId"] = "wrong-turn"
         emit({"jsonrpc":"2.0","method":"turn/completed","params":terminal_params})
+        extra_terminal_mismatch = os.environ.get("MSP_EXTRA_TERMINAL_MISMATCH")
+        if extra_terminal_mismatch:
+            extra_terminal_params = dict(terminal_params)
+            if extra_terminal_mismatch == "session":
+                extra_terminal_params["sessionId"] = "wrong-session"
+            elif extra_terminal_mismatch == "turn":
+                extra_terminal_params["turnId"] = "wrong-turn"
+            else:
+                raise AssertionError("unsupported extra terminal mismatch")
+            emit({"jsonrpc":"2.0","method":"turn/completed","params":extra_terminal_params})
         if os.environ.get("MSP_EVENTS_BEFORE_ACK"):
             emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
         if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
@@ -292,14 +302,17 @@ def test_initial_test_failure_cannot_report_a_previous_session(tmp_path, monkeyp
     monkeypatch.setenv("MSP_LOG", str(log))
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
     manager = _manager(config, automatic_session_resume=False)
+    client = manager._clients["muse"]
     assert manager._run_llm_cli("first") == "answer:first"
     previous_session = manager.get_last_session_id()
     assert previous_session == "opaque/provider/session"
+    assert client.get_last_session_id() == previous_session
     previous_protocol = log.read_text()
     write_target_test_script(repo, "#!/bin/bash\nexit 127\n")
     with pytest.raises(WorkspacePreparationError, match="test script could not complete"):
         manager._run_llm_cli("second")
     assert manager.get_last_session_id() is None
+    assert client.get_last_session_id() is None
     assert manager.has_retained_local_session(previous_session)
     assert log.read_text() == previous_protocol
 
@@ -908,6 +921,39 @@ def test_muse_wrong_terminal_turn_is_immediate_protocol_failure(tmp_path, monkey
     with pytest.raises(RuntimeError, match="terminal belongs to an incompatible turn"):
         _manager(config)._run_llm_cli("inspect", is_noedit=True)
     assert time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize(
+    ("mismatch", "message"),
+    [
+        ("session", "terminal belongs to an incompatible session"),
+        ("turn", "terminal belongs to an incompatible turn"),
+    ],
+)
+def test_muse_buffered_terminal_after_valid_terminal_still_fails_continuation(tmp_path, monkeypatch, _use_real_commands, mismatch, message):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config, automatic_session_resume=False)
+    client = manager._clients["muse"]
+
+    assert manager._run_llm_cli("first", is_noedit=True) == "answer:first"
+    session_id = manager.get_last_session_id()
+    assert session_id == "opaque/provider/session"
+    manager.authorize_retained_local_session_reuse(session_id)
+    monkeypatch.setenv("MSP_EVENTS_BEFORE_ACK", "1")
+    monkeypatch.setenv("MSP_EXTRA_TERMINAL_MISMATCH", mismatch)
+
+    with pytest.raises(RuntimeError, match=message):
+        manager.continue_session(session_id, "second", is_noedit=True)
+
+    assert client.get_last_session_id() is None
+    assert manager.get_last_session_id() is None
+    assert manager._last_continue_session_resumed is False
 
 
 def test_muse_nonzero_exit_invalidates_completed_protocol(tmp_path, monkeypatch, _use_real_commands):

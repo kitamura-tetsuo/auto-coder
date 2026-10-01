@@ -956,8 +956,8 @@ class MuseClient(LLMClientBase):
                         raise RuntimeError("Muse MSP terminal belongs to an incompatible turn")
                     if params_obj.get("sessionId") != canonical_id:
                         raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
-                    terminal = params_obj
-                    break
+                    if terminal is None:
+                        terminal = params_obj
             if terminal.get("terminal") != "completed":
                 self._raise_msp_failure("Muse MSP turn did not complete successfully", terminal)
             answers: list[str] = []
