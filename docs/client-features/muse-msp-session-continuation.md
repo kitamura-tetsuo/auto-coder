@@ -62,9 +62,12 @@ Malformed metadata and unsupported envelope versions still fail before session
 dispatch. Host version strings are retained for diagnostics but are not compatibility
 authority. Session and turn commands carry UUIDv7 command
 identities; their returned state and acknowledgements are checked before work
-continues. Model selection belongs to fresh-session setup, reasoning effort
-belongs to turn submission, and all sessions start with verified `denyUnmatched`
-approval mode. Editable resume also restores that mode before turn submission.
+continues. Model selection belongs to fresh-session setup, and reasoning effort
+belongs to turn submission. Ordinary editable fresh sessions omit `approvalMode`
+and accept absent effective-mode metadata; no-edit or explicit
+`--disable-approval` requests verified `denyUnmatched`. Resume changes the stored
+mode to `denyUnmatched` only for such constrained invocations and otherwise
+preserves the stored mode without issuing a mode-changing command.
 The 1.4.1 host may record the selected `muse-spark-1.3` model as its effective
 `muse-spark-1.3-contributor` model after the first turn. Both fresh and resumed
 sessions accept only that specific alias resolution, independently of fingerprint
