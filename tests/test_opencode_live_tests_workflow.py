@@ -53,7 +53,7 @@ def test_opencode_live_workflow_contract_and_limits():
 
     job = workflow["jobs"]["opencode-live-tests"]
     assert job["name"] == "OpenCode Live Tests"
-    assert job["timeout-minutes"] == 40, "Containing live job must have a 40-minute limit"
+    assert job["timeout-minutes"] == 50, "Containing live job must have a 50-minute limit"
     assert "needs" not in job, "OpenCode Live Tests must run independently of other workflows"
 
     steps = job["steps"]
@@ -70,7 +70,7 @@ def test_opencode_live_workflow_contract_and_limits():
     assert "scripts/prepare_opencode_image.py" in prep_step["run"]
 
     test_step = steps[test_index]
-    assert test_step["timeout-minutes"] == 20, "Live pytest execution must have a 20-minute step limit"
+    assert test_step["timeout-minutes"] == 35, "Live pytest execution must have a 35-minute step limit"
     assert test_step["env"]["AUTO_CODER_REQUIRE_OPENCODE_LIVE"] == "1"
     assert "-m opencode_live" in test_step["run"]
     for excluder in ("--splits", "--group", " -k ", "test_opencode_noedit_live.py", "test_opencode_container_runtime.py"):

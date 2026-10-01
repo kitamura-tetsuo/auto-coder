@@ -39,6 +39,7 @@ from src.auto_coder.decomposition_analyzer import (
     analyze_issue_decomposition,
 )
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.objective_evidence import ObjectiveAnchor, ObjectiveExtraction
 from src.auto_coder.pr_processor import _remove_reviewer_sessions_for_closed_pr
 from src.auto_coder.requirement_contract import build_normative_issue_manifest
@@ -421,7 +422,7 @@ class TestAC001IssueAndPrReview:
 
 
 class TestAC002PrScopedSessionContinuity:
-    def test_pr_session_persists_and_continues_across_worktrees(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+    def test_persisted_pr_session_cannot_replace_live_retained_authority(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
         repo1, head_sha = _build_test_repo(tmp_path / "wt1")
         pass_response = _pr_validation_pass_payload()
         body_script = tmp_path / "driver_body.py"
@@ -485,8 +486,12 @@ class TestAC002PrScopedSessionContinuity:
 
         # Reopen registry from disk to prove persistence across restart
         fresh_registry = ReviewerSessionRegistry(path=registry_file)
-        with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.opencode_client.get_llm_config", return_value=config):
-            res2 = run_adversarial_validation(
+        with (
+            patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config),
+            patch("src.auto_coder.opencode_client.get_llm_config", return_value=config),
+            pytest.raises(LocalContinuationError, match="no retained controller-owned binding"),
+        ):
+            run_adversarial_validation(
                 repo_name=REPO_NAME,
                 pr_data=pr_data,
                 config=auto_config,
@@ -495,10 +500,7 @@ class TestAC002PrScopedSessionContinuity:
                 execution_cwd=str(repo2),
             )
 
-        assert res2.result == "PASS"
-        obs2 = json.loads(report2.read_text())
-        assert "--session" in obs2["argv"]
-        assert obs2["argv"][obs2["argv"].index("--session") + 1] == "ses_pr101"
+        assert not report2.exists()
 
     def test_different_pr_or_backend_uses_fresh_review(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
         repo, head_sha = _build_test_repo(tmp_path)
@@ -628,7 +630,7 @@ class TestAC003SessionRecoveryAndEvidenceContinuation:
         with (
             patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config),
             patch("src.auto_coder.opencode_client.get_llm_config", return_value=config),
-            pytest.raises(RuntimeError, match="not associated with the current execution directory"),
+            pytest.raises(LocalContinuationError, match="no retained controller-owned binding"),
         ):
             run_adversarial_validation(
                 repo_name=REPO_NAME,
