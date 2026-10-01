@@ -39,6 +39,11 @@ _MUSE_MSP_CLIENT_NAME = "auto_coder"
 _MUSE_141_MODEL_ALIASES = {"muse-spark-1.3": "muse-spark-1.3-contributor"}
 _MUSE_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 
+
+class _MspEndOfStream(Exception):
+    """Signal an expected host EOF while draining a completed turn."""
+
+
 _READ_ONLY_GIT_COMMANDS = {
     "blame",
     "cat-file",
@@ -594,6 +599,8 @@ class MuseClient(LLMClientBase):
         request_id: int,
         deadline: float,
         notifications: list[dict[str, object]],
+        *,
+        clean_eof: bool = False,
     ) -> dict[str, object]:
         if process.stdout is None:
             raise RuntimeError("Muse MSP host has no output stream")
@@ -653,6 +660,8 @@ class MuseClient(LLMClientBase):
             if chunk:
                 self._msp_stdout.extend(chunk)
                 continue
+            if clean_eof:
+                raise _MspEndOfStream
             detail = self._msp_stderr.decode(errors="replace").strip()
             self._raise_msp_failure("Muse MSP host exited before completing the request", detail)
 
@@ -960,6 +969,30 @@ class MuseClient(LLMClientBase):
                         terminal = params_obj
             if terminal.get("terminal") != "completed":
                 self._raise_msp_failure("Muse MSP turn did not complete successfully", terminal)
+            # A single-turn host remains open waiting for more input. Close our
+            # input after completion, then consume every remaining notification
+            # through host EOF so a later contradictory terminal cannot escape
+            # correlation checks merely by arriving after the first terminal.
+            if process.stdin is not None:
+                process.stdin.close()
+            try:
+                while process.poll() is None:
+                    poll_deadline = min(deadline, time.monotonic() + 0.05)
+                    try:
+                        self._msp_wait(process, -1, poll_deadline, notifications, clean_eof=True)
+                    except AutoCoderTimeoutError:
+                        if time.monotonic() >= deadline:
+                            raise
+            except _MspEndOfStream:
+                pass
+            for event in notifications:
+                params_obj = event.get("params")
+                if event.get("method") != "turn/completed":
+                    continue
+                if not isinstance(params_obj, dict) or params_obj.get("turnId") != turn_id:
+                    raise RuntimeError("Muse MSP terminal belongs to an incompatible turn")
+                if params_obj.get("sessionId") != canonical_id:
+                    raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
             answers: list[str] = []
             for event in notifications:
                 params_obj = event.get("params")

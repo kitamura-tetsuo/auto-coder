@@ -164,7 +164,7 @@ for line in sys.stdin:
             terminal_params["turnId"] = "wrong-turn"
         emit({"jsonrpc":"2.0","method":"turn/completed","params":terminal_params})
         extra_terminal_mismatch = os.environ.get("MSP_EXTRA_TERMINAL_MISMATCH")
-        if extra_terminal_mismatch:
+        if extra_terminal_mismatch and not os.environ.get("MSP_EXTRA_TERMINAL_AFTER_ACK"):
             extra_terminal_params = dict(terminal_params)
             if extra_terminal_mismatch == "session":
                 extra_terminal_params["sessionId"] = "wrong-session"
@@ -175,6 +175,16 @@ for line in sys.stdin:
             emit({"jsonrpc":"2.0","method":"turn/completed","params":extra_terminal_params})
         if os.environ.get("MSP_EVENTS_BEFORE_ACK"):
             emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
+        if extra_terminal_mismatch and os.environ.get("MSP_EXTRA_TERMINAL_AFTER_ACK"):
+            time.sleep(0.05)
+            extra_terminal_params = dict(terminal_params)
+            if extra_terminal_mismatch == "session":
+                extra_terminal_params["sessionId"] = "wrong-session"
+            elif extra_terminal_mismatch == "turn":
+                extra_terminal_params["turnId"] = "wrong-turn"
+            else:
+                raise AssertionError("unsupported extra terminal mismatch")
+            emit({"jsonrpc":"2.0","method":"turn/completed","params":extra_terminal_params})
         if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
             time.sleep(10)
 if os.environ.get("MSP_EXIT_NONZERO"):
@@ -954,6 +964,32 @@ def test_muse_buffered_terminal_after_valid_terminal_still_fails_continuation(tm
     assert client.get_last_session_id() is None
     assert manager.get_last_session_id() is None
     assert manager._last_continue_session_resumed is False
+
+
+@pytest.mark.parametrize(
+    ("mismatch", "message"),
+    [
+        ("session", "terminal belongs to an incompatible session"),
+        ("turn", "terminal belongs to an incompatible turn"),
+    ],
+)
+def test_muse_post_ack_terminal_after_valid_terminal_still_fails(tmp_path, monkeypatch, _use_real_commands, mismatch, message):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_EXTRA_TERMINAL_MISMATCH", mismatch)
+    monkeypatch.setenv("MSP_EXTRA_TERMINAL_AFTER_ACK", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config, automatic_session_resume=False)
+    client = manager._clients["muse"]
+
+    with pytest.raises(RuntimeError, match=message):
+        manager._run_llm_cli("first", is_noedit=True)
+
+    assert client.get_last_session_id() is None
+    assert manager.get_last_session_id() is None
 
 
 def test_muse_nonzero_exit_invalidates_completed_protocol(tmp_path, monkeypatch, _use_real_commands):
