@@ -1054,7 +1054,13 @@ class BackendManager(LLMBackendManagerBase):
                     # usable session. Mirror that result on failure as well as
                     # success so a fail-closed client cannot leave an earlier
                     # manager-level session looking like the failed call's result.
-                    self._last_session_id = getattr(cli, "get_last_session_id", lambda: None)() if provider_started else None
+                    if provider_started:
+                        self._last_session_id = getattr(cli, "get_last_session_id", lambda: None)()
+                    else:
+                        clear_last_session_id = getattr(cli, "clear_last_session_id", None)
+                        if callable(clear_last_session_id):
+                            clear_last_session_id()
+                        self._last_session_id = None
                     self._save_session_state(backend_name, self._last_session_id)
                     end_dt = datetime.now(timezone.utc)
                     end_time_iso = end_dt.isoformat()
