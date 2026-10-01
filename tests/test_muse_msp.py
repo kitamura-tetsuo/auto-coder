@@ -14,6 +14,7 @@ import pytest
 from src.auto_coder.cli_helpers import build_backend_manager
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from src.auto_coder.local_session_continuation import LocalContinuationError
 from tests.utils.workspace import write_target_test_script
 
 
@@ -66,15 +67,29 @@ for line in sys.stdin:
             time.sleep(10)
         schema = {"version":1,"fingerprint":"sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"}
         result = {"serverInfo":{"name":"fixture","version":os.environ.get("MSP_SERVER_VERSION", "1.3.0")},"schema":schema,"capabilities":{"sessionDurability":"durable"}}
+        if os.environ.get("MSP_OMIT_SERVER_INFO"):
+            result.pop("serverInfo")
         if os.environ.get("MSP_SCHEMA_ALIAS"):
             result["schemaInfo"] = result.pop("schema")
+        if os.environ.get("MSP_SCHEMA_NON_OBJECT"):
+            result["schema"] = []
         if os.environ.get("MSP_SCHEMA_VERSION"):
             schema["version"] = os.environ["MSP_SCHEMA_VERSION"]
         if os.environ.get("MSP_SCHEMA_BOOLEAN"):
             schema["version"] = True
+        if os.environ.get("MSP_SCHEMA_FLOAT"):
+            schema["version"] = 1.0
         if os.environ.get("MSP_SCHEMA_FINGERPRINT"):
             schema["fingerprint"] = os.environ["MSP_SCHEMA_FINGERPRINT"]
+        if os.environ.get("MSP_SCHEMA_FINGERPRINT_CASE") == "missing":
+            schema.pop("fingerprint")
+        elif os.environ.get("MSP_SCHEMA_FINGERPRINT_CASE") == "null":
+            schema["fingerprint"] = None
+        elif os.environ.get("MSP_SCHEMA_FINGERPRINT_CASE") == "blank":
+            schema["fingerprint"] = " \t"
         emit({"jsonrpc":"2.0","id":frame["id"],"result":result})
+        if os.environ.get("MSP_UNKNOWN_NOTIFICATION"):
+            emit({"jsonrpc":"2.0","method":"host/information","params":{"extra":True}})
     elif method in ("session/start", "session/resume"):
         sid = "opaque/provider/session" if method == "session/start" else frame["params"]["sessionId"]
         if method == "session/resume" and os.environ.get("MSP_WRONG_RESUME_ID"):
@@ -83,7 +98,7 @@ for line in sys.stdin:
         session = {"sessionId":sid,"workspaceRoot":workspace}
         missing_model = os.environ.get("MSP_MISSING_MODEL") or (os.environ.get("MSP_MISSING_MODEL_RESUME") and method == "session/resume")
         if not missing_model:
-            session["modelId"] = os.environ.get("MSP_RESUME_MODEL", "muse-spark-1.3") if method == "session/resume" else "muse-spark-1.3"
+            session["modelId"] = os.environ.get("MSP_RESUME_MODEL", "muse-spark-1.3") if method == "session/resume" else os.environ.get("MSP_FRESH_MODEL", "muse-spark-1.3")
         requested_denial = method == "session/start" and frame["params"].get("approvalMode") == "denyUnmatched"
         approval_mode = os.environ.get("MSP_APPROVAL_MODE")
         if approval_mode != "omit" and (requested_denial or (method == "session/resume" and os.environ.get("MSP_RESUME_DENIED"))):
@@ -149,8 +164,28 @@ for line in sys.stdin:
         if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
             terminal_params["turnId"] = "wrong-turn"
         emit({"jsonrpc":"2.0","method":"turn/completed","params":terminal_params})
+        extra_terminal_mismatch = os.environ.get("MSP_EXTRA_TERMINAL_MISMATCH")
+        if extra_terminal_mismatch and not os.environ.get("MSP_EXTRA_TERMINAL_AFTER_ACK"):
+            extra_terminal_params = dict(terminal_params)
+            if extra_terminal_mismatch == "session":
+                extra_terminal_params["sessionId"] = "wrong-session"
+            elif extra_terminal_mismatch == "turn":
+                extra_terminal_params["turnId"] = "wrong-turn"
+            else:
+                raise AssertionError("unsupported extra terminal mismatch")
+            emit({"jsonrpc":"2.0","method":"turn/completed","params":extra_terminal_params})
         if os.environ.get("MSP_EVENTS_BEFORE_ACK"):
             emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
+        if extra_terminal_mismatch and os.environ.get("MSP_EXTRA_TERMINAL_AFTER_ACK"):
+            time.sleep(0.05)
+            extra_terminal_params = dict(terminal_params)
+            if extra_terminal_mismatch == "session":
+                extra_terminal_params["sessionId"] = "wrong-session"
+            elif extra_terminal_mismatch == "turn":
+                extra_terminal_params["turnId"] = "wrong-turn"
+            else:
+                raise AssertionError("unsupported extra terminal mismatch")
+            emit({"jsonrpc":"2.0","method":"turn/completed","params":extra_terminal_params})
         if os.environ.get("MSP_WRONG_TERMINAL_TURN"):
             time.sleep(10)
 if os.environ.get("MSP_EXIT_NONZERO"):
@@ -278,14 +313,17 @@ def test_initial_test_failure_cannot_report_a_previous_session(tmp_path, monkeyp
     monkeypatch.setenv("MSP_LOG", str(log))
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
     manager = _manager(config, automatic_session_resume=False)
+    client = manager._clients["muse"]
     assert manager._run_llm_cli("first") == "answer:first"
     previous_session = manager.get_last_session_id()
     assert previous_session == "opaque/provider/session"
+    assert client.get_last_session_id() == previous_session
     previous_protocol = log.read_text()
     write_target_test_script(repo, "#!/bin/bash\nexit 127\n")
     with pytest.raises(WorkspacePreparationError, match="test script could not complete"):
         manager._run_llm_cli("second")
     assert manager.get_last_session_id() is None
+    assert client.get_last_session_id() is None
     assert manager.has_retained_local_session(previous_session)
     assert log.read_text() == previous_protocol
 
@@ -570,7 +608,7 @@ def test_muse_msp_resume_reestablishes_approval_denial(tmp_path, monkeypatch, _u
     "ack_case",
     ["mismatched-command", "rejected", "pending", "missing-mode", "permissive-mode"],
 )
-def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path, monkeypatch, _use_real_commands, ack_case):
+def test_muse_manager_refuses_unretained_session_before_approval_protocol(tmp_path, monkeypatch, _use_real_commands, ack_case):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -580,13 +618,9 @@ def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path
     monkeypatch.setenv("MSP_APPROVAL_ACK_CASE", ack_case)
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         _manager(config).continue_session("opaque/provider/session", "second", is_noedit=True)
-    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
-    assert methods.count("session/resume") == 1
-    assert methods.count("session/setApprovalMode") == 1
-    assert "session/start" not in methods
-    assert "turn/start" not in methods
+    assert not log.exists()
 
 
 @pytest.mark.parametrize(
@@ -622,18 +656,23 @@ def test_muse_msp_continuation_rejects_workspace_trust_before_protocol_setup(tmp
     monkeypatch.setenv("MSP_LOG", str(log))
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--trust-workspace"])})
 
+    client = _manager(config)._clients["muse"]
     with pytest.raises(RuntimeError, match="without independent PR-review authorization"):
-        _manager(config).continue_session("opaque/provider/session", "prompt", is_noedit=is_noedit)
+        client.continue_session("opaque/provider/session", "prompt", is_noedit=is_noedit)
     assert not log.exists()
 
 
 @pytest.mark.parametrize(
     ("environment", "message"),
     [
-        ({"MSP_SCHEMA_ALIAS": "1"}, "omitted schema"),
-        ({"MSP_SCHEMA_VERSION": "1"}, "schema is incompatible"),
-        ({"MSP_SCHEMA_BOOLEAN": "1"}, "schema is incompatible"),
-        ({"MSP_SCHEMA_FINGERPRINT": "sha256:deadbeef"}, "schema is incompatible"),
+        ({"MSP_SCHEMA_ALIAS": "1"}, "missing or non-object schema"),
+        ({"MSP_SCHEMA_NON_OBJECT": "1"}, "missing or non-object schema"),
+        ({"MSP_SCHEMA_VERSION": "1"}, "unsupported schema.version"),
+        ({"MSP_SCHEMA_BOOLEAN": "1"}, "unsupported schema.version"),
+        ({"MSP_SCHEMA_FLOAT": "1"}, "unsupported schema.version"),
+        ({"MSP_SCHEMA_FINGERPRINT_CASE": "missing"}, "invalid schema.fingerprint"),
+        ({"MSP_SCHEMA_FINGERPRINT_CASE": "null"}, "invalid schema.fingerprint"),
+        ({"MSP_SCHEMA_FINGERPRINT_CASE": "blank"}, "invalid schema.fingerprint"),
     ],
 )
 def test_muse_msp_rejects_incompatible_initialization_before_session(tmp_path, monkeypatch, _use_real_commands, environment, message):
@@ -674,16 +713,50 @@ def test_muse_msp_host_version_does_not_control_schema_admission(tmp_path, monke
     assert _manager(config)._run_llm_cli("first", is_noedit=True) == "answer:first"
 
 
+@pytest.mark.parametrize(
+    "fingerprint",
+    [
+        "sha256:61afea3112e0906e9dc3a536144278a74cb4b36fc6e20901a91d4432ba3568e2",
+        "peer-generated-one",
+        "opaque value",
+    ],
+)
+def test_muse_msp_unknown_fingerprint_warns_and_runs_contract_checks(tmp_path, monkeypatch, _use_real_commands, fingerprint):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    warnings: list[str] = []
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_SCHEMA_FINGERPRINT", fingerprint)
+    monkeypatch.setenv("MSP_UNKNOWN_NOTIFICATION", "1")
+    monkeypatch.setenv("MSP_OMIT_SERVER_INFO", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+
+    with patch("src.auto_coder.muse_client.logger.warning", side_effect=lambda message: warnings.append(str(message))):
+        assert _manager(config)._run_llm_cli("first", is_noedit=True) == "answer:first"
+
+    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
+    assert methods == ["initialize", "initialized", "session/start", "turn/start"]
+    compatibility_warnings = [message for message in warnings if "diagnostic reference set" in message]
+    assert len(compatibility_warnings) == 1
+    assert fingerprint in compatibility_warnings[0]
+    assert "schema version=1" in compatibility_warnings[0]
+    assert "host version=None" in compatibility_warnings[0]
+    assert "continues with required runtime contract checks" in compatibility_warnings[0]
+
+
 @pytest.mark.parametrize("resumed_model, accepted", [("muse-spark-1.3-contributor", True), ("other-model", False)])
-def test_muse_141_resume_accepts_only_observed_effective_model_alias(tmp_path, monkeypatch, _use_real_commands, resumed_model, accepted):
+def test_muse_resume_accepts_only_explicit_effective_model_alias_independent_of_fingerprint(tmp_path, monkeypatch, _use_real_commands, resumed_model, accepted):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
     monkeypatch.setenv("MSP_LOG", str(log))
-    monkeypatch.setenv("MSP_SERVER_VERSION", "1.4.1")
-    monkeypatch.setenv("MSP_SCHEMA_FINGERPRINT", "sha256:e0e163db6ccf00dbe68402ce55d6319b3edc33c421f31e9583b587b2de8a118f")
+    monkeypatch.setenv("MSP_SERVER_VERSION", "unfamiliar-build")
+    monkeypatch.setenv("MSP_SCHEMA_FINGERPRINT", "opaque-unknown-fingerprint")
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
     manager = _manager(config, automatic_session_resume=False)
 
@@ -700,6 +773,19 @@ def test_muse_141_resume_accepts_only_observed_effective_model_alias(tmp_path, m
         assert manager.get_last_session_id() is None
         methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
         assert methods.count("turn/start") == 1
+
+
+def test_muse_fresh_session_accepts_explicit_model_alias_with_unknown_fingerprint(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_SCHEMA_FINGERPRINT", "fresh-unknown")
+    monkeypatch.setenv("MSP_FRESH_MODEL", "muse-spark-1.3-contributor")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+
+    assert _manager(config)._run_llm_cli("first", is_noedit=True) == "answer:first"
 
 
 def test_muse_141_schema_agent_message_and_buffered_terminal_reach_caller(tmp_path, monkeypatch, _use_real_commands):
@@ -843,6 +929,65 @@ def test_muse_wrong_terminal_turn_is_immediate_protocol_failure(tmp_path, monkey
     with pytest.raises(RuntimeError, match="terminal belongs to an incompatible turn"):
         _manager(config)._run_llm_cli("inspect", is_noedit=True)
     assert time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize(
+    ("mismatch", "message"),
+    [
+        ("session", "terminal belongs to an incompatible session"),
+        ("turn", "terminal belongs to an incompatible turn"),
+    ],
+)
+def test_muse_buffered_terminal_after_valid_terminal_still_fails_continuation(tmp_path, monkeypatch, _use_real_commands, mismatch, message):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config, automatic_session_resume=False)
+    client = manager._clients["muse"]
+
+    assert manager._run_llm_cli("first", is_noedit=True) == "answer:first"
+    session_id = manager.get_last_session_id()
+    assert session_id == "opaque/provider/session"
+    manager.authorize_retained_local_session_reuse(session_id)
+    monkeypatch.setenv("MSP_EVENTS_BEFORE_ACK", "1")
+    monkeypatch.setenv("MSP_EXTRA_TERMINAL_MISMATCH", mismatch)
+
+    with pytest.raises(RuntimeError, match=message):
+        manager.continue_session(session_id, "second", is_noedit=True)
+
+    assert client.get_last_session_id() is None
+    assert manager.get_last_session_id() is None
+    assert manager._last_continue_session_resumed is False
+
+
+@pytest.mark.parametrize(
+    ("mismatch", "message"),
+    [
+        ("session", "terminal belongs to an incompatible session"),
+        ("turn", "terminal belongs to an incompatible turn"),
+    ],
+)
+def test_muse_post_ack_terminal_after_valid_terminal_still_fails(tmp_path, monkeypatch, _use_real_commands, mismatch, message):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_EXTRA_TERMINAL_MISMATCH", mismatch)
+    monkeypatch.setenv("MSP_EXTRA_TERMINAL_AFTER_ACK", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config, automatic_session_resume=False)
+    client = manager._clients["muse"]
+
+    with pytest.raises(RuntimeError, match=message):
+        manager._run_llm_cli("first", is_noedit=True)
+
+    assert client.get_last_session_id() is None
+    assert manager.get_last_session_id() is None
 
 
 def test_muse_nonzero_exit_invalidates_completed_protocol(tmp_path, monkeypatch, _use_real_commands):
@@ -990,10 +1135,10 @@ def test_muse_missing_resume_model_fails_without_fresh_fallback(tmp_path, monkey
     monkeypatch.setenv("MSP_MISSING_MODEL_RESUME", "1")
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
     manager = _manager(config)
+    client = manager._clients["muse"]
 
     with pytest.raises(RuntimeError, match="omitted or uses an incompatible model"):
-        manager.continue_session("opaque/provider/session", "second")
-    assert manager._last_continue_session_resumed is False
+        client.continue_session("opaque/provider/session", "second", is_noedit=True)
     methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert methods.count("session/resume") == 1
     assert "session/start" not in methods
@@ -1031,13 +1176,10 @@ def test_muse_foreign_or_removed_workspace_fails_without_fresh_fallback(tmp_path
     assert "turn/start" not in failed_methods
 
     log.unlink()
-    with pytest.raises(RuntimeError, match="incompatible workspace"):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("opaque/provider/session", "second")
     assert manager._last_continue_session_resumed is False
-    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
-    assert methods.count("session/resume") == 1
-    assert "session/start" not in methods
-    assert "turn/start" not in methods
+    assert not log.exists()
     assert manager.get_last_session_id() is None
     if remove_original:
         assert not old_repo.exists()
@@ -1104,10 +1246,7 @@ def test_muse_incompatible_resume_state_fails_without_fresh_fallback(tmp_path, m
     assert "turn/start" not in failed_methods
 
     log.unlink()
-    with pytest.raises(RuntimeError, match=error_pattern):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("opaque/provider/session", "second", is_noedit=True)
     assert manager._last_continue_session_resumed is False
-    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
-    assert methods.count("session/resume") == 1
-    assert "session/start" not in methods
-    assert "turn/start" not in methods
+    assert not log.exists()

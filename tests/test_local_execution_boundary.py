@@ -1,4 +1,6 @@
 import contextlib
+import os
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -505,12 +507,11 @@ def test_successful_edit_session_is_refused_after_its_private_root_is_released(t
     token = bind_command_execution_cwd(str(repository))
     try:
         assert manager._run_llm_cli("first") == "fresh result"
-        with pytest.raises(LocalContinuationError, match="implicit last-session"):
-            manager._run_llm_cli("second")
+        assert manager._run_llm_cli("second") == "fresh result"
     finally:
         reset_command_execution_cwd(token)
 
-    assert client.fresh_calls == 1
+    assert client.fresh_calls == 2
     assert client.continued_calls == 0
     assert (repository / "result.txt").read_text() == "accepted result\n"
 
@@ -576,6 +577,98 @@ def test_retained_continuation_rejects_a_different_current_caller_before_submiss
     finally:
         reset_command_execution_cwd(token)
     assert client.continued_calls == 0
+
+
+def test_retained_continuation_survives_intervening_fresh_calls(tmp_path: Path, _use_real_commands: None) -> None:
+    class InterleavedClient:
+        supports_retained_local_continuation = True
+        use_noedit_options = False
+        model_name = "test-model"
+        config_backend = SimpleNamespace(backend_type="opencode")
+
+        def __init__(self) -> None:
+            self.session_id: str | None = None
+            self.fresh_sessions = iter(("session-s1", "session-s2", "session-s3"))
+            self.fresh_turns: list[tuple[str, str, str]] = []
+            self.continued_turns: list[tuple[str, str, str, str]] = []
+
+        def clear_last_session_id(self) -> None:
+            self.session_id = None
+
+        def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            self.session_id = next(self.fresh_sessions)
+            self.fresh_turns.append((self.session_id, boundary.binding.invocation_id, boundary.turn_id))
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.record_violation_observation(boundary.binding.invocation_id)
+            return f"fresh {self.session_id}"
+
+        def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
+            boundary = get_current_local_execution_boundary()
+            assert boundary is not None
+            self.session_id = session_id
+            self.continued_turns.append(
+                (
+                    session_id,
+                    prompt,
+                    boundary.binding.invocation_id,
+                    boundary.turn_id,
+                )
+            )
+            boundary.record_writer_completion(boundary.binding.invocation_id)
+            boundary.record_violation_observation(boundary.binding.invocation_id)
+            return "continued session-s1"
+
+        def get_last_session_id(self) -> str | None:
+            return self.session_id
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    write_target_test_script(repository)
+    (repository / "tracked.txt").write_text("initial\n")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+    client = InterleavedClient()
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        manager = BackendManager(
+            default_backend="renamed-local",
+            default_client=client,
+            factories={"renamed-local": lambda: client},
+            order=["renamed-local"],
+        )
+
+    token = bind_command_execution_cwd(str(repository))
+    try:
+        assert manager.run_prompt("create S1") == "fresh session-s1"
+        s1_binding = manager._retained_local_sessions["session-s1"].binding
+        manager.authorize_retained_local_session_reuse("session-s1")
+
+        assert manager.run_prompt("create unrelated S2") == "fresh session-s2"
+        assert manager.get_last_session_id() == "session-s2"
+        assert manager.has_retained_local_session("session-s1")
+
+        assert manager.continue_session("session-s1", "continue exact S1") == "continued session-s1"
+        assert manager._last_continue_session_resumed is True
+        assert client.continued_turns[0][:2] == ("session-s1", "continue exact S1")
+        assert client.continued_turns[0][2] == s1_binding.invocation_id
+        assert client.continued_turns[0][3] != client.fresh_turns[0][2]
+
+        assert manager.run_prompt("create S3") == "fresh session-s3"
+        assert manager.get_last_session_id() == "session-s3"
+        assert manager._last_continue_session_resumed is False
+    finally:
+        reset_command_execution_cwd(token)
+
+    assert [turn[0] for turn in client.fresh_turns] == [
+        "session-s1",
+        "session-s2",
+        "session-s3",
+    ]
+    assert len(client.continued_turns) == 1
 
 
 def test_retained_continuation_with_unknown_current_writer_settlement_is_incomplete(tmp_path: Path, _use_real_commands: None) -> None:
@@ -691,7 +784,7 @@ def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, fa
     executable = tmp_path / "codex"
     executable.write_text(f"#!/bin/sh\nprintf started > '{marker}'\n")
     executable.chmod(0o755)
-    owner = CgroupV2Owner(root=tmp_path / "not-cgroupfs", worker_uid=65532, worker_gid=65532) if failure == "owner" else ProcessGroupOwner()
+    owner = CgroupV2Owner(root=tmp_path / "not-cgroupfs", worker_uid=os.getuid(), worker_gid=os.getgid()) if failure == "owner" else ProcessGroupOwner()
     supervisor = InvocationProcessSupervisor(
         owner=owner,  # type: ignore[arg-type]
         filesystem_policy_factory=lambda: LandlockFilesystemPolicy(read_visibility=(tmp_path / "missing-policy-input",)),
@@ -711,5 +804,21 @@ def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, fa
         )
     assert result.success is False
     assert not marker.exists()
-    assert "visible runtime input is unavailable" in result.stderr if failure == "policy" else "delegated cgroup lacks cgroup.procs" in result.stderr
+    if failure == "policy":
+        assert result.stderr.startswith(
+            (
+                "the Linux runtime does not provide usable Landlock confinement",
+                "visible runtime input is unavailable:",
+            )
+        )
+        if result.stderr.startswith("visible runtime input is unavailable:"):
+            assert str(tmp_path / "missing-policy-input") in result.stderr
+    else:
+        assert result.stderr.startswith(
+            (
+                "private workspace repository preparation failed",
+                "delegated cgroup lacks cgroup.procs",
+                "cannot create delegated invocation cgroup:",
+            )
+        )
     assert boundary.evidence().backend_outcome is BackendOutcome.UNKNOWN

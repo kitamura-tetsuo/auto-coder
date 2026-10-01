@@ -29,16 +29,20 @@ from .utils import _COMMAND_EXECUTION_CWD
 
 logger = get_logger(__name__)
 
-_MUSE_141_SCHEMA = (1, "sha256:e0e163db6ccf00dbe68402ce55d6319b3edc33c421f31e9583b587b2de8a118f")
-_MUSE_MSP_SUPPORTED_SCHEMAS = frozenset(
+_MUSE_MSP_DIAGNOSTIC_SCHEMAS = frozenset(
     {
         (1, "sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"),
-        _MUSE_141_SCHEMA,
+        (1, "sha256:e0e163db6ccf00dbe68402ce55d6319b3edc33c421f31e9583b587b2de8a118f"),
     }
 )
 _MUSE_MSP_CLIENT_NAME = "auto_coder"
 _MUSE_141_MODEL_ALIASES = {"muse-spark-1.3": "muse-spark-1.3-contributor"}
 _MUSE_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
+
+
+class _MspEndOfStream(Exception):
+    """Signal an expected host EOF while draining a completed turn."""
+
 
 _READ_ONLY_GIT_COMMANDS = {
     "blame",
@@ -595,6 +599,8 @@ class MuseClient(LLMClientBase):
         request_id: int,
         deadline: float,
         notifications: list[dict[str, object]],
+        *,
+        clean_eof: bool = False,
     ) -> dict[str, object]:
         if process.stdout is None:
             raise RuntimeError("Muse MSP host has no output stream")
@@ -654,6 +660,8 @@ class MuseClient(LLMClientBase):
             if chunk:
                 self._msp_stdout.extend(chunk)
                 continue
+            if clean_eof:
+                raise _MspEndOfStream
             detail = self._msp_stderr.decode(errors="replace").strip()
             self._raise_msp_failure("Muse MSP host exited before completing the request", detail)
 
@@ -870,12 +878,21 @@ class MuseClient(LLMClientBase):
             schema = initialized.get("schema")
             host_version = server_info.get("version") if isinstance(server_info, dict) else None
             if not isinstance(schema, dict):
-                raise RuntimeError("Muse MSP initialization omitted schema compatibility metadata " f"(host version={host_version!r}; expected one of {sorted(_MUSE_MSP_SUPPORTED_SCHEMAS)!r})")
+                raise RuntimeError("Muse MSP initialization returned missing or non-object schema metadata " f"(host version={host_version!r}; required schema.version=1 and a nonblank schema.fingerprint)")
             schema_version = schema.get("version")
             schema_fingerprint = schema.get("fingerprint")
             observed_schema = (schema_version, schema_fingerprint)
-            if type(schema_version) is not int or not isinstance(schema_fingerprint, str) or observed_schema not in _MUSE_MSP_SUPPORTED_SCHEMAS:
-                raise RuntimeError("Muse MSP host schema is incompatible with Auto-Coder " f"(host version={host_version!r}; observed schema={observed_schema!r}; " f"expected one of {sorted(_MUSE_MSP_SUPPORTED_SCHEMAS)!r})")
+            if type(schema_version) is not int or schema_version != 1:
+                raise RuntimeError("Muse MSP initialization has unsupported schema.version " f"(host version={host_version!r}; observed version={schema_version!r}; required integer 1)")
+            if not isinstance(schema_fingerprint, str) or not schema_fingerprint.strip():
+                raise RuntimeError("Muse MSP initialization has invalid schema.fingerprint " f"(host version={host_version!r}; observed fingerprint={schema_fingerprint!r}; required nonblank string)")
+            if observed_schema not in _MUSE_MSP_DIAGNOSTIC_SCHEMAS:
+                logger.warning(
+                    "Muse MSP schema fingerprint is not in Auto-Coder's diagnostic reference set; "
+                    "execution continues with required runtime contract checks "
+                    f"(schema version={schema_version!r}, fingerprint={schema_fingerprint!r}, host version={host_version!r}). "
+                    "This does not certify host compatibility."
+                )
             self._msp_send(process, {"jsonrpc": "2.0", "method": "initialized"}, deadline)
             session_command_id = new_command_id()
             if session_id is None:
@@ -899,9 +916,8 @@ class MuseClient(LLMClientBase):
                 raise RuntimeError("Muse MSP session belongs to an incompatible workspace")
             effective_model = metadata.get("modelId")
             model_matches = effective_model == self.model_name
-            if session_id is not None and observed_schema == _MUSE_141_SCHEMA:
-                resolved_model = _MUSE_141_MODEL_ALIASES.get(self.model_name)
-                model_matches = model_matches or (resolved_model is not None and effective_model == resolved_model)
+            resolved_model = _MUSE_141_MODEL_ALIASES.get(self.model_name)
+            model_matches = model_matches or (resolved_model is not None and effective_model == resolved_model)
             if not model_matches:
                 raise RuntimeError("Muse MSP session omitted or uses an incompatible model")
             pending = opened.get("pendingRequests")
@@ -949,10 +965,34 @@ class MuseClient(LLMClientBase):
                         raise RuntimeError("Muse MSP terminal belongs to an incompatible turn")
                     if params_obj.get("sessionId") != canonical_id:
                         raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
-                    terminal = params_obj
-                    break
+                    if terminal is None:
+                        terminal = params_obj
             if terminal.get("terminal") != "completed":
                 self._raise_msp_failure("Muse MSP turn did not complete successfully", terminal)
+            # A single-turn host remains open waiting for more input. Close our
+            # input after completion, then consume every remaining notification
+            # through host EOF so a later contradictory terminal cannot escape
+            # correlation checks merely by arriving after the first terminal.
+            if process.stdin is not None:
+                process.stdin.close()
+            try:
+                while process.poll() is None:
+                    poll_deadline = min(deadline, time.monotonic() + 0.05)
+                    try:
+                        self._msp_wait(process, -1, poll_deadline, notifications, clean_eof=True)
+                    except AutoCoderTimeoutError:
+                        if time.monotonic() >= deadline:
+                            raise
+            except _MspEndOfStream:
+                pass
+            for event in notifications:
+                params_obj = event.get("params")
+                if event.get("method") != "turn/completed":
+                    continue
+                if not isinstance(params_obj, dict) or params_obj.get("turnId") != turn_id:
+                    raise RuntimeError("Muse MSP terminal belongs to an incompatible turn")
+                if params_obj.get("sessionId") != canonical_id:
+                    raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
             answers: list[str] = []
             for event in notifications:
                 params_obj = event.get("params")

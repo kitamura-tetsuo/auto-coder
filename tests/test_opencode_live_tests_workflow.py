@@ -53,7 +53,7 @@ def test_opencode_live_workflow_contract_and_limits():
 
     job = workflow["jobs"]["opencode-live-tests"]
     assert job["name"] == "OpenCode Live Tests"
-    assert job["timeout-minutes"] == 40, "Containing live job must have a 40-minute limit"
+    assert job["timeout-minutes"] == 60, "Containing live job must have a 60-minute limit"
     assert "needs" not in job, "OpenCode Live Tests must run independently of other workflows"
 
     steps = job["steps"]
@@ -66,13 +66,14 @@ def test_opencode_live_workflow_contract_and_limits():
     assert prep_index < test_index < artifact_index, "Image must be prepared before live tests execute"
 
     prep_step = steps[prep_index]
-    assert prep_step["timeout-minutes"] == 10, "Cold image preparation must have a 10-minute step limit"
+    assert prep_step["timeout-minutes"] == 20, "Cold image preparation must have a 20-minute step limit"
     assert "scripts/prepare_opencode_image.py" in prep_step["run"]
 
     test_step = steps[test_index]
-    assert test_step["timeout-minutes"] == 20, "Live pytest execution must have a 20-minute step limit"
+    assert test_step["timeout-minutes"] == 35, "Live pytest execution must have a 35-minute step limit"
     assert test_step["env"]["AUTO_CODER_REQUIRE_OPENCODE_LIVE"] == "1"
     assert "-m opencode_live" in test_step["run"]
+    assert "-n 2" in test_step["run"], "Dedicated live pytest must execute with two xdist workers"
     for excluder in ("--splits", "--group", " -k ", "test_opencode_noedit_live.py", "test_opencode_container_runtime.py"):
         assert excluder not in test_step["run"], f"Selection must be purely marker-based, not {excluder!r}"
 
@@ -362,6 +363,68 @@ def test_opencode_cli_fails_closed_in_dedicated_live_ci():
             opencode_cli.__wrapped__() if hasattr(opencode_cli, "__wrapped__") else opencode_cli()
 
 
+def test_parallel_dedicated_live_validation_joins_worker_results(tmp_path):
+    """REQ-003/REQ-005: xdist workers collectively satisfy one complete marker-selected live run."""
+    probe = tmp_path / "test_parallel_live_probe.py"
+    probe.write_text(
+        """
+import pytest
+
+@pytest.mark.opencode_live
+def test_ac001_container_executes_opencode_task_against_controlled_provider():
+    pass
+
+@pytest.mark.opencode_live
+def test_ac002_effective_home_and_runtime_authentication():
+    pass
+
+@pytest.mark.opencode_live
+def test_ac003_retained_and_isolated_native_state_between_channels():
+    pass
+
+@pytest.mark.opencode_live
+def test_ac004_no_baked_credentials_or_unsolicited_provider_calls():
+    pass
+
+@pytest.mark.opencode_live
+def test_ac005_documentation_matches_production_compose_and_route():
+    pass
+""",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["AUTO_CODER_REQUIRE_OPENCODE_LIVE"] = "1"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "tests.conftest",
+            "--rootdir",
+            str(ROOT),
+            "-c",
+            str(ROOT / "pyproject.toml"),
+            str(probe),
+            "-m",
+            "opencode_live",
+            "-n",
+            "2",
+            "-vv",
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "FAIL-CLOSED VALIDATION FAILED" not in (proc.stdout + proc.stderr)
+
+
 def test_deliberate_skip_in_dedicated_ci_results_in_non_success(tmp_path):
     """AS-004, REQ-005: A skipped migrated scenario causes dedicated CI session to fail closed with exit status 1."""
     probe = tmp_path / "test_skip_probe.py"
@@ -409,6 +472,8 @@ def test_ac005_documentation_matches_production_compose_and_route():
             str(probe),
             "-m",
             "opencode_live",
+            "-n",
+            "2",
             "-vv",
         ],
         cwd=ROOT,
