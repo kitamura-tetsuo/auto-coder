@@ -363,7 +363,6 @@ def test_opencode_cli_fails_closed_in_dedicated_live_ci():
             opencode_cli.__wrapped__() if hasattr(opencode_cli, "__wrapped__") else opencode_cli()
 
 
-
 def test_parallel_dedicated_live_validation_joins_worker_results(tmp_path):
     """REQ-003/REQ-005: xdist workers collectively satisfy one complete marker-selected live run."""
     probe = tmp_path / "test_parallel_live_probe.py"
