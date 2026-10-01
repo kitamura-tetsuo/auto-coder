@@ -399,7 +399,7 @@ def build_backend_manager(
             openai_api_key=backend_config.openai_api_key if backend_config else None,
             openai_base_url=backend_config.openai_base_url if backend_config else None,
             use_noedit_options=use_noedit_options,
-            capture_final_message=capture_codex_final_message,
+            **({"capture_final_message": True} if capture_codex_final_message else {}),
         )
 
     def _create_codex_mcp_client(backend_name: str):
