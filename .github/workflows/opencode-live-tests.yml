@@ -51,7 +51,7 @@ jobs:
           AUTOCODER_OPENCODE_VERBOSE_DEBUG: "1"
           AUTO_CODER_REQUIRE_OPENCODE_LIVE: "1"
         run: |
-          uv run pytest -m opencode_live -vv
+          uv run pytest -m opencode_live -vv -n 2
 
       - name: Print git-wrapper debug log (non-read-only decisions only)
         if: always()
