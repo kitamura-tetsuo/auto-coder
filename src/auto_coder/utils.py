@@ -63,6 +63,8 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     runtime.mkdir(parents=True, exist_ok=False)
     home = runtime / "home"
     home.mkdir()
+    isolated_codex_home = home / ".codex"
+    isolated_codex_home.mkdir()
     temporary_directory = runtime / "tmp"
     temporary_directory.mkdir()
     original_home = Path(environment.get("HOME", str(Path.home())))
@@ -70,8 +72,7 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     for name in ("auth.json", "config.toml"):
         source = codex_home / name
         if source.is_file():
-            destination = home / ".codex" / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination = isolated_codex_home / name
             shutil.copy2(source, destination)
     for relative in (Path(".config/opencode"), Path(".local/share/opencode/auth.json")):
         source = original_home / relative
@@ -87,7 +88,7 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     if uid is not None and gid is not None:
         _chown_tree(runtime, uid, gid)
     environment["HOME"] = str(home)
-    environment["CODEX_HOME"] = str(home / ".codex")
+    environment["CODEX_HOME"] = str(isolated_codex_home)
     # Provider runtimes such as Bun create executable/cache state in TMPDIR.
     # Keep that state inside the invocation-owned writable runtime rather than
     # granting the worker access to the controller's shared /tmp.
