@@ -179,6 +179,40 @@ def test_cloud_alias_still_automatically_resumes_matching_history(tmp_path, back
     assert client.continued == [("cloud-session", "continue cloud task", False)]
 
 
+@pytest.mark.parametrize("backend_type", ["claude-routine", "codex-cloud", "jules"])
+@pytest.mark.parametrize(
+    "automatic_session_resume,last_backend,last_session_id",
+    [
+        (False, "renamed-cloud", "remembered-session"),
+        (True, "different-cloud-alias", "remembered-session"),
+        (True, "renamed-cloud", None),
+    ],
+    ids=["automatic-resume-disabled", "different-remembered-alias", "missing-session-id"],
+)
+def test_cloud_alias_selects_fresh_when_automatic_resume_predicates_are_incomplete(
+    tmp_path,
+    backend_type,
+    automatic_session_resume,
+    last_backend,
+    last_session_id,
+):
+    client = SessionClient(fresh_session_id="new-cloud-session")
+    client.config_backend = type("Config", (), {"backend_type": backend_type})()
+    manager = _manager(
+        tmp_path,
+        {"renamed-cloud": client},
+        automatic_session_resume=automatic_session_resume,
+    )
+    manager._last_backend = last_backend
+    manager._last_session_id = last_session_id
+
+    assert manager.run_prompt("fresh cloud task") == "fresh response"
+
+    assert client.fresh_prompts == ["fresh cloud task"]
+    assert client.continued == []
+    assert manager.get_last_session_id() == "new-cloud-session"
+
+
 def test_ordinary_local_call_resets_previous_continuity_indicator(tmp_path):
     client = SessionClient(fresh_session_id="old-session")
     client.config_backend = type("Config", (), {"backend_type": "opencode"})()
