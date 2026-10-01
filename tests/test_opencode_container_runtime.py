@@ -303,7 +303,9 @@ def test_codex_private_repository_checkpoint_uses_production_worker_boundary() -
 
     provider = ControlledProviderServer()
     marker = "codex-worker-private-marker-v1\n"
-    marker_checksum = hashlib.sha256(f"tracked.txt\0{marker}".encode()).hexdigest()
+    # Readiness hashes every tracked regular file in `git ls-files` order: the
+    # repository tracks scripts/test.sh as well as tracked.txt.
+    marker_checksum = hashlib.sha256(f"scripts/test.sh\0exit 0tracked.txt\0{marker}".encode()).hexdigest()
     try:
         script = f'''
 import os, subprocess
