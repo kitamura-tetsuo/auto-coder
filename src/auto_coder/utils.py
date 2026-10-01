@@ -105,6 +105,25 @@ def bind_supervised_command_execution(supervisor: "InvocationProcessSupervisor",
         _SUPERVISED_COMMAND.reset(token)
 
 
+def is_qualified_supervised_noedit_codex() -> bool:
+    """Return whether the current launch is a supervised no-edit Codex invocation.
+
+    Only a launch routed through ``InvocationProcessSupervisor`` for the current
+    invocation's private workspace, with a no-edit boundary resolving to the
+    ``codex`` backend type, qualifies. The supervisor itself refuses to start the
+    provider unless its filesystem policy is installed on the child first, so
+    Codex's nested Linux sandbox is redundant for such a launch.
+    """
+    from .worktree_utils import get_current_local_workspace
+
+    supervised = _SUPERVISED_COMMAND.get()
+    workspace = get_current_local_workspace()
+    if supervised is None or workspace is None:
+        return False
+    boundary = supervised.boundary
+    return not boundary.editable and boundary.backend_type.lower() == "codex" and boundary.binding.invocation_id == workspace.invocation_id and boundary.binding.workspace == workspace.workspace
+
+
 def bind_command_execution_cwd(cwd: str):
     """Bind implicit CommandExecutor calls in the current context to ``cwd``."""
     return _COMMAND_EXECUTION_CWD.set(cwd)

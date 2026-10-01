@@ -1144,44 +1144,55 @@ class TestCodexClient:
             ]
             assert called_cmd == expected_cmd
 
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    @patch("src.auto_coder.codex_client.subprocess.run")
-    def test_isolated_noedit_falls_back_when_bwrap_preflight_fails(self, mock_run, mock_run_command):
-        """A disposable validation worktree remains usable when nested bwrap cannot start."""
-        version_result = MagicMock(returncode=0, stdout="codex-cli 1.0", stderr="")
-        probe_result = MagicMock(returncode=1, stdout="", stderr="bwrap: Failed to make / slave: Permission denied")
-        mock_run.side_effect = [version_result, probe_result]
-        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+    @staticmethod
+    def _noedit_cmd(*, editable: bool, backend_type: str = "codex", bound: bool = True, workspace_matches: bool = True):
+        """Run a no-edit Codex call under a (possibly unqualified) supervised binding."""
+        from pathlib import Path
 
+        from src.auto_coder.utils import _SUPERVISED_COMMAND, _SupervisedCommandContext
+        from src.auto_coder.worktree_utils import _CURRENT_LOCAL_WORKSPACE
+
+        binding = MagicMock(invocation_id="inv-1", workspace=Path("/ws/a"))
+        boundary = MagicMock(editable=editable, backend_type=backend_type)
+        boundary.binding = MagicMock(invocation_id="inv-1", workspace=Path("/ws/a") if workspace_matches else Path("/ws/b"))
         mock_config = MagicMock()
-        mock_backend_config = MagicMock()
-        mock_backend_config.model = "custom-model"
-        mock_backend_config.options = ["exec", "--json"]
-        mock_backend_config.options_for_noedit = ["exec", "--json"]
-        mock_backend_config.replace_placeholders.return_value = {
-            "options": ["exec", "--json"],
-            "options_for_noedit": ["exec", "--json"],
-            "options_for_resume": [],
-        }
-        mock_config.get_backend_config.return_value = mock_backend_config
+        backend = MagicMock(model="m", options=["exec", "--json"], options_for_noedit=["exec", "--json"])
+        backend.replace_placeholders.return_value = {"options": ["exec", "--json"], "options_for_noedit": ["exec", "--json"], "options_for_resume": []}
+        mock_config.get_backend_config.return_value = backend
+        with (
+            patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config),
+            patch("src.auto_coder.codex_client.subprocess.run", return_value=MagicMock(returncode=0)) as probe_run,
+            patch("src.auto_coder.codex_client.CommandExecutor.run_command", return_value=CommandResult(True, "ok\n", "", 0)) as run_command,
+        ):
+            client = CodexClient(backend_name="codex")
+            tokens = []
+            if bound:
+                tokens.append((_SUPERVISED_COMMAND, _SUPERVISED_COMMAND.set(_SupervisedCommandContext(MagicMock(), boundary))))
+                tokens.append((_CURRENT_LOCAL_WORKSPACE, _CURRENT_LOCAL_WORKSPACE.set(binding)))
+            try:
+                client._run_llm_cli("p", is_noedit=True)
+            finally:
+                for var, token in reversed(tokens):
+                    var.reset(token)
+        # Only the CLI availability check may spawn a controller-side process.
+        assert [c.args[0] for c in probe_run.call_args_list] == [["codex", "--version"]]
+        cmd = run_command.call_args.args[0]
+        return cmd[cmd.index("--sandbox") + 1]
 
-        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
-            client = CodexClient(backend_name="codex", allow_isolated_noedit_sandbox_fallback=True)
-            client._run_llm_cli("test prompt", is_noedit=True)
+    def test_supervised_noedit_codex_delegates_filesystem_enforcement(self):
+        assert self._noedit_cmd(editable=False) == "danger-full-access"
 
-        assert mock_run.call_args_list[1].args[0] == ["codex", "sandbox", "linux", "--", "true"]
-        assert mock_run_command.call_args.args[0] == [
-            "codex",
-            "--sandbox",
-            "danger-full-access",
-            "--ask-for-approval",
-            "never",
-            "-c",
-            'approvals_reviewer="user"',
-            "exec",
-            "--json",
-            "-",
-        ]
+    def test_noedit_without_supervised_binding_keeps_read_only(self):
+        assert self._noedit_cmd(editable=False, bound=False) == "read-only"
+
+    def test_supervised_binding_for_other_workspace_keeps_read_only(self):
+        assert self._noedit_cmd(editable=False, workspace_matches=False) == "read-only"
+
+    def test_supervised_binding_for_other_backend_type_keeps_read_only(self):
+        assert self._noedit_cmd(editable=False, backend_type="claude") == "read-only"
+
+    def test_supervised_editable_boundary_keeps_read_only_for_noedit_call(self):
+        assert self._noedit_cmd(editable=True) == "read-only"
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")

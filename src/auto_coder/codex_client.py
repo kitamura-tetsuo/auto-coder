@@ -18,7 +18,7 @@ from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .usage_marker_utils import has_usage_marker_match
-from .utils import CommandExecutor
+from .utils import CommandExecutor, is_qualified_supervised_noedit_codex
 from .worktree_utils import get_current_local_workspace
 
 logger = get_logger(__name__)
@@ -37,7 +37,6 @@ class CodexClient(LLMClientBase):
         openai_api_key: Optional[str] = None,
         openai_base_url: Optional[str] = None,
         use_noedit_options: bool = False,
-        allow_isolated_noedit_sandbox_fallback: bool = False,
         capture_final_message: bool = False,
     ) -> None:
         """Initialize Codex CLI client.
@@ -50,8 +49,6 @@ class CodexClient(LLMClientBase):
             openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
             openai_base_url: OpenAI base URL (optional, for OpenAI-compatible backends).
             use_noedit_options: If True, use options_for_noedit instead of options.
-            allow_isolated_noedit_sandbox_fallback: Allow a no-edit review running in
-                a disposable worktree to bypass a broken local Linux sandbox.
             capture_final_message: Use Codex's dedicated final-message output for
                 structured no-edit review responses.
         """
@@ -98,9 +95,7 @@ class CodexClient(LLMClientBase):
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.timeout = None
-        self.allow_isolated_noedit_sandbox_fallback = allow_isolated_noedit_sandbox_fallback
         self.capture_final_message = capture_final_message
-        self._noedit_sandbox_fallback_required: Optional[bool] = None
 
         # Validate required options for this backend
         if self.config_backend:
@@ -133,33 +128,6 @@ class CodexClient(LLMClientBase):
     def _escape_prompt(self, prompt: str) -> str:
         """Escape special characters that may confuse shell/CLI."""
         return prompt.replace("@", "\\@").strip()
-
-    def _requires_isolated_noedit_sandbox_fallback(self) -> bool:
-        """Return whether Codex's Linux sandbox cannot start in this container.
-
-        This probe does not invoke an LLM. The fallback is opt-in and is only set by
-        the adversarial validator after it has entered a disposable detached worktree.
-        """
-        if not self.allow_isolated_noedit_sandbox_fallback:
-            return False
-        if self._noedit_sandbox_fallback_required is not None:
-            return self._noedit_sandbox_fallback_required
-
-        try:
-            probe = subprocess.run(
-                ["codex", "sandbox", "linux", "--", "true"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            probe_output = f"{probe.stdout or ''}\n{probe.stderr or ''}".lower()
-            self._noedit_sandbox_fallback_required = probe.returncode != 0 and "bwrap:" in probe_output
-        except (OSError, subprocess.SubprocessError):
-            self._noedit_sandbox_fallback_required = False
-
-        if self._noedit_sandbox_fallback_required:
-            logger.warning("Codex read-only sandbox preflight failed; using the disposable worktree fallback")
-        return self._noedit_sandbox_fallback_required
 
     @staticmethod
     def _has_usage_limit_diagnostic(
@@ -379,7 +347,11 @@ class CodexClient(LLMClientBase):
                     sanitized_cmd.append(cmd[i])
                     i += 1
 
-                sandbox_mode = "danger-full-access" if self._requires_isolated_noedit_sandbox_fallback() else "read-only"
+                # A supervised no-edit launch has its filesystem policy installed
+                # by Auto-Coder before provider code runs; Codex's nested Linux
+                # sandbox is then redundant and cannot start under the worker's
+                # restrictions. Any other no-edit call keeps Codex's own sandbox.
+                sandbox_mode = "danger-full-access" if is_qualified_supervised_noedit_codex() else "read-only"
                 noedit_flags = [
                     "--sandbox",
                     sandbox_mode,
