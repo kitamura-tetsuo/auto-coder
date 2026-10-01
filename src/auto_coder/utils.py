@@ -67,6 +67,9 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     temporary_directory.mkdir()
     original_home = Path(environment.get("HOME", str(Path.home())))
     codex_home = Path(environment.get("CODEX_HOME", str(original_home / ".codex")))
+    # Codex refuses to start when CODEX_HOME does not exist, even if the caller
+    # has no credentials or configuration to copy into the private runtime.
+    (home / ".codex").mkdir()
     for name in ("auth.json", "config.toml"):
         source = codex_home / name
         if source.is_file():
