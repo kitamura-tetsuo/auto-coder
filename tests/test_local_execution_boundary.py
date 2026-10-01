@@ -1,4 +1,5 @@
 import contextlib
+import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -690,7 +691,7 @@ def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, fa
     executable = tmp_path / "codex"
     executable.write_text(f"#!/bin/sh\nprintf started > '{marker}'\n")
     executable.chmod(0o755)
-    owner = CgroupV2Owner(root=tmp_path / "not-cgroupfs", worker_uid=65532, worker_gid=65532) if failure == "owner" else ProcessGroupOwner()
+    owner = CgroupV2Owner(root=tmp_path / "not-cgroupfs", worker_uid=os.getuid(), worker_gid=os.getgid()) if failure == "owner" else ProcessGroupOwner()
     supervisor = InvocationProcessSupervisor(
         owner=owner,  # type: ignore[arg-type]
         filesystem_policy_factory=lambda: LandlockFilesystemPolicy(read_visibility=(tmp_path / "missing-policy-input",)),
