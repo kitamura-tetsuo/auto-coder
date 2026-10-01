@@ -44,3 +44,7 @@ a read-write `/sys/fs/cgroup` mount, privileged controller execution, and the
 image's fixed non-root worker UID/GID 65532. These privileges are required for the
 controller to create root-owned invocation cgroups; they are not optional provider
 permissions.
+
+When a local boundary is supplied, the launcher rejects any invocation identity,
+backend type, workspace, or effective-mode mismatch before process-owner setup.
+This prevents a launch from consuming another boundary's filesystem authority.

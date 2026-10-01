@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 _PINNED_OPENCODE_VERSION = "1.18.31"
-_PINNED_CODEX_VERSION = "0.159.0"
+_PINNED_CODEX_VERSION = "0.159.2"
 _IMAGE_TAG = "auto-coder:opencode"
 
 
@@ -303,7 +303,7 @@ def test_codex_private_repository_checkpoint_uses_production_worker_boundary() -
 
     provider = ControlledProviderServer()
     marker = "codex-worker-private-marker-v1\n"
-    tracked_contents_checksum = hashlib.sha256(f"scripts/test.sh\0exit 0tracked.txt\0{marker}".encode()).hexdigest()
+    marker_checksum = hashlib.sha256(b"scripts/test.sh\0exit 0" + f"tracked.txt\0{marker}".encode()).hexdigest()
     try:
         script = f'''
 import os, subprocess
@@ -384,7 +384,7 @@ else:
         assert provider.captured_requests, output
         assert "EXPECTED_DOWNSTREAM_FAILURE:" in output
         assert "Codex repository readiness established under uid=65532, gid=65532" in output
-        assert tracked_contents_checksum in output
+        assert marker_checksum in output
         assert "Not inside a trusted directory" not in output
 
         before = len(provider.captured_requests)
@@ -398,7 +398,7 @@ else:
         assert len(provider.captured_requests) == before
         assert "EXPECTED_DOWNSTREAM_FAILURE:" in denied_output
         assert "Codex repository readiness established" not in denied_output
-        assert tracked_contents_checksum not in denied_output
+        assert marker_checksum not in denied_output
     finally:
         provider.stop()
 

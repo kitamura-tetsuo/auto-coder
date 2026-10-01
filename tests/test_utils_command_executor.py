@@ -27,7 +27,7 @@ def test_prepare_invocation_runtime_creates_empty_codex_home(tmp_path):
         "HOME": str(original_home),
     }
     context = SimpleNamespace(
-        boundary=SimpleNamespace(binding=SimpleNamespace(invocation_id="fresh-call")),
+        boundary=SimpleNamespace(backend_type="codex", binding=SimpleNamespace(invocation_id="fresh-call")),
         supervisor=SimpleNamespace(owner=None),
     )
 

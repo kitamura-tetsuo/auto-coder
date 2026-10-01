@@ -63,8 +63,8 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     runtime.mkdir(parents=True, exist_ok=False)
     home = runtime / "home"
     home.mkdir()
-    isolated_codex_home = home / ".codex"
-    isolated_codex_home.mkdir()
+    if context.boundary.backend_type.lower() == "codex":
+        (home / ".codex").mkdir()
     temporary_directory = runtime / "tmp"
     temporary_directory.mkdir()
     original_home = Path(environment.get("HOME", str(Path.home())))
@@ -72,7 +72,8 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     for name in ("auth.json", "config.toml"):
         source = codex_home / name
         if source.is_file():
-            destination = isolated_codex_home / name
+            destination = home / ".codex" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
     for relative in (Path(".config/opencode"), Path(".local/share/opencode/auth.json")):
         source = original_home / relative
@@ -88,7 +89,7 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     if uid is not None and gid is not None:
         _chown_tree(runtime, uid, gid)
     environment["HOME"] = str(home)
-    environment["CODEX_HOME"] = str(isolated_codex_home)
+    environment["CODEX_HOME"] = str(home / ".codex")
     # Provider runtimes such as Bun create executable/cache state in TMPDIR.
     # Keep that state inside the invocation-owned writable runtime rather than
     # granting the worker access to the controller's shared /tmp.
@@ -920,6 +921,22 @@ class CommandExecutor:
                     private_runtime = _prepare_invocation_runtime(supervised, launch_env)
                 if boundary.backend_type.lower() == "codex" and Path(cmd[0]).name == "codex":
                     validate_codex_effective_directory(cmd[1:], binding.workspace)
+                    if not boundary.editable:
+                        from .local_execution_boundary import get_current_local_execution_boundary
+                        from .worktree_utils import get_current_local_workspace
+
+                        if get_current_local_workspace() is not binding or get_current_local_execution_boundary() is not boundary:
+                            raise RepositoryReadinessError("Codex no-edit launch lacks the current invocation binding")
+                        # Selection happens only after routing into this supervisor.
+                        # Its mandatory child policy runs before provider exec;
+                        # installation/owner failure cannot fall back to Popen.
+                        if cmd[1:3] != ["--sandbox", "read-only"]:
+                            raise RepositoryReadinessError("Codex no-edit launch does not match the effective mode")
+                        cmd = [*cmd]
+                        cmd[2] = "danger-full-access"
+                        # Read-only Git commands must not opportunistically
+                        # refresh the protected repository's index.
+                        launch_env["GIT_OPTIONAL_LOCKS"] = "0"
                     if not boundary.editable and private_runtime is not None and "--output-last-message" in cmd:
                         option_index = cmd.index("--output-last-message")
                         if option_index + 1 >= len(cmd):

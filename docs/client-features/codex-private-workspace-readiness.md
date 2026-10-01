@@ -19,7 +19,7 @@ prompt is not delivered. An explicit `--skip-git-repo-check` does not bypass thi
 decision, and Auto-Coder does not inject that flag or modify persistent Git/Codex
 trust configuration.
 
-The production container pins Codex CLI `0.159.0`. Its live regression uses a
+The production container pins Codex CLI `0.159.2`. Its live regression uses a
 controlled provider request as the post-checkpoint observation: in that version,
 the `exec` implementation performs Git-root validation before starting the model
 turn, so receipt of the request establishes progress beyond repository startup

@@ -1146,11 +1146,10 @@ class TestCodexClient:
 
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     @patch("src.auto_coder.codex_client.subprocess.run")
-    def test_isolated_noedit_falls_back_when_bwrap_preflight_fails(self, mock_run, mock_run_command):
-        """A disposable validation worktree remains usable when nested bwrap cannot start."""
+    def test_unsupervised_noedit_never_probes_or_disables_sandbox(self, mock_run, mock_run_command):
+        """Controller diagnostics cannot authorize sandbox removal."""
         version_result = MagicMock(returncode=0, stdout="codex-cli 1.0", stderr="")
-        probe_result = MagicMock(returncode=1, stdout="", stderr="bwrap: Failed to make / slave: Permission denied")
-        mock_run.side_effect = [version_result, probe_result]
+        mock_run.return_value = version_result
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
         mock_config = MagicMock()
@@ -1166,14 +1165,15 @@ class TestCodexClient:
         mock_config.get_backend_config.return_value = mock_backend_config
 
         with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
-            client = CodexClient(backend_name="codex", allow_isolated_noedit_sandbox_fallback=True)
+            client = CodexClient(backend_name="codex")
             client._run_llm_cli("test prompt", is_noedit=True)
 
-        assert mock_run.call_args_list[1].args[0] == ["codex", "sandbox", "linux", "--", "true"]
+        assert mock_run.call_count == 1
+        assert mock_run.call_args.args[0] == ["codex", "--version"]
         assert mock_run_command.call_args.args[0] == [
             "codex",
             "--sandbox",
-            "danger-full-access",
+            "read-only",
             "--ask-for-approval",
             "never",
             "-c",
@@ -1648,3 +1648,18 @@ class TestCodexClient:
                 "-",
             ]
             assert called_cmd == expected_cmd
+
+
+def test_exit_zero_failed_execution_protection_never_returns_final_payload():
+    from types import SimpleNamespace
+
+    backend = BackendConfig(name="fixture", backend_type="codex", model="fixture", options=["exec", "--json"], options_for_noedit=["exec", "--json"])
+    config = SimpleNamespace(get_backend_config=lambda name: backend)
+    with (
+        patch("src.auto_coder.codex_client.get_llm_config", return_value=config),
+        patch("src.auto_coder.codex_client.subprocess.run", return_value=SimpleNamespace(returncode=0)),
+        patch("src.auto_coder.codex_client.CommandExecutor.run_command", return_value=CommandResult(False, '{"verdict":"PASS"}', "filesystem policy denied source write", 0, True)),
+    ):
+        client = CodexClient()
+        with pytest.raises(RuntimeError, match="Codex execution protection failed"):
+            client._run_llm_cli("review", is_noedit=True)

@@ -240,6 +240,8 @@ class InvocationProcessSupervisor:
         policies: Optional[Sequence[ExecutionPolicyInstaller]] = None,
         boundary: Optional[LocalExecutionBoundary] = None,
     ) -> SupervisedInvocationResult:
+        if boundary is not None and (request.invocation_id != boundary.binding.invocation_id or request.backend_type != boundary.backend_type or request.result_root.resolve() != boundary.binding.workspace.resolve() or request.effective_mode != ("editable" if boundary.editable else "no-edit")):
+            return self._unavailable(request, "launch does not match its invocation boundary")
         if self.state(request.invocation_id) is not WriterState.NOT_STARTED:
             return self._unavailable(request, "invocation identity has already been used")
         try:
@@ -392,6 +394,11 @@ class InvocationProcessSupervisor:
             with self._lock:
                 self._retained[request.invocation_id] = (process, group)
         self._set_state(request.invocation_id, writer_state)
+        if boundary is not None and request.backend_type.lower() == "codex" and request.effective_mode == "no-edit":
+            evidence = boundary.evidence()
+            if evidence.policy_violation:
+                outcome = InvocationOutcome.FAILED
+                detail = detail or evidence.failure or "Codex no-edit filesystem policy was violated"
         if boundary is not None:
             if outcome is InvocationOutcome.SUCCEEDED and writer_state is WriterState.POSITIVELY_STOPPED:
                 boundary.record_backend_success(request.invocation_id)

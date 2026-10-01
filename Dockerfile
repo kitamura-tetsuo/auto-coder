@@ -6,7 +6,7 @@ RUN pip wheel --no-cache-dir --wheel-dir /wheels .
 
 ARG TARGETARCH
 ARG OPENCODE_VERSION=1.18.31
-ARG CODEX_VERSION=0.159.0
+ARG CODEX_VERSION=0.159.2
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
     ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" && \
     case "$ARCH" in \

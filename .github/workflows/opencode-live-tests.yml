@@ -37,7 +37,7 @@ jobs:
 
       - name: Record pinned Codex CLI
         run: |
-          echo "Codex live repository oracle uses @openai/codex 0.159.0"
+          echo "Codex live repository oracle uses @openai/codex 0.159.2"
 
       - name: Prepare OpenCode runtime image
         timeout-minutes: 10
