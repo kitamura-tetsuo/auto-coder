@@ -902,7 +902,7 @@ def test_ac002_manager_missing_session_fails_without_fresh_fallback(tmp_path: Pa
         install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
-        with pytest.raises(RuntimeError, match="session error"):
+        with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
             manager.continue_session(session_id="ses_missing", prompt="continue please")
 
     assert manager._last_continue_session_resumed is False
@@ -931,7 +931,7 @@ def test_ac002_manager_usage_failure_does_not_switch_backend_or_claim_continuity
         install_test_supervisor(manager)
         manager._last_continue_session_resumed = True
 
-        with pytest.raises(AutoCoderUsageLimitError):
+        with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
             manager.continue_session(session_id="ses_x", prompt="continue please")
 
     assert manager._last_continue_session_resumed is False
@@ -982,7 +982,7 @@ def test_ac003_syntactically_correct_result_with_wrong_identity_is_not_continuit
         _continue_via_driver(tmp_path, monkeypatch, jsonl, session_id="ses_requested", exit_code=0)
 
 
-def test_ac003_manager_continuity_flag_resets_after_identity_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
+def test_ac003_manager_refuses_unretained_identity_before_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _use_real_commands) -> None:
     repo = _repository(tmp_path)
     script = _driver(tmp_path)
     good = tmp_path / "good.jsonl"
@@ -999,12 +999,9 @@ def test_ac003_manager_continuity_flag_resets_after_identity_mismatch(tmp_path: 
         manager = build_backend_manager(["opencode"], "opencode", {})
         install_test_supervisor(manager)
 
-        monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(good))
-        assert manager.continue_session(session_id="ses_good", prompt="first") == "first ok"
-        assert manager._last_continue_session_resumed is True
-
         monkeypatch.setenv("OPENCODE_TEST_STDOUT_FILE", str(mismatched))
-        with pytest.raises(LocalContinuationError, match="positive live-root reuse permission"):
+        manager._last_continue_session_resumed = True
+        with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
             manager.continue_session(session_id="ses_good", prompt="second")
 
     assert manager._last_continue_session_resumed is False
