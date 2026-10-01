@@ -866,11 +866,7 @@ def _opencode_live_failure_reasons(
             call_outcome = reports.get("call")
             status = reports.get("status")
             if status != "passed" or call_outcome != "passed":
-                failure_reasons.append(
-                    f"Migrated scenario '{scenario}' did not execute to passing result: "
-                    f"status={status}, setup={reports.get('setup')}, "
-                    f"call={call_outcome}, teardown={reports.get('teardown')}"
-                )
+                failure_reasons.append(f"Migrated scenario '{scenario}' did not execute to passing result: " f"status={status}, setup={reports.get('setup')}, " f"call={call_outcome}, teardown={reports.get('teardown')}")
 
     return failure_reasons
 
@@ -958,9 +954,7 @@ def pytest_sessionfinish(session, exitstatus):
                         test_reports[nodeid] = normalized
 
                 if len(_opencode_live_xdist_worker_summaries) != len(_opencode_live_xdist_collections):
-                    failure_reasons.append(
-                        "OpenCode live xdist worker report count did not match the collected worker count"
-                    )
+                    failure_reasons.append("OpenCode live xdist worker report count did not match the collected worker count")
                 failure_reasons.extend(f"OpenCode live xdist worker failed: {error}" for error in _opencode_live_xdist_worker_errors)
             else:
                 selected_tests = [item.nodeid for item in session.items]
