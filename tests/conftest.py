@@ -860,9 +860,7 @@ def _opencode_live_failure_reasons(
         failure_reasons.append(f"Missing required container scenarios from collection: {sorted(missing_scenarios)}")
 
     for scenario in sorted(_MIGRATED_CONTAINER_SCENARIOS):
-        matching_nodeids = [
-            nodeid for nodeid in selected_tests if _opencode_live_function_name(nodeid) == scenario
-        ]
+        matching_nodeids = [nodeid for nodeid in selected_tests if _opencode_live_function_name(nodeid) == scenario]
         for nodeid in matching_nodeids:
             reports = test_reports.get(nodeid, {})
             call_outcome = reports.get("call")
@@ -963,17 +961,12 @@ def pytest_sessionfinish(session, exitstatus):
                     failure_reasons.append(
                         "OpenCode live xdist worker report count did not match the collected worker count"
                     )
-                failure_reasons.extend(
-                    f"OpenCode live xdist worker failed: {error}"
-                    for error in _opencode_live_xdist_worker_errors
-                )
+                failure_reasons.extend(f"OpenCode live xdist worker failed: {error}" for error in _opencode_live_xdist_worker_errors)
             else:
                 selected_tests = [item.nodeid for item in session.items]
                 test_reports = _opencode_live_test_reports
 
-            failure_reasons.extend(
-                _opencode_live_failure_reasons(selected_tests, test_reports)
-            )
+            failure_reasons.extend(_opencode_live_failure_reasons(selected_tests, test_reports))
 
             if failure_reasons:
                 session.exitstatus = 1
