@@ -23,6 +23,7 @@ from auto_coder.adversarial_validator import (
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.backend_manager import BackendManager
 from auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.local_session_continuation import LocalContinuationError
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
     ClaimedReviewThread,
@@ -647,7 +648,7 @@ def test_failed_continuation_does_not_fallback_or_falsely_resolve_gap(tmp_path, 
     registry.save(prior_session(initial, "sha-a"))
 
     with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
-        with pytest.raises(type(primary_error), match=str(primary_error)):
+        with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
             run_adversarial_validation(
                 "owner/repo",
                 {"number": 1, "head": {"sha": "sha-b"}},
@@ -657,8 +658,7 @@ def test_failed_continuation_does_not_fallback_or_falsely_resolve_gap(tmp_path, 
             )
 
     saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
-    assert primary.continued[0][0] == "session-1"
-    assert len(primary.continued) == 1
+    assert primary.continued == []
     assert manager._last_continue_session_resumed is False
     assert saved is not None
     assert saved.session_id == "session-1"

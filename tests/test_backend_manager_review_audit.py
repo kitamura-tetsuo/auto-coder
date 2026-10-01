@@ -36,7 +36,7 @@ def mock_llm_config():
 
         def _get_backend_config(name):
             bc = MagicMock()
-            bc.backend_type = f"{name}-type"
+            bc.backend_type = "codex-cloud"
             bc.usage_limit_retry_count = 0
             bc.always_switch_after_execution = False
             return bc
@@ -56,7 +56,7 @@ class MockClient:
         self.logger = None
 
         self.config_backend = MagicMock()
-        self.config_backend.backend_type = f"{name}-type"
+        self.config_backend.backend_type = "codex-cloud"
 
     def _run_llm_cli(self, prompt, is_noedit=False):
         if self.throws:

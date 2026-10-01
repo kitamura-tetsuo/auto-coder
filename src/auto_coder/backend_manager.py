@@ -529,6 +529,11 @@ class BackendManager(LLMBackendManagerBase):
         """Normal execution (circular retry on usage limit with provider rotation)."""
         from .utils import TemporaryEnvironment
 
+        # Ordinary execution is never evidence that the caller requested an
+        # explicit continuation.  In particular, a prior successful
+        # continue_session() call must not leak its continuity result into a
+        # later fresh call.
+        self._last_continue_session_resumed = False
         requested_noedit = bool(getattr(self, "_is_noedit", False)) if is_noedit is None else is_noedit
 
         # Check if we need to auto-reset the backend based on saved state
@@ -579,12 +584,9 @@ class BackendManager(LLMBackendManagerBase):
                 attempts += 1
                 continue
 
-            should_resume = self._automatic_session_resume and backend_name == self._last_backend and bool(self._last_session_id)
-            if should_resume:
-                config_backend = getattr(cli, "config_backend", None)
-                backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
-                if backend_type not in _CLOUD_BACKEND_TYPES:
-                    raise LocalContinuationError("implicit last-session continuation is unsupported; request an explicit generation-authorized continuation")
+            config_backend = getattr(cli, "config_backend", None)
+            backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
+            should_resume = backend_type in _CLOUD_BACKEND_TYPES and self._automatic_session_resume and backend_name == self._last_backend and bool(self._last_session_id)
             try:
                 try:
                     result = self._execute_backend_with_providers(
@@ -723,6 +725,8 @@ class BackendManager(LLMBackendManagerBase):
         is_local_backend = backend_type not in _CLOUD_BACKEND_TYPES
         if is_local_backend and getattr(client, "supports_retained_local_continuation", False) is not True:
             raise LocalContinuationError("selected local adapter cannot prove retained-workspace continuation compatibility")
+        if is_local_backend and session_id not in self._retained_local_sessions:
+            raise LocalContinuationError("local continuation refused because no retained controller-owned binding and generation authority exist for this session")
         self._is_noedit = is_noedit
         try:
             # Re-use _execute_backend_with_providers to capture interaction
@@ -883,6 +887,12 @@ class BackendManager(LLMBackendManagerBase):
                     config_backend = getattr(cli, "config_backend", None)
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
+                    if is_local and session_id is None and hasattr(cli, "clear_last_session_id"):
+                        # Provider metadata from an earlier local call is not
+                        # the identity of this fresh invocation.  Clear only
+                        # the client's last-result cache; retained workspace
+                        # and lifecycle authority remain keyed independently.
+                        cli.clear_last_session_id()
                     retained_session: Optional[RetainedLocalSession] = None
                     if session_id is not None and is_local and session_id in self._released_local_workspace_sessions:
                         raise SessionWorkspaceCompatibilityError("local continuation refused because its original private workspace and generation checkpoint are no longer retained")
@@ -1044,7 +1054,13 @@ class BackendManager(LLMBackendManagerBase):
                     # usable session. Mirror that result on failure as well as
                     # success so a fail-closed client cannot leave an earlier
                     # manager-level session looking like the failed call's result.
-                    self._last_session_id = getattr(cli, "get_last_session_id", lambda: None)() if provider_started else None
+                    if provider_started:
+                        self._last_session_id = getattr(cli, "get_last_session_id", lambda: None)()
+                    else:
+                        clear_last_session_id = getattr(cli, "clear_last_session_id", None)
+                        if callable(clear_last_session_id):
+                            clear_last_session_id()
+                        self._last_session_id = None
                     self._save_session_state(backend_name, self._last_session_id)
                     end_dt = datetime.now(timezone.utc)
                     end_time_iso = end_dt.isoformat()

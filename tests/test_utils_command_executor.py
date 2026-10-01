@@ -18,6 +18,27 @@ def _stdin_digest_command():
     ]
 
 
+def test_prepare_invocation_runtime_creates_empty_codex_home(tmp_path):
+    runtime_root = tmp_path / "runtime"
+    original_home = tmp_path / "original-home"
+    original_home.mkdir()
+    environment = {
+        "AUTO_CODER_RUNTIME_ROOT": str(runtime_root),
+        "HOME": str(original_home),
+    }
+    context = SimpleNamespace(
+        boundary=SimpleNamespace(backend_type="codex", binding=SimpleNamespace(invocation_id="fresh-call")),
+        supervisor=SimpleNamespace(owner=None),
+    )
+
+    runtime = utils._prepare_invocation_runtime(context, environment)
+
+    codex_home = runtime / "home" / ".codex"
+    assert codex_home.is_dir()
+    assert list(codex_home.iterdir()) == []
+    assert environment["CODEX_HOME"] == str(codex_home)
+
+
 @pytest.mark.parametrize(
     "stdin_text",
     [
