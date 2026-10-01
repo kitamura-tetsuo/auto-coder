@@ -711,5 +711,11 @@ def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, fa
         )
     assert result.success is False
     assert not marker.exists()
-    assert "visible runtime input is unavailable" in result.stderr if failure == "policy" else "delegated cgroup lacks cgroup.procs" in result.stderr
+    if failure == "policy":
+        assert result.stderr in {
+            "the Linux runtime does not provide usable Landlock confinement",
+            f"visible runtime input is unavailable: {tmp_path / 'missing-policy-input'}",
+        }
+    else:
+        assert result.stderr.startswith(("delegated cgroup lacks cgroup.procs", "cannot create delegated invocation cgroup:"))
     assert boundary.evidence().backend_outcome is BackendOutcome.UNKNOWN
