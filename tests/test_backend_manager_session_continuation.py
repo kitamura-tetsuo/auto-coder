@@ -12,7 +12,6 @@ from src.auto_coder.exceptions import (
     AutoCoderTimeoutError,
     AutoCoderUsageLimitError,
     LocalWriterSettlementError,
-    SessionWorkspaceCompatibilityError,
 )
 from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.opencode_client import OpenCodeClient
@@ -73,18 +72,28 @@ def test_consecutive_local_implementation_prompts_are_fresh(tmp_path):
     assert manager._last_session_id == "second-session"
 
 
-def test_incompatible_explicit_session_fails_without_fresh_submission(tmp_path):
+@pytest.mark.parametrize("automatic_session_resume", [False, True])
+def test_unretained_explicit_local_session_fails_before_any_submission(
+    tmp_path,
+    automatic_session_resume,
+):
     client = SessionClient(fresh_session_id="stale-session")
-    client.continue_error = SessionWorkspaceCompatibilityError("session belongs to another workspace")
-    manager = _manager(tmp_path, {"claude": client}, automatic_session_resume=False)
+    client.config_backend = type("Config", (), {"backend_type": "muse"})()
+    manager = _manager(
+        tmp_path,
+        {"renamed-local": client},
+        automatic_session_resume=automatic_session_resume,
+    )
     manager._last_session_id = "stale-session"
+    manager._last_continue_session_resumed = True
 
-    with pytest.raises(SessionWorkspaceCompatibilityError, match="another workspace"):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("stale-session", "full review", is_noedit=True)
 
-    assert client.continued == [("stale-session", "full review", True)]
+    assert client.continued == []
     assert client.fresh_prompts == []
     assert manager._last_session_id == "stale-session"
+    assert manager._last_continue_session_resumed is False
 
 
 def test_stale_local_session_selects_fresh_execution(tmp_path):
@@ -225,29 +234,29 @@ def test_ordinary_local_call_resets_previous_continuity_indicator(tmp_path):
     assert client.continued == []
 
 
-def test_uncertain_writer_during_explicit_resume_does_not_launch_replacement(tmp_path):
+def test_unretained_session_refuses_before_writer_error_or_replacement(tmp_path):
     opencode = SessionClient(fresh_session_id="opencode-session")
     opencode.continue_error = LocalWriterSettlementError("writer settlement is uncertain")
     fallback = SessionClient(fresh_session_id="fallback-session")
     manager = _manager(tmp_path, {"opencode": opencode, "codex": fallback}, automatic_session_resume=False)
 
-    with pytest.raises(LocalWriterSettlementError, match="settlement is uncertain"):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("opencode-session", "review", is_noedit=True)
 
-    assert opencode.continued == [("opencode-session", "review", True)]
+    assert opencode.continued == []
     assert opencode.fresh_prompts == []
     assert fallback.fresh_prompts == []
     assert manager.get_current_backend_identity()[0] == "opencode"
     assert manager._last_continue_session_resumed is False
 
 
-def test_explicit_resume_usage_limit_does_not_rotate_or_start_fresh(tmp_path):
+def test_unretained_session_refuses_before_usage_error_or_rotation(tmp_path):
     claude = SessionClient(fresh_session_id="claude-session")
     claude.continue_error = AutoCoderUsageLimitError("usage limit")
     codex = SessionClient(fresh_session_id="codex-session")
     manager = _manager(tmp_path, {"claude": claude, "codex": codex}, automatic_session_resume=False)
 
-    with pytest.raises(AutoCoderUsageLimitError, match="usage limit"):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("claude-session", "review", is_noedit=True)
 
     assert claude.fresh_prompts == []
@@ -275,29 +284,29 @@ def test_unsupported_explicit_continuation_fails_before_provider_or_fresh_submis
     ],
     ids=["timeout", "usage-limit"],
 )
-def test_muse_continuation_execution_error_does_not_use_fresh_fallback(tmp_path, continuation_error):
+def test_unretained_muse_session_refuses_before_execution_error_or_fallback(tmp_path, continuation_error):
     muse = SessionClient(fresh_session_id="exact-session")
     muse.continue_error = continuation_error
     fallback = SessionClient(fresh_session_id="fallback-session")
     manager = _manager(tmp_path, {"muse": muse, "codex": fallback}, automatic_session_resume=False)
 
-    with pytest.raises(type(continuation_error), match=str(continuation_error)):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("exact-session", "review follow-up", is_noedit=True)
 
-    assert muse.continued == [("exact-session", "review follow-up", True)]
+    assert muse.continued == []
     assert muse.fresh_prompts == []
     assert fallback.fresh_prompts == []
     assert manager.get_current_backend_identity()[0] == "muse"
     assert manager._last_continue_session_resumed is False
 
 
-def test_explicit_resume_resets_continuity_before_unexpected_error(tmp_path):
+def test_unretained_session_resets_continuity_before_adapter_error(tmp_path):
     client = SessionClient(fresh_session_id="session")
     client.continue_error = OSError("unexpected transport failure")
     manager = _manager(tmp_path, {"codex": client}, automatic_session_resume=False)
     manager._last_continue_session_resumed = True
 
-    with pytest.raises(OSError, match="unexpected transport failure"):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("session", "review", is_noedit=True)
 
     assert manager._last_continue_session_resumed is False
@@ -317,7 +326,7 @@ def test_empty_explicit_session_is_rejected_without_claiming_continuity(tmp_path
     assert client.fresh_prompts == []
 
 
-def test_unreadable_opencode_preflight_does_not_start_fresh_or_clear_session(tmp_path, monkeypatch):
+def test_unretained_opencode_session_refuses_before_adapter_preflight(tmp_path, monkeypatch):
     class PreflightClient(SessionClient):
         command = ["opencode"]
 
@@ -344,10 +353,10 @@ def test_unreadable_opencode_preflight_does_not_start_fresh_or_clear_session(tmp
         unreadable_session_list,
     )
 
-    with pytest.raises(SessionWorkspaceCompatibilityError, match="could not be verified"):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("prior-session", "continue", is_noedit=True)
 
-    assert client.continued == [("prior-session", "continue", True)]
+    assert client.continued == []
     assert client.fresh_prompts == []
     assert manager._last_session_id == "prior-session"
     assert manager._last_continue_session_resumed is False

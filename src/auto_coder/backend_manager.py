@@ -725,6 +725,8 @@ class BackendManager(LLMBackendManagerBase):
         is_local_backend = backend_type not in _CLOUD_BACKEND_TYPES
         if is_local_backend and getattr(client, "supports_retained_local_continuation", False) is not True:
             raise LocalContinuationError("selected local adapter cannot prove retained-workspace continuation compatibility")
+        if is_local_backend and session_id not in self._retained_local_sessions:
+            raise LocalContinuationError("local continuation refused because no retained controller-owned binding and generation authority exist for this session")
         self._is_noedit = is_noedit
         try:
             # Re-use _execute_backend_with_providers to capture interaction

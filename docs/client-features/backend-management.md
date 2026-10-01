@@ -14,7 +14,7 @@
       behavior:
         - "Captures session IDs from backend clients after each execution and persists them to ~/.auto-coder/backend_session_state.json"
         - "Automatically selects a remembered session only for cloud backend types (claude-routine, codex-cloud, and jules) when the same configured alias runs consecutively"
-        - "Ordinary calls to local backend types always start fresh, regardless of remembered session metadata; local reuse is available only through explicit generation-authorized continuation"
+        - "Ordinary calls to local backend types always start fresh, regardless of remembered session metadata; local reuse is available only through explicit generation-authorized continuation, and an unknown session without its retained controller-owned binding is refused before provider submission"
         - "Clears persisted session data when rotating to a different backend to avoid cross-backend leakage"
       configuration_file: "~/.auto-coder/llm_config.toml"
       persistence_file: "~/.auto-coder/backend_session_state.json"

@@ -14,6 +14,7 @@ import pytest
 from src.auto_coder.cli_helpers import build_backend_manager
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+from src.auto_coder.local_session_continuation import LocalContinuationError
 from tests.utils.workspace import write_target_test_script
 
 
@@ -570,7 +571,7 @@ def test_muse_msp_resume_reestablishes_approval_denial(tmp_path, monkeypatch, _u
     "ack_case",
     ["mismatched-command", "rejected", "pending", "missing-mode", "permissive-mode"],
 )
-def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path, monkeypatch, _use_real_commands, ack_case):
+def test_muse_manager_refuses_unretained_session_before_approval_protocol(tmp_path, monkeypatch, _use_real_commands, ack_case):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -580,13 +581,9 @@ def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path
     monkeypatch.setenv("MSP_APPROVAL_ACK_CASE", ack_case)
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         _manager(config).continue_session("opaque/provider/session", "second", is_noedit=True)
-    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
-    assert methods.count("session/resume") == 1
-    assert methods.count("session/setApprovalMode") == 1
-    assert "session/start" not in methods
-    assert "turn/start" not in methods
+    assert not log.exists()
 
 
 @pytest.mark.parametrize(
@@ -622,8 +619,9 @@ def test_muse_msp_continuation_rejects_workspace_trust_before_protocol_setup(tmp
     monkeypatch.setenv("MSP_LOG", str(log))
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--trust-workspace"])})
 
+    client = _manager(config)._clients["muse"]
     with pytest.raises(RuntimeError, match="without independent PR-review authorization"):
-        _manager(config).continue_session("opaque/provider/session", "prompt", is_noedit=is_noedit)
+        client.continue_session("opaque/provider/session", "prompt", is_noedit=is_noedit)
     assert not log.exists()
 
 
@@ -990,10 +988,10 @@ def test_muse_missing_resume_model_fails_without_fresh_fallback(tmp_path, monkey
     monkeypatch.setenv("MSP_MISSING_MODEL_RESUME", "1")
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
     manager = _manager(config)
+    client = manager._clients["muse"]
 
     with pytest.raises(RuntimeError, match="omitted or uses an incompatible model"):
-        manager.continue_session("opaque/provider/session", "second")
-    assert manager._last_continue_session_resumed is False
+        client.continue_session("opaque/provider/session", "second", is_noedit=True)
     methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
     assert methods.count("session/resume") == 1
     assert "session/start" not in methods
@@ -1031,13 +1029,10 @@ def test_muse_foreign_or_removed_workspace_fails_without_fresh_fallback(tmp_path
     assert "turn/start" not in failed_methods
 
     log.unlink()
-    with pytest.raises(RuntimeError, match="incompatible workspace"):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("opaque/provider/session", "second")
     assert manager._last_continue_session_resumed is False
-    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
-    assert methods.count("session/resume") == 1
-    assert "session/start" not in methods
-    assert "turn/start" not in methods
+    assert not log.exists()
     assert manager.get_last_session_id() is None
     if remove_original:
         assert not old_repo.exists()
@@ -1104,10 +1099,7 @@ def test_muse_incompatible_resume_state_fails_without_fresh_fallback(tmp_path, m
     assert "turn/start" not in failed_methods
 
     log.unlink()
-    with pytest.raises(RuntimeError, match=error_pattern):
+    with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
         manager.continue_session("opaque/provider/session", "second", is_noedit=True)
     assert manager._last_continue_session_resumed is False
-    methods = [json.loads(line)["frame"].get("method") for line in log.read_text().splitlines()]
-    assert methods.count("session/resume") == 1
-    assert "session/start" not in methods
-    assert "turn/start" not in methods
+    assert not log.exists()
