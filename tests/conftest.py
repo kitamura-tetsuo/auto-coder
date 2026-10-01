@@ -833,6 +833,64 @@ _MIGRATED_CONTAINER_SCENARIOS = {
     "test_ac005_documentation_matches_production_compose_and_route",
 }
 _opencode_live_test_reports: dict[str, dict[str, str]] = {}
+_opencode_live_xdist_collections: dict[str, list[str]] = {}
+_opencode_live_xdist_worker_summaries: list[dict[str, object]] = []
+_opencode_live_xdist_worker_errors: list[str] = []
+
+
+def _opencode_live_function_name(nodeid: str) -> str:
+    """Return the unparameterized function name from a pytest node id."""
+    function = nodeid.rsplit("::", 1)[-1]
+    return function.split("[", 1)[0]
+
+
+def _opencode_live_failure_reasons(
+    selected_tests: list[str],
+    test_reports: dict[str, dict[str, str]],
+) -> list[str]:
+    """Validate the dedicated live selection and its required container outcomes."""
+    failure_reasons: list[str] = []
+
+    if not selected_tests:
+        failure_reasons.append("Empty live test selection (zero tests collected)")
+
+    collected_function_names = {_opencode_live_function_name(nodeid) for nodeid in selected_tests}
+    missing_scenarios = _MIGRATED_CONTAINER_SCENARIOS - collected_function_names
+    if missing_scenarios:
+        failure_reasons.append(f"Missing required container scenarios from collection: {sorted(missing_scenarios)}")
+
+    for scenario in sorted(_MIGRATED_CONTAINER_SCENARIOS):
+        matching_nodeids = [nodeid for nodeid in selected_tests if _opencode_live_function_name(nodeid) == scenario]
+        for nodeid in matching_nodeids:
+            reports = test_reports.get(nodeid, {})
+            call_outcome = reports.get("call")
+            status = reports.get("status")
+            if status != "passed" or call_outcome != "passed":
+                failure_reasons.append(f"Migrated scenario '{scenario}' did not execute to passing result: " f"status={status}, setup={reports.get('setup')}, " f"call={call_outcome}, teardown={reports.get('teardown')}")
+
+    return failure_reasons
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_xdist_node_collection_finished(node, ids):
+    """Record each worker's complete marker selection for controller-side validation."""
+    if os.environ.get("AUTO_CODER_REQUIRE_OPENCODE_LIVE") != "1":
+        return
+    gateway = getattr(getattr(node, "gateway", None), "id", None) or repr(node)
+    _opencode_live_xdist_collections[str(gateway)] = list(ids)
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):
+    """Collect worker-side test reports without racing on one shared diagnostics file."""
+    if os.environ.get("AUTO_CODER_REQUIRE_OPENCODE_LIVE") != "1":
+        return
+    if error:
+        _opencode_live_xdist_worker_errors.append(str(error))
+    workeroutput = getattr(node, "workeroutput", {}) or {}
+    summary = workeroutput.get("opencode_live_summary")
+    if isinstance(summary, dict):
+        _opencode_live_xdist_worker_summaries.append(summary)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -856,44 +914,74 @@ def pytest_sessionfinish(session, exitstatus):
     Collects log if running via simple pytest command (not via local_test_log_collector.py).
     """
     if os.environ.get("AUTO_CODER_REQUIRE_OPENCODE_LIVE") == "1":
-        failure_reasons = []
+        config = session.config
+        workerinput = getattr(config, "workerinput", None)
 
-        if not session.items:
-            failure_reasons.append("Empty live test selection (zero tests collected)")
-
-        collected_function_names = {item.name for item in session.items}
-        missing_scenarios = _MIGRATED_CONTAINER_SCENARIOS - collected_function_names
-        if missing_scenarios:
-            failure_reasons.append(f"Missing required container scenarios from collection: {sorted(missing_scenarios)}")
-
-        for item in session.items:
-            if item.name in _MIGRATED_CONTAINER_SCENARIOS:
-                reports = _opencode_live_test_reports.get(item.nodeid, {})
-                call_outcome = reports.get("call")
-                status = reports.get("status")
-                if status != "passed" or call_outcome != "passed":
-                    failure_reasons.append(f"Migrated scenario '{item.name}' did not execute to passing result: " f"status={status}, setup={reports.get('setup')}, call={call_outcome}, teardown={reports.get('teardown')}")
-
-        if failure_reasons:
-            session.exitstatus = 1
-            print("\n[opencode-live-tests] FAIL-CLOSED VALIDATION FAILED:", file=sys.stderr)
-            for reason in failure_reasons:
-                print(f"  - {reason}", file=sys.stderr)
-
-        try:
-            log_dir = Path("opencode-live-logs")
-            log_dir.mkdir(parents=True, exist_ok=True)
-            results_file = log_dir / "test-results.json"
-            summary = {
-                "exit_status": session.exitstatus,
-                "total_collected": len(session.items),
-                "selected_tests": [item.nodeid for item in session.items],
+        if workerinput is not None:
+            # xdist workers must not independently enforce whole-suite completeness
+            # or write the shared diagnostics file. The controller joins all worker
+            # reports against the complete collected selection.
+            config.workeroutput["opencode_live_summary"] = {
                 "test_reports": _opencode_live_test_reports,
-                "failure_reasons": failure_reasons,
             }
-            results_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        except Exception as exc:
-            print(f"[opencode-live-tests] Could not write test-results.json: {exc}", file=sys.stderr)
+        else:
+            failure_reasons: list[str] = []
+            selected_tests: list[str]
+            test_reports: dict[str, dict[str, str]]
+
+            if _opencode_live_xdist_collections:
+                collections = list(_opencode_live_xdist_collections.values())
+                selected_tests = collections[0]
+                canonical = set(selected_tests)
+                if any(set(collection) != canonical for collection in collections[1:]):
+                    failure_reasons.append("OpenCode live xdist workers collected different test selections")
+
+                test_reports = {}
+                for summary in _opencode_live_xdist_worker_summaries:
+                    worker_reports = summary.get("test_reports")
+                    if not isinstance(worker_reports, dict):
+                        failure_reasons.append("OpenCode live xdist worker returned malformed test reports")
+                        continue
+                    for nodeid, reports in worker_reports.items():
+                        if not isinstance(nodeid, str) or not isinstance(reports, dict):
+                            failure_reasons.append("OpenCode live xdist worker returned malformed test report entries")
+                            continue
+                        existing = test_reports.get(nodeid)
+                        normalized = {str(key): str(value) for key, value in reports.items()}
+                        if existing is not None and existing != normalized:
+                            failure_reasons.append(f"Conflicting OpenCode live xdist reports for {nodeid}")
+                            continue
+                        test_reports[nodeid] = normalized
+
+                if len(_opencode_live_xdist_worker_summaries) != len(_opencode_live_xdist_collections):
+                    failure_reasons.append("OpenCode live xdist worker report count did not match the collected worker count")
+                failure_reasons.extend(f"OpenCode live xdist worker failed: {error}" for error in _opencode_live_xdist_worker_errors)
+            else:
+                selected_tests = [item.nodeid for item in session.items]
+                test_reports = _opencode_live_test_reports
+
+            failure_reasons.extend(_opencode_live_failure_reasons(selected_tests, test_reports))
+
+            if failure_reasons:
+                session.exitstatus = 1
+                print("\n[opencode-live-tests] FAIL-CLOSED VALIDATION FAILED:", file=sys.stderr)
+                for reason in failure_reasons:
+                    print(f"  - {reason}", file=sys.stderr)
+
+            try:
+                log_dir = Path("opencode-live-logs")
+                log_dir.mkdir(parents=True, exist_ok=True)
+                results_file = log_dir / "test-results.json"
+                summary = {
+                    "exit_status": session.exitstatus,
+                    "total_collected": len(selected_tests),
+                    "selected_tests": selected_tests,
+                    "test_reports": test_reports,
+                    "failure_reasons": failure_reasons,
+                }
+                results_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            except Exception as exc:
+                print(f"[opencode-live-tests] Could not write test-results.json: {exc}", file=sys.stderr)
     # Check if we are running via local_test_log_collector.py by checking an env var or arg
     # Ideally, local_test_log_collector.py could set an env var, but we didn't add that.
     # However, if we blindly save a log here, we might duplicate it if the runner also saves it.

@@ -19,6 +19,9 @@ applies the policy to shells, interpreters, absolute
 executables, Git alternate-directory options, hooks, and every descendant. Writes
 through path traversal, symlinks, hard-link creation, rename/refer operations, and
 newly opened descriptors are checked at the actual filesystem operation.
+Invocation preparation creates the isolated Codex home even when there are no
+shared credentials or configuration files to copy, so `CODEX_HOME` always names
+an existing invocation-owned directory before the executable starts.
 
 The supported x86-64 profile also starts each confined child under a
 controller-owned ptrace syscall guard before the provider's first instruction.
