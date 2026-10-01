@@ -96,6 +96,25 @@ def _hold_process_reservation(path: str, ready: Connection) -> None:
     ready.recv()
 
 
+def _wait_for_process_admission(path: str, channel: Connection, attempt: int) -> None:
+    def wait(_seconds: float) -> None:
+        channel.send("waiting")
+        assert channel.poll(10), "timed out waiting for controlled admission poll"
+        assert channel.recv() == "poll"
+
+    governor = GitHubRequestGovernor(store_path=Path(path), waiter=wait)
+    request = context(attempt)
+    try:
+        assert governor.admit_blocking(request) is True
+        governor.observe(outcome(request))
+        channel.send("completed")
+    except BaseException as exc:
+        channel.send(("error", str(exc)))
+        raise
+    finally:
+        governor.close()
+
+
 def _create_legacy_store(path: Path, timestamp: float) -> None:
     with sqlite3.connect(path) as connection:
         connection.executescript(
@@ -576,7 +595,7 @@ def test_simultaneous_first_use_converges_and_preserves_live_request(tmp_path) -
         assert leader.exitcode == 0
         assert joiner.exitcode == 0
         with sqlite3.connect(path) as connection:
-            assert connection.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
+            assert connection.execute("SELECT schema_version FROM governor_metadata").fetchone() == (3,)
             assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (0.0, "")
             reservations = connection.execute("SELECT resolved, recovered FROM reservations ORDER BY admitted_utc").fetchall()
             assert len(reservations) >= 2
@@ -645,7 +664,7 @@ def test_pre_schema_pragma_contention_recovers_same_governor_instance(tmp_path, 
     send("/second")
     assert sends == ["/second"]
     with real_connect(path) as observer:
-        assert observer.execute("SELECT schema_version FROM governor_metadata").fetchone() == (2,)
+        assert observer.execute("SELECT schema_version FROM governor_metadata").fetchone() == (3,)
         assert observer.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(1, 0)]
 
 
@@ -723,7 +742,7 @@ def test_legacy_recovery_uses_logical_time_after_slow_initialization(tmp_path, m
     assert recovery.value.reason == "rate_limit_cooldown"
     assert recovery.value.retry_at == clock.wall_value + 60
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata").fetchone() == (2, clock.wall_value)
+        assert connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata").fetchone() == (3, clock.wall_value)
         assert connection.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (
             clock.wall_value + 60,
             "unresolved_attempt_recovery",
@@ -841,6 +860,360 @@ def test_blocking_admission_gives_up_on_a_stuck_attempt(tmp_path) -> None:
     assert exhausted.value.reason == "request_in_flight"
     assert sum(waits) == pytest.approx(2.0)
     assert waits and max(waits) <= 0.5
+    with sqlite3.connect(governor.path) as observer:
+        assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+        assert observer.execute("SELECT attempt_id, resolved, recovered FROM reservations").fetchall() == [("attempt-1", 0, 0)]
+
+
+@pytest.mark.parametrize("shared_instance", [False, True])
+@pytest.mark.parametrize("waiting_kind", ["read", "mutation"])
+def test_waiting_request_prevents_completion_owner_from_reclaiming_capacity(tmp_path, shared_instance, waiting_kind) -> None:
+    """Completed traffic cannot repeatedly overtake a registered waiting request."""
+    clock = Clock()
+    path = tmp_path / "fair-admission.sqlite3"
+    competitor = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall)
+    first, waiting, following = context(1001), context(1002, waiting_kind), context(1003)
+    polls = []
+
+    def waiter(seconds):
+        clock.advance(seconds)
+        polls.append(seconds)
+        competitor.observe(outcome(first))
+        with pytest.raises(GitHubRequestDeferred) as blocked:
+            competitor.admit(following)
+        assert blocked.value.reason == "admission_queue"
+        assert blocked.value.outcome.delivery is DeliveryCertainty.DEFINITELY_NOT_SENT
+
+    participant = competitor if shared_instance else GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall, waiter=waiter)
+    if shared_instance:
+        participant._waiter = waiter
+    try:
+        assert competitor.admit(first) is True
+        assert participant.admit_blocking(waiting) is True
+        assert len(polls) == 1
+        participant.observe(outcome(waiting))
+        assert competitor.admit(following) is True
+        competitor.observe(outcome(following))
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT attempt_id, resolved, recovered FROM reservations ORDER BY admitted_utc").fetchall() == [("attempt-1001", 1, 0), ("attempt-1002", 1, 0), ("attempt-1003", 1, 0)]
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+    finally:
+        participant.close()
+        competitor.close()
+
+
+def test_separate_process_waiters_take_capacity_in_registration_order(tmp_path) -> None:
+    """A later process cannot overtake the oldest eligible live ticket."""
+    process_context = get_context("spawn")
+    path = tmp_path / "process-fairness.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path)
+    first = context(2000)
+    assert leader.admit(first) is True
+    oldest_parent, oldest_child = process_context.Pipe()
+    later_parent, later_child = process_context.Pipe()
+    oldest = process_context.Process(target=_wait_for_process_admission, args=(str(path), oldest_child, 2001))
+    later = process_context.Process(target=_wait_for_process_admission, args=(str(path), later_child, 2002))
+    try:
+        oldest.start()
+        assert _receive(oldest_parent) == "waiting"
+        later.start()
+        assert _receive(later_parent) == "waiting"
+        leader.observe(outcome(first))
+        with pytest.raises(GitHubRequestDeferred) as blocked:
+            leader.admit(context(2003))
+        assert blocked.value.reason == "admission_queue"
+        later_parent.send("poll")
+        assert _receive(later_parent) == "waiting"
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT attempt_id FROM admission_waiters ORDER BY ticket").fetchall() == [("attempt-2001",), ("attempt-2002",)]
+            assert observer.execute("SELECT attempt_id FROM reservations").fetchall() == [("attempt-2000",)]
+        oldest_parent.send("poll")
+        assert _receive(oldest_parent) == "completed"
+        later_parent.send("poll")
+        assert _receive(later_parent) == "completed"
+        oldest.join(timeout=5)
+        later.join(timeout=5)
+        assert oldest.exitcode == later.exitcode == 0
+        assert leader.admit(context(2003)) is True
+        leader.observe(outcome(context(2003)))
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT attempt_id, resolved, recovered FROM reservations ORDER BY admitted_utc").fetchall() == [(f"attempt-{number}", 1, 0) for number in range(2000, 2004)]
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+            assert observer.execute("SELECT cooldown_until_utc FROM origin_state").fetchone() == (0.0,)
+    finally:
+        for participant in (oldest, later):
+            if participant.is_alive():
+                participant.terminate()
+            if participant.pid is not None:
+                participant.join(timeout=5)
+        leader.close()
+
+
+def test_terminated_waiting_process_releases_unsent_ticket_without_cooldown(tmp_path) -> None:
+    process_context = get_context("spawn")
+    path = tmp_path / "terminated-waiter.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path)
+    assert leader.admit(context(2100)) is True
+    parent, child = process_context.Pipe()
+    participant = process_context.Process(target=_wait_for_process_admission, args=(str(path), child, 2101))
+    try:
+        participant.start()
+        assert _receive(parent) == "waiting"
+        participant.terminate()
+        participant.join(timeout=5)
+        assert not participant.is_alive()
+        leader.observe(outcome(context(2100)))
+        assert leader.admit(context(2102)) is True
+        leader.observe(outcome(context(2102)))
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+            assert observer.execute("SELECT attempt_id, resolved, recovered FROM reservations ORDER BY admitted_utc").fetchall() == [("attempt-2100", 1, 0), ("attempt-2102", 1, 0)]
+            assert observer.execute("SELECT cooldown_until_utc, cooldown_reason FROM origin_state").fetchone() == (0.0, "")
+    finally:
+        if participant.is_alive():
+            participant.terminate()
+            participant.join(timeout=5)
+        leader.close()
+
+
+def test_ineligible_mutation_ticket_allows_reads_until_it_becomes_eligible(tmp_path) -> None:
+    clock = Clock()
+    path = tmp_path / "eligible-fairness.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall)
+    admit_and_finish(leader, context(3000, "mutation"))
+    polls = []
+
+    def wait(seconds):
+        clock.advance(seconds)
+        polls.append(seconds)
+        if len(polls) == 1:
+            admit_and_finish(leader, context(3002))
+        else:
+            with pytest.raises(GitHubRequestDeferred) as blocked:
+                leader.admit(context(3003))
+            assert blocked.value.reason == "admission_queue"
+            admit_and_finish(leader, context(3004, origin="https://github.example.com"))
+
+    participant = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall, waiter=wait)
+    try:
+        assert participant.admit_blocking(context(3001, "mutation")) is True
+        participant.observe(outcome(context(3001, "mutation")))
+        assert polls == [0.5, 0.5]
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT attempt_id FROM reservations WHERE origin='https://api.github.com' ORDER BY admitted_utc").fetchall() == [("attempt-3000",), ("attempt-3002",), ("attempt-3001",)]
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+    finally:
+        participant.close()
+        leader.close()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+def test_interrupted_waiting_request_cancels_its_ticket(tmp_path, failure) -> None:
+    path = tmp_path / "cancelled-waiter.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path)
+    assert leader.admit(context(3100)) is True
+
+    def wait(_seconds):
+        raise failure("interrupted before sending")
+
+    participant = GitHubRequestGovernor(store_path=path, waiter=wait)
+    try:
+        with pytest.raises(failure, match="interrupted before sending"):
+            participant.admit_blocking(context(3101))
+        leader.observe(outcome(context(3100)))
+        assert leader.admit(context(3102)) is True
+        leader.observe(outcome(context(3102)))
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+            assert observer.execute("SELECT COUNT(*) FROM reservations WHERE attempt_id='attempt-3101'").fetchone() == (0,)
+    finally:
+        participant.close()
+        leader.close()
+
+
+@pytest.mark.parametrize("finish_active", [False, True])
+def test_expired_unsent_ticket_does_not_expire_a_live_reservation(tmp_path, finish_active) -> None:
+    clock = Clock()
+    path = tmp_path / "expired-waiter.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall)
+    assert leader.admit(context(3200)) is True
+
+    def wait(_seconds):
+        clock.advance(91)
+        if finish_active:
+            leader.observe(outcome(context(3200)))
+            admit_and_finish(leader, context(3202))
+        else:
+            with pytest.raises(GitHubRequestDeferred) as blocked:
+                leader.admit(context(3202))
+            assert blocked.value.reason == "request_in_flight"
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+            assert observer.execute("SELECT resolved, recovered FROM reservations WHERE attempt_id='attempt-3200'").fetchone() == (int(finish_active), 0)
+        raise RuntimeError("expired waiter stopped")
+
+    participant = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall, waiter=wait)
+    try:
+        with pytest.raises(RuntimeError, match="expired waiter stopped"):
+            participant.admit_blocking(context(3201))
+    finally:
+        leader.observe(outcome(context(3200)))
+        participant.close()
+        leader.close()
+
+
+def test_new_throttle_evidence_cancels_waiting_ticket_without_sending(tmp_path) -> None:
+    clock = Clock()
+    path = tmp_path / "throttled-waiter.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall)
+    assert leader.admit(context(3300)) is True
+
+    def wait(seconds):
+        clock.advance(seconds)
+        leader.observe(outcome(context(3300), GitHubApiOutcome.THROTTLED))
+
+    participant = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall, waiter=wait)
+    try:
+        with pytest.raises(GitHubRequestDeferred) as deferred:
+            participant.admit_blocking(context(3301))
+        assert deferred.value.reason == "rate_limit_cooldown"
+        assert deferred.value.retry_at == clock.wall_value + 60
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+            assert observer.execute("SELECT attempt_id, resolved, recovered FROM reservations").fetchall() == [("attempt-3300", 1, 0)]
+    finally:
+        participant.close()
+        leader.close()
+
+
+def test_waiter_cancellation_contention_is_retried_before_next_admission(tmp_path) -> None:
+    path = tmp_path / "cancel-contention.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path)
+    assert leader.admit(context(3350)) is True
+    writer = sqlite3.connect(path, isolation_level=None)
+
+    def wait(_seconds):
+        writer.execute("BEGIN IMMEDIATE")
+        raise RuntimeError("interrupted during contention")
+
+    participant = GitHubRequestGovernor(store_path=path, waiter=wait)
+    participant._connection.execute("PRAGMA busy_timeout=0")
+    try:
+        with pytest.raises(RuntimeError, match="interrupted during contention"):
+            participant.admit_blocking(context(3351))
+        assert writer.execute("SELECT attempt_id FROM admission_waiters").fetchall() == [("attempt-3351",)]
+        writer.execute("ROLLBACK")
+        leader.observe(outcome(context(3350)))
+        admit_and_finish(participant, context(3352))
+        assert writer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+        assert writer.execute("SELECT COUNT(*) FROM reservations WHERE attempt_id='attempt-3351'").fetchone() == (0,)
+    finally:
+        writer.close()
+        participant.close()
+        leader.close()
+
+
+def test_missing_waiter_ownership_evidence_fails_admission_closed(tmp_path) -> None:
+    path = tmp_path / "missing-waiter-owner.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path)
+    assert leader.admit(context(3360)) is True
+
+    def wait(_seconds):
+        leader.observe(outcome(context(3360)))
+        owner = path.parent / "owners" / f"{participant._incarnation_id}.lock"
+        owner.unlink()
+        with pytest.raises(GitHubRequestDeferred) as blocked:
+            leader.admit(context(3362))
+        assert blocked.value.reason == "governor_state_unavailable"
+        raise RuntimeError("owner evidence unavailable")
+
+    participant = GitHubRequestGovernor(store_path=path, waiter=wait)
+    try:
+        with pytest.raises(RuntimeError, match="owner evidence unavailable"):
+            participant.admit_blocking(context(3361))
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT attempt_id, resolved, recovered FROM reservations").fetchall() == [("attempt-3360", 1, 0)]
+    finally:
+        participant.close()
+        leader.close()
+
+
+def test_wait_budget_is_monotonic_despite_wall_clock_jump(tmp_path) -> None:
+    clock = Clock()
+    waits = []
+
+    def wait(seconds):
+        clock.advance(seconds)
+        if not waits:
+            clock.wall_value += 1000
+        waits.append(seconds)
+
+    governor = GitHubRequestGovernor(store_path=tmp_path / "monotonic-wait.sqlite3", monotonic=clock.monotonic, wall_time=clock.wall, wait_budget=2, waiter=wait)
+    try:
+        assert governor.admit(context(3370)) is True
+        with pytest.raises(GitHubRequestDeferred) as deferred:
+            governor.admit_blocking(context(3371))
+        assert deferred.value.reason == "request_in_flight"
+        assert sum(waits) == pytest.approx(2)
+        with sqlite3.connect(governor.path) as observer:
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+            assert observer.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(0, 0)]
+    finally:
+        governor.observe(outcome(context(3370)))
+        governor.close()
+
+
+def test_queue_diagnostics_report_unsent_lifecycle_with_attempt_and_owner(tmp_path) -> None:
+    from loguru import logger
+
+    diagnostics = []
+    sink = logger.add(lambda message: diagnostics.append(message.record["extra"].get("github_governor", {})), level="DEBUG")
+    path = tmp_path / "queue-diagnostics.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path)
+    assert leader.admit(context(3380)) is True
+
+    def wait(_seconds):
+        raise RuntimeError("cancel diagnostic")
+
+    participant = GitHubRequestGovernor(store_path=path, waiter=wait)
+    try:
+        with pytest.raises(RuntimeError, match="cancel diagnostic"):
+            participant.admit_blocking(context(3381))
+        queue_events = [entry for entry in diagnostics if entry.get("attempt") == "attempt-3381" and entry.get("decision") in ("queued", "released")]
+        assert [(entry["decision"], entry["delay_reason"]) for entry in queue_events] == [("queued", "admission_queue"), ("released", "cancelled_waiter")]
+        assert all(entry["origin"] == "https://api.github.com" and entry["state_path"] == str(path) and entry["incarnation"] == participant._incarnation_id for entry in queue_events)
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT COUNT(*) FROM reservations WHERE attempt_id='attempt-3381'").fetchone() == (0,)
+    finally:
+        leader.observe(outcome(context(3380)))
+        participant.close()
+        leader.close()
+        logger.remove(sink)
+
+
+def test_version_two_upgrade_preserves_live_reservations_and_budgets(tmp_path) -> None:
+    clock = Clock()
+    path = tmp_path / "version-two.sqlite3"
+    leader = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall)
+    assert leader.admit(context(3400)) is True
+    with sqlite3.connect(path) as writer:
+        writer.execute("DROP TABLE admission_waiters")
+        writer.execute("UPDATE governor_metadata SET schema_version=2")
+    participant = GitHubRequestGovernor(store_path=path, monotonic=clock.monotonic, wall_time=clock.wall)
+    try:
+        with pytest.raises(GitHubRequestDeferred) as protected:
+            participant.admit(context(3401))
+        assert protected.value.reason == "request_in_flight"
+        with sqlite3.connect(path) as observer:
+            assert observer.execute("SELECT schema_version FROM governor_metadata").fetchone() == (3,)
+            assert observer.execute("SELECT attempt_id, admitted_utc, resolved, recovered FROM reservations").fetchall() == [("attempt-3400", clock.wall_value, 0, 0)]
+            assert observer.execute("SELECT cooldown_until_utc FROM origin_state").fetchone() == (0.0,)
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+        leader.observe(outcome(context(3400)))
+        admit_and_finish(participant, context(3401))
+    finally:
+        participant.close()
+        leader.close()
 
 
 def test_blocking_admission_does_not_wait_out_real_backpressure(tmp_path) -> None:

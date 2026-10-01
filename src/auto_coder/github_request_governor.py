@@ -25,7 +25,7 @@ MUTATIONS_PER_MINUTE = 60
 MUTATIONS_PER_HOUR = 400
 MUTATION_SPACING_SECONDS = 1.0
 RECOVERY_COOLDOWN_SECONDS = 60.0
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 ADMISSION_WAIT_BUDGET_SECONDS = 90.0
 ADMISSION_POLL_CEILING_SECONDS = 0.5
 ADMISSION_POLL_FLOOR_SECONDS = 0.01
@@ -36,6 +36,7 @@ ADMISSION_POLL_FLOOR_SECONDS = 0.01
 SELF_RESOLVING_DEFERRALS = frozenset(
     {
         "request_in_flight",
+        "admission_queue",
         "mutation_spacing",
         "request_rolling_window",
         "mutation_minute_window",
@@ -106,6 +107,7 @@ class GitHubRequestGovernor:
         self._initialization_pending_reason: str | None = None
         self._unavailable_reason: str | None = None
         self._pending_outcomes: dict[str, GitHubRequestOutcome] = {}
+        self._cancelled_waiters: set[tuple[str, str]] = set()
         self._base_monotonic = self._checked_time(monotonic(), "monotonic clock")
         self._base_wall = self._checked_time(wall_time(), "UTC clock")
         try:
@@ -250,12 +252,13 @@ class GitHubRequestGovernor:
                 )
                 for statement in statements:
                     connection.execute(statement)
+                self._create_waiter_store()
                 connection.execute("INSERT INTO governor_metadata VALUES (1, ?, ?)", (SCHEMA_VERSION, self._base_wall))
             else:
                 if "governor_metadata" not in tables:
                     raise GovernorStateError("existing store has no supported schema")
                 metadata = connection.execute("SELECT schema_version, last_logical_utc FROM governor_metadata WHERE singleton=1").fetchone()
-                if metadata is None or metadata[0] not in (1, SCHEMA_VERSION):
+                if metadata is None or metadata[0] not in (1, 2, SCHEMA_VERSION):
                     raise GovernorStateError("incompatible governor schema")
                 self._stored_number(metadata[1], "UTC checkpoint")
                 if metadata[0] == 1:
@@ -269,10 +272,36 @@ class GitHubRequestGovernor:
                         connection.execute("UPDATE reservations SET recovered=1 WHERE origin=? AND attempt_id=?", (origin, attempt_id))
                     connection.execute("UPDATE governor_metadata SET schema_version=?, last_logical_utc=MAX(last_logical_utc, ?)", (SCHEMA_VERSION, now))
                 self._validate_current_store(tables)
+                if metadata[0] in (1, 2):
+                    self._create_waiter_store()
+                    connection.execute("UPDATE governor_metadata SET schema_version=?", (SCHEMA_VERSION,))
+            self._validate_waiter_store()
             connection.execute("COMMIT")
         except Exception:
             connection.execute("ROLLBACK")
             raise
+
+    def _create_waiter_store(self) -> None:
+        assert self._connection is not None
+        self._connection.execute(
+            """CREATE TABLE admission_waiters (
+            ticket INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin TEXT NOT NULL, attempt_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('read','mutation')),
+            deadline_utc REAL NOT NULL, UNIQUE(origin, attempt_id)
+        )"""
+        )
+        self._connection.execute("CREATE INDEX admission_waiters_order ON admission_waiters(origin, ticket)")
+
+    def _validate_waiter_store(self) -> None:
+        assert self._connection is not None
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(admission_waiters)")}
+        if not {"ticket", "origin", "attempt_id", "owner_id", "kind", "deadline_utc"}.issubset(columns):
+            raise GovernorStateError("current store is missing admission queue schema")
+        for ticket, origin, attempt, owner, kind, deadline in self._connection.execute("SELECT ticket, origin, attempt_id, owner_id, kind, deadline_utc FROM admission_waiters"):
+            if not isinstance(ticket, int) or ticket <= 0 or not isinstance(origin, str) or normalize_api_origin(origin) != origin or not isinstance(attempt, str) or not self._valid_owner_id(owner) or kind not in ("read", "mutation"):
+                raise GovernorStateError("invalid admission waiter")
+            self._stored_number(deadline, "admission wait deadline")
 
     def _validate_legacy_store(self, tables: set[str]) -> None:
         required = {"governor_metadata", "origin_state", "reservations"}
@@ -340,12 +369,26 @@ class GitHubRequestGovernor:
     def _cleanup(self, now: float) -> None:
         assert self._connection is not None
         self._connection.execute("DELETE FROM reservations WHERE admitted_utc <= ? AND (resolved=1 OR recovered=1)", (now - 3600.0,))
-        self._connection.execute("DELETE FROM origin_state WHERE cooldown_until_utc <= ? AND COALESCE(last_mutation_completion_utc, 0) <= ? AND throttle_count=0 AND origin NOT IN (SELECT origin FROM reservations)", (now, now - MUTATION_SPACING_SECONDS))
+        self._connection.execute(
+            "DELETE FROM origin_state WHERE cooldown_until_utc <= ? AND COALESCE(last_mutation_completion_utc, 0) <= ? AND throttle_count=0 AND origin NOT IN (SELECT origin FROM reservations) AND origin NOT IN (SELECT origin FROM admission_waiters)", (now, now - MUTATION_SPACING_SECONDS)
+        )
+
+    def _cleanup_waiters(self, now: float) -> None:
+        """Expired unsent tickets are safe to release; reservations never age out."""
+        assert self._connection is not None
+        invalid = self._connection.execute("SELECT 1 FROM admission_waiters WHERE typeof(deadline_utc) NOT IN ('integer','real') OR deadline_utc < 0 OR deadline_utc > ? LIMIT 1", (sys.float_info.max,)).fetchone()
+        if invalid:
+            raise GovernorStateError("invalid admission wait deadline")
+        expired = self._connection.execute("DELETE FROM admission_waiters WHERE deadline_utc <= ? RETURNING origin, attempt_id, owner_id", (now,)).fetchall()
+        for origin, attempt, owner in expired:
+            self._diagnostic(origin, attempt, "released", "expired_waiter", now, now, incarnation=owner)
+        for origin, attempt in self._cancelled_waiters:
+            self._connection.execute("DELETE FROM admission_waiters WHERE origin=? AND attempt_id=? AND owner_id=?", (origin, attempt, self._incarnation_id))
 
     def _recover_terminated(self, now: float) -> None:
-        """Recover only reservations whose incarnation lifetime lock is released."""
+        """Recover sent work and release unsent tickets only after owner termination."""
         assert self._connection is not None
-        rows = self._connection.execute("SELECT DISTINCT owner_id FROM reservations WHERE resolved=0 AND recovered=0").fetchall()
+        rows = self._connection.execute("SELECT owner_id FROM reservations WHERE resolved=0 AND recovered=0 UNION SELECT owner_id FROM admission_waiters").fetchall()
         for (owner_id,) in rows:
             if not self._valid_owner_id(owner_id):
                 raise GovernorStateError("unresolved reservation has indeterminate ownership")
@@ -381,6 +424,9 @@ class GitHubRequestGovernor:
                         (origin, attempt, owner_id),
                     )
                     self._diagnostic(str(origin), str(attempt), "recovered", "confirmed_orphan_recovery", deadline, now, incarnation=owner_id)
+                deleted = self._connection.execute("DELETE FROM admission_waiters WHERE owner_id=? RETURNING origin, attempt_id", (owner_id,)).fetchall()
+                for origin, attempt in deleted:
+                    self._diagnostic(origin, attempt, "released", "terminated_waiter", now, now, incarnation=owner_id)
             except OSError as exc:
                 raise GovernorStateError(f"ownership verification failed for {owner_id}") from exc
             finally:
@@ -392,6 +438,8 @@ class GitHubRequestGovernor:
             release_lifetime = not self._ownership_active
             if self._connection is not None:
                 try:
+                    with self._transaction():
+                        self._connection.execute("DELETE FROM admission_waiters WHERE owner_id=?", (self._incarnation_id,))
                     unresolved = self._connection.execute(
                         "SELECT 1 FROM reservations WHERE owner_id=? AND resolved=0 AND recovered=0 LIMIT 1",
                         (self._incarnation_id,),
@@ -417,6 +465,9 @@ class GitHubRequestGovernor:
         out a self-resolving deferral does not re-log the same decision on
         every poll; the decision itself is unaffected.
         """
+        return self._admit(context, announce_deferral)
+
+    def _admit(self, context: GitHubRequestContext, announce_deferral: bool = True, remaining_wait: float = 0.0) -> bool:
         origin = normalize_api_origin(context.api_origin)
         with self._lock:
             self._ensure_initialized(context, origin)
@@ -436,6 +487,7 @@ class GitHubRequestGovernor:
                 now = self._now()
                 assert self._connection is not None
                 with self._transaction():
+                    self._cleanup_waiters(now)
                     self._recover_terminated(now)
                     self._cleanup(now)
                     state = self._read_state(origin)
@@ -473,9 +525,30 @@ class GitHubRequestGovernor:
                             reason, eligible = "mutation_hour_window", first_hour_mutation + 3600.0
                         elif state.last_mutation_completion is not None and now < state.last_mutation_completion + MUTATION_SPACING_SECONDS:
                             reason, eligible = "mutation_spacing", state.last_mutation_completion + MUTATION_SPACING_SECONDS
+                    # Queue only blocking callers. A one-shot admission must
+                    # respect existing tickets without retaining an abandoned
+                    # place after its definitely-not-sent refusal.
+                    if not reason:
+                        mutations_eligible = minute < MUTATIONS_PER_MINUTE and hour < MUTATIONS_PER_HOUR and (state.last_mutation_completion is None or now >= state.last_mutation_completion + MUTATION_SPACING_SECONDS)
+                        head = self._connection.execute("SELECT attempt_id, owner_id FROM admission_waiters WHERE origin=? AND (kind='read' OR ?) ORDER BY ticket LIMIT 1", (origin, int(mutations_eligible))).fetchone()
+                        if head is not None and head != (context.attempt_id, self._incarnation_id):
+                            reason, eligible = "admission_queue", now + ADMISSION_POLL_CEILING_SECONDS
+                    queued = False
+                    if remaining_wait > 0 and reason in SELF_RESOLVING_DEFERRALS:
+                        queued = (
+                            self._connection.execute(
+                                "INSERT INTO admission_waiters(origin, attempt_id, owner_id, kind, deadline_utc) VALUES (?, ?, ?, ?, ?) ON CONFLICT(origin, attempt_id) DO NOTHING",
+                                (origin, context.attempt_id, self._incarnation_id, context.kind, now + remaining_wait),
+                            ).rowcount
+                            == 1
+                        )
                     if not reason:
                         self._connection.execute("INSERT INTO reservations(origin, attempt_id, kind, admitted_utc, post_cooldown, owner_id) VALUES (?, ?, ?, ?, ?, ?)", (origin, context.attempt_id, context.kind, now, int(state.episode_active and now >= state.cooldown_until), self._incarnation_id))
+                        self._connection.execute("DELETE FROM admission_waiters WHERE origin=? AND attempt_id=? AND owner_id=?", (origin, context.attempt_id, self._incarnation_id))
                     self._checkpoint(now)
+                self._cancelled_waiters.clear()
+                if queued and reason:
+                    self._diagnostic(origin, context.attempt_id, "queued", "admission_queue", now + remaining_wait, now, incarnation=self._incarnation_id)
                 if reason:
                     if announce_deferral:
                         self._diagnostic(origin, context.attempt_id, "deferred", reason, eligible, now)
@@ -561,20 +634,44 @@ class GitHubRequestGovernor:
         ``governor_state_unavailable`` is unusable state, and their callers own
         durable resumption rather than an in-process wait.
         """
-        deadline = self._wall_time() + self._wait_budget
+        deadline = self._monotonic() + self._wait_budget
         announce = True
-        while True:
+        try:
+            while True:
+                try:
+                    return self._admit(context, announce_deferral=announce, remaining_wait=max(0.0, deadline - self._monotonic()))
+                except GitHubRequestDeferred as deferred:
+                    remaining = deadline - self._monotonic()
+                    if deferred.reason not in SELF_RESOLVING_DEFERRALS or remaining <= 0:
+                        if not announce:
+                            self._exhausted(context, deferred)
+                        raise
+                    announce = False
+                    self._wait_for_capacity(min(max(deferred.retry_at - self._wall_time(), ADMISSION_POLL_FLOOR_SECONDS), ADMISSION_POLL_CEILING_SECONDS, remaining))
+        except BaseException:
+            self._cancel_waiter(context)
+            raise
+
+    def _cancel_waiter(self, context: GitHubRequestContext) -> None:
+        origin = normalize_api_origin(context.api_origin)
+        with self._lock:
+            if self._connection is None:
+                return
+            self._cancelled_waiters.add((origin, context.attempt_id))
             try:
-                return self.admit(context, announce_deferral=announce)
-            except GitHubRequestDeferred as deferred:
-                now = self._wall_time()
-                remaining = deadline - now
-                if deferred.reason not in SELF_RESOLVING_DEFERRALS or remaining <= 0:
-                    if not announce:
-                        self._exhausted(context, deferred)
-                    raise
-                announce = False
-                self._wait_for_capacity(min(max(deferred.retry_at - now, ADMISSION_POLL_FLOOR_SECONDS), ADMISSION_POLL_CEILING_SECONDS, remaining))
+                with self._transaction():
+                    deleted = self._connection.execute("DELETE FROM admission_waiters WHERE origin=? AND attempt_id=? AND owner_id=?", (origin, context.attempt_id, self._incarnation_id)).rowcount
+                self._cancelled_waiters.discard((origin, context.attempt_id))
+                if deleted:
+                    now = self._now()
+                    self._diagnostic(origin, context.attempt_id, "released", "cancelled_waiter", now, now, incarnation=self._incarnation_id)
+                self._wake_waiters()
+            except GovernorTransactionContention:
+                # Retry cancellation on this participant's next admission.
+                # Other participants can expire this unsent ticket safely.
+                logger.debug("GitHub admission ticket cancellation is waiting for shared coordination")
+            except Exception as exc:
+                self._fail_closed(f"admission ticket cancellation failed: {exc}", origin)
 
     def _wait_for_capacity(self, seconds: float) -> None:
         if self._waiter is not None:

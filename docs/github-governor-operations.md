@@ -25,7 +25,39 @@ participant that encounters transient SQLite lock contention remains fail-closed
 retries initialization on later admission calls using the same governor instance;
 corrupt, incompatible, invalid, and inaccessible stores remain permanently closed.
 
-## Upgrading a version-1 store
+## Fair admission and bounded waiting
+
+Schema version 3 stores `admission_waiters` separately from sent reservations.
+Tickets order blocking requests by registration, per origin, across all participating
+controllers. The oldest request that satisfies the current request-kind limits
+gets the next available slot. A pending mutation does not suppress an eligible
+read while mutation spacing or mutation-specific budgets prevent its transmission.
+Both blocking and one-shot admissions honor existing eligible tickets.
+
+Tickets contain only attempt/incarnation identity, normalized origin, request kind,
+sequence, and the original wait deadline. They are unsent and uncharged. Admission
+consumes a ticket and creates a charged reservation in the same transaction.
+Timeout, interruption, or a real cooldown cancels the caller's ticket; transient
+cancellation contention is retried by the same participant on its next admission.
+Other participants can release expired tickets, or tickets whose lifetime lock has
+been released, without adding a recovery cooldown. This never releases a sent
+reservation, even when its live owner is paused beyond the 90-second wait budget.
+
+Governor DEBUG diagnostics identify queue registration (`queued`,
+`admission_queue`) and release (`released`, `cancelled_waiter`, `expired_waiter`,
+or `terminated_waiter`). Keep `AUTO_CODER_FILE_LOG_LEVEL=DEBUG` when investigating
+contention. A queue wait that exhausts its budget reports `wait_exhausted` and a
+typed definitely-not-sent deferral; it does not establish a hung network request.
+
+## Upgrading a version-1 or version-2 store
+
+Stop **all** older controllers sharing the runtime before upgrading to version 3.
+The first upgraded controller validates existing state, adds the admission queue,
+and advances the schema version atomically. Version-2 reservations, budgets,
+cooldowns, and ownership remain intact; adding a queue does not recover a live
+reservation. Running older controllers alongside queue-aware controllers is
+unsupported because older code does not honor ticket order. Preserve the database,
+its WAL files, and owner evidence; do not delete them to obtain a fresh allowance.
 
 Stop **all** controllers that can write the version-1 store before starting upgraded
 Auto-Coder. Overlapping legacy writers are unsupported. The first upgraded controller

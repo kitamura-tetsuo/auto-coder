@@ -766,6 +766,7 @@ also mount and refresh the detail view from that snapshot.
 
 | Production origin | Runnable checks |
 | --- | --- |
+| Shared GitHub admission queue (operational gate; no entity execution) | `tests/test_github_request_governor.py::test_separate_process_waiters_take_capacity_in_registration_order`; `tests/test_github_request_governor.py::test_queue_diagnostics_report_unsent_lifecycle_with_attempt_and_owner`; `tests/test_pending_work_resumption.py::test_wrapped_reconciliation_admission_deferral_is_durably_retained` covers the existing `Deferred` result and durable handoff for `admission_queue`, without inventing task completion. |
 | Cached negative Issue admission, before strict refresh or family enumeration | `tests/test_dashboard_observability.py::test_cached_terminal_refusal_reaches_mounted_detail_without_github`; `tests/test_issue_admission_cache.py::test_worker_acknowledges_terminal_refusal_without_strict_refresh_or_validation`; `tests/test_issue_admission_cache.py::test_completed_contract_refusal_is_reused_until_webhook_then_strictly_refreshed` |
 | Codex Cloud quota acquisition and admission | `tests/test_dashboard_observability.py::test_codex_app_server_failure_remains_deferred_in_detail_view` |
 | Standalone sibling-dependency admission (empty vs nonempty declaration) | `tests/test_dashboard_observability.py::test_standalone_dependency_gate_reaches_mounted_detail_view` |
@@ -906,6 +907,21 @@ only the cost of computing those same decisions. No new dashboard stage is impli
 covers bounded result allocation for 100 and 10,000 retained requests;
 `test_aggregated_admission_rejects_invalid_live_timestamps` preserves fail-closed
 handling of corrupted evidence. Run `bash scripts/test.sh tests/test_github_request_governor.py`.
+
+Fair GitHub admission adds ordered, unsent tickets inside that same HTTP gate.
+Operational diagnostics emit `queued/admission_queue` and ticket release reasons;
+typed deferrals can now carry `admission_queue`. These are capacity observations,
+not Issue/PR execution, provider dispatch, or task completion. Production processing
+trace emission points and the dashboard execution schema remain unchanged because
+an unsent ticket establishes no business progress. Wrapped queue deferrals retain
+the existing `Deferred` result and durable pending-work identity/deadline.
+`tests/test_github_request_governor.py::test_waiting_request_prevents_completion_owner_from_reclaiming_capacity`
+and `test_separate_process_waiters_take_capacity_in_registration_order` exercise
+the production admission gate, and `test_terminated_waiting_process_releases_unsent_ticket_without_cooldown`
+checks that an unsent ticket cannot invent a network-recovery outcome.
+`tests/test_pending_work_resumption.py::test_wrapped_reconciliation_admission_deferral_is_durably_retained`
+covers both `request_in_flight` and `admission_queue` through the production
+reconciliation result and durable writer. Run `bash scripts/test.sh tests/test_github_request_governor.py tests/test_pending_work_resumption.py tests/test_dashboard_observability.py`.
 
 Explicit startup passes its completed relationship preflight into child-generation
 validation. This removes a duplicate internal discovery pass; the original

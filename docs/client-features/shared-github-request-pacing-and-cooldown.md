@@ -34,6 +34,23 @@ deferrals to the callers that own durable resumption for them. Exhausting the
 wait budget emits a `wait_exhausted` governor diagnostic and re-raises the
 original deferral.
 
+Blocking requests register ordered, unsent admission tickets in the shared SQLite
+store. When origin capacity becomes free, the oldest currently eligible ticket
+has priority across threads and controller processes; a completion owner or a
+new one-shot `admit` caller cannot reclaim that slot ahead of it. Waiting for
+another ticket reports `admission_queue`. A mutation waiting for spacing or its
+mutation-specific rolling ceiling does not block reads, but takes priority once
+eligible. Origin cooldowns, the global attempt ceiling, and active reservations
+still gate every send. A ticket is not a network attempt and spends no quota.
+
+The 90-second wait budget uses monotonic time. Tickets retain their original
+deadline and position across polls, and are removed atomically on admission or
+on cancellation, throttle deferral, or timeout. Expired unsent tickets and tickets
+whose owner lifetime has ended can be released without a request-recovery
+cooldown. A live or paused owner's sent reservation never expires with its ticket.
+Queue registration and release emit secret-safe governor diagnostics; exhaustion
+still returns a definitely-not-sent deferral for normal durable resumption.
+
 Admission reservations, rolling budgets, mutation-completion spacing, throttle
 episodes, and cooldown deadlines are durably recorded in the controller-wide
 `~/.auto-coder/runtime/github/request_governor.sqlite3` store. Restart recovery
@@ -47,7 +64,9 @@ state fails GitHub admission closed. Persisted records and safe diagnostics cont
 no credentials or request content. A participant that loses persistence after an
 admission retains its lifetime evidence so another participant cannot recover a
 possibly active transport. See `docs/github-governor-operations.md` for the supported
-topology and schema-version-1 upgrade procedure.
+topology and schema upgrade procedure. Schema version 3 adds admission tickets;
+stop all older controllers sharing the runtime before upgrading, preserving the
+existing database and owner files.
 Explicit `--only` target resolution uses strict reads and reports local governor
 deferrals with their reason and retry deadline instead of reporting a missing
 target. Reservation write-lock contention is retryable on the same participant;

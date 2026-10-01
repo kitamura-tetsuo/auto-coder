@@ -433,12 +433,13 @@ def test_process_single_candidate_defers_issue_hierarchy_observation_failure(tmp
     assert result.error is not None
 
 
-def test_wrapped_reconciliation_admission_deferral_is_durably_retained(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reason", ["request_in_flight", "admission_queue"])
+def test_wrapped_reconciliation_admission_deferral_is_durably_retained(tmp_path, monkeypatch, reason):
     store = PendingWorkStore(tmp_path / "pending.db")
     monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repository: store)
 
     context = GitHubRequestContext("op", "attempt", "parent", "https://api.github.com", "GET", "read", "/repos/{repo}/issues/{number}/parent", "owner/repo", "issue:7", strict_read=True)
-    deferred = GitHubRequestDeferred(context, "request_in_flight", retry_at=time.time() + 20)
+    deferred = GitHubRequestDeferred(context, reason, retry_at=time.time() + 20)
 
     class _ParentGithub(GitHubClient):
         def __init__(self):
@@ -460,7 +461,7 @@ def test_wrapped_reconciliation_admission_deferral_is_durably_retained(tmp_path,
     result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data=issue_data, priority=0, issue_number=7), engine.config)
 
     assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
-    assert "request_in_flight" in (result.target_reason or "")
+    assert reason in (result.target_reason or "")
     identity = WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue_data))
     obligation = store.get(identity)
     assert obligation is not None

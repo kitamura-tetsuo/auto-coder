@@ -9,6 +9,13 @@ view, and independently assert business outcomes. Negative controls reject missi
 emissions, scope reattribution, evidence coercion, and false completion while the
 generic renderer continues to accept new or repeated stages without a node map.
 
+Shared GitHub admission tickets remain operational capacity evidence. Queue waits
+and ticket release never create a dashboard execution or imply provider progress.
+The `admission_queue` refusal uses the existing typed `Deferred` result and durable
+pending-work handoff. Governor process-order regressions and the production wrapped
+reconciliation regression are recorded in `docs/dashboard-observability.md`; the
+processing trace schema and rendered outcome meanings remain unchanged.
+
 Initial implementation-clone tests emit `local.workspace-tests` before the
 provider runs. Unexpected Muse approval or user-input requests emit
 `llm.muse-interactive-request` with a blocked outcome instead of remaining hidden

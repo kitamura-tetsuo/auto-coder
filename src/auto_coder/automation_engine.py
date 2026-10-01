@@ -181,6 +181,7 @@ logger = get_logger(__name__)
 _RECONCILIATION_ADMISSION_DEFERRALS = frozenset(
     {
         "request_in_flight",
+        "admission_queue",
         "mutation_spacing",
         "request_rolling_window",
         "mutation_minute_window",
