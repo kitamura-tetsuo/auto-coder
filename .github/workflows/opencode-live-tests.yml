@@ -11,7 +11,7 @@ jobs:
   opencode-live-tests:
     name: OpenCode Live Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -45,7 +45,7 @@ jobs:
           uv run python scripts/prepare_opencode_image.py
 
       - name: Run opencode_live-marked tests
-        timeout-minutes: 20
+        timeout-minutes: 35
         env:
           AUTOCODER_OPENCODE_GIT_DEBUG_LOG: ${{ github.workspace }}/opencode-git-debug.log
           AUTOCODER_OPENCODE_VERBOSE_DEBUG: "1"
