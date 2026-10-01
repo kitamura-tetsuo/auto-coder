@@ -321,13 +321,18 @@ def test_linux_cgroup_stops_double_forked_writer_before_release(tmp_path: Path) 
 
     runtime = Path("/tmp") / f"auto-coder-cgroup-test-{os.getpid()}-{time.time_ns()}"
     runtime.mkdir(mode=0o777)
-    ready = runtime / "ready"
-    late = runtime / "late-write"
-    migrated = runtime / "migrated"
+    (runtime / "result").mkdir()
+    (runtime / "runtime").mkdir()
+    os.chown(runtime / "runtime", 65534, 65534)
+    ready = runtime / "runtime" / "ready"
+    late = runtime / "runtime" / "late-write"
+    migrated = runtime / "runtime" / "migrated"
     sibling = owner.root / f"escape-{time.time_ns()}"
     code = f"""import os, pathlib, time
 child = os.fork()
 if child:
+    while not pathlib.Path({str(ready)!r}).exists() or pathlib.Path({str(ready)!r}).read_text() != "ready":
+        time.sleep(.01)
     os._exit(0)
 os.setsid()
 try:
@@ -350,3 +355,30 @@ pathlib.Path({str(late)!r}).write_text('escaped')
     assert not migrated.exists()
     time.sleep(0.6)
     assert not late.exists()
+
+
+@pytest.mark.parametrize("mismatch", ["invocation_id", "backend_type", "result_root", "effective_mode"])
+def test_launch_mismatch_refuses_before_owner_or_provider(tmp_path: Path, mismatch: str) -> None:
+    from dataclasses import replace
+
+    from src.auto_coder.local_execution_boundary import LocalExecutionBoundary
+    from tests.test_local_execution_boundary import _binding
+
+    binding = _binding(tmp_path)
+    boundary = LocalExecutionBoundary(binding, "codex", editable=False)
+    marker = tmp_path / "provider-started"
+    launch = InvocationLaunch(
+        invocation_id=binding.invocation_id,
+        backend_type="codex",
+        effective_mode="no-edit",
+        result_root=binding.workspace,
+        runtime_paths=(),
+        executable=sys.executable,
+        arguments=("-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"),
+    )
+    changes = {"invocation_id": "different", "backend_type": "opencode", "result_root": tmp_path, "effective_mode": "editable"}
+    supervisor = InvocationProcessSupervisor()
+    result = supervisor.run(replace(launch, **{mismatch: changes[mismatch]}), boundary=boundary)
+    assert result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE
+    assert result.detail == "launch does not match its invocation boundary"
+    assert not marker.exists()

@@ -176,6 +176,16 @@ class LandlockFilesystemPolicy:
                     raise FilesystemConfinementUnavailable("writable roots must be directories")
                 rules.append((fd, _write_rights(abi)))
             self._rules = rules
+            if context.backend_type.lower() == "codex" and not editable:
+                # Git opens the kernel null sink O_RDWR during repository reads.
+                # Pin that exact device, without granting any writable /dev root
+                # or permission to create/remove devices or change metadata.
+                null_fd = os.open("/dev/null", os.O_PATH | os.O_CLOEXEC)
+                null_stat = os.fstat(null_fd)
+                if not stat.S_ISCHR(null_stat.st_mode) or null_stat.st_rdev != os.makedev(1, 3):
+                    os.close(null_fd)
+                    raise FilesystemConfinementUnavailable("Codex requires the kernel null device")
+                rules.append((null_fd, _WRITE_FILE | _TRUNCATE))
             self._abi = abi
             self._monitor = PtraceDenialMonitor(writable_roots)
             return PolicyInstallation(
@@ -433,7 +443,7 @@ class PtraceDenialMonitor:
         requested = _read_process_string(pid, path_pointer)
         if requested is None:
             return None
-        target = _resolve_process_path(pid, directory_fd, requested)
+        target = _resolve_process_path(pid, directory_fd, requested, follow_leaf=syscall not in {87, 263})
         # Opening the kernel null sink does not mutate persistent filesystem
         # state. Real CLI runtimes routinely use it for discarded diagnostics,
         # so it is not a confinement violation.
@@ -504,7 +514,7 @@ def _read_process_word(pid: int, address: int) -> Optional[int]:
     return word & ((1 << (ctypes.sizeof(ctypes.c_long) * 8)) - 1)
 
 
-def _resolve_process_path(pid: int, directory_fd: int, requested: str) -> Optional[Path]:
+def _resolve_process_path(pid: int, directory_fd: int, requested: str, *, follow_leaf: bool = True) -> Optional[Path]:
     try:
         if os.path.isabs(requested):
             base = Path(f"/proc/{pid}/root")
@@ -513,6 +523,10 @@ def _resolve_process_path(pid: int, directory_fd: int, requested: str) -> Option
             anchor = "cwd" if directory_fd == -100 else f"fd/{directory_fd}"
             base = Path(os.readlink(f"/proc/{pid}/{anchor}"))
             combined = base / requested
+        if not follow_leaf:
+            # unlink/unlinkat remove the directory entry, not the referent.
+            # Codex removes runtime-owned PATH aliases to its executable.
+            return combined.parent.resolve(strict=True) / combined.name
         try:
             return combined.resolve(strict=True)
         except FileNotFoundError:

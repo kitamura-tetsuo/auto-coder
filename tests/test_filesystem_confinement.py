@@ -399,3 +399,65 @@ def test_ordinary_permitted_command_failure_is_not_a_policy_violation(tmp_path: 
         pytest.skip(result.detail)
     assert result.outcome is InvocationOutcome.SUCCEEDED
     assert not boundary.evidence().policy_violation
+
+
+def test_codex_noedit_denied_write_fails_even_after_exit_zero(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from src.auto_coder.local_execution_boundary import BackendOutcome
+
+    launch = replace(_launch(tmp_path, "from pathlib import Path\ntry: Path('tracked.txt').write_text('forbidden')\nexcept PermissionError: print('caught-denial')", mode="no-edit"), backend_type="codex")
+    protected = launch.result_root / "tracked.txt"
+    protected.write_text("preserved")
+    boundary = _boundary(launch, tmp_path)
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    result = supervisor.run(launch, boundary=boundary)
+    assert result.returncode == 0
+    assert result.stdout == "caught-denial\n"
+    assert result.outcome is InvocationOutcome.FAILED
+    assert result.writer_complete
+    assert protected.read_text() == "preserved"
+    assert boundary.evidence().backend_outcome is BackendOutcome.FAILED
+    assert boundary.evidence().policy_violation
+    assert not boundary.evidence().confined_result_authorized
+
+
+def test_codex_noedit_can_remove_own_runtime_symlink_without_mutating_referent(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    launch = replace(_launch(tmp_path, "", mode="no-edit"), backend_type="codex")
+    protected = tmp_path / "caller" / "codex-executable"
+    protected.write_text("protected executable")
+    alias = launch.runtime_paths[0] / "codex-alias"
+    alias.symlink_to(protected)
+    launch = replace(launch, arguments=("-c", f"from pathlib import Path; Path({str(alias)!r}).unlink(); print('alias-removed')"))
+    boundary = _boundary(launch, tmp_path)
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    result = supervisor.run(launch, boundary=boundary)
+    assert result.outcome is InvocationOutcome.SUCCEEDED
+    assert result.stdout == "alias-removed\n"
+    assert not alias.is_symlink()
+    assert protected.read_text() == "protected executable"
+    assert not boundary.evidence().policy_violation
+    assert boundary.evidence().confined_result_authorized
+
+
+def test_codex_noedit_cannot_remove_caller_symlink_pointing_into_runtime(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    launch = replace(_launch(tmp_path, "", mode="no-edit"), backend_type="codex")
+    owned_file = launch.runtime_paths[0] / "owned"
+    owned_file.write_text("owned content")
+    protected_alias = tmp_path / "caller" / "alias"
+    protected_alias.symlink_to(owned_file)
+    code = f"from pathlib import Path\ntry: Path({str(protected_alias)!r}).unlink()\nexcept PermissionError: print('caller-alias-denied')"
+    launch = replace(launch, arguments=("-c", code))
+    boundary = _boundary(launch, tmp_path)
+    supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
+    result = supervisor.run(launch, boundary=boundary)
+    assert result.outcome is InvocationOutcome.FAILED
+    assert result.returncode == 0
+    assert result.stdout == "caller-alias-denied\n"
+    assert protected_alias.is_symlink()
+    assert owned_file.read_text() == "owned content"
+    assert boundary.evidence().policy_violation

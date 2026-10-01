@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 _PINNED_OPENCODE_VERSION = "1.18.31"
-_PINNED_CODEX_VERSION = "0.159.0"
+_PINNED_CODEX_VERSION = "0.159.2"
 _IMAGE_TAG = "auto-coder:opencode"
 
 
@@ -303,7 +303,7 @@ def test_codex_private_repository_checkpoint_uses_production_worker_boundary() -
 
     provider = ControlledProviderServer()
     marker = "codex-worker-private-marker-v1\n"
-    marker_checksum = hashlib.sha256(f"tracked.txt\0{marker}".encode()).hexdigest()
+    marker_checksum = hashlib.sha256(b"scripts/test.sh\0exit 0" + f"tracked.txt\0{marker}".encode()).hexdigest()
     try:
         script = f'''
 import os, subprocess

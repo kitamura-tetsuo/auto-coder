@@ -19,7 +19,7 @@ from src.auto_coder.local_execution_boundary import (
 )
 from src.auto_coder.local_session_continuation import LocalContinuationError
 from src.auto_coder.utils import CommandExecutor, bind_command_execution_cwd, bind_supervised_command_execution, reset_command_execution_cwd
-from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership
+from src.auto_coder.worktree_utils import LocalWorkspaceBinding, LocalWorkspaceOwnership, bind_retained_local_workspace
 from tests.utils.workspace import write_target_test_script
 
 
@@ -214,6 +214,9 @@ def test_noedit_codex_final_message_is_written_outside_read_only_repository(tmp_
 
     class RecordingSupervisor:
         def run(self, request, *, boundary):
+            assert request.effective_mode == "no-edit"
+            assert request.arguments[:2] == ("--sandbox", "danger-full-access")
+            assert request.environment["GIT_OPTIONAL_LOCKS"] == "0"
             index = request.arguments.index("--output-last-message")
             provider_output = Path(request.arguments[index + 1])
             assert provider_output.parent == request.runtime_paths[0] / "tmp"
@@ -241,13 +244,15 @@ def test_noedit_codex_final_message_is_written_outside_read_only_repository(tmp_
         readable_regular_files=1,
         tracked_contents_checksum="checksum",
     )
-    environment = {"PATH": "/bin", "HOME": str(tmp_path), "AUTO_CODER_RUNTIME_ROOT": str(tmp_path)}
+    environment = {"PATH": "/bin", "HOME": str(tmp_path), "AUTO_CODER_RUNTIME_ROOT": str(tmp_path), "GIT_OPTIONAL_LOCKS": "1"}
     with (
         patch("src.auto_coder.repository_readiness.verify_worker_repository", return_value=evidence),
-        bind_supervised_command_execution(RecordingSupervisor(), boundary),  # type: ignore[arg-type]
+        bind_retained_local_workspace(boundary.binding, is_noedit=True),
+        bind_local_execution_boundary(boundary.binding, backend_type="codex", editable=False) as current_boundary,
+        bind_supervised_command_execution(RecordingSupervisor(), current_boundary),  # type: ignore[arg-type]
     ):
         result = CommandExecutor.run_command(
-            ["codex", "exec", "--output-last-message", str(destination), "-"],
+            ["codex", "--sandbox", "read-only", "exec", "--output-last-message", str(destination), "-"],
             cwd=str(boundary.binding.workspace),
             env=environment,
         )
@@ -673,3 +678,38 @@ def test_retained_continuation_policy_violation_blocks_caller_handoff(tmp_path: 
 
     assert manager._last_continue_session_resumed is False
     assert (repository / "tracked.txt").read_text() == "initial\n"
+
+
+@pytest.mark.parametrize("failure", ["policy", "owner"])
+def test_codex_supervised_setup_failure_never_starts_provider(tmp_path: Path, failure: str, _use_real_commands) -> None:
+    from src.auto_coder.filesystem_confinement import LandlockFilesystemPolicy
+    from src.auto_coder.invocation_process_supervisor import CgroupV2Owner, InvocationProcessSupervisor
+    from tests.utils.supervised_local import ProcessGroupOwner
+
+    binding = _binding(tmp_path)
+    marker = tmp_path / "provider-started"
+    executable = tmp_path / "codex"
+    executable.write_text(f"#!/bin/sh\nprintf started > '{marker}'\n")
+    executable.chmod(0o755)
+    owner = CgroupV2Owner(root=tmp_path / "not-cgroupfs", worker_uid=65532, worker_gid=65532) if failure == "owner" else ProcessGroupOwner()
+    supervisor = InvocationProcessSupervisor(
+        owner=owner,  # type: ignore[arg-type]
+        filesystem_policy_factory=lambda: LandlockFilesystemPolicy(read_visibility=(tmp_path / "missing-policy-input",)),
+    )
+    with (
+        patch(
+            "src.auto_coder.repository_readiness.verify_worker_repository",
+            return_value=SimpleNamespace(worker_uid=65532, worker_gid=65532, root=binding.workspace, git_dir=binding.workspace / ".git", common_dir=binding.workspace / ".git", head="a" * 40, readable_regular_files=1, tracked_contents_checksum="checksum"),
+        ),
+        bind_retained_local_workspace(binding, is_noedit=True),
+        bind_local_execution_boundary(binding, backend_type="codex", editable=False) as boundary,
+        bind_supervised_command_execution(supervisor, boundary),
+    ):
+        result = CommandExecutor.run_command(
+            [str(executable), "--sandbox", "read-only", "exec", "-"],
+            env={"PATH": "/bin", "HOME": str(tmp_path), "AUTO_CODER_RUNTIME_ROOT": str(tmp_path)},
+        )
+    assert result.success is False
+    assert not marker.exists()
+    assert "visible runtime input is unavailable" in result.stderr if failure == "policy" else "delegated cgroup lacks cgroup.procs" in result.stderr
+    assert boundary.evidence().backend_outcome is BackendOutcome.UNKNOWN
