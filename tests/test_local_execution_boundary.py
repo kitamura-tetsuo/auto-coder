@@ -500,12 +500,11 @@ def test_successful_edit_session_is_refused_after_its_private_root_is_released(t
     token = bind_command_execution_cwd(str(repository))
     try:
         assert manager._run_llm_cli("first") == "fresh result"
-        with pytest.raises(LocalContinuationError, match="implicit last-session"):
-            manager._run_llm_cli("second")
+        assert manager._run_llm_cli("second") == "fresh result"
     finally:
         reset_command_execution_cwd(token)
 
-    assert client.fresh_calls == 1
+    assert client.fresh_calls == 2
     assert client.continued_calls == 0
     assert (repository / "result.txt").read_text() == "accepted result\n"
 

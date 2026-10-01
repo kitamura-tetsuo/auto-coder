@@ -8,12 +8,13 @@
       provider_manager: "BackendProviderManager is shared across backend manager instances and tracks provider rotation state"
       deprecated_names: "get_message_backend_manager(), run_llm_message_prompt(), get_message_backend_and_model() are deprecated - use get_noedit_backend_manager(), run_llm_noedit_prompt(), get_noedit_backend_and_model() instead"
   session_resume:
-      description: "Persist and reuse backend session identifiers so supported backends can resume previous conversations."
+      description: "Persist backend session identifiers while keeping fresh local execution distinct from explicit continuation."
       prerequisites:
         - "Backend configuration includes options_for_resume with a [sessionId] placeholder that matches the backend CLI flag"
       behavior:
         - "Captures session IDs from backend clients after each execution and persists them to ~/.auto-coder/backend_session_state.json"
-        - "Automatically injects configured resume options when the same backend runs consecutively and a session ID is available"
+        - "Automatically selects a remembered session only for cloud backend types (claude-routine, codex-cloud, and jules) when the same configured alias runs consecutively"
+        - "Ordinary calls to local backend types always start fresh, regardless of remembered session metadata; local reuse is available only through explicit generation-authorized continuation"
         - "Clears persisted session data when rotating to a different backend to avoid cross-backend leakage"
       configuration_file: "~/.auto-coder/llm_config.toml"
       persistence_file: "~/.auto-coder/backend_session_state.json"

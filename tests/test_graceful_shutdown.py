@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import yaml
@@ -18,7 +18,6 @@ from auto_coder.codex_cloud_client import CodexSubmissionOutcome, CodexSubmissio
 from auto_coder.entity_invalidation import EntityIdentity
 from auto_coder.exceptions import AutoCoderUsageLimitError
 from auto_coder.issue_processor import _apply_issue_actions_directly, _process_issue_claude_routine_mode, _process_issue_codex_cloud_mode, _process_issue_jules_mode
-from auto_coder.local_session_continuation import LocalContinuationError
 from auto_coder.pr_processor import _apply_github_actions_fix, _apply_local_test_fix, _send_codex_cloud_error_feedback, _send_jules_error_feedback
 from auto_coder.shutdown_context import new_work_allowed
 from auto_coder.utils import CommandExecutor
@@ -638,7 +637,7 @@ def test_local_issue_backend_fallback_is_not_started_during_drain(monkeypatch, t
     second._run_llm_cli.assert_not_called()
 
 
-def test_implicit_session_is_refused_before_provider_or_fresh_fallback(monkeypatch, tmp_path):
+def test_remembered_local_session_does_not_prevent_fresh_provider_call(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
     client = MagicMock(model_name="test-model")
@@ -656,11 +655,13 @@ def test_implicit_session_is_refused_before_provider_or_fresh_fallback(monkeypat
 
     assert manager._run_llm_cli("initial implementation") == "initial result"
 
-    with pytest.raises(LocalContinuationError, match="implicit last-session"):
-        manager._run_llm_cli("continued implementation")
+    assert manager._run_llm_cli("continued implementation") == "initial result"
 
     client.continue_session.assert_not_called()
-    client._run_llm_cli.assert_called_once_with("initial implementation", is_noedit=False)
+    assert client._run_llm_cli.call_args_list == [
+        call("initial implementation", is_noedit=False),
+        call("continued implementation", is_noedit=False),
+    ]
 
 
 def test_local_test_repair_rechecks_drain_after_context_acquisition(monkeypatch, tmp_path):

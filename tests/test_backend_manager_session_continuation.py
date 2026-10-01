@@ -1,5 +1,6 @@
 """Regression tests for explicit and implementation session continuation."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,20 +23,22 @@ class SessionClient:
 
     def __init__(self, fresh_session_id: str | None = None) -> None:
         self.model_name = "test-model"
-        self.session_id = fresh_session_id
+        self.session_id: str | None = None
+        self.next_fresh_session_id = fresh_session_id
         self.fresh_prompts: list[str] = []
         self.continued: list[tuple[str, str, bool]] = []
         self.continue_error: Exception | None = None
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         self.fresh_prompts.append(prompt)
+        self.session_id = self.next_fresh_session_id
         return "fresh response"
 
     def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
         self.continued.append((session_id, prompt, is_noedit))
+        self.session_id = session_id
         if self.continue_error:
             raise self.continue_error
-        self.session_id = session_id
         return "continued response"
 
     def get_last_session_id(self) -> str | None:
@@ -57,17 +60,17 @@ def _manager(tmp_path: Path, clients: dict[str, SessionClient], automatic_sessio
         )
 
 
-def test_consecutive_implementation_prompt_refuses_implicit_last_session_without_fresh_task(tmp_path):
+def test_consecutive_local_implementation_prompts_are_fresh(tmp_path):
     client = SessionClient(fresh_session_id="implementation-session")
     manager = _manager(tmp_path, {"claude": client})
 
     assert manager._run_llm_cli("first") == "fresh response"
-    with pytest.raises(LocalContinuationError, match="implicit last-session"):
-        manager._run_llm_cli("second")
+    client.next_fresh_session_id = "second-session"
+    assert manager._run_llm_cli("second") == "fresh response"
 
-    assert client.fresh_prompts == ["first"]
+    assert client.fresh_prompts == ["first", "second"]
     assert client.continued == []
-    assert manager._last_session_id == "implementation-session"
+    assert manager._last_session_id == "second-session"
 
 
 def test_incompatible_explicit_session_fails_without_fresh_submission(tmp_path):
@@ -84,48 +87,108 @@ def test_incompatible_explicit_session_fails_without_fresh_submission(tmp_path):
     assert manager._last_session_id == "stale-session"
 
 
-def test_stale_implicit_session_is_not_cleared_or_replaced(tmp_path):
-    client = SessionClient(fresh_session_id="stale-session")
+def test_stale_local_session_selects_fresh_execution(tmp_path):
+    client = SessionClient(fresh_session_id="new-session")
     client.continue_error = RuntimeError("session not found")
     manager = _manager(tmp_path, {"claude": client})
     manager._last_session_id = "stale-session"
 
-    with pytest.raises(LocalContinuationError, match="implicit last-session"):
-        manager._run_llm_cli("implementation context")
+    assert manager._run_llm_cli("implementation context") == "fresh response"
 
-    assert client.fresh_prompts == []
+    assert client.fresh_prompts == ["implementation context"]
     assert client.continued == []
-    assert client.get_last_session_id() == "stale-session"
-    assert manager._last_session_id == "stale-session"
+    assert client.get_last_session_id() == "new-session"
+    assert manager._last_session_id == "new-session"
 
 
-def test_implicit_resume_is_refused_before_retryable_provider_call(tmp_path):
+def test_restored_local_session_is_history_only_for_first_fresh_call(tmp_path):
+    state_dir = tmp_path / ".auto-coder"
+    state_dir.mkdir()
+    (state_dir / "backend_session_state.json").write_text(
+        json.dumps(
+            {
+                "last_backend": "renamed-local",
+                "last_session_id": "restored-session",
+                "last_used_timestamp": 1.0,
+            }
+        )
+    )
+    client = SessionClient(fresh_session_id="current-session")
+    client.config_backend = type("Config", (), {"backend_type": "muse"})()
+    manager = _manager(tmp_path, {"renamed-local": client})
+
+    assert manager.run_prompt("current task") == "fresh response"
+
+    assert client.fresh_prompts == ["current task"]
+    assert client.continued == []
+    assert manager.get_last_session_id() == "current-session"
+
+
+def test_fresh_local_call_does_not_report_previous_identity_when_provider_returns_none(tmp_path):
+    client = SessionClient()
+    client.config_backend = type("Config", (), {"backend_type": "muse"})()
+    manager = _manager(tmp_path, {"renamed-local": client})
+    manager._last_backend = "renamed-local"
+    manager._last_session_id = "previous-session"
+    client.session_id = "previous-session"
+
+    assert manager.run_prompt("current task") == "fresh response"
+
+    assert manager.get_last_session_id() is None
+    assert client.continued == []
+
+
+def test_local_history_does_not_select_retryable_continuation(tmp_path):
     client = SessionClient(fresh_session_id="persisted-session")
     client.continue_error = AutoCoderRetryableBackendError("Codex transport reconnects exhausted")
     manager = _manager(tmp_path, {"codex": client})
     manager._last_backend = "codex"
     manager._last_session_id = "persisted-session"
 
-    with pytest.raises(LocalContinuationError, match="implicit last-session"):
-        manager._run_llm_cli("implementation context")
+    assert manager._run_llm_cli("implementation context") == "fresh response"
 
     assert client.continued == []
-    assert client.fresh_prompts == []
+    assert client.fresh_prompts == ["implementation context"]
 
 
-def test_implicit_resume_is_refused_before_writer_uncertain_provider_call(tmp_path):
-    client = SessionClient(fresh_session_id="persisted-session")
+def test_local_history_does_not_select_writer_uncertain_continuation(tmp_path):
+    client = SessionClient(fresh_session_id="new-session")
     client.continue_error = LocalWriterSettlementError("writer settlement is uncertain")
     manager = _manager(tmp_path, {"opencode": client})
     manager._last_backend = "opencode"
     manager._last_session_id = "persisted-session"
 
-    with pytest.raises(LocalContinuationError, match="implicit last-session"):
-        manager._run_llm_cli("implementation context")
+    assert manager._run_llm_cli("implementation context") == "fresh response"
 
     assert client.continued == []
+    assert client.fresh_prompts == ["implementation context"]
+    assert manager._last_session_id == "new-session"
+
+
+@pytest.mark.parametrize("backend_type", ["claude-routine", "codex-cloud", "jules"])
+def test_cloud_alias_still_automatically_resumes_matching_history(tmp_path, backend_type):
+    client = SessionClient(fresh_session_id="cloud-session")
+    client.config_backend = type("Config", (), {"backend_type": backend_type})()
+    manager = _manager(tmp_path, {"renamed-cloud": client})
+    manager._last_backend = "renamed-cloud"
+    manager._last_session_id = "cloud-session"
+
+    assert manager._run_llm_cli("continue cloud task") == "continued response"
+
     assert client.fresh_prompts == []
-    assert manager._last_session_id == "persisted-session"
+    assert client.continued == [("cloud-session", "continue cloud task", False)]
+
+
+def test_ordinary_local_call_resets_previous_continuity_indicator(tmp_path):
+    client = SessionClient(fresh_session_id="old-session")
+    client.config_backend = type("Config", (), {"backend_type": "opencode"})()
+    manager = _manager(tmp_path, {"renamed-local": client})
+    manager._last_continue_session_resumed = True
+
+    assert manager.run_prompt("fresh task") == "fresh response"
+
+    assert manager._last_continue_session_resumed is False
+    assert client.continued == []
 
 
 def test_uncertain_writer_during_explicit_resume_does_not_launch_replacement(tmp_path):
@@ -226,6 +289,7 @@ def test_unreadable_opencode_preflight_does_not_start_fresh_or_clear_session(tmp
 
         def continue_session(self, session_id: str, prompt: str, is_noedit: bool = False) -> str:
             self.continued.append((session_id, prompt, is_noedit))
+            self.session_id = session_id
             OpenCodeClient._verify_resumable_session_in_current_workspace(self, session_id=session_id, cwd=tmp_path, env={})
             raise AssertionError("continued task must not be submitted")
 
