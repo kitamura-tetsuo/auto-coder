@@ -1,6 +1,8 @@
 """Tests for delegating merge-conflict repair to originating cloud sessions."""
 
 import json
+import threading
+from contextlib import nullcontext
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -9,6 +11,8 @@ from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.claude_usage_checker import ClaudeStrictUsageObservation
 from src.auto_coder.cloud_run import CloudRun
 from src.auto_coder.cloud_task_client_base import CloudTaskClientBase
+from src.auto_coder.codex_wham_client import FollowUpDeliveryOutcome
+from src.auto_coder.execution_trace import TraceCollector
 from src.auto_coder.issue_processor import _process_issue_claude_routine_mode
 from src.auto_coder.llm_backend_config import BackendConfig
 from src.auto_coder.pr_processor import (
@@ -20,6 +24,7 @@ from src.auto_coder.pr_processor import (
     _merge_pr,
     _record_cloud_conflict_deliveries,
     _resolve_cloud_conflict_origin,
+    _start_mergeability_remediation,
     _update_with_base_branch,
 )
 from src.auto_coder.util.gh_cache import ReviewThread, ReviewThreadComment
@@ -415,6 +420,139 @@ def test_delivery_is_reserved_before_followup_and_never_redelivered(tmp_path) ->
     assert second
     assert len(client.messages) == 1
     assert record.call_count == 2
+
+
+class InterruptedJournalClient(FollowupClient):
+    """Expose typed provider receipts and interrupt before the first POST."""
+
+    def __init__(self):
+        super().__init__()
+        self.interrupt = True
+        self.delivery = FollowUpDeliveryOutcome.NOT_DELIVERED
+        self.identities = []
+
+    def get_followup_delivery(self, task_id, logical_identity):
+        self.identities.append((task_id, logical_identity))
+        return self.delivery
+
+    def send_followup(self, task_id, message, logical_identities=()):
+        assert len(logical_identities) == 1
+        if self.interrupt:
+            self.interrupt = False
+            raise KeyboardInterrupt()
+        self.delivery = FollowUpDeliveryOutcome.DELIVERED
+        return super().send_followup(task_id, message)
+
+
+@pytest.mark.parametrize("delivery", list(FollowUpDeliveryOutcome))
+def test_interrupted_conflict_reservation_reconciles_typed_provider_receipt(tmp_path, delivery):
+    client = InterruptedJournalClient()
+    state_path = tmp_path / "repairs.json"
+    with (
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
+        pending = json.loads(state_path.read_text())
+        record = next(iter(pending.values()))
+        assert record["status"] == "pending"
+        assert record["logical_identity"].startswith("merge-conflict-repair:")
+        assert client.messages == []
+        client.delivery = delivery
+        result = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
+        final = next(iter(json.loads(state_path.read_text()).values()))
+
+    assert client.identities == [("task_existing", record["logical_identity"])]
+    if delivery is FollowUpDeliveryOutcome.INDETERMINATE:
+        assert not result
+        assert "not resending" in result.reason
+        assert final == record
+        assert client.messages == []
+    else:
+        assert result
+        assert final["status"] == "confirmed"
+        assert final["logical_identity"] == record["logical_identity"]
+        assert len(client.messages) == (1 if delivery is FollowUpDeliveryOutcome.NOT_DELIVERED else 0)
+
+
+def test_active_conflict_sender_prevents_reconciliation_and_duplicate_transport(tmp_path):
+    client = FollowupClient()
+    state_path = tmp_path / "repairs.json"
+    entered = threading.Event()
+    release = threading.Event()
+    results = []
+    original_send = client.send_followup
+
+    def send(task_id, message):
+        entered.set()
+        assert release.wait(timeout=5)
+        return original_send(task_id, message)
+
+    client.send_followup = send
+    with (
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
+    ):
+        thread = threading.Thread(target=lambda: results.append(_delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())))
+        thread.start()
+        try:
+            assert entered.wait(timeout=5)
+            second = _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
+            assert not second
+            assert "coordination is unavailable" in second.reason
+            assert next(iter(json.loads(state_path.read_text()).values()))["status"] == "pending"
+        finally:
+            release.set()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert len(results) == 1 and results[0]
+    assert len(client.messages) == 1
+
+
+@pytest.mark.parametrize("delivery", list(FollowUpDeliveryOutcome))
+def test_reconciled_conflict_delivery_emits_truthful_remediation_stage(tmp_path, delivery):
+    client = InterruptedJournalClient()
+    state_path = tmp_path / "repairs.json"
+    collector = TraceCollector()
+    api = MagicMock()
+    api.pulls.get.return_value = pr_data()
+    with (
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=(client, "task_existing")),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=state_path),
+        patch("src.auto_coder.pr_processor.get_trace_collector", return_value=collector),
+        patch("src.auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+        patch("src.auto_coder.pr_processor.GitHubClient.get_instance"),
+        patch("src.auto_coder.pr_processor.get_ghapi_client", return_value=api),
+        patch("src.auto_coder.pr_processor._checkout_pr_branch", return_value=True),
+        patch("src.auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
+        patch("src.auto_coder.pr_processor._is_local_llm_pr", return_value=False),
+        patch("src.auto_coder.pr_processor.cmd") as commands,
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            _delegate_cloud_merge_conflict_repair_result("owner/repo", pr_data())
+        client.delivery = delivery
+        commands.run_command.side_effect = [
+            CommandResult(True, "", "", 0),
+            CommandResult(True, "3\n", "", 0),
+            CommandResult(False, "CONFLICT", "", 1),
+            CommandResult(True, "", "", 0),
+        ]
+        with collector.start_execution("owner/repo", "pr", 1589, origin="explicit-only") as execution:
+            actions = _start_mergeability_remediation(1589, "dirty", "owner/repo")
+
+    events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=1589).events if event.stage_id == "pr.mergeability-remediation" and event.execution_id == execution.scope.execution_id]
+    assert len(events) == 1
+    event = events[0]
+    assert event.facts["state"] == "dirty"
+    if delivery is FollowUpDeliveryOutcome.INDETERMINATE:
+        assert event.outcome == "deferred"
+        assert event.facts["result"] == "unconfirmed"
+        assert not any("Delegated merge-conflict repair" in action for action in actions)
+    else:
+        assert event.outcome == "accepted_handoff"
+        assert event.facts["result"] == "delegated"
+        assert any("Delegated merge-conflict repair" in action for action in actions)
 
 
 def test_reservation_failure_prevents_non_idempotent_delivery(tmp_path) -> None:

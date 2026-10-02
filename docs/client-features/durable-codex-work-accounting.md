@@ -5,6 +5,12 @@ of Codex operations. Each operation is identified independently of its provider
 task ID and retains its source request, causal baseline, execution, publication,
 tracking, and settlement evidence. Mutations share the implementation owner's
 cross-process serialization and atomically advance the slot activity revision.
+Owner and store locks use a canonical, process-local coordination registry shared
+by repository instances. Reentry on the owning thread retains the outer file
+lock, including when a Codex client constructs a fresh repository inside the
+engine's owner lock. Other threads and processes remain excluded. Acquisition
+waits at most 30 seconds and raises `ImplementationSlotUnavailable` before
+transport when the lock cannot be acquired; it never discards ownership to send.
 Acceptance is a monotonic fact: later ambiguous delivery cannot reclassify
 accepted work as definite non-delivery. Settlement evidence must match the
 operation's source request, task when bound, and causal baseline when present.

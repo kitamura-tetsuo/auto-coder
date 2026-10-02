@@ -2,11 +2,81 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import re
+import threading
+import time
+import weakref
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Iterator, Optional
+
+
+class LockAcquisitionTimeout(TimeoutError):
+    """A runtime lock could not be acquired within its bounded wait."""
+
+
+@dataclass
+class _FileLockState:
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    depth: int = 0
+
+
+_file_locks: weakref.WeakValueDictionary[tuple[int, str], _FileLockState] = weakref.WeakValueDictionary()
+_file_locks_guard = threading.Lock()
+
+
+@contextmanager
+def file_lock(path: Path, *, opener: Optional[Callable[[], int]] = None, timeout: float = 30.0, reentrant: bool = True) -> Iterator[None]:
+    """Serialize a canonical file across processes, instances, and threads.
+
+    Reentry on the same thread shares the outer file descriptor. Separate
+    descriptors for the same inode would otherwise deadlock even in one process.
+    The PID in the registry key keeps forked children out of inherited reentry.
+    """
+    key = (os.getpid(), str(path.expanduser().resolve()))
+    with _file_locks_guard:
+        state = _file_locks.get(key)
+        if state is None:
+            state = _FileLockState()
+            _file_locks[key] = state
+    deadline = time.monotonic() + timeout
+    if not state.lock.acquire(timeout=max(0.0, timeout)):
+        raise LockAcquisitionTimeout(f"Timed out acquiring runtime lock '{path}'")
+    try:
+        if state.depth:
+            if not reentrant:
+                raise LockAcquisitionTimeout(f"Runtime lock '{path}' already has an active sender")
+            state.depth += 1
+            try:
+                yield
+            finally:
+                state.depth -= 1
+            return
+        fd = opener() if opener is not None else os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o660)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise LockAcquisitionTimeout(f"Timed out acquiring runtime lock '{path}'")
+                    time.sleep(min(0.05, remaining))
+            state.depth = 1
+            try:
+                yield
+            finally:
+                state.depth = 0
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+    finally:
+        state.lock.release()
 
 
 def runtime_root() -> Path:
