@@ -9,11 +9,13 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from enum import Enum
-from typing import cast
+from typing import Iterator, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -96,6 +98,41 @@ class GitHubRequestError(RuntimeError):
 
 class GitHubRequestRefused(GitHubRequestError):
     """An admission decision made before the transport sent any bytes."""
+
+
+class GitHubReadCancelled(RuntimeError):
+    """An unsent read whose caller can now use local observation evidence."""
+
+
+_read_cancellation: ContextVar[Callable[[GitHubRequestContext], bool] | None] = ContextVar("github_read_cancellation", default=None)
+
+
+@contextmanager
+def cancel_github_reads_when(predicate: Callable[[GitHubRequestContext], bool]) -> Iterator[None]:
+    """Scope cancellation to one observation operation, including its thread."""
+    token = _read_cancellation.set(predicate)
+    try:
+        yield
+    finally:
+        _read_cancellation.reset(token)
+
+
+def github_read_cancellation_requested(context: GitHubRequestContext) -> bool:
+    predicate = _read_cancellation.get()
+    if context.kind != "read" or predicate is None:
+        return False
+    try:
+        return predicate(context)
+    except Exception:
+        # Unavailable advisory evidence cannot replace an authoritative read
+        # or poison the shared governor's durable coordination state.
+        logger.debug("Local read cancellation evidence unavailable; retaining the authoritative read")
+        return False
+
+
+def is_issue_resource_read(context: GitHubRequestContext, repository: str, number: int) -> bool:
+    """Exclude list, relationship, comment, PR, and mutation requests."""
+    return context.method == "GET" and context.repository == repository and context.item == str(number) and context.endpoint_template == f"/repos/{repository}/issues/{{id}}"
 
 
 AdmissionHook = Callable[[GitHubRequestContext], bool | None]

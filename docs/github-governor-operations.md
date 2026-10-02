@@ -49,6 +49,14 @@ or `terminated_waiter`). Keep `AUTO_CODER_FILE_LOG_LEVEL=DEBUG` when investigati
 contention. A queue wait that exhausts its budget reports `wait_exhausted` and a
 typed definitely-not-sent deferral; it does not establish a hung network request.
 
+Eligible local observation replacement reports `cancelled` with reason
+`local_observation_available`, followed by the unsent ticket's release when one
+was registered. This is not a sent-request outcome. In-flight capacity checks use
+a 0.5-second fallback; completion and local webhook intake may wake them sooner.
+Repeated polls neither change ticket order/deadline nor increment its sequence.
+Timeout diagnostics contain measured monotonic `waited_seconds`; receiving real
+cooldown evidence partway through a wait does not emit `wait_exhausted`.
+
 ## Upgrading a version-1 or version-2 store
 
 Stop **all** older controllers sharing the runtime before upgrading to version 3.

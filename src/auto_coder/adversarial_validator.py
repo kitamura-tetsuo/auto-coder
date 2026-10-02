@@ -15,6 +15,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Sequence
 
+from .accepted_finding_bridge import (
+    FINDING_ROOT_MARKER,
+    AcceptedFindingBridge,
+    AcceptedFindingProjection,
+    BridgeDiagnostic,
+    ObservedRoot,
+    OrdinaryDisposition,
+    ProjectionTarget,
+    RootObservation,
+    known_gap_from_record,
+    render_accepted_findings,
+)
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager, run_llm_prompt
 from .ci_observation import CIConclusion, ObservationAvailability, WorkflowObservation
@@ -452,6 +464,7 @@ class AdversarialValidationResult:
     attempt_sequence: int = 0
     reviewer_session_checkpoint: Optional[ReviewerSession] = field(default=None, repr=False)
     reviewer_session_registry: Optional[ReviewerSessionRegistry] = field(default=None, repr=False)
+    accepted_finding_projection: Optional[AcceptedFindingProjection] = field(default=None, repr=False)
     # Only set for result="EXHAUSTED": the earliest epoch time at which an
     # automatic retry may run (REQ-006). Published durably in the comment
     # marker so a deferred retry survives restart without local state (REQ-007).
@@ -522,6 +535,9 @@ class AdversarialValidationContext:
     unresolvable_file_count: int = 0
     file_change_identities: dict[str, str] = field(default_factory=dict)
     requirement_manifest_identity: str = ""
+    # Ordinary representations of accepted Strong findings are anchored by their
+    # existing native root, not by this head's changed-file set.
+    accepted_known_gap_ids: frozenset[str] = frozenset()
 
     @property
     def has_complete_file_coverage(self) -> bool:
@@ -2274,6 +2290,7 @@ def parse_adversarial_validation_response(
                             "pr_number": closure_input.pr_number,
                             "open_epoch": closure_input.open_epoch,
                             "attempt_sequence": closure_input.attempt_sequence,
+                            "audited_head_sha": closure_input.audited_head_sha,
                         }
                         contradiction = next(
                             (key for key, value in identities.items() if key in bound_assessment and bound_assessment[key] != value),
@@ -2438,8 +2455,15 @@ def _reconcile_test_oracle_gap_lifecycle(
     stored_session: Optional[ReviewerSession],
     head_sha: str,
     addressed_gap_evidence: Optional[dict[str, str]] = None,
+    accepted_open_gap_ids: frozenset[str] = frozenset(),
 ) -> AdversarialValidationResult:
-    """Enforce bounded initial discovery and deterministic rereview convergence."""
+    """Enforce bounded initial discovery and deterministic rereview convergence.
+
+    ``accepted_open_gap_ids`` names representations of accepted, still-unresolved
+    Strong findings. Their closure is owned by the review-cycle lifecycle, so a
+    model RESOLVED/INVALID entry, a paraphrase or a disposition can never close
+    them here, and their original scope is never rewritten.
+    """
     if stored_session is None:
         for gap in result.test_oracle_gaps:
             gap.discovery_phase = "INITIAL"
@@ -2460,6 +2484,12 @@ def _reconcile_test_oracle_gap_lifecycle(
 
     for gap_id, prior in prior_by_id.items():
         current = current_by_id.pop(gap_id, None)
+        if gap_id in accepted_open_gap_ids:
+            prior.status = "OPEN"
+            prior.resolution_evidence = ""
+            prior.resolution_head_sha = ""
+            reconciled.append(prior)
+            continue
         accepted_head = prior.resolution_head_sha or stored_session.last_head_sha
         same_head = accepted_head == head_sha
         current_matches = current is not None and _same_test_oracle_gap_scope(prior, current)
@@ -3400,7 +3430,7 @@ def _apply_coverage_and_verdict_precedence(
     unknown_finding_requirement_ids = sorted(finding_requirement_ids - expected_requirement_ids)
     gap_requirement_ids = {gap.requirement_id for gap in result.test_oracle_gaps}
     unknown_gap_requirement_ids = sorted(gap_requirement_ids - expected_requirement_ids)
-    invalid_gap_anchors = sorted({gap.anchor_path for gap in result.open_test_oracle_gaps if gap.anchor_path not in context.all_changed_files})
+    invalid_gap_anchors = sorted({gap.anchor_path for gap in result.open_test_oracle_gaps if gap.anchor_path not in context.all_changed_files and gap.gap_id not in context.accepted_known_gap_ids})
 
     unavailable_requirement_ids = {requirement_id for entry in result.evidence_recovery if entry.status == "UNAVAILABLE" and entry.path in remaining_unverified_files for requirement_id in entry.requirement_ids}
     incompatible_verified_ids = sorted(requirement_id for requirement_id in unavailable_requirement_ids if requirement_id in coverage_by_id and coverage_by_id[requirement_id].status in {"VERIFIED", "IRRELEVANT"})
@@ -3571,6 +3601,78 @@ def _closure_prompt_extension(closure_input: Optional[ReviewExecutionInput]) -> 
     return "\n\nORDINARY STRONG-FINDING CLOSURE EXTENSION (non-authorizing):\n" + build_review_prompt(closure_input) + "\nReturn that role's semantic fields in a top-level `closure_assessment` object " "inside the ordinary validation JSON. The ordinary result remains independent."
 
 
+def _default_accepted_finding_bridge(repo_name: str) -> AcceptedFindingBridge:
+    from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
+    from .pr_review_cycle import PrReviewCycleRepository
+
+    return AcceptedFindingBridge(PrReviewCycleRepository(repo_name), CanonicalPRBlockerLedger())
+
+
+def _observed_roots_from_claimed_threads(claimed_review_threads: Sequence["ClaimedReviewThread"]) -> RootObservation:
+    """Roots of claimed threads were already filtered to the eligible reviewer identity."""
+    roots = tuple(ObservedRoot(comment_id=thread.root_comment_database_id, body=thread.original_finding, authenticated=True, thread_id=thread.thread_id) for thread in claimed_review_threads if thread.root_comment_database_id is not None)
+    return RootObservation(roots=roots, complete=False)
+
+
+def _project_accepted_findings(
+    bridge: AcceptedFindingBridge,
+    target: ProjectionTarget,
+    claimed_review_threads: Sequence["ClaimedReviewThread"],
+    dispositions: Sequence[OrdinaryDisposition] = (),
+) -> AcceptedFindingProjection:
+    try:
+        return bridge.project(target, _observed_roots_from_claimed_threads(claimed_review_threads), dispositions)
+    except Exception as exc:  # the bridge must never turn a store fault into "no findings"
+        logger.warning(f"Accepted-finding projection failed for PR #{target.pr_number}: {exc}")
+        return AcceptedFindingProjection(target=target, complete=False, diagnostics=(BridgeDiagnostic("projection_failed", "", str(exc)),))
+
+
+def _lifecycle_session_with_accepted_gaps(
+    lifecycle_session: Optional[ReviewerSession],
+    stored_session: Optional[ReviewerSession],
+    accepted_gaps: Sequence[TestOracleGap],
+    repo_name: str,
+    pr_number: int,
+    fallback_head_sha: str,
+) -> Optional[ReviewerSession]:
+    """Add accepted-finding representations without mutating registry-owned state."""
+    if not accepted_gaps:
+        return lifecycle_session
+    base = lifecycle_session or stored_session or ReviewerSession(repository=repo_name, pr_number=pr_number)
+    known = {gap.gap_id for gap in base.test_oracle_gaps}
+    merged = [replace(gap) for gap in base.test_oracle_gaps] + [gap for gap in accepted_gaps if gap.gap_id not in known]
+    return replace(base, last_head_sha=base.last_head_sha or fallback_head_sha, test_oracle_gaps=merged)
+
+
+def _accepted_finding_dispositions(
+    result: AdversarialValidationResult,
+    claimed_review_threads: Sequence["ClaimedReviewThread"],
+    projection: AcceptedFindingProjection,
+    head_sha: str,
+) -> List[OrdinaryDisposition]:
+    """Ordinary dispositions addressed to roots that carry (or are associated with) an accepted finding."""
+    known_roots = {root for record in projection.records for root in record.root_comment_ids}
+    threads = {thread.thread_id: thread for thread in claimed_review_threads}
+    selected: List[OrdinaryDisposition] = []
+    for disposition in result.thread_dispositions:
+        thread = threads.get(disposition.thread_id)
+        if thread is None or thread.root_comment_database_id is None:
+            continue
+        if thread.root_comment_database_id not in known_roots and FINDING_ROOT_MARKER.search(thread.original_finding) is None:
+            continue
+        selected.append(
+            OrdinaryDisposition(
+                status=disposition.status,
+                rationale=disposition.rationale,
+                evidence=disposition.evidence,
+                head_sha=head_sha,
+                root_comment_id=thread.root_comment_database_id,
+                thread_id=thread.thread_id,
+            )
+        )
+    return selected
+
+
 def run_adversarial_validation(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -3585,6 +3687,7 @@ def run_adversarial_validation(
     ci_status: Optional["GitHubActionsStatusResult"] = None,
     refresh_ci_status: Optional[Callable[[], "GitHubActionsStatusResult"]] = None,
     closure_input: Optional[ReviewExecutionInput] = None,
+    accepted_finding_bridge: Optional[AcceptedFindingBridge] = None,
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
 
@@ -3738,6 +3841,15 @@ def run_adversarial_validation(
             coverage_prefix = "INCOMPLETE: PASS is forbidden. Partial/unavailable file evidence after equivalent-evidence reuse:\n"
             coverage_status = coverage_prefix + _format_path_manifest(unresolved_paths, "(Unverified path metadata unavailable)")
     lifecycle_session = stored_session if stored_session is not None and stored_session.last_head_sha else None
+    # Accepted Strong findings are known findings independently of reviewer-session
+    # identity, so they join the lifecycle snapshot before prompt assembly.
+    bridge = accepted_finding_bridge or _default_accepted_finding_bridge(repo_name)
+    projection_target = ProjectionTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha, base_sha=str((pr_data.get("base") or {}).get("sha") or ""))
+    accepted_projection = _project_accepted_findings(bridge, projection_target, claimed_review_threads)
+    accepted_known_gaps = [known_gap_from_record(record) for record in accepted_projection.known_gap_records]
+    accepted_gap_ids = frozenset(gap.gap_id for gap in accepted_known_gaps)
+    context.accepted_known_gap_ids = accepted_gap_ids
+    lifecycle_session = _lifecycle_session_with_accepted_gaps(lifecycle_session, stored_session, accepted_known_gaps, repo_name, pr_number, accepted_projection.records[0].originating_head_sha if accepted_projection.records else "")
     if lifecycle_session is not None and can_continue_stored_session:
         review_policy = render_prompt(
             "pr.adversarial_validation_rereview",
@@ -3771,6 +3883,7 @@ def run_adversarial_validation(
         requirement_manifest=requirement_manifest,
         claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
         prior_test_oracle_gaps=prior_test_oracle_gaps,
+        accepted_strong_findings=render_accepted_findings(accepted_projection),
         ci_execution_evidence=format_ci_execution_evidence(ci_status),
         adjacent_exploration_budget=ADVERSARIAL_ADJACENT_EXPLORATION_BUDGET,
         evidence_recovery_budget=ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET,
@@ -3812,6 +3925,7 @@ def run_adversarial_validation(
             claimed_review_threads,
             effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else (),
         ),
+        accepted_gap_ids,
     )
     result = _complete_changed_file_evidence(
         result,
@@ -4025,6 +4139,7 @@ def run_adversarial_validation(
                             claimed_review_threads,
                             effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else (),
                         ),
+                        accepted_gap_ids,
                     )
                 result = _apply_coverage_and_verdict_precedence(result, context)
                 if initial_thread_dispositions and not result.thread_dispositions:
@@ -4073,6 +4188,7 @@ def run_adversarial_validation(
             )
 
     result = _apply_coverage_and_verdict_precedence(result, context)
+    result.accepted_finding_projection = _project_accepted_findings(bridge, projection_target, claimed_review_threads, _accepted_finding_dispositions(result, claimed_review_threads, accepted_projection, head_sha)) if accepted_projection.records else accepted_projection
 
     if was_resumed:
         persisted_session_id = provider_session_id if isinstance(provider_session_id, str) and provider_session_id else stored_session.session_id if stored_session else ""
@@ -4098,6 +4214,9 @@ def run_adversarial_validation(
         persist_proven_closure = has_proven_gap_closure and result.result in {"PASS", "NEEDS_FIX", "NEEDS_TESTS", "INCONCLUSIVE", "BLOCKED"}
         persisted_head_sha = head_sha if lifecycle_completed or persist_proven_closure else effective_lifecycle_session.last_head_sha if effective_lifecycle_session else ""
         persisted_gaps = result.test_oracle_gaps if lifecycle_completed or persist_proven_closure else effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else []
+        # Accepted-finding representations are re-derived from the owning stores on
+        # every read; persisting them in a reviewer session would fork their lifecycle.
+        persisted_gaps = [gap for gap in persisted_gaps if gap.gap_id not in accepted_gap_ids]
         checkpoint = ReviewerSession(
             repository=repo_name,
             pr_number=pr_number,

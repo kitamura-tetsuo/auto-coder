@@ -93,6 +93,35 @@ def test_invalid_closure_extension_preserves_valid_ordinary_result() -> None:
     assert result.closure_assessment_diagnostic == "Closure assessment contradicts controller-owned head_sha"
 
 
+def test_contradictory_audited_head_is_non_authorizing() -> None:
+    payload = _ordinary_payload()
+    assessment = payload["closure_assessment"]
+    assert isinstance(assessment, dict)
+    assessment["audited_head_sha"] = "f" * 40
+
+    result = parse_adversarial_validation_response(
+        json.dumps(payload),
+        closure_input=_closure_input(),
+        reviewer_provenance="codex/model",
+    )
+
+    assert result.result == "PASS"
+    assert result.closure_assessment is None
+    assert result.closure_assessment_diagnostic == "Closure assessment contradicts controller-owned audited_head_sha"
+
+
+def test_omitted_audited_head_is_bound_from_controller_context() -> None:
+    result = parse_adversarial_validation_response(
+        json.dumps(_ordinary_payload()),
+        closure_input=_closure_input(),
+        reviewer_provenance="codex/model",
+    )
+
+    assert result.closure_assessment is not None
+    assert result.closure_assessment.is_complete
+    assert result.closure_assessment.grants_closure_evidence
+
+
 def test_missing_or_inconclusive_assessment_never_grants_closure_evidence() -> None:
     missing = parse_adversarial_validation_response(
         json.dumps({"result": "PASS", "summary": "valid ordinary result", "findings": []}),

@@ -1357,3 +1357,132 @@ def test_aggregated_admission_rejects_invalid_live_timestamps(tmp_path, invalid_
             assert observer.execute("SELECT resolved, recovered FROM reservations").fetchall() == [(0, 0)]
     finally:
         governor.close()
+
+
+def test_waiting_polls_preserve_one_ticket_and_bounded_frequency(tmp_path):
+    clock = Clock()
+    polls = []
+    governor = GitHubRequestGovernor(store_path=tmp_path / "bounded-polls.sqlite3", monotonic=clock.monotonic, wall_time=clock.wall)
+    governor.admit(context(1))
+
+    def wait(seconds):
+        polls.append(seconds)
+        clock.advance(seconds)
+        if len(polls) == 4:
+            governor.observe(outcome(context(1)))
+
+    governor._waiter = wait
+    try:
+        assert governor.admit_blocking(context(2)) is True
+        assert polls == [0.5, 0.5, 0.5, 0.5]
+        with sqlite3.connect(governor.path) as observer:
+            assert observer.execute("SELECT seq FROM sqlite_sequence WHERE name='admission_waiters'").fetchone() == (1,)
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+        governor.observe(outcome(context(2)))
+    finally:
+        governor.close()
+
+
+def test_local_observation_cancels_unsent_read_without_charging_or_recovery(tmp_path):
+    from auto_coder.util.github_request_outcome import GitHubReadCancelled, cancel_github_reads_when
+
+    ready = threading.Event()
+    governor = GitHubRequestGovernor(store_path=tmp_path / "observed-read.sqlite3", waiter=lambda _seconds: ready.set())
+    governor.admit(context(1))
+    sends = []
+    try:
+        with github_http_client(subsystem="test", transport=httpx.MockTransport(lambda request: sends.append(request) or httpx.Response(200)), admission_hook=governor.admit_blocking, observation_hook=governor.observe) as client:
+            with cancel_github_reads_when(lambda _context: ready.is_set()):
+                with pytest.raises(GitHubReadCancelled, match="cancelled before sending"):
+                    client.get("https://api.github.com/repos/owner/repo/issues/2")
+        assert sends == []
+        with sqlite3.connect(governor.path) as observer:
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+            assert observer.execute("SELECT attempt_id,resolved,recovered FROM reservations").fetchall() == [("attempt-1", 0, 0)]
+            assert observer.execute("SELECT cooldown_until_utc FROM origin_state").fetchone() == (0.0,)
+        governor.observe(outcome(context(1)))
+        assert governor.admit_blocking(context(3)) is True
+        governor.observe(outcome(context(3)))
+    finally:
+        governor.close()
+
+
+def test_cancellation_scope_never_cancels_mutations_or_leaks(tmp_path):
+    from auto_coder.util.github_request_outcome import cancel_github_reads_when
+
+    governor = GitHubRequestGovernor(store_path=tmp_path / "mutation-scope.sqlite3")
+    try:
+        with cancel_github_reads_when(lambda _context: True):
+            assert governor.admit_blocking(context(1, "mutation")) is True
+            governor.observe(outcome(context(1, "mutation")))
+        assert governor.admit_blocking(context(2)) is True
+        governor.observe(outcome(context(2)))
+    finally:
+        governor.close()
+
+
+def test_cooldown_during_wait_does_not_report_budget_exhaustion(tmp_path, monkeypatch):
+    clock = Clock()
+    diagnostic_logger = MagicMock()
+    monkeypatch.setattr("auto_coder.github_request_governor.logger", diagnostic_logger)
+    governor = GitHubRequestGovernor(store_path=tmp_path / "cooldown-diagnostic.sqlite3", monotonic=clock.monotonic, wall_time=clock.wall)
+    governor.admit(context(1))
+
+    def wait(seconds):
+        clock.advance(seconds)
+        governor.observe(outcome(context(1), GitHubApiOutcome.SECONDARY_THROTTLED))
+
+    governor._waiter = wait
+    try:
+        with pytest.raises(GitHubRequestDeferred) as error:
+            governor.admit_blocking(context(2))
+        assert error.value.reason == "rate_limit_cooldown"
+        assert clock.monotonic_value == 100.5
+        assert diagnostic_logger.bind.return_value.warning.call_count == 0
+        with sqlite3.connect(governor.path) as observer:
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+    finally:
+        governor.close()
+
+
+def test_exhaustion_reports_measured_wait_including_admission_delay(tmp_path, monkeypatch):
+    clock = Clock()
+    diagnostic_logger = MagicMock()
+    monkeypatch.setattr("auto_coder.github_request_governor.logger", diagnostic_logger)
+    governor = GitHubRequestGovernor(store_path=tmp_path / "elapsed-diagnostic.sqlite3", monotonic=clock.monotonic, wall_time=clock.wall, wait_budget=1, waiter=lambda seconds: clock.advance(seconds + 0.25))
+    try:
+        governor.admit(context(1))
+        with pytest.raises(GitHubRequestDeferred):
+            governor.admit_blocking(context(2))
+        exhausted = [call.kwargs["github_governor"] for call in diagnostic_logger.bind.call_args_list if call.kwargs["github_governor"]["decision"] == "wait_exhausted"]
+        assert len(exhausted) == 1
+        assert exhausted[0]["waited_seconds"] == 1.25
+        assert exhausted[0]["delay_reason"] == "request_in_flight"
+    finally:
+        governor.close()
+
+
+@pytest.mark.parametrize("failed_check", [1, 2])
+def test_unavailable_cancellation_evidence_keeps_authoritative_read_and_governor_usable(tmp_path, failed_check):
+    from auto_coder.util.github_request_outcome import cancel_github_reads_when
+
+    checks = []
+
+    def unavailable(request):
+        checks.append(request.attempt_id)
+        if len(checks) == failed_check:
+            raise RuntimeError("advisory store unavailable")
+        return False
+
+    governor = GitHubRequestGovernor(store_path=tmp_path / "unavailable-observation.sqlite3")
+    try:
+        with cancel_github_reads_when(unavailable):
+            assert governor.admit_blocking(context(1)) is True
+        assert checks == ["attempt-1", "attempt-1"]
+        governor.observe(outcome(context(1)))
+        assert governor.admit_blocking(context(2)) is True
+        governor.observe(outcome(context(2)))
+        with sqlite3.connect(governor.path) as observer:
+            assert observer.execute("SELECT COUNT(*),SUM(resolved),SUM(recovered) FROM reservations").fetchone() == (2, 2, 0)
+    finally:
+        governor.close()

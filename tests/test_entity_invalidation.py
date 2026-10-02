@@ -503,7 +503,7 @@ def test_failed_deferral_transaction_stops_worker_and_preserves_recovery(tmp_pat
     assert engine.invalidations.claim("owner/repo") is not None
 
 
-def _candidate(repo_name, entity_type, number, propagate_errors=False):
+def _candidate(repo_name, entity_type, number, propagate_errors=False, cancel_initial_refusal=False):
     return Candidate(type=entity_type, data={"number": number, "state": "open"}, priority=0)
 
 
@@ -2088,7 +2088,8 @@ def test_urgent_label_transition_preserves_retryable_admission_obligation(tmp_pa
     fetched = []
     processed = []
 
-    def fetch(_repo, _entity_type, number, bypass_cache):
+    def fetch(_repo, _entity_type, number, bypass_cache, cancel_initial_refusal):
+        assert cancel_initial_refusal is True
         fetched.append((number, bypass_cache))
         return Candidate(
             type="issue",

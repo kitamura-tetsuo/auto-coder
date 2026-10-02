@@ -10,6 +10,7 @@ import os
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import partial
@@ -172,7 +173,7 @@ from .update_manager import check_for_updates_and_restart
 from .util.gh_cache import IMPLEMENTATION_READY_LABEL, GitHubClient, InvalidSubIssueRelationshipError, get_ghapi_client, is_implementation_ready, parse_parent_issue_number, parse_parent_issue_url_number, resolve_authoritative_item_type
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url, is_item_closed_on_github
 from .util.github_cache import get_github_cache
-from .util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestError, configure_github_request_boundary
+from .util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubReadCancelled, GitHubRequestError, cancel_github_reads_when, configure_github_request_boundary, is_issue_resource_read
 from .utils import CommandExecutor, get_target_container, log_action
 from .validation_scheduler import ValidationAdmissionDeferred, ValidationJob, ValidationScheduler
 
@@ -3355,7 +3356,7 @@ class AutomationEngine:
     def _create_and_prepare_closed_issue_candidate(self, repo_name: str, issue_number: int) -> tuple[Optional[Candidate], bool]:
         """Bind a worker's strict closed read to all closure/family effects."""
         with self._issue_routing_lock(repo_name, issue_number):
-            candidate = self._create_candidate_from_single(repo_name, "issue", issue_number, True)
+            candidate = self._create_candidate_from_single(repo_name, "issue", issue_number, True, True)
             if candidate is None or candidate.data.get("state") != "closed":
                 return candidate, False
             self.issue_admission_cache.observe(repo_name, candidate.data, authoritative=True)
@@ -3962,12 +3963,22 @@ class AutomationEngine:
                                     self._invalidation_wake_event.set()
                                 continue
                         if candidate.type == "issue":
-                            authoritative_candidate, closed_issue_prepared = await self._run_local_critical(
-                                f"worker {worker_id} strict closed preparation for issue #{item_number}",
-                                self._create_and_prepare_closed_issue_candidate,
-                                repo_name,
-                                int(item_number),
-                            )
+                            try:
+                                authoritative_candidate, closed_issue_prepared = await self._run_local_critical(
+                                    f"worker {worker_id} strict closed preparation for issue #{item_number}",
+                                    self._create_and_prepare_closed_issue_candidate,
+                                    repo_name,
+                                    int(item_number),
+                                )
+                            except GitHubReadCancelled:
+                                refusal = await asyncio.to_thread(self._cached_issue_refusal, repo_name, int(item_number), self.config)
+                                if refusal is not None:
+                                    self._record_cached_issue_refusal(repo_name, refusal, "durable-invalidation-worker")
+                                    decision_completed = True
+                                # If newer evidence removed the refusal, release
+                                # this claim for reevaluation rather than authorize
+                                # work from the superseded webhook observation.
+                                continue
                         else:
                             authoritative_candidate = await asyncio.to_thread(
                                 self._create_candidate_from_single,
@@ -4480,6 +4491,7 @@ class AutomationEngine:
                 self.dependency_observations.invalidate(repo_name, number)
         if issue_snapshot is not None:
             self.issue_admission_cache.observe(repo_name, issue_snapshot)
+        self.github_request_governor.wake_admission_waiters()
 
         dependency_job_target = resolve_repo_job_target(repo_name, RepoJobKind.DEPENDENCY_RESCAN.value) if entity_type == "dependency" else None
         ambient_scope = current_repo_job_scope()
@@ -4653,10 +4665,15 @@ class AutomationEngine:
         cache = self.dependency_observations
 
         def observe_missing(target: int) -> None:
-            if cache.get(repo_name, target) is None:
+            while cache.get(repo_name, target) is None:
                 version = cache.version(repo_name, target)
                 try:
-                    snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, target)
+                    with cancel_github_reads_when(lambda context: is_issue_resource_read(context, repo_name, target) and cache.get(repo_name, target) is not None):
+                        snapshot = self.github.get_issue_dispatch_snapshot_strict(repo_name, target)
+                except GitHubReadCancelled:
+                    # Recheck TTL, ambiguity, and notification fencing before
+                    # using the observation; otherwise retry the ordinary read.
+                    continue
                 except httpx.HTTPStatusError as error:
                     if error.response.status_code != 404:
                         raise
@@ -4666,6 +4683,7 @@ class AutomationEngine:
                     return
                 if isinstance(snapshot, dict) and snapshot.get("number") == target:
                     cache.observe(repo_name, snapshot, version=version)
+                return
 
         observe_missing(number)
         for dependency in sorted(cache.dependencies(repo_name, number)):
@@ -8525,13 +8543,15 @@ class AutomationEngine:
             logger.error(f"Error parsing commit history: {e}")
             return []
 
-    def _create_candidate_from_single(self, repo_name: str, target_type: str, number: int, propagate_errors: bool = False) -> Optional[Candidate]:
+    def _create_candidate_from_single(self, repo_name: str, target_type: str, number: int, propagate_errors: bool = False, cancel_initial_refusal: bool = False) -> Optional[Candidate]:
         """Create a Candidate from a single issue or PR.
 
         Args:
             repo_name: Repository name
             target_type: Type of target ('issue' or 'pr')
             number: Issue or PR number
+            cancel_initial_refusal: Allow the worker's initial Issue GET to use
+                a completed local refusal received during admission waiting.
 
         Returns:
             Candidate or None if failed
@@ -8618,7 +8638,11 @@ class AutomationEngine:
                         # This one strict snapshot is both the type authority and
                         # the candidate source. A second, failure-flattening read
                         # could otherwise turn a transport outage into absence.
-                        issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
+                        cancellation = cancel_github_reads_when(lambda context: is_issue_resource_read(context, repo_name, number) and self._cached_issue_refusal(repo_name, number, self.config) is not None) if cancel_initial_refusal else nullcontext()
+                        # End the cancellation scope before closure cleanup,
+                        # which can itself need authoritative reads and effects.
+                        with cancellation:
+                            issue = self.github.get_issue_dispatch_snapshot_strict(repo_name, number)
                     except httpx.HTTPStatusError as error:
                         if error.response.status_code == 404:
                             logger.info(f"Issue #{number} no longer exists in {repo_name}")
@@ -8655,9 +8679,9 @@ class AutomationEngine:
                     priority=0,  # Single processing doesn't need priority
                     issue_number=number,
                 )
-        except GitHubRequestDeferred:
-            # Durable invalidation workers retain this typed, definitely-not-sent
-            # outcome. Do not flatten it before the worker commits its schedule.
+        except (GitHubRequestDeferred, GitHubReadCancelled):
+            # Preserve unsent cancellation and deferral control flow so the
+            # worker can finish a refusal or retain its durable schedule.
             raise
         except Exception as e:
             logger.error(f"Failed to create candidate for {target_type} #{number}: {e}")
