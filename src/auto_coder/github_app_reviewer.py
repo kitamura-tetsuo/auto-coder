@@ -16,6 +16,7 @@ from typing import Callable, Optional
 import httpx
 import jwt
 
+from .accepted_finding_bridge import ObservedRoot, RootObservation
 from .adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
@@ -319,6 +320,42 @@ class GitHubAppReviewer:
         except Exception:
             logger.bind(repository=repo_name, target=str(pr_number), phase="two-tier-reconciliation").error("Dedicated reviewer GitHub App could not reconcile exact review evidence")
             return ReviewPublicationResult(False, "", "Exact review reconciliation is unavailable")
+
+    def observe_authenticated_review_roots(self, repo_name: str, pr_number: int, head_sha: str) -> RootObservation:
+        """List native review roots authored by the reviewer App on exactly ``head_sha``.
+
+        A root is marked authenticated only when both its review and the root
+        comment were authored by the App identity resolved from its own
+        credentials. Any unreadable page makes the whole observation incomplete.
+        """
+        try:
+            identity = self.get_identity()
+            token = self._installation_token(repo_name, frozenset({("pull_requests", "read")}))
+            roots: list[ObservedRoot] = []
+            page = 1
+            while True:
+                reviews = self._request("GET", f"/repos/{repo_name}/pulls/{pr_number}/reviews?per_page=100&page={page}", token).json()
+                if not isinstance(reviews, list):
+                    return RootObservation(reason="GitHub did not return pull-request reviews")
+                for review in reviews:
+                    if not isinstance(review, dict) or not isinstance(review.get("id"), int) or review.get("commit_id") != head_sha:
+                        continue
+                    user = review.get("user")
+                    if not identity.matches_login(user.get("login") if isinstance(user, dict) else None):
+                        continue
+                    for item in self._review_root_comments(repo_name, pr_number, review["id"], token):
+                        comment_user = item.get("user")
+                        comment_id = item.get("id")
+                        body = item.get("body")
+                        if item.get("in_reply_to_id") or not isinstance(comment_id, int) or not isinstance(body, str):
+                            continue
+                        roots.append(ObservedRoot(comment_id=comment_id, body=body, authenticated=identity.matches_login(comment_user.get("login") if isinstance(comment_user, dict) else None)))
+                if len(reviews) < 100:
+                    return RootObservation(roots=tuple(roots), complete=True)
+                page += 1
+        except Exception:
+            logger.bind(repository=repo_name, target=str(pr_number), phase="two-tier-root-observation").error("Dedicated reviewer GitHub App could not observe review roots")
+            return RootObservation(reason="Authenticated review-root observation is unavailable")
 
     def publish_issue_comment(self, repo_name: str, issue_number: int, body: str, authorize_fn: Callable[[], bool]) -> IssuePublicationResult:
         """Submit an Issue review comment, verifying exact identity and returning a detailed outcome."""

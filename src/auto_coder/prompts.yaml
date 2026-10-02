@@ -920,6 +920,9 @@ pr:
     Persisted Material Test-Oracle Gap Registry (the deterministic lifecycle authority for rereview; initial review says none):
     $prior_test_oracle_gaps
 
+    Accepted Strong Audit Findings (known findings that exist independently of this reviewer session; they are never new discoveries, are not erased by omission from your gap list, and are closed only by the owning lifecycle's independent exact-finding acceptance, never by your ADDRESSED or RESOLVED proposal alone):
+    $accepted_strong_findings
+
   adversarial_validation_initial_review: |-
     Your mission: Falsify the implementation of this Pull Request against the original issue specification and acceptance criteria.
 

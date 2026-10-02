@@ -30,6 +30,7 @@ from auto_coder.github_ci_observer import ci_observation_merge_authority, ci_rea
 from auto_coder.util.gh_cache import GitHubClient, PullRequestRoutingMetadata, ReviewThread, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, is_ci_observation_recovered
 
+from .accepted_finding_bridge import AcceptedFindingBridge, ProjectionTarget
 from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from .adversarial_validation_scheduler import AdversarialValidationScheduler
 from .adversarial_validator import (
@@ -480,6 +481,22 @@ class _GitHubReviewEffectTransport:
         return EffectAttempt(UNCERTAIN, reason=result.reason)
 
 
+def _retain_accepted_finding_roots(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, reviewer: GitHubAppReviewer, published_head_sha: str) -> None:
+    """Best-effort retention of accepted-finding canonical identities and native roots.
+
+    A failure leaves the accepted finding intact; the next ordinary review's
+    bridge read reconstructs the association from the owning stores.
+    """
+    try:
+        bridge = AcceptedFindingBridge(inputs.gate.state, CanonicalPRBlockerLedger())
+        target = ProjectionTarget(repository=repo_name, pr_number=pr_number, head_sha=inputs.head_sha, base_sha=inputs.base_sha, contract_identity=inputs.contract.identity, policy_identity=inputs.policy.identity)
+        projection = bridge.project(target, reviewer.observe_authenticated_review_roots(repo_name, pr_number, published_head_sha))
+        if not projection.complete:
+            logger.warning(f"Accepted-finding projection for PR #{pr_number} is incomplete after publication: {[d.code for d in projection.diagnostics]}")
+    except Exception as exc:
+        logger.warning(f"Accepted-finding association after publication failed for PR #{pr_number}: {exc}")
+
+
 def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
     """Publish only a current, durably accepted two-tier result and acknowledge it."""
     snapshot = inputs.gate.state.snapshot(pr_number)
@@ -523,6 +540,7 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
         inputs.gate.state.acknowledge_closure_publication(pr_number, payload.round_id)
     else:
         inputs.gate.state.acknowledge_publication(pr_number, payload.round_id)
+        _retain_accepted_finding_roots(repo_name, pr_number, inputs, reviewer, strong.head_sha)
     return True, f"confirmed authenticated {payload.mode} publication receipt {operation.receipt}"
 
 
