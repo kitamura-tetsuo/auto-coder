@@ -1,5 +1,14 @@
 # Mandatory production-to-view dashboard observability regressions
 
+Local Issue PR recovery uses the existing commit/push and PR-publication stages.
+Successful publication of existing commits is `COMPLETED`; an empty base diff
+is `SKIPPED` for commit/push and `BLOCKED` for PR publication, with a reason in
+the stage facts. Fetch, inspection, and push errors remain `FAILED`.
+`TestKeepLabelOnPRCreation` in `tests/test_issue_processor.py` exercises these
+production boundaries; see the Local Issue publication admission inventory in
+`docs/dashboard-observability.md` and
+`local-issue-pr-publication-recovery.md`.
+
 Dashboard observability is protected by deterministic tests in the ordinary PR
 shards and by a documented `scripts/test.sh` invocation. The maintained coverage
 inventory maps processing, validation, resumption, CI, merge, and asynchronous

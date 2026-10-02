@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.execution_trace import TraceCollector
 from src.auto_coder.issue_processor import _apply_issue_actions_directly, _create_pr_for_issue
 
 
@@ -973,18 +974,24 @@ class TestKeepLabelOnPRCreation:
     """Test that keep_label() is called on successful PR creation."""
 
     @pytest.mark.parametrize(
-        ("commit_action", "expects_pr"),
+        ("commit_action", "fetch_ok", "diff_code", "push_ok", "pr_result", "expects_pr", "expected_outcome"),
         [
-            ("Successfully committed and pushed changes: issue", True),
-            ("Failed to commit and push changes: rejected", False),
-            ("No changes to commit", False),
+            ("Successfully committed and pushed changes: issue", True, 0, True, "Successfully created PR", True, "completed"),
+            ("Failed to commit and push changes: rejected", True, 1, True, "Successfully created PR", False, "failed"),
+            ("No changes to commit", True, 1, True, "Successfully created PR", True, "completed"),
+            ("No changes to commit", True, 1, True, "PR already exists", True, "completed"),
+            ("No changes to commit", True, 0, True, "Successfully created PR", False, "skipped"),
+            ("No changes to commit", True, 1, False, "Successfully created PR", False, "failed"),
+            ("No changes to commit", False, 1, True, "Successfully created PR", False, "failed"),
+            ("No changes to commit", True, 128, True, "Successfully created PR", False, "failed"),
         ],
     )
-    def test_apply_issue_actions_creates_pr_only_after_published_change(self, commit_action, expects_pr):
+    def test_apply_issue_actions_creates_pr_only_after_published_change(self, commit_action, fetch_ok, diff_code, push_ok, pr_result, expects_pr, expected_outcome):
         repo_name = "owner/repo"
         issue_number = 123
         issue_data = {"number": issue_number, "title": "Test Issue", "body": "Test body"}
         config = AutomationConfig()
+        collector = TraceCollector()
 
         # Track if keep_label was called
         keep_label_called = []
@@ -1013,6 +1020,8 @@ class TestKeepLabelOnPRCreation:
             mock_cmd.run_command.side_effect = [
                 _cmd_result(success=True, stdout="main", returncode=0),  # get current branch
                 _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work branch missing
+                _cmd_result(success=fetch_ok, stderr="fetch rejected" if not fetch_ok else ""),
+                _cmd_result(success=diff_code == 0, returncode=diff_code, stderr="bad revision" if diff_code == 128 else ""),
             ]
 
             with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
@@ -1022,8 +1031,13 @@ class TestKeepLabelOnPRCreation:
                             with patch("src.auto_coder.issue_processor.get_current_branch", return_value="main"):
                                 with patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0):
                                     # Mock _create_pr_for_issue to return success message
-                                    with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
-                                        mock_create_pr.return_value = f"Successfully created PR for issue #{issue_number}: Test PR"
+                                    with (
+                                        patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr,
+                                        patch("src.auto_coder.issue_processor.git_push", return_value=_cmd_result(success=push_ok, stderr="push rejected")) as mock_push,
+                                        patch("src.auto_coder.issue_processor.get_trace_collector", return_value=collector),
+                                        collector.start_execution(repo_name, "issue", issue_number, origin="worker") as execution,
+                                    ):
+                                        mock_create_pr.return_value = f"{pr_result} for issue #{issue_number}: Test PR"
 
                                         # Mock GitHub client
                                         github_client = MagicMock()
@@ -1033,10 +1047,10 @@ class TestKeepLabelOnPRCreation:
                                         # Mock LLM response
                                         class DummyLLM:
                                             def _run_llm_cli(self, *_args, **_kwargs):
-                                                return "Made some changes to fix the issue"
+                                                return "Already implemented; no changes needed. Invalid input is now handled."
 
                                         with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
-                                            _apply_issue_actions_directly(
+                                            actions = _apply_issue_actions_directly(
                                                 repo_name,
                                                 issue_data,
                                                 config,
@@ -1045,6 +1059,33 @@ class TestKeepLabelOnPRCreation:
 
         assert mock_create_pr.called is expects_pr
         assert len(keep_label_called) == (1 if expects_pr else 0)
+        github_client.close_issue.assert_not_called()
+        assert not any(action.startswith(("Closed issue", "Added analysis comment")) for action in actions)
+        snapshot = collector.get_snapshot(item_type="issue", item_number=issue_number)
+        events = [event for event in snapshot.events if event.execution_id == execution.scope.execution_id]
+        commit_stages = [event for event in events if event.stage_id == "issue.local-commit-push"]
+        assert len(commit_stages) == 1
+        assert commit_stages[0].outcome == expected_outcome
+        if commit_action == "No changes to commit":
+            mock_cmd.run_command.assert_any_call(["git", "fetch", "origin", "main"])
+            if fetch_ok:
+                mock_cmd.run_command.assert_any_call(["git", "diff", "--quiet", "FETCH_HEAD...HEAD", "--"])
+            if fetch_ok and diff_code == 1:
+                mock_push.assert_called_once_with(branch="issue-123")
+            else:
+                mock_push.assert_not_called()
+            if fetch_ok and diff_code == 0:
+                assert actions[-1] == "Cannot create PR for issue #123: no changes against main; issue remains open"
+                blocked = [event for event in events if event.stage_id == "issue.pr-publication"]
+                assert len(blocked) == 1
+                assert blocked[0].outcome == "blocked"
+                assert blocked[0].facts == {"issue_number": issue_number, "reason": actions[-1]}
+        else:
+            mock_push.assert_not_called()
+        if expects_pr:
+            assert mock_create_pr.call_count == 1
+            assert mock_create_pr.call_args.kwargs["work_branch"] == "issue-123"
+            assert mock_create_pr.call_args.kwargs["base_branch"] == "main"
 
     def test_apply_issue_actions_does_not_call_keep_label_on_failed_pr(self):
         """Test that _apply_issue_actions_directly does not call keep_label when PR creation fails."""

@@ -1412,12 +1412,19 @@ required.
 
 Local Issue implementation continues to emit `issue.local-commit-push` as
 `COMPLETED`, `SKIPPED`, or `FAILED` from the controller publication result. New-PR
-creation is now admitted only after `COMPLETED`; skipped no-change and failed
-publication outcomes do not emit a later `issue.pr-publication` attempt. This
-changes no event schema or dashboard projection and prevents the existing view
-from displaying a stale/empty PR as the successor of an unpublished result.
+creation is admitted only after `COMPLETED`, including a successful controller
+push of existing committed changes when the working tree is clean. Recovery
+fetches the intended remote base and verifies an effective diff before pushing.
+Fetch, inspection, or push failure reports `FAILED` and never creates a PR.
+A clean tree with no effective base diff reports `SKIPPED` for commit/push and
+`BLOCKED` for `issue.pr-publication`, including the reason that the Issue remains
+open. Existing PR reuse remains a completed publication and retains ownership.
+These outcomes use the existing generic stage-detail projection without adding
+an event schema or processing origin.
 `tests/test_issue_processor.py::TestKeepLabelOnPRCreation::test_apply_issue_actions_creates_pr_only_after_published_change`
-drives all three outcomes through the production Issue-processing boundary.
+drives new-change publication, clean-tree recovery, existing-PR reuse, empty
+diff, and failed fetch/inspection/push through the production processing boundary.
+See `docs/client-features/local-issue-pr-publication-recovery.md`.
 # Codex retirement-accounting fence
 
 Codex retirement registration and reconstruction are safety gates within the

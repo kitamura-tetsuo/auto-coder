@@ -26,7 +26,7 @@ from .codex_cloud_task import canonical_codex_cloud_task_url
 from .exceptions import AutoCoderRetryableBackendError, AutoCoderUsageLimitError, CloudSubmissionNotStartedError
 from .execution_trace import EventKind, Outcome, get_trace_collector
 from .git_branch import branch_context, extract_attempt_from_branch
-from .git_commit import commit_and_push_changes
+from .git_commit import commit_and_push_changes, git_push
 from .git_info import get_commit_log, get_current_branch
 from .implementation_ownership import confirm_implementation_ownership
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
@@ -2193,16 +2193,6 @@ def _apply_issue_actions_directly(
 
                     actions.append(f"LLM CLI analyzed and took action on issue: {response[:200]}...")
 
-                    # Check if LLM indicated the issue should be closed
-                    if "closed" in response.lower() or "duplicate" in response.lower() or "invalid" in response.lower():
-                        # Close the issue
-                        # github_client.close_issue(repo_name, issue_data['number'], f"Auto-Coder Analysis: {response[:500]}...")
-                        actions.append(f"Closed issue #{issue_data['number']} based on analysis")
-                    else:
-                        # Add analysis comment
-                        # github_client.add_comment_to_issue(repo_name, issue_data['number'], f"## 🤖 Auto-Coder Analysis\n\n{response}")
-                        actions.append(f"Added analysis comment to issue #{issue_data['number']}")
-
                     # Commit any changes made
                     with ProgressStage("Committing changes"):
                         commit_action = commit_and_push_changes(
@@ -2212,7 +2202,31 @@ def _apply_issue_actions_directly(
                         )
                         actions.append(commit_action)
 
-                    get_trace_logger().log("Apply Changes", f"Committed changes for issue #{issue_number}", item_type="issue", item_number=issue_number)
+                    # A clean working tree may already contain the implementation
+                    # from an earlier run whose PR publication was interrupted.
+                    if commit_action == "No changes to commit" and "head_branch" not in issue_data:
+                        with ProgressStage("Publishing existing changes"):
+                            fetch_result = cmd.run_command(["git", "fetch", "origin", pr_base_branch])
+                            if not fetch_result.success:
+                                commit_action = f"Failed to fetch PR base: {fetch_result.stderr}"
+                            else:
+                                diff_result = cmd.run_command(["git", "diff", "--quiet", "FETCH_HEAD...HEAD", "--"])
+                                if diff_result.returncode == 1:
+                                    push_result = git_push(branch=target_branch)
+                                    if push_result.success:
+                                        commit_action = "Successfully pushed existing changes for PR creation"
+                                    else:
+                                        commit_action = f"Failed to push existing changes: {push_result.stderr}"
+                                elif diff_result.returncode != 0:
+                                    commit_action = f"Failed to inspect existing changes: {diff_result.stderr}"
+                            if commit_action != "No changes to commit":
+                                actions.append(commit_action)
+                            else:
+                                reason = f"Cannot create PR for issue #{issue_number}: no changes against {pr_base_branch}; issue remains open"
+                                actions.append(reason)
+                                _record_dispatch_stage(issue_number, "issue.pr-publication", f"issue#{issue_number} PR publication", Outcome.BLOCKED, {"reason": reason})
+
+                    get_trace_logger().log("Apply Changes", f"Commit/push result for issue #{issue_number}: {commit_action}", item_type="issue", item_number=issue_number)
                     if commit_action.startswith("Successfully"):
                         commit_outcome = Outcome.COMPLETED
                     elif commit_action == "No changes to commit":
@@ -2237,7 +2251,7 @@ def _apply_issue_actions_directly(
                         actions.append(pr_creation_result)
 
                         # Retain the label if PR creation was successful
-                        if pr_creation_result.startswith("Successfully created PR"):
+                        if pr_creation_result.startswith(("Successfully created PR", "PR already exists")):
                             should_process.keep_label()
                 else:
                     actions.append("LLM CLI did not provide a clear response for issue analysis")
