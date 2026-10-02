@@ -50,6 +50,10 @@ class ReviewExecutionInput:
     policy: StrongPolicyIdentity
     repository_evidence: str
     diff_evidence: str
+    repository: str = ""
+    pr_number: int = 0
+    open_epoch: int = 0
+    attempt_sequence: int = 0
     finding_set_revision: int = 0
     findings: Tuple[Finding, ...] = field(default_factory=tuple)
     audited_head_sha: str = ""
@@ -106,6 +110,10 @@ def build_review_prompt(review_input: ReviewExecutionInput) -> str:
         contract_identity=review_input.contract.identity,
         policy_identity=review_input.policy.identity,
         issue_ids=json.dumps(review_input.contract.issue_ids),
+        repository=review_input.repository,
+        pr_number=review_input.pr_number,
+        open_epoch=review_input.open_epoch,
+        attempt_sequence=review_input.attempt_sequence,
         requirements_text=review_input.contract.requirements_text,
         audited_head_sha=review_input.audited_head_sha or review_input.head_sha,
         finding_set_revision=review_input.finding_set_revision,

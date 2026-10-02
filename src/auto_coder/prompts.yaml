@@ -629,6 +629,10 @@ pr:
     policy_identity=$policy_identity
     finding_set_revision=$finding_set_revision
     audited_head_sha=$audited_head_sha
+    repository=$repository
+    pr_number=$pr_number
+    open_epoch=$open_epoch
+    attempt_sequence=$attempt_sequence
     Issue identities: $issue_ids
 
     Authoritative Requirements:
@@ -701,6 +705,8 @@ pr:
 
   adversarial_validation: |-
     You are an expert adversarial software correctness reviewer with deep domain expertise.
+
+    $closure_extension
 
     EXECUTION EVIDENCE PROTOCOL: Authoritative exact-head CI execution evidence
     can prove that an identified suite or target executed successfully, but it
