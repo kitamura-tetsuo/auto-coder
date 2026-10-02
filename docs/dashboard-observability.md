@@ -328,8 +328,10 @@ drives a failed baseline followed by a real executable MSP host's approval
 notification and asserts exact outcomes, shared identity, exit code, omission of
 subject text, and visibility in the mounted detail page.
 `tests/test_muse_msp.py` additionally covers before/after-ack interactive requests,
-editable/read-only policy confirmation, dependency preparation before provider
-launch, read-only exclusion, and launch failure with zero provider submission.
+pending-resume requested/effective policy diagnostics, editable/read-only policy
+confirmation, dependency preparation before provider launch, read-only exclusion,
+and launch failure with zero provider submission. The pending-resume regression is
+`test_muse_pending_resume_reports_requested_and_effective_approval_policy`.
 Run `bash scripts/test.sh tests/test_muse_msp.py tests/test_local_execution_boundary.py tests/test_dashboard_observability.py`.
 
 ## Updating observable processing

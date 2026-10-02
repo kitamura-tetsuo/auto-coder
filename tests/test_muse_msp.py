@@ -13,6 +13,7 @@ import pytest
 
 from src.auto_coder.cli_helpers import build_backend_manager
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
+from src.auto_coder.execution_trace import EventKind, Outcome, get_trace_collector
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from src.auto_coder.local_session_continuation import LocalContinuationError
 from tests.utils.workspace import write_target_test_script
@@ -1354,3 +1355,54 @@ def test_muse_incompatible_resume_state_fails_without_fresh_fallback(tmp_path, m
         manager.continue_session("opaque/provider/session", "second", is_noedit=True)
     assert manager._last_continue_session_resumed is False
     assert not log.exists()
+
+
+@pytest.mark.parametrize("is_noedit", [False, True])
+@pytest.mark.parametrize("reported_mode", [None, "denyUnmatched"])
+def test_muse_pending_resume_reports_requested_and_effective_approval_policy(
+    tmp_path,
+    monkeypatch,
+    _use_real_commands,
+    is_noedit,
+    reported_mode,
+):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    client = manager._clients["muse"]
+
+    assert manager._run_llm_cli("first") == "answer:first"
+    session_id = manager.get_last_session_id()
+    assert session_id == "opaque/provider/session"
+    manager.authorize_retained_local_session_reuse(session_id)
+    log.unlink()
+    monkeypatch.setenv("MSP_PENDING_RESUME", "1")
+    if reported_mode is not None:
+        monkeypatch.setenv("MSP_REPORTED_APPROVAL_MODE", reported_mode)
+
+    collector = get_trace_collector()
+    case_number = 23960 + (2 if is_noedit else 0) + (1 if reported_mode else 0)
+    with collector.start_execution("owner/repo", "issue", case_number, origin="worker") as execution:
+        with pytest.raises(RuntimeError, match="pending interactive requests"):
+            manager.continue_session(session_id, "second", is_noedit=is_noedit)
+        execution.finish(Outcome.FAILED)
+
+    frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
+    assert [frame.get("method") for frame in frames] == ["initialize", "initialized", "session/resume"]
+    assert client.get_last_session_id() is None
+    assert manager.get_last_session_id() is None
+    events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=case_number).events if event.kind == EventKind.STAGE_RESULT.value and event.stage_id == "llm.muse-interactive-request"]
+    assert len(events) == 1
+    assert events[0].outcome == Outcome.BLOCKED.value
+    assert events[0].facts == {
+        "method": "session/resume",
+        "requested_approval_policy": "denyUnmatched" if is_noedit else "hostDefault",
+        "effective_approval_policy": reported_mode or "unknown",
+        "sessionId": session_id,
+        "reason": "pending interactive requests",
+    }

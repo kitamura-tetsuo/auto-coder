@@ -937,14 +937,27 @@ class MuseClient(LLMClientBase):
             model_matches = model_matches or (resolved_model is not None and effective_model == resolved_model)
             if not model_matches:
                 raise RuntimeError("Muse MSP session omitted or uses an incompatible model")
-            pending = opened.get("pendingRequests")
-            if pending not in (None, []):
-                get_trace_collector().record_event(EventKind.STAGE_RESULT, "llm.muse-interactive-request", "local-backend", label="Muse interactive request blocked", outcome=Outcome.BLOCKED, facts={"method": method, "sessionId": canonical_id, "reason": "pending interactive requests"})
-                raise RuntimeError("Muse MSP session has pending interactive requests")
             approval_mode = metadata.get("approvalMode")
             observed_mode = approval_mode.get("mode") if isinstance(approval_mode, dict) else None
             if isinstance(observed_mode, str):
                 self._observed_approval_mode = observed_mode
+            pending = opened.get("pendingRequests")
+            if pending not in (None, []):
+                get_trace_collector().record_event(
+                    EventKind.STAGE_RESULT,
+                    "llm.muse-interactive-request",
+                    "local-backend",
+                    label="Muse interactive request blocked",
+                    outcome=Outcome.BLOCKED,
+                    facts={
+                        "method": method,
+                        "requested_approval_policy": "denyUnmatched" if self._approval_denial_requested else "hostDefault",
+                        "effective_approval_policy": self._observed_approval_mode or "unknown",
+                        "sessionId": canonical_id,
+                        "reason": "pending interactive requests",
+                    },
+                )
+                raise RuntimeError("Muse MSP session has pending interactive requests")
             denial_confirmed = observed_mode == "denyUnmatched"
             if session_id is None:
                 if msp_options.approval_denial and not denial_confirmed:
