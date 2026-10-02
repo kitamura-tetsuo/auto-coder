@@ -123,6 +123,7 @@ from .review_thread_validation import (
     retry_pending_stale_review_thread_rollbacks,
 )
 from .reviewer_session_registry import ReviewerSessionRegistry
+from .runtime_locks import LockAcquisitionTimeout, ensure_lock_directory, file_lock, lock_path
 from .security_utils import redact_string
 from .shutdown_context import new_work_allowed
 from .speculative_jules_lifecycle import get_speculative_jules_lifecycle
@@ -582,6 +583,7 @@ class CloudConflictDeliveryRecord:
 
     task_id: str
     status: str
+    logical_identity: str = ""
 
 
 @dataclass
@@ -6564,7 +6566,7 @@ def _record_cloud_conflict_deliveries(state_path: Path, delivered: dict[str, Clo
     """Atomically persist conflict delivery reservations and receipts."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = state_path.with_suffix(f"{state_path.suffix}.{os.getpid()}.tmp")
-    serialized = {fingerprint: {"task_id": record.task_id, "status": record.status} for fingerprint, record in delivered.items()}
+    serialized = {fingerprint: {"task_id": record.task_id, "status": record.status, **({"logical_identity": record.logical_identity} if record.logical_identity else {})} for fingerprint, record in delivered.items()}
     temporary.write_text(json.dumps(serialized, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(temporary, state_path)
 
@@ -6583,9 +6585,10 @@ def _load_cloud_conflict_deliveries(state_path: Path) -> dict[str, CloudConflict
             raise ValueError("delivery state contains an invalid record")
         task_id = value.get("task_id")
         status = value.get("status")
-        if not isinstance(task_id, str) or status not in {"pending", "confirmed"}:
+        logical_identity = value.get("logical_identity", "")
+        if not isinstance(task_id, str) or status not in {"pending", "confirmed"} or not isinstance(logical_identity, str):
             raise ValueError("delivery state contains an invalid record")
-        records[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status=status)
+        records[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status=status, logical_identity=logical_identity)
     return records
 
 
@@ -7627,6 +7630,26 @@ def _delegate_cloud_merge_conflict_repair_result(
     pr_data: Dict[str, Any],
     github_client: Optional[Any] = None,
 ) -> CloudConflictDelegationResult:
+    """Fence journal reconciliation and transport against overlapping senders."""
+    state_path = _cloud_conflict_state_path(repo_name)
+    delivery_lock = lock_path(repo_name, state_path, "cloud-conflict-delivery")
+    try:
+        ensure_lock_directory(delivery_lock)
+        # Do not wait while an existing sender may hold an implementation lock.
+        # This order avoids a journal/implementation-owner lock inversion.
+        with file_lock(delivery_lock, timeout=0.0, reentrant=False):
+            return _delegate_cloud_merge_conflict_repair_locked(repo_name, pr_data, github_client)
+    except (LockAcquisitionTimeout, OSError, RuntimeError) as exc:
+        reason = f"cloud conflict delivery coordination is unavailable: {exc}"
+        logger.warning(reason)
+        return CloudConflictDelegationResult(reason=reason)
+
+
+def _delegate_cloud_merge_conflict_repair_locked(
+    repo_name: str,
+    pr_data: dict,
+    github_client: Optional[Any] = None,
+) -> CloudConflictDelegationResult:
     """Delegate a current conflict to its originating cloud session when possible.
 
     ``True`` means this conflict state was either just delegated or was already
@@ -7657,6 +7680,8 @@ def _delegate_cloud_merge_conflict_repair_result(
         return CloudConflictDelegationResult(reason="the PR head/base metadata required for repair is unavailable")
 
     fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}:{task_id}"
+    delivery_reader = getattr(type(client), "get_followup_delivery", None)
+    logical_identity = "merge-conflict-repair:" + hashlib.sha256(fingerprint.encode("utf-8")).hexdigest() if callable(delivery_reader) else ""
     retained_wait = get_claude_followup_wait_store().get(repo_name, task_id, "merge-conflict-repair", fingerprint)
     if retained_wait and (retained_wait.certainty is DeliveryCertainty.INDETERMINATE or retained_wait.retry_not_before > time.time()):
         return CloudConflictDelegationResult(
@@ -7675,6 +7700,23 @@ def _delegate_cloud_merge_conflict_repair_result(
             return CloudConflictDelegationResult(reason=f"prior repair delivery state could not be read: {exc}")
 
         existing = delivered.get(fingerprint)
+        if existing and existing.status == "pending" and existing.logical_identity and existing.logical_identity == logical_identity and callable(delivery_reader):
+            from .codex_wham_client import FollowUpDeliveryOutcome
+
+            try:
+                delivery = delivery_reader(client, task_id, logical_identity)
+            except Exception as exc:
+                return CloudConflictDelegationResult(reason=f"prior conflict delivery could not be reconciled: {exc}")
+            if delivery is FollowUpDeliveryOutcome.DELIVERED:
+                existing = CloudConflictDeliveryRecord(task_id, "confirmed", logical_identity)
+                delivered[fingerprint] = existing
+                _record_cloud_conflict_deliveries(state_path, delivered)
+            elif delivery is FollowUpDeliveryOutcome.NOT_DELIVERED:
+                # The journal lock proves no cooperating sender is still between
+                # reservation and transport. The provider journal proves this
+                # exact operation never reached its non-idempotent POST boundary.
+                delivered.pop(fingerprint)
+                existing = None
         if existing and existing.status == "confirmed":
             logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
             try:
@@ -7692,7 +7734,7 @@ def _delegate_cloud_merge_conflict_repair_result(
         # Reserve the conflict identity before the non-idempotent follow-up call.
         # Pending state prevents speculative redelivery but is never evidence
         # that the cloud session accepted the request. If this write fails, do not send.
-        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="pending")
+        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="pending", logical_identity=logical_identity)
         try:
             _record_cloud_conflict_deliveries(state_path, delivered)
         except OSError as exc:
@@ -7716,7 +7758,7 @@ def _delegate_cloud_merge_conflict_repair_result(
                 delivered.pop(fingerprint, None)
                 _record_cloud_conflict_deliveries(state_path, delivered)
             return CloudConflictDelegationResult(reason=final_origin.reason)
-        accepted = _send_followup_with_quota_admission(client, repo_name, task_id, message)
+        accepted = _send_followup_with_quota_admission(client, repo_name, task_id, message, (logical_identity,) if logical_identity else ())
     except ClaudeFollowupHoldActive as exc:
         return CloudConflictDelegationResult(reason=str(exc), deferred=True, retry_not_before=exc.retry_not_before)
     except ClaudeFollowupUsageLimitError as exc:
@@ -7749,7 +7791,7 @@ def _delegate_cloud_merge_conflict_repair_result(
     get_claude_followup_wait_store().retire(repo_name, task_id, "merge-conflict-repair", fingerprint)
 
     with _cloud_conflict_delivery_lock:
-        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="confirmed")
+        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="confirmed", logical_identity=logical_identity)
         try:
             _record_cloud_conflict_deliveries(state_path, delivered)
         except OSError as exc:

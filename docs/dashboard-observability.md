@@ -14,6 +14,18 @@ tests/test_dashboard_reviews.py` to exercise root confirmation, retained
 audit effects, production-stage consumption, and the existing history projection.
 `test_publication_confirms_one_root_per_blocker` verifies both distinct-defect
 publication and equivalent-observation consolidation without a pending intent.
+Cloud merge-conflict receipt recovery retains the existing
+`pr.mergeability-remediation` stage and schema. A recovered accepted receipt or
+a newly confirmed send reaches `ACCEPTED_HANDOFF`; a busy delivery lock, legacy
+pending reservation, or indeterminate provider receipt reaches `DEFERRED` with
+`result=unconfirmed`. No pending reservation is acceptance evidence. The runnable
+receipt and concurrent-sender regressions live in
+`tests/test_cloud_conflict_delegation.py`, including
+`test_reconciled_conflict_delivery_emits_truthful_remediation_stage` which drives
+the production remediation and reads the execution-scoped stage outcome for
+all three provider delivery states. The cross-instance production fence
+regression is
+`tests/test_codex_work_fence.py::test_followup_fence_reenters_engine_owner_lock_with_fresh_repository`.
 
 Issues #2077 and #2078 add `IssueDispatchGuard` and its provider-neutral ranked
 candidate boundary. The guard introduces no new processing origin,

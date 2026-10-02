@@ -1588,6 +1588,20 @@ def test_same_owner_serialization_is_reentrant(tmp_path):
             assert owner.key == "issue:100"
 
 
+@pytest.mark.timeout(5)
+def test_same_owner_serialization_is_reentrant_across_repository_instances(tmp_path):
+    first = repository(tmp_path)
+    second = repository(tmp_path)
+    owner = ImplementationOwner("issue", 2405)
+    assert first.reserve(owner)
+    with first.serialize(owner):
+        with second.serialize(owner, timeout=0):
+            assert second.record_provider_session(owner, "task_e_regression")
+        with first._state_lock():
+            assert second.active_owners() == (owner,)
+    assert first.snapshot().owners[0].provider_sessions == ("task_e_regression",)
+
+
 class UnavailablePullRequests(GitHubState):
     """`GitHubClient.get_pull_request` reports an unavailable read as None."""
 
