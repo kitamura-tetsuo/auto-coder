@@ -45,7 +45,7 @@ def reset_collectors():
     TraceCollector._instance = None
 
 
-def _candidate(repo_name, entity_type, number, propagate_errors=False):
+def _candidate(repo_name, entity_type, number, propagate_errors=False, cancel_initial_refusal=False):
     return Candidate(type=entity_type, data={"number": number, "state": "open"}, priority=0)
 
 

@@ -20,7 +20,7 @@ def test_dedicated_workers_progress_while_other_type_is_busy(tmp_path, monkeypat
     completed = threading.Event()
     other_type = "pr" if blocked_type == "issue" else "issue"
 
-    def fetch(repo, kind, number, propagate_errors=False):
+    def fetch(repo, kind, number, propagate_errors=False, cancel_initial_refusal=False):
         return Candidate(type=kind, data={"number": number, "state": "open"}, priority=0)
 
     def process(repo, candidate, **kwargs):
@@ -110,7 +110,7 @@ def test_durable_prs_overtake_issue_backlog_without_losing_generations(tmp_path,
             engine.invalidations.recover("owner/repo")
             await engine._enqueue_pending_invalidations("owner/repo")
 
-        def fetch(repo, kind, number, propagate_errors=False):
+        def fetch(repo, kind, number, propagate_errors=False, cancel_initial_refusal=False):
             fetched.append((kind, number))
             return Candidate(type=kind, data={"number": number, "state": "open"}, priority=0)
 

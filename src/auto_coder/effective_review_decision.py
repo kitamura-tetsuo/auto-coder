@@ -14,6 +14,7 @@ from .accepted_finding_bridge import (
     AMBIGUOUS,
     BINDING_CURRENT,
     CATEGORY_IMPLEMENTATION,
+    CATEGORY_REGRESSION_GAP,
     CURRENCY_CURRENT_HEAD,
     OUTCOME_AMBIGUOUS,
     OUTCOME_CLOSURE_PROPOSAL_NOT_ACCEPTED,
@@ -47,6 +48,9 @@ class EffectiveCorrection:
     affected_boundary: str = ""
     evidence: str = ""
     reason: str = ""
+    accepted_state: str = ""
+    source_revision: int = 0
+    association_revision: int = 0
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,7 @@ class EffectiveDecisionBinding:
     source_revision: int = -1
     finding_set_revision: int = 0
     association_revision: int = 0
+    reopen_epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,7 @@ def _binding(result: AdversarialValidationResult, projection: AcceptedFindingPro
         source_revision=projection.source_revision,
         finding_set_revision=projection.finding_set_revision,
         association_revision=projection.ledger_revision,
+        reopen_epoch=projection.open_epoch,
     )
 
 
@@ -97,6 +103,9 @@ def _correction(record: AcceptedFindingRecord, reason: str) -> EffectiveCorrecti
         affected_boundary=record.affected_boundary,
         evidence=record.evidence,
         reason=reason,
+        accepted_state=record.accepted_state,
+        source_revision=record.source_revision,
+        association_revision=record.association_revision,
     )
 
 
@@ -139,7 +148,8 @@ def derive_effective_review_decision(
 
     raw_status = result.result.strip().upper()
     if raw_status in {"ERROR", "EXHAUSTED", "BLOCKED", "INCONCLUSIVE"}:
-        return _decision(result, projection, raw_status, EffectiveNextAction.OPERATIONAL_WAIT, [f"Ordinary validation ended with {raw_status}"], [])
+        retained = [_correction(record, "Known accepted obligation retained during an unfinished ordinary invocation") for record in projection.unresolved]
+        return _decision(result, projection, raw_status, EffectiveNextAction.OPERATIONAL_WAIT, [f"Ordinary validation ended with {raw_status}"], retained)
 
     if not projection.complete:
         reasons = ["Accepted-finding projection is incomplete"]
@@ -160,7 +170,13 @@ def derive_effective_review_decision(
     repairs: list[EffectiveCorrection] = []
     pending_closure: list[EffectiveCorrection] = []
     reconciliation: list[EffectiveCorrection] = []
-    for record in projection.unresolved:
+    for record in projection.records:
+        if record.accepted_state != "OPEN":
+            if record.accepted_state not in {"FIXED", "INVALID"}:
+                reconciliation.append(_correction(record, "Accepted finding has no recognized lifecycle closure"))
+            elif record.target_binding != BINDING_CURRENT:
+                reconciliation.append(_correction(record, "Accepted closure is not applicable to the current target"))
+            continue
         observations = tuple(outcome for outcome in record.current_observations if outcome.source_identity == record.source_identity)
         closure = next((outcome for outcome in observations if outcome.outcome == OUTCOME_CLOSURE_PROPOSAL_NOT_ACCEPTED), None)
         if record.target_binding != BINDING_CURRENT or not record.canonical_blocker_id or record.association in {AMBIGUOUS}:
@@ -173,12 +189,17 @@ def derive_effective_review_decision(
             reconciliation.append(_correction(record, "Accepted OPEN finding lacks current-target adjudication"))
 
     if reconciliation:
-        return _decision(result, projection, "BLOCKED", EffectiveNextAction.RECONCILIATION, [item.reason for item in reconciliation], reconciliation)
+        retained = [*reconciliation, *pending_closure, *repairs]
+        return _decision(result, projection, "BLOCKED", EffectiveNextAction.RECONCILIATION, [item.reason for item in retained], retained)
     if pending_closure:
-        return _decision(result, projection, "BLOCKED", EffectiveNextAction.CLOSURE_ACCEPTANCE, [item.reason for item in pending_closure], pending_closure)
+        retained = [*pending_closure, *repairs]
+        return _decision(result, projection, "BLOCKED", EffectiveNextAction.CLOSURE_ACCEPTANCE, [item.reason for item in retained], retained)
 
     implementation = [item for item in repairs if item.category == CATEGORY_IMPLEMENTATION]
-    tests = [item for item in repairs if item.category != CATEGORY_IMPLEMENTATION]
+    tests = [item for item in repairs if item.category == CATEGORY_REGRESSION_GAP]
+    unknown = [item for item in repairs if item.category not in {CATEGORY_IMPLEMENTATION, CATEGORY_REGRESSION_GAP}]
+    if unknown:
+        return _decision(result, projection, "BLOCKED", EffectiveNextAction.RECONCILIATION, ["Accepted finding has an unsupported category"], unknown)
     if implementation:
         return _decision(result, projection, "NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR, [item.reason for item in repairs], repairs)
     if tests:

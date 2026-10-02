@@ -81,7 +81,8 @@ def test_operational_failure_precedes_known_repairs() -> None:
 
     assert decision.status == "EXHAUSTED"
     assert decision.next_action is EffectiveNextAction.OPERATIONAL_WAIT
-    assert decision.corrections == ()
+    assert decision.blocker_ids == ("blocker-gap",)
+    assert decision.corrections[0].accepted_state == "OPEN"
 
 
 def test_incomplete_or_historical_authority_requires_reconciliation() -> None:
@@ -106,6 +107,32 @@ def test_exact_closure_proposal_waits_for_owner_then_accepted_closure_passes() -
     assert closed.binding.association_revision == 10
 
 
+def test_pending_closure_precedes_repair_without_losing_other_obligation() -> None:
+    closure = replace(
+        finding("round:gap", "blocker-gap", CATEGORY_REGRESSION_GAP),
+        current_observations=(DispositionOutcome(OUTCOME_CLOSURE_PROPOSAL_NOT_ACCEPTED, "round:gap", "ADDRESSED", "exact evidence"),),
+    )
+    implementation = finding("round:implementation", "blocker-implementation", CATEGORY_IMPLEMENTATION)
+
+    decision = derive_effective_review_decision(result(), projection(closure, implementation))
+
+    assert (decision.status, decision.next_action) == ("BLOCKED", EffectiveNextAction.CLOSURE_ACCEPTANCE)
+    assert decision.blocker_ids == ("blocker-gap", "blocker-implementation")
+
+
+def test_stale_accepted_closure_requires_reconciliation() -> None:
+    closed = replace(
+        finding("round:gap", "blocker-gap", CATEGORY_REGRESSION_GAP),
+        accepted_state="FIXED",
+        target_binding="RECONCILIATION_REQUIRED",
+    )
+
+    decision = derive_effective_review_decision(result(), projection(closed))
+
+    assert (decision.status, decision.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)
+    assert decision.corrections[0].accepted_state == "FIXED"
+
+
 def test_same_head_decision_is_revision_bound_and_specification_gap_blocks() -> None:
     first = derive_effective_review_decision(result(), projection(revision=1))
     second = derive_effective_review_decision(result(), projection(finding("round:gap", "blocker-gap", CATEGORY_REGRESSION_GAP), revision=2))
@@ -117,4 +144,5 @@ def test_same_head_decision_is_revision_bound_and_specification_gap_blocks() -> 
     assert second.status == "NEEDS_TESTS"
     assert first.binding.target.head_sha == second.binding.target.head_sha == "head"
     assert first.binding.association_revision != second.binding.association_revision
+    assert first.binding.reopen_epoch == 0
     assert (specification.status, specification.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)

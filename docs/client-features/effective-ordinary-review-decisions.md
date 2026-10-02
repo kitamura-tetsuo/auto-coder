@@ -4,11 +4,14 @@
 parsed ordinary validation result and the complete accepted-Strong-finding
 projection. The decision retains its target, validation-attempt, source,
 finding-set, and association revisions so a consumer can reject stale output.
+The binding also carries the PR reopen epoch, while each retained accepted
+record carries its own source and canonical-association revisions.
 The raw validator result and requirement coverage remain separate diagnostic
 evidence.
 
 Operational `ERROR`, `EXHAUSTED`, `BLOCKED`, and `INCONCLUSIVE` outcomes wait
-without dispatching a repair. Incomplete, ambiguous, stale, or insufficiently
+without dispatching a repair while retaining known accepted obligations for a
+later invocation. Incomplete, ambiguous, stale, or insufficiently
 adjudicated accepted-finding evidence requires reconciliation. An exact
 independent `ADDRESSED` proposal requests lifecycle-owner closure acceptance;
 the policy does not close findings itself.
