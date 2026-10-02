@@ -32,3 +32,10 @@ read the mounted repository's audit root and update client state: they do not
 query GitHub/providers, dispatch or retry reviews, mutate authorization/audit
 state, or accept repository/file paths from the request. Report content is
 rendered as inert text.
+
+Ordinary adversarial reviews retain every semantic finding in the native report,
+even when equivalent observations share a single published root. Attached-thread
+counts describe GitHub publication, not the number of findings displayed here;
+publication confirmation still appears as a separate effect. Blocker identity
+matching and same-batch root consolidation do not change this view's audit schema,
+polling, or authorization boundaries.

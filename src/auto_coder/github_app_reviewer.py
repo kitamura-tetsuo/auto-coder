@@ -625,12 +625,24 @@ class GitHubAppReviewer:
 
             if unrooted_findings or unrooted_gaps or (result.unexplained_changes and result.publish_clarification_thread):
                 changed_files = self._changed_files(repo_name, pr_number, token)
+                blocker_comments: list[tuple[dict[str, object], Optional[str]]] = []
                 for idx, finding in enumerate(unrooted_findings):
                     bid = unrooted_finding_blockers[idx] if idx < len(unrooted_finding_blockers) else None
-                    comments.append(self._finding_comment(finding, changed_files, blocker_id=bid))
+                    blocker_comments.append((self._finding_comment(finding, changed_files, blocker_id=bid), bid))
                 for gap in gaps_to_publish:
                     bid = gap_blockers.get(gap.gap_id)
-                    comments.append(self._test_oracle_gap_comment(gap, changed_files, blocker_id=bid))
+                    blocker_comments.append((self._test_oracle_gap_comment(gap, changed_files, blocker_id=bid), bid))
+                roots_by_blocker: dict[str, dict[str, object]] = {}
+                for comment, bid in blocker_comments:
+                    if bid is not None and bid in roots_by_blocker:
+                        # Equivalent observations share one root, retaining every
+                        # finding section and its evidence in the submitted body.
+                        root = roots_by_blocker[bid]
+                        root["body"] = f"{root['body']}\n\n---\n\n{comment['body']}"
+                    else:
+                        comments.append(comment)
+                        if bid is not None:
+                            roots_by_blocker[bid] = comment
                 if result.unexplained_changes and result.publish_clarification_thread:
                     clarification_body = format_change_provenance_clarification(result.unexplained_changes)
                     unexplained_paths = [path for item in result.unexplained_changes for path in item.paths if path in changed_files]
@@ -655,7 +667,8 @@ class GitHubAppReviewer:
             review_body = format_adversarial_review_summary(
                 result,
                 validated_head_sha,
-                attached_test_oracle_gap_count=len(gaps_to_publish),
+                attached_test_oracle_gap_count=sum("### Auto-Coder material test-oracle gap" in str(comment["body"]) for comment in comments),
+                attached_finding_count=sum("### Auto-Coder adversarial finding" in str(comment["body"]) for comment in comments),
             )
             comments_json = json.dumps(comments, sort_keys=True, separators=(",", ":"))
             if effective_ledger is not None and unrooted_blocker_ids and reconciled_snapshot:

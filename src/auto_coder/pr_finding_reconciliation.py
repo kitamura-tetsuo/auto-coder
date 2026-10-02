@@ -358,6 +358,8 @@ def extract_observation_candidate_from_gap(
 
 
 _FILL_WORDS = {
+    "and",
+    "or",
     "the",
     "a",
     "an",
@@ -449,6 +451,18 @@ def _normalize_boundary(boundary: str) -> str:
     return boundary.strip().lower().replace("\\", "/").rstrip("/")
 
 
+def _scope_texts_match(left: str, right: str) -> bool:
+    """Require substantial shared content, rather than an incidental shared word."""
+    left_tokens = _normalize_tokens(left)
+    right_tokens = _normalize_tokens(right)
+    if not left_tokens or not right_tokens:
+        return False
+    shared = left_tokens & right_tokens
+    if left_tokens == right_tokens:
+        return True
+    return len(shared) >= 2 and len(shared) * 2 >= max(len(left_tokens), len(right_tokens))
+
+
 def scopes_describe_same_blocker(
     cand: ObservationCandidate,
     blocker: BlockerSnapshot,
@@ -471,6 +485,9 @@ def scopes_describe_same_blocker(
     cand_b = _normalize_boundary(cand.authoritative_boundary)
     blk_b = _normalize_boundary(blocker.authoritative_boundary)
 
+    if not cand_b or not blk_b:
+        return False
+
     boundaries_match = cand_b == blk_b or cand_b in blk_b or blk_b in cand_b
     if not boundaries_match and cand_b and blk_b:
         return False
@@ -481,26 +498,9 @@ def scopes_describe_same_blocker(
         if not cand_reqs.intersection(blk_reqs):
             return False
 
-    cand_outcome_tokens = _normalize_tokens(cand.required_outcome)
-    blk_outcome_tokens = _normalize_tokens(blocker.required_correction_outcome)
-
-    cand_behavior_tokens = _normalize_tokens(cand.incorrect_behavior_or_invariant)
-    blk_behavior_tokens = _normalize_tokens(blocker.incorrect_behavior_or_missing_invariant)
-
-    outcome_overlap = len(cand_outcome_tokens.intersection(blk_outcome_tokens)) if cand_outcome_tokens and blk_outcome_tokens else 0
-    behavior_overlap = len(cand_behavior_tokens.intersection(blk_behavior_tokens)) if cand_behavior_tokens and blk_behavior_tokens else 0
-
-    if cand_outcome_tokens and blk_outcome_tokens and outcome_overlap == 0:
-        if behavior_overlap == 0:
-            return False
-
-    if boundaries_match:
-        if outcome_overlap > 0 or behavior_overlap > 0:
-            return True
-        if not cand_outcome_tokens or not blk_outcome_tokens:
-            return True
-
-    return False
+    # Both parts of the correction scope must agree. A common requirement,
+    # anchor file, or broad remedy must not merge independent obligations.
+    return boundaries_match and _scope_texts_match(cand.required_outcome, blocker.required_correction_outcome) and _scope_texts_match(cand.incorrect_behavior_or_invariant, blocker.incorrect_behavior_or_missing_invariant)
 
 
 def advisory_semantic_match(

@@ -119,6 +119,185 @@ def make_reviewer(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_presentation_guide_and_audit_findings_keep_distinct_ids(ledger: CanonicalPRBlockerLedger, reverse_order: bool) -> None:
+    """PR #5453: sharing REQ-009 and a diff anchor does not imply one defect."""
+    findings = [
+        AdversarialValidationFinding(
+            requirement_ids=["REQ-009"],
+            anchor_path="server/src/mcp/mcp-api.ts",
+            actual_behavior="Guide unchanged: catalog still says the nine mutation tools, no presentation entry or example; only the tools/list description string mentions the new tool.",
+            required_behavior="Update the MCP operator guide with saved-versus-rendered semantics, exact-column targeting, reset/default rules, separate presentation/query revisions, five-minute process-local replay window, reuse rejection, and a Japanese read/preview/apply/reread example.",
+            finding_identity="operator-guide-missing-presentation",
+        ),
+        AdversarialValidationFinding(
+            requirement_ids=["REQ-009"],
+            anchor_path="server/src/mcp/mcp-api.ts",
+            actual_behavior="Audit record is written with outcome success and correct applied/replayed/entity/operationId but priorRevision and newRevision undefined even though both presentation revisions are known from the result.",
+            required_behavior="Success/preview/no-op/replay audit carries prior/resulting presentation revisions when known alongside correlation, fingerprint, tool/project/grid/operation IDs and dryRun/applied/replayed state.",
+            finding_identity="presentation-audit-missing-revisions",
+        ),
+    ]
+    if reverse_order:
+        findings.reverse()
+    result = AdversarialValidationResult(result="NEEDS_FIX", findings=findings)
+    first = reconcile_pr_findings_before_publication(ledger, API_ORIGIN, REPO, PR_NUMBER, 5436, "head-a", "base", result, HistoricalRootParseResult())
+    assert first.is_ambiguous is False
+    assert len(first.unrooted_blocker_ids) == 2
+    assert len(set(first.unrooted_finding_blockers)) == 2
+    assert first.unrooted_findings == tuple(findings)
+    assert first.snapshot is not None
+    assert len(first.snapshot.blockers) == 2
+
+    # A new attempt with moved diff lines still reuses each defect's own ID.
+    for finding in findings:
+        finding.anchor_line = 99
+    second = reconcile_pr_findings_before_publication(ledger, API_ORIGIN, REPO, PR_NUMBER, 5436, "head-b", "base", result, HistoricalRootParseResult())
+    assert second.is_ambiguous is False
+    assert second.unrooted_finding_blockers == first.unrooted_finding_blockers
+    assert second.snapshot is not None
+    assert len(second.snapshot.blockers) == 2
+
+
+@pytest.mark.parametrize(
+    "behavior,outcome",
+    [
+        ("Audit omits known presentation revisions", "Update the operator guide with presentation revisions"),
+        ("", "Record known presentation revisions in audit logs"),
+        ("Audit omits known presentation revisions", ""),
+    ],
+)
+def test_shared_boundary_requires_matching_behavior_and_correction(behavior: str, outcome: str) -> None:
+    from auto_coder.canonical_pr_blocker_ledger import BlockerSnapshot
+
+    blocker = BlockerSnapshot(
+        category="IMPLEMENTATION",
+        authoritative_boundary="server/src/mcp/mcp-api.ts",
+        qualified_requirements=(QualifiedRequirement(issue_number=5436, requirement_id="REQ-009"),),
+        incorrect_behavior_or_missing_invariant="Audit omits known presentation revisions",
+        required_correction_outcome="Record known presentation revisions in audit logs",
+    )
+    candidate = ObservationCandidate(
+        category="IMPLEMENTATION",
+        authoritative_boundary=blocker.authoritative_boundary,
+        requirement_ids=("REQ-009",),
+        incorrect_behavior_or_invariant=behavior,
+        required_outcome=outcome,
+    )
+    assert scopes_describe_same_blocker(candidate, blocker) is False
+    assert scopes_describe_same_blocker(candidate, blocker, advisory_mode=True) is False
+
+
+@pytest.mark.parametrize("candidate_boundary,blocker_boundary", [("", "src/api.py"), ("src/api.py", ""), ("", "")])
+def test_missing_boundary_cannot_associate_identical_scope_text(candidate_boundary: str, blocker_boundary: str) -> None:
+    from auto_coder.canonical_pr_blocker_ledger import BlockerSnapshot
+
+    candidate = ObservationCandidate(
+        category="IMPLEMENTATION",
+        authoritative_boundary=candidate_boundary,
+        incorrect_behavior_or_invariant="Audit omits known presentation revisions",
+        required_outcome="Record known presentation revisions in audit logs",
+    )
+    blocker = BlockerSnapshot(
+        category=candidate.category,
+        authoritative_boundary=blocker_boundary,
+        incorrect_behavior_or_missing_invariant=candidate.incorrect_behavior_or_invariant,
+        required_correction_outcome=candidate.required_outcome,
+    )
+    assert scopes_describe_same_blocker(candidate, blocker) is False
+    assert advisory_semantic_match(candidate, [blocker])[0] == ReconciliationDecision.DISTINCT_DEFECT
+
+
+def test_common_remedy_does_not_merge_different_response_defects() -> None:
+    from auto_coder.canonical_pr_blocker_ledger import BlockerSnapshot
+
+    blocker = BlockerSnapshot(
+        category="IMPLEMENTATION",
+        authoritative_boundary="server/src/mcp/mcp-api.ts",
+        incorrect_behavior_or_missing_invariant="Applied change returns missing presentation revision",
+        required_correction_outcome="Correct the presentation response fields",
+    )
+    candidate = ObservationCandidate(
+        category="IMPLEMENTATION",
+        authoritative_boundary=blocker.authoritative_boundary,
+        incorrect_behavior_or_invariant="Preview returns applied true without changing presentation",
+        required_outcome=blocker.required_correction_outcome,
+    )
+    assert scopes_describe_same_blocker(candidate, blocker, advisory_mode=True) is False
+
+
+@pytest.mark.parametrize("equivalent", [False, True])
+def test_publication_confirms_one_root_per_blocker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ledger: CanonicalPRBlockerLedger, equivalent: bool) -> None:
+    """Distinct defects get distinct roots; repeated observations share one root."""
+    first = AdversarialValidationFinding(
+        requirement_ids=["REQ-009"],
+        anchor_path="server/src/mcp/mcp-api.ts",
+        anchor_line=1,
+        actual_behavior="Successful presentation audit omits prior and resulting revisions",
+        required_behavior="Record known prior and resulting presentation revisions in audit logs",
+        evidence="Success audit reads the wrong revision fields",
+    )
+    second = AdversarialValidationFinding(
+        requirement_ids=["REQ-009"],
+        anchor_path=first.anchor_path,
+        anchor_line=2,
+        actual_behavior=first.actual_behavior if equivalent else "Operator guide lists nine mutation tools and omits the presentation example",
+        required_behavior=first.required_behavior if equivalent else "Document saved presentation semantics and the Japanese read preview apply reread example in the operator guide",
+        evidence="Independent evidence for the second observation",
+    )
+
+    class PublicationClient(RecordingClient):
+        review_body = ""
+        review_comments: list[dict[str, object]] = []
+
+        def request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
+            if method == "POST" and url.endswith("/reviews"):
+                self.requests.append(httpx.Request(method, url, **kwargs))
+                payload = kwargs["json"]
+                assert isinstance(payload, dict)
+                self.review_body = payload["body"]
+                self.review_comments = payload["comments"]
+                return resp(200, {"id": 77})
+            if url.endswith("/reviews/77"):
+                return resp(200, {"id": 77, "body": self.review_body, "commit_id": "head", "state": "CHANGES_REQUESTED", "user": {"login": "auto-coder-reviewer[bot]"}})
+            if "/reviews/77/comments?" in url:
+                return resp(200, [dict(comment, id=701 + index, pull_request_review_id=77, user={"login": "auto-coder-reviewer[bot]"}) for index, comment in enumerate(self.review_comments)])
+            return super().request(method, url, **kwargs)
+
+    client = PublicationClient(
+        [
+            resp(200, {"id": 1}),
+            resp(201, {"token": "fake-token", "expires_at": "2099-01-01T00:00:00Z"}),
+            resp(200, {"head": {"sha": "head"}}),
+            resp(200, []),
+            resp(200, [{"filename": first.anchor_path, "patch": "@@ -1,2 +1,2 @@\n-old\n+new\n+other"}]),
+        ]
+    )
+    reviewer = make_reviewer(tmp_path, client, monkeypatch, ledger=ledger)
+    monkeypatch.setattr(reviewer, "_identity", ReviewerAppIdentity("auto-coder-reviewer[bot]", 4765828))
+    publication = reviewer.publish(REPO, PR_NUMBER, "head", AdversarialValidationResult(result="NEEDS_FIX", findings=[first, second]), operation_id="test-publication")
+
+    assert publication.success is True
+    assert publication.reason == ""
+    expected_roots = 1 if equivalent else 2
+    assert len(client.review_comments) == expected_roots
+    assert f"{expected_roots} actionable finding thread(s) are attached" in client.review_body
+    snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER)
+    assert len(snapshot.blockers) == expected_roots
+    assert {blocker.get_canonical_root_comment_id() for blocker in snapshot.blockers} == set(range(701, 701 + expected_roots))
+    intent = ledger.get_publication_intent(API_ORIGIN, REPO, PR_NUMBER, "test-publication")
+    assert intent is not None
+    assert intent.status == "CONFIRMED"
+    assert len(intent.confirmed_roots) == expected_roots
+    assert ledger.get_pending_publication_intents(API_ORIGIN, REPO, PR_NUMBER) == ()
+    assert len(client.responses) == 0
+    submitted_bodies = "\n".join(str(comment["body"]) for comment in client.review_comments)
+    assert first.evidence in submitted_bodies
+    assert second.evidence in submitted_bodies
+    if equivalent:
+        assert client.review_comments[0]["line"] == 1
+
+
 def test_as001_repeat_without_another_root(ledger: CanonicalPRBlockerLedger) -> None:
     """AS-001: Given an open PR with an active blocker rooted at comment 101 on Head A,
 

@@ -1,5 +1,20 @@
 # Dashboard observability verification
 
+Ordinary adversarial publication now keeps distinct correction scopes under
+distinct blocker IDs and combines equivalent same-batch observations into one
+root. This preserves the existing `pr.adversarial-validation` stage and the
+review-audit publication/reconciliation effect schema: only confirmed native
+roots produce a confirmed publication, while incomplete associations retain the
+existing failure path. No processing origin, provider route, resumption path,
+trace field, or dashboard projection changes. The native semantic report still
+retains every finding independently of attached-thread counts. Run
+`bash scripts/test.sh tests/test_pr_finding_reconciliation.py tests/test_github_app_reviewer.py
+tests/test_pr_adversarial_review_audit.py tests/test_adversarial_validation_pr_flow.py
+tests/test_dashboard_reviews.py` to exercise root confirmation, retained
+audit effects, production-stage consumption, and the existing history projection.
+`test_publication_confirms_one_root_per_blocker` verifies both distinct-defect
+publication and equivalent-observation consolidation without a pending intent.
+
 Issues #2077 and #2078 add `IssueDispatchGuard` and its provider-neutral ranked
 candidate boundary. The guard introduces no new processing origin,
 execution-trace stage, structured event field, or dashboard projection: its

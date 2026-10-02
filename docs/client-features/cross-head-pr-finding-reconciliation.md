@@ -23,6 +23,14 @@ Blocker Ledger:
 - **Distinct Defect Preservation:** Observation candidates describing genuinely
   distinct defects (differing authoritative boundaries, distinct requirements, or
   differing failure invariants) reconcile to distinct blockers.
+  Sharing a requirement, diff-anchor file, or a few domain words does not establish
+  equivalence: both the incorrect behavior and corrective outcome must have
+  substantial shared content. Missing scope text or an empty authoritative boundary
+  does not authorize association.
+  The conservative lexical comparison ignores connective words and requires at
+  least two shared content tokens covering half of each description, or identical
+  nonempty token sets, separately for behavior and outcome. It is an advisory
+  heuristic, not proof of semantic equivalence.
 - **Non-Authorizing Ambiguity:** When reconciliation encounters ambiguous
   association across multiple active blockers or candidate roots, the ambiguity is
   treated as non-authorizing: it blocks speculative publications, resolves no
@@ -107,6 +115,12 @@ an acceptance receipt: completion additionally requires paginated, review-specif
 comment retrieval and an authenticated, non-reply root declaring each intended
 canonical blocker identity. Review IDs are never used as comment aliases, and a
 root-producing operation cannot be confirmed with an empty or partial alias set.
+Distinct defects receive separate identities and roots even within one review.
+When equivalent observations in the same batch reuse a blocker, their complete
+finding sections and evidence are combined under one root at the first anchor;
+the native review summary reports the actual attached thread count. This prevents
+multiple roots declaring one blocker from stranding publication confirmation.
+This change does not rewrite already-pending requests or historical GitHub roots.
 
 If acknowledgement or root discovery is interrupted, the durable operation remains
 pending and suppresses another publication for the same blockers. A later ordinary
