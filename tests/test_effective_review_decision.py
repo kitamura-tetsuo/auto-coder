@@ -1,5 +1,7 @@
 from dataclasses import replace
 
+import pytest
+
 from auto_coder.accepted_finding_bridge import (
     ASSOCIATED,
     BINDING_CURRENT,
@@ -83,6 +85,29 @@ def test_operational_failure_precedes_known_repairs() -> None:
     assert decision.next_action is EffectiveNextAction.OPERATIONAL_WAIT
     assert decision.blocker_ids == ("blocker-gap",)
     assert decision.corrections[0].accepted_state == "OPEN"
+
+
+@pytest.mark.parametrize(
+    ("ordinary_status", "expected_action"),
+    [
+        ("NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR),
+        ("NEEDS_TESTS", EffectiveNextAction.FOCUSED_TEST_REPAIR),
+    ],
+)
+def test_ordinary_repair_result_remains_nonapproving_without_accepted_findings(
+    ordinary_status: str,
+    expected_action: EffectiveNextAction,
+) -> None:
+    raw = result(ordinary_status)
+
+    decision = derive_effective_review_decision(raw, projection())
+
+    assert decision.status == ordinary_status
+    assert decision.next_action is expected_action
+    assert decision.approval_eligible is False
+    assert decision.corrections == ()
+    assert decision.raw_result == ordinary_status
+    assert decision.requirement_coverage == tuple(raw.requirement_coverage)
 
 
 def test_incomplete_or_historical_authority_requires_reconciliation() -> None:
