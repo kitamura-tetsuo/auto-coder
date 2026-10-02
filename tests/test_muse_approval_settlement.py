@@ -292,3 +292,17 @@ def test_unsupported_server_request_gets_method_error(setup):
 
 def test_denial_without_any_approval_frames_keeps_result_path(setup):
     _run_ok(setup, [{"ack": True}, *_FINISH], 24008, options=())
+
+
+def test_conflicting_turn_terminal_outcome_fails(setup):
+    failed = {"jsonrpc": "2.0", "method": "turn/completed", "params": {"sessionId": "$S", "turnId": "$T", "terminal": "failed"}}
+    _run_fail(setup, [{"ack": True}, {"emit": _REQ}, {"receipt": "$RPCID"}, {"emit": _resolved()}, *_FINISH, {"emit": failed}], "conflicting terminal")
+
+
+def test_preack_unrelated_resolution_cannot_erase_provisional_approval(setup):
+    script = [{"emit": _UPDATED}, {"emit": _resolved(turnId="old-turn")}, {"ack": True}, *_FINISH, {"sleep": 10}]
+    _run_fail(setup, script, "approval/unresolved-at-completion")
+
+
+def test_preack_resolution_for_admitted_turn_settles_provisional_approval(setup):
+    _run_ok(setup, [{"emit": _UPDATED}, {"emit": _resolved()}, {"ack": True}, *_FINISH], 24020)

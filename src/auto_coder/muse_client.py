@@ -159,11 +159,6 @@ class _ApprovalObservation:
     first_seen: float
     turn_id: Optional[str] = None
     opened: bool = False
-    policy_result: Optional[str] = None
-
-    @property
-    def pending(self) -> bool:
-        return self.policy_result is None
 
 
 @dataclass
@@ -175,6 +170,9 @@ class _ApprovalState:
     turn_id: Optional[str] = None
     completed_while_pending: bool = False
     records: dict[tuple[str, str], _ApprovalObservation] = field(default_factory=dict)
+    # Terminal host policy results keyed by (session, approval, turn); retained independently
+    # of openings so ordering cannot change them and an unrelated turn cannot bind a record.
+    resolutions: dict[tuple[str, str, str], str] = field(default_factory=dict)
 
 
 def _nonempty_str(value: object) -> Optional[str]:
@@ -729,7 +727,13 @@ class MuseClient(LLMClientBase):
     # --- Host-resolved approval observation (confirmed denyUnmatched only) ---
 
     def _pending_approvals(self) -> list[tuple[tuple[str, str], _ApprovalObservation]]:
-        return [(key, record) for key, record in self._approvals.records.items() if record.pending]
+        state = self._approvals
+        pending = []
+        for key, record in state.records.items():
+            turn_id = record.turn_id or state.turn_id
+            if turn_id is None or (key[0], key[1], turn_id) not in state.resolutions:
+                pending.append((key, record))
+        return pending
 
     def _wait_budget(self, deadline: float) -> float:
         """Seconds until the overall deadline or the earliest pending approval deadline."""
@@ -857,16 +861,11 @@ class MuseClient(LLMClientBase):
         session_id, turn_id, approval_id = identity
         if session_id != state.session_id or (state.turn_id is not None and turn_id != state.turn_id):
             return
-        record = state.records.get((session_id, approval_id))
-        if record is None:
-            state.records[(session_id, approval_id)] = _ApprovalObservation(first_seen=time.monotonic(), turn_id=turn_id, policy_result=str(policy_result))
-            return
-        if record.turn_id is not None and record.turn_id != turn_id:
-            return
-        if record.policy_result is not None and record.policy_result != policy_result:
+        assert turn_id is not None
+        key = (session_id, approval_id, turn_id)
+        if state.resolutions.get(key, str(policy_result)) != policy_result:
             raise RuntimeError("Muse MSP host reported conflicting policy results for one approval")
-        record.turn_id = turn_id
-        record.policy_result = str(policy_result)
+        state.resolutions[key] = str(policy_result)
 
     @staticmethod
     def _session_metadata(result: dict[str, object]) -> dict[str, object]:
@@ -1218,6 +1217,8 @@ class MuseClient(LLMClientBase):
                     raise RuntimeError("Muse MSP terminal belongs to an incompatible turn")
                 if params_obj.get("sessionId") != canonical_id:
                     raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
+                if params_obj.get("terminal") != terminal.get("terminal"):
+                    raise RuntimeError("Muse MSP host reported conflicting terminal outcomes for the turn")
             self._assert_approvals_settled()
             answers: list[str] = []
             for event in notifications:
