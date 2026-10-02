@@ -248,6 +248,7 @@ class PrReviewCycleSnapshot:
     attempt_error_reason: str
     pending_effect: str
     requires_new_strong_round: bool
+    strong_rounds: Tuple[StrongAuditRound, ...] = field(default_factory=tuple)
 
 
 class PrReviewCycleRepository:
@@ -458,11 +459,13 @@ class PrReviewCycleRepository:
 
         accepted_round_id = str(raw_pr.get("accepted_strong_round_id", ""))
         accepted_round = None
+        all_rounds: List[StrongAuditRound] = []
         for raw_round in raw_pr.get("strong_rounds", []) or []:
             assert isinstance(raw_round, dict)
-            if raw_round.get("round_id") == accepted_round_id:
-                accepted_round = self._strong_round_from_raw(raw_round)
-                break
+            parsed_round = self._strong_round_from_raw(raw_round)
+            all_rounds.append(parsed_round)
+            if parsed_round.round_id == accepted_round_id:
+                accepted_round = parsed_round
 
         ordinary_pass = raw_pr.get("ordinary_pass")
         ordinary_head = ordinary_base = ordinary_contract = ""
@@ -513,6 +516,7 @@ class PrReviewCycleRepository:
             attempt_error_reason=str(raw_pr.get("attempt_error_reason", "")),
             pending_effect=pending_effect,
             requires_new_strong_round=requires_new_strong_round,
+            strong_rounds=tuple(all_rounds),
         )
 
     @staticmethod
