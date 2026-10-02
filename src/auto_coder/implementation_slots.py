@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, NoReturn, Optional
 
+from .cloud_manager import claude_session_alias
 from .issue_context import extract_lifecycle_branch_issue_number, extract_lifecycle_directive_issue_references
 from .logger_config import get_logger
 from .runtime_locks import ensure_lock_directory, lock_path
@@ -272,6 +273,7 @@ class ImplementationSlotRepository:
             session_ids.update(re.findall(r"jules\.google\.com/(?:session|task)/([A-Za-z0-9_-]+)", body))
             session_ids.update(re.findall(r"https://claude\.ai/code/(session_[A-Za-z0-9_-]+)(?=[\s/#?)]|$)", body))
             session_ids.update(re.findall(r"\bSession ID:\s*([A-Za-z0-9_-]+)", body, re.IGNORECASE))
+        session_ids.update(alias for session_id in tuple(session_ids) if (alias := claude_session_alias(session_id)) is not None)
         with self._state_lock():
             records = self._read()
         for key, record in records.items():

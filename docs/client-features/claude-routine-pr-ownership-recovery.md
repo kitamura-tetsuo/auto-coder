@@ -2,6 +2,9 @@
 
 Claude Routine PR URLs (`https://claude.ai/code/session_...`) are matched against
 provider sessions already recorded in the repository's implementation-slot store.
+The existing Claude session alias rule treats `session_<S>` and `cse_<S>` as
+the same session for a nonempty, case-sensitive suffix, including when the
+provider registered `cse_<S>` and the published PR URL uses `session_<S>`.
 A matching PR reuses the existing logical owner even at full capacity, and its
 PR membership survives restart without requiring the URL to remain in the body.
 Startup discovery uses the same resolution before reconciliation. Unknown

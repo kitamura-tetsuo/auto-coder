@@ -858,6 +858,13 @@ view. No static diagram mapping or new dashboard request is needed.
 
 ### Claude PR implementation admission
 
+Admission uses the existing Claude session alias rule: a published
+`session_<S>` URL also matches a recorded `cse_<S>` provider session, preserving
+the Issue owner and completed admission at full capacity. Unknown sessions
+remain deferred under their standalone PR owner. The production trace schema
+and detail renderer are unchanged; the runnable regression below covers both
+stored spellings through the common processing boundary and mounted detail view.
+
 `tests/test_dashboard_observability.py::test_claude_pr_slot_admission_reaches_detail_view`
 executes the unified PR admission boundary with a real, full slot store and
 mounts the resulting PR detail page. A Claude session URL matching recorded

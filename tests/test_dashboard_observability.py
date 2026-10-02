@@ -972,8 +972,9 @@ def test_standalone_dependency_gate_reaches_mounted_detail_view(mock_ui, tmp_pat
 
 
 @pytest.mark.parametrize("known_session", [True, False])
+@pytest.mark.parametrize("stored_session", ["session_recorded", "cse_recorded"])
 @patch("auto_coder.dashboard.ui")
-def test_claude_pr_slot_admission_reaches_detail_view(mock_ui, tmp_path, known_session):
+def test_claude_pr_slot_admission_reaches_detail_view(mock_ui, tmp_path, known_session, stored_session):
     from auto_coder.automation_config import CandidateProcessingResult
     from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 
@@ -990,7 +991,7 @@ def test_claude_pr_slot_admission_reaches_detail_view(mock_ui, tmp_path, known_s
     engine.implementation_slots = slots
     owner = ImplementationOwner("issue", 1993)
     assert slots.reserve(owner)
-    assert slots.record_provider_session(owner, "session_recorded")
+    assert slots.record_provider_session(owner, stored_session)
     session = "session_recorded" if known_session else "session_unknown"
     pr = {"number": 2027, "title": "Dashboard", "body": f"https://claude.ai/code/{session}", "user": {"id": 1, "login": "developer"}, "labels": []}
     with patch.object(engine, "_process_single_candidate_reserved", return_value=CandidateProcessingResult("pr", 2027, "Dashboard", True, ["processing reached"])) as dispatch:
