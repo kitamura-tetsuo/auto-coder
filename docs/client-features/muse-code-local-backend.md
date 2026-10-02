@@ -17,11 +17,13 @@ in no-edit mode, Auto-Coder starts Muse with `--disable-write` and
 before submitting the turn. Dangerous bypass and unauthorized workspace-trust
 options fail closed rather than being stripped or passed to the host.
 
-Every editable session also starts with confirmed `denyUnmatched` approval mode.
-Exact-session resume establishes that mode before submitting a new turn. Required
-operations must already be allowed by the operator's Muse permission rules;
-Auto-Coder does not invent policy rules or grant blanket approval. Unmatched
-operations receive Muse's model-visible denial instead of waiting for a person.
+Ordinary editable fresh sessions omit `approvalMode`, allowing the host's configured
+default to govern without an Auto-Coder-maintained command allowlist. No-edit and
+explicit `--disable-approval` invocations request and confirm `denyUnmatched` before
+submitting a turn. Exact-session resume requests that mode only for those constrained
+invocations; ordinary resume preserves the stored host policy, including a stored
+`denyUnmatched` mode. Auto-Coder does not invent policy rules, relax stored policy,
+or grant blanket approval.
 This approval policy does not enable sandbox network access. Dependencies should
 be prepared by the controller's initial `scripts/test.sh` execution or by the
 target repository's setup procedure before invoking the provider.
@@ -30,7 +32,8 @@ An unexpected `approval/requested`, `approval/updated`, or `userInput/requested`
 frame fails promptly, including before the turn acknowledgement. Other server
 requests receive an unsupported-request response and fail the invocation. No
 request is automatically approved. The `llm.muse-interactive-request` stage
-reports a blocked outcome and bounded correlation identifiers to the dashboard,
+reports a blocked outcome, the requested and observed effective policy (using
+`unknown` when the host supplied no mode), and bounded correlation identifiers to the dashboard,
 without copying shell commands, prompt text, or approval subjects. The owned host
 and its process group are settled by the existing failure path.
 

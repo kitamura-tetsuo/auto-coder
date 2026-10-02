@@ -145,6 +145,8 @@ class _GitState:
 class _MspOptions:
     host_arguments: list[str]
     reasoning_effort: Optional[str]
+    noedit: bool
+    approval_denial: bool
 
 
 def _uuid7() -> str:
@@ -665,11 +667,14 @@ class MuseClient(LLMClientBase):
             detail = self._msp_stderr.decode(errors="replace").strip()
             self._raise_msp_failure("Muse MSP host exited before completing the request", detail)
 
-    @staticmethod
-    def _fail_interactive_request(method: str, params: object) -> None:
+    def _fail_interactive_request(self, method: str, params: object) -> None:
         details = params if isinstance(params, dict) else {}
         # Preserve correlation, never raw commands, prompts, subjects, or choices.
-        facts = {"method": method, "approval_mode": "denyUnmatched"}
+        facts = {
+            "method": method,
+            "requested_approval_policy": "denyUnmatched" if self._approval_denial_requested else "hostDefault",
+            "effective_approval_policy": self._observed_approval_mode or "unknown",
+        }
         for field in ("sessionId", "approvalId", "requestId"):
             value = details.get(field)
             if isinstance(value, str):
@@ -695,14 +700,21 @@ class MuseClient(LLMClientBase):
         self._reject_competing_prompt_sources(arguments)
         host_arguments = ["serve"]
         reasoning: Optional[str] = None
+        approval_denial = effective_noedit
         index = 0
-        harmless = {"exec", "--json", "--disable-approval"}
+        harmless = {"exec", "--json"}
         while index < len(arguments):
             argument = arguments[index]
             if argument in harmless:
                 index += 1
                 continue
+            if argument == "--disable-approval":
+                approval_denial = True
+                index += 1
+                continue
             if argument == "--no-edit":
+                effective_noedit = True
+                approval_denial = True
                 for flag in ("--disable-write", "--disable-shell"):
                     if flag not in host_arguments:
                         host_arguments.append(flag)
@@ -740,7 +752,7 @@ class MuseClient(LLMClientBase):
             for flag in ("--disable-write", "--disable-shell"):
                 if flag not in host_arguments:
                     host_arguments.append(flag)
-        return _MspOptions(host_arguments, reasoning)
+        return _MspOptions(host_arguments, reasoning, effective_noedit, approval_denial)
 
     @staticmethod
     def _validate_command_ack(result: dict[str, object], command_id: str, *, approval_change: bool = False) -> None:
@@ -817,6 +829,9 @@ class MuseClient(LLMClientBase):
         effective_noedit = is_noedit or self.use_noedit_options
         cwd = self._execution_cwd().resolve()
         msp_options = self._msp_options(effective_noedit)
+        effective_noedit = msp_options.noedit
+        self._approval_denial_requested = msp_options.approval_denial
+        self._observed_approval_mode: Optional[str] = None
         boundary = get_current_local_execution_boundary()
         if not effective_noedit:
             if boundary is None:
@@ -896,7 +911,9 @@ class MuseClient(LLMClientBase):
             self._msp_send(process, {"jsonrpc": "2.0", "method": "initialized"}, deadline)
             session_command_id = new_command_id()
             if session_id is None:
-                params: dict[str, object] = {"commandId": session_command_id, "workspaceRoot": str(cwd), "modelId": self.model_name, "approvalMode": "denyUnmatched"}
+                params: dict[str, object] = {"commandId": session_command_id, "workspaceRoot": str(cwd), "modelId": self.model_name}
+                if msp_options.approval_denial:
+                    params["approvalMode"] = "denyUnmatched"
                 method = "session/start"
             else:
                 if not session_id.strip():
@@ -920,16 +937,32 @@ class MuseClient(LLMClientBase):
             model_matches = model_matches or (resolved_model is not None and effective_model == resolved_model)
             if not model_matches:
                 raise RuntimeError("Muse MSP session omitted or uses an incompatible model")
+            approval_mode = metadata.get("approvalMode")
+            observed_mode = approval_mode.get("mode") if isinstance(approval_mode, dict) else None
+            if isinstance(observed_mode, str):
+                self._observed_approval_mode = observed_mode
             pending = opened.get("pendingRequests")
             if pending not in (None, []):
-                get_trace_collector().record_event(EventKind.STAGE_RESULT, "llm.muse-interactive-request", "local-backend", label="Muse interactive request blocked", outcome=Outcome.BLOCKED, facts={"method": method, "sessionId": canonical_id, "reason": "pending interactive requests"})
+                get_trace_collector().record_event(
+                    EventKind.STAGE_RESULT,
+                    "llm.muse-interactive-request",
+                    "local-backend",
+                    label="Muse interactive request blocked",
+                    outcome=Outcome.BLOCKED,
+                    facts={
+                        "method": method,
+                        "requested_approval_policy": "denyUnmatched" if self._approval_denial_requested else "hostDefault",
+                        "effective_approval_policy": self._observed_approval_mode or "unknown",
+                        "sessionId": canonical_id,
+                        "reason": "pending interactive requests",
+                    },
+                )
                 raise RuntimeError("Muse MSP session has pending interactive requests")
-            approval_mode = metadata.get("approvalMode")
-            denial_confirmed = isinstance(approval_mode, dict) and approval_mode.get("mode") == "denyUnmatched"
+            denial_confirmed = observed_mode == "denyUnmatched"
             if session_id is None:
-                if not denial_confirmed:
+                if msp_options.approval_denial and not denial_confirmed:
                     raise RuntimeError("Muse MSP fresh session did not confirm approval denial")
-            elif not denial_confirmed:
+            elif msp_options.approval_denial and not denial_confirmed:
                 approval_command_id = new_command_id()
                 approval_params: dict[str, object] = {
                     "commandId": approval_command_id,
@@ -939,6 +972,7 @@ class MuseClient(LLMClientBase):
                 self._msp_send(process, {"jsonrpc": "2.0", "id": 3, "method": "session/setApprovalMode", "params": approval_params}, deadline)
                 approval_result = self._msp_wait(process, 3, deadline, notifications)
                 self._validate_command_ack(approval_result, approval_command_id, approval_change=True)
+                self._observed_approval_mode = "denyUnmatched"
             command_id = new_command_id()
             turn_params: dict[str, object] = {"commandId": command_id, "sessionId": canonical_id, "input": [{"type": "text", "text": rendered_prompt}]}
             if msp_options.reasoning_effort is not None:

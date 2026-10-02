@@ -74,7 +74,13 @@ def test_muse_initial_tests_and_interactive_refusal_reach_mounted_detail(mock_ui
     events = [event for event in snapshot.events if event.kind == EventKind.STAGE_RESULT.value]
     assert [(event.stage_id, event.outcome) for event in events] == [("local.workspace-tests", "failed"), ("llm.muse-interactive-request", "blocked")]
     assert events[0].facts["exit_code"] == 1
-    assert events[1].facts == {"method": "approval/requested", "approval_mode": "denyUnmatched", "sessionId": "opaque/provider/session", "approvalId": "pending-1"}
+    assert events[1].facts == {
+        "method": "approval/requested",
+        "requested_approval_policy": "hostDefault",
+        "effective_approval_policy": "unknown",
+        "sessionId": "opaque/provider/session",
+        "approvalId": "pending-1",
+    }
     assert len({event.execution_id for event in events}) == 1
     assert "do-not-log-this-command" not in str(events)
     diagram = _mounted_detail(mock_ui, "issue", 5407)
