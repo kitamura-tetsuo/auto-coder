@@ -150,3 +150,44 @@ def test_expired_relationship_failure_never_uses_stale_success(tmp_path, monkeyp
             with pytest.raises(httpx.HTTPStatusError):
                 github.get_direct_sub_issues_strict("o/r", 10)
     assert sent == ["/repos/o/r/issues/10/sub_issues"] * 2
+
+
+def test_cancelled_webhook_observation_read_does_not_create_http_authority(tmp_path, monkeypatch):
+    import sqlite3
+    import threading
+
+    from auto_coder.github_request_governor import GitHubRequestGovernor
+    from auto_coder.util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubReadCancelled, GitHubRequestContext, GitHubRequestOutcome, GitHubResponseMetadata, cancel_github_reads_when
+
+    monkeypatch.chdir(tmp_path)
+    observed = threading.Event()
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3", waiter=lambda _seconds: observed.set())
+    held = GitHubRequestContext("held", "held", "test", "https://api.github.com", "GET", "read", "/held")
+    assert governor.admit(held)
+    configure_github_request_boundary(governor.admit_blocking, governor.observe)
+    sent = []
+    payload = {"number": 10, "state": "open", "body": "HTTP authority"}
+
+    def respond(_transport, request):
+        sent.append(request.url.path)
+        return httpx.Response(200, headers={"Cache-Control": "private, max-age=3600"}, json=payload)
+
+    try:
+        with patch.object(httpx.HTTPTransport, "handle_request", respond):
+            github = GitHubClient("test-token")
+            with cancel_github_reads_when(lambda _context: observed.is_set()):
+                with pytest.raises(GitHubReadCancelled):
+                    github.get_issue_dispatch_snapshot_strict("o/r", 10)
+            assert sent == []
+            governor.observe(GitHubRequestOutcome(held, 200, GitHubApiOutcome.SUCCESS, RequestProvenance.NETWORK, DeliveryCertainty.HTTP_RESPONSE_RECEIVED, GitHubResponseMetadata(), 1.0))
+            # The cancelled GET never populated HTTP authority. The next strict
+            # read must send, and only its actual response can be cached.
+            assert github.get_issue_dispatch_snapshot_strict("o/r", 10) == payload
+            assert github.get_issue_dispatch_snapshot_strict("o/r", 10) == payload
+            assert sent == ["/repos/o/r/issues/10"]
+            with sqlite3.connect(governor.path) as observer:
+                assert observer.execute("SELECT COUNT(*),SUM(resolved),SUM(recovered) FROM reservations").fetchone() == (2, 2, 0)
+                assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+    finally:
+        configure_github_request_boundary()
+        governor.close()

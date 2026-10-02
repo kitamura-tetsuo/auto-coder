@@ -203,3 +203,67 @@ def test_missing_issue_falls_through_to_authoritative_classification(tmp_path, n
     engine.github.get_issue_dispatch_snapshot_strict.side_effect = httpx.HTTPStatusError("Not found", request=response.request, response=response)
     assert engine._defer_observed_dependency_wait("owner/repo", 2019, claim) is False
     assert engine.invalidations.get_deferred(identity) is None
+
+
+@pytest.mark.parametrize("delivery", ["matching", "other-repository", "conflicting", "expired"])
+def test_webhook_cancels_only_usable_matching_dependency_reads(tmp_path, delivery):
+    from auto_coder.github_request_governor import GitHubRequestGovernor
+    from auto_coder.util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestContext, GitHubRequestOutcome, GitHubResponseMetadata, RequestProvenance, github_http_client
+
+    engine, identity, claim = engine_with_claim(tmp_path)
+    engine.dependency_observations.observe("owner/repo", issue())
+    active = GitHubRequestContext("operation", "held", "test", "https://api.github.com", "GET", "read", "/held")
+    governor = GitHubRequestGovernor(store_path=tmp_path / "governor.sqlite3", monotonic=lambda: 100.0, wall_time=lambda: 1_800_000_000.0)
+    assert governor.admit(active)
+    sends = []
+    waits = []
+
+    def deliver(seconds):
+        waits.append(seconds)
+        if delivery == "other-repository":
+            engine.dependency_observations.observe("another/repo", issue(2018))
+        else:
+            payload = {"repository": {"full_name": "owner/repo"}, "action": "opened", "issue": issue(2018)}
+            asyncio.run(process_github_payload("issues", payload, engine, "owner/repo", "during-wait"))
+            if delivery == "conflicting":
+                engine.dependency_observations.observe("owner/repo", issue(2018, state="closed"))
+            elif delivery == "expired":
+                object.__setattr__(engine.dependency_observations.get("owner/repo", 2018), "observed_at", -1000.0)
+        if delivery != "matching":
+            governor.observe(GitHubRequestOutcome(active, 200, GitHubApiOutcome.SUCCESS, RequestProvenance.NETWORK, DeliveryCertainty.HTTP_RESPONSE_RECEIVED, GitHubResponseMetadata(), 1.0))
+
+    governor._waiter = deliver
+
+    def transport(request):
+        sends.append(request.url.path)
+        return httpx.Response(200, json=issue(2018))
+
+    def read(repository, number):
+        if number == 2019:
+            return issue()
+        with github_http_client(subsystem="test", transport=httpx.MockTransport(transport), admission_hook=governor.admit_blocking, observation_hook=governor.observe) as client:
+            return client.get(f"https://api.github.com/repos/{repository}/issues/{number}").json()
+
+    engine.github.get_issue_dispatch_snapshot_strict.side_effect = read
+    try:
+        can_defer = delivery in {"matching", "other-repository"}
+        assert engine._defer_observed_dependency_wait("owner/repo", 2019, claim) is can_defer
+        assert waits == [0.5]
+        assert sends == ([] if delivery == "matching" else ["/repos/owner/repo/issues/2018"])
+        expected_reads = [("owner/repo", 2018), ("owner/repo", 2019)] if can_defer else [("owner/repo", 2018)]
+        assert [call.args for call in engine.github.get_issue_dispatch_snapshot_strict.call_args_list] == expected_reads
+        if can_defer:
+            engine._route_issue_stages_authoritatively.assert_called_once_with("owner/repo", 2019, issue())
+            assert engine.invalidations.get_deferred(identity).reason == "cached_dependency_wait"
+        else:
+            engine._route_issue_stages_authoritatively.assert_not_called()
+            assert engine.invalidations.get_deferred(identity) is None
+            assert engine.dependency_observations.get("owner/repo", 2018) is None
+        assert engine.implementation_slots is None
+        import sqlite3
+
+        with sqlite3.connect(governor.path) as observer:
+            assert observer.execute("SELECT COUNT(*) FROM admission_waiters").fetchone() == (0,)
+            assert observer.execute("SELECT COUNT(*) FROM reservations").fetchone() == ((1,) if delivery == "matching" else (2,))
+    finally:
+        governor.close()

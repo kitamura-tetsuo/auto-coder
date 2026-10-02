@@ -463,6 +463,33 @@ on restart; this is an expiry bound, not a processing delay. Durable
 `reissue_required` markers remain terminal across body edits. Incomplete
 publication and operational retries remain outside the negative-result cache.
 
+Webhook intake can also finish an already waiting initial Issue refresh through
+the same negative boundary. A cancelled unsent GET is not a network success or
+execution completion: the worker rechecks its refusal, emits the existing
+`issue.cached-blocked-admission` event only for a still-valid refusal, and otherwise
+releases the durable generation for reevaluation. Dependency observation GETs
+cancelled by matching usable webhook evidence still run authoritative Review
+routing before emitting the existing `issue.cached-dependency-wait` deferral.
+`tests/test_dashboard_observability.py::test_cached_dependency_wait_reaches_mounted_detail`
+now covers both preexisting observations and a webhook arriving during admission
+waiting, asserting zero transport sends for the cancelled dependency GET and the
+real deferred stage in the mounted detail. The refusal race is covered by
+`tests/test_issue_admission_cache.py::test_worker_cancels_waiting_refresh_when_webhook_supplies_refusal`.
+Governor diagnostics separately report `cancelled/local_observation_available`;
+they do not fabricate an entity stage. The renderer and structured event schema
+are unchanged because these paths reuse their existing blocked/deferred outcomes,
+facts, execution origins, and durable claim completion/release boundaries. Bounded
+fallback polling, one-time ticket insertion, and measured exhaustion diagnostics
+are exercised by `tests/test_github_request_governor.py` without changing the
+production-to-view projection. Run `bash scripts/test.sh
+tests/test_github_request_governor.py tests/test_dependency_observation_cache.py
+tests/test_issue_admission_cache.py tests/test_issue_relationship_http_cache.py
+tests/test_dashboard_observability.py`.
+`tests/test_issue_relationship_http_cache.py::test_cancelled_webhook_observation_read_does_not_create_http_authority`
+also drives the real Hishel/HTTP boundary: a cancelled read sends nothing and
+cannot populate HTTP authority, the next strict read sends once, and only that
+actual response may satisfy a subsequent cache hit.
+
 When changing a processing origin, gate, outcome, provider route, resumption handler,
 or event schema:
 
@@ -786,7 +813,7 @@ also mount and refresh the detail view from that snapshot.
 | Production origin | Runnable checks |
 | --- | --- |
 | Shared GitHub admission queue (operational gate; no entity execution) | `tests/test_github_request_governor.py::test_separate_process_waiters_take_capacity_in_registration_order`; `tests/test_github_request_governor.py::test_queue_diagnostics_report_unsent_lifecycle_with_attempt_and_owner`; `tests/test_pending_work_resumption.py::test_wrapped_reconciliation_admission_deferral_is_durably_retained` covers the existing `Deferred` result and durable handoff for `admission_queue`, without inventing task completion. |
-| Cached negative Issue admission, before strict refresh or family enumeration | `tests/test_dashboard_observability.py::test_cached_terminal_refusal_reaches_mounted_detail_without_github`; `tests/test_issue_admission_cache.py::test_worker_acknowledges_terminal_refusal_without_strict_refresh_or_validation`; `tests/test_issue_admission_cache.py::test_completed_contract_refusal_is_reused_until_webhook_then_strictly_refreshed` |
+| Cached negative Issue admission, before strict refresh or family enumeration | `tests/test_dashboard_observability.py::test_cached_terminal_refusal_reaches_mounted_detail_without_github`; `tests/test_issue_admission_cache.py::test_worker_acknowledges_terminal_refusal_without_strict_refresh_or_validation`; `tests/test_issue_admission_cache.py::test_worker_cancels_waiting_refresh_when_webhook_supplies_refusal` verifies an unsent initial refresh is cancelled when negative evidence arrives, and that evidence removed before acknowledgment cannot authorize or complete work; `tests/test_issue_admission_cache.py::test_completed_contract_refusal_is_reused_until_webhook_then_strictly_refreshed` |
 | Codex Cloud quota acquisition and admission | `tests/test_dashboard_observability.py::test_codex_app_server_failure_remains_deferred_in_detail_view` |
 | Standalone sibling-dependency admission (empty vs nonempty declaration) | `tests/test_dashboard_observability.py::test_standalone_dependency_gate_reaches_mounted_detail_view` |
 | Normal/explicit Issue processing and pre-worker admission | `tests/test_dashboard_observability.py::test_issue_admission_reaches_mounted_detail_view`; `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_explicit_single_target_origin_is_recorded`; `tests/test_issue_production_instrumentation.py::TestPreAdmissionGateVisible::test_author_disallowed_issue_records_skip_without_dispatch` |

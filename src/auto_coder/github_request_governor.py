@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import BinaryIO, Callable
 
 from .logger_config import get_logger
-from .util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubRequestContext, GitHubRequestOutcome, GitHubRequestRefused, GitHubResponseMetadata, RequestProvenance, normalize_api_origin
+from .util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome, GitHubReadCancelled, GitHubRequestContext, GitHubRequestOutcome, GitHubRequestRefused, GitHubResponseMetadata, RequestProvenance, github_read_cancellation_requested, normalize_api_origin
 
 logger = get_logger(__name__)
 REQUESTS_PER_MINUTE = 300
@@ -515,7 +515,7 @@ class GitHubRequestGovernor:
                     if state.cooldown_until > now:
                         reason, eligible = "rate_limit_cooldown", state.cooldown_until
                     elif active:
-                        reason = "request_in_flight"
+                        reason, eligible = "request_in_flight", now + ADMISSION_POLL_CEILING_SECONDS
                     elif attempts >= REQUESTS_PER_MINUTE:
                         reason, eligible = "request_rolling_window", first_attempt + 60.0
                     elif context.kind == "mutation":
@@ -537,12 +537,15 @@ class GitHubRequestGovernor:
                     if remaining_wait > 0 and reason in SELF_RESOLVING_DEFERRALS:
                         queued = (
                             self._connection.execute(
-                                "INSERT INTO admission_waiters(origin, attempt_id, owner_id, kind, deadline_utc) VALUES (?, ?, ?, ?, ?) ON CONFLICT(origin, attempt_id) DO NOTHING",
-                                (origin, context.attempt_id, self._incarnation_id, context.kind, now + remaining_wait),
+                                """INSERT INTO admission_waiters(origin, attempt_id, owner_id, kind, deadline_utc)
+                                SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS
+                                (SELECT 1 FROM admission_waiters WHERE origin=? AND attempt_id=?)""",
+                                (origin, context.attempt_id, self._incarnation_id, context.kind, now + remaining_wait, origin, context.attempt_id),
                             ).rowcount
                             == 1
                         )
                     if not reason:
+                        self._cancel_observed_read(context)
                         self._connection.execute("INSERT INTO reservations(origin, attempt_id, kind, admitted_utc, post_cooldown, owner_id) VALUES (?, ?, ?, ?, ?, ?)", (origin, context.attempt_id, context.kind, now, int(state.episode_active and now >= state.cooldown_until), self._incarnation_id))
                         self._connection.execute("DELETE FROM admission_waiters WHERE origin=? AND attempt_id=? AND owner_id=?", (origin, context.attempt_id, self._incarnation_id))
                     self._checkpoint(now)
@@ -555,7 +558,7 @@ class GitHubRequestGovernor:
                     raise GitHubRequestDeferred(context, reason, self._retry_at(eligible, now))
                 self._diagnostic(origin, context.attempt_id, "admitted", "eligible", now, now)
                 return True
-            except GitHubRequestDeferred:
+            except (GitHubRequestDeferred, GitHubReadCancelled):
                 raise
             except GovernorTransactionContention:
                 now = self._now()
@@ -634,17 +637,19 @@ class GitHubRequestGovernor:
         ``governor_state_unavailable`` is unusable state, and their callers own
         durable resumption rather than an in-process wait.
         """
-        deadline = self._monotonic() + self._wait_budget
+        started = self._monotonic()
+        deadline = started + self._wait_budget
         announce = True
         try:
             while True:
+                self._cancel_observed_read(context)
                 try:
                     return self._admit(context, announce_deferral=announce, remaining_wait=max(0.0, deadline - self._monotonic()))
                 except GitHubRequestDeferred as deferred:
                     remaining = deadline - self._monotonic()
                     if deferred.reason not in SELF_RESOLVING_DEFERRALS or remaining <= 0:
-                        if not announce:
-                            self._exhausted(context, deferred)
+                        if deferred.reason in SELF_RESOLVING_DEFERRALS and remaining <= 0:
+                            self._exhausted(context, deferred, self._monotonic() - started)
                         raise
                     announce = False
                     self._wait_for_capacity(min(max(deferred.retry_at - self._wall_time(), ADMISSION_POLL_FLOOR_SECONDS), ADMISSION_POLL_CEILING_SECONDS, remaining))
@@ -686,14 +691,24 @@ class GitHubRequestGovernor:
         with self._admission_wake:
             self._admission_wake.notify_all()
 
-    def _exhausted(self, context: GitHubRequestContext, deferred: GitHubRequestDeferred) -> None:
+    def wake_admission_waiters(self) -> None:
+        """Recheck observation cancellation promptly after local webhook intake."""
+        self._wake_waiters()
+
+    def _cancel_observed_read(self, context: GitHubRequestContext) -> None:
+        if github_read_cancellation_requested(context):
+            now = self._now()
+            self._diagnostic(normalize_api_origin(context.api_origin), context.attempt_id, "cancelled", "local_observation_available", now, now)
+            raise GitHubReadCancelled("GitHub read cancelled before sending: local observation available")
+
+    def _exhausted(self, context: GitHubRequestContext, deferred: GitHubRequestDeferred, waited_seconds: float) -> None:
         diagnostic: dict[str, object] = {
             "decision": "wait_exhausted",
             "state_path": str(self.path),
             "origin": normalize_api_origin(context.api_origin),
             "attempt": context.attempt_id,
             "delay_reason": deferred.reason,
-            "waited_seconds": self._wait_budget,
+            "waited_seconds": waited_seconds,
         }
         logger.bind(github_governor=diagnostic).warning("github_governor_diagnostic {}", json.dumps(diagnostic, sort_keys=True))
 

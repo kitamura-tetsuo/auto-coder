@@ -13,6 +13,16 @@ deliveries, incomplete payloads, deletion/transfer and relationship notification
 invalidate affected observations; an in-flight REST response cannot overwrite a
 newer notification. Duplicate deliveries do not renew observation age.
 
+If a complete, usable observation for the same Issue arrives while its cold GET
+is waiting for shared GitHub admission, the unsent GET is cancelled and the
+observation is rechecked for expiry, ambiguity, and invalidation before reuse.
+If it became unavailable, the normal read is retried. Unrelated repositories,
+older or conflicting deliveries, and expired observations never cancel the read.
+The separate authoritative Review-routing read and final execution gates are not
+cancellable from advisory evidence. Cancellation is process-local, matching the
+existing observation-cache lifetime; it does not publish webhook data as shared
+HTTP authority or persist trust across restart.
+
 Observations expire after 300 seconds. A cached wait retains a durable retry at
 most 300 seconds later, so missing notifications cannot strand work indefinitely.
 Issue notifications wake advisory dependency waits without lifting GitHub rate

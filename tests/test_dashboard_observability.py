@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
+import httpx
 import pytest
 from fastapi import FastAPI
 
@@ -17,6 +19,8 @@ from auto_coder.execution_trace import EventKind, Outcome, TraceCollector, get_t
 from auto_coder.github_pending_work import PendingObligation, PendingReason, WorkIdentity
 from auto_coder.reissue_required_store import ReissueRequiredStore
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult
+from auto_coder.util.github_request_outcome import GitHubRequestContext, github_http_client
+from auto_coder.webhook_server import process_github_payload
 
 
 @pytest.fixture(autouse=True)
@@ -132,7 +136,8 @@ def test_cached_terminal_refusal_reaches_mounted_detail_without_github(mock_ui):
 
 
 @patch("auto_coder.dashboard.ui")
-def test_cached_dependency_wait_reaches_mounted_detail(mock_ui, tmp_path):
+@pytest.mark.parametrize("webhook_while_queued", [False, True])
+def test_cached_dependency_wait_reaches_mounted_detail(mock_ui, tmp_path, webhook_while_queued):
     engine = AutomationEngine(MagicMock(), AutomationConfig(repo_name="owner/repo"))
     engine.github.get_issue_dispatch_snapshot_strict.return_value = {
         "number": 2019,
@@ -144,14 +149,35 @@ def test_cached_dependency_wait_reaches_mounted_detail(mock_ui, tmp_path):
     engine.invalidations.invalidate(EntityIdentity("owner/repo", "issue", 2019))
     claim = engine.invalidations.claim("owner/repo")
     assert engine.invalidations.begin_processing(claim)
-    for number in (2019, 2018):
+    for number in ((2019,) if webhook_while_queued else (2019, 2018)):
         engine.dependency_observations.observe("owner/repo", {"number": number, "body": "Parent-Issue: #2016\nBlocked-By: #2018", "state": "open", "updated_at": "2026-09-12T10:00:00Z"})
+    sends = []
+    if webhook_while_queued:
+        governor = engine.github_request_governor
+        assert governor.admit(GitHubRequestContext("held", "held", "test", "https://api.github.com", "GET", "read", "/held"))
+
+        def deliver(_seconds):
+            payload = {"action": "opened", "issue": {"number": 2018, "title": "Dependency", "body": "", "state": "open", "updated_at": "2026-09-12T10:00:00Z"}}
+            asyncio.run(process_github_payload("issues", payload, engine, "owner/repo", "queued-dependency"))
+
+        governor._waiter = deliver
+        routing_snapshot = engine.github.get_issue_dispatch_snapshot_strict.return_value
+
+        def read(repository, number):
+            if number == 2019:
+                return routing_snapshot
+            with github_http_client(subsystem="test", admission_hook=governor.admit_blocking, observation_hook=governor.observe, transport=httpx.MockTransport(lambda request: sends.append(request.url.path) or httpx.Response(200))) as client:
+                return client.get(f"https://api.github.com/repos/{repository}/issues/{number}").json()
+
+        engine.github.get_issue_dispatch_snapshot_strict.side_effect = read
     assert engine._defer_observed_dependency_wait("owner/repo", 2019, claim)
     snapshot = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=2019)
     stages = [event for event in snapshot.events if event.kind == EventKind.STAGE_RESULT.value]
     assert [event.stage_id for event in stages] == ["issue.cached-dependency-wait"]
     assert stages[0].outcome == Outcome.DEFERRED.value
-    engine.github.get_issue_dispatch_snapshot_strict.assert_called_once_with("owner/repo", 2019)
+    expected_reads = [("owner/repo", 2018), ("owner/repo", 2019)] if webhook_while_queued else [("owner/repo", 2019)]
+    assert [call.args for call in engine.github.get_issue_dispatch_snapshot_strict.call_args_list] == expected_reads
+    assert sends == []
     engine._route_issue_stages_authoritatively.assert_called_once()
     assert engine.implementation_slots is None
     _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 2019), "cached dependency wait")

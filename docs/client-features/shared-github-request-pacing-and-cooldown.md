@@ -34,6 +34,26 @@ deferrals to the callers that own durable resumption for them. Exhausting the
 wait budget emits a `wait_exhausted` governor diagnostic and re-raises the
 original deferral.
 
+An active request schedules a fallback admission check after 0.5 seconds rather
+than repeatedly polling at the 0.01-second floor. Completion and local webhook
+notifications wake same-instance waiters immediately. Other controller processes
+still discover released capacity within the bounded fallback interval. Repeated
+polls preserve the original ticket without another attempted AUTOINCREMENT insert.
+`wait_exhausted` records the measured monotonic elapsed time and is emitted only
+when the local wait budget actually expires; a transition to real cooldown does
+not report a fictitious 90-second timeout.
+
+Callers may cancel an unsent observation GET when usable local Issue evidence
+arrives during admission waiting. This is scoped to the requesting operation and
+exact repository/Issue resource, excluding mutations and relationship/list reads.
+The governor checks before polling and again before creating a charged reservation,
+removes the unsent ticket, and emits `cancelled/local_observation_available`.
+Cancellation creates no network response, quota charge, throttle retry, or recovery
+cooldown, and never releases another request's live reservation. The caller must
+recheck its observation before using it; advisory data never authorizes execution.
+Unavailable cancellation evidence leaves the ordinary authoritative read enabled
+and does not mark the governor's shared coordination state unavailable.
+
 Blocking requests register ordered, unsent admission tickets in the shared SQLite
 store. When origin capacity becomes free, the oldest currently eligible ticket
 has priority across threads and controller processes; a completion owner or a
