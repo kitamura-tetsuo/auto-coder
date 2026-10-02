@@ -241,6 +241,8 @@ def test_muse_interactive_notification_fails_without_waiting(tmp_path, monkeypat
     monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
     monkeypatch.setenv("MSP_LOG", str(log))
     monkeypatch.setenv("MSP_INTERACTIVE_METHOD", method)
+    # A confirmed-denial provisional update is bounded by the settlement window, not refused instantly.
+    monkeypatch.setattr("src.auto_coder.muse_client._MUSE_APPROVAL_SETTLEMENT_SECONDS", 0.5)
     if server_request:
         monkeypatch.setenv("MSP_INTERACTIVE_REQUEST_ID", "1")
     if events_before_ack:

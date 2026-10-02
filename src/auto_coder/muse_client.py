@@ -13,9 +13,9 @@ import subprocess
 import tempfile
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import NoReturn, Optional, Sequence
 
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .execution_trace import EventKind, Outcome, get_trace_collector
@@ -38,6 +38,9 @@ _MUSE_MSP_DIAGNOSTIC_SCHEMAS = frozenset(
 _MUSE_MSP_CLIENT_NAME = "auto_coder"
 _MUSE_141_MODEL_ALIASES = {"muse-spark-1.3": "muse-spark-1.3-contributor"}
 _MUSE_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
+# Auto-Coder policy (not a Muse timeout): how long one host-resolved approval may stay pending.
+_MUSE_APPROVAL_SETTLEMENT_SECONDS = 5.0
+_APPROVAL_POLICY_RESULTS = frozenset({"deny", "allow"})
 
 
 class _MspEndOfStream(Exception):
@@ -149,6 +152,33 @@ class _MspOptions:
     approval_denial: bool
 
 
+@dataclass
+class _ApprovalObservation:
+    """One approval observed in the current invocation, keyed by session and approval id."""
+
+    first_seen: float
+    turn_id: Optional[str] = None
+    opened: bool = False
+
+
+@dataclass
+class _ApprovalState:
+    """Per-invocation approval observations; never carried between invocations."""
+
+    eligible: bool = False
+    session_id: Optional[str] = None
+    turn_id: Optional[str] = None
+    completed_while_pending: bool = False
+    records: dict[tuple[str, str], _ApprovalObservation] = field(default_factory=dict)
+    # Terminal host policy results keyed by (session, approval, turn); retained independently
+    # of openings so ordering cannot change them and an unrelated turn cannot bind a record.
+    resolutions: dict[tuple[str, str, str], str] = field(default_factory=dict)
+
+
+def _nonempty_str(value: object) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
+
+
 def _uuid7() -> str:
     """Create an RFC 9562 UUIDv7 without depending on Python 3.14's uuid.uuid7."""
     timestamp_ms = int(time.time_ns() // 1_000_000) & ((1 << 48) - 1)
@@ -182,6 +212,7 @@ class MuseClient(LLMClientBase):
         self.timeout = (self.config_backend and self.config_backend.timeout) or 7200
         self._msp_stdout = bytearray()
         self._msp_stderr = bytearray()
+        self._approvals = _ApprovalState()
 
         override = os.environ.get("AUTOCODER_MUSE_CLI")
         command = shlex.split(override) if override else ["muse"]
@@ -561,9 +592,13 @@ class MuseClient(LLMClientBase):
         stdin_fd = process.stdin.fileno()
         stderr_fd = process.stderr.fileno() if process.stderr is not None else None
         while payload:
-            remaining = deadline - time.monotonic()
+            self._check_approval_expiry()
+            remaining = self._wait_budget(deadline)
             if remaining <= 0:
-                raise self._msp_timeout()
+                self._check_approval_expiry()
+                if time.monotonic() >= deadline:
+                    raise self._msp_timeout()
+                continue
             reads = [stderr_fd] if stderr_fd is not None else []
             readable, writable, _ = select.select(reads, [stdin_fd], [], remaining)
             if stderr_fd is not None and stderr_fd in readable:
@@ -609,6 +644,7 @@ class MuseClient(LLMClientBase):
         stdout_fd = process.stdout.fileno()
         stderr_fd = process.stderr.fileno() if process.stderr is not None else None
         while True:
+            self._check_approval_expiry()
             newline = self._msp_stdout.find(b"\n")
             if newline >= 0:
                 raw = bytes(self._msp_stdout[:newline])
@@ -619,38 +655,43 @@ class MuseClient(LLMClientBase):
                     raise RuntimeError("Muse MSP host emitted an invalid protocol frame") from exc
                 if not isinstance(frame, dict):
                     raise RuntimeError("Muse MSP host emitted a non-object protocol frame")
-                method = frame.get("method")
-                if method in {"approval/requested", "approval/updated", "userInput/requested"}:
-                    self._fail_interactive_request(str(method), frame.get("params"))
-                if frame.get("id") == request_id:
+                if "method" in frame:
+                    method = frame["method"]
+                    if not isinstance(method, str):
+                        raise RuntimeError("Muse MSP host emitted a frame with a non-string method")
+                    if "id" in frame:
+                        # Server-originated RPC: its id namespace is independent of ours.
+                        self._msp_handle_server_request(process, frame, method, deadline)
+                    else:
+                        self._msp_handle_notification(frame, method)
+                        notifications.append(frame)
+                        if request_id == -1:
+                            return {}
+                    continue
+                response_id = frame.get("id")
+                if "id" in frame and type(response_id) is int and response_id == request_id:
                     if "error" in frame:
                         self._raise_msp_failure("Muse MSP request failed", frame["error"])
                     result = frame.get("result")
                     if not isinstance(result, dict):
                         raise RuntimeError("Muse MSP response did not contain an object result")
                     return result
-                if "method" in frame and "id" in frame:
-                    self._msp_send(
-                        process,
-                        {"jsonrpc": "2.0", "id": frame["id"], "error": {"code": -32601, "message": "Auto-Coder does not support interactive MSP requests"}},
-                        deadline,
-                    )
-                    self._fail_interactive_request(str(method), frame.get("params"))
-                elif "method" in frame:
-                    notifications.append(frame)
-                    if request_id == -1:
-                        return {}
                 continue
 
-            remaining = deadline - time.monotonic()
+            remaining = self._wait_budget(deadline)
             if remaining <= 0:
-                raise self._msp_timeout()
+                self._check_approval_expiry()
+                if time.monotonic() >= deadline:
+                    raise self._msp_timeout()
+                continue
             reads = [stdout_fd]
             if stderr_fd is not None:
                 reads.append(stderr_fd)
             readable, _, _ = select.select(reads, [], [], remaining)
             if not readable:
-                raise self._msp_timeout()
+                if time.monotonic() >= deadline:
+                    raise self._msp_timeout()
+                continue
             if stderr_fd is not None and stderr_fd in readable:
                 self._drain_msp_stderr(stderr_fd)
             if stdout_fd not in readable:
@@ -667,7 +708,7 @@ class MuseClient(LLMClientBase):
             detail = self._msp_stderr.decode(errors="replace").strip()
             self._raise_msp_failure("Muse MSP host exited before completing the request", detail)
 
-    def _fail_interactive_request(self, method: str, params: object) -> None:
+    def _fail_interactive_request(self, method: str, params: object) -> NoReturn:
         details = params if isinstance(params, dict) else {}
         # Preserve correlation, never raw commands, prompts, subjects, or choices.
         facts = {
@@ -675,13 +716,156 @@ class MuseClient(LLMClientBase):
             "requested_approval_policy": "denyUnmatched" if self._approval_denial_requested else "hostDefault",
             "effective_approval_policy": self._observed_approval_mode or "unknown",
         }
-        for field in ("sessionId", "approvalId", "requestId"):
-            value = details.get(field)
+        for field_name in ("sessionId", "turnId", "approvalId", "requestId"):
+            value = details.get(field_name)
             if isinstance(value, str):
-                facts[field] = value[:200]
+                facts[field_name] = value[:200]
         get_trace_collector().record_event(EventKind.STAGE_RESULT, "llm.muse-interactive-request", "local-backend", label="Muse interactive request blocked", outcome=Outcome.BLOCKED, facts=facts)
         logger.error("Muse unattended execution received an interactive request: {}", facts)
         raise RuntimeError(f"Muse MSP unattended execution cannot wait for interactive request {method}; configure required Muse permission rules and prepare dependencies before invocation")
+
+    # --- Host-resolved approval observation (confirmed denyUnmatched only) ---
+
+    def _pending_approvals(self) -> list[tuple[tuple[str, str], _ApprovalObservation]]:
+        state = self._approvals
+        pending = []
+        for key, record in state.records.items():
+            turn_id = record.turn_id or state.turn_id
+            if turn_id is None or (key[0], key[1], turn_id) not in state.resolutions:
+                pending.append((key, record))
+        return pending
+
+    def _wait_budget(self, deadline: float) -> float:
+        """Seconds until the overall deadline or the earliest pending approval deadline."""
+        now = time.monotonic()
+        limits = [deadline - now]
+        limits.extend(record.first_seen + _MUSE_APPROVAL_SETTLEMENT_SECONDS - now for _, record in self._pending_approvals())
+        return max(min(limits), 0.0) if len(limits) > 1 else limits[0]
+
+    def _check_approval_expiry(self) -> None:
+        now = time.monotonic()
+        for (session_id, approval_id), record in self._pending_approvals():
+            if now - record.first_seen >= _MUSE_APPROVAL_SETTLEMENT_SECONDS:
+                params = {"sessionId": session_id, "approvalId": approval_id, "turnId": record.turn_id}
+                self._fail_interactive_request("approval/settlement-expired", params)
+
+    def _bind_admitted_turn(self, turn_id: str) -> None:
+        """Check pre-acknowledgement approval traffic against the actual admitted turn."""
+        state = self._approvals
+        state.turn_id = turn_id
+        for key, record in list(state.records.items()):
+            if record.turn_id is None or record.turn_id == turn_id:
+                continue
+            if record.opened:
+                self._fail_interactive_request("approval/incompatible-turn", {"sessionId": key[0], "approvalId": key[1], "turnId": record.turn_id})
+            del state.records[key]
+
+    def _assert_approvals_settled(self) -> None:
+        state = self._approvals
+        pending = self._pending_approvals()
+        if pending or state.completed_while_pending:
+            session_id, approval_id = pending[0][0] if pending else (state.session_id, None)
+            self._fail_interactive_request("approval/unresolved-at-completion", {"sessionId": session_id, "approvalId": approval_id, "turnId": state.turn_id})
+
+    @staticmethod
+    def _valid_rpc_id(value: object) -> bool:
+        return type(value) is int or (type(value) is str)
+
+    def _msp_handle_server_request(self, process: subprocess.Popen[bytes], frame: dict[str, object], method: str, deadline: float) -> None:
+        request_id = frame["id"]
+        if not self._valid_rpc_id(request_id):
+            raise RuntimeError("Muse MSP host emitted a server request with an invalid id")
+        params = frame.get("params")
+        if method == "approval/request":
+            identity = self._approval_identity(params, require_turn=True)
+            if identity is None:
+                self._msp_send(process, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "Invalid approval request identity"}}, deadline)
+                self._fail_interactive_request(method, params)
+            # The empty result is only a presentation receipt, never a decision.
+            self._msp_send(process, {"jsonrpc": "2.0", "id": request_id, "result": {}}, deadline)
+            if not self._approvals.eligible:
+                self._fail_interactive_request(method, params)
+            self._observe_approval_opening(method, params, identity)
+            return
+        self._msp_send(
+            process,
+            {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Auto-Coder does not support interactive MSP requests"}},
+            deadline,
+        )
+        self._fail_interactive_request(method, params)
+
+    def _msp_handle_notification(self, frame: dict[str, object], method: str) -> None:
+        params = frame.get("params")
+        state = self._approvals
+        if method == "userInput/requested":
+            self._fail_interactive_request(method, params)
+        if method in {"approval/requested", "approval/updated"}:
+            if not state.eligible:
+                self._fail_interactive_request(method, params)
+            if method == "approval/requested":
+                identity = self._approval_identity(params, require_turn=True)
+                if identity is None:
+                    self._fail_interactive_request(method, params)
+                self._observe_approval_opening(method, params, identity)
+            else:
+                self._observe_approval_update(method, params)
+        elif method == "approval/resolved" and state.eligible:
+            self._observe_approval_resolution(params)
+        elif method == "turn/completed" and state.eligible and self._pending_approvals():
+            state.completed_while_pending = True
+
+    @staticmethod
+    def _approval_identity(params: object, *, require_turn: bool) -> Optional[tuple[str, Optional[str], str]]:
+        if not isinstance(params, dict):
+            return None
+        session_id = _nonempty_str(params.get("sessionId"))
+        approval_id = _nonempty_str(params.get("approvalId"))
+        turn_id = _nonempty_str(params.get("turnId"))
+        if session_id is None or approval_id is None or (require_turn and turn_id is None):
+            return None
+        return session_id, turn_id, approval_id
+
+    def _observe_approval_opening(self, method: str, params: object, identity: Optional[tuple[str, Optional[str], str]]) -> None:
+        state = self._approvals
+        assert identity is not None
+        session_id, turn_id, approval_id = identity
+        if session_id != state.session_id or (state.turn_id is not None and turn_id != state.turn_id):
+            self._fail_interactive_request(method, params)
+        record = state.records.get((session_id, approval_id))
+        if record is None:
+            state.records[(session_id, approval_id)] = _ApprovalObservation(first_seen=time.monotonic(), turn_id=turn_id, opened=True)
+            return
+        if record.turn_id is not None and record.turn_id != turn_id:
+            self._fail_interactive_request(method, params)
+        # Duplicates neither renew the age nor reopen a settled approval.
+        record.turn_id = turn_id
+        record.opened = True
+
+    def _observe_approval_update(self, method: str, params: object) -> None:
+        state = self._approvals
+        identity = self._approval_identity(params, require_turn=False)
+        if identity is None:
+            self._fail_interactive_request(method, params)
+        session_id, turn_id, approval_id = identity
+        if session_id != state.session_id or (turn_id is not None and state.turn_id is not None and turn_id != state.turn_id):
+            return
+        # An update cannot establish turn identity or completion; it only starts the clock.
+        state.records.setdefault((session_id, approval_id), _ApprovalObservation(first_seen=time.monotonic()))
+
+    def _observe_approval_resolution(self, params: object) -> None:
+        state = self._approvals
+        identity = self._approval_identity(params, require_turn=True)
+        policy_result = params.get("policyResult") if isinstance(params, dict) else None
+        if identity is None or policy_result not in _APPROVAL_POLICY_RESULTS:
+            return
+        session_id, turn_id, approval_id = identity
+        if session_id != state.session_id or (state.turn_id is not None and turn_id != state.turn_id):
+            return
+        assert turn_id is not None
+        key = (session_id, approval_id, turn_id)
+        if state.resolutions.get(key, str(policy_result)) != policy_result:
+            raise RuntimeError("Muse MSP host reported conflicting policy results for one approval")
+        state.resolutions[key] = str(policy_result)
 
     @staticmethod
     def _session_metadata(result: dict[str, object]) -> dict[str, object]:
@@ -832,6 +1016,7 @@ class MuseClient(LLMClientBase):
         effective_noedit = msp_options.noedit
         self._approval_denial_requested = msp_options.approval_denial
         self._observed_approval_mode: Optional[str] = None
+        self._approvals = _ApprovalState()
         boundary = get_current_local_execution_boundary()
         if not effective_noedit:
             if boundary is None:
@@ -974,6 +1159,8 @@ class MuseClient(LLMClientBase):
                 self._validate_command_ack(approval_result, approval_command_id, approval_change=True)
                 self._observed_approval_mode = "denyUnmatched"
             command_id = new_command_id()
+            # Automatic settlement is eligible only after denyUnmatched is confirmed for this session.
+            self._approvals = _ApprovalState(eligible=self._observed_approval_mode == "denyUnmatched", session_id=canonical_id)
             turn_params: dict[str, object] = {"commandId": command_id, "sessionId": canonical_id, "input": [{"type": "text", "text": rendered_prompt}]}
             if msp_options.reasoning_effort is not None:
                 turn_params["reasoningEffort"] = msp_options.reasoning_effort
@@ -984,6 +1171,7 @@ class MuseClient(LLMClientBase):
             turn_id = turn_ack.get("turnId")
             if not isinstance(turn_id, str) or not turn_id or type(turn_ack.get("startedNewTurn")) is not bool or not isinstance(turn_ack.get("disposition"), str) or not turn_ack.get("disposition"):
                 raise RuntimeError("Muse MSP did not acknowledge the submitted turn")
+            self._bind_admitted_turn(turn_id)
             terminal: Optional[dict[str, object]] = None
             notification_cursor = 0
             while terminal is None:
@@ -1003,6 +1191,8 @@ class MuseClient(LLMClientBase):
                         terminal = params_obj
             if terminal.get("terminal") != "completed":
                 self._raise_msp_failure("Muse MSP turn did not complete successfully", terminal)
+            # A resolution arriving after completion cannot rescue an unresolved approval.
+            self._assert_approvals_settled()
             # A single-turn host remains open waiting for more input. Close our
             # input after completion, then consume every remaining notification
             # through host EOF so a later contradictory terminal cannot escape
@@ -1027,6 +1217,9 @@ class MuseClient(LLMClientBase):
                     raise RuntimeError("Muse MSP terminal belongs to an incompatible turn")
                 if params_obj.get("sessionId") != canonical_id:
                     raise RuntimeError("Muse MSP terminal belongs to an incompatible session")
+                if params_obj.get("terminal") != terminal.get("terminal"):
+                    raise RuntimeError("Muse MSP host reported conflicting terminal outcomes for the turn")
+            self._assert_approvals_settled()
             answers: list[str] = []
             for event in notifications:
                 params_obj = event.get("params")

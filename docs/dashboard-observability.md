@@ -320,6 +320,9 @@ invocation's requested policy and the host-confirmed effective policy, using
 `unknown` when optional mode metadata is absent. Ordinary editable fresh sessions
 use the host default and ordinary resume preserves stored policy; no-edit and
 explicit-denial invocations still require confirmed `denyUnmatched` before a turn.
+Under confirmed `denyUnmatched`, an approval the host resolves by policy within its
+five-second observation window emits no blocked stage; an unresolved one is blocked
+with method `approval/settlement-expired` or `approval/unresolved-at-completion`.
 
 Both producers use schema version 1 and the current caller execution scope. The
 generic mounted detail renderer displays their new stages without a renderer or
