@@ -19,3 +19,9 @@ writer evidence replace the predecessor evidence used by the next reuse decision
 earlier evidence cannot make the current turn successful. Releasing a retained
 session drops only that session's lease, so delayed lifecycle work cannot dispose
 an actively retained generation.
+
+After handoff, checkpoint advancement compares the shared source scope rather than
+new ignored build output. Preserved baseline paths and privately tracked files
+remain validated, including paths now covered by an ignore rule. Ignored caller
+context still participates in the staleness guard. See
+[private local Git workspaces](private-local-git-workspaces.md) for the scope rules.

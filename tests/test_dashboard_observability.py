@@ -76,8 +76,8 @@ def test_muse_initial_tests_and_interactive_refusal_reach_mounted_detail(mock_ui
     assert events[0].facts["exit_code"] == 1
     assert events[1].facts == {
         "method": "approval/requested",
-        "requested_approval_policy": "hostDefault",
-        "effective_approval_policy": "unknown",
+        "requested_approval_policy": "allowAll",
+        "effective_approval_policy": "allowAll",
         "sessionId": "opaque/provider/session",
         "approvalId": "pending-1",
     }

@@ -100,10 +100,10 @@ for line in sys.stdin:
         missing_model = os.environ.get("MSP_MISSING_MODEL") or (os.environ.get("MSP_MISSING_MODEL_RESUME") and method == "session/resume")
         if not missing_model:
             session["modelId"] = os.environ.get("MSP_RESUME_MODEL", "muse-spark-1.3") if method == "session/resume" else os.environ.get("MSP_FRESH_MODEL", "muse-spark-1.3")
-        requested_denial = method == "session/start" and frame["params"].get("approvalMode") == "denyUnmatched"
+        requested_mode = frame["params"].get("approvalMode") if method == "session/start" else None
         approval_mode = os.environ.get("MSP_APPROVAL_MODE")
-        if approval_mode != "omit" and (requested_denial or (method == "session/resume" and os.environ.get("MSP_RESUME_DENIED"))):
-            session["approvalMode"] = {"mode":approval_mode or "denyUnmatched"}
+        if approval_mode != "omit" and (requested_mode or (method == "session/resume" and os.environ.get("MSP_RESUME_DENIED"))):
+            session["approvalMode"] = {"mode":approval_mode or requested_mode or "denyUnmatched"}
         if os.environ.get("MSP_REPORTED_APPROVAL_MODE"):
             session["approvalMode"] = {"mode":os.environ["MSP_REPORTED_APPROVAL_MODE"]}
         pending = [{"kind":"approval","approvalId":"pending-1","viewCursor":"cursor-1"}] if method == "session/resume" and os.environ.get("MSP_PENDING_RESUME") else []
@@ -112,7 +112,7 @@ for line in sys.stdin:
             time.sleep(10)
     elif method == "session/setApprovalMode":
         ack_case = os.environ.get("MSP_APPROVAL_ACK_CASE", "completed")
-        ack = {"commandId":frame["params"]["commandId"],"status":"accepted","applyOutcome":ack_case if ack_case in ("completed", "noop") else "completed","effectiveMode":{"mode":"denyUnmatched"}}
+        ack = {"commandId":frame["params"]["commandId"],"status":"accepted","applyOutcome":ack_case if ack_case in ("completed", "noop") else "completed","effectiveMode":{"mode":frame["params"]["mode"]}}
         if ack_case == "mismatched-command":
             ack["commandId"] = "01900000-0000-7000-8000-000000000000"
         elif ack_case == "rejected":
@@ -122,7 +122,7 @@ for line in sys.stdin:
         elif ack_case == "missing-mode":
             ack.pop("effectiveMode")
         elif ack_case == "permissive-mode":
-            ack["effectiveMode"] = {"mode":"allowAll"}
+            ack["effectiveMode"] = {"mode":"allowAll" if frame["params"]["mode"] == "denyUnmatched" else "denyUnmatched"}
         emit({"jsonrpc":"2.0","id":frame["id"],"result":ack})
     elif method == "turn/start":
         if os.environ.get("MSP_CHILD_WRITER"):
@@ -137,6 +137,9 @@ for line in sys.stdin:
             continue
         if os.environ.get("MSP_MUTATE"):
             Path("tracked.txt").write_text("mutated\n")
+        if os.environ.get("MSP_GENERATED_IGNORED"):
+            Path("build").mkdir(exist_ok=True)
+            Path("build/generated.js").write_text("ignored build output\n")
         if os.environ.get("MSP_SLEEP"):
             time.sleep(float(os.environ["MSP_SLEEP"]))
         turn = "turn-" + frame["params"]["commandId"]
@@ -410,7 +413,7 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     turns = [entry for entry in frames if entry["frame"].get("method") == "turn/start"]
     assert [entry["frame"]["params"]["clientInfo"]["name"] for entry in initializations] == ["auto_coder", "auto_coder"]
     assert len(starts) == 1
-    assert "approvalMode" not in starts[0]["frame"]["params"]
+    assert starts[0]["frame"]["params"]["approvalMode"] == "allowAll"
     assert [entry["frame"]["params"]["sessionId"] for entry in resumes] == [session_id]
     assert len(turns) == 2
     assert turns[1]["argv"] == ["serve", "--disable-write", "--disable-shell"]
@@ -534,29 +537,31 @@ def test_muse_msp_fresh_noedit_rejects_unconfirmed_approval_before_turn(tmp_path
     monkeypatch.setenv("MSP_APPROVAL_MODE", approval_mode)
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
-    with pytest.raises(RuntimeError, match="fresh session did not confirm approval denial"):
+    with pytest.raises(RuntimeError, match="fresh session did not confirm approval mode denyUnmatched"):
         _manager(config)._run_llm_cli("first", is_noedit=True)
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     assert any(entry["frame"].get("method") == "session/start" for entry in entries)
     assert not any(entry["frame"].get("method") == "turn/start" for entry in entries)
 
 
-def test_muse_msp_unconstrained_fresh_accepts_unknown_host_default(tmp_path, monkeypatch, _use_real_commands):
+@pytest.mark.parametrize("approval_mode", ["omit", "promptUnmatched", "denyUnmatched"])
+def test_muse_msp_editable_fresh_rejects_unconfirmed_allow_all_before_turn(tmp_path, monkeypatch, _use_real_commands, approval_mode):
     repo = _repository(tmp_path)
-    host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
     monkeypatch.chdir(repo)
-    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(_host(tmp_path)))
     monkeypatch.setenv("MSP_LOG", str(log))
-    monkeypatch.setenv("MSP_APPROVAL_MODE", "omit")
+    monkeypatch.setenv("MSP_APPROVAL_MODE", approval_mode)
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
 
-    assert _manager(config)._run_llm_cli("first") == "answer:first"
+    with pytest.raises(RuntimeError, match="fresh session did not confirm approval mode allowAll"):
+        manager._run_llm_cli("first")
     frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
     start = next(frame for frame in frames if frame.get("method") == "session/start")
-    assert "approvalMode" not in start["params"]
-    assert not any(frame.get("method") == "session/setApprovalMode" for frame in frames)
-    assert sum(frame.get("method") == "turn/start" for frame in frames) == 1
+    assert start["params"]["approvalMode"] == "allowAll"
+    assert not any(frame.get("method") == "turn/start" for frame in frames)
+    assert manager.get_last_session_id() is None
 
 
 @pytest.mark.parametrize(
@@ -584,7 +589,7 @@ def test_muse_msp_one_shot_denial_does_not_leak(tmp_path, monkeypatch, _use_real
     assert starts[0]["params"]["approvalMode"] == "denyUnmatched"
     first_start = next(json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"] == starts[0])
     assert first_start["argv"] == expected_argv
-    assert "approvalMode" not in starts[1]["params"]
+    assert starts[1]["params"]["approvalMode"] == "allowAll"
 
 
 def _assert_uuid7(value: str) -> None:
@@ -658,7 +663,8 @@ def test_muse_msp_resume_reestablishes_approval_denial(tmp_path, monkeypatch, _u
     "ack_case",
     ["mismatched-command", "rejected", "pending", "missing-mode", "permissive-mode"],
 )
-def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path, monkeypatch, _use_real_commands, ack_case):
+@pytest.mark.parametrize("is_noedit", [False, True])
+def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path, monkeypatch, _use_real_commands, ack_case, is_noedit):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -677,7 +683,7 @@ def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path
     monkeypatch.setenv("MSP_APPROVAL_ACK_CASE", ack_case)
 
     with pytest.raises(RuntimeError):
-        manager.continue_session(session_id, "second", is_noedit=True)
+        manager.continue_session(session_id, "second", is_noedit=is_noedit)
 
     frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
     assert [frame.get("method") for frame in frames].count("session/resume") == 1
@@ -687,8 +693,8 @@ def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path
     assert manager.get_last_session_id() is None
 
 
-@pytest.mark.parametrize("stored_mode", ["onRequest", "denyUnmatched"])
-def test_muse_msp_ordinary_resume_preserves_stored_approval_mode(tmp_path, monkeypatch, _use_real_commands, stored_mode):
+@pytest.mark.parametrize("stored_mode", ["onRequest", "denyUnmatched", "allowAll"])
+def test_muse_msp_editable_resume_establishes_allow_all(tmp_path, monkeypatch, _use_real_commands, stored_mode):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -707,7 +713,11 @@ def test_muse_msp_ordinary_resume_preserves_stored_approval_mode(tmp_path, monke
 
     frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
     assert sum(frame.get("method") == "session/resume" for frame in frames) == 1
-    assert not any(frame.get("method") == "session/setApprovalMode" for frame in frames)
+    changes = [frame for frame in frames if frame.get("method") == "session/setApprovalMode"]
+    assert len(changes) == (0 if stored_mode == "allowAll" else 1)
+    if changes:
+        assert changes[0]["params"]["mode"] == "allowAll"
+        assert changes[0]["params"]["sessionId"] == session_id
     assert sum(frame.get("method") == "turn/start" for frame in frames) == 2
 
 
@@ -1403,8 +1413,45 @@ def test_muse_pending_resume_reports_requested_and_effective_approval_policy(
     assert events[0].outcome == Outcome.BLOCKED.value
     assert events[0].facts == {
         "method": "session/resume",
-        "requested_approval_policy": "denyUnmatched" if is_noedit else "hostDefault",
+        "requested_approval_policy": "denyUnmatched" if is_noedit else "allowAll",
         "effective_approval_policy": reported_mode or "unknown",
         "sessionId": session_id,
         "reason": "pending interactive requests",
     }
+
+
+def test_muse_ignored_build_output_allows_handoff_and_retained_review(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    (repo / ".gitignore").write_text("build/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(_host(tmp_path)))
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_MUTATE", "1")
+    monkeypatch.setenv("MSP_GENERATED_IGNORED", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    try:
+        assert manager._run_llm_cli("first") == "answer:first"
+        session_id = manager.get_last_session_id()
+        assert session_id == "opaque/provider/session"
+        assert (repo / "tracked.txt").read_text() == "mutated\n"
+        assert not (repo / "build").exists()
+        retained = manager._retained_local_sessions[session_id]
+        artifact = retained.binding.workspace / "build/generated.js"
+        assert artifact.read_text() == "ignored build output\n"
+        assert "build/generated.js" not in {state.relative_path for state in retained.binding.initial_files}
+        manager.authorize_retained_local_session_reuse(session_id)
+        monkeypatch.delenv("MSP_MUTATE")
+        monkeypatch.delenv("MSP_GENERATED_IGNORED")
+        assert manager.continue_session(session_id, "second review", is_noedit=True) == "answer:second"
+        assert manager._last_continue_session_resumed is True
+        assert artifact.read_text() == "ignored build output\n"
+        frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
+        assert sum(frame.get("method") == "session/start" for frame in frames) == 1
+        assert sum(frame.get("method") == "session/resume" for frame in frames) == 1
+        assert sum(frame.get("method") == "turn/start" for frame in frames) == 2
+    finally:
+        for retained_id in tuple(manager._retained_local_sessions):
+            manager.release_local_session(retained_id)

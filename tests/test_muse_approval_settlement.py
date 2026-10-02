@@ -55,7 +55,7 @@ while True:
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"serverInfo":{"name":"fixture","version":"1.4.2"},"schema":{"version":1,"fingerprint":"sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"},"capabilities":{}}})
     elif method == "session/start":
         session = {"sessionId":"opaque/provider/session","workspaceRoot":os.getcwd(),"modelId":"muse-spark-1.3"}
-        mode = os.environ.get("MSP_MODE") or ("denyUnmatched" if frame["params"].get("approvalMode") == "denyUnmatched" else None)
+        mode = os.environ.get("MSP_MODE") or frame["params"].get("approvalMode")
         if mode:
             session["approvalMode"] = {"mode": mode}
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":session,"pendingRequests":[]}})
@@ -265,20 +265,21 @@ def test_prior_invocation_terminal_does_not_settle_new_work(setup, monkeypatch):
     assert manager.get_last_session_id() is None
 
 
-@pytest.mark.parametrize("mode", [None, "allowAll", "ask"])
-def test_unconfirmed_mode_gets_receipt_then_refuses_immediately(setup, mode):
-    # Fresh ordinary session without explicit denial: no automatic-settlement path.
+@pytest.mark.parametrize("mode", [None, "allowAll"])
+def test_allow_all_unexpected_approval_gets_receipt_then_refuses_immediately(setup, mode):
+    # Even allowAll must not acknowledge an unexpected approval as a grant.
     started = time.monotonic()
     manager = setup.run([{"ack": True}, {"emit": _REQ}, {"receipt": "$RPCID"}, {"sleep": 10}], options=(), mode=mode)
-    with get_trace_collector().start_execution("owner/repo", "issue", 24007 + {None: 0, "allowAll": 1, "ask": 2}[mode], origin="worker") as execution:
+    with get_trace_collector().start_execution("owner/repo", "issue", 24007 + {None: 0, "allowAll": 1}[mode], origin="worker") as execution:
         with pytest.raises(RuntimeError, match="cannot wait for interactive request approval/request"):
             manager._run_llm_cli("first")
         execution.finish(Outcome.FAILED)
     assert time.monotonic() - started < 5
     assert not setup.mark.exists()
-    events = _blocked(24007 + {None: 0, "allowAll": 1, "ask": 2}[mode])
+    events = _blocked(24007 + {None: 0, "allowAll": 1}[mode])
     assert len(events) == 1 and events[0].outcome == Outcome.BLOCKED.value
-    assert events[0].facts["effective_approval_policy"] == (mode or "unknown")
+    assert events[0].facts["requested_approval_policy"] == "allowAll"
+    assert events[0].facts["effective_approval_policy"] == "allowAll"
     assert events[0].facts["approvalId"] == "ap-1"
     assert "do-not-log-this-command" not in str(events)
     _assert_no_decision(setup)

@@ -510,3 +510,94 @@ def test_disposing_one_private_workspace_preserves_peer_workspace_and_caller_ref
     for worker in workers:
         worker.join(timeout=10)
     assert failures == []
+
+
+@pytest.mark.parametrize("artifact", ["build/generated.js", "coverage/report.json", "runtime.log"])
+def test_retained_checkpoint_ignores_new_ignored_build_artifacts(tmp_path: Path, artifact: str) -> None:
+    repo = _init_repo(tmp_path)
+    (repo / ".gitignore").write_text("build/\ncoverage/\n*.log\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    ownership = LocalWorkspaceOwnership()
+    ownership.retain_session()
+    try:
+        with isolated_local_llm_worktree(repo, ownership=ownership) as private:
+            binding = get_current_local_workspace()
+            assert binding is not None
+            workspace = Path(private)
+            (workspace / "tracked.txt").write_text("implementation result\n")
+            generated = workspace / artifact
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            generated.write_text("private build output\n")
+            ownership.release_execution()
+        assert (repo / "tracked.txt").read_text() == "implementation result\n"
+        assert not (repo / artifact).exists()
+        advanced = worktree_utils.refresh_local_workspace_binding(binding)
+        assert advanced.workspace == workspace
+        assert advanced.invocation_id == binding.invocation_id
+        assert advanced.file_snapshot_checksum == worktree_utils.current_local_caller_checkpoint(advanced)
+        assert {state.relative_path for state in advanced.initial_files} == {".gitignore", "tracked.txt"}
+        assert generated.read_text() == "private build output\n"
+        # The next handoff must still detect edits against the advanced source baseline.
+        (workspace / "tracked.txt").write_text("next implementation result\n")
+        sync_worktree_changes_back(workspace, repo, advanced)
+        assert (repo / "tracked.txt").read_text() == "next implementation result\n"
+        assert not (repo / artifact).exists()
+    finally:
+        ownership.release_session()
+
+
+@pytest.mark.parametrize("tracking", ["baseline-now-ignored", "private-tracked-ignored", "ordinary-untracked"])
+def test_retained_checkpoint_preserves_source_scope_after_git_changes(tmp_path: Path, tracking: str) -> None:
+    repo = _init_repo(tmp_path)
+    (repo / "source.txt").write_text("baseline\n")
+    if tracking != "baseline-now-ignored":
+        (repo / "source.txt").unlink()
+    ownership = LocalWorkspaceOwnership()
+    ownership.retain_session()
+    try:
+        with isolated_local_llm_worktree(repo, ownership=ownership) as private:
+            binding = get_current_local_workspace()
+            assert binding is not None
+            workspace = Path(private)
+            (workspace / "source.txt").write_text("result\n")
+            if tracking != "ordinary-untracked":
+                (workspace / ".gitignore").write_text("source.txt\n")
+            if tracking == "private-tracked-ignored":
+                subprocess.run(["git", "update-index", "--add", "source.txt"], cwd=workspace, check=True)
+            ownership.release_execution()
+        assert (repo / "source.txt").read_text() == "result\n"
+        advanced = worktree_utils.refresh_local_workspace_binding(binding)
+        assert "source.txt" in {state.relative_path for state in advanced.initial_files}
+        # Even a source path now ignored by Git remains part of retained validation.
+        (workspace / "source.txt").write_text("unhanded source change\n")
+        with pytest.raises(worktree_utils.WorkspaceHandoffError, match="retained private root does not match"):
+            worktree_utils.refresh_local_workspace_binding(advanced)
+        assert (repo / "source.txt").read_text() == "result\n"
+    finally:
+        ownership.release_session()
+
+
+def test_retained_checkpoint_keeps_ignored_caller_context_in_staleness_guard(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    (repo / ".gitignore").write_text("context.log\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    (repo / "context.log").write_text("caller context\n")
+    ownership = LocalWorkspaceOwnership()
+    ownership.retain_session()
+    try:
+        with isolated_local_llm_worktree(repo, ownership=ownership) as private:
+            binding = get_current_local_workspace()
+            assert binding is not None
+            workspace = Path(private)
+            (workspace / "context.log").write_text("private context\n")
+            ownership.release_execution()
+        advanced = worktree_utils.refresh_local_workspace_binding(binding)
+        assert (repo / "context.log").read_text() == "caller context\n"
+        assert "context.log" not in {state.relative_path for state in advanced.initial_files}
+        (repo / "context.log").write_text("concurrent caller change\n")
+        (workspace / "tracked.txt").write_text("implementation result\n")
+        with pytest.raises(worktree_utils.WorkspaceHandoffError, match="caller checkpoint changed"):
+            sync_worktree_changes_back(workspace, repo, advanced)
+        assert (repo / "tracked.txt").read_text() == "initial content\n"
+    finally:
+        ownership.release_session()

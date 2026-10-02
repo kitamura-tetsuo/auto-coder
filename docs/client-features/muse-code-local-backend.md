@@ -17,16 +17,25 @@ in no-edit mode, Auto-Coder starts Muse with `--disable-write` and
 before submitting the turn. Dangerous bypass and unauthorized workspace-trust
 options fail closed rather than being stripped or passed to the host.
 
-Ordinary editable fresh sessions omit `approvalMode`, allowing the host's configured
-default to govern without an Auto-Coder-maintained command allowlist. No-edit and
-explicit `--disable-approval` invocations request and confirm `denyUnmatched` before
-submitting a turn. Exact-session resume requests that mode only for those constrained
-invocations; ordinary resume preserves the stored host policy, including a stored
-`denyUnmatched` mode. Auto-Coder does not invent policy rules, relax stored policy,
-or grant blanket approval.
-This approval policy does not enable sandbox network access. Dependencies should
-be prepared by the controller's initial `scripts/test.sh` execution or by the
-target repository's setup procedure before invoking the provider.
+Editable implementation sessions explicitly request and confirm the official MSP
+`allowAll` mode before submitting a turn, so a host configured for interactive
+approval cannot defer an unattended issue merely because a tool needs approval.
+No-edit and explicit `--disable-approval` invocations instead request and confirm
+`denyUnmatched`. Fresh sessions must echo the requested mode; absent or mismatched
+metadata fails before the turn. Exact-session resume selects the mode for the
+current invocation through `session/setApprovalMode` when it differs from the
+stored mode, and verifies the correlated completed/noop acknowledgement and
+effective mode before submitting work. A retained session does not carry a prior
+invocation's restrictions into an editable implementation or vice versa.
+
+These modes are host-defined; Auto-Coder does not send individual approval decisions
+or modify permission rules. Host sandbox restrictions and permission ceilings still
+apply, including network access restrictions. Dependencies should be prepared by
+the controller's initial `scripts/test.sh` execution or by the target repository's
+setup procedure before invoking the provider. An unexpected interactive request
+under `allowAll` still fails promptly rather than being blindly approved.
+The protocol modes are described in the
+[official Muse approval guide](https://meta-models.github.io/muse-code-sdk/next/guides/msp-concepts/approvals/).
 
 ### Host-resolved approval settlement
 
@@ -55,9 +64,10 @@ assistant text; a completed turn with an unresolved approval fails and a later
 resolution cannot rescue it. A resolved approval emits no
 `llm.muse-interactive-request` stage.
 
-Without confirmed denial, `userInput/request(ed)`, unsupported server requests
-and resume with `pendingRequests` fail promptly (a known `approval/request` still
-receives its receipt first; unsupported methods receive `-32601`). The
+Approval traffic without confirmed denial, all `userInput/request(ed)` messages,
+unsupported server requests and resume with `pendingRequests` fail promptly.
+A known `approval/request` still receives its receipt first; unsupported methods
+receive `-32601`. The
 `llm.muse-interactive-request` stage reports a blocked outcome, the requested and
 observed effective policy (`unknown` when absent), and bounded correlation
 identifiers (session, turn, approval, request, plus a distinct method such as

@@ -213,7 +213,7 @@ def refresh_local_workspace_binding(binding: LocalWorkspaceBinding) -> LocalWork
     """Advance a retained binding to the exact post-handoff caller checkpoint.
 
     The invocation and private-root identities remain unchanged.  Both roots must
-    have identical supported file state, otherwise no next-generation binding can
+    have identical handoff-supported file state, otherwise no next-generation binding can
     be issued.
     """
     caller = binding.caller_root.resolve()
@@ -221,10 +221,12 @@ def refresh_local_workspace_binding(binding: LocalWorkspaceBinding) -> LocalWork
     tracked = _listed_paths(caller, "--cached")
     untracked = tuple(path for path in _listed_paths(caller, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
     token, index_checksum, git_dir_text = _source_token(caller, tracked, untracked)
-    private_paths = set(_listed_paths(workspace, "--cached"))
-    private_paths.update(path for path in _listed_paths(workspace, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
-    caller_states = _capture_file_states(caller, set(tracked) | set(untracked))
-    private_states = _capture_file_states(workspace, private_paths)
+    # Compare the same source scope used by handoff. New ignored build output is
+    # private runtime context, while baseline and privately tracked paths remain
+    # source even if the provider changes ignore rules or the private index.
+    result_paths = _result_file_paths(caller, binding) | _result_file_paths(workspace, binding)
+    caller_states = _capture_file_states(caller, result_paths)
+    private_states = _capture_file_states(workspace, result_paths)
     if caller_states != private_states:
         raise WorkspaceHandoffError("retained private root does not match the post-handoff caller checkpoint")
     git_dir = Path(git_dir_text).resolve()
@@ -512,11 +514,17 @@ def _restore_path(path: Path, state: Optional[WorkspaceFileState]) -> None:
         path.chmod(state.mode)
 
 
+def _result_file_paths(root: Path, binding: LocalWorkspaceBinding) -> set[str]:
+    """Select tracked, non-ignored source and preserved baseline paths for handoff."""
+    paths = set(_listed_paths(root, "--cached"))
+    paths.update(path for path in _listed_paths(root, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
+    paths.update(state.relative_path for state in binding.initial_files)
+    return paths
+
+
 def _result_has_file_delta(source: Path, binding: LocalWorkspaceBinding) -> bool:
     baseline_states = {item.relative_path: item for item in binding.initial_files}
-    final_paths = set(_listed_paths(source, "--cached"))
-    final_paths.update(path for path in _listed_paths(source, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
-    final_paths.update(baseline_states)
+    final_paths = _result_file_paths(source, binding)
     final_states = {item.relative_path: item for item in _capture_file_states(source, final_paths)}
     return baseline_states != final_states
 
@@ -546,10 +554,7 @@ def sync_worktree_changes_back(
         raise WorkspaceHandoffError("private result has an unfinished Git operation")
 
     baseline_states = {item.relative_path: item for item in binding.initial_files}
-    final_paths = set(_listed_paths(source, "--cached"))
-    final_paths.update(path for path in _listed_paths(source, "--others", "--exclude-standard") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
-    # A baseline source file remains in scope even when the result adds an ignore rule.
-    final_paths.update(baseline_states)
+    final_paths = _result_file_paths(source, binding)
     final_states = {item.relative_path: item for item in _capture_file_states(source, final_paths)}
     changed = sorted(path for path in baseline_states.keys() | final_states.keys() if baseline_states.get(path) != final_states.get(path))
 

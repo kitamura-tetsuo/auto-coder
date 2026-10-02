@@ -44,3 +44,13 @@ index, and supported files under a
 per-target writer lock; stale targets, unsafe paths, symlink ancestors, or partial
 application failures are refused without overwriting caller work. Failed and
 no-edit turns never enter this handoff.
+
+After result handoff, retained-root checkpoint advancement compares the same source
+path scope as handoff: tracked files, non-ignored non-disposable untracked files,
+and the preserved source baseline. The comparison uses the union of caller and
+private source paths, so a new file tracked only in the private index or a baseline
+file covered by a new ignore rule remains validated. Newly generated ignored build
+outputs and logs remain private runtime context and do not block successful
+handoff or a later retained review. They are not added to the next source baseline.
+The caller's complete context checkpoint still includes non-disposable ignored
+files, so concurrent caller changes continue to invalidate stale result handoff.

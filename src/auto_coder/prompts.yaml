@@ -70,8 +70,9 @@ muse:
     update, or comment on pull requests; Auto-Coder owns remote publication after
     you return.
 
-    This unattended Muse session denies operations outside its configured permission
-    rules instead of waiting for approval. Do not wait for a human decision or a
+    This unattended Muse session uses controller-selected non-interactive approval
+    mode: allowAll for implementation, denyUnmatched for no-edit or explicitly
+    restricted execution. Host sandbox and permission ceilings still apply. Do not wait for a human decision or a
     controller update. Initial implementation tests, when run, are recorded in
     `.agent-tmp/initial-tests.log`; inspect that baseline and use installed local
     tools before attempting network downloads. Complete verification before

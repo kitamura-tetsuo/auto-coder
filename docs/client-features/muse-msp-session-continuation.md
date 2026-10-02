@@ -63,11 +63,13 @@ dispatch. Host version strings are retained for diagnostics but are not compatib
 authority. Session and turn commands carry UUIDv7 command
 identities; their returned state and acknowledgements are checked before work
 continues. Model selection belongs to fresh-session setup, and reasoning effort
-belongs to turn submission. Ordinary editable fresh sessions omit `approvalMode`
-and accept absent effective-mode metadata; no-edit or explicit
-`--disable-approval` requests verified `denyUnmatched`. Resume changes the stored
-mode to `denyUnmatched` only for such constrained invocations and otherwise
-preserves the stored mode without issuing a mode-changing command.
+belongs to turn submission. Editable fresh sessions explicitly request verified `allowAll` for unattended
+implementation; no-edit or explicit `--disable-approval` requests verified
+`denyUnmatched`. Resume selects the requested invocation mode when stored metadata
+is absent or differs, using a correlated `session/setApprovalMode` acknowledgement
+that confirms completed/noop application and the effective mode. A missing or
+mismatched fresh-session mode fails before turn submission. Host sandbox and
+permission ceilings continue to govern execution.
 The 1.4.1 host may record the selected `muse-spark-1.3` model as its effective
 `muse-spark-1.3-contributor` model after the first turn. Both fresh and resumed
 sessions accept only that specific alias resolution, independently of fingerprint
@@ -81,3 +83,9 @@ be positively stopped; a completed-looking protocol exchange followed by a nonze
 process status or unsettled descendant writer is a failed invocation. A terminal
 notification for a different turn is rejected immediately as a protocol error rather
 than being allowed to age into a timeout.
+
+Ignored build output produced during an editable Muse turn remains in its retained
+private repository without being handed back as source. Post-handoff checkpoint
+advancement uses the shared source scope, allowing a subsequent read-only review
+to resume the exact same session despite these private generated files. Genuine
+source mismatches still refuse retention.
