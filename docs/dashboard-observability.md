@@ -162,6 +162,18 @@ verifies the pre-publication head fence. Run these with
 `bash scripts/test.sh tests/test_github_app_reviewer.py tests/test_pr_review_effects.py`.
 The existing production effect event and dashboard timeline need no additional
 field or renderer to display the confirmed/deferred result.
+Publication recovery preserves those production emissions: an accepted result
+with a pending effect records `pr.strong-audit` as `DEFERRED` with reason
+`resuming accepted review publication without model execution`, then records
+`pr.two-tier-review-effect` as `COMPLETED` only for a confirmed authenticated
+receipt, or `DEFERRED` for unavailable reconciliation or an active sender.
+The existing timeline displays these reasons without a new projection.
+`tests/test_pr_adversarial_review_audit.py::test_pending_publication_reentry_never_invokes_a_reviewer`
+asserts production reentry, retained retry scheduling, and the emitted pending
+publication facts; `tests/test_pr_review_effects.py::test_production_consumer_recovers_with_a_new_executor`
+drives receipt recovery, positive-absence replay, and unavailable lookup through
+the real durable cycle/effect consumers. Run both modules with
+`bash scripts/test.sh tests/test_pr_review_effects.py tests/test_pr_adversarial_review_audit.py`.
 `tests/test_pr_review_effects.py::test_strong_finding_threads_enter_normal_authenticated_revalidation`
 checks that strong roots use the existing reviewer-thread admission path, while
 spoofed authors remain blocked and neither path resolves a thread. This retains

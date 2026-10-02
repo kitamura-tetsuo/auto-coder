@@ -4463,6 +4463,12 @@ def _handle_pr_merge(
                         reviewer_backend = two_tier_inputs.policy.strong_route
                         stage_id = "pr.strong-audit"
                         stage_label = f"pr#{pr_number} strong audit"
+                    elif pending_snapshot.pending_effect:
+                        accepted = False
+                        reason = "resuming accepted review publication without model execution"
+                        reviewer_backend = two_tier_inputs.policy.strong_route
+                        stage_id = "pr.strong-audit"
+                        stage_label = f"pr#{pr_number} strong audit"
                     elif pending_snapshot.phase == PHASE_ORDINARY_CLOSURE and pending_snapshot.open_findings:
                         accepted, reason, reviewer_backend = _execute_pending_ordinary_closure(repo_name, pr_number, two_tier_inputs)
                         stage_id = "pr.ordinary-closure"

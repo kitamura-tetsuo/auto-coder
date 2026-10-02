@@ -33,6 +33,7 @@ from auto_coder.backend_manager import BackendManager
 from auto_coder.cli_helpers import AdversarialValidationAvailability
 from auto_coder.dashboard_reviews import list_row
 from auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.execution_trace import get_trace_collector
 from auto_coder.github_app_reviewer import ReviewPublicationResult
 from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 from auto_coder.pr_processor import TwoTierGateInputs, _handle_pr_merge
@@ -958,6 +959,51 @@ def _closure_completion(gate, contract, policy, *, pr_number, base, audited, rep
         "The cumulative diff contains only the tracked repair and regression.",
     )
     return strong_round, gate.state.acknowledge_closure_publication(pr_number, closure.accepted_closure.closure_id)
+
+
+@pytest.mark.parametrize("verdict", ["PASS", "FINDINGS"])
+def test_pending_publication_reentry_never_invokes_a_reviewer(tmp_path, monkeypatch, audit_store, verdict):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    contract = ContractSnapshot(("#0",), "Issue #0 REQ-001: Preserve pending publication.")
+    policy = StrongPolicyIdentity("strong", "model=strong", "v1")
+    base, head = "b" * 40, "a" * 40
+    gate = TwoTierPrGate(REPO_NAME)
+    gate.ordinary_pass(PR_NUMBER, head, base, contract)
+    claim = gate.state.claim_strong_audit(PR_NUMBER, RoundProvenance(head, base), contract, policy)
+    findings = (
+        [Finding("pending-finding", claim.claim_id, ("#0/REQ-001",), ("Preserve pending publication.",), "A lost response blocks publication.", "Retry publication.", "Publication is pending.", "effects.json", "publication", focused_regression_scenario="Resume publication after a lost response.")]
+        if verdict == "FINDINGS"
+        else []
+    )
+    gate.state.record_strong_result(PR_NUMBER, claim.claim_id, verdict, "strong/model", findings)
+    inputs = TwoTierGateInputs(gate, contract, policy, head, base)
+    client, pr_data, config = _two_tier_reprocessing_setup(monkeypatch, tmp_path, gate, inputs, head)
+    strong = MagicMock(side_effect=AssertionError("pending publication must not invoke strong audit"))
+    closure = MagicMock(side_effect=AssertionError("pending publication must not invoke closure"))
+    monkeypatch.setattr("auto_coder.pr_processor._execute_pending_strong_audit", strong)
+    monkeypatch.setattr("auto_coder.pr_processor._execute_pending_ordinary_closure", closure)
+    publication = MagicMock(return_value=(False, "publication uncertain: lookup unavailable"))
+    monkeypatch.setattr("auto_coder.pr_processor._consume_pending_two_tier_publication", publication)
+    collector = get_trace_collector()
+    before_sequence = max((event.sequence for event in collector.get_snapshot().events), default=0)
+
+    for _ in range(2):
+        with collector.start_execution(REPO_NAME, "pr", PR_NUMBER, origin="worker"):
+            actions = _handle_pr_merge(client, REPO_NAME, pr_data, config, {})
+        assert actions.quota_deferred is True
+        assert any("resuming accepted review publication without model execution" in action for action in actions)
+        assert any("publication uncertain: lookup unavailable" in action for action in actions)
+    strong.assert_not_called()
+    closure.assert_not_called()
+    assert publication.call_count == 2
+    assert gate.state.snapshot(PR_NUMBER).accepted_strong_round.publication_status == "PENDING"
+    events = [event for event in collector.get_snapshot().events if event.sequence > before_sequence and event.item_number == PR_NUMBER]
+    effects = [event for event in events if event.stage_id == "pr.two-tier-review-effect"]
+    assert len(effects) == 2
+    assert all(event.outcome == "deferred" and event.facts["effect"] == "review-publication" and event.facts["reason"] == "publication uncertain: lookup unavailable" for event in effects)
+    audits = [event for event in events if event.stage_id == "pr.strong-audit"]
+    assert len(audits) == 2
+    assert all(event.outcome == "deferred" and event.facts["reason"] == "resuming accepted review publication without model execution" for event in audits)
 
 
 def test_production_reentry_reuses_bounded_closure_after_reconstruction(tmp_path, monkeypatch, audit_store):

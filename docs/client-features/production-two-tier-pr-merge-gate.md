@@ -23,6 +23,14 @@ reviews display disposition evidence without recreating strong finding threads.
 Publication uses the versioned `github-reviewer-app:threads-v1` effect destination;
 an older summary-only receipt does not confirm thread publication. Reconciliation
 checks all expected comment bodies on the authenticated exact-head review.
+Publication retries acquire a per-operation execution lock and adopt an idle
+reservation, including after a restart with a new executor identity. A live
+sender retains exclusive transport ownership. Sends are durably marked uncertain
+before the request, so an interrupted response is reconciled against the exact
+authenticated review and finding threads before replay. A confirmed receipt is
+reused; positive absence permits resending after a fresh authority check; an
+unavailable lookup remains deferred. Pending accepted publication resumes before
+another strong audit or ordinary closure reviewer is invoked.
 The strong finding marker is recognized by the existing authenticated reviewer
 thread gate, so changed-head revalidation can inspect these roots under the same
 rules as ordinary findings. A matching marker from another author grants no such

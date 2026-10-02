@@ -1,4 +1,5 @@
 import json
+import threading
 from dataclasses import replace
 
 import pytest
@@ -163,13 +164,31 @@ def test_contention_allows_only_reservation_owner_to_send(tmp_path):
     first = ReviewEffectExecutor(repository, "worker-a")
     second = ReviewEffectExecutor(repository, "worker-b")
 
-    reservation = repository.reserve(payload, "publication", "github-reviewer-app", "worker-a")
-    contested = second.apply(payload, "publication", "github-reviewer-app", second_transport, lambda: True)
-    confirmed = first.apply(payload, "publication", "github-reviewer-app", first_transport, lambda: True)
+    entered = threading.Event()
+    release = threading.Event()
+    results = []
 
-    assert contested.operation_id == reservation.operation_id
-    assert contested.status == RESERVED
-    assert second_transport.sent == 0
+    class BlockingTransport(_Transport):
+        def send(self, operation):
+            entered.set()
+            assert release.wait(timeout=5)
+            return first_transport.send(operation)
+
+    worker = threading.Thread(target=lambda: results.append(first.apply(payload, "publication", "github-reviewer-app", BlockingTransport(EffectAttempt(CONFIRMED)), lambda: True)))
+    worker.start()
+    try:
+        assert entered.wait(timeout=5)
+        contested = second.apply(payload, "publication", "github-reviewer-app", second_transport, lambda: True)
+        assert contested.status == UNCERTAIN
+        assert contested.owner_token == "worker-a"
+        assert second_transport.sent == second_transport.reconciled == 0
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    confirmed = results[0]
+
+    assert contested.operation_id == confirmed.operation_id
     assert confirmed.status == CONFIRMED
     assert confirmed.receipt == "review:99"
     assert first_transport.sent == 1
@@ -187,7 +206,7 @@ def test_uncertain_effect_reconciles_without_resend_and_survives_restart(tmp_pat
     assert lost_response.sent == 1
 
     recovered_repository = ReviewEffectRepository("owner/repo", path)
-    recovered = ReviewEffectExecutor(recovered_repository, "stable-worker")
+    recovered = ReviewEffectExecutor(recovered_repository, "new-worker")
     transport = _Transport(EffectAttempt(REJECTED), EffectAttempt(CONFIRMED, "turn:abc"))
     confirmed = recovered.apply(payload, "repair-handoff", "codex-cloud:task-1", transport, lambda: True)
 
@@ -195,6 +214,71 @@ def test_uncertain_effect_reconciles_without_resend_and_survives_restart(tmp_pat
     assert confirmed.receipt == "turn:abc"
     assert transport.sent == 0
     assert transport.reconciled == 1
+    assert confirmed.owner_token == "new-worker"
+
+
+@pytest.mark.parametrize("initial_status", [RESERVED, UNCERTAIN])
+def test_new_owner_reconciles_positive_absence_before_resending(tmp_path, initial_status):
+    repository = ReviewEffectRepository("owner/repo", tmp_path / "effects.json")
+    payload = _payload()
+    operation = repository.reserve(payload, "publication", "github-reviewer-app", "dead-worker")
+    if initial_status == UNCERTAIN:
+        repository.record(operation.operation_id, "dead-worker", EffectAttempt(UNCERTAIN))
+    order = []
+
+    class Transport(_Transport):
+        def reconcile(self, operation):
+            order.append("reconcile")
+            assert operation.exact_payload == payload.canonical_json()
+            return super().reconcile(operation)
+
+        def send(self, operation):
+            order.append("send")
+            assert repository.get(operation.operation_id).status == UNCERTAIN
+            return super().send(operation)
+
+    transport = Transport(EffectAttempt(CONFIRMED, "review:102"), EffectAttempt(REJECTED, reason="authenticated absence"))
+    confirmed = ReviewEffectExecutor(repository).apply(payload, "publication", "github-reviewer-app", transport, lambda: True)
+    assert confirmed.status == CONFIRMED
+    assert confirmed.receipt == "review:102"
+    assert order == ["reconcile", "send"]
+
+
+def test_unavailable_reconciliation_never_resends_and_authority_is_rechecked(tmp_path):
+    repository = ReviewEffectRepository("owner/repo", tmp_path / "effects.json")
+    payload = _payload()
+    operation = repository.reserve(payload, "publication", "github-reviewer-app", "old-worker")
+    repository.record(operation.operation_id, "old-worker", EffectAttempt(UNCERTAIN))
+    unavailable = _Transport(EffectAttempt(CONFIRMED), EffectAttempt(UNCERTAIN, reason="rate limited"))
+    result = ReviewEffectExecutor(repository).apply(payload, "publication", "github-reviewer-app", unavailable, lambda: True)
+    assert result.status == UNCERTAIN
+    assert unavailable.reconciled == 1
+    assert unavailable.sent == 0
+    checks = iter((True, False))
+    absent = _Transport(EffectAttempt(CONFIRMED), EffectAttempt(REJECTED))
+    result = ReviewEffectExecutor(repository).apply(payload, "publication", "github-reviewer-app", absent, lambda: next(checks))
+    assert result.status == REJECTED
+    assert absent.reconciled == 1
+    assert absent.sent == 0
+
+
+def test_send_exception_leaves_recoverable_uncertainty(tmp_path):
+    repository = ReviewEffectRepository("owner/repo", tmp_path / "effects.json")
+    payload = _payload()
+
+    class FailingTransport(_Transport):
+        def send(self, operation):
+            assert repository.get(operation.operation_id).status == UNCERTAIN
+            raise RuntimeError("response lost")
+
+    result = ReviewEffectExecutor(repository).apply(payload, "publication", "github-reviewer-app", FailingTransport(EffectAttempt(CONFIRMED)), lambda: True)
+    assert result.status == UNCERTAIN
+    transport = _Transport(EffectAttempt(CONFIRMED), EffectAttempt(CONFIRMED, "review:103"))
+    result = ReviewEffectExecutor(repository).apply(payload, "publication", "github-reviewer-app", transport, lambda: True)
+    assert result.receipt == "review:103"
+    assert result.status == CONFIRMED
+    assert transport.reconciled == 1
+    assert transport.sent == 0
 
 
 def test_stale_authority_rejects_before_mutation_and_positive_rejection_can_retry(tmp_path):
@@ -269,3 +353,41 @@ def test_production_consumer_publishes_exact_accepted_record_and_persists_receip
     operations = json.loads((tmp_path / ".auto-coder" / "owner/repo" / "pr_review_effects.json").read_text())["operations"]
     assert list(operations.values())[0]["receipt"] == "987"
     assert list(operations.values())[0]["status"] == CONFIRMED
+
+
+@pytest.mark.parametrize("remote_state", ["published", "absent", "unavailable"])
+def test_production_consumer_recovers_with_a_new_executor(tmp_path, monkeypatch, remote_state):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    payload = _payload()
+    contract = ContractSnapshot(payload.contract_issue_ids, payload.requirements_text)
+    policy = StrongPolicyIdentity(payload.policy_route, payload.policy_options, payload.policy_protocol)
+    cycle = PrReviewCycleRepository("owner/repo", tmp_path / "cycle.json")
+    cycle.record_ordinary_pass(42, RoundProvenance("head-a", "base-a"), contract)
+    claim = cycle.claim_strong_audit(42, RoundProvenance("head-a", "base-a"), contract, policy)
+    cycle.record_strong_result(42, claim.claim_id, "FINDINGS", "reviewer/model", [replace(payload.findings[0], origin_round_id=claim.claim_id)])
+    inputs = pr_processor.TwoTierGateInputs(TwoTierPrGate("owner/repo", cycle), contract, policy, "head-a", "base-a")
+    calls = []
+
+    class Reviewer:
+        def __init__(self, config):
+            pass
+
+        def publish_exact_pr_review(self, repo, number, head, body, authorize, comments=()):
+            assert authorize()
+            assert len(comments) == 1
+            calls.append("send")
+            return ReviewPublicationResult(len(calls) > 1, "receipt" if len(calls) > 1 else "", "response lost")
+
+        def find_exact_pr_review(self, repo, number, head, body, comments=()):
+            calls.append("reconcile")
+            assert len(comments) == 1
+            return ReviewPublicationResult(remote_state == "published", "receipt" if remote_state == "published" else "", "Exact authenticated review was not found" if remote_state == "absent" else "lookup unavailable")
+
+    monkeypatch.setattr(pr_processor, "load_reviewer_app_config", lambda repo_name: object())
+    monkeypatch.setattr(pr_processor, "GitHubAppReviewer", Reviewer)
+    assert pr_processor._consume_pending_two_tier_publication("owner/repo", 42, inputs)[0] is False
+    published, reason = pr_processor._consume_pending_two_tier_publication("owner/repo", 42, inputs)
+    assert published is (remote_state != "unavailable")
+    assert calls == (["send", "reconcile", "send"] if remote_state == "absent" else ["send", "reconcile"])
+    assert cycle.snapshot(42).accepted_strong_round.publication_status == ("PENDING" if remote_state == "unavailable" else PUBLICATION_ACKNOWLEDGED)
+    assert "publication uncertain" in reason if remote_state == "unavailable" else "receipt receipt" in reason

@@ -178,8 +178,40 @@ class ReviewEffectRepository:
     """Atomic reservation/receipt journal shared by overlapping controllers."""
 
     def __init__(self, repo_name: str, storage_path: Optional[Path] = None):
+        self.repo_name = repo_name
         self.storage_path = storage_path or Path.home() / ".auto-coder" / repo_name / "pr_review_effects.json"
         self.lock_path = lock_path(repo_name, self.storage_path, "pr-review-effects")
+
+    @contextmanager
+    def execution_lock(self, operation_id: str) -> Iterator[bool]:
+        """Fence transport work; process exit releases ownership automatically."""
+        path = lock_path(self.repo_name, self.storage_path, "pr-review-effect-execution", operation_id)
+        ensure_lock_directory(path)
+        with path.open("a+", encoding="utf-8") as lock:
+            os.chmod(path, 0o600)
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def adopt(self, operation_id: str, owner_token: str) -> EffectOperation:
+        """Transfer an idle reservation while its execution lock is held."""
+        with self._locked():
+            state = self._read()
+            raw = state["operations"][operation_id]
+            if raw["status"] not in {CONFIRMED, RETIRED} and raw["owner_token"] != owner_token:
+                # A prior process may have sent a RESERVED operation and crashed
+                # before recording the response. Reconcile before any replay.
+                if raw["status"] == RESERVED:
+                    raw["status"] = UNCERTAIN
+                raw.update(owner_token=owner_token, updated_at=time.time())
+                self._write(state)
+            return self._from_raw(raw)
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -298,13 +330,26 @@ class ReviewEffectExecutor:
         is_current: Callable[[], bool],
     ) -> EffectOperation:
         operation = self.repository.reserve(payload, purpose, destination, self.owner_token)
-        if operation.status in {CONFIRMED, RETIRED}:
-            return operation
-        if operation.owner_token != self.owner_token:
-            return operation
-        if not is_current():
-            return self.repository.record(operation.operation_id, self.owner_token, EffectAttempt(REJECTED, reason="accepted result or destination authority is no longer current"))
-        # RESERVED means no send outcome was observed.  An UNCERTAIN operation
-        # must be reconciled first and is never blindly sent again.
-        outcome = transport.reconcile(operation) if operation.status == UNCERTAIN else transport.send(operation)
-        return self.repository.record(operation.operation_id, self.owner_token, outcome)
+        with self.repository.execution_lock(operation.operation_id) as acquired:
+            if not acquired:
+                return self.repository.get(operation.operation_id) or operation
+            operation = self.repository.adopt(operation.operation_id, self.owner_token)
+            if operation.status in {CONFIRMED, RETIRED}:
+                return operation
+            if not is_current():
+                return self.repository.record(operation.operation_id, self.owner_token, EffectAttempt(REJECTED, reason="accepted result or destination authority is no longer current"))
+            try:
+                if operation.status == UNCERTAIN:
+                    outcome = transport.reconcile(operation)
+                    operation = self.repository.record(operation.operation_id, self.owner_token, outcome)
+                    if outcome.status != REJECTED:
+                        return operation
+                    # Positive absence permits replay, but authority may have
+                    # changed during the authenticated remote lookup.
+                    if not is_current():
+                        return operation
+                operation = self.repository.record(operation.operation_id, self.owner_token, EffectAttempt(UNCERTAIN, reason="external send awaiting confirmation"))
+                outcome = transport.send(operation)
+            except Exception:
+                outcome = EffectAttempt(UNCERTAIN, reason="external transport failed before confirmation")
+            return self.repository.record(operation.operation_id, self.owner_token, outcome)
