@@ -70,3 +70,7 @@ local route, retained phase and reason visible in the generic detail table.
 The local repair generation revalidation inventory in
 `docs/dashboard-observability.md` records the regression commands; the trace
 schema and renderer remain unchanged.
+That inventory also covers revalidation of already-resolved original repair
+roots alongside new findings. Missing or unauthenticated original roots emit
+`FAILED` with `effect=local-validation-input` before reviewer execution; the
+existing detail table displays the local phase, route, and failure reason.

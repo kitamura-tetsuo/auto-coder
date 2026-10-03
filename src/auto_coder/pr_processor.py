@@ -1072,6 +1072,45 @@ def _allow_older_head_adversarial_threads(
     )
 
 
+def _include_pending_local_repair_threads(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    reviewer_login: str,
+    claimed: Sequence[ClaimedReviewThread],
+) -> Tuple[ClaimedReviewThread, ...]:
+    """Keep completed repair roots in independent validation after UI resolution."""
+    from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
+
+    snapshot = RepairAllowanceLedger().get_snapshot("https://api.github.com", repo_name, pr_number)
+    generation = snapshot.get_outstanding_generation()
+    if generation is None or generation.owning_identity != "local-review-repair" or generation.lifecycle_state != GenerationLifecycleState.PENDING_REVALIDATION:
+        return tuple(claimed)
+    settled = {item.blocker_id for item in generation.settlements}
+    pending = set(generation.covered_blocker_ids) - settled
+    threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+    existing = {thread.thread_id: thread for thread in claimed}
+    retained = []
+    found = set()
+    for thread in threads:
+        if not thread.comments:
+            continue
+        identity = _review_feedback_identity(f"{repo_name}#{pr_number}:local:", thread, 0)
+        if identity not in pending:
+            continue
+        found.add(identity)
+        current = existing.get(thread.id)
+        if current is not None and not thread.comments_truncated and current.root_comment_database_id == thread.comments[0].database_id:
+            # Already-classified claims retain their supported reviewer authority.
+            continue
+        # Resolution is presentation state, never independent correctness evidence.
+        retained.append(replace(thread, is_resolved=False))
+    promoted = _allow_older_head_adversarial_threads(ClaimedReviewThreadGateState(blocking_unresolved=tuple(retained)), reviewer_login, forced=True)
+    if found != pending or promoted.blocking_unresolved:
+        raise RuntimeError("pending local repair roots are missing, incomplete, or unauthenticated")
+    return tuple(claimed) + tuple(thread for thread in promoted.claimed if thread.thread_id not in existing)
+
+
 def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
     """Read a field from either a REST dictionary or a GhApi object."""
     return comment.get(key, default) if isinstance(comment, dict) else getattr(comment, key, default)
@@ -3940,6 +3979,18 @@ def _handle_pr_merge(
                         actions.append(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
                         logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
                         return actions
+
+                    if local_revalidation_due:
+                        try:
+                            claimed_review_threads = _include_pending_local_repair_threads(github_client, repo_name, pr_number, reviewer_login, claimed_review_threads)
+                        except Exception as exc:
+                            reason = str(exc)
+                            actions.append(f"Local repair validation input failed for PR #{pr_number}: {reason}")
+                            _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"route_disposition": "LOCAL_EXECUTION", "local_phase": "awaiting_validation", "reason": reason, "effect": "local-validation-input"})
+                            if processing_status is not None:
+                                processing_status.error = reason
+                                processing_status.outcome = PRProcessingOutcome.FAILED
+                            return actions
 
                     # Recover older accepted reviews before invoking another LLM:
                     # pending roots otherwise block every new publication too.

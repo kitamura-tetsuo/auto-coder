@@ -1679,6 +1679,20 @@ model invocation or merge and the emitted recovery phase and failed status.
 
 ## Local repair generation revalidation
 
+Pending local generations retain their original covered roots in the fresh
+validation input even after GitHub thread resolution. Failure to acquire or
+authenticate those roots emits `FAILED` on `pr.repair-delegation` with
+`effect=local-validation-input`, `route_disposition=LOCAL_EXECUTION`,
+`local_phase=awaiting_validation`, and the reason, before reviewer invocation.
+This uses the existing stage-detail renderer and schema.
+`tests/test_local_review_repair.py::test_pending_local_repair_includes_original_root_after_resolution`
+and `test_pending_local_repair_root_evidence_fails_closed` cover exact-root
+retention, settlement, fresh admission, and unavailable/untrusted evidence.
+The `resolved_prior=True` variant of the production regression below also
+asserts that the resolved prior root reaches the reviewer and the independent
+settlement boundary alongside the new unresolved finding; the mounted dashboard
+assertions retain the local phase and deferred route.
+
 Ordinary unresolved-thread repair emits `local_phase` on `pr.repair-delegation`
 alongside `route_disposition=LOCAL_EXECUTION`. A completed allowance awaiting
 independent validation emits `DEFERRED` with `local_phase=awaiting_validation` and

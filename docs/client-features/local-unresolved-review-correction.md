@@ -63,3 +63,15 @@ stable `TOG` identity as well as exact text. Changed reproduction wording does
 not discard an existing open gap: the correction uses the current validated
 instructions while preserving the original root's durable feedback identity.
 Different gap identities remain excluded even when their prose is identical.
+
+When a completed generation requires revalidation, its original unsettled roots
+remain part of the independent review input even if GitHub already displays
+them as resolved. Auto-Coder retrieves the complete threads again, matches the
+original durable feedback identities, and authenticates the reviewer before
+including them alongside current findings. This recovery occurs after the
+post-Codex thread refresh so that refresh cannot discard the covered roots.
+Only fresh current-head dispositions settle the generation; resolved UI state
+alone does not clear an allowance. Missing, truncated, or unauthenticated roots,
+and failed reads, stop before another model invocation with an explicit
+`local-validation-input` failure instead of repeatedly reviewing unrelated
+findings while the original generation remains pending.

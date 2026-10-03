@@ -2151,7 +2151,7 @@ class TestAdversarialValidationPRFlow:
         assert any("Published APPROVE adversarial review" in a for a in actions)
         assert any("Successfully merged PR #100" in a for a in actions)
 
-    @pytest.mark.parametrize("local,pending", [(False, False), (True, False), (True, True)])
+    @pytest.mark.parametrize("local,pending,resolved_prior", [(False, False, False), (True, False, False), (True, True, False), (True, True, True), (True, True, "missing")])
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
@@ -2173,7 +2173,9 @@ class TestAdversarialValidationPRFlow:
         dedicated_reviewer_publication,
         local,
         pending,
+        resolved_prior,
         monkeypatch,
+        tmp_path,
     ):
         """A violation is reported without checking out or modifying the PR branch."""
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
@@ -2216,8 +2218,14 @@ class TestAdversarialValidationPRFlow:
             monkeypatch.setattr("auto_coder.local_review_repair.execute_local_review_repair", execute)
             if pending:
                 from auto_coder.adversarial_validator import ReviewThreadDisposition
+                from auto_coder.durable_repair_allowance import RepairAllowanceLedger
                 from auto_coder.local_review_repair import LocalRepairValidationRequired
+                from auto_coder.pr_processor import _allow_older_head_adversarial_threads
                 from auto_coder.review_thread_validation import ClaimedReviewThread
+
+                ledger = RepairAllowanceLedger(tmp_path / "allowance.sqlite3")
+                ledger.initialize_namespace("https://api.github.com", "owner/repo", 100)
+                monkeypatch.setattr("auto_coder.durable_repair_allowance.RepairAllowanceLedger", lambda: ledger)
 
                 root = client.get_pr_review_threads_strict.return_value[0]
                 blocked = ClaimedReviewThreadGateState(unresolved=(root,), blocking_unresolved=(root,), has_blocking_unresolved=True)
@@ -2232,6 +2240,32 @@ class TestAdversarialValidationPRFlow:
                 monkeypatch.setattr("auto_coder.local_review_repair.settle_local_review_repair_validation", settlement)
                 client.get_pull_request_head_sha_strict.return_value = "abc123456789"
                 mock_run_validation.return_value.thread_dispositions = [ReviewThreadDisposition(thread_id="finding", status="STILL_VALID", evidence="defect independently reproduced")]
+                if resolved_prior:
+                    from auto_coder.local_review_repair import LocalReviewRepairRequest
+
+                    prior = ReviewThread(id="prior", is_resolved=True, comments=[ReviewThreadComment(database_id=17, author_login="auto-coder-reviewer[bot]", body="### Auto-Coder material test-oracle gap\nPrior invariant")])
+                    client.get_pr_review_threads_strict.return_value = [root, prior]
+                    prior_identity = _review_feedback_identity("owner/repo#100:local:", prior, 0)
+                    request = LocalReviewRepairRequest("owner/repo", 100, "owner/repo", "feature-branch", "abc123456789", (prior_identity,), "repair")
+                    from auto_coder.durable_repair_allowance import CorrectiveGenerationBundle
+                    from auto_coder.local_review_repair import LocalRepairAllowanceAuthority
+
+                    snapshot = ledger.initialize_namespace("https://api.github.com", "owner/repo", 100)
+                    admitted = ledger.admit_generation(
+                        "https://api.github.com", "owner/repo", 100, "admit-prior", snapshot.epoch, CorrectiveGenerationBundle(request.attempt_id, (prior_identity,), owning_identity="local-review-repair", observed_baseline=request.head_sha), open_blocker_ids=(prior_identity,)
+                    )
+                    authority = LocalRepairAllowanceAuthority(ledger, request, admitted.generation_id, admitted.snapshot.epoch)
+                    authority.mark_invocation()
+                    authority.mark_completion(code_changed=True, evidence="published prior correction")
+                    monkeypatch.setattr("auto_coder.durable_repair_allowance.RepairAllowanceLedger", lambda: ledger)
+                    mock_run_validation.return_value.thread_dispositions.append(ReviewThreadDisposition(thread_id="prior", status="ADDRESSED", evidence="prior invariant independently verified"))
+                    # Preserve the production promotion adapter for the retained root.
+                    from auto_coder import pr_processor
+
+                    promote = _allow_older_head_adversarial_threads
+                    monkeypatch.setattr(pr_processor, "_allow_older_head_adversarial_threads", lambda state, login, **kwargs: promote(state, login, **kwargs) if state.blocking_unresolved and state.blocking_unresolved[0].id == "prior" else claimed)
+                    if resolved_prior == "missing":
+                        client.get_pr_review_threads_strict.return_value = [root]
             monkeypatch.setattr("auto_coder.pr_processor.get_linked_issues_context", lambda *args: "REQ-001: idempotency")
         from auto_coder.execution_trace import TraceCollector, get_trace_collector
 
@@ -2239,6 +2273,25 @@ class TestAdversarialValidationPRFlow:
         collector = get_trace_collector()
         with collector.start_execution("owner/repo", "pr", 100, origin="worker"):
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
+        if resolved_prior == "missing":
+            from auto_coder.execution_trace import Outcome
+            from tests.test_dashboard_observability import _mounted_detail
+
+            mock_run_validation.assert_not_called()
+            mock_merge_pr.assert_not_called()
+            execute.assert_not_called()
+            settlement.assert_not_called()
+            assert any("Local repair validation input failed" in action for action in actions)
+            events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=100).events if event.stage_id == "pr.repair-delegation"]
+            assert events[-1].outcome == Outcome.FAILED.value
+            assert events[-1].facts["effect"] == "local-validation-input"
+            assert events[-1].facts["local_phase"] == "awaiting_validation"
+            with patch("auto_coder.dashboard.ui") as mock_ui:
+                _mounted_detail(mock_ui, "pr", 100)
+            assert any("local-validation-input" in str(call) for call in mock_ui.table.call_args_list)
+            assert ledger.get_snapshot("https://api.github.com", "owner/repo", 100).get_outstanding_generation() is not None
+            return
 
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
         mock_run_validation.assert_called_once()
@@ -2258,9 +2311,13 @@ class TestAdversarialValidationPRFlow:
             if pending:
                 settlement.assert_called_once()
                 observations = settlement.call_args.args[3]
-                assert len(observations) == 1
+                assert len(observations) == (2 if resolved_prior else 1)
                 assert observations[0].blocker_id == _review_feedback_identity("owner/repo#100:local:", root, 0)
                 assert observations[0].still_unmet is True
+                if resolved_prior:
+                    assert [thread.thread_id for thread in mock_run_validation.call_args.kwargs["claimed_review_threads"]] == ["finding", "prior"]
+                    assert observations[1].blocker_id == prior_identity
+                    assert observations[1].still_unmet is False
                 assert admission.call_count == 2
                 assert any("Continuing to independent validation for completed local correction" in action for action in actions)
             assert repair_events[0].outcome == Outcome.DEFERRED.value
