@@ -18,6 +18,13 @@ view, and independently assert business outcomes. Negative controls reject missi
 emissions, scope reattribution, evidence coercion, and false completion while the
 generic renderer continues to accept new or repeated stages without a node map.
 
+Runtime owner-lock timeouts reach the mounted detail view as a deferred
+implementation-admission stage and a deferred execution outcome, including the
+operational reason. They do not imply implementation success or specification
+rejection. `test_owner_lock_timeout_defers_and_retries_with_mounted_evidence`
+holds the real owner lock, exercises the shared processing boundary, checks the
+mounted view and item identity, and verifies admission after the lock is released.
+
 Shared GitHub admission tickets remain operational capacity evidence. Queue waits
 and ticket release never create a dashboard execution or imply provider progress.
 The `admission_queue` refusal uses the existing typed `Deferred` result and durable

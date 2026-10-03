@@ -13,6 +13,16 @@ cloud dispatch and precede implementation ownership and capacity admission.
 They do not create `plan.md`/`tasks.md`, allocate implementation slots, relax
 quota or routing policy, or permit sibling implementation in parallel.
 
+If per-candidate ownership serialization or durable slot evidence is unavailable,
+including a runtime owner-lock acquisition timeout, the common dispatch boundary
+returns a retryable `DEFERRED` result instead of terminating the daemon. The
+capacity-refill pass continues with other candidates and retains its retry flag.
+The lock holder remains protected; no backend is started without admission.
+Once the lock is released, a subsequent attempt repeats the normal gates. This
+operational refusal is not cached as a specification defect. The execution trace
+records `issue.implementation-admission` (or `pr.implementation-admission`) with
+`DEFERRED` and the failure reason under the affected item's execution identity.
+
 Before classifying or snapshotting any readiness submission, Auto-Coder examines
 every line-form `Parent-Issue`, `Parent_Issue`, or `Parent Issue` declaration,
 rejects malformed, ambiguous, self-referential, contradictory, missing, PR, and
