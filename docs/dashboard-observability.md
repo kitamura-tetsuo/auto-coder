@@ -1623,7 +1623,8 @@ Codex no-edit sandbox composition (issue #2387) reuses the existing backend
 interaction and adversarial-validation trace/outcome boundaries. The inner
 sandbox argument changes only inside the bound supervised launch; identity or
 mode mismatch and failed enforcement remain existing pre-start failures, while
-policy violations and unsettled writers remain backend execution failures.
+denied operations remain advisory and unsettled writers remain backend execution
+failures.
 The same no-edit launch sets `GIT_OPTIONAL_LOCKS=0` to prevent read-only Git
 inspection from attempting an optional index refresh; the live conformance
 command includes `git status --short` and asserts successful reads while
@@ -1634,13 +1635,17 @@ renderer changes are needed. Runnable conformance is
 container profile, plus `tests/test_invocation_process_supervisor.py` and
 `tests/test_local_execution_boundary.py` for admission/output-transfer failures.
 
-The Codex no-edit supervisor now consumes its sticky filesystem violation as a
-failed execution, and the client honors that failure even after CLI exit 0.
-Existing backend-interaction failure emissions therefore remain truthful, and
-Strong Audit abandons the claim through its existing failure path instead of
-accepting the provider's payload. The live denied-write cases and
-`tests/test_filesystem_confinement.py::test_codex_noedit_denied_write_fails_even_after_exit_zero`
-exercise this composition; no new event or dashboard outcome category is added.
+The local supervisor records blocked filesystem operations as warning diagnostics
+without converting an otherwise successful provider exit into a failure. Existing
+backend-interaction and adversarial-validation production emissions therefore
+report the actual accepted review outcome instead of a protection error caused
+solely by a denied attempt. Denial evidence remains in the interaction log; it is
+not a new dashboard event or verdict. Enforcement/monitor failures and uncertain
+settlement still take the existing failure path. No provider route, structured
+trace schema or dashboard renderer changes are needed. Runnable coverage is
+`tests/test_filesystem_confinement.py::test_codex_noedit_denied_write_preserves_success_after_exit_zero`,
+`tests/test_local_execution_boundary.py::test_retained_continuation_policy_denial_allows_caller_handoff`,
+and the live denied-write cases in `tests/test_codex_noedit_runtime.py`.
 
 Retained-root checkpoint advancement uses the shared handoff source scope rather
 than including new ignored build artifacts. This changes local continuation

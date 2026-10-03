@@ -336,12 +336,14 @@ class InvocationProcessSupervisor:
         input_writer = self._start_writer(process.stdin, (request.prompt or "").encode("utf-8"))
         outcome = InvocationOutcome.FAILED
         monitor_failures: list[str] = []
+        policy_denials: list[str] = []
 
         def provider_running() -> bool:
             if monitors:
                 try:
                     for monitor in monitors:
                         for denial in monitor.pump():
+                            policy_denials.append(denial)
                             if boundary is not None:
                                 boundary.report_policy_violation(request.invocation_id, denial)
                 except (OSError, RuntimeError) as exc:
@@ -377,6 +379,7 @@ class InvocationProcessSupervisor:
                 while any(monitor.root_returncode is None for monitor in monitors) and time.monotonic() < monitor_deadline:
                     for monitor in monitors:
                         for denial in monitor.pump():
+                            policy_denials.append(denial)
                             if boundary is not None:
                                 boundary.report_policy_violation(request.invocation_id, denial)
                     time.sleep(0.01)
@@ -394,11 +397,6 @@ class InvocationProcessSupervisor:
             with self._lock:
                 self._retained[request.invocation_id] = (process, group)
         self._set_state(request.invocation_id, writer_state)
-        if boundary is not None and request.backend_type.lower() == "codex" and request.effective_mode == "no-edit":
-            evidence = boundary.evidence()
-            if evidence.policy_violation:
-                outcome = InvocationOutcome.FAILED
-                detail = detail or evidence.failure or "Codex no-edit filesystem policy was violated"
         if boundary is not None:
             if outcome is InvocationOutcome.SUCCEEDED and writer_state is WriterState.POSITIVELY_STOPPED:
                 boundary.record_backend_success(request.invocation_id)
@@ -409,6 +407,7 @@ class InvocationProcessSupervisor:
             for thread in (*readers, input_writer):
                 if thread is not None:
                     thread.join(timeout=self.settlement_timeout)
+        detail = "\n".join(part for part in (detail, *dict.fromkeys(policy_denials)) if part)
         return SupervisedInvocationResult(
             request.invocation_id,
             outcome,

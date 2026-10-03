@@ -13,8 +13,10 @@ Boundary state is scoped by context to one invocation, so concurrent invocations
 cannot settle or invalidate one another. This state abstraction does not itself
 confine filesystem or network access and does not prove that a provider's complete
 descendant tree stopped; those facts require an enforcing launcher before this
-evidence can authorize promotion. Positive violations, once reported by that
-launcher, remain terminal even if the provider later exits successfully.
+evidence can authorize promotion. Denied policy operations remain recorded and logged as warnings. A denied
+operation does not invalidate a successful provider result; completed observation
+and positive writer settlement are still required. Enforcement installation or
+monitoring failures remain terminal.
 
 An ordinary successful provider return records only successful backend completion.
 It remains a usable legacy result, but its enforcement and writer facts stay unknown
