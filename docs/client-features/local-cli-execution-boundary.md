@@ -13,8 +13,10 @@ Boundary state is scoped by context to one invocation, so concurrent invocations
 cannot settle or invalidate one another. This state abstraction does not itself
 confine filesystem or network access and does not prove that a provider's complete
 descendant tree stopped; those facts require an enforcing launcher before this
-evidence can authorize promotion. Positive violations, once reported by that
-launcher, remain terminal even if the provider later exits successfully.
+evidence can authorize promotion. Denied policy operations remain recorded and logged as warnings. A denied
+operation does not invalidate a successful provider result; completed observation
+and positive writer settlement are still required. Enforcement installation or
+monitoring failures remain terminal.
 
 An ordinary successful provider return records only successful backend completion.
 It remains a usable legacy result, but its enforcement and writer facts stay unknown
@@ -35,6 +37,10 @@ is positively empty and the direct child is reaped. Production deployments provi
 the non-root child credentials with `AUTO_CODER_LOCAL_WORKER_UID` and
 `AUTO_CODER_LOCAL_WORKER_GID`; missing or unusable cgroup/Landlock prerequisites
 cause refusal before the CLI starts rather than an editable fallback.
+Codex execution-safety failures preserve the executor's concrete diagnostic
+(redacted and bounded to 2,000 characters) in the raised error and interaction
+log. Preparation failures such as missing worker credentials therefore remain
+visible instead of being described solely as uncertain writer settlement.
 An uncertain settlement error is terminal for automatic and explicit session
 resume handling: it retains the prior session identity and cannot be converted
 into a fresh call or a different-backend replacement.
@@ -63,3 +69,29 @@ Local sessions are refused once their invocation-owned private workspace has bee
 released; an opaque provider session ID is never resumed in a newly cloned root and
 reported as a continuation. A future continuation implementation must retain or
 capture the prior generation and establish the next caller checkpoint explicitly.
+
+For an existing Docker Compose deployment using an `app` service, merge the
+following settings into the final override file (use the actual service name
+when it differs):
+
+```yaml
+services:
+  app:
+    user: "0:0"
+    environment:
+      AUTO_CODER_LOCAL_WORKER_UID: "65532"
+      AUTO_CODER_LOCAL_WORKER_GID: "65532"
+    privileged: true
+    cgroup: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+```
+
+Use the production image containing the dedicated worker identity. Apply the
+override using the same project name and full existing Compose file list, with
+the new override last. Drain active processing before recreating the service;
+`docker compose restart` does not apply changed environment or mount settings.
+After recreation, verify that the two worker variables are set, the controller
+runs as root, and `/sys/fs/cgroup` is mounted read-write. Then reprocess the
+deferred PR so its pending strong audit can run. Changing these deployment
+settings does not turn an ordinary validation PASS into strong-audit completion.

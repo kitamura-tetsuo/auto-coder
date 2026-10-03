@@ -1415,6 +1415,7 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    @pytest.mark.parametrize("saved_pass", [False, True])
     def test_same_sha_pass_does_not_skip_incomplete_publication_recovery(
         self,
         mock_merge_pr,
@@ -1425,19 +1426,26 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
         mock_recover_publications,
+        saved_pass,
     ):
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), head_sha)}]
+        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), head_sha)}] if saved_pass else []
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
 
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        status = ProcessedPRResult(pr_data=pr_data)
+        with patch("auto_coder.pr_processor._record_pr_stage") as record_stage:
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, status)
+
+        assert status.outcome is PRProcessingOutcome.FAILED
+        assert status.error == "root evidence temporarily unavailable"
+        assert any(call.args[4].get("phase") == "publication-recovery" for call in record_stage.call_args_list)
 
         mock_recover_publications.assert_called_once_with("owner/repo", 100)
         mock_run_validation.assert_not_called()
@@ -2143,6 +2151,7 @@ class TestAdversarialValidationPRFlow:
         assert any("Published APPROVE adversarial review" in a for a in actions)
         assert any("Successfully merged PR #100" in a for a in actions)
 
+    @pytest.mark.parametrize("local,pending", [(False, False), (True, False), (True, True)])
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
@@ -2162,6 +2171,9 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
         dedicated_reviewer_publication,
+        local,
+        pending,
+        monkeypatch,
     ):
         """A violation is reported without checking out or modifying the PR branch."""
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
@@ -2185,7 +2197,48 @@ class TestAdversarialValidationPRFlow:
 
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        if local:
+            from auto_coder.local_review_repair import LocalReviewRepairOutcome
+            from auto_coder.pr_processor import ReviewRepairRouteDecision, ReviewRepairRouteDisposition
+            from auto_coder.util.gh_cache import PullRequestRoutingMetadata
+
+            pr_data["body"] = "<!-- auto-coder:local-llm -->\nFixes #99"
+            pr_data["base"] = {"ref": "main"}
+            evidence = PullRequestRoutingMetadata("https://api.github.com", "owner/repo", 100, "open", pr_data["body"], "owner/repo", "feature-branch", "abc123456789")
+            route = ReviewRepairRouteDecision(ReviewRepairRouteDisposition.LOCAL_REQUIRED, "local", evidence)
+            monkeypatch.setattr("auto_coder.pr_processor._select_review_repair_route", lambda *args: route)
+            monkeypatch.setattr("auto_coder.pr_processor._revalidate_local_review_repair_route", lambda *args: route)
+            finding_body = format_adversarial_finding_comment(mock_run_validation.return_value.findings[0])
+            client.get_pr_review_threads_strict.return_value = [ReviewThread(id="finding", comments=[ReviewThreadComment(database_id=1, author_login="reviewer", body=finding_body)])]
+            monkeypatch.setattr("auto_coder.pr_processor._get_claimed_review_thread_state", lambda *args, **kwargs: ClaimedReviewThreadGateState())
+            monkeypatch.setattr("auto_coder.local_review_repair.admit_local_repair_allowance", lambda request: (object(), ""))
+            execute = MagicMock(return_value=LocalReviewRepairOutcome("awaiting_validation", "published", True, True))
+            monkeypatch.setattr("auto_coder.local_review_repair.execute_local_review_repair", execute)
+            if pending:
+                from auto_coder.adversarial_validator import ReviewThreadDisposition
+                from auto_coder.local_review_repair import LocalRepairValidationRequired
+                from auto_coder.review_thread_validation import ClaimedReviewThread
+
+                root = client.get_pr_review_threads_strict.return_value[0]
+                blocked = ClaimedReviewThreadGateState(unresolved=(root,), blocking_unresolved=(root,), has_blocking_unresolved=True)
+                claimed = ClaimedReviewThreadGateState(claimed=(ClaimedReviewThread(thread_id="finding", root_comment_database_id=1, original_finding=finding_body, revalidation_forced=True),))
+                monkeypatch.setattr("auto_coder.pr_processor._get_claimed_review_thread_state", lambda *args, **kwargs: blocked)
+                monkeypatch.setattr("auto_coder.pr_processor._allow_older_head_adversarial_threads", lambda *args, **kwargs: claimed)
+                monkeypatch.setattr("auto_coder.pr_processor.resolve_addressed_review_threads", lambda *args, **kwargs: [])
+                monkeypatch.setattr("auto_coder.pr_processor._get_published_adversarial_validation_status", lambda *args: ("NEEDS_FIX", None))
+                admission = MagicMock(side_effect=[LocalRepairValidationRequired("completed generation"), (object(), "")])
+                monkeypatch.setattr("auto_coder.local_review_repair.admit_local_repair_allowance", admission)
+                settlement = MagicMock()
+                monkeypatch.setattr("auto_coder.local_review_repair.settle_local_review_repair_validation", settlement)
+                client.get_pull_request_head_sha_strict.return_value = "abc123456789"
+                mock_run_validation.return_value.thread_dispositions = [ReviewThreadDisposition(thread_id="finding", status="STILL_VALID", evidence="defect independently reproduced")]
+            monkeypatch.setattr("auto_coder.pr_processor.get_linked_issues_context", lambda *args: "REQ-001: idempotency")
+        from auto_coder.execution_trace import TraceCollector, get_trace_collector
+
+        monkeypatch.setattr(TraceCollector, "_instance", None)
+        collector = get_trace_collector()
+        with collector.start_execution("owner/repo", "pr", 100, origin="worker"):
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
         mock_run_validation.assert_called_once()
@@ -2194,7 +2247,35 @@ class TestAdversarialValidationPRFlow:
         client.add_comment_to_pr.assert_not_called()
         dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, "abc123456789", mock_run_validation.return_value)
         assert any("Adversarial validation failed for PR #100" in a for a in actions)
-        assert any("no local automatic adversarial fix was attempted" in a for a in actions)
+        if local:
+            from auto_coder.execution_trace import Outcome
+
+            execute.assert_called_once()
+            assert finding_body in execute.call_args.args[0].prompt
+            assert execute.call_args.args[0].head_sha == "abc123456789"
+            repair_events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=100).events if event.stage_id == "pr.repair-delegation"]
+            assert len(repair_events) == (2 if pending else 1)
+            if pending:
+                settlement.assert_called_once()
+                observations = settlement.call_args.args[3]
+                assert len(observations) == 1
+                assert observations[0].blocker_id == _review_feedback_identity("owner/repo#100:local:", root, 0)
+                assert observations[0].still_unmet is True
+                assert admission.call_count == 2
+                assert any("Continuing to independent validation for completed local correction" in action for action in actions)
+            assert repair_events[0].outcome == Outcome.DEFERRED.value
+            assert repair_events[0].facts["route_disposition"] == "LOCAL_EXECUTION"
+            assert repair_events[0].facts["local_phase"] == "awaiting_validation"
+            from tests.test_dashboard_observability import _mounted_detail
+
+            with patch("auto_coder.dashboard.ui") as mock_ui:
+                diagram = _mounted_detail(mock_ui, "pr", 100)
+            assert "repair delegation" in diagram
+            assert "deferred" in diagram
+            assert any("LOCAL_EXECUTION" in str(call) for call in mock_ui.table.call_args_list)
+            assert not any("no local automatic adversarial fix" in action for action in actions)
+        else:
+            assert any("no local automatic adversarial fix was attempted" in a for a in actions)
 
     def test_handle_pr_merge_persists_nonempty_provider_snapshot_for_restart_delivery(self, tmp_path, dedicated_reviewer_publication):
         """The production validation boundary preserves B through publication and restart."""

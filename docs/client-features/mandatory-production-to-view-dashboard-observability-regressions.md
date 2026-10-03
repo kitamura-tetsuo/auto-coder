@@ -18,6 +18,13 @@ view, and independently assert business outcomes. Negative controls reject missi
 emissions, scope reattribution, evidence coercion, and false completion while the
 generic renderer continues to accept new or repeated stages without a node map.
 
+Runtime owner-lock timeouts reach the mounted detail view as a deferred
+implementation-admission stage and a deferred execution outcome, including the
+operational reason. They do not imply implementation success or specification
+rejection. `test_owner_lock_timeout_defers_and_retries_with_mounted_evidence`
+holds the real owner lock, exercises the shared processing boundary, checks the
+mounted view and item identity, and verifies admission after the lock is released.
+
 Shared GitHub admission tickets remain operational capacity evidence. Queue waits
 and ticket release never create a dashboard execution or imply provider progress.
 The `admission_queue` refusal uses the existing typed `Deferred` result and durable
@@ -55,3 +62,11 @@ accepted handoff without PR publication, a validation job as its own execution,
 two concurrently processed Issues never sharing or swapping execution identity,
 and unavailable CI evidence reaching the mounted view as an explicit `unknown`
 outcome rather than a coerced boolean.
+
+Local review correction exposes the pending allowance generation through the
+existing repair-delegation stage's `local_phase=awaiting_validation` fact and
+continues to independent validation. A settlement failure is `FAILED`, with the
+local route, retained phase and reason visible in the generic detail table.
+The local repair generation revalidation inventory in
+`docs/dashboard-observability.md` records the regression commands; the trace
+schema and renderer remain unchanged.

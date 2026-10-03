@@ -285,9 +285,9 @@ def test_denied_escape_is_a_sticky_controller_owned_violation(tmp_path: Path) ->
     assert result.outcome is InvocationOutcome.SUCCEEDED
     assert result.stdout == "success\n"
     assert evidence.filesystem_enforcement is EvidenceStatus.ESTABLISHED
-    assert evidence.violation_observation is EvidenceStatus.FAILED
+    assert evidence.violation_observation is EvidenceStatus.ESTABLISHED
     assert evidence.policy_violation
-    assert not evidence.confined_result_authorized
+    assert evidence.confined_result_authorized
     boundary.record_backend_success(request.invocation_id)
     assert boundary.evidence().policy_violation
 
@@ -362,7 +362,7 @@ except PermissionError:
     assert "user.auto-coder-test" not in os.listxattr(tracked)
     evidence = boundary.evidence()
     assert evidence.policy_violation
-    assert evidence.violation_observation is EvidenceStatus.FAILED
+    assert evidence.violation_observation is EvidenceStatus.ESTABLISHED
     boundary.record_backend_success(request.invocation_id)
     assert boundary.evidence().policy_violation
 
@@ -401,7 +401,7 @@ def test_ordinary_permitted_command_failure_is_not_a_policy_violation(tmp_path: 
     assert not boundary.evidence().policy_violation
 
 
-def test_codex_noedit_denied_write_fails_even_after_exit_zero(tmp_path: Path) -> None:
+def test_codex_noedit_denied_write_preserves_success_after_exit_zero(tmp_path: Path) -> None:
     from dataclasses import replace
 
     from src.auto_coder.local_execution_boundary import BackendOutcome
@@ -414,12 +414,13 @@ def test_codex_noedit_denied_write_fails_even_after_exit_zero(tmp_path: Path) ->
     result = supervisor.run(launch, boundary=boundary)
     assert result.returncode == 0
     assert result.stdout == "caught-denial\n"
-    assert result.outcome is InvocationOutcome.FAILED
+    assert "filesystem policy denied" in result.detail
+    assert result.outcome is InvocationOutcome.SUCCEEDED
     assert result.writer_complete
     assert protected.read_text() == "preserved"
-    assert boundary.evidence().backend_outcome is BackendOutcome.FAILED
+    assert boundary.evidence().backend_outcome is BackendOutcome.SUCCEEDED
     assert boundary.evidence().policy_violation
-    assert not boundary.evidence().confined_result_authorized
+    assert boundary.evidence().confined_result_authorized
 
 
 def test_codex_noedit_can_remove_own_runtime_symlink_without_mutating_referent(tmp_path: Path) -> None:
@@ -455,7 +456,7 @@ def test_codex_noedit_cannot_remove_caller_symlink_pointing_into_runtime(tmp_pat
     boundary = _boundary(launch, tmp_path)
     supervisor = InvocationProcessSupervisor(owner=ProcessOwner(tmp_path / "owners"))  # type: ignore[arg-type]
     result = supervisor.run(launch, boundary=boundary)
-    assert result.outcome is InvocationOutcome.FAILED
+    assert result.outcome is InvocationOutcome.SUCCEEDED
     assert result.returncode == 0
     assert result.stdout == "caller-alias-denied\n"
     assert protected_alias.is_symlink()

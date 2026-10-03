@@ -48,3 +48,9 @@ permissions.
 When a local boundary is supplied, the launcher rejects any invocation identity,
 backend type, workspace, or effective-mode mismatch before process-owner setup.
 This prevents a launch from consuming another boundary's filesystem authority.
+
+Denied filesystem operations are blocked before mutation, recorded on the bound
+invocation and retained in result diagnostics, but do not override a successful
+provider exit. Monitoring failures, timeout, cancellation and uncertain writer
+settlement remain independent failures. Boundary authorization requires completed
+observation and settlement even when denials were recorded.

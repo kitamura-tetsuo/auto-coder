@@ -625,12 +625,24 @@ class GitHubAppReviewer:
 
             if unrooted_findings or unrooted_gaps or (result.unexplained_changes and result.publish_clarification_thread):
                 changed_files = self._changed_files(repo_name, pr_number, token)
+                blocker_comments: list[tuple[dict[str, object], Optional[str]]] = []
                 for idx, finding in enumerate(unrooted_findings):
                     bid = unrooted_finding_blockers[idx] if idx < len(unrooted_finding_blockers) else None
-                    comments.append(self._finding_comment(finding, changed_files, blocker_id=bid))
+                    blocker_comments.append((self._finding_comment(finding, changed_files, blocker_id=bid), bid))
                 for gap in gaps_to_publish:
                     bid = gap_blockers.get(gap.gap_id)
-                    comments.append(self._test_oracle_gap_comment(gap, changed_files, blocker_id=bid))
+                    blocker_comments.append((self._test_oracle_gap_comment(gap, changed_files, blocker_id=bid), bid))
+                roots_by_blocker: dict[str, dict[str, object]] = {}
+                for comment, bid in blocker_comments:
+                    if bid is not None and bid in roots_by_blocker:
+                        # Equivalent observations share one root, retaining every
+                        # finding section and its evidence in the submitted body.
+                        root = roots_by_blocker[bid]
+                        root["body"] = f"{root['body']}\n\n---\n\n{comment['body']}"
+                    else:
+                        comments.append(comment)
+                        if bid is not None:
+                            roots_by_blocker[bid] = comment
                 if result.unexplained_changes and result.publish_clarification_thread:
                     clarification_body = format_change_provenance_clarification(result.unexplained_changes)
                     unexplained_paths = [path for item in result.unexplained_changes for path in item.paths if path in changed_files]
@@ -655,7 +667,8 @@ class GitHubAppReviewer:
             review_body = format_adversarial_review_summary(
                 result,
                 validated_head_sha,
-                attached_test_oracle_gap_count=len(gaps_to_publish),
+                attached_test_oracle_gap_count=sum("### Auto-Coder material test-oracle gap" in str(comment["body"]) for comment in comments),
+                attached_finding_count=sum("### Auto-Coder adversarial finding" in str(comment["body"]) for comment in comments),
             )
             comments_json = json.dumps(comments, sort_keys=True, separators=(",", ":"))
             if effective_ledger is not None and unrooted_blocker_ids and reconciled_snapshot:
@@ -820,7 +833,7 @@ class GitHubAppReviewer:
             associations, conflicts = self._publication_root_associations(roots, identity, repo_name, pr_number, blocker_ids, ledger, self._api_url)
             if conflicts or set(associations) != set(blocker_ids):
                 return ReviewPublicationResult(False, event, "Publication root association is incomplete or conflicting")
-            if comments_json != "[]" and not self._root_payloads_match(comments_json, roots, associations):
+            if comments_json != "[]" and not self._root_payloads_match(comments_json, roots, associations, reviewed_head_sha=retained.reviewed_head_sha):
                 return ReviewPublicationResult(False, event, "Publication root payload does not match the retained request")
             ledger.confirm_publication_intent(self._api_url, repo_name, pr_number, intent_id, tuple(sorted(associations.items())), evidence=f"review:{review_id}")
             return ReviewPublicationResult(True, event, "")
@@ -840,6 +853,16 @@ class GitHubAppReviewer:
                 item_review_id = item.get("pull_request_review_id")
                 if item_review_id is not None and item_review_id != review_id:
                     raise RuntimeError("Review-specific comment response contained another review")
+                # The review-specific endpoint can omit modern diff anchors even
+                # when the individual comment endpoint retains them.
+                if ("position" in item or "line" in item or "side" in item) and any(item.get(field) is None for field in ("line", "side")):
+                    comment_id = item.get("id")
+                    if not isinstance(comment_id, int) or comment_id <= 0:
+                        raise RuntimeError("Review comment is missing its native identity")
+                    detail = self._request("GET", f"/repos/{repo_name}/pulls/comments/{comment_id}", token).json()
+                    if not isinstance(detail, dict) or detail.get("id") != comment_id or detail.get("pull_request_review_id") != review_id or any(detail.get(field) != item.get(field) for field in ("body", "path", "in_reply_to_id")):
+                        raise RuntimeError("Individual comment receipt does not match the review root")
+                    item = detail
                 roots.append(item)
             if len(data) < 100:
                 return roots
@@ -870,7 +893,7 @@ class GitHubAppReviewer:
         return associations, conflicts
 
     @staticmethod
-    def _root_payloads_match(comments_json: str, roots: list[dict[str, object]], associations: dict[str, int]) -> bool:
+    def _root_payloads_match(comments_json: str, roots: list[dict[str, object]], associations: dict[str, int], *, reviewed_head_sha: str) -> bool:
         try:
             intended = json.loads(comments_json)
         except (TypeError, json.JSONDecodeError):
@@ -893,8 +916,21 @@ class GitHubAppReviewer:
             expected = expected_by_blocker[blocker_id]
             if not isinstance(actual, dict):
                 return False
+            original_commit = actual.get("original_commit_id")
+            if original_commit is not None and original_commit != reviewed_head_sha:
+                return False
+            # GitHub relocates current anchors after later commits. The receipt's
+            # original coordinates remain bound to the reviewed commit.
+            relocated = actual.get("commit_id") is not None and actual.get("commit_id") != reviewed_head_sha
+            if relocated and original_commit != reviewed_head_sha:
+                return False
             for field in ("body", "path", "line", "side", "start_line", "start_side"):
-                if field in expected and actual.get(field) != expected[field]:
+                actual_field = field
+                if field in {"line", "start_line"} and original_commit == reviewed_head_sha:
+                    original_field = f"original_{field}"
+                    if original_field in actual or relocated:
+                        actual_field = original_field
+                if field in expected and actual.get(actual_field) != expected[field]:
                     return False
         return True
 

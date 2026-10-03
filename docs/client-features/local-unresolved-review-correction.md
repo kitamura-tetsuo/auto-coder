@@ -9,6 +9,16 @@ order, model and options therefore use that repository's overrides rather than a
 process-global cached configuration. Task-only providers are never selected as a
 local fallback.
 
+The same route handles freshly published adversarial `NEEDS_FIX` and
+`NEEDS_TESTS` reports and saved same-head report replay. It requires the
+authoritative explicit-local PR declaration and the still-current validated
+head. Only unresolved roots matching the report's actionable feedback are
+submitted; an implementer's addressed claim does not suppress a root that
+independent validation still finds defective. Existing stable feedback identities
+and the durable local claim prevent duplicate execution on replay. Cloud-owned
+PRs retain their existing provider follow-up route; missing cloud ownership alone
+does not authorize local repair.
+
 The correction runs in a detached worktree at the captured PR head. A SQLite claim
 serializes execution for the whole pull request and retains executing,
 indeterminate, publication-pending, no-change, and awaiting-validation states so a
@@ -29,3 +39,27 @@ no-change completion. Successful no-change and published completions proceed to
 independent same-head revalidation. Ordinary unstaged model edits are staged by the
 controller; if staging or committing fails, the detached workspace path is retained
 with the durable attempt for recovery.
+
+A completed allowance generation is never reused as delivery authority for a
+new attempt. Its pending-revalidation state instead sends ordinary PR processing
+through independent validation, even when unresolved threads would otherwise stop
+that pass. After confirmed review publication, exact-current-head dispositions
+settle only the original covered root identities: `ADDRESSED` clears that blocker
+and `STILL_VALID` charges one failed generation. Missing or inconclusive
+observations retain the outstanding generation. Validation must examine the
+published correction or a descendant; unrelated heads cannot settle it. A later
+repair then receives a fresh allowance generation. An unfinished generation for a
+different attempt cannot authorize a new invocation.
+
+An allowance-delivery failure before entering the backend leaves the local claim
+`not_started`, with `executed=False`, so a later pass can retry. Exceptions after
+backend entry remain indeterminate and continue suppressing duplicate execution.
+The ordinary repair-delegation trace includes `local_phase=awaiting_validation`
+when independent validation is due; settlement failures remain explicit failed
+repair-delegation events rather than successful corrections.
+
+Retained material test-oracle threads match newly validated feedback by their
+stable `TOG` identity as well as exact text. Changed reproduction wording does
+not discard an existing open gap: the correction uses the current validated
+instructions while preserving the original root's durable feedback identity.
+Different gap identities remain excluded even when their prose is identical.

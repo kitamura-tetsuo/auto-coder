@@ -185,7 +185,7 @@ def test_real_codex_reads_and_preserves_durable_review_authority(runtime_root: P
         assert result["ordinary_before"] == result["head"]
         assert result["ordinary_head"] == ("" if verdict == "FINDINGS" else result["head"])
         assert result["source"] == "Distinctive source head 2387.\n"
-        accepted = verdict in {"PASS", "FINDINGS"} and not write_target
+        accepted = verdict in {"PASS", "FINDINGS"}
         assert result["accepted"] is accepted, output
         assert result["verdict"] == (verdict if accepted else None), output
         assert result["findings"] == (["source-finding"] if verdict == "FINDINGS" else [])

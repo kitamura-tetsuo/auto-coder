@@ -18,16 +18,17 @@ remain protected; only invocation-owned runtime paths are writable.
 
 There is no sandbox capability probe, cached fallback decision, client opt-in, or
 `.git` path heuristic. Unsupervised calls retain Codex read-only mode. Missing
-invocation bindings, mismatched modes, failed policy/owner setup, detected writes,
-and uncertain writer settlement refuse execution or fail the result. Final messages
+invocation bindings, mismatched modes, failed policy/owner setup,
+and uncertain writer settlement refuse execution or fail the result. Denied write
+attempts remain blocked and logged but do not fail an otherwise successful turn. Final messages
 are transferred by the controller only after positive writer settlement; CLI exit 0
 alone does not establish review acceptance.
 
 Observability is neutral: this adapter changes the inner Codex sandbox argument
 and disables optional Git index refreshes in that same no-edit launch. The
 existing supervisor supplies filesystem and writer evidence and
-existing failures; provider selection, review acceptance inputs, dashboard trace
-schema, and processing outcomes are unchanged.
+existing failures. Denied operations alone now preserve the successful backend
+outcome, while provider selection and dashboard trace schema remain unchanged.
 
 Codex no-edit policy also pins the kernel `/dev/null` character device for sink
 I/O, which Git requires for `git rev-parse HEAD` under Codex's shell runtime.
@@ -40,15 +41,17 @@ The production image pins Codex 0.159.2. Real-CLI conformance runs with the
 existing `opencode_live` suite in its privileged controller/non-root worker
 container profile (`tests/test_codex_noedit_runtime.py`); it drives Strong Audit
 through the production factory, executor, client, supervisor, and durable state,
-including denied writes and exit-0 non-authoritative payloads.
+including denied writes followed by accepted exit-0 payloads and malformed
+non-authoritative payloads.
 
-A caught write denial remains terminal even if Codex later emits PASS and exits 0:
-the supervisor converts the sticky no-edit Codex violation into a failed outcome,
-and the client honors execution failure independently of the CLI exit status.
-This uses the existing denial producer and result channel; it changes no review
-verdict or claim acceptance rule. Valid FINDINGS continue through the normal
-accepted-finding transition, including its existing requirement for a fresh
-ordinary review after repair.
+A caught write denial is advisory even if Codex later emits PASS and exits 0.
+The supervisor preserves successful completion and the boundary retains the
+policy-violation flag without invalidating result authorization. Denial diagnostics
+remain in the executor result and interaction log and are emitted as warnings.
+The provider payload still passes the normal review identity and verdict checks;
+malformed results, actual CLI failures and failed enforcement remain failures.
+Valid FINDINGS continue through the normal accepted-finding transition, including
+its existing requirement for a fresh ordinary review after repair.
 
 Codex's runtime PATH aliases may point to its protected executable. The syscall
 guard checks the directory entry for `unlink`/`unlinkat`, so removing an owned

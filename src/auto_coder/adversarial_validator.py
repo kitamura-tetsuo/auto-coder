@@ -797,6 +797,7 @@ def format_adversarial_review_summary(
     result: AdversarialValidationResult,
     head_sha: str,
     attached_test_oracle_gap_count: Optional[int] = None,
+    attached_finding_count: Optional[int] = None,
 ) -> str:
     """Render review-level metadata without duplicating actionable findings."""
     summary_result = AdversarialValidationResult(
@@ -813,8 +814,11 @@ def format_adversarial_review_summary(
     body = format_adversarial_validation_comment(summary_result, head_sha)
     if result.clarification_reply_fingerprint:
         body += f"\n{result.clarification_reply_fingerprint}"
-    if result.findings:
-        body += f"\n\n{len(result.findings)} actionable finding thread(s) are attached to this review."
+    finding_count = len(result.findings) if attached_finding_count is None else attached_finding_count
+    if finding_count:
+        body += f"\n\n{finding_count} actionable finding thread(s) are attached to this review."
+    elif result.findings:
+        body += f"\n\n{len(result.findings)} actionable finding(s) remain represented by existing review threads."
     attached_gap_count = len(result.open_test_oracle_gaps) if attached_test_oracle_gap_count is None else attached_test_oracle_gap_count
     if attached_gap_count:
         body += f"\n\n{attached_gap_count} focused regression-test request thread(s) are attached to this review."

@@ -60,4 +60,5 @@
         - "Blocks PR merge."
         - "Publishes the concrete findings to the PR conversation without checking out or modifying the local PR branch."
         - "For a PR associated with an existing Codex Cloud task, sends the complete bounded validation report to that task as a follow-up fix request. Delivery is recorded with a validator-version and head-SHA marker so a saved NEEDS_FIX result can be delivered after restart without being resent on every processing loop."
-        - "For other PRs, the PR author or other recipient remains responsible for applying the correction. After a new commit and green CI, Auto-Coder validates the new head SHA and only merges after PASS."
+        - "Explicit-local PRs route actionable NEEDS_FIX or NEEDS_TESTS findings through the existing durable local review correction flow, including saved-report replay. Independently rejected addressed claims remain repairable; the validated head must still match the authoritative PR head."
+        - "For PRs with neither an explicit-local declaration nor an existing provider task, the PR author or other recipient remains responsible for applying the correction. After a new commit and green CI, Auto-Coder validates the new head SHA and only merges after PASS."

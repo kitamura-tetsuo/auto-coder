@@ -25,6 +25,19 @@ completion. Missing audit, report, trace, model, or legacy reuse provenance is
 shown as unavailable rather than inferred. The Execution Trace remains a
 separate, process-local panel.
 
+For explicit-local PRs, the Execution Trace's existing repair-delegation stage
+also covers adversarial failure and saved-report replay. It displays
+`route_disposition=LOCAL_EXECUTION` and `local_phase` for a pending local
+correction, with a deferred outcome until independent validation. Routing
+refusal is failed; local publication alone does not certify a successful review
+or merge.
+
+Codex execution-safety failures retain a bounded, redacted executor diagnostic
+in the interaction error. The existing strong-audit Execution Trace reason and
+durable pending reason carry that diagnostic too, so missing worker credentials
+or failed cgroup confirmation remain visible while the review stays pending.
+These diagnostics do not certify review completion or authorize provider retry.
+
 The views poll the local audit once per second. They retain the last successful
 display as stale when a read fails, preserve a selected review by `review_id`,
 and avoid rebuilding unchanged report/list content. Dashboard actions only
@@ -32,3 +45,22 @@ read the mounted repository's audit root and update client state: they do not
 query GitHub/providers, dispatch or retry reviews, mutate authorization/audit
 state, or accept repository/file paths from the request. Report content is
 rendered as inert text.
+
+Ordinary adversarial reviews retain every semantic finding in the native report,
+even when equivalent observations share a single published root. Attached-thread
+counts describe GitHub publication, not the number of findings displayed here;
+publication confirmation still appears as a separate effect. Blocker identity
+matching and same-batch root consolidation do not change this view's audit schema,
+polling, or authorization boundaries.
+
+Recovery of missing GitHub review-list anchors uses an individually verified
+comment receipt before confirming publication. It preserves the same separate
+publication effect and historical native report; an unavailable or mismatched
+receipt remains incomplete rather than appearing as confirmed publication.
+
+Pending publication recovery before validation appears in the existing
+`pr.adversarial-validation` trace stage with `phase=publication-recovery` and a
+failed outcome when recovery cannot confirm the receipt. The reason is retained
+in processing status and the trace. Confirming original anchors after a later
+commit allows normal validation and repair routing to resume; it does not grant
+merge approval from an older verdict.
