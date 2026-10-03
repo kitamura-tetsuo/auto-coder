@@ -131,6 +131,39 @@ class CodexClient(LLMClientBase):
         return prompt.replace("@", "\\@").strip()
 
     @staticmethod
+    def _terminal_error_message(output: str) -> Optional[str]:
+        """Extract the terminal cause without treating tool output as diagnostics."""
+        terminal_messages: list[str] = []
+        error_messages: list[str] = []
+        for line in output.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("type") not in {"error", "turn.failed"}:
+                continue
+            message = event.get("error") or event.get("message")
+            # Provider errors can be JSON encoded inside a JSONL message.
+            for _ in range(8):
+                if isinstance(message, dict):
+                    message = message.get("error") or message.get("message")
+                elif isinstance(message, str):
+                    try:
+                        decoded = json.loads(message)
+                    except json.JSONDecodeError:
+                        break
+                    if not isinstance(decoded, (dict, str)):
+                        break
+                    message = decoded
+                else:
+                    break
+            if isinstance(message, str) and message.strip():
+                destination = terminal_messages if event.get("type") == "turn.failed" else error_messages
+                destination.append(message.strip())
+        messages = terminal_messages or error_messages
+        return messages[-1] if messages else None
+
+    @staticmethod
     def _has_usage_limit_diagnostic(
         stdout: str,
         stderr: str,
@@ -523,6 +556,10 @@ class CodexClient(LLMClientBase):
             print(f"Duration: {duration_ms:.0f}ms")
             print(f"Status: {status.upper()}")
             if error_message:
+                terminal_cause = self._terminal_error_message(full_output)
+                if terminal_cause:
+                    cause = redact_string(terminal_cause)
+                    print(f"Cause: {cause[:2000]}..." if len(cause) > 2000 else f"Cause: {cause}")
                 print(f"Error: {error_message[:200]}..." if len(error_message) > 200 else f"Error: {error_message}")
             print("=" * 60 + "\n")
 
