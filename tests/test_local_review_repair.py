@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
 from auto_coder.git_commit import git_push
 from auto_coder.llm_backend_config import get_active_repo_name
@@ -478,3 +480,50 @@ def test_exact_head_push_uses_lease_and_never_enters_recovery_fallback() -> None
         cwd="/checkout",
     )
     fallback.assert_not_called()
+
+
+@pytest.mark.parametrize("heading", ["### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"])
+@pytest.mark.parametrize("replay", [False, True])
+def test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelated_threads(heading: str, replay: bool) -> None:
+    from auto_coder.pr_processor import _send_adversarial_validation_feedback_to_cloud_task
+
+    evidence = PullRequestRoutingMetadata("https://api.github.com", "owner/repo", 42, "open", "<!-- auto-coder:local-llm -->", "owner/repo", "repair-head", "abc123")
+    route = ReviewRepairRouteDecision(ReviewRepairRouteDisposition.LOCAL_REQUIRED, "local", evidence)
+    finding = f"{heading}\n\nCorrect the broken invariant."
+    thread = ReviewThread(id="validated", comments=[ReviewThreadComment(database_id=1, body=finding, author_login="reviewer"), ReviewThreadComment(database_id=2, body="<!-- auto-coder-review-addressed:v1 -->", author_login="implementer")])
+    unrelated = ReviewThread(id="unrelated", comments=[ReviewThreadComment(database_id=3, body="Unrelated request", author_login="reviewer")])
+    github = MagicMock()
+    github.get_pr_review_threads_strict.return_value = [thread, unrelated]
+    pr_data = {"number": 42, "body": evidence.body, "head": {"ref": "repair-head", "sha": "abc123"}, "base": {"ref": "main"}}
+    with (
+        patch("auto_coder.pr_processor._select_review_repair_route", return_value=route),
+        patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),
+        patch("auto_coder.pr_processor.get_linked_issues_context", return_value="REQ-001: preserve invariant"),
+        patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(object(), "")),
+        patch("auto_coder.local_review_repair.execute_local_review_repair", return_value=LocalReviewRepairOutcome("awaiting_validation", "published", True, True)) as execute,
+        patch("auto_coder.pr_processor._resolve_cloud_task_origin") as cloud,
+    ):
+        result = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "abc123", finding, github, () if replay else [finding], config=MagicMock())
+    execute.assert_called_once()
+    request = execute.call_args.args[0]
+    assert finding in request.prompt
+    assert "Unrelated request" not in request.prompt
+    assert len(request.feedback_identities) == 1
+    assert request.head_sha == "abc123"
+    assert result.route_disposition == "LOCAL_EXECUTION"
+    assert result.local_phase == "awaiting_validation"
+    cloud.assert_not_called()
+
+
+def test_local_adversarial_repair_rejects_changed_validated_head() -> None:
+    evidence = PullRequestRoutingMetadata("https://api.github.com", "owner/repo", 42, "open", "<!-- auto-coder:local-llm -->", "owner/repo", "repair-head", "new-head")
+    route = ReviewRepairRouteDecision(ReviewRepairRouteDisposition.LOCAL_REQUIRED, "local", evidence)
+    with (
+        patch("auto_coder.pr_processor._select_review_repair_route", return_value=route),
+        patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),
+        patch("auto_coder.local_review_repair.execute_local_review_repair") as execute,
+    ):
+        result = _delegate_cloud_review_thread_repair("owner/repo", {"number": 42}, MagicMock(), config=MagicMock(), validated_feedback=("finding",), validated_head_sha="old-head")
+    assert result.route_disposition == "CONFLICT"
+    assert result == ["Local review repair was not admitted for PR #42: validated head has changed"]
+    execute.assert_not_called()

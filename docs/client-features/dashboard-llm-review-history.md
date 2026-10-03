@@ -25,6 +25,13 @@ completion. Missing audit, report, trace, model, or legacy reuse provenance is
 shown as unavailable rather than inferred. The Execution Trace remains a
 separate, process-local panel.
 
+For explicit-local PRs, the Execution Trace's existing repair-delegation stage
+also covers adversarial failure and saved-report replay. It displays
+`route_disposition=LOCAL_EXECUTION` and `local_phase` for a pending local
+correction, with a deferred outcome until independent validation. Routing
+refusal is failed; local publication alone does not certify a successful review
+or merge.
+
 Codex execution-safety failures retain a bounded, redacted executor diagnostic
 in the interaction error. The existing strong-audit Execution Trace reason and
 durable pending reason carry that diagnostic too, so missing worker credentials

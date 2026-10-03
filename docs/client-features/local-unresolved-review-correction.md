@@ -9,6 +9,16 @@ order, model and options therefore use that repository's overrides rather than a
 process-global cached configuration. Task-only providers are never selected as a
 local fallback.
 
+The same route handles freshly published adversarial `NEEDS_FIX` and
+`NEEDS_TESTS` reports and saved same-head report replay. It requires the
+authoritative explicit-local PR declaration and the still-current validated
+head. Only unresolved roots matching the report's actionable feedback are
+submitted; an implementer's addressed claim does not suppress a root that
+independent validation still finds defective. Existing stable feedback identities
+and the durable local claim prevent duplicate execution on replay. Cloud-owned
+PRs retain their existing provider follow-up route; missing cloud ownership alone
+does not authorize local repair.
+
 The correction runs in a detached worktree at the captured PR head. A SQLite claim
 serializes execution for the whole pull request and retains executing,
 indeterminate, publication-pending, no-change, and awaiting-validation states so a

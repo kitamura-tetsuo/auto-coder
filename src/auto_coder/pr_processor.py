@@ -631,6 +631,15 @@ class CloudReviewRepairResult(list[str]):
         self.local_phase = local_phase
 
 
+def _adversarial_repair_outcome(actions: List[str]) -> Outcome:
+    """Distinguish local pending repair from confirmed cloud handoff."""
+    if getattr(actions, "deferred", False) or getattr(actions, "quota_deferred", False):
+        return Outcome.DEFERRED
+    if getattr(actions, "route_disposition", "CLOUD") != "CLOUD":
+        return Outcome.FAILED
+    return Outcome.ACCEPTED_HANDOFF if any("sent" in action.lower() or "Requested" in action for action in actions) else Outcome.UNKNOWN
+
+
 class ReviewRepairRouteDisposition(Enum):
     CLOUD = "CLOUD"
     LOCAL_REQUIRED = "LOCAL_REQUIRED"
@@ -4028,15 +4037,25 @@ def _handle_pr_merge(
                                         publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
                                         _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.BLOCKED, {"effect": "adversarial-feedback-replay", "reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids)})
                                     else:
-                                        actions.extend(
-                                            _send_adversarial_validation_feedback_to_cloud_task(
-                                                repo_name,
-                                                pr_data,
-                                                head_sha,
-                                                published_report,
-                                                github_client,
-                                            )
+                                        feedback_actions = _send_adversarial_validation_feedback_to_cloud_task(
+                                            repo_name,
+                                            pr_data,
+                                            head_sha,
+                                            published_report,
+                                            github_client,
+                                            config=config,
                                         )
+                                        actions.extend(feedback_actions)
+                                        _record_pr_stage(
+                                            pr_number,
+                                            "pr.repair-delegation",
+                                            f"pr#{pr_number} repair delegation",
+                                            _adversarial_repair_outcome(feedback_actions),
+                                            {"effect": "adversarial-feedback-replay", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
+                                        )
+                                        if getattr(feedback_actions, "deferred", False) and processing_status is not None:
+                                            processing_status.error = None
+                                            processing_status.outcome = PRProcessingOutcome.DEFERRED
                             return actions
                     else:
                         if force_adversarial_validation:
@@ -4363,19 +4382,21 @@ def _handle_pr_merge(
                             format_adversarial_validation_comment(val_result, head_sha),
                             github_client,
                             [format_adversarial_finding_comment(finding) for finding in val_result.findings] + [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
+                            config=config,
                         )
                         actions.extend(feedback_actions)
-                        if getattr(feedback_actions, "quota_deferred", False) and processing_status is not None:
+                        if (getattr(feedback_actions, "quota_deferred", False) or getattr(feedback_actions, "deferred", False)) and processing_status is not None:
                             processing_status.error = None
                             processing_status.outcome = PRProcessingOutcome.DEFERRED
                         _record_pr_stage(
                             pr_number,
                             "pr.repair-delegation",
                             f"pr#{pr_number} repair delegation",
-                            Outcome.ACCEPTED_HANDOFF if any("Sent" in a or "Requested" in a or "sent" in a for a in feedback_actions) else Outcome.UNKNOWN,
-                            {"effect": "adversarial-fix-feedback", "examined_head": head_sha},
+                            _adversarial_repair_outcome(feedback_actions),
+                            {"effect": "adversarial-fix-feedback", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
                         )
-                        actions.append(f"Awaiting PR author or originating cloud-provider changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
+                        if getattr(feedback_actions, "route_disposition", "CLOUD") == "CLOUD":
+                            actions.append(f"Awaiting PR author or originating cloud-provider changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
                         return actions
 
                     elif val_result.needs_tests:
@@ -4393,17 +4414,18 @@ def _handle_pr_merge(
                             format_adversarial_validation_comment(val_result, head_sha),
                             github_client,
                             [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
+                            config=config,
                         )
                         actions.extend(feedback_actions)
-                        if getattr(feedback_actions, "quota_deferred", False) and processing_status is not None:
+                        if (getattr(feedback_actions, "quota_deferred", False) or getattr(feedback_actions, "deferred", False)) and processing_status is not None:
                             processing_status.error = None
                             processing_status.outcome = PRProcessingOutcome.DEFERRED
                         _record_pr_stage(
                             pr_number,
                             "pr.repair-delegation",
                             f"pr#{pr_number} repair delegation",
-                            Outcome.ACCEPTED_HANDOFF if any("Sent" in a or "Requested" in a or "sent" in a for a in feedback_actions) else Outcome.UNKNOWN,
-                            {"effect": "adversarial-test-feedback", "examined_head": head_sha},
+                            _adversarial_repair_outcome(feedback_actions),
+                            {"effect": "adversarial-test-feedback", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
                         )
                         actions.append(f"Awaiting focused regression tests for PR #{pr_number}; production-code changes were not requested by test-oracle gaps")
                         return actions
@@ -7043,6 +7065,8 @@ def _delegate_cloud_review_thread_repair(
     github_client: Optional[Any] = None,
     unresolved_threads: Tuple[ReviewThread, ...] = (),
     config: Optional[AutomationConfig] = None,
+    validated_feedback: Sequence[str] = (),
+    validated_head_sha: str = "",
 ) -> CloudReviewRepairResult:
     """Assign unresolved review feedback to its originating cloud task.
 
@@ -7053,6 +7077,8 @@ def _delegate_cloud_review_thread_repair(
     """
     pr_number = int(pr_data["number"])
     route = _select_review_repair_route(repo_name, pr_data, github_client)
+    if validated_head_sha and route.disposition is ReviewRepairRouteDisposition.CLOUD:
+        return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: explicit-local route has changed"], route_disposition="CONFLICT")
     if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED:
         route = _revalidate_local_review_repair_route(route, repo_name, pr_data, github_client)
         if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED and config is not None:
@@ -7061,9 +7087,18 @@ def _delegate_cloud_review_thread_repair(
             evidence = route.evidence
             if evidence is None:
                 return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: authoritative target evidence is absent"], route_disposition="LOCAL_REQUIRED")
+            if validated_head_sha and evidence.head_sha != validated_head_sha:
+                return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: validated head has changed"], route_disposition="CONFLICT")
             implementer = (get_pr_author_login(pr_data) or "").lower()
             feedback_entries = []
             for thread in unresolved_threads:
+                if validated_feedback:
+                    if not thread.is_resolved and thread.comments and thread.comments[0].body in validated_feedback:
+                        # Independent validation overrides an implementer's addressed
+                        # claim. Keep the root identity stable for durable deduplication.
+                        identity = _review_feedback_identity(f"{repo_name}#{pr_number}:local:", thread, 0)
+                        feedback_entries.append((thread.id, thread.comments[0].body, identity))
+                    continue
                 addressed_through = max(
                     (index for index, comment in enumerate(thread.comments) if "<!-- auto-coder-review-addressed:v1 -->" in comment.body),
                     default=-1,
@@ -7942,8 +7977,9 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     validation_report: str,
     github_client: Optional[Any] = None,
     actionable_feedback: Sequence[str] = (),
+    config: Optional[AutomationConfig] = None,
 ) -> List[str]:
-    """Send actionable findings only to the owning provider task."""
+    """Route validated findings to explicit-local repair or the owning task."""
     pr_number = pr_data["number"]
     exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
     if exhaustion_info and exhaustion_info.is_exhausted:
@@ -7952,6 +7988,32 @@ def _send_adversarial_validation_feedback_to_cloud_task(
 
     if not new_work_allowed():
         return [f"Deferred adversarial correction feedback for PR #{pr_number}: graceful shutdown is draining"]
+    route = _select_review_repair_route(repo_name, pr_data, github_client)
+    if route.disposition is not ReviewRepairRouteDisposition.CLOUD:
+        if route.disposition is not ReviewRepairRouteDisposition.LOCAL_REQUIRED:
+            return CloudReviewRepairResult([f"Review repair routing {route.disposition.value} for PR #{pr_number}: {route.reason}"], route_disposition=route.disposition.value)
+        if github_client is None:
+            return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}; GitHub client is unavailable"], route_disposition="UNAVAILABLE")
+        try:
+            review_threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+        except Exception as exc:
+            return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}: {exc}"], route_disposition="UNAVAILABLE")
+        requested_feedback = tuple(actionable_feedback) or tuple(
+            thread.comments[0].body
+            for thread in review_threads
+            if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap")) and _adversarial_feedback_belongs_to_report(thread.comments[0].body, validation_report)
+        )
+        if not requested_feedback:
+            return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}; local repair was not attempted"], route_disposition="UNAVAILABLE")
+        return _delegate_cloud_review_thread_repair(
+            repo_name,
+            pr_data,
+            github_client=github_client,
+            unresolved_threads=tuple(review_threads),
+            config=config,
+            validated_feedback=requested_feedback,
+            validated_head_sha=head_sha,
+        )
     feedback_marker = adversarial_validation_codex_feedback_marker(head_sha)
     source_validation_report = validation_report
 

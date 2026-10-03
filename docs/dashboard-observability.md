@@ -1485,6 +1485,21 @@ and zero-cloud-send behavior; the joined existing cloud controls are in
 
 # Local unresolved-review correction
 
+Fresh adversarial failure and cached-report replay now use that same local
+correction route. The existing `pr.repair-delegation` event carries
+`effect=adversarial-fix-feedback`, `adversarial-test-feedback`, or
+`adversarial-feedback-replay`, plus `examined_head`, `route_disposition`, and
+`local_phase`. Pending local correction emits `DEFERRED`; refused routing emits
+`FAILED`, while confirmed cloud delivery retains `ACCEPTED_HANDOFF`.
+`tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationPRFlow::test_green_ci_with_adversarial_needs_fix_comments_and_stops`
+drives publication through local correction and verifies the production stage
+facts and deferred outcome in the mounted detail page. `tests/test_local_review_repair.py` verifies addressed-claim
+rejection, bounded finding/test-gap selection, and changed-head refusal.
+Run `bash scripts/test.sh tests/test_local_review_repair.py
+tests/test_adversarial_validation_pr_flow.py tests/test_dashboard_observability.py`.
+The dashboard's generic stage-detail projection displays these existing facts;
+no renderer or processing-origin change is required.
+
 The existing `pr.repair-delegation` stage now reports
 `route_disposition=LOCAL_EXECUTION` while an explicit-local unresolved-review
 correction is executing, indeterminate, publication-pending, completed with no
