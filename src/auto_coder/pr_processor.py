@@ -27,7 +27,7 @@ from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, 
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager, claude_session_alias
 from auto_coder.github_ci_observer import ci_observation_merge_authority, ci_read_phase, end_ci_read_phase
-from auto_coder.util.gh_cache import GitHubClient, PullRequestRoutingMetadata, ReviewThread, get_ghapi_client
+from auto_coder.util.gh_cache import GitHubClient, PullRequestRoutingMetadata, ReviewThread, ReviewThreadComment, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, is_ci_observation_recovered
 
 from .accepted_finding_bridge import AcceptedFindingBridge, ProjectionTarget
@@ -3740,7 +3740,7 @@ def _handle_pr_merge(
                                 "pr.repair-delegation",
                                 f"pr#{pr_number} repair delegation",
                                 Outcome.ACCEPTED_HANDOFF if repair_result.delivered else (Outcome.DEFERRED if repair_result.deferred else Outcome.FAILED),
-                                {"effect": "review-thread-repair", "thread_count": len(repair_threads), "route_disposition": repair_result.route_disposition},
+                                {"effect": "review-thread-repair", "thread_count": len(repair_threads), "route_disposition": repair_result.route_disposition, "local_phase": repair_result.local_phase},
                             )
                     if not force_admission_eligible:
                         return actions
@@ -4362,6 +4362,36 @@ def _handle_pr_merge(
                                 _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "post-publication"})
                                 record_effect(review_target, active_review_id, "superseded", {"phase": "post-publication"})
                                 return actions
+                            if local_revalidation_due:
+                                try:
+                                    if github_client.get_pull_request_head_sha_strict(repo_name, pr_number) != head_sha:
+                                        raise RuntimeError("current head changed before local repair settlement")
+                                    from .durable_repair_allowance import ValidationObservation
+                                    from .local_review_repair import settle_local_review_repair_validation
+
+                                    dispositions = {item.thread_id: item for item in val_result.thread_dispositions}
+                                    observations = []
+                                    for thread in claimed_review_threads:
+                                        disposition = dispositions.get(thread.thread_id)
+                                        if disposition is None or disposition.status not in {"ADDRESSED", "STILL_VALID"}:
+                                            continue
+                                        root = ReviewThread(id=thread.thread_id, comments=[ReviewThreadComment(database_id=thread.root_comment_database_id)])
+                                        observations.append(
+                                            ValidationObservation(
+                                                blocker_id=_review_feedback_identity(f"{repo_name}#{pr_number}:local:", root, 0),
+                                                still_unmet=disposition.status == "STILL_VALID",
+                                                validation_seq=time.time_ns(),
+                                                evidence=f"independent review {attempt.attempt_id} at {head_sha}: {disposition.status}; {disposition.evidence}",
+                                            )
+                                        )
+                                    settle_local_review_repair_validation(repo_name, pr_number, head_sha, tuple(observations))
+                                except Exception as exc:
+                                    actions.append(f"Local repair validation settlement failed for PR #{pr_number}: {exc}")
+                                    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"route_disposition": "LOCAL_EXECUTION", "local_phase": "awaiting_validation", "reason": str(exc), "effect": "local-validation-settlement"})
+                                    if processing_status is not None:
+                                        processing_status.error = str(exc)
+                                        processing_status.outcome = PRProcessingOutcome.FAILED
+                                    return actions
                     if published_status == "PASS" and unfinished_closure_outcomes:
                         reason = f"Review-thread closure remains unfinished for {len(unfinished_closure_outcomes)} " f"thread(s): {', '.join(outcome.thread_id for outcome in unfinished_closure_outcomes)}"
                         if processing_status is not None:
@@ -7086,7 +7116,7 @@ def _delegate_cloud_review_thread_repair(
     if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED:
         route = _revalidate_local_review_repair_route(route, repo_name, pr_data, github_client)
         if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED and config is not None:
-            from .local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance, execute_local_review_repair
+            from .local_review_repair import LocalRepairValidationRequired, LocalReviewRepairRequest, admit_local_repair_allowance, execute_local_review_repair
 
             evidence = route.evidence
             if evidence is None:
@@ -7095,13 +7125,20 @@ def _delegate_cloud_review_thread_repair(
                 return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: validated head has changed"], route_disposition="CONFLICT")
             implementer = (get_pr_author_login(pr_data) or "").lower()
             feedback_entries = []
+            from .review_adjudication_orchestrator import extract_test_oracle_gap_id
+
             for thread in unresolved_threads:
                 if validated_feedback:
-                    if not thread.is_resolved and thread.comments and thread.comments[0].body in validated_feedback:
+                    if not thread.is_resolved and thread.comments:
+                        root_body = thread.comments[0].body
+                        gap_id = extract_test_oracle_gap_id(root_body)
+                        current_feedback = next((body for body in validated_feedback if body == root_body or (gap_id and extract_test_oracle_gap_id(body) == gap_id)), None)
+                        if current_feedback is None:
+                            continue
                         # Independent validation overrides an implementer's addressed
                         # claim. Keep the root identity stable for durable deduplication.
                         identity = _review_feedback_identity(f"{repo_name}#{pr_number}:local:", thread, 0)
-                        feedback_entries.append((thread.id, thread.comments[0].body, identity))
+                        feedback_entries.append((thread.id, current_feedback, identity))
                     continue
                 addressed_through = max(
                     (index for index, comment in enumerate(thread.comments) if "<!-- auto-coder-review-addressed:v1 -->" in comment.body),
@@ -7136,6 +7173,13 @@ def _delegate_cloud_review_thread_repair(
             )
             try:
                 allowance_authority, allowance_reason = admit_local_repair_allowance(request)
+            except LocalRepairValidationRequired as exc:
+                return CloudReviewRepairResult(
+                    [f"Local review correction for PR #{pr_number} awaits independent validation: {exc}"],
+                    deferred=True,
+                    route_disposition="LOCAL_EXECUTION",
+                    local_phase="awaiting_validation",
+                )
             except Exception as exc:
                 return CloudReviewRepairResult(
                     [f"Local review repair was not admitted for PR #{pr_number}: repair allowance authority is unavailable: {exc}"],

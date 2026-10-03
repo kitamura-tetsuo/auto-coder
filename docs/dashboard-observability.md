@@ -1649,3 +1649,25 @@ line/range coordinates and contradictory receipts at the production recovery
 boundary. `TestAdversarialValidationPRFlow::test_same_sha_pass_does_not_skip_incomplete_publication_recovery`
 covers both an existing PASS and no saved current-head verdict, asserting no
 model invocation or merge and the emitted recovery phase and failed status.
+
+## Local repair generation revalidation
+
+Ordinary unresolved-thread repair emits `local_phase` on `pr.repair-delegation`
+alongside `route_disposition=LOCAL_EXECUTION`. A completed allowance awaiting
+independent validation emits `DEFERRED` with `local_phase=awaiting_validation` and
+continues to the existing adversarial-validation stage. Fresh confirmed,
+current-head review dispositions settle the prior generation before further
+repair admission. Settlement errors emit `FAILED` on `pr.repair-delegation`, with
+`effect=local-validation-settlement`, the retained phase and a diagnostic reason.
+The generic dashboard stage-detail table already displays these facts; no new
+schema, processing origin, or renderer is required.
+`tests/test_local_review_repair.py::test_delivery_authority_failure_is_not_started_and_retries`,
+`test_completed_generation_requires_validation_before_new_attempt`, and
+`test_independent_validation_settles_only_covered_causal_feedback` exercise the
+retry, admission, and settlement boundaries. Run `bash scripts/test.sh
+tests/test_local_review_repair.py tests/test_adversarial_validation_pr_flow.py
+tests/test_dashboard_observability.py`.
+`tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationPRFlow::test_green_ci_with_adversarial_needs_fix_comments_and_stops[True-True]`
+drives ordinary blocked-thread admission through independent validation,
+settlement, and renewed repair; its collector and mounted detail assertions
+verify both `LOCAL_EXECUTION` deferred stages and their retained local phase.

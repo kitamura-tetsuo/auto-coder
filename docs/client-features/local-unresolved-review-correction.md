@@ -39,3 +39,27 @@ no-change completion. Successful no-change and published completions proceed to
 independent same-head revalidation. Ordinary unstaged model edits are staged by the
 controller; if staging or committing fails, the detached workspace path is retained
 with the durable attempt for recovery.
+
+A completed allowance generation is never reused as delivery authority for a
+new attempt. Its pending-revalidation state instead sends ordinary PR processing
+through independent validation, even when unresolved threads would otherwise stop
+that pass. After confirmed review publication, exact-current-head dispositions
+settle only the original covered root identities: `ADDRESSED` clears that blocker
+and `STILL_VALID` charges one failed generation. Missing or inconclusive
+observations retain the outstanding generation. Validation must examine the
+published correction or a descendant; unrelated heads cannot settle it. A later
+repair then receives a fresh allowance generation. An unfinished generation for a
+different attempt cannot authorize a new invocation.
+
+An allowance-delivery failure before entering the backend leaves the local claim
+`not_started`, with `executed=False`, so a later pass can retry. Exceptions after
+backend entry remain indeterminate and continue suppressing duplicate execution.
+The ordinary repair-delegation trace includes `local_phase=awaiting_validation`
+when independent validation is due; settlement failures remain explicit failed
+repair-delegation events rather than successful corrections.
+
+Retained material test-oracle threads match newly validated feedback by their
+stable `TOG` identity as well as exact text. Changed reproduction wording does
+not discard an existing open gap: the correction uses the current validated
+instructions while preserving the original root's durable feedback identity.
+Different gap identities remain excluded even when their prose is identical.

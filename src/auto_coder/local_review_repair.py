@@ -17,7 +17,9 @@ from .durable_repair_allowance import (
     CompletionAvailability,
     CorrectiveGenerationBundle,
     DeliveryOutcome,
+    GenerationLifecycleState,
     RepairAllowanceLedger,
+    ValidationObservation,
 )
 from .git_branch import git_commit_with_retry
 from .git_commit import git_push
@@ -76,6 +78,46 @@ class LocalBackendUnavailableError(RuntimeError):
     """Raised before invocation when no configured local candidate can run."""
 
 
+class LocalRepairValidationRequired(RuntimeError):
+    """A completed generation needs independent validation before another repair."""
+
+
+def settle_local_review_repair_validation(
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    observations: tuple[ValidationObservation, ...],
+    *,
+    ledger: Optional[RepairAllowanceLedger] = None,
+    store: Optional[LocalReviewRepairStore] = None,
+) -> None:
+    """Settle only independently adjudicated feedback after the published result."""
+    ledger = ledger or RepairAllowanceLedger()
+    snapshot = ledger.get_snapshot("https://api.github.com", repository, pr_number)
+    generation = snapshot.get_outstanding_generation()
+    if generation is None or generation.owning_identity != "local-review-repair" or generation.lifecycle_state != GenerationLifecycleState.PENDING_REVALIDATION:
+        return
+    store = store or LocalReviewRepairStore(local_review_repair_db_path(repository))
+    request = LocalReviewRepairRequest(repository, pr_number, repository, "", head_sha, (), "")
+    record = store.get(request, generation.bundle_reference)
+    if record is None or not record.result_sha:
+        return
+    ancestry = subprocess.run(["git", "merge-base", "--is-ancestor", record.result_sha, head_sha], capture_output=True)
+    if ancestry.returncode != 0:
+        return
+    covered = tuple(observation for observation in observations if observation.blocker_id in generation.covered_blocker_ids)
+    if covered:
+        ledger.record_validation_results(
+            "https://api.github.com",
+            repository,
+            pr_number,
+            f"local-validation-{generation.generation_id}-{time.time_ns()}",
+            snapshot.epoch,
+            generation.generation_id,
+            covered,
+        )
+
+
 @dataclass
 class LocalRepairAllowanceAuthority:
     ledger: RepairAllowanceLedger
@@ -123,6 +165,10 @@ def admit_local_repair_allowance(
     outstanding = snapshot.get_outstanding_generation()
     if outstanding is not None:
         if outstanding.owning_identity == "local-review-repair":
+            if outstanding.lifecycle_state == GenerationLifecycleState.PENDING_REVALIDATION:
+                raise LocalRepairValidationRequired(f"local correction {outstanding.bundle_reference} awaits independent validation")
+            if outstanding.bundle_reference != request.attempt_id:
+                return None, f"another local corrective attempt is outstanding: {outstanding.bundle_reference}"
             return LocalRepairAllowanceAuthority(ledger, request, outstanding.generation_id, snapshot.epoch), ""
         return None, f"another corrective generation is outstanding: {outstanding.generation_id}"
     bundle = CorrectiveGenerationBundle(
@@ -401,9 +447,13 @@ def execute_local_review_repair(
         if added.returncode != 0:
             store.transition(request, claim, "not_started", reason=added.stderr.strip())
             return LocalReviewRepairOutcome("not_started", f"protected checkout failed: {added.stderr.strip()}")
-        try:
-            if allowance_authority is not None:
+        if allowance_authority is not None:
+            try:
                 allowance_authority.mark_invocation()
+            except Exception as exc:
+                store.transition(request, claim, "not_started", reason=str(exc))
+                return LocalReviewRepairOutcome("not_started", f"local invocation was not admitted: {exc}")
+        try:
             response = executor(request, worktree)
         except Exception as exc:
             store.transition(request, claim, "indeterminate", reason=str(exc), workspace_path=worktree)
