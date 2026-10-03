@@ -1,5 +1,17 @@
 # Dashboard observability verification
 
+Per-item runtime owner-lock acquisition timeouts now return retryable `DEFERRED`
+results through the unified dispatch boundary. They emit
+`issue.implementation-admission` or `pr.implementation-admission` with the failure
+reason and preserve the affected item's execution identity. The existing generic
+detail projection shows both admission and execution as deferred, without a new
+outcome enum or trace schema. Run
+`bash scripts/test.sh tests/test_dashboard_observability.py -k owner_lock_timeout`
+for real-lock contention, mounted-view evidence, and successful admission after
+release. `bash scripts/test.sh tests/test_capacity_refill.py` verifies that a
+per-item ownership failure leaves refill pending and does not stop later
+candidates in the same pass.
+
 Ordinary adversarial publication now keeps distinct correction scopes under
 distinct blocker IDs and combines equivalent same-batch observations into one
 root. This preserves the existing `pr.adversarial-validation` stage and the

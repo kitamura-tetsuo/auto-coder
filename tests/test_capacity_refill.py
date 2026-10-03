@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
-from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotUnavailable
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
 
 
@@ -140,6 +140,28 @@ def test_dispatch_authority_failure_keeps_refill_pending(monkeypatch, tmp_path):
     assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is False
     assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
     assert attempts == 2
+
+
+def test_ownership_failure_does_not_abort_other_refill_candidates(monkeypatch, tmp_path):
+    github = MagicMock()
+    github.get_open_entities_strict.return_value = OpenGitHubEntities(issues=[OpenGitHubIssue(20), OpenGitHubIssue(30)])
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {"number": number, "state": "open", "labels": [{"name": "implementation-ready"}]}
+    github.get_issue_details.side_effect = lambda issue: issue
+    engine = AutomationEngine(github, AutomationConfig())
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    attempted = []
+
+    def implementation(_repo, candidate, *_args):
+        attempted.append(candidate.issue_number)
+        if candidate.issue_number == 20 and attempted.count(20) == 1:
+            raise ImplementationSlotUnavailable("Timed out acquiring runtime lock 'owner.lock'")
+        return CandidateProcessingResult(type="issue", number=candidate.issue_number, success=True)
+
+    monkeypatch.setattr(engine, "_process_single_candidate_unified_impl", implementation)
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is False
+    assert attempted == [20, 30]
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    assert attempted == [20, 30, 20, 30]
 
 
 def test_release_during_refill_causes_second_fresh_enumeration(monkeypatch, tmp_path):
