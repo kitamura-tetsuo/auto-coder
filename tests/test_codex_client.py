@@ -399,6 +399,41 @@ class TestCodexClient:
         with pytest.raises(LocalWriterSettlementError, match="replacement is withheld"):
             client._run_llm_cli("hello world")
 
+    @pytest.mark.parametrize(
+        "diagnostic, expected_detail",
+        [
+            (
+                "private workspace repository preparation failed (uid=None, gid=None): repository readiness requires an explicit non-root worker identity",
+                "private workspace repository preparation failed (uid=None, gid=None): repository readiness requires an explicit non-root worker identity",
+            ),
+            (
+                "authoritative termination confirmation failed: owned cgroup termination was not confirmed",
+                "authoritative termination confirmation failed: owned cgroup termination was not confirmed",
+            ),
+            ("", "writer settlement is uncertain"),
+            ("x" * 3000, "x" * 2000),
+            ("diagnostic token=ghp_example123", "diagnostic token=[REDACTED]"),
+        ],
+        ids=["pre-start-readiness", "termination-confirmation", "missing-diagnostic", "bounded-diagnostic", "redacted-diagnostic"],
+    )
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_execution_safety_failure_preserves_diagnostic(self, mock_run_command, mock_run, diagnostic, expected_detail):
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(False, "", diagnostic, -1, writer_settled=False)
+        client = CodexClient()
+        client.output_logger = MagicMock()
+
+        with pytest.raises(LocalWriterSettlementError) as failure:
+            client._run_llm_cli("hello world")
+
+        expected_error = f"Codex execution safety could not be established; provider replacement is withheld: {expected_detail}"
+        assert str(failure.value) == expected_error
+        mock_run_command.assert_called_once()
+        logged = client.output_logger.log_interaction.call_args.kwargs
+        assert logged["status"] == "error"
+        assert logged["error"] == expected_error
+
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_usage_limit_error_with_json_marker(self, mock_run_command, mock_run):

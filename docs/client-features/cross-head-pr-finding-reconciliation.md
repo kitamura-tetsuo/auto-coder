@@ -128,3 +128,12 @@ publication entry reconciles the accepted review from the retained request, reco
 its receipt, and completes the original root associations without rerunning semantic
 review. Ambiguous, missing, conflicting, or unauthenticated evidence stays explicitly
 incomplete; genuinely root-free reviews retain their existing behavior.
+
+GitHub's review-specific comment listing can omit `line`/`side` anchors or return
+them as null while the individual comment endpoint retains the submitted anchor.
+Recovery
+fetches that individual receipt when the listing lacks these anchors, verifies
+its comment ID, review ID, body, path, and reply relationship against the listing,
+and then applies the existing author, blocker, and exact request-payload checks.
+Missing or inconsistent receipts remain pending. Recovery uses GET requests and
+never creates a replacement review or rewrites the retained request.

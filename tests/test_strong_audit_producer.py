@@ -8,6 +8,7 @@ import pytest
 
 from auto_coder.cli_helpers import AdversarialValidationAvailability
 from auto_coder.codex_usage_checker import CodexWeeklyUsage
+from auto_coder.exceptions import LocalWriterSettlementError
 from auto_coder.llm_backend_config import LLMBackendConfiguration
 from auto_coder.pr_processor import TwoTierGateInputs, _execute_pending_strong_audit
 from auto_coder.pr_review_cycle import VERDICT_PASS, ContractSnapshot, RoundProvenance, StrongPolicyIdentity
@@ -135,6 +136,41 @@ def test_unavailable_strong_route_releases_claim_without_acceptance(tmp_path: Pa
     assert snapshot.active_claim is None
     assert snapshot.accepted_strong_round is None
     assert snapshot.waiting_reason == "strong reviewer route is UNAVAILABLE"
+
+
+def test_execution_safety_diagnostic_remains_pending_after_restart(tmp_path: Path, monkeypatch) -> None:
+    repository, base, head = _repository(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(13, head, base, inputs.contract)
+    diagnostic = "Codex execution safety could not be established; provider replacement is withheld: " "private workspace repository preparation failed (uid=None, gid=None): " "repository readiness requires an explicit non-root worker identity"
+
+    @contextlib.contextmanager
+    def worktree(*args, **kwargs):
+        yield str(repository)
+
+    with (
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
+        patch(
+            "auto_coder.cli_helpers.resolve_adversarial_validation_availability",
+            return_value=AdversarialValidationAvailability(backend_manager=MagicMock()),
+        ),
+        patch(
+            "auto_coder.pr_processor.CommandExecutor.run_command",
+            side_effect=[CommandResult(True, "diff", "", 0), CommandResult(True, "contract.txt", "", 0)],
+        ),
+        patch("auto_coder.pr_processor.execute_review", side_effect=LocalWriterSettlementError(diagnostic)) as transport,
+    ):
+        accepted, reason = _execute_pending_strong_audit("owner/repo", 13, inputs)
+
+    assert accepted is False
+    assert reason == f"strong audit execution failed: {diagnostic}"
+    transport.assert_called_once()
+    snapshot = _inputs(tmp_path, base, head).gate.state.snapshot(13)
+    assert snapshot.phase == "STRONG_PENDING"
+    assert snapshot.waiting_reason == diagnostic
+    assert snapshot.active_claim is None
+    assert snapshot.accepted_strong_round is None
 
 
 def test_completed_strong_audit_is_reused_without_transport_after_restart(tmp_path: Path, monkeypatch) -> None:

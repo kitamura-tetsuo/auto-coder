@@ -14,6 +14,12 @@ tests/test_dashboard_reviews.py` to exercise root confirmation, retained
 audit effects, production-stage consumption, and the existing history projection.
 `test_publication_confirms_one_root_per_blocker` verifies both distinct-defect
 publication and equivalent-observation consolidation without a pending intent.
+`tests/test_github_app_reviewer.py::test_recovers_retained_review_with_missing_list_anchors`
+drives the same durable confirmation boundary when GitHub omits list anchors:
+an authenticated individual receipt confirms the original roots; mismatched
+identity, body, anchor, author, or unavailable receipt keeps the operation pending.
+The production stage and audit effect continue consuming the existing recovery
+result; this adds no trace fields, outcomes, provider routes, or dashboard schema.
 Cloud merge-conflict receipt recovery retains the existing
 `pr.mergeability-remediation` stage and schema. A recovered accepted receipt or
 a newly confirmed send reaches `ACCEPTED_HANDOFF`; a busy delivery lock, legacy
@@ -176,6 +182,14 @@ acceptance, renewed-audit coverage, and configured quota-strategy admission at
 the production strong-audit origin. The quota-strategy correction changes only
 whether the existing `pr.strong-audit` stage proceeds or records its existing
 EXHAUSTED deferral; it adds no trace field, stage, schema, or dashboard renderer.
+
+Codex execution-safety errors now preserve up to 2,000 redacted characters of
+the executor diagnostic. The existing `pr.strong-audit` DEFERRED reason and
+durable waiting reason therefore expose preparation/termination failures without
+adding a stage, event field, or renderer. Run `bash scripts/test.sh
+tests/test_codex_client.py tests/test_strong_audit_producer.py` for diagnostic
+preservation, redaction, bounding, and restart-persistent pending-state coverage.
+Replacement remains withheld and no accepted strong result is fabricated.
 
 Two-tier finding publication retains the `pr.two-tier-review-effect` schema but
 uses the `github-reviewer-app:threads-v1` effect destination. Confirmation now

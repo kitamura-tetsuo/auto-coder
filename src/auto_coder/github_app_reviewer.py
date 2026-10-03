@@ -853,6 +853,16 @@ class GitHubAppReviewer:
                 item_review_id = item.get("pull_request_review_id")
                 if item_review_id is not None and item_review_id != review_id:
                     raise RuntimeError("Review-specific comment response contained another review")
+                # The review-specific endpoint can omit modern diff anchors even
+                # when the individual comment endpoint retains them.
+                if ("position" in item or "line" in item or "side" in item) and any(item.get(field) is None for field in ("line", "side")):
+                    comment_id = item.get("id")
+                    if not isinstance(comment_id, int) or comment_id <= 0:
+                        raise RuntimeError("Review comment is missing its native identity")
+                    detail = self._request("GET", f"/repos/{repo_name}/pulls/comments/{comment_id}", token).json()
+                    if not isinstance(detail, dict) or detail.get("id") != comment_id or detail.get("pull_request_review_id") != review_id or any(detail.get(field) != item.get(field) for field in ("body", "path", "in_reply_to_id")):
+                        raise RuntimeError("Individual comment receipt does not match the review root")
+                    item = detail
                 roots.append(item)
             if len(data) < 100:
                 return roots

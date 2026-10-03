@@ -25,6 +25,12 @@ completion. Missing audit, report, trace, model, or legacy reuse provenance is
 shown as unavailable rather than inferred. The Execution Trace remains a
 separate, process-local panel.
 
+Codex execution-safety failures retain a bounded, redacted executor diagnostic
+in the interaction error. The existing strong-audit Execution Trace reason and
+durable pending reason carry that diagnostic too, so missing worker credentials
+or failed cgroup confirmation remain visible while the review stays pending.
+These diagnostics do not certify review completion or authorize provider retry.
+
 The views poll the local audit once per second. They retain the last successful
 display as stale when a read fails, preserve a selected review by `review_id`,
 and avoid rebuilding unchanged report/list content. Dashboard actions only
@@ -39,3 +45,8 @@ counts describe GitHub publication, not the number of findings displayed here;
 publication confirmation still appears as a separate effect. Blocker identity
 matching and same-batch root consolidation do not change this view's audit schema,
 polling, or authorization boundaries.
+
+Recovery of missing GitHub review-list anchors uses an individually verified
+comment receipt before confirming publication. It preserves the same separate
+publication effect and historical native report; an unavailable or mismatched
+receipt remains incomplete rather than appearing as confirmed publication.

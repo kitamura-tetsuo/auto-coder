@@ -17,6 +17,7 @@ from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
+from .security_utils import redact_string
 from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 from .worktree_utils import get_current_local_workspace
@@ -419,7 +420,8 @@ class CodexClient(LLMClientBase):
             low = full_output.lower()
 
             if result.writer_settled is False:
-                raise LocalWriterSettlementError("Codex writer settlement is uncertain; provider replacement is withheld")
+                diagnostic = redact_string(stderr)[:2000] or "writer settlement is uncertain"
+                raise LocalWriterSettlementError(f"Codex execution safety could not be established; provider replacement is withheld: {diagnostic}")
 
             if result.returncode == 0 and not result.success:
                 status = "error"
@@ -481,8 +483,9 @@ class CodexClient(LLMClientBase):
             status = "error"
             error_message = str(e)
             raise
-        except LocalWriterSettlementError:
+        except LocalWriterSettlementError as e:
             status = "error"
+            error_message = str(e)
             raise
         except Exception as e:
             status = "error"
