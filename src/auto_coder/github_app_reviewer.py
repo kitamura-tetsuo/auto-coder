@@ -833,7 +833,7 @@ class GitHubAppReviewer:
             associations, conflicts = self._publication_root_associations(roots, identity, repo_name, pr_number, blocker_ids, ledger, self._api_url)
             if conflicts or set(associations) != set(blocker_ids):
                 return ReviewPublicationResult(False, event, "Publication root association is incomplete or conflicting")
-            if comments_json != "[]" and not self._root_payloads_match(comments_json, roots, associations):
+            if comments_json != "[]" and not self._root_payloads_match(comments_json, roots, associations, reviewed_head_sha=retained.reviewed_head_sha):
                 return ReviewPublicationResult(False, event, "Publication root payload does not match the retained request")
             ledger.confirm_publication_intent(self._api_url, repo_name, pr_number, intent_id, tuple(sorted(associations.items())), evidence=f"review:{review_id}")
             return ReviewPublicationResult(True, event, "")
@@ -893,7 +893,7 @@ class GitHubAppReviewer:
         return associations, conflicts
 
     @staticmethod
-    def _root_payloads_match(comments_json: str, roots: list[dict[str, object]], associations: dict[str, int]) -> bool:
+    def _root_payloads_match(comments_json: str, roots: list[dict[str, object]], associations: dict[str, int], *, reviewed_head_sha: str) -> bool:
         try:
             intended = json.loads(comments_json)
         except (TypeError, json.JSONDecodeError):
@@ -916,8 +916,21 @@ class GitHubAppReviewer:
             expected = expected_by_blocker[blocker_id]
             if not isinstance(actual, dict):
                 return False
+            original_commit = actual.get("original_commit_id")
+            if original_commit is not None and original_commit != reviewed_head_sha:
+                return False
+            # GitHub relocates current anchors after later commits. The receipt's
+            # original coordinates remain bound to the reviewed commit.
+            relocated = actual.get("commit_id") is not None and actual.get("commit_id") != reviewed_head_sha
+            if relocated and original_commit != reviewed_head_sha:
+                return False
             for field in ("body", "path", "line", "side", "start_line", "start_side"):
-                if field in expected and actual.get(field) != expected[field]:
+                actual_field = field
+                if field in {"line", "start_line"} and original_commit == reviewed_head_sha:
+                    original_field = f"original_{field}"
+                    if original_field in actual or relocated:
+                        actual_field = original_field
+                if field in expected and actual.get(actual_field) != expected[field]:
                     return False
         return True
 

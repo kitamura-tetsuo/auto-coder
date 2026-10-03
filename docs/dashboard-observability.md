@@ -1630,3 +1630,22 @@ host through successful implementation and exact-session review without a fresh
 fallback. `tests/test_worktree_isolation.py` covers ignored build output, preserved
 baseline paths, private tracked files and concurrent ignored caller context edits.
 Run `bash scripts/test.sh tests/test_worktree_isolation.py tests/test_muse_msp.py tests/test_local_session_continuation.py`.
+
+## Pending ordinary review publication recovery
+
+Before a fresh ordinary PR adversarial validation (including a changed head with
+no saved verdict), `_handle_pr_merge` recovers accepted pending publications.
+Unconfirmed recovery emits `pr.adversarial-validation`, `Outcome.FAILED`, with
+`phase=publication-recovery`, `examined_head`, and `reason`, and records a failed
+processing status. No reviewer invocation is started. Recovery success continues
+through the normal current-head validation and repair stages without authorizing
+merge from an older review. The existing dashboard trace renderer needs no schema
+change. See `docs/client-features/dashboard-llm-review-history.md`.
+
+Runnable regression coverage:
+`bash scripts/test.sh tests/test_github_app_reviewer.py tests/test_adversarial_validation_pr_flow.py`.
+`test_recovers_retained_review_with_missing_list_anchors` covers relocated original
+line/range coordinates and contradictory receipts at the production recovery
+boundary. `TestAdversarialValidationPRFlow::test_same_sha_pass_does_not_skip_incomplete_publication_recovery`
+covers both an existing PASS and no saved current-head verdict, asserting no
+model invocation or merge and the emitted recovery phase and failed status.

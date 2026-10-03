@@ -3941,6 +3941,18 @@ def _handle_pr_merge(
                         logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
                         return actions
 
+                    # Recover older accepted reviews before invoking another LLM:
+                    # pending roots otherwise block every new publication too.
+                    publication_recovery = recover_pending_adversarial_publications(repo_name, pr_number)
+                    if not publication_recovery.success:
+                        reason = publication_recovery.reason or "review-root association remains incomplete"
+                        actions.append(f"Adversarial review publication incomplete for PR #{pr_number}: {reason}")
+                        _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"examined_head": head_sha, "reason": reason, "phase": "publication-recovery"})
+                        if processing_status is not None:
+                            processing_status.error = reason
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                        return actions
+
                     published_status, lookup_error = _get_published_adversarial_validation_status(
                         github_client,
                         repo_name,
@@ -3987,14 +3999,6 @@ def _handle_pr_merge(
                         return actions
 
                     if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and not force_adversarial_validation:
-                        publication_recovery = recover_pending_adversarial_publications(repo_name, pr_number)
-                        if not publication_recovery.success:
-                            reason = publication_recovery.reason or "review-root association remains incomplete"
-                            actions.append(f"Adversarial review publication incomplete for PR #{pr_number}: {reason}")
-                            if processing_status is not None:
-                                processing_status.error = reason
-                                processing_status.outcome = PRProcessingOutcome.FAILED
-                            return actions
                         # REQ-005/REQ-011: an authoritative same-head result is
                         # consumed without a new reviewer-backend invocation.
                         # Provenance for the producing review may be genuinely
@@ -4334,7 +4338,7 @@ def _handle_pr_merge(
                                 if not publication_confirmed:
                                     reconciliation_suffix = f"; reconciliation failed: {reconciliation_error}" if reconciliation_error else ""
                                     actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
-                                    logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
+                                    logger.warning(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "reason": publication.reason, "phase": "publication"})
                                     # An ordinary publication failure must not erase the
                                     # already-retained semantic review report (REQ-006).

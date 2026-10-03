@@ -57,3 +57,10 @@ Recovery of missing GitHub review-list anchors uses an individually verified
 comment receipt before confirming publication. It preserves the same separate
 publication effect and historical native report; an unavailable or mismatched
 receipt remains incomplete rather than appearing as confirmed publication.
+
+Pending publication recovery before validation appears in the existing
+`pr.adversarial-validation` trace stage with `phase=publication-recovery` and a
+failed outcome when recovery cannot confirm the receipt. The reason is retained
+in processing status and the trace. Confirming original anchors after a later
+commit allows normal validation and repair routing to resume; it does not grant
+merge approval from an older verdict.

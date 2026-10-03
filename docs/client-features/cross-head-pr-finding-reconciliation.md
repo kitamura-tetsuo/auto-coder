@@ -137,3 +137,13 @@ its comment ID, review ID, body, path, and reply relationship against the listin
 and then applies the existing author, blocker, and exact request-payload checks.
 Missing or inconsistent receipts remain pending. Recovery uses GET requests and
 never creates a replacement review or rewrites the retained request.
+
+After a later commit relocates a comment, recovery compares `original_line` and
+`original_start_line` from the individual receipt against the retained submission,
+bound by `original_commit_id` to the validated head. Current line coordinates are
+not evidence of the original publication position. A contradictory original
+commit, missing required original coordinate, changed body/path, or mismatched
+side still leaves publication pending. Recovery runs before a fresh ordinary
+validation, including when the current head has no saved verdict, so an incomplete
+older publication cannot cause repeated model runs whose publication is blocked
+by that same operation.

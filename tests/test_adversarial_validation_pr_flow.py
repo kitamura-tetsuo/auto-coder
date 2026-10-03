@@ -1415,6 +1415,7 @@ class TestAdversarialValidationPRFlow:
     @patch("auto_coder.pr_processor.run_adversarial_validation")
     @patch("auto_coder.pr_processor.isolated_pr_head_worktree")
     @patch("auto_coder.pr_processor._merge_pr", return_value=True)
+    @pytest.mark.parametrize("saved_pass", [False, True])
     def test_same_sha_pass_does_not_skip_incomplete_publication_recovery(
         self,
         mock_merge_pr,
@@ -1425,19 +1426,26 @@ class TestAdversarialValidationPRFlow:
         mock_mergeable,
         mock_exit_in_progress,
         mock_recover_publications,
+        saved_pass,
     ):
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         head_sha = "abc123456789"
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
-        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), head_sha)}]
+        client.get_pr_comments.return_value = [{"body": format_adversarial_validation_comment(AdversarialValidationResult(result="PASS"), head_sha)}] if saved_pass else []
         client.get_pull_request.return_value = {"head": {"sha": head_sha}}
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
 
-        actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+        status = ProcessedPRResult(pr_data=pr_data)
+        with patch("auto_coder.pr_processor._record_pr_stage") as record_stage:
+            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, status)
+
+        assert status.outcome is PRProcessingOutcome.FAILED
+        assert status.error == "root evidence temporarily unavailable"
+        assert any(call.args[4].get("phase") == "publication-recovery" for call in record_stage.call_args_list)
 
         mock_recover_publications.assert_called_once_with("owner/repo", 100)
         mock_run_validation.assert_not_called()
