@@ -13,9 +13,16 @@ completion.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from auto_coder.implementation_reclamation_scheduler import (
     RECLAMATION_RECHECK_SECONDS,
@@ -74,6 +81,90 @@ def _establish_owner_with_closed_pr(slots: ImplementationSlotRepository, owner: 
     incarnation = slots.owner_incarnation(owner)
     assert incarnation is not None
     return incarnation
+
+
+@contextmanager
+def _hold_owner_lock(slots, another_process):
+    if another_process:
+        code = """
+import sys
+from pathlib import Path
+from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
+slots = ImplementationSlotRepository(sys.argv[1], 3, Path(sys.argv[2]))
+with slots.serialize(ImplementationOwner("issue", 100)):
+    print("locked", flush=True)
+    sys.stdin.readline()
+"""
+        child = subprocess.Popen([sys.executable, "-c", code, REPO, str(slots.storage_path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            assert child.stdout.readline().strip() == "locked"
+            yield
+        finally:
+            stdout, stderr = child.communicate("release\n", timeout=5)
+            assert child.returncode == 0, (stdout, stderr)
+    else:
+        entered = threading.Event()
+        release = threading.Event()
+
+        def hold():
+            with slots.serialize(ISSUE_100):
+                entered.set()
+                assert release.wait(timeout=10)
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        try:
+            assert entered.wait(timeout=5)
+            yield
+        finally:
+            release.set()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("another_process", [False, True])
+def test_busy_owner_is_deferred_without_blocking_other_reclamation(tmp_path, another_process):
+    slots = _setup_slots(tmp_path)
+    store = ReclamationObligationStore.for_slots(slots)
+    incarnation = _establish_owner_with_closed_pr(slots, ISSUE_100, 201, "gen-100")
+    _establish_owner_with_closed_pr(slots, ISSUE_200, 202, "gen-200")
+    for owner in (ISSUE_100, ISSUE_200):
+        assert schedule_reevaluation(owner, slots, store, due_at=0)
+    github = _make_github_client(pr_responses={201: {"number": 201, "state": "closed", "merged": False}, 202: {"number": 202, "state": "closed", "merged": False}}, connected_prs={100: [201], 200: [202]})
+    freed = MagicMock()
+    with _hold_owner_lock(slots, another_process), patch("auto_coder.implementation_slots.logger") as slot_log, patch("auto_coder.implementation_reclamation_scheduler.logger") as scheduler_log:
+        started = time.monotonic()
+        assert run_due_reclamation_checks(slots, store, github_client=github, on_capacity_freed=freed, now=100) == 1
+        assert time.monotonic() - started < 2
+        assert slots.owner_incarnation(ISSUE_100) == incarnation
+        assert slots.owner_incarnation(ISSUE_200) is None
+        (pending,) = store.all()
+        assert pending.owner == ISSUE_100
+        assert pending.incarnation == incarnation
+        assert pending.last_reason == "owner-lock-busy"
+        assert pending.next_due_at == 100 + RECLAMATION_RECHECK_SECONDS
+        assert run_due_reclamation_checks(slots, store, github_client=github, now=101) == 0
+        assert run_due_reclamation_checks(slots, store, github_client=github, now=160) == 0
+        assert store.all()[0].next_due_at == 220
+        slot_log.warning.assert_not_called()
+        scheduler_log.warning.assert_not_called()
+        scheduler_log.error.assert_not_called()
+        freed.assert_called_once_with()
+    assert run_due_reclamation_checks(slots, store, github_client=github, now=220) == 1
+    assert store.all() == ()
+    assert slots.owner_incarnation(ISSUE_100) is None
+
+
+def test_try_serialize_propagates_protected_operation_failure(tmp_path):
+    from auto_coder.implementation_slots import ImplementationSlotLockTimeout
+
+    slots = _setup_slots(tmp_path)
+    with pytest.raises(ImplementationSlotLockTimeout, match="protected failure"):
+        with slots.try_serialize(ISSUE_100) as acquired:
+            assert acquired is True
+            raise ImplementationSlotLockTimeout("protected failure")
+    with slots.try_serialize(ISSUE_100) as acquired:
+        assert acquired is True
 
 
 # ---------------------------------------------------------------------------

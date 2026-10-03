@@ -11,7 +11,7 @@ import re
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, NoReturn, Optional
@@ -38,6 +38,10 @@ class ImplementationOwner:
 
 class ImplementationSlotUnavailable(RuntimeError):
     """Raised when an independent implementation cannot reserve a slot."""
+
+
+class ImplementationSlotLockTimeout(ImplementationSlotUnavailable):
+    """Raised when slot coordination is busy beyond the requested wait."""
 
 
 class ImplementationHierarchyConflict(RuntimeError):
@@ -314,8 +318,9 @@ class ImplementationSlotRepository:
                 entered = True
                 yield
         except LockAcquisitionTimeout as exc:
-            logger.warning(str(exc))
-            raise ImplementationSlotUnavailable(str(exc)) from exc
+            if timeout > 0:
+                logger.warning(str(exc))
+            raise ImplementationSlotLockTimeout(str(exc)) from exc
         except OSError as exc:
             if entered:
                 raise
@@ -1438,6 +1443,21 @@ class ImplementationSlotRepository:
             self._raise_permission_error(mutation_lock_path.parent, exc)
         with self._file_lock(mutation_lock_path, timeout):
             yield
+
+    @contextmanager
+    def try_serialize(self, owner: ImplementationOwner) -> Iterator[bool]:
+        """Attempt owner serialization immediately, yielding False when busy.
+
+        Only acquisition contention is handled; permission errors and failures
+        from the protected operation still propagate to the caller.
+        """
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(self.serialize(owner, timeout=0))
+            except ImplementationSlotLockTimeout:
+                yield False
+                return
+            yield True
 
     def establish_incarnation(self, owner: ImplementationOwner) -> str:
         """Ensure *owner* has a durable reservation incarnation and activity revision."""

@@ -1550,6 +1550,16 @@ continue through the existing loguru reclamation diagnostics and capacity-refill
 path; `tests/test_codex_reclamation_composition.py` exercises the production
 predicate/settlement/removal composition, while dashboard renderers have no new
 event to map.
+
+Busy owner guards are deferred without waiting, preserving the reservation and
+rescheduling the durable reclamation obligation by 60 seconds. This is
+observability-neutral: it changes internal lock scheduling and debug diagnostics,
+with no new processing origin, admission decision, provider route, dashboard
+outcome, or structured event field. The existing capacity-refill emission path
+still follows committed retirement only. Runnable regressions in
+`tests/test_implementation_reclamation_scheduler.py::test_busy_owner_is_deferred_without_blocking_other_reclamation`
+cover actual thread and process contention, retained incarnation, retry cadence,
+other-owner release, and eventual retirement after the guard is released.
 Recovery-linked PR candidates, first-check settlement from durable handoff
 evidence, final guarded token revalidation, and provider-selective startup
 reconstruction remain internal safety decisions on that same reclamation path;

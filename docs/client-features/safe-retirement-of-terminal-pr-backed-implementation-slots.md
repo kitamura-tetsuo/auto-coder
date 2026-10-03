@@ -120,6 +120,16 @@ Jules-only reservations on their established retirement path.
 
 Each owner's check runs inside `ImplementationSlotRepository.serialize(owner)` — the same per-owner cross-process lock ordinary admission/mutation paths already use — so two overlapping checks for the same incarnation never run. Before doing anything, a due check re-reads the live store's current incarnation for the owner and compares it against the obligation's recorded incarnation; a mismatch (already retired, or retired-and-recreated under a new incarnation) safely discards only the stale entry via `ReclamationObligationStore.clear`, which itself re-checks the incarnation immediately before removing the record — so an older incarnation's completion can never consume or clear a newer incarnation's obligation.
 
+The consumer uses `try_serialize(owner)` to attempt this guard without waiting.
+If another thread or process holds it, the owner retains its reservation and
+incarnation, its obligation is deferred by 60 seconds with reason
+`owner-lock-busy`, and the pass continues checking other due owners. Expected
+contention logs only at debug level, without timeout warnings or pass-failure
+errors. Evidence collection and retirement begin only after acquiring the guard;
+permission and persistence failures remain errors rather than being treated as
+contention. Once the guard becomes available, the next due check collects fresh
+evidence and follows the ordinary retirement transaction.
+
 This consumer is piggybacked onto the daemon's existing per-repository capacity-refill loop (`_capacity_refill_loop`, already ticking once per second) rather than adding a new global poller or asyncio task. No obligation store scan happens when nothing is pending in it, so idle repositories with no reclamation obligation incur no extra GitHub/Jules reads on this loop's account.
 
 ### Capacity Refill Integration (REQ-006)
