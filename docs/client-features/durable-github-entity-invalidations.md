@@ -1,5 +1,16 @@
 # Durable GitHub Entity Invalidations
 
+A typed GitHub failure while verifying a PR closing directive or Issue-bearing
+branch during startup ownership discovery is retained unchanged under the
+repository's `startup-reconciliation` pending-work identity. The daemon remains
+responsive to shutdown while recovery is incomplete, retained slots remain
+occupied, and an unverified PR never receives fabricated standalone ownership.
+Existing pending-work policy controls resumption: eligible admission/throttle
+failures retry automatically; indeterminate transport failures remain an
+operational block for targeted `pending-work retry` or a fresh startup attempt.
+A successful recovery repeats discovery before enumeration and preserves open
+implementation PR membership.
+
   durable_github_entity_invalidations:
     description: "Coalesces webhook notifications into durable authoritative reevaluations keyed by GitHub entity identity."
     implementation: |

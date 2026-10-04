@@ -22,11 +22,14 @@ import pytest
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
 from auto_coder.automation_engine import (
     ISSUE_PROCESSING_STAGE,
+    STARTUP_RECONCILIATION_EFFECT,
+    STARTUP_RECONCILIATION_STAGE,
     AutomationEngine,
     _issue_content_revision,
     _IssueProcessingStageHandler,
     _PrProcessingStageHandler,
     _reconciliation_admission_deferral,
+    _StartupReconciliationHandler,
 )
 from auto_coder.github_pending_work import (
     PendingObligation,
@@ -68,6 +71,93 @@ def _github_error(classification, *, delivery=DeliveryCertainty.HTTP_RESPONSE_RE
     if classification is GitHubApiOutcome.REFUSED:
         return GitHubRequestRefused(outcome)
     return GitHubRequestError(outcome)
+
+
+@pytest.mark.parametrize("marker", ["directive", "branch"])
+def test_startup_owner_lookup_transport_failure_is_retained_and_resumed(tmp_path, monkeypatch, marker):
+    """An uncertain owner retains capacity and startup work without stopping the daemon."""
+    error = _github_error(GitHubApiOutcome.TRANSPORT_FAILURE, delivery=DeliveryCertainty.INDETERMINATE, status=None)
+    pr = {"number": 108, "body": "Closes #100" if marker == "directive" else "", "head": {"ref": "issue-100-work" if marker == "branch" else "work"}}
+
+    class StartupGithub:
+        failed = True
+        enumerations = 0
+
+        def get_open_pull_requests(self, repo):
+            return [pr]
+
+        def get_issue_strict(self, repo, number):
+            if self.failed:
+                raise error
+            return {"number": number, "state": "closed"}
+
+        get_issue = get_issue_strict
+
+        def get_issue_details(self, issue):
+            return issue
+
+        def get_connected_prs(self, repo, number, strict=False):
+            return []
+
+        def get_pull_request(self, repo, number):
+            return {"number": number, "state": "open", "merged": False}
+
+        def get_pr_details(self, pull_request):
+            return pull_request
+
+        def get_open_entities_strict(self, repo):
+            self.enumerations += 1
+            return OpenGitHubEntities()
+
+    github = StartupGithub()
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    owner = ImplementationOwner("issue", 100)
+    assert slots.reserve(owner) is True
+    store = PendingWorkStore(tmp_path / "pending.db")
+    monkeypatch.setattr("auto_coder.automation_engine.get_pending_work_store", lambda repo: store)
+    engine = AutomationEngine(github, AutomationConfig())
+    engine.implementation_slots = slots
+    identity = WorkIdentity("owner/repo", "startup", STARTUP_RECONCILIATION_STAGE)
+
+    async def scenario():
+        engine._loop = asyncio.get_running_loop()
+        engine._startup_reconciliation_event = asyncio.Event()
+        engine._shutdown_event = asyncio.Event()
+        task = asyncio.create_task(engine._perform_startup_reconciliation("owner/repo"))
+        try:
+            for _ in range(300):
+                if store.get(identity) is not None:
+                    break
+                await asyncio.sleep(0.01)
+            obligation = store.get(identity)
+            assert obligation is not None
+            assert obligation.reason is PendingReason.INDETERMINATE
+            assert obligation.unfinished_effects == (STARTUP_RECONCILIATION_EFFECT,)
+            assert obligation.last_error == "GitHub request failed: transport_failure"
+            assert not task.done()
+            assert engine.startup_reconciled is False
+            assert github.enumerations == 0
+            assert slots.active_owners() == (owner,)
+            assert slots.snapshot().owners[0].implementation_prs == ()
+            assert slots.reserve(ImplementationOwner("pr", 108)) is False
+
+            github.failed = False
+            handler = _StartupReconciliationHandler(engine, "owner/repo")
+            outcome = await asyncio.to_thread(handler.dispatch, obligation)
+            assert outcome.error is None
+            assert outcome.completed_effects == (STARTUP_RECONCILIATION_EFFECT,)
+            assert store.complete_effect(identity, STARTUP_RECONCILIATION_EFFECT) is True
+            await asyncio.wait_for(task, timeout=2)
+            assert engine.startup_reconciled is True
+            assert github.enumerations == 1
+            assert store.get(identity) is None
+            assert slots.active_owners() == (owner,)
+            assert slots.snapshot().owners[0].implementation_prs == (108,)
+        finally:
+            engine._shutdown_event.set()
+            await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(scenario())
 
 
 class _FakePrGithub:

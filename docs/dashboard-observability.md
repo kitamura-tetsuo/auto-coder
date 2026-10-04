@@ -806,6 +806,22 @@ recorded meaning of an owner, an execution, or an admission flag is
 entirely owned by `implementation_slots.py` and Issue #1992's snapshot
 contract; this panel only renders that already-defined observation.
 
+## Startup PR ownership lookup recovery
+
+Startup PR ownership discovery preserves typed GitHub lookup failures instead
+of wrapping them as owner-resolution defects. The existing secret-safe GitHub
+request diagnostics retain `transport_failure` and delivery certainty, and the
+startup warning reports the retained pending-work reason and eligibility. This
+is repository recovery, not an entity execution: no new entity trace, stage,
+outcome, or schema is introduced. Existing pending-work status reports the
+`startup-reconciliation` obligation and operational block for indeterminate
+delivery; the implementation-slot panel keeps its recorded occupied capacity.
+`tests/test_pending_work_resumption.py::test_startup_owner_lookup_transport_failure_is_retained_and_resumed`
+drives real owner resolution, durable startup deferral, and the startup stage
+handler for both closing directives and branch markers, checking incomplete
+recovery, retained capacity, and successful membership discovery on retry.
+Run `bash scripts/test.sh tests/test_pending_work_resumption.py tests/test_implementation_slots.py`.
+
 ## Codex quota transport
 
 Codex quota reads use the app-server account API. This transport change does not

@@ -20,6 +20,7 @@ from .cloud_manager import claude_session_alias
 from .issue_context import extract_lifecycle_branch_issue_number, extract_lifecycle_directive_issue_references
 from .logger_config import get_logger
 from .runtime_locks import LockAcquisitionTimeout, ensure_lock_directory, file_lock, lock_path
+from .util.github_request_outcome import GitHubRequestError
 
 logger = get_logger(__name__)
 
@@ -214,7 +215,8 @@ class ImplementationSlotRepository:
         A confirmed foreign repository, a confirmed pull request, or an exact
         number that fails to resolve at all is excluded quietly (it is
         definitive, not uncertain). An unreadable lookup instead raises, so the
-        caller cannot silently discard or fabricate an owner from it.
+        caller cannot silently discard or fabricate an owner from it. Typed
+        GitHub failures retain their retry evidence for startup recovery.
         """
         if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate <= 0 or candidate == pr_number:
             return None
@@ -233,6 +235,10 @@ class ImplementationSlotRepository:
                 issue = github_client.get_issue_strict(self.repo_name, candidate)
             else:
                 issue = github_client.get_issue(self.repo_name, candidate)
+        except GitHubRequestError:
+            # Startup recovery retains typed failures as durable pending work.
+            # Wrapping them would bypass that retry boundary and stop the daemon.
+            raise
         except Exception as exc:
             raise ImplementationOwnerResolutionError(f"Cannot verify referenced Issue #{candidate}: {exc}") from exc
         if not issue:

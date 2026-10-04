@@ -23,3 +23,9 @@ Refreshing this panel never issues a GitHub/provider request, a liveness
 probe, or a slot reservation/release/reconciliation call, and a slow
 filesystem observation runs off the page's event loop so it cannot
 block the rest of the dashboard.
+
+A GitHub transport failure during startup PR ownership discovery leaves the
+recorded owners and capacity intact. The panel continues to show those durable
+reservations while startup recovery is retained as pending work; an uncertain
+Issue lookup does not turn an occupied slot into free capacity. Indeterminate
+transport delivery remains subject to the existing operational retry policy.
