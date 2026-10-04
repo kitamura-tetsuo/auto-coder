@@ -196,7 +196,7 @@ def test_status_workers_queue_slots_independent(client, engine, tmp_path):
 
 
 def test_status_slot_failure_is_unavailable_with_null_data(client, engine):
-    with patch.object(AutomationEngine, "get_implementation_slot_snapshot", side_effect=RuntimeError("boom /srv/x")):
+    with patch.object(ImplementationSlotRepository, "snapshot", side_effect=RuntimeError("boom /srv/x")):
         response = client.get("/api/status")
     body = response.json()
     assert response.status_code == 200
@@ -235,14 +235,14 @@ async def _blocked_slot_read(engine, monkeypatch):
     with patch("src.auto_coder.webhook_server.init_dashboard"), patch("src.auto_coder.webhook_server.init_dashboard_adjudication"):
         app = create_app(engine, REPO)
     entered, release = threading.Event(), threading.Event()
-    real = engine.get_implementation_slot_snapshot
+    real = engine.implementation_slots.snapshot
 
-    def blocked(repo):
+    def blocked():
         entered.set()
         release.wait(10)
-        return real(repo)
+        return real()
 
-    engine.get_implementation_slot_snapshot = blocked
+    engine.implementation_slots.snapshot = blocked
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
         task = asyncio.create_task(c.get("/api/status"))
         while not entered.is_set():
@@ -266,3 +266,32 @@ def test_bearer_value_is_redacted_in_http_response_bytes(client, scheme):
     # The collector source still holds the original, unredacted text.
     stored = [e for e in get_trace_collector().get_snapshot().events if e.stage_id == "pr.ci-observation"]
     assert stored[0].facts["reason"] == reason
+
+
+def test_status_does_not_bind_controller_slot_store(client, engine, tmp_path, monkeypatch):
+    """Anonymous status reads observe a detached store and never establish the admission binding."""
+    monkeypatch.setenv("AUTO_CODER_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    engine.implementation_slots = None
+    for _ in range(3):
+        body = client.get("/api/status").json()
+        assert body["implementation_slots"]["availability"] in ("available", "unavailable")
+    assert engine.implementation_slots is None
+
+
+def test_oversized_provider_session_identity_is_omitted_not_shortened(client, engine):
+    slots = engine.implementation_slots
+    owner = ImplementationOwner("issue", 3)
+    assert slots.reserve(owner)
+    prefix = "s" * 2000
+    assert slots.record_provider_session(owner, prefix + "A")
+    assert slots.record_provider_session(owner, prefix + "B")
+    assert slots.record_provider_session(owner, "short-session")
+    before = slots.snapshot()
+    response = client.get("/api/status")
+    section = response.json()["implementation_slots"]
+    entry = section["owners"][0]
+    assert entry["provider_session_ids"] == ["short-session"]
+    assert prefix not in response.text
+    assert entry["omitted_memberships"] == 2 and section["incomplete"] is True
+    assert (section["normal_usage"], section["normal_available"]) == (before.normal_usage, before.normal_available)
+    assert slots.snapshot().owners == before.owners

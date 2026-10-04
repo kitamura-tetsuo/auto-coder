@@ -29,7 +29,12 @@ from fastapi.responses import Response
 from loguru import logger
 
 from .execution_trace import EventKind, StructuredEvent, get_trace_collector
-from .implementation_slots import ImplementationOwnerSnapshot, ImplementationSlotSnapshot, ImplementationSlotSnapshotUnavailable
+from .implementation_slots import (
+    ImplementationOwnerSnapshot,
+    ImplementationSlotRepository,
+    ImplementationSlotSnapshot,
+    ImplementationSlotSnapshotUnavailable,
+)
 
 ENABLE_ENV_VAR = "AUTO_CODER_PUBLIC_API_ENABLED"
 SCHEMA_VERSION = 1
@@ -118,6 +123,7 @@ class OwnerEntry:
     implementation_prs: List[int] = field(default_factory=list)
     provider_session_ids: List[str] = field(default_factory=list)
     memberships_truncated: bool = False
+    omitted_memberships: int = 0
     admission_pending: Optional[bool] = None
     admission_established: Optional[bool] = None
     filtered: bool = False
@@ -129,6 +135,7 @@ class SlotsSection(Section):
     normal_usage: Optional[int] = None
     normal_available: Optional[int] = None
     emergency_usage: Optional[int] = None
+    incomplete: bool = False
     owners: Optional[List[OwnerEntry]] = None
 
 
@@ -283,14 +290,24 @@ def project_queue(engine: Any, limit: int) -> QueueSection:
 
 
 def _owner_entry(owner: ImplementationOwnerSnapshot) -> OwnerEntry:
+    """Project one owner; an identity that cannot be exported exactly is omitted and counted."""
     filtered = False
+    omitted = 0
     sessions: List[str] = []
     for session in owner.provider_sessions[:MAX_MEMBERSHIPS]:
-        text, was_filtered, _ = sanitize_text(session)
+        text, was_filtered, was_clipped = sanitize_text(session)
+        if was_clipped:
+            omitted += 1
+            continue
         filtered = filtered or was_filtered
         sessions.append(text)
-    executions = [e.execution_id for e in owner.executions[:MAX_MEMBERSHIPS]]
-    executions = [text for text in (_identifier(e) for e in executions) if text is not None]
+    executions = []
+    for execution in owner.executions[:MAX_MEMBERSHIPS]:
+        identifier = _identifier(execution.execution_id)
+        if identifier is None:
+            omitted += 1
+        else:
+            executions.append(identifier)
     return OwnerEntry(
         owner_type=owner.kind,
         owner_number=owner.number,
@@ -299,10 +316,25 @@ def _owner_entry(owner: ImplementationOwnerSnapshot) -> OwnerEntry:
         implementation_prs=list(owner.implementation_prs[:MAX_MEMBERSHIPS]),
         provider_session_ids=sessions,
         memberships_truncated=any(len(x) > MAX_MEMBERSHIPS for x in (owner.executions, owner.implementation_prs, owner.provider_sessions)),
+        omitted_memberships=omitted,
         admission_pending=owner.admission_pending,
         admission_established=owner.admission_established,
         filtered=filtered,
     )
+
+
+def observe_slots(engine: Any, repo_name: str) -> object:
+    """Read the persisted slot snapshot without touching the controller's admission binding.
+
+    ``engine.get_implementation_slot_snapshot`` lazily establishes
+    ``engine.implementation_slots`` when unbound; an anonymous observation must
+    not, so an unbound (or differently bound) controller is observed through a
+    detached repository over the same store.
+    """
+    current = engine.implementation_slots
+    if current is not None and current.repo_name == repo_name:
+        return current.snapshot()
+    return ImplementationSlotRepository(repo_name, engine.config.MAX_CONCURRENT_IMPLEMENTATIONS).snapshot()
 
 
 def project_slots(observation: object, limit: int) -> SlotsSection:
@@ -311,6 +343,7 @@ def project_slots(observation: object, limit: int) -> SlotsSection:
     if not isinstance(observation, ImplementationSlotSnapshot):
         return SlotsSection(error_code="slot_observation_invalid")
     owners = [_owner_entry(o) for o in observation.owners[:limit]]
+    incomplete = any(o.omitted_memberships or o.memberships_truncated for o in owners)
     return SlotsSection(
         "available",
         float(observation.observed_at),
@@ -322,6 +355,7 @@ def project_slots(observation: object, limit: int) -> SlotsSection:
         observation.normal_usage,
         observation.normal_available,
         observation.emergency_usage,
+        incomplete,
         owners,
     )
 
@@ -581,7 +615,7 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str) -> None:
         queue = await observe(lambda: project_queue(engine, limit), QueueSection(), "queue_observation_unavailable")
 
         def slots() -> Section:
-            return project_slots(engine.get_implementation_slot_snapshot(repo_name), limit)
+            return project_slots(observe_slots(engine, repo_name), limit)
 
         slot_section = await observe(slots, SlotsSection(), "slot_observation_unavailable")
         return _json_response(StatusResponse(repo_name, time.time(), workers, queue, slot_section))  # type: ignore[arg-type]

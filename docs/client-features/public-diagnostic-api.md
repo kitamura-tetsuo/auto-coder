@@ -44,7 +44,7 @@ unavailable); queue entries keep their typed target (internal jobs such as
 controller's persisted slot snapshot: normal limit/usage/available, emergency
 usage, and per-owner type/number/class, recorded execution IDs, implementation
 PRs, opaque provider-session IDs and admission flags (null when not recorded).
-Over-capacity usage is not clamped, and a slot stays visible with no local worker.
+Over-capacity usage is not clamped, and a slot stays visible with no local worker. Slots are read through the controller's existing store, or through a detached read-only repository when the controller has no binding yet; an API request never establishes or changes the controller's admission-store binding. A provider-session ID longer than 2,000 characters is never shortened: it is omitted, counted in the owner's `omitted_memberships`, and the slots section is marked `incomplete`.
 
 ### `/api/logs`
 
