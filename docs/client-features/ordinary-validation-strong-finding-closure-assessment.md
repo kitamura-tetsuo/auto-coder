@@ -15,6 +15,11 @@ retains the actual ordinary backend/model provenance and independently reports
 each finding as `FIXED`, `INVALID`, `OPEN`, or `INCONCLUSIVE`, plus cumulative
 scope as `BOUNDED`, `EXPANDED`, or `UNKNOWN`. Invalid or absent extension data is
 recorded as a closure diagnostic without erasing a valid ordinary verdict.
+The retained result also carries repository and PR identity, audited head,
+review-cycle open epoch, and ordinary attempt sequence. Missing required
+identity or repository/diff evidence makes the optional context explicitly
+unavailable, while duplicate closure JSON members or malformed extension fields
+remain extension-only diagnostics and cannot erase valid ordinary findings.
 
 The extension is deliberately non-authorizing. It does not accept durable
 findings, complete a review cycle, resolve threads, publish a review, or merge a

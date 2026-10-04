@@ -83,6 +83,11 @@ class ReviewExecutionResult:
     scope: Optional[ScopeAssessment] = None
     scope_evidence: str = ""
     diagnostic: str = ""
+    repository: str = ""
+    pr_number: int = 0
+    open_epoch: int = 0
+    attempt_sequence: int = 0
+    audited_head_sha: str = ""
 
     @property
     def is_complete(self) -> bool:
@@ -417,7 +422,7 @@ def parse_review_result(response: str, expected: ReviewExecutionInput, reviewer_
         if raw.get(key) != value:
             return _diagnostic(expected, reviewer_provenance, f"Mismatched or missing {key}")
     verdict = raw.get("verdict")
-    if verdict not in {"PASS", "FINDINGS", "INCONCLUSIVE"}:
+    if not isinstance(verdict, str) or verdict not in {"PASS", "FINDINGS", "INCONCLUSIVE"}:
         return _diagnostic(expected, reviewer_provenance, "Invalid verdict")
 
     if expected.mode is ReviewMode.STRONG_AUDIT:
@@ -433,7 +438,7 @@ def parse_review_result(response: str, expected: ReviewExecutionInput, reviewer_
     scope_text = raw.get("scope")
     try:
         scope = ScopeAssessment(scope_text)
-    except ValueError:
+    except (TypeError, ValueError):
         return _diagnostic(expected, reviewer_provenance, "Missing or invalid cumulative scope assessment")
     scope_evidence = raw.get("scope_evidence")
     if not isinstance(scope_evidence, str) or not scope_evidence.strip():
@@ -554,6 +559,11 @@ def _result(
         scope=scope,
         scope_evidence=scope_evidence,
         diagnostic=diagnostic,
+        repository=expected.repository,
+        pr_number=expected.pr_number,
+        open_epoch=expected.open_epoch,
+        attempt_sequence=expected.attempt_sequence,
+        audited_head_sha=expected.audited_head_sha,
     )
 
 

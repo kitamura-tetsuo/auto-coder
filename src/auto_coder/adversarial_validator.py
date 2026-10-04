@@ -65,6 +65,53 @@ TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS = {
 }
 
 
+class _DuplicateAwareDict(dict[str, Any]):
+    """JSON object retaining duplicate-member evidence for extension checks."""
+
+    duplicate_keys: tuple[str, ...]
+
+
+def _retain_duplicate_json_members(pairs: list[tuple[str, Any]]) -> _DuplicateAwareDict:
+    result = _DuplicateAwareDict()
+    duplicates: list[str] = []
+    for key, value in pairs:
+        if key in result:
+            duplicates.append(key)
+        result[key] = value
+    result.duplicate_keys = tuple(duplicates)
+    return result
+
+
+def _closure_input_unavailable_reason(closure_input: ReviewExecutionInput) -> str:
+    """Return the missing controller context that forbids closure assessment."""
+    missing: list[str] = []
+    required_strings = {
+        "repository": closure_input.repository,
+        "round_id": closure_input.round_id,
+        "attempt_id": closure_input.attempt_id,
+        "head_sha": closure_input.head_sha,
+        "base_sha": closure_input.base_sha,
+        "audited_head_sha": closure_input.audited_head_sha,
+        "requirements_snapshot": closure_input.contract.requirements_text,
+        "policy_identity": closure_input.policy.identity,
+        "repository_evidence": closure_input.repository_evidence,
+        "cumulative_diff_evidence": closure_input.diff_evidence,
+    }
+    missing.extend(name for name, value in required_strings.items() if not value.strip())
+    if not closure_input.contract.issue_ids:
+        missing.append("issue_identities")
+    for name, value in {
+        "pr_number": closure_input.pr_number,
+        "open_epoch": closure_input.open_epoch,
+        "attempt_sequence": closure_input.attempt_sequence,
+    }.items():
+        if value <= 0:
+            missing.append(name)
+    if not closure_input.findings:
+        missing.append("accepted_finding_bundle")
+    return ", ".join(missing)
+
+
 @dataclass
 class AdversarialValidationFinding:
     """Demonstrated specification violation identified during validation."""
@@ -1937,7 +1984,7 @@ def parse_adversarial_validation_response(
     json_failure_reason: Optional[str] = None
     if json_str:
         try:
-            parsed = json.loads(json_str)
+            parsed = json.loads(json_str, object_pairs_hook=_retain_duplicate_json_members)
             if isinstance(parsed, dict):
                 raw_result = str(parsed.get("result", "")).strip().upper()
                 summary = str(parsed.get("summary", "")).strip()
@@ -2273,9 +2320,15 @@ def parse_adversarial_validation_response(
                     unexplained_changes=unexplained_changes,
                 )
                 if closure_input is not None:
+                    unavailable_reason = _closure_input_unavailable_reason(closure_input)
                     assessment = parsed.get("closure_assessment")
-                    if not isinstance(assessment, dict):
+                    if unavailable_reason:
+                        result_object.closure_assessment_diagnostic = f"Closure context unavailable: {unavailable_reason}"
+                    elif not isinstance(assessment, dict):
                         result_object.closure_assessment_diagnostic = "Closure assessment is absent or malformed"
+                    elif isinstance(assessment, _DuplicateAwareDict) and assessment.duplicate_keys:
+                        duplicate_names = ", ".join(dict.fromkeys(assessment.duplicate_keys))
+                        result_object.closure_assessment_diagnostic = f"Closure assessment contains duplicate JSON members: {duplicate_names}"
                     else:
                         bound_assessment = dict(assessment)
                         identities = {
@@ -2300,13 +2353,17 @@ def parse_adversarial_validation_response(
                             result_object.closure_assessment_diagnostic = f"Closure assessment contradicts controller-owned {contradiction}"
                         else:
                             bound_assessment.update(identities)
-                            closure_result = parse_review_result(
-                                json.dumps(bound_assessment),
-                                closure_input,
-                                reviewer_provenance or "unavailable",
-                            )
-                            result_object.closure_assessment = closure_result
-                            result_object.closure_assessment_diagnostic = closure_result.diagnostic
+                            try:
+                                closure_result = parse_review_result(
+                                    json.dumps(bound_assessment),
+                                    closure_input,
+                                    reviewer_provenance or "unavailable",
+                                )
+                            except (TypeError, ValueError) as exc:
+                                result_object.closure_assessment_diagnostic = f"Malformed closure assessment: {exc}"
+                            else:
+                                result_object.closure_assessment = closure_result
+                                result_object.closure_assessment_diagnostic = closure_result.diagnostic
                 return result_object
             else:
                 return _parse_error(
@@ -3598,6 +3655,9 @@ def _closure_prompt_extension(closure_input: Optional[ReviewExecutionInput]) -> 
     """Render optional closure work without changing ordinary-only prompts."""
     if closure_input is None:
         return ""
+    unavailable_reason = _closure_input_unavailable_reason(closure_input)
+    if unavailable_reason:
+        return f"\n\nORDINARY STRONG-FINDING CLOSURE EXTENSION UNAVAILABLE: {unavailable_reason}. Do not return a closure_assessment."
     return "\n\nORDINARY STRONG-FINDING CLOSURE EXTENSION (non-authorizing):\n" + build_review_prompt(closure_input) + "\nReturn that role's semantic fields in a top-level `closure_assessment` object " "inside the ordinary validation JSON. The ordinary result remains independent."
 
 
