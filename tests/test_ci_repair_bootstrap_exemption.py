@@ -130,3 +130,41 @@ def test_designation_is_per_context_under_real_overlap(tmp_path, monkeypatch, _u
     assert not marker.exists()
     _run(manager, next(_CASES))
     assert marker.read_text() == "run"
+
+
+def test_designation_survives_automatic_backend_fallback_into_replacement_clone(tmp_path, monkeypatch, _use_real_commands):
+    from unittest.mock import patch
+
+    from src.auto_coder.cli_helpers import build_backend_manager
+
+    repo, marker = _setup(tmp_path, monkeypatch, '#!/bin/bash\nprintf run >> "$BASELINE_MARKER"\nexit 127\n')
+    host = tmp_path / "muse"
+    # The first provider turn reports quota exhaustion; the replacement attempt succeeds and edits.
+    host.write_text(
+        host.read_text().replace(
+            'if os.environ.get("MSP_QUOTA_RESPONSE"):',
+            'if os.environ.get("MSP_QUOTA_ONCE") and not Path(os.environ["MSP_QUOTA_ONCE"]).exists() and (Path(os.environ["MSP_QUOTA_ONCE"]).write_text("x") or True):',
+            1,
+        )
+    )
+    monkeypatch.setenv("MSP_QUOTA_ONCE", str(tmp_path / "quota-spent"))
+    monkeypatch.setenv("MSP_MUTATE", "1")
+    names = ["muse", "muse2"]
+    config = LLMBackendConfiguration(backends={n: BackendConfig(name=n, backend_type="muse", model="muse-spark-1.3") for n in names})
+    with patch("src.auto_coder.cli_helpers.get_llm_config", return_value=config), patch("src.auto_coder.muse_client.get_llm_config", return_value=config), patch("src.auto_coder.backend_manager.get_llm_config", return_value=config):
+        manager = build_backend_manager(names, "muse", {n: "muse-spark-1.3" for n in names})
+        case = next(_CASES)
+        assert _run(manager, case, designated=True) == "answer:first"
+        assert not marker.exists()
+        assert (repo / "tracked.txt").read_text() == "mutated\n"
+        events = _baseline_events(case)
+        assert len(events) == 2
+        assert {e.outcome for e in events} == {Outcome.SKIPPED.value}
+        assert len({e.facts["invocation_id"] for e in events}) == 2
+        # A later non-designated invocation through the same manager runs its baseline.
+        later = next(_CASES)
+        from src.auto_coder.worktree_utils import WorkspacePreparationError
+
+        with pytest.raises(WorkspacePreparationError, match="could not complete"):
+            _run(manager, later)
+        assert marker.read_text() == "run"
