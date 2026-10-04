@@ -12,3 +12,17 @@ Only a verified matching GitHub PR counts as publication.  Open PRs discovered
 by polling are handed to the ordinary durable PR-processing queue without a
 webhook; publication remains monotonic, and accepted/indeterminate reminders
 continue observation without minting a replacement task or reminder budget.
+
+Initial-publication polling ends durably once an open PR has been accepted by
+the ordinary PR queue. A verified previously published closed/merged PR also
+completes recovery without queueing it. Both paths retain the PR number and mark
+the handoff responsibility complete for retirement accounting. Later unavailable
+provider or GitHub observations cannot revive this completed recovery, including
+after a daemon restart. Failed queue admission or completion persistence remains
+retryable; publication alone never suppresses an unfinished open-PR handoff.
+Missing or unrecognized GitHub PR lifecycle state remains unknown and cannot
+establish closed/merged completion.
+
+This monitor has no execution-trace scope of its own. Completed recovery emits
+no further waiting logs or synthetic PR-processing events; ordinary queued PR
+processing and capacity reclamation retain their existing dashboard traces.

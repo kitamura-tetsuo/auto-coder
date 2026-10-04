@@ -1628,6 +1628,17 @@ diff, and failed fetch/inspection/push through the production processing boundar
 See `docs/client-features/local-issue-pr-publication-recovery.md`.
 # Codex retirement-accounting fence
 
+Initial-PR recovery stops observing after durable queue handoff or verified
+closed/merged publication. It retains the same `pr_observed` record and PR
+identity for retirement accounting; `handoff_complete` also records that a
+closed PR requires no queue delivery. This boundary has no execution-trace
+scope and creates no dashboard processing event. Removing subsequent recovery
+waiting logs changes neither the ordinary PR queue's production emissions nor
+the reclamation view. No renderer or structured schema change is required.
+`tests/test_codex_pr_recovery.py::test_completed_publication_stops_polling_across_restart`,
+`test_failed_handoff_keeps_polling_until_verified_pr_closure`, and
+`test_closed_pr_completion_write_failure_remains_retryable` verify this boundary.
+
 Codex retirement registration and reconstruction are safety gates within the
 existing Issue dispatch, retry, continuation, repair, and recovery origins.
 They do not add or rename a processing origin, route, user-visible outcome, or

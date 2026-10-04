@@ -185,7 +185,7 @@ class CodexObservationService:
             if attribution.disposition is AttributionDisposition.VERIFIED and attribution.origin is not None:
                 if attribution.origin.task_id == binding.task_id:
                     state = str(pr.get("state", "")).lower()
-                    presence = PullRequestPresence.PR_PRESENT if state == "open" else PullRequestPresence.PREVIOUSLY_PUBLISHED
+                    presence = {"open": PullRequestPresence.PR_PRESENT, "closed": PullRequestPresence.PREVIOUSLY_PUBLISHED}.get(state, PullRequestPresence.UNKNOWN)
                     return PullRequestEvidence(presence, number, str(pr.get("html_url", "")))
                 continue
             if attribution.disposition in {AttributionDisposition.CONFLICT, AttributionDisposition.UNAVAILABLE}:

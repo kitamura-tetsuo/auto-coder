@@ -253,14 +253,22 @@ class CodexPRRecoveryMonitor:
                 self._next_due[run.task_id] = self.now() + self.poll_interval
 
     async def _poll(self, run: CloudRun, shutdown: asyncio.Event) -> None:
-        observation = await asyncio.to_thread(self.observations.observe, run)
         record = self.store.get(run.repo_name, run.task_id)
+        # Initial publication recovery ends once the durable queue owns the PR,
+        # or a verified closed/merged PR no longer requires a queue handoff.
+        # Keep the record for retirement accounting and across daemon restarts.
+        if record and record.state is RecoveryOutcome.PR_OBSERVED and record.handoff_complete:
+            return
+        observation = await asyncio.to_thread(self.observations.observe, run)
         pr = observation.pull_request
         if pr.presence in {PullRequestPresence.PR_PRESENT, PullRequestPresence.PREVIOUSLY_PUBLISHED} and pr.number:
             if record is None or record.state is not RecoveryOutcome.PR_OBSERVED:
                 if not self.store.save_observation(run, RecoveryOutcome.PR_OBSERVED, pr_number=pr.number):
                     self.store.transition(run, RecoveryOutcome.PR_OBSERVED, pr_number=pr.number)
             updated = self.store.get(run.repo_name, run.task_id)
+            if pr.presence is PullRequestPresence.PREVIOUSLY_PUBLISHED:
+                self.store.mark_handoff(run)
+                return
             if pr.presence is PullRequestPresence.PR_PRESENT and updated and not updated.handoff_complete and not shutdown.is_set():
                 if await self.enqueue_pr(pr.number):
                     self.store.mark_handoff(run)

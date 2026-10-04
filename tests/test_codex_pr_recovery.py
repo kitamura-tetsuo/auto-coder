@@ -4,6 +4,8 @@ import asyncio
 import time
 from pathlib import Path
 
+import pytest
+
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.cloud_task_client_base import CloudTaskState
 from auto_coder.codex_cloud_client import CodexCloudClient
@@ -141,6 +143,77 @@ def test_pr_race_suppresses_post_and_hands_open_pr_to_normal_queue(tmp_path):
     assert handed_off == [77]
     assert record.state is RecoveryOutcome.PR_OBSERVED
     assert record.handoff_complete is True
+
+
+@pytest.mark.parametrize("presence", [PullRequestPresence.PR_PRESENT, PullRequestPresence.PREVIOUSLY_PUBLISHED])
+def test_completed_publication_stops_polling_across_restart(tmp_path, presence):
+    run, observations, wham, store, clock, handed_off, monitor = setup(tmp_path)
+    observations.pr = PullRequestEvidence(presence, 77, "https://github.com/owner/repo/pull/77")
+    poll(monitor)
+    record = store.get(run.repo_name, run.task_id)
+    assert record.state is RecoveryOutcome.PR_OBSERVED
+    assert record.pr_number == 77
+    assert record.handoff_complete is True
+    assert handed_off == ([77] if presence is PullRequestPresence.PR_PRESENT else [])
+    assert observations.calls == 1
+
+    # Later unavailable provider/GitHub data must not revive completed recovery.
+    observations.pr = PullRequestEvidence()
+    observations.state = CloudTaskState.UNKNOWN
+    clock.value += 60
+    poll(monitor)
+    restarted_store = CodexPRRecoveryStore(store.path)
+    restarted = CodexPRRecoveryMonitor(monitor.runs, observations, wham, restarted_store, monitor.enqueue_pr, now=clock, retirement_accounting=False)
+    poll(restarted)
+    assert observations.calls == 1
+    assert restarted_store.get(run.repo_name, run.task_id) == record
+    assert handed_off == ([77] if presence is PullRequestPresence.PR_PRESENT else [])
+    assert wham.posts == []
+
+
+def test_failed_handoff_keeps_polling_until_verified_pr_closure(tmp_path):
+    run, observations, wham, store, clock, handed_off, monitor = setup(tmp_path)
+
+    async def unavailable_queue(number):
+        handed_off.append(number)
+        return False
+
+    monitor.enqueue_pr = unavailable_queue
+    observations.pr = PullRequestEvidence(PullRequestPresence.PR_PRESENT, 77)
+    poll(monitor)
+    assert store.get(run.repo_name, run.task_id).handoff_complete is False
+    clock.value += 60
+    poll(monitor)
+    assert handed_off == [77, 77]
+    assert store.get(run.repo_name, run.task_id).handoff_complete is False
+
+    observations.pr = PullRequestEvidence(PullRequestPresence.PREVIOUSLY_PUBLISHED, 77)
+    clock.value += 60
+    poll(monitor)
+    assert store.get(run.repo_name, run.task_id).handoff_complete is True
+    assert store.get(run.repo_name, run.task_id).pr_number == 77
+    assert handed_off == [77, 77]
+    assert observations.calls == 3
+    clock.value += 60
+    poll(monitor)
+    assert observations.calls == 3
+    assert wham.posts == []
+
+
+def test_closed_pr_completion_write_failure_remains_retryable(tmp_path, monkeypatch):
+    run, observations, wham, store, clock, handed_off, monitor = setup(tmp_path)
+    observations.pr = PullRequestEvidence(PullRequestPresence.PREVIOUSLY_PUBLISHED, 77)
+    original = store.mark_handoff
+    monkeypatch.setattr(store, "mark_handoff", lambda candidate: False)
+    poll(monitor)
+    assert store.get(run.repo_name, run.task_id).handoff_complete is False
+    monkeypatch.setattr(store, "mark_handoff", original)
+    clock.value += 60
+    poll(monitor)
+    assert observations.calls == 2
+    assert store.get(run.repo_name, run.task_id).handoff_complete is True
+    assert handed_off == []
+    assert wham.posts == []
 
 
 def test_unavailability_preserves_completion_anchor(tmp_path):

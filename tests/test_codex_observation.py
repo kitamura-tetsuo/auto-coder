@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
+
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
 from auto_coder.cloud_task_client_base import CloudTaskState
 from auto_coder.codex_observation import CodexObservationService, PullRequestPresence
@@ -100,10 +102,18 @@ def test_attribution_unavailable_never_becomes_task_publication(tmp_path):
     assert result.pull_request.number is None
 
 
-def test_canonical_task_url_and_closed_publication(tmp_path):
-    pr = {"number": 45, "state": "closed", "merged": True, "body": f"Fixes #1863\nhttps://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
+@pytest.mark.parametrize("merged", [False, True])
+def test_canonical_task_url_and_closed_publication(tmp_path, merged):
+    pr = {"number": 45, "state": "closed", "merged": merged, "body": f"Fixes #1863\nhttps://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
     result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
     assert result.pull_request.presence is PullRequestPresence.PREVIOUSLY_PUBLISHED
+
+
+@pytest.mark.parametrize("state", ["", "unknown", None])
+def test_missing_pr_lifecycle_never_proves_closed_publication(tmp_path, state):
+    pr = {"number": 45, "state": state, "body": f"https://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
+    result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
+    assert result.pull_request.presence is PullRequestPresence.UNKNOWN
 
 
 def test_pending_new_user_turn_blocks_old_completed_assistant(tmp_path):
