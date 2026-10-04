@@ -59,6 +59,12 @@ def test_repaired_head_uses_exactly_one_ordinary_invocation_and_reaches_the_merg
     snapshot = flow_env.cycle.snapshot(pr)
     assert snapshot.open_findings == () and snapshot.accepted_closure is not None and snapshot.accepted_closure.head_sha == flow.h2
     assert snapshot.accepted_closure.publication_status == "ACKNOWLEDGED"  # the exact closure publication was confirmed
+    closure_replies = [call.args for call in flow.client.reply_to_review_thread.call_args_list if "auto-coder-two-tier-closure:v1:" in call.args[3]]
+    assert len(closure_replies) == 1
+    assert closure_replies[0][:3] == (REPO, pr, flow.root_id)
+    assert f"**FIXED** against `{flow.h2}`" in closure_replies[0][3]
+    flow.client.resolve_review_thread.assert_any_call(flow.thread_id)
+    assert flow.threads()[0].is_resolved is True  # GitHub retains the exact root after resolution.
 
     attempts = AdversarialValidationAttemptRepository(REPO)
     source = OrdinaryClosureEvidenceRepository(REPO).inspect(snapshot.accepted_closure.source_identity).record
@@ -188,8 +194,11 @@ def test_unresolved_thread_blocks_merge_after_valid_bounded_closure(flow_env: En
 
     actions = flow.run(closure=ClosureScript(status="FIXED"))
 
-    assert flow_env.cycle.snapshot(7310).accepted_closure is not None
-    assert flow.merge.call_count == 0 and any("unresolved review threads remain" in action for action in actions)
+    snapshot = flow_env.cycle.snapshot(7310)
+    assert snapshot.accepted_closure is not None and snapshot.accepted_closure.publication_status == "PENDING"
+    assert snapshot.completion is None
+    assert flow.merge.call_count == 0 and any("accepted finding thread resolution remains unfinished" in action for action in actions)
+    assert flow.threads()[0].is_resolved is False
 
 
 def test_authority_state_is_the_owning_cycle_not_a_helper_flag(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:

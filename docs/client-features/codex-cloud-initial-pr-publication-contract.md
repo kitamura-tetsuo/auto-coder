@@ -17,3 +17,8 @@ exact source-Issue closing relationship, and either a supported exact task URL
 in fresh PR metadata or the exact retained publication head. It never follows
 the mutable Issue current-task pointer, and exposes verified, unresolved,
 unavailable, and conflict outcomes plus a repository consistency revision.
+
+Observation regressions distinguish a qualifying PR with an unreadable lifecycle
+(UNKNOWN) from a task URL without the source-Issue closing relationship
+(no matching publication). A task URL alone never establishes task ownership,
+regardless of the PR's lifecycle state.
