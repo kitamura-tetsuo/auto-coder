@@ -1806,3 +1806,18 @@ tests/test_adversarial_validation_pr_flow.py tests/test_dashboard_observability.
 are an additional read-only consumer of `TraceCollector` snapshots, engine
 worker/queue state and the slot snapshot. They add no trace emissions, origins,
 outcomes or event-schema fields; the runnable regression is `tests/test_public_api.py`.
+
+# Complete CI job detail pagination
+
+`tests/test_workflow_job_pagination.py::test_local_pr_repair_receives_failure_beyond_first_page`
+drives the production `_handle_pr_merge` route with the real details reader and
+proves that a later-page failure reaches log summarization and one local repair
+invocation without merging. The same module covers 37/101/200-job listings,
+run-URL logs, partial-page failure, and advisory exclusions. Run it with
+`bash scripts/test.sh tests/test_workflow_job_pagination.py`.
+
+This is observability-neutral: completing REST job-detail inputs introduces no
+processing origin, admission gate, outcome, provider route, durable resumption
+path, or trace schema change. Existing CI eligibility and repair execution
+stages remain the dashboard's evidence; retrieving all jobs never implies
+repair completion. See `docs/client-features/complete-workflow-job-pagination.md`.
