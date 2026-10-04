@@ -235,13 +235,18 @@ pr:
     Extracted Important Errors (failed test files and key error details):
     $extracted_errors
 
-    
+    $if(focused_targets)
+    Failed test files reported by CI (focused local checks apply to these only):
+    $focused_targets
+
+    $endif
 
     Your task:
     1) Identify the root cause(s) of the failing checks based on the extracted errors.
     2) Apply the necessary code changes directly in the repository to fix them.
-    3) After applying changes, run the appropriate quick checks if available (linters/unit tests) to sanity-verify.
-    4) Do NOT run git commit/push; the system will handle committing and pushing.
+    3) Full-suite validation is performed by CI after your changes are submitted. Do NOT run the full test suite and do not require all repository tests to pass locally. When runnable, run only focused checks by explicitly selecting the failed test files listed above (or tests directly related to your change).
+    4) If a focused check cannot run (missing target, setup/launch problem, timeout), state that verification was unavailable; never present unavailable verification as success. Still apply the best fix supported by the CI logs.
+    5) Do NOT run git commit/push; the system will handle committing and pushing.
 
     Output requirements:
     - First, provide a concise summary of what you changed and why.
@@ -323,7 +328,8 @@ pr:
     
 
     Please analyze the test failures and provide specific code fixes.
-    Focus on making the tests pass while maintaining code quality.
+    Focus on making the failing tests above pass while maintaining code quality.
+    Full-suite validation is performed by CI after your changes are submitted. Do NOT run the full test suite and do not require all repository tests to pass locally; run only focused checks that explicitly select the failing test file(s) above, or tests directly related to your change. If a focused check cannot run, say verification was unavailable rather than claiming success.
     All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
 
     After analyzing, apply the necessary fixes to the codebase.

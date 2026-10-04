@@ -36,8 +36,6 @@ from auto_coder.llm_backend_config import (
     get_feature_switch_from_config,
 )
 from auto_coder.pr_processor import (
-    _fix_pr_issues_with_github_actions_testing,
-    _fix_pr_issues_with_local_testing,
     _fix_pr_issues_with_testing,
     _is_automatic_test_fix_enabled,
     process_pull_request,
@@ -74,6 +72,14 @@ def _pr_data(
         "mergeable": mergeable,
         "created_at": "2024-01-01T00:00:00Z",
     }
+
+
+@pytest.fixture(autouse=True)
+def reported_failed_test_files(tmp_path, monkeypatch):
+    """Focused verification selects only failed test files that exist in the working tree."""
+    for name in ("test_feature.py", "test_foo.py", "test_bar.py", "test_x.py", "test_y.py"):
+        (tmp_path / name).write_text("")
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -434,8 +440,9 @@ class TestAS004TestsMayStillRun:
 
         # Real test execution was performed
         mock_run_local_tests.assert_called_once()
+        assert mock_run_local_tests.call_args.kwargs == {"test_file": "test_bar.py"}
         # Real failure was recorded
-        assert any("Local tests failed" in a for a in result.actions_taken)
+        assert any("Focused check failed: test_bar.py" in a for a in result.actions_taken)
         # Failure is not converted to pass
         assert result.outcome != PRProcessingOutcome.SUCCESS
 
@@ -708,7 +715,7 @@ class TestAS007ReEnableAfterDisabledFailures:
 
         # Repair LLM was invoked now that feature is re-enabled
         mock_apply_local_fix.assert_called_once()
-        assert any("Local tests passed on attempt 2" in a for a in result.actions_taken)
+        assert any("passed locally on the latest corrected state" in a for a in result.actions_taken)
 
 
 # ---------------------------------------------------------------------------

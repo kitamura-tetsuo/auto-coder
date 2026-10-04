@@ -125,5 +125,5 @@ def test_local_pr_repair_receives_failure_beyond_first_page(tmp_path, monkeypatc
     assert "Repair invoked" in actions
     assert not any("No specific failed checks" in action for action in actions)
     assert summary.call_args.args[2][0]["job_id"] == 101
-    repair.assert_called_once_with("owner/repo", pr, config, "Exact width failed", ["grid-widths.spec.ts"], skip_github_actions_fix=False)
+    repair.assert_called_once_with("owner/repo", pr, config, "Exact width failed", ["grid-widths.spec.ts"])
     client.merge_pr.assert_not_called()
