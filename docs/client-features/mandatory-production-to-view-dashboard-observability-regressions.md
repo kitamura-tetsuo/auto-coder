@@ -1,5 +1,14 @@
 # Mandatory production-to-view dashboard observability regressions
 
+Accepted ordinary closure exposes GitHub thread completion separately from the
+FIXED/INVALID validation evidence. The production consumer emits the existing
+`pr.review-thread-closure` stage with confirmed/unfinished counts and exact failure
+phases, using `effect="accepted-ordinary-closure"`. Failed effects keep closure
+bookkeeping pending and appear as `BLOCKED` in the existing timeline. The
+parametrized production regression and runnable command are recorded in
+`docs/dashboard-observability.md`; no dashboard renderer or schema change is
+required.
+
 Local PR conflict repair uses the existing `pr.mergeability-remediation` stage:
 confirmed repair publication is `COMPLETED` with `result=success`, and failed
 repair is `FAILED` with `result=failed`. A staged index or leftover conflict

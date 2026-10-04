@@ -29,3 +29,25 @@ Production adapters remain responsible for authenticated GitHub publication,
 authoritative existing-work lookup, provider-specific reconciliation, and real
 controller-owned thread transitions; each adapter supplies its observable send
 and reconciliation result to the common journal.
+
+Accepted ordinary closure now resolves the original strong-review finding
+threads whose evidence-backed dispositions are `FIXED` or `INVALID` for the
+closure head. The controller uses the immutable confirmed strong-publication
+identity to locate the exact authenticated root, including after mutable finding
+statuses change. The native root must also be observed through the authenticated
+reviewer adapter. Missing publication receipts remain pending. Unrelated threads and
+unaccepted `OPEN` or `INCONCLUSIVE` proposals cannot authorize resolution.
+
+Closure publication and each thread resolution have separate durable operations.
+Resolution records the disposition evidence in a reply and rechecks accepted
+cycle authority and the strict current PR head before mutating GitHub. A changed
+head during resolution reopens the thread. Missing roots, incomplete observations,
+or failed replies/mutations leave closure bookkeeping pending. A later pass
+reconciles the exact thread before retrying, without publishing the confirmed
+closure review again or invoking an additional reviewer. Closure acknowledgement
+waits for all selected finding threads to be confirmed resolved.
+
+The existing `pr.review-thread-closure` dashboard stage exposes confirmed and
+unfinished counts, thread IDs, phases and reasons with
+`effect="accepted-ordinary-closure"`. These facts distinguish accepted validation
+from completed GitHub effects and merge authority.

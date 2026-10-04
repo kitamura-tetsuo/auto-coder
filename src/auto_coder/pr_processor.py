@@ -113,7 +113,7 @@ from .pr_repair_guard import (
 )
 from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_PASS, ClaimContendedError, ContractSnapshot, Finding
 from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
-from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongPolicyIdentity
+from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongAuditRound, StrongPolicyIdentity
 from .pr_review_effects import CONFIRMED, REJECTED, UNCERTAIN, AcceptedReviewPayload, EffectAttempt, EffectOperation, ReviewEffectExecutor, ReviewEffectRepository
 from .pr_review_execution import ReviewExecutionInput, ReviewMode, ScopeAssessment, execute_review
 from .progress_decorators import progress_stage
@@ -141,6 +141,7 @@ from .review_capture.pr_adversarial_audit import (
 )
 from .review_thread_validation import (
     ClaimedReviewThread,
+    StaleReviewThreadRegistry,
     StaleReviewThreadRegistryError,
     StaleReviewThreadResolutionError,
     change_provenance_reply_fingerprint,
@@ -559,7 +560,100 @@ def _retain_accepted_finding_roots(repo_name: str, pr_number: int, inputs: TwoTi
         logger.warning(f"Accepted-finding association after publication failed for PR #{pr_number}: {exc}")
 
 
-def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
+class _GitHubClosureThreadTransport:
+    """Resolve an exact authenticated root using accepted closure evidence."""
+
+    def __init__(self, client: GitHubClient, payload: AcceptedReviewPayload, thread: ReviewThread, finding: Finding, authorize: Callable[[], bool]):
+        self.client = client
+        self.payload = payload
+        self.thread = thread
+        self.finding = finding
+        self.authorize = authorize
+
+    def reconcile(self, operation: EffectOperation) -> EffectAttempt:
+        threads = self.client.get_pr_review_threads_strict(self.payload.repository, self.payload.pr_number)
+        matches = [thread for thread in threads if thread.id == self.thread.id and thread.comments and thread.comments[0].database_id == self.thread.comments[0].database_id and thread.comments[0].body == self.thread.comments[0].body]
+        if len(matches) != 1:
+            return EffectAttempt(UNCERTAIN, reason="Exact finding thread could not be observed")
+        if matches[0].is_resolved:
+            return EffectAttempt(CONFIRMED, self.thread.id)
+        return EffectAttempt(REJECTED, reason="Exact finding thread remains unresolved")
+
+    def send(self, operation: EffectOperation) -> EffectAttempt:
+        observed = self.reconcile(operation)
+        if observed.status != REJECTED:
+            return observed
+        if not self.authorize():
+            return EffectAttempt(REJECTED, reason="Closure authority is no longer current")
+        root_id = self.thread.comments[0].database_id
+        if root_id is None:
+            return EffectAttempt(REJECTED, reason="Finding root identity is unavailable")
+        self.client.reply_to_review_thread(
+            self.payload.repository,
+            self.payload.pr_number,
+            root_id,
+            f"<!-- auto-coder-two-tier-closure:v1:{operation.operation_id} -->\n" f"Independently validated **{self.finding.status}** against `{self.payload.target_head}`.\n\n" f"{self.finding.disposition_evidence}",
+        )
+        if not self.authorize():
+            return EffectAttempt(REJECTED, reason="Closure authority changed before resolution")
+        self.client.resolve_review_thread(self.thread.id)
+        if not self.authorize():
+            registry = StaleReviewThreadRegistry()
+            registry.record_rollback_transition(self.payload.repository, self.payload.pr_number, self.thread.id, root_id)
+            self.client.unresolve_review_thread(self.thread.id)
+            registry.clear(self.payload.repository, self.thread.id)
+            return EffectAttempt(REJECTED, reason="Closure authority changed during resolution; thread reopened")
+        return EffectAttempt(CONFIRMED, self.thread.id)
+
+
+def _consume_closure_thread_resolutions(payload: AcceptedReviewPayload, strong: StrongAuditRound, reviewer: GitHubAppReviewer, executor: ReviewEffectExecutor, authorize: Callable[[], bool], client: GitHubClient) -> Tuple[bool, str]:
+    """Finish accepted FIXED/INVALID roots before acknowledging closure effects."""
+
+    def unavailable(reason: str) -> Tuple[bool, str]:
+        _record_pr_stage(payload.pr_number, "pr.review-thread-closure", f"pr#{payload.pr_number} review-thread closure", Outcome.BLOCKED, {"examined_head": payload.target_head, "effect": "accepted-ordinary-closure", "reason": reason})
+        return False, reason
+
+    publications = executor.repository.confirmed_strong_publications(payload.pr_number, strong.round_id)
+    if len(publications) != 1:
+        return unavailable("exact strong finding publication is unavailable")
+    publication_identity = publications[0].payload_identity
+    observation = reviewer.observe_authenticated_review_roots(payload.repository, payload.pr_number, strong.head_sha)
+    if not observation.complete:
+        return unavailable(observation.reason or "authenticated finding roots are unavailable")
+    threads = client.get_pr_review_threads_strict(payload.repository, payload.pr_number)
+    confirmed = 0
+    unfinished = []
+    for finding in payload.findings:
+        if finding.origin_round_id != strong.claim_id:
+            continue
+        if finding.status not in {"FIXED", "INVALID"} or finding.disposition_head_sha != payload.target_head or not finding.disposition_evidence.strip():
+            unfinished.append({"thread_id": "", "phase": "disposition", "reason": f"Accepted closure evidence for {finding.finding_id} is unavailable"})
+            continue
+        marker = f"<!-- auto-coder-two-tier-finding:v1:{publication_identity}:{hashlib.sha256(finding.finding_id.encode()).hexdigest()} -->"
+        roots = [root for root in observation.roots if root.authenticated and root.body.startswith(marker)]
+        matches = [thread for thread in threads if thread.comments and any(thread.comments[0].database_id == root.comment_id and thread.comments[0].body == root.body for root in roots)]
+        if len(roots) != 1 or len(matches) != 1 or matches[0].comments_truncated:
+            unfinished.append({"thread_id": matches[0].id if len(matches) == 1 else "", "phase": "root-identity", "reason": f"Exact root for {finding.finding_id} is unavailable"})
+            continue
+        thread = matches[0]
+        transport = _GitHubClosureThreadTransport(client, payload, thread, finding, authorize)
+        operation = executor.apply(payload, "finding-thread-resolution", f"github-thread:{thread.id}", transport, authorize)
+        observed = transport.reconcile(operation) if operation.status == CONFIRMED else None
+        if operation.status == CONFIRMED and observed is not None and observed.status == CONFIRMED:
+            confirmed += 1
+        else:
+            unfinished.append({"thread_id": thread.id, "phase": "effect-confirmation", "reason": observed.reason if observed is not None else operation.reason or operation.status})
+    _record_pr_stage(
+        payload.pr_number,
+        "pr.review-thread-closure",
+        f"pr#{payload.pr_number} review-thread closure",
+        Outcome.BLOCKED if unfinished else Outcome.COMPLETED,
+        {"confirmed_count": confirmed, "unfinished_count": len(unfinished), "unfinished": unfinished, "examined_head": payload.target_head, "effect": "accepted-ordinary-closure"},
+    )
+    return not unfinished, "accepted finding thread resolution confirmed" if not unfinished else "accepted finding thread resolution remains unfinished"
+
+
+def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, *, github_client: Optional[GitHubClient] = None) -> Tuple[bool, str]:
     """Publish only a current, durably accepted two-tier result and acknowledge it."""
     snapshot = inputs.gate.state.snapshot(pr_number)
     strong = snapshot.accepted_strong_round
@@ -582,6 +676,7 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
             and current.accepted_strong_round.round_id == strong.round_id
             and current.finding_set_revision == payload.finding_set_revision
             and current.pending_effect == snapshot.pending_effect
+            and (payload.mode != "ORDINARY_CLOSURE" or (current.accepted_closure is not None and current.accepted_closure.closure_id == payload.round_id))
         )
 
     try:
@@ -599,6 +694,29 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
     if operation.status != CONFIRMED:
         return False, f"publication {operation.status.lower()}: {operation.reason or 'awaiting the reservation owner'}"
     if payload.mode == "ORDINARY_CLOSURE":
+
+        def authorize_closure() -> bool:
+            if not is_current() or client.get_pull_request_head_sha_strict(repo_name, pr_number) != payload.target_head:
+                return False
+            current_closure = inputs.gate.state.snapshot(pr_number).accepted_closure
+            if current_closure is not None and current_closure.source_identity:
+                from .ordinary_closure_evidence import ObservedTarget
+
+                allowed, _ = inputs.gate.closure_evidence().dependent_effects_allowed(current_closure.source_identity, lambda: ObservedTarget(payload.target_head, inputs.base_sha, inputs.contract, inputs.policy))
+                return allowed
+            return True
+
+        try:
+            client = github_client or GitHubClient.get_instance()
+            resolved, reason = _consume_closure_thread_resolutions(payload, strong, reviewer, executor, authorize_closure, client)
+            if resolved and not authorize_closure():
+                _record_pr_stage(pr_number, "pr.review-thread-closure", f"pr#{pr_number} review-thread closure", Outcome.BLOCKED, {"examined_head": payload.target_head, "effect": "accepted-ordinary-closure", "reason": "Closure authority changed before acknowledgement"})
+                return False, "closure authority changed before acknowledgement"
+        except Exception as exc:
+            _record_pr_stage(pr_number, "pr.review-thread-closure", f"pr#{pr_number} review-thread closure", Outcome.BLOCKED, {"examined_head": payload.target_head, "effect": "accepted-ordinary-closure", "reason": f"Accepted finding thread resolution is unavailable: {exc}"})
+            return False, f"accepted finding thread resolution is unavailable: {exc}"
+        if not resolved:
+            return False, reason
         inputs.gate.state.acknowledge_closure_publication(pr_number, payload.round_id)
     else:
         inputs.gate.state.acknowledge_publication(pr_number, payload.round_id)
@@ -3801,7 +3919,7 @@ def _pursue_effective_closure(
         published = False
         publication_reason = ""
         if outcome.accepted:
-            published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, inputs)
+            published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, inputs, github_client=github_client)
         _record_pr_stage(
             pr_number,
             "pr.ordinary-closure",
@@ -5381,7 +5499,7 @@ def _handle_pr_merge(
                         if reusable_completion is not None:
                             accepted = True
                             reason = f"reused existing {reusable_completion.basis} completion"
-                    published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, two_tier_inputs)
+                    published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, two_tier_inputs, github_client=github_client)
                     if reusable_completion is not None:
                         published = True
                         publication_reason = f"no publication required; reused {reusable_completion.basis} completion"

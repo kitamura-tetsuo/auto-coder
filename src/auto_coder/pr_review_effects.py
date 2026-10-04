@@ -296,6 +296,13 @@ class ReviewEffectRepository:
             raw = self._read()["operations"].get(operation_id)
             return self._from_raw(raw) if isinstance(raw, dict) else None
 
+    def confirmed_strong_publications(self, pr_number: int, round_id: str) -> tuple[EffectOperation, ...]:
+        """Recover immutable root-marker identities after findings change status."""
+        with self._locked():
+            return tuple(
+                self._from_raw(raw) for raw in self._read()["operations"].values() if raw["repository"] == self.repo_name and raw["pr_number"] == pr_number and raw["round_id"] == round_id and raw["mode"] == "STRONG_AUDIT" and raw["purpose"] == "review-publication" and raw["status"] == CONFIRMED
+            )
+
     def record(self, operation_id: str, owner_token: str, outcome: EffectAttempt) -> EffectOperation:
         if outcome.status not in {CONFIRMED, UNCERTAIN, REJECTED, RETIRED}:
             raise ValueError(f"invalid effect outcome: {outcome.status}")

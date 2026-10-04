@@ -250,6 +250,19 @@ verifies the pre-publication head fence. Run these with
 `bash scripts/test.sh tests/test_github_app_reviewer.py tests/test_pr_review_effects.py`.
 The existing production effect event and dashboard timeline need no additional
 field or renderer to display the confirmed/deferred result.
+Accepted ordinary closure also emits `pr.review-thread-closure` with
+`effect="accepted-ordinary-closure"`, the evaluated head, confirmed/unfinished
+counts, and unfinished thread IDs, phases and reasons. `COMPLETED` means every
+selected authenticated FIXED/INVALID root is confirmed resolved; `BLOCKED`
+retains pending closure bookkeeping for retry. Confirmed validation publication
+alone cannot complete this effect. The existing dashboard stage timeline and
+detail renderer display these facts without a schema migration. Run
+`bash scripts/test.sh tests/test_pr_review_effects.py`; the parametrized
+`test_accepted_closure_resolves_only_its_authenticated_finding_and_resumes`
+drives real cycle acceptance and durable effect consumption, asserts production
+trace emissions and unrelated-root preservation, and covers reply/mutation
+failures, response-loss reconciliation, missing/untrusted roots and head-change
+rollback before successful retry.
 Publication recovery preserves those production emissions: an accepted result
 with a pending effect records `pr.strong-audit` as `DEFERRED` with reason
 `resuming accepted review publication without model execution`, then records

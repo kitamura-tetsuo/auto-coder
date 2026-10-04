@@ -5,11 +5,13 @@ from dataclasses import replace
 import pytest
 
 from auto_coder import pr_processor
+from auto_coder.accepted_finding_bridge import ObservedRoot, RootObservation
 from auto_coder.github_app_reviewer import ReviewerAppIdentity, ReviewPublicationResult
 from auto_coder.pr_review_cycle import (
     PUBLICATION_ACKNOWLEDGED,
     ContractSnapshot,
     Finding,
+    FindingDisposition,
     PrReviewCycleRepository,
     RoundProvenance,
     StrongAuditRound,
@@ -391,3 +393,122 @@ def test_production_consumer_recovers_with_a_new_executor(tmp_path, monkeypatch,
     assert calls == (["send", "reconcile", "send"] if remote_state == "absent" else ["send", "reconcile"])
     assert cycle.snapshot(42).accepted_strong_round.publication_status == ("PENDING" if remote_state == "unavailable" else PUBLICATION_ACKNOWLEDGED)
     assert "publication uncertain" in reason if remote_state == "unavailable" else "receipt receipt" in reason
+
+
+@pytest.mark.parametrize("disposition", ["FIXED", "INVALID"])
+@pytest.mark.parametrize("failure", ["none", "reply", "resolve", "lost_response", "changed_head", "reply_changed_head", "stale_head", "missing_root", "untrusted_root", "truncated_thread"])
+def test_accepted_closure_resolves_only_its_authenticated_finding_and_resumes(tmp_path, monkeypatch, disposition, failure):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    contract = ContractSnapshot(("#2209",), "REQ-001: Preserve the accepted payload.")
+    policy = StrongPolicyIdentity("strong-route", "options", "v1")
+    cycle = PrReviewCycleRepository("owner/repo", tmp_path / "cycle.json")
+    cycle.record_ordinary_pass(42, RoundProvenance("head-a", "base-a"), contract)
+    claim = cycle.claim_strong_audit(42, RoundProvenance("head-a", "base-a"), contract, policy)
+    finding = replace(_payload().findings[0], origin_round_id=claim.claim_id)
+    strong = cycle.record_strong_result(42, claim.claim_id, "FINDINGS", "reviewer/model", [finding])
+    inputs = pr_processor.TwoTierGateInputs(TwoTierPrGate("owner/repo", cycle), contract, policy, "head-a", "base-a")
+    roots = []
+    publications = []
+    calls = []
+    stages = []
+    active_failure = "none"
+
+    class Reviewer:
+        def __init__(self, config):
+            pass
+
+        def publish_exact_pr_review(self, repo, number, head, body, authorize, comments=()):
+            assert authorize()
+            publications.append(body)
+            if comments:
+                roots.append(ObservedRoot(12, comments[0].body, True))
+            return ReviewPublicationResult(True, "review-receipt")
+
+        def observe_authenticated_review_roots(self, repo, number, head):
+            assert head == strong.head_sha
+            return RootObservation(tuple(replace(root, authenticated=active_failure != "untrusted_root") for root in roots), True)
+
+    class Client:
+        head = "head-b"
+        resolved = False
+
+        def get_pull_request_head_sha_strict(self, repo, number):
+            return self.head
+
+        def get_pr_review_threads_strict(self, repo, number):
+            if active_failure == "missing_root":
+                return []
+            return [
+                ReviewThread(id="finding-thread", is_resolved=self.resolved, comments=[ReviewThreadComment(database_id=12, body=roots[0].body)], comments_truncated=active_failure == "truncated_thread"),
+                ReviewThread(id="human-thread", is_resolved=False, comments=[ReviewThreadComment(database_id=13, body="Unrelated human finding")]),
+            ]
+
+        def reply_to_review_thread(self, repo, number, root, body):
+            assert root == 12
+            assert f"**{disposition}**" in body and "head-b" in body and "Verified correction evidence" in body
+            calls.append("reply")
+            if active_failure == "reply":
+                raise RuntimeError("reply unavailable")
+            if active_failure == "reply_changed_head":
+                self.head = "head-c"
+
+        def resolve_review_thread(self, thread):
+            assert thread == "finding-thread"
+            calls.append("resolve")
+            if active_failure == "resolve":
+                raise RuntimeError("mutation unavailable")
+            self.resolved = True
+            if active_failure == "changed_head":
+                self.head = "head-c"
+            if active_failure == "lost_response":
+                raise RuntimeError("mutation response lost")
+
+        def unresolve_review_thread(self, thread):
+            assert thread == "finding-thread"
+            calls.append("unresolve")
+            self.resolved = False
+
+    client = Client()
+    monkeypatch.setattr(pr_processor, "load_reviewer_app_config", lambda repo_name: object())
+    monkeypatch.setattr(pr_processor, "GitHubAppReviewer", Reviewer)
+    monkeypatch.setattr(pr_processor.GitHubClient, "get_instance", lambda: client)
+    monkeypatch.setattr(pr_processor, "_record_pr_stage", lambda *args: stages.append(args))
+    assert pr_processor._consume_pending_two_tier_publication("owner/repo", 42, inputs)[0] is True
+    assert calls == []  # OPEN findings never authorize resolution.
+    snapshot = cycle.record_ordinary_pass(42, RoundProvenance("head-b", "base-a"), contract)
+    cycle.certify_closure(42, RoundProvenance("head-b", "base-a"), contract, policy, strong.round_id, snapshot.finding_set_revision, [FindingDisposition(finding.finding_id, disposition, "Verified correction evidence", "head-b")], bounded=True, bounded_evidence="Only the finding was corrected")
+    inputs = replace(inputs, head_sha="head-b")
+    active_failure = failure
+    if failure == "stale_head":
+        client.head = "head-c"
+
+    published, reason = pr_processor._consume_pending_two_tier_publication("owner/repo", 42, inputs)
+    assert published is (failure == "none"), reason
+    assert len(publications) == 2
+    assert stages[-1][1] == "pr.review-thread-closure"
+    assert stages[-1][-1]["confirmed_count"] == int(failure == "none")
+    assert stages[-1][-1]["unfinished_count"] == int(failure != "none")
+    if failure == "none":
+        assert client.resolved is True
+        assert calls == ["reply", "resolve"]
+        assert cycle.snapshot(42).accepted_closure.publication_status == PUBLICATION_ACKNOWLEDGED
+    else:
+        assert cycle.snapshot(42).pending_effect == "CLOSURE_PUBLICATION"
+        assert cycle.snapshot(42).accepted_closure.publication_status == "PENDING"
+        if failure == "changed_head":
+            assert calls == ["reply", "resolve", "unresolve"]
+            assert client.resolved is False
+        if failure in {"missing_root", "untrusted_root", "stale_head", "truncated_thread"}:
+            assert calls == []
+        if failure == "reply_changed_head":
+            assert calls == ["reply"]
+            assert client.resolved is False
+        prior_resolves = calls.count("resolve")
+        active_failure = "none"
+        client.head = "head-b"
+        published, reason = pr_processor._consume_pending_two_tier_publication("owner/repo", 42, inputs)
+        assert published is True, reason
+        assert client.resolved is True
+        assert len(publications) == 2  # Confirmed closure publication is never resent.
+        assert calls.count("resolve") == prior_resolves + int(failure != "lost_response")
+        assert cycle.snapshot(42).accepted_closure.publication_status == PUBLICATION_ACKNOWLEDGED
