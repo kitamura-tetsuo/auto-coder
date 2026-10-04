@@ -38,6 +38,7 @@ from auto_coder.canonical_pr_blocker_ledger import (
     ReconciliationDecision,
     StaleLedgerRevisionError,
 )
+from auto_coder.execution_trace import EventKind, Outcome, bind_scope, get_trace_collector
 from auto_coder.github_app_reviewer import (
     GitHubAppReviewer,
     ReviewerAppConfig,
@@ -227,7 +228,8 @@ def test_common_remedy_does_not_merge_different_response_defects() -> None:
 
 
 @pytest.mark.parametrize("equivalent", [False, True])
-def test_publication_confirms_one_root_per_blocker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ledger: CanonicalPRBlockerLedger, equivalent: bool) -> None:
+@pytest.mark.parametrize("ambiguous_owners", [False, True])
+def test_publication_confirms_one_root_per_blocker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ledger: CanonicalPRBlockerLedger, equivalent: bool, ambiguous_owners: bool) -> None:
     """Distinct defects get distinct roots; repeated observations share one root."""
     first = AdversarialValidationFinding(
         requirement_ids=["REQ-009"],
@@ -245,6 +247,27 @@ def test_publication_confirms_one_root_per_blocker(tmp_path: Path, monkeypatch: 
         required_behavior=first.required_behavior if equivalent else "Document saved presentation semantics and the Japanese read preview apply reread example in the operator guide",
         evidence="Independent evidence for the second observation",
     )
+    retained_ids: set[str] = set()
+    if ambiguous_owners:
+        snapshot = ledger.initialize_namespace(API_ORIGIN, REPO, PR_NUMBER)
+        for index in range(2):
+            blocker_id, snapshot = ledger.admit_blocker(
+                API_ORIGIN,
+                REPO,
+                PR_NUMBER,
+                operation_id=f"retained-owner-{index}",
+                expected_ledger_revision=snapshot.ledger_revision,
+                payload=BlockerAdmissionPayload(
+                    category="IMPLEMENTATION",
+                    qualified_requirements=(QualifiedRequirement(issue_number=0, requirement_id="REQ-009"),),
+                    authoritative_boundary=first.anchor_path,
+                    incorrect_behavior_or_missing_invariant=first.actual_behavior,
+                    required_correction_outcome=first.required_behavior,
+                    accepted_scope=CorrectionScope(description=f"Retained obligation {index}"),
+                    aliases=(BlockerAlias(alias_type="github_root_comment", alias_value="4176063590"),),
+                ),
+            )
+            retained_ids.add(blocker_id)
 
     class PublicationClient(RecordingClient):
         review_body = ""
@@ -283,8 +306,9 @@ def test_publication_confirms_one_root_per_blocker(tmp_path: Path, monkeypatch: 
     assert len(client.review_comments) == expected_roots
     assert f"{expected_roots} actionable finding thread(s) are attached" in client.review_body
     snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER)
-    assert len(snapshot.blockers) == expected_roots
-    assert {blocker.get_canonical_root_comment_id() for blocker in snapshot.blockers} == set(range(701, 701 + expected_roots))
+    assert len(snapshot.blockers) == expected_roots + len(retained_ids)
+    assert {blocker.get_canonical_root_comment_id() for blocker in snapshot.blockers if blocker.blocker_id not in retained_ids} == set(range(701, 701 + expected_roots))
+    assert all(snapshot.get_blocker(blocker_id).disposition == BlockerDisposition.OPEN for blocker_id in retained_ids)
     intent = ledger.get_publication_intent(API_ORIGIN, REPO, PR_NUMBER, "test-publication")
     assert intent is not None
     assert intent.status == "CONFIRMED"
@@ -914,12 +938,8 @@ def test_as002_already_duplicated_legacy_pr(ledger: CanonicalPRBlockerLedger) ->
     assert auth_b.disposition == BlockerDisposition.OPEN
 
 
-def test_as002_ambiguous_match_blocks_speculative_publication(ledger: CanonicalPRBlockerLedger) -> None:
-    """AS-002 (Ambiguity): When an observation candidate produces ambiguous association
-
-    across multiple active blockers, reconciliation returns is_ambiguous=True,
-    preventing speculative publication.
-    """
+def test_ambiguous_match_splits_without_discarding_existing_owners(ledger: CanonicalPRBlockerLedger, db_path: Path) -> None:
+    """An ambiguous observation gets an independent, restart-stable owner."""
     ledger.initialize_namespace(API_ORIGIN, REPO, PR_NUMBER)
 
     # Admit two blockers on the same file with identical requirement ID and similar description
@@ -997,10 +1017,98 @@ def test_as002_ambiguous_match_blocks_speculative_publication(ledger: CanonicalP
         attempt_id="att-2",
     )
 
-    # Ambiguity must be non-authorizing: blocks publication
-    assert reconciled.is_ambiguous
-    assert "ambiguous" in (reconciled.ambiguity_reason or "").lower()
-    assert len(reconciled.unrooted_blocker_ids) == 0
+    assert reconciled.is_ambiguous is False
+    assert len(reconciled.unrooted_blocker_ids) == 1
+    split_id = reconciled.unrooted_blocker_ids[0]
+    assert split_id not in (b1_id, b2_id)
+    assert reconciled.blocker_for_finding == ((0, split_id),)
+    assert reconciled.unrooted_findings == (ambig_finding,)
+    assert reconciled.snapshot is not None
+    assert len(reconciled.snapshot.blockers) == 3
+    assert all(b.disposition == BlockerDisposition.OPEN for b in reconciled.snapshot.blockers)
+    assert reconciled.snapshot.get_blocker(b1_id).incorrect_behavior_or_missing_invariant == payload1.incorrect_behavior_or_missing_invariant
+    assert reconciled.snapshot.get_blocker(b2_id).incorrect_behavior_or_missing_invariant == payload2.incorrect_behavior_or_missing_invariant
+
+    ambig_finding.anchor_line = 99
+    repeated = reconcile_pr_findings_before_publication(
+        CanonicalPRBlockerLedger(db_path=db_path),
+        API_ORIGIN,
+        REPO,
+        PR_NUMBER,
+        2137,
+        "head-3",
+        "base-0",
+        val_result,
+        HistoricalRootParseResult(),
+        attempt_id="att-3",
+    )
+    assert repeated.is_ambiguous is False
+    assert repeated.blocker_for_finding == ((0, split_id),)
+    assert repeated.snapshot is not None
+    assert len(repeated.snapshot.blockers) == 3
+
+
+@pytest.mark.parametrize("matches_existing", [False, True])
+def test_historical_multi_owner_root_splits_and_replays(db_path: Path, matches_existing: bool) -> None:
+    """The PR #2417 ambiguity preserves each owner and continues after restart."""
+    ledger = CanonicalPRBlockerLedger(db_path=db_path)
+    snapshot = ledger.initialize_namespace(API_ORIGIN, REPO, PR_NUMBER)
+    original_ids: set[str] = set()
+    for index in range(2):
+        blocker_id, snapshot = ledger.admit_blocker(
+            API_ORIGIN,
+            REPO,
+            PR_NUMBER,
+            operation_id=f"historical-owner-{index}",
+            expected_ledger_revision=snapshot.ledger_revision,
+            payload=BlockerAdmissionPayload(
+                category="IMPLEMENTATION",
+                qualified_requirements=(QualifiedRequirement(issue_number=2137, requirement_id="REQ-001"),),
+                authoritative_boundary="service.py",
+                incorrect_behavior_or_missing_invariant="Null pointer when config is missing",
+                required_correction_outcome="Handle missing config safely",
+                accepted_scope=CorrectionScope(description=f"Independent retained concern {index}"),
+                aliases=(BlockerAlias(alias_type="github_root_comment", alias_value="4176063590"),),
+            ),
+        )
+        original_ids.add(blocker_id)
+    before = snapshot
+    behavior = "Null pointer when config is missing" if matches_existing else "Access token expiration is never validated"
+    outcome = "Handle missing config safely" if matches_existing else "Reject expired access tokens before dispatch"
+    parsed = parse_historical_pr_review_roots(
+        [{"id": 4176063590, "path": "service.py", "user": {"login": "reviewer[bot]"}, "body": f"### Adversarial finding\nRequirement: REQ-001\n**Actual:** {behavior}\n**Expected:** {outcome}"}],
+        reviewer_identity=ReviewerAppIdentity("reviewer[bot]", 42),
+    )
+    finding = AdversarialValidationFinding(requirement_ids=["REQ-001"], anchor_path="service.py", actual_behavior=behavior, required_behavior=outcome)
+    result = AdversarialValidationResult(result="NEEDS_FIX", findings=[finding])
+    collector = get_trace_collector()
+    handle = collector.start_execution(REPO, "pr", PR_NUMBER, "test")
+    with bind_scope(handle.scope):
+        first = reconcile_pr_findings_before_publication(ledger, API_ORIGIN, REPO, PR_NUMBER, 2137, "head", "base", result, parsed)
+    assert first.is_ambiguous is False
+    assert first.snapshot is not None
+    assert len(first.snapshot.blockers) == 3
+    split_id = first.blocker_for_finding[0][1]
+    assert split_id not in original_ids
+    assert first.already_rooted_blocker_ids == (split_id,)
+    assert first.unrooted_blocker_ids == ()
+    for blocker_id in original_ids:
+        assert first.snapshot.get_blocker(blocker_id) == before.get_blocker(blocker_id)
+    assert all(b.disposition == BlockerDisposition.OPEN for b in first.snapshot.blockers)
+    events = [event for event in collector.get_snapshot(repository=REPO, item_type="pr", item_number=PR_NUMBER).events if event.execution_id == handle.scope.execution_id and event.kind == EventKind.STAGE_RESULT.value]
+    assert len(events) == 1
+    assert events[0].stage_id == "pr.adversarial-validation"
+    assert events[0].outcome == Outcome.COMPLETED.value
+    assert events[0].facts["phase"] == "reconciliation-split"
+    assert split_id in events[0].facts["reason"]
+    assert "4176063590" in events[0].facts["reason"]
+
+    repeated = reconcile_pr_findings_before_publication(CanonicalPRBlockerLedger(db_path=db_path), API_ORIGIN, REPO, PR_NUMBER, 2137, "later-head", "base", result, parsed)
+    assert repeated.is_ambiguous is False
+    assert repeated.already_rooted_blocker_ids == (split_id,)
+    assert repeated.snapshot is not None
+    assert len(repeated.snapshot.blockers) == 3
+    assert repeated.unrooted_blocker_ids == ()
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,8 @@ before publication, preventing duplicate roots across heads while preserving dis
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import string
 import uuid
@@ -15,6 +17,7 @@ from typing import TYPE_CHECKING, Optional, Sequence
 
 if TYPE_CHECKING:
     from .github_app_reviewer import ReviewerAppIdentity
+
 from .adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
@@ -31,6 +34,7 @@ from .canonical_pr_blocker_ledger import (
     QualifiedRequirement,
     ReconciliationDecision,
 )
+from .execution_trace import EventKind, Outcome, get_trace_collector
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -539,6 +543,40 @@ def advisory_semantic_match(
     return ReconciliationDecision.DISTINCT_DEFECT, None, "Materially distinct correction scope"
 
 
+def _split_scope_alias(cand: ObservationCandidate) -> BlockerAlias:
+    """Retain a split's exact scope independently of attempts and diff anchors."""
+    scope = (
+        cand.category,
+        tuple(sorted(set(cand.requirement_ids))),
+        cand.authoritative_boundary,
+        cand.incorrect_behavior_or_invariant,
+        cand.required_outcome,
+    )
+    digest = hashlib.sha256(json.dumps(scope, ensure_ascii=True).encode("utf-8")).hexdigest()
+    return BlockerAlias(alias_type="reconciliation_split_scope", alias_value=digest)
+
+
+def _retained_split(cand: ObservationCandidate, blockers: Sequence[BlockerSnapshot]) -> Optional[BlockerSnapshot]:
+    """Reuse only a controller-created exact-scope split, never an arbitrary owner."""
+    alias = _split_scope_alias(cand)
+    return next((blocker for blocker in blockers if any(a.alias_type == alias.alias_type and a.alias_value == alias.alias_value for a in blocker.aliases)), None)
+
+
+def _record_split(pr_number: int, reason: str) -> None:
+    """Observe a durably admitted split without claiming publication success."""
+    try:
+        get_trace_collector().record_event(
+            EventKind.STAGE_RESULT,
+            stage_id="pr.adversarial-validation",
+            origin="pr.adversarial-validation",
+            label=f"pr#{pr_number} review finding split",
+            outcome=Outcome.COMPLETED,
+            facts={"pr_number": pr_number, "phase": "reconciliation-split", "reason": reason},
+        )
+    except Exception:
+        logger.debug(f"Diagnostic trace recording failed for pr#{pr_number} finding split")
+
+
 # ---------------------------------------------------------------------------
 # High-Level Reconciliation Coordinator (REQ-001, REQ-004, REQ-005, REQ-010)
 # ---------------------------------------------------------------------------
@@ -565,7 +603,7 @@ def reconcile_pr_findings_before_publication(
        as canonical publication target, records aliases, and preserves compound root obligations (REQ-004).
     3. Rereview observation reconciliation: matches each finding and gap against candidate scopes.
     4. Categorizes items into already-rooted (reuse canonical root) vs unrooted (require publication).
-    5. Detects ambiguity and halts speculative publication (REQ-003).
+    5. Splits ambiguous scopes while retaining all existing obligations.
     """
     try:
         snapshot = ledger.get_snapshot(api_origin, repo_name, pr_number, require_retained_state=True)
@@ -614,6 +652,9 @@ def reconcile_pr_findings_before_publication(
         all_blockers = snapshot.blockers
 
         matched_blocker_id: Optional[str] = None
+        retained_split = _retained_split(cand, open_blockers)
+        if retained_split is not None:
+            matched_blocker_id = retained_split.blocker_id
         if cand.gap_ref and cand.gap_ref.gap_id:
             for b in all_blockers:
                 for alias in b.aliases:
@@ -626,14 +667,16 @@ def reconcile_pr_findings_before_publication(
         if not matched_blocker_id:
             decision, associated_id, reason = advisory_semantic_match(cand, open_blockers)
         else:
-            decision, associated_id, reason = ReconciliationDecision.ASSOCIATE, matched_blocker_id, "Matched explicit TOG ID alias"
+            decision, associated_id, reason = ReconciliationDecision.ASSOCIATE, matched_blocker_id, "Matched retained controller scope or explicit TOG ID alias"
 
+        split_aliases: list[BlockerAlias] = []
         if decision == ReconciliationDecision.AMBIGUOUS:
-            return FindingReconciliationResult(
-                snapshot=snapshot,
-                is_ambiguous=True,
-                ambiguity_reason=reason,
-            )
+            # Similarity does not authorize merging or closing existing owners.
+            # Admit the observation independently and retain its exact identity
+            # so later attempts do not create another split.
+            logger.bind(repository=repo_name, target=str(pr_number), phase="reconciliation-split").warning(f"Splitting ambiguous review observation: {reason}")
+            split_aliases.append(_split_scope_alias(cand))
+            decision = ReconciliationDecision.DISTINCT_DEFECT
 
         if decision == ReconciliationDecision.ASSOCIATE and associated_id:
             effective_id = associated_id
@@ -686,7 +729,7 @@ def reconcile_pr_findings_before_publication(
                     ambiguity_reason=str(exc),
                 )
         else:
-            aliases_to_add: list[BlockerAlias] = []
+            aliases_to_add: list[BlockerAlias] = list(split_aliases)
             if cand.gap_ref and cand.gap_ref.gap_id:
                 aliases_to_add.append(BlockerAlias(alias_type="test_oracle_gap", alias_value=cand.gap_ref.gap_id))
 
@@ -719,6 +762,8 @@ def reconcile_pr_findings_before_publication(
                 payload=payload,
                 review_observation_identity=cand.observation_identity,
             )
+            if split_aliases:
+                _record_split(pr_number, f"Retained ambiguous observation separately as {effective_id}; {reason}")
 
         blk = snapshot.get_blocker(effective_id)
         canonical_root = blk.get_canonical_root_comment_id() if blk else None
@@ -816,6 +861,15 @@ def _bootstrap_historical_roots(
         earliest = sorted_by_id[0]
 
         snapshot = ledger.get_snapshot(api_origin, repo_name, pr_number, require_retained_state=True)
+        cand_earliest = ObservationCandidate(
+            source_type="FINDING" if earliest.category != "TEST_ORACLE" else "TEST_ORACLE_GAP",
+            category=earliest.category,
+            requirement_ids=earliest.requirement_ids,
+            authoritative_boundary=earliest.authoritative_boundary,
+            incorrect_behavior_or_invariant=earliest.incorrect_behavior_or_invariant,
+            required_outcome=earliest.required_outcome,
+        )
+        split_aliases: list[BlockerAlias] = []
         conflicting = [c for c in sorted_by_id if c.blocker_identity_conflict]
         if conflicting:
             details = ", ".join(f"root {c.comment_id}: {list(c.blocker_identity_conflict)}" for c in conflicting)
@@ -849,44 +903,22 @@ def _bootstrap_historical_roots(
             # the same category unless an explicit blocker declaration selects it.
             matching_blocker = sole_root_match if sole_root_match.category == earliest.category else None
         elif root_matches:
-            scope_matches = [
-                blocker
-                for blocker in root_matches.values()
-                if scopes_describe_same_blocker(
-                    ObservationCandidate(
-                        source_type=("FINDING" if earliest.category != "TEST_ORACLE" else "TEST_ORACLE_GAP"),
-                        category=earliest.category,
-                        requirement_ids=earliest.requirement_ids,
-                        authoritative_boundary=earliest.authoritative_boundary,
-                        incorrect_behavior_or_invariant=(earliest.incorrect_behavior_or_invariant),
-                        required_outcome=earliest.required_outcome,
-                    ),
-                    blocker,
-                )
-            ]
-            if len(scope_matches) != 1:
-                raise AssociationAmbiguityError(f"Historical root {earliest.comment_id} has multiple retained owners " "and this finding does not identify exactly one of them")
-            matching_blocker = scope_matches[0]
+            retained_split = _retained_split(cand_earliest, tuple(root_matches.values()))
+            scope_matches = [blocker for blocker in root_matches.values() if scopes_describe_same_blocker(cand_earliest, blocker)]
+            if retained_split is not None:
+                matching_blocker = retained_split
+            elif len(scope_matches) == 1:
+                matching_blocker = scope_matches[0]
+            else:
+                logger.bind(repository=repo_name, target=str(pr_number), phase="reconciliation-split").warning(f"Splitting historical root {earliest.comment_id} scope from retained owners {sorted(root_matches)}")
+                matching_blocker = None
+                split_aliases.append(_split_scope_alias(cand_earliest))
         else:
             matching_blocker = None
 
-        cand_earliest = ObservationCandidate(
-            source_type="FINDING" if earliest.category != "TEST_ORACLE" else "TEST_ORACLE_GAP",
-            category=earliest.category,
-            requirement_ids=earliest.requirement_ids,
-            authoritative_boundary=earliest.authoritative_boundary,
-            incorrect_behavior_or_invariant=earliest.incorrect_behavior_or_invariant,
-            required_outcome=earliest.required_outcome,
-        )
-        if matching_blocker is None:
-            for b in snapshot.blockers:
-                has_comment = any(a.alias_type == "github_root_comment" and a.alias_value == str(earliest.comment_id) for a in b.aliases)
-                if has_comment and scopes_describe_same_blocker(cand_earliest, b):
-                    matching_blocker = b
-                    break
-
         if matching_blocker is None:
             aliases: list[BlockerAlias] = [BlockerAlias(alias_type="github_root_comment", alias_value=str(corr.comment_id)) for corr in sorted_by_id]
+            aliases.extend(split_aliases)
             if earliest.gap_id:
                 aliases.append(BlockerAlias(alias_type="test_oracle_gap", alias_value=earliest.gap_id))
 
@@ -907,7 +939,7 @@ def _bootstrap_historical_roots(
                 observation_identity=f"import_{earliest.comment_id}_{earliest.category.lower()}",
             )
             op_id = f"import_{earliest.comment_id}_{earliest.category.lower()}_{uuid.uuid4().hex[:6]}"
-            _, snapshot = ledger.admit_blocker(
+            imported_id, snapshot = ledger.admit_blocker(
                 api_origin,
                 repo_name,
                 pr_number,
@@ -916,6 +948,8 @@ def _bootstrap_historical_roots(
                 payload=payload,
                 review_observation_identity=f"import_{earliest.comment_id}",
             )
+            if split_aliases:
+                _record_split(pr_number, f"Retained historical root {earliest.comment_id} scope separately as {imported_id}; existing owners: {sorted(root_matches)}")
             current_rev = snapshot.ledger_revision
         else:
             for corr in sorted_by_id:

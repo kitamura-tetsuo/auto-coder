@@ -56,8 +56,17 @@ polling, or authorization boundaries.
 Historical two-tier root parsing preserves each distinct correction's retained
 owner during publication reconciliation. This prevents a false ambiguity from
 blocking publication while keeping the native report and publication effect
-separate in this view. Genuine ambiguity remains a publication failure in the
-existing validation trace; parsing success alone does not confirm publication.
+separate in this view. Contradictory explicit identities remain a publication
+failure in the existing validation trace; parsing success alone does not confirm
+publication.
+
+Scope ambiguity now continues through a conservative split that preserves all
+existing owners. After durable split admission, `pr.adversarial-validation` emits
+`phase=reconciliation-split`, `outcome=completed`, and a reason identifying the
+split and historical root or considered owners. This event confirms only the
+ledger split. Native publication still has its separate confirmed/failed audit
+effect, and the subsequent validation verdict still controls repair and merge.
+The existing detail trace displays the split without changing the native report.
 
 Recovery of missing GitHub review-list anchors uses an individually verified
 comment receipt before confirming publication. It preserves the same separate
