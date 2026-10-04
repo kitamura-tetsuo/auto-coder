@@ -251,3 +251,18 @@ async def _blocked_slot_read(engine, monkeypatch):
         assert progressed and not task.done()
         release.set()
         assert (await task).status_code == 200
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "bearer", "BEARER"])
+def test_bearer_value_is_redacted_in_http_response_bytes(client, scheme):
+    """A live Bearer credential recorded through the collector never reaches the anonymous response."""
+    reason = f"harmless control phrase; auth header {scheme} secret123 retained"
+    _trace(reason=reason)
+    response = client.get("/api/logs")
+    assert "secret123" not in response.text
+    assert "harmless control phrase" in response.text and "[REDACTED]" in response.text
+    event = next(e for e in response.json()["events"] if e["stage_id"] == "pr.ci-observation")
+    assert event["filtered"] is True and "secret123" not in event["facts"]["reason"]
+    # The collector source still holds the original, unredacted text.
+    stored = [e for e in get_trace_collector().get_snapshot().events if e.stage_id == "pr.ci-observation"]
+    assert stored[0].facts["reason"] == reason
