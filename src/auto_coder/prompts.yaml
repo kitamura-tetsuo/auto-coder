@@ -263,6 +263,27 @@ pr:
     Please fix the issues that are causing the GitHub Actions failures. Make the necessary code changes to resolve the errors.
     DO NOT include git commit or push commands in your response.
 
+  local_repair_verification: |-
+    Verify ONLY the pending local correction targets listed below, at exact commit $head_sha in repository $repo_name, PR #$pr_number.
+    Repair generation: $generation_id. The correction started from $baseline_sha.
+    This is independent verification of completed corrective work, NOT a new PR-wide adversarial validation.
+    Do not explore unrelated requirements, inspect unrelated findings, produce new findings or test-gap requests, or repeat the full PR validation.
+    Inspect current repository evidence and, when useful, run focused checks through the target repository's test script. Operate strictly read-only. Do not mutate files, Git state, or GitHub.
+    For EACH listed thread, decide only whether its ORIGINAL recorded counterexample/invariant was corrected:
+    ADDRESSED requires independently established correction with concrete current-head evidence.
+    STILL_VALID requires independently established persistence of the original defect/invariant gap with concrete current-head evidence.
+    For a material test-oracle gap, ADDRESSED requires a committed focused regression test that directly exercises the recorded boundary and invariant. Passing production behavior or an indirect, skipped, bypassed, or mock-only test is insufficient.
+    INCONCLUSIVE means verification could not complete; explain exactly what was not verified and why, including failed checks or missing evidence. Do not use STILL_VALID for an unverified target.
+    Do not infer correction from a resolved GitHub thread, a prior review, an implementer claim, or a green CI result.
+    Return ONLY JSON with this schema, exactly one entry per requested thread and no other thread IDs or top-level fields:
+    {"thread_dispositions": [{"thread_id": "requested ID", "status": "ADDRESSED|STILL_VALID|INCONCLUSIVE", "rationale": "independent explanation", "evidence": "current repository paths/checks or the precise verification failure"}]}
+
+    Pending correction targets:
+    $pending_threads
+
+    Linked Issue contract (context for the listed original targets only):
+    $linked_issue_contract
+
   local_review_correction: |-
     Correct the currently unresolved review findings below in this protected checkout. The linked Issue's explicit Requirements are the sole implementation contract; preserve its Objective verbatim and do not edit the Issue or expand the work to unrelated changes. Inspect the code, implement the bounded correction, and run the relevant tests. Do not change branches, commit, push, create or replace a pull request, resolve review threads, or mutate GitHub state; Auto-Coder owns publication and independent validation.
 

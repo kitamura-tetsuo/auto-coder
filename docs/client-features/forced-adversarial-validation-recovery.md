@@ -1,7 +1,7 @@
 # Forced adversarial-validation recovery
 
 An explicit `--only <PR> --force` run starts a new adversarial-validation
-attempt for the current head even when that head already has a verdict or the
+attempt for the current head even when that head already has a non-actionable verdict or the
 normal review limit has been reached. Ordinary scheduling and non-forced
 `--only` runs retain same-head and review-limit suppression. Every attempt has
 a durable, start-ordered identity; prior reviews remain immutable, overlapping
@@ -30,6 +30,12 @@ reached a fresh validator invocation, because the current head already had a
 saved verdict (including `ERROR`) so the older-head exception below did not
 apply.
 
+A saved actionable same-head `NEEDS_FIX` or `NEEDS_TESTS` verdict instead
+routes to the existing local or cloud repair owner, even with `--force`.
+A local allowance generation awaiting verification receives only scoped
+verification of its unsettled covered targets. Force does not repeat that
+generation/head reviewer invocation or request an unrelated full PR review.
+
 This is strictly an *admission* change. Every unresolved thread that
 authentically originates from Auto-Coder's adversarial reviewer (root heading
 `### Auto-Coder adversarial finding` or `### Auto-Coder material test-oracle
@@ -56,6 +62,6 @@ prevents the merge.
 
 Prior repair-request delivery (or its already-requested/delivered outcome) is
 informational only: it never counts as independent review, and it never
-suppresses the forced attempt. Force does not create a new repair-delivery
+suppresses an otherwise eligible forced attempt. Force does not create a new repair-delivery
 obligation and does not resend feedback whose delivery is already durably
 confirmed.

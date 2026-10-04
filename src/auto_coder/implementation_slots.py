@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import fcntl
 import io
 import json
 import math
@@ -12,7 +11,7 @@ import re
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, NoReturn, Optional
@@ -20,7 +19,7 @@ from typing import Any, Dict, Iterator, NoReturn, Optional
 from .cloud_manager import claude_session_alias
 from .issue_context import extract_lifecycle_branch_issue_number, extract_lifecycle_directive_issue_references
 from .logger_config import get_logger
-from .runtime_locks import ensure_lock_directory, lock_path
+from .runtime_locks import LockAcquisitionTimeout, ensure_lock_directory, file_lock, lock_path
 
 logger = get_logger(__name__)
 
@@ -39,6 +38,10 @@ class ImplementationOwner:
 
 class ImplementationSlotUnavailable(RuntimeError):
     """Raised when an independent implementation cannot reserve a slot."""
+
+
+class ImplementationSlotLockTimeout(ImplementationSlotUnavailable):
+    """Raised when slot coordination is busy beyond the requested wait."""
 
 
 class ImplementationHierarchyConflict(RuntimeError):
@@ -154,11 +157,7 @@ class ImplementationSlotRepository:
         self.storage_path = storage_path or default_root / repo_name / "implementation_slots.json"
         self.retired_storage_path = retired_storage_path or self.storage_path.parent / f"{self.storage_path.stem}_retired.json"
         self.lock_path = lock_path(repo_name, self.storage_path, "implementation-store")
-        self._thread_lock = threading.RLock()
-        self._owner_locks: Dict[str, threading.RLock] = {}
-        self._serialization_depth = threading.local()
         self._execution_context = threading.local()
-        self._state_lock_depth = threading.local()
 
     def resolve_owner(self, candidate_type: str, data: Dict[str, Any], github_client: Any) -> ImplementationOwner:
         number = data.get("number")
@@ -291,15 +290,6 @@ class ImplementationSlotRepository:
 
     @contextmanager
     def _state_lock(self) -> Iterator[None]:
-        depth = getattr(self._state_lock_depth, "depth", 0)
-        if depth > 0:
-            self._state_lock_depth.depth = depth + 1
-            try:
-                yield
-            finally:
-                self._state_lock_depth.depth -= 1
-            return
-
         try:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -308,23 +298,33 @@ class ImplementationSlotRepository:
             ensure_lock_directory(self.lock_path, os.stat(self.storage_path.parent).st_gid)
         except (OSError, RuntimeError) as exc:
             self._raise_permission_error(self.lock_path.parent, exc)
-        with self._thread_lock:
+        with self._file_lock(self.lock_path):
+            yield
+
+    @contextmanager
+    def _file_lock(self, path: Path, timeout: float = 30.0) -> Iterator[None]:
+        def open_shared_lock() -> int:
+            fd = self._open_lock_file(path)
             try:
-                lock_fd = self._open_lock_file(self.lock_path)
-            except OSError as exc:
-                self._raise_permission_error(self.lock_path, exc)
-            with os.fdopen(lock_fd, "a+", encoding="utf-8") as lock_file:
-                self._establish_shared_permissions(lock_file.fileno(), self.lock_path)
-                try:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-                except OSError as exc:
-                    self._raise_permission_error(self.lock_path, exc)
-                self._state_lock_depth.depth = 1
-                try:
-                    yield
-                finally:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                    self._state_lock_depth.depth = 0
+                self._establish_shared_permissions(fd, path)
+            except BaseException:
+                os.close(fd)
+                raise
+            return fd
+
+        entered = False
+        try:
+            with file_lock(path, opener=open_shared_lock, timeout=timeout):
+                entered = True
+                yield
+        except LockAcquisitionTimeout as exc:
+            if timeout > 0:
+                logger.warning(str(exc))
+            raise ImplementationSlotLockTimeout(str(exc)) from exc
+        except OSError as exc:
+            if entered:
+                raise
+            self._raise_permission_error(path, exc)
 
     def _open_lock_file(self, lock_path: Path) -> int:
         """Open the lock, atomically publishing fully prepared metadata if new."""
@@ -1434,43 +1434,30 @@ class ImplementationSlotRepository:
         return pull_request
 
     @contextmanager
-    def serialize(self, owner: ImplementationOwner) -> Iterator[None]:
+    def serialize(self, owner: ImplementationOwner, *, timeout: float = 30.0) -> Iterator[None]:
         """Prevent simultaneous mutation paths for one owner across processes."""
-        with self._thread_lock:
-            owner_lock = self._owner_locks.setdefault(owner.key, threading.RLock())
-        with owner_lock:
-            depths = getattr(self._serialization_depth, "owners", {})
-            depth = depths.get(owner.key, 0)
-            if depth:
-                depths[owner.key] = depth + 1
-                try:
-                    yield
-                finally:
-                    depths[owner.key] -= 1
-                return
+        mutation_lock_path = lock_path(self.repo_name, self.storage_path, "implementation-owner", owner.key)
+        try:
+            ensure_lock_directory(mutation_lock_path, os.stat(self.storage_path.parent).st_gid)
+        except (OSError, RuntimeError) as exc:
+            self._raise_permission_error(mutation_lock_path.parent, exc)
+        with self._file_lock(mutation_lock_path, timeout):
+            yield
 
-            mutation_lock_path = lock_path(self.repo_name, self.storage_path, "implementation-owner", owner.key)
+    @contextmanager
+    def try_serialize(self, owner: ImplementationOwner) -> Iterator[bool]:
+        """Attempt owner serialization immediately, yielding False when busy.
+
+        Only acquisition contention is handled; permission errors and failures
+        from the protected operation still propagate to the caller.
+        """
+        with ExitStack() as stack:
             try:
-                ensure_lock_directory(mutation_lock_path, os.stat(self.storage_path.parent).st_gid)
-            except (OSError, RuntimeError) as exc:
-                self._raise_permission_error(mutation_lock_path.parent, exc)
-            try:
-                mutation_lock_fd = self._open_lock_file(mutation_lock_path)
-            except OSError as exc:
-                self._raise_permission_error(mutation_lock_path, exc)
-            with os.fdopen(mutation_lock_fd, "a+", encoding="utf-8") as lock_file:
-                self._establish_shared_permissions(lock_file.fileno(), mutation_lock_path)
-                try:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-                except OSError as exc:
-                    self._raise_permission_error(mutation_lock_path, exc)
-                depths[owner.key] = 1
-                self._serialization_depth.owners = depths
-                try:
-                    yield
-                finally:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                    depths.pop(owner.key, None)
+                stack.enter_context(self.serialize(owner, timeout=0))
+            except ImplementationSlotLockTimeout:
+                yield False
+                return
+            yield True
 
     def establish_incarnation(self, owner: ImplementationOwner) -> str:
         """Ensure *owner* has a durable reservation incarnation and activity revision."""

@@ -478,6 +478,13 @@ class ChangeProvenanceItem:
     why_unexplained: str = ""
 
 
+@dataclass(frozen=True)
+class UnverifiedLocalRepair:
+    blocker_id: str = ""
+    thread_id: str = ""
+    reason: str = ""
+
+
 @dataclass
 class AdversarialValidationResult:
     """Outcome of adversarial PR validation against the specification oracle.
@@ -520,6 +527,9 @@ class AdversarialValidationResult:
     # semantic response.  Durable acceptance remains owned by the review cycle.
     closure_assessment: Optional[ReviewExecutionResult] = None
     closure_assessment_diagnostic: str = ""
+    local_repair_generation_id: str = ""
+    local_repair_verification_pending: bool = False
+    unverified_local_repairs: List[UnverifiedLocalRepair] = field(default_factory=list)
 
     @property
     def is_pass(self) -> bool:
@@ -731,18 +741,25 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
     large event stream.  The parsed summary and every structured finding retain
     the actionable reviewer output while keeping the GitHub comment usable.
     """
-    status = result.result.strip().upper() or "ERROR"
+    status = ("INCOMPLETE" if result.unverified_local_repairs else "COMPLETE") if result.local_repair_generation_id else result.result.strip().upper() or "ERROR"
     status_icon = "✅" if result.is_pass else "❌" if result.needs_fix else "⚠️"
     lines = [
-        adversarial_validation_comment_marker(head_sha),
+        f"<!-- auto-coder-local-repair-validation:v1:{result.local_repair_generation_id}{':pending' if result.local_repair_verification_pending else ''}:{head_sha} -->" if result.local_repair_generation_id else adversarial_validation_comment_marker(head_sha),
         *([f"<!-- auto-coder-adversarial-validation-attempt:v1:{result.attempt_sequence}:{result.attempt_id} -->"] if result.attempt_id else []),
         *([f"<!-- auto-coder-adversarial-validation-retry-not-before:v1:{result.retry_not_before_epoch} -->"] if result.retry_not_before_epoch is not None else []),
-        f"## {status_icon} Auto-Coder adversarial validation: {status}",
+        f"## {status_icon} Auto-Coder local repair verification: {status}" if result.local_repair_generation_id else f"## {status_icon} Auto-Coder adversarial validation: {status}",
         "",
         f"Validated commit: `{head_sha}`",
         "",
         _bounded_comment_field(result.summary) or "No validation summary was provided.",
     ]
+
+    if result.local_repair_generation_id:
+        lines.extend(["", f"Repair generation: `{result.local_repair_generation_id}`", "This report verifies only the pending local correction targets. It is not a full PR validation or merge approval."])
+    if result.unverified_local_repairs:
+        lines.extend(["", "### Pending local corrections NOT verified", "", "Independent verification did not complete for the following targets. They remain pending in the repair allowance ledger; STILL_VALID entries for other targets do not settle them."])
+        for pending in result.unverified_local_repairs:
+            lines.extend(["", f"- Blocker `{_bounded_comment_field(pending.blocker_id)}`, thread `{_bounded_comment_field(pending.thread_id) or 'unavailable'}`: {_bounded_comment_field(pending.reason)}"])
 
     if result.retry_not_before_epoch is not None:
         retry_at = datetime.fromtimestamp(result.retry_not_before_epoch, tz=timezone.utc).isoformat()
@@ -849,6 +866,7 @@ def format_adversarial_review_summary(
     result: AdversarialValidationResult,
     head_sha: str,
     attached_test_oracle_gap_count: Optional[int] = None,
+    attached_finding_count: Optional[int] = None,
 ) -> str:
     """Render review-level metadata without duplicating actionable findings."""
     summary_result = AdversarialValidationResult(
@@ -861,12 +879,18 @@ def format_adversarial_review_summary(
         specification_gaps=result.specification_gaps,
         attempt_id=result.attempt_id,
         attempt_sequence=result.attempt_sequence,
+        local_repair_generation_id=result.local_repair_generation_id,
+        local_repair_verification_pending=result.local_repair_verification_pending,
+        unverified_local_repairs=result.unverified_local_repairs,
     )
     body = format_adversarial_validation_comment(summary_result, head_sha)
     if result.clarification_reply_fingerprint:
         body += f"\n{result.clarification_reply_fingerprint}"
-    if result.findings:
-        body += f"\n\n{len(result.findings)} actionable finding thread(s) are attached to this review."
+    finding_count = len(result.findings) if attached_finding_count is None else attached_finding_count
+    if finding_count:
+        body += f"\n\n{finding_count} actionable finding thread(s) are attached to this review."
+    elif result.findings:
+        body += f"\n\n{len(result.findings)} actionable finding(s) remain represented by existing review threads."
     attached_gap_count = len(result.open_test_oracle_gaps) if attached_test_oracle_gap_count is None else attached_test_oracle_gap_count
     if attached_gap_count:
         body += f"\n\n{attached_gap_count} focused regression-test request thread(s) are attached to this review."

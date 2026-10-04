@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
@@ -48,6 +50,46 @@ def _mounted_detail(mock_ui, item_type: str, item_number: int):
 
 def _assert_required_stage_visible(diagram: str, display_text: str) -> None:
     assert display_text in diagram, f"required production stage {display_text!r} did not reach the mounted detail view"
+
+
+@pytest.mark.parametrize("origin", ["worker", "capacity-refill-intake", "explicit-single-target", "container-child"])
+@patch("auto_coder.dashboard.ui")
+def test_owner_lock_timeout_defers_and_retries_with_mounted_evidence(mock_ui, origin, tmp_path, monkeypatch):
+    from auto_coder.implementation_slots import ImplementationOwner
+    from tests.test_specification_validation_lifecycle import GitHubFlow, engine_with_gate, lifecycle, snapshot
+
+    engine, candidate = engine_with_gate(tmp_path, GitHubFlow([snapshot()]), lifecycle(tmp_path, "READY"))
+    slots = engine.implementation_slots
+    owner = ImplementationOwner("issue", candidate.data["number"])
+    serialize = slots.serialize
+    monkeypatch.setattr(slots, "serialize", partial(serialize, timeout=0.01))
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        # Hold the real owner lock on another thread; production must time out
+        # without invoking implementation or discarding the lock holder.
+        with serialize(owner):
+            result = executor.submit(engine._process_single_candidate_unified, "owner/repo", candidate, engine.config, origin=origin).result(timeout=5)
+            assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+            assert result.success is False
+            assert result.refill_retry_required is True
+            assert "Timed out acquiring runtime lock" in result.error
+            assert result.actions == ["Deferred - implementation ownership requires retry"]
+            engine._process_single_candidate_reserved.assert_not_called()
+            assert slots.active_owners() == ()
+
+        events = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=owner.number).events
+        started = next(event for event in events if event.kind == EventKind.EXECUTION_STARTED.value)
+        admission = next(event for event in events if event.stage_id == "issue.implementation-admission")
+        assert started.origin == origin
+        assert admission.execution_id == started.execution_id
+        assert admission.outcome == Outcome.DEFERRED.value
+        assert admission.facts == {"reason": result.error}
+        diagram = _mounted_detail(mock_ui, "issue", owner.number)
+        _assert_required_stage_visible(diagram, "implementation admission")
+        assert "outcome: deferred" in diagram
+
+        retried = executor.submit(engine._process_single_candidate_unified, "owner/repo", candidate, engine.config, origin=origin).result(timeout=5)
+        assert retried.success is True
+        engine._process_single_candidate_reserved.assert_called_once()
 
 
 @patch("auto_coder.dashboard.ui")

@@ -11,6 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Generator, Optional
 
+from loguru import logger
+
 from .worktree_utils import LocalWorkspaceBinding
 
 
@@ -53,7 +55,7 @@ class LocalBoundaryEvidence:
 
     @property
     def confined_result_authorized(self) -> bool:
-        return self.backend_outcome is BackendOutcome.SUCCEEDED and self.filesystem_enforcement is EvidenceStatus.ESTABLISHED and self.writer_completion is EvidenceStatus.ESTABLISHED and self.violation_observation is EvidenceStatus.ESTABLISHED and not self.policy_violation and self.failure is None
+        return self.backend_outcome is BackendOutcome.SUCCEEDED and self.filesystem_enforcement is EvidenceStatus.ESTABLISHED and self.writer_completion is EvidenceStatus.ESTABLISHED and self.violation_observation is EvidenceStatus.ESTABLISHED and self.failure is None
 
     @property
     def promotable(self) -> bool:
@@ -68,7 +70,7 @@ class LocalBoundaryEvidence:
         controller publication. Writer settlement and violation observation remain
         mandatory so an incomplete turn can never promote files.
         """
-        return self.editable and self.backend_outcome is BackendOutcome.SUCCEEDED and self.writer_completion is EvidenceStatus.ESTABLISHED and self.violation_observation is EvidenceStatus.ESTABLISHED and not self.policy_violation and self.failure is None
+        return self.editable and self.backend_outcome is BackendOutcome.SUCCEEDED and self.writer_completion is EvidenceStatus.ESTABLISHED and self.violation_observation is EvidenceStatus.ESTABLISHED and self.failure is None
 
 
 @dataclass
@@ -165,15 +167,14 @@ class LocalExecutionBoundary:
         """Record that the enforcing launcher observed this turn until settlement."""
         with self._lock:
             self._accept(invocation_id)
-            if not self._policy_violation:
-                self._violation_observation = EvidenceStatus.ESTABLISHED
+            self._violation_observation = EvidenceStatus.ESTABLISHED
 
     def report_policy_violation(self, invocation_id: str, reason: str) -> None:
+        """Retain a blocked operation as advisory evidence, not execution failure."""
         with self._lock:
             self._accept(invocation_id)
             self._policy_violation = True
-            self._violation_observation = EvidenceStatus.FAILED
-            self._failure = self._failure or reason.strip() or "local execution policy was violated"
+            logger.warning("Local execution policy denied an operation for invocation {}: {}", invocation_id, reason.strip() or "unspecified denial")
 
     def close(self) -> LocalBoundaryEvidence:
         with self._lock:

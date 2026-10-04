@@ -399,6 +399,41 @@ class TestCodexClient:
         with pytest.raises(LocalWriterSettlementError, match="replacement is withheld"):
             client._run_llm_cli("hello world")
 
+    @pytest.mark.parametrize(
+        "diagnostic, expected_detail",
+        [
+            (
+                "private workspace repository preparation failed (uid=None, gid=None): repository readiness requires an explicit non-root worker identity",
+                "private workspace repository preparation failed (uid=None, gid=None): repository readiness requires an explicit non-root worker identity",
+            ),
+            (
+                "authoritative termination confirmation failed: owned cgroup termination was not confirmed",
+                "authoritative termination confirmation failed: owned cgroup termination was not confirmed",
+            ),
+            ("", "writer settlement is uncertain"),
+            ("x" * 3000, "x" * 2000),
+            ("diagnostic token=ghp_example123", "diagnostic token=[REDACTED]"),
+        ],
+        ids=["pre-start-readiness", "termination-confirmation", "missing-diagnostic", "bounded-diagnostic", "redacted-diagnostic"],
+    )
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_execution_safety_failure_preserves_diagnostic(self, mock_run_command, mock_run, diagnostic, expected_detail):
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(False, "", diagnostic, -1, writer_settled=False)
+        client = CodexClient()
+        client.output_logger = MagicMock()
+
+        with pytest.raises(LocalWriterSettlementError) as failure:
+            client._run_llm_cli("hello world")
+
+        expected_error = f"Codex execution safety could not be established; provider replacement is withheld: {expected_detail}"
+        assert str(failure.value) == expected_error
+        mock_run_command.assert_called_once()
+        logged = client.output_logger.log_interaction.call_args.kwargs
+        assert logged["status"] == "error"
+        assert logged["error"] == expected_error
+
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_usage_limit_error_with_json_marker(self, mock_run_command, mock_run):
@@ -1663,3 +1698,69 @@ def test_exit_zero_failed_execution_protection_never_returns_final_payload():
         client = CodexClient()
         with pytest.raises(RuntimeError, match="Codex execution protection failed"):
             client._run_llm_cli("review", is_noedit=True)
+
+
+def test_error_summary_exposes_nested_model_rejection(capsys):
+    from types import SimpleNamespace
+
+    cause = "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+    provider_error = json.dumps({"type": "error", "status": 400, "error": {"type": "invalid_request_error", "message": cause}})
+    output = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread_id": "fixture-thread"}),
+            json.dumps({"type": "item.completed", "item": {"type": "error", "message": "Model metadata not found. " + "warning " * 40}}),
+            json.dumps({"type": "error", "message": provider_error}),
+            json.dumps({"type": "turn.failed", "error": {"message": provider_error}}),
+        ]
+    )
+    backend = BackendConfig(name="fixture", backend_type="codex", model="gpt-6.1-sol", options=["exec", "--json"])
+    with (
+        patch("src.auto_coder.codex_client.get_llm_config", return_value=SimpleNamespace(get_backend_config=lambda name: backend)),
+        patch("src.auto_coder.codex_client.subprocess.run", return_value=SimpleNamespace(returncode=0)),
+        patch("src.auto_coder.codex_client.CommandExecutor.run_command", return_value=CommandResult(False, output, "", 1)) as execute,
+    ):
+        client = CodexClient()
+        client.output_logger = MagicMock()
+        with pytest.raises(RuntimeError, match="codex CLI failed with return code 1") as error:
+            client._run_llm_cli("review", is_noedit=True)
+
+    assert f"Cause: {cause}\n" in capsys.readouterr().out
+    assert output in str(error.value)
+    execute.assert_called_once()
+    assert client.output_logger.log_interaction.call_args.kwargs["response"] == output
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ('{"type":"turn.failed","error":{"message":"terminal failure"}}\n{"type":"error","message":"later warning"}', "terminal failure"),
+        ('{"type":"error","message":"provider failure"}', "provider failure"),
+        ('{"type":"item.completed","item":{"type":"command_execution","output":"model is not supported"}}', None),
+        ('{"type":"item.completed","item":{"type":"error","message":"metadata warning"}}', None),
+        ('invalid JSON\n[]\n{"type":"turn.failed","error":{"code":400}}', None),
+        ('{"type":"turn.failed","error":{"message":"123"}}', "123"),
+    ],
+)
+def test_terminal_error_summary_selects_only_provider_diagnostics(output, expected):
+    assert CodexClient._terminal_error_message(output) == expected
+
+
+@pytest.mark.parametrize(
+    ("cause", "expected"),
+    [("Authentication rejected for ghp_fixturetoken", "Authentication rejected for [REDACTED]"), ("x" * 2100, "x" * 2000 + "...")],
+)
+def test_error_summary_redacts_and_bounds_terminal_cause(cause, expected, capsys):
+    from types import SimpleNamespace
+
+    output = json.dumps({"type": "turn.failed", "error": {"message": cause}})
+    backend = BackendConfig(name="fixture", backend_type="codex", options=["exec", "--json"])
+    with (
+        patch("src.auto_coder.codex_client.get_llm_config", return_value=SimpleNamespace(get_backend_config=lambda name: backend)),
+        patch("src.auto_coder.codex_client.subprocess.run", return_value=SimpleNamespace(returncode=0)),
+        patch("src.auto_coder.codex_client.CommandExecutor.run_command", return_value=CommandResult(False, output, "", 1)),
+    ):
+        client = CodexClient()
+        client.output_logger = MagicMock()
+        with pytest.raises(RuntimeError):
+            client._run_llm_cli("review", is_noedit=True)
+    assert f"Cause: {expected}\n" in capsys.readouterr().out

@@ -1,5 +1,50 @@
 # Dashboard observability verification
 
+Per-item runtime owner-lock acquisition timeouts now return retryable `DEFERRED`
+results through the unified dispatch boundary. They emit
+`issue.implementation-admission` or `pr.implementation-admission` with the failure
+reason and preserve the affected item's execution identity. The existing generic
+detail projection shows both admission and execution as deferred, without a new
+outcome enum or trace schema. Run
+`bash scripts/test.sh tests/test_dashboard_observability.py -k owner_lock_timeout`
+for real-lock contention, mounted-view evidence, and successful admission after
+release. `bash scripts/test.sh tests/test_capacity_refill.py` verifies that a
+per-item ownership failure leaves refill pending and does not stop later
+candidates in the same pass.
+
+Ordinary adversarial publication now keeps distinct correction scopes under
+distinct blocker IDs and combines equivalent same-batch observations into one
+root. This preserves the existing `pr.adversarial-validation` stage and the
+review-audit publication/reconciliation effect schema: only confirmed native
+roots produce a confirmed publication, while incomplete associations retain the
+existing failure path. No processing origin, provider route, resumption path,
+trace field, or dashboard projection changes. The native semantic report still
+retains every finding independently of attached-thread counts. Run
+`bash scripts/test.sh tests/test_pr_finding_reconciliation.py tests/test_github_app_reviewer.py
+tests/test_pr_adversarial_review_audit.py tests/test_adversarial_validation_pr_flow.py
+tests/test_dashboard_reviews.py` to exercise root confirmation, retained
+audit effects, production-stage consumption, and the existing history projection.
+`test_publication_confirms_one_root_per_blocker` verifies both distinct-defect
+publication and equivalent-observation consolidation without a pending intent.
+`tests/test_github_app_reviewer.py::test_recovers_retained_review_with_missing_list_anchors`
+drives the same durable confirmation boundary when GitHub omits list anchors:
+an authenticated individual receipt confirms the original roots; mismatched
+identity, body, anchor, author, or unavailable receipt keeps the operation pending.
+The production stage and audit effect continue consuming the existing recovery
+result; this adds no trace fields, outcomes, provider routes, or dashboard schema.
+Cloud merge-conflict receipt recovery retains the existing
+`pr.mergeability-remediation` stage and schema. A recovered accepted receipt or
+a newly confirmed send reaches `ACCEPTED_HANDOFF`; a busy delivery lock, legacy
+pending reservation, or indeterminate provider receipt reaches `DEFERRED` with
+`result=unconfirmed`. No pending reservation is acceptance evidence. The runnable
+receipt and concurrent-sender regressions live in
+`tests/test_cloud_conflict_delegation.py`, including
+`test_reconciled_conflict_delivery_emits_truthful_remediation_stage` which drives
+the production remediation and reads the execution-scoped stage outcome for
+all three provider delivery states. The cross-instance production fence
+regression is
+`tests/test_codex_work_fence.py::test_followup_fence_reenters_engine_owner_lock_with_fresh_repository`.
+
 Issues #2077 and #2078 add `IssueDispatchGuard` and its provider-neutral ranked
 candidate boundary. The guard introduces no new processing origin,
 execution-trace stage, structured event field, or dashboard projection: its
@@ -149,6 +194,14 @@ acceptance, renewed-audit coverage, and configured quota-strategy admission at
 the production strong-audit origin. The quota-strategy correction changes only
 whether the existing `pr.strong-audit` stage proceeds or records its existing
 EXHAUSTED deferral; it adds no trace field, stage, schema, or dashboard renderer.
+
+Codex execution-safety errors now preserve up to 2,000 redacted characters of
+the executor diagnostic. The existing `pr.strong-audit` DEFERRED reason and
+durable waiting reason therefore expose preparation/termination failures without
+adding a stage, event field, or renderer. Run `bash scripts/test.sh
+tests/test_codex_client.py tests/test_strong_audit_producer.py` for diagnostic
+preservation, redaction, bounding, and restart-persistent pending-state coverage.
+Replacement remains withheld and no accepted strong result is fabricated.
 
 Two-tier finding publication retains the `pr.two-tier-review-effect` schema but
 uses the `github-reviewer-app:threads-v1` effect destination. Confirmation now
@@ -1444,6 +1497,21 @@ and zero-cloud-send behavior; the joined existing cloud controls are in
 
 # Local unresolved-review correction
 
+Fresh adversarial failure and cached-report replay now use that same local
+correction route. The existing `pr.repair-delegation` event carries
+`effect=adversarial-fix-feedback`, `adversarial-test-feedback`, or
+`adversarial-feedback-replay`, plus `examined_head`, `route_disposition`, and
+`local_phase`. Pending local correction emits `DEFERRED`; refused routing emits
+`FAILED`, while confirmed cloud delivery retains `ACCEPTED_HANDOFF`.
+`tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationPRFlow::test_green_ci_with_adversarial_needs_fix_comments_and_stops`
+drives publication through local correction and verifies the production stage
+facts and deferred outcome in the mounted detail page. `tests/test_local_review_repair.py` verifies addressed-claim
+rejection, bounded finding/test-gap selection, and changed-head refusal.
+Run `bash scripts/test.sh tests/test_local_review_repair.py
+tests/test_adversarial_validation_pr_flow.py tests/test_dashboard_observability.py`.
+The dashboard's generic stage-detail projection displays these existing facts;
+no renderer or processing-origin change is required.
+
 The existing `pr.repair-delegation` stage now reports
 `route_disposition=LOCAL_EXECUTION` while an explicit-local unresolved-review
 correction is executing, indeterminate, publication-pending, completed with no
@@ -1494,6 +1562,16 @@ continue through the existing loguru reclamation diagnostics and capacity-refill
 path; `tests/test_codex_reclamation_composition.py` exercises the production
 predicate/settlement/removal composition, while dashboard renderers have no new
 event to map.
+
+Busy owner guards are deferred without waiting, preserving the reservation and
+rescheduling the durable reclamation obligation by 60 seconds. This is
+observability-neutral: it changes internal lock scheduling and debug diagnostics,
+with no new processing origin, admission decision, provider route, dashboard
+outcome, or structured event field. The existing capacity-refill emission path
+still follows committed retirement only. Runnable regressions in
+`tests/test_implementation_reclamation_scheduler.py::test_busy_owner_is_deferred_without_blocking_other_reclamation`
+cover actual thread and process contention, retained incarnation, retry cadence,
+other-owner release, and eventual retirement after the guard is released.
 Recovery-linked PR candidates, first-check settlement from durable handoff
 evidence, final guarded token revalidation, and provider-selective startup
 reconstruction remain internal safety decisions on that same reclamation path;
@@ -1545,7 +1623,8 @@ Codex no-edit sandbox composition (issue #2387) reuses the existing backend
 interaction and adversarial-validation trace/outcome boundaries. The inner
 sandbox argument changes only inside the bound supervised launch; identity or
 mode mismatch and failed enforcement remain existing pre-start failures, while
-policy violations and unsettled writers remain backend execution failures.
+denied operations remain advisory and unsettled writers remain backend execution
+failures.
 The same no-edit launch sets `GIT_OPTIONAL_LOCKS=0` to prevent read-only Git
 inspection from attempting an optional index refresh; the live conformance
 command includes `git status --short` and asserts successful reads while
@@ -1556,13 +1635,17 @@ renderer changes are needed. Runnable conformance is
 container profile, plus `tests/test_invocation_process_supervisor.py` and
 `tests/test_local_execution_boundary.py` for admission/output-transfer failures.
 
-The Codex no-edit supervisor now consumes its sticky filesystem violation as a
-failed execution, and the client honors that failure even after CLI exit 0.
-Existing backend-interaction failure emissions therefore remain truthful, and
-Strong Audit abandons the claim through its existing failure path instead of
-accepting the provider's payload. The live denied-write cases and
-`tests/test_filesystem_confinement.py::test_codex_noedit_denied_write_fails_even_after_exit_zero`
-exercise this composition; no new event or dashboard outcome category is added.
+The local supervisor records blocked filesystem operations as warning diagnostics
+without converting an otherwise successful provider exit into a failure. Existing
+backend-interaction and adversarial-validation production emissions therefore
+report the actual accepted review outcome instead of a protection error caused
+solely by a denied attempt. Denial evidence remains in the interaction log; it is
+not a new dashboard event or verdict. Enforcement/monitor failures and uncertain
+settlement still take the existing failure path. No provider route, structured
+trace schema or dashboard renderer changes are needed. Runnable coverage is
+`tests/test_filesystem_confinement.py::test_codex_noedit_denied_write_preserves_success_after_exit_zero`,
+`tests/test_local_execution_boundary.py::test_retained_continuation_policy_denial_allows_caller_handoff`,
+and the live denied-write cases in `tests/test_codex_noedit_runtime.py`.
 
 Retained-root checkpoint advancement uses the shared handoff source scope rather
 than including new ignored build artifacts. This changes local continuation
@@ -1574,3 +1657,58 @@ host through successful implementation and exact-session review without a fresh
 fallback. `tests/test_worktree_isolation.py` covers ignored build output, preserved
 baseline paths, private tracked files and concurrent ignored caller context edits.
 Run `bash scripts/test.sh tests/test_worktree_isolation.py tests/test_muse_msp.py tests/test_local_session_continuation.py`.
+
+## Pending ordinary review publication recovery
+
+Before a fresh ordinary PR adversarial validation (including a changed head with
+no saved verdict), `_handle_pr_merge` recovers accepted pending publications.
+Unconfirmed recovery emits `pr.adversarial-validation`, `Outcome.FAILED`, with
+`phase=publication-recovery`, `examined_head`, and `reason`, and records a failed
+processing status. No reviewer invocation is started. Recovery success continues
+through the normal current-head validation and repair stages without authorizing
+merge from an older review. The existing dashboard trace renderer needs no schema
+change. See `docs/client-features/dashboard-llm-review-history.md`.
+
+Runnable regression coverage:
+`bash scripts/test.sh tests/test_github_app_reviewer.py tests/test_adversarial_validation_pr_flow.py`.
+`test_recovers_retained_review_with_missing_list_anchors` covers relocated original
+line/range coordinates and contradictory receipts at the production recovery
+boundary. `TestAdversarialValidationPRFlow::test_same_sha_pass_does_not_skip_incomplete_publication_recovery`
+covers both an existing PASS and no saved current-head verdict, asserting no
+model invocation or merge and the emitted recovery phase and failed status.
+
+## Local repair generation revalidation
+
+Pending local generations receive verification of only their unsettled covered
+roots, including already-resolved original roots. Unrelated findings are excluded.
+The generation/head checkpoint prevents duplicate reviewer invocation after restart
+or `--force`. An actionable same-head ordinary verdict routes to repair rather
+than repeated full validation.
+
+The scoped producer emits `pr.repair-delegation` with
+`effect=local-validation-scoped`, `route_disposition=LOCAL_EXECUTION`,
+`generation_id`, `examined_head`, `unverified_count`, and `unverified_targets`
+(blocker ID, available thread ID, reason). Missing or inconclusive targets produce
+`BLOCKED` and `local_phase=awaiting_validation`; complete scoped verification
+produces `COMPLETED` and `local_phase=validation_complete`. Both defer PR
+processing and never imply a full validation PASS or merge approval. Publication
+and settlement failures emit `FAILED` with the retained phase and reason. A head
+refresh emits `DEFERRED` with `effect=local-validation-head-refresh`.
+Confirmed addressed-thread closure uses `pr.review-thread-closure` with confirmed
+and unfinished counts and the scoped effect. The generic detail table displays
+these facts without a schema or renderer change.
+
+`tests/test_local_review_validation.py::test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_target_in_mounted_view`
+drives the production admission and scoped reviewer through partial results,
+native GitHub report publication, settlement, and forced replay. Its collector and
+mounted detail assertions retain the same unverified target and reason exposed in
+the GitHub report. `test_same_commit_actionable_validation_routes_to_local_repair_even_with_force`
+asserts repair routing and zero full-review or merge calls for both actionable
+verdicts. `test_pending_scope_partial_result_is_visible_and_not_repeated_after_restart`,
+`test_incomplete_verification_is_published_as_unverified_not_still_valid`, and
+`test_pending_diagnostic_cannot_absorb_later_completed_report` cover durable
+partial replay, malformed/omitted evidence, and concurrent publication scopes.
+The existing local repair tests retain exact-root authentication, admission, and
+causal settlement coverage. Run `bash scripts/test.sh
+tests/test_local_review_validation.py tests/test_local_review_repair.py
+tests/test_adversarial_validation_pr_flow.py tests/test_dashboard_observability.py`.

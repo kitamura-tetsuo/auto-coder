@@ -23,6 +23,14 @@ Blocker Ledger:
 - **Distinct Defect Preservation:** Observation candidates describing genuinely
   distinct defects (differing authoritative boundaries, distinct requirements, or
   differing failure invariants) reconcile to distinct blockers.
+  Sharing a requirement, diff-anchor file, or a few domain words does not establish
+  equivalence: both the incorrect behavior and corrective outcome must have
+  substantial shared content. Missing scope text or an empty authoritative boundary
+  does not authorize association.
+  The conservative lexical comparison ignores connective words and requires at
+  least two shared content tokens covering half of each description, or identical
+  nonempty token sets, separately for behavior and outcome. It is an advisory
+  heuristic, not proof of semantic equivalence.
 - **Non-Authorizing Ambiguity:** When reconciliation encounters ambiguous
   association across multiple active blockers or candidate roots, the ambiguity is
   treated as non-authorizing: it blocks speculative publications, resolves no
@@ -107,6 +115,12 @@ an acceptance receipt: completion additionally requires paginated, review-specif
 comment retrieval and an authenticated, non-reply root declaring each intended
 canonical blocker identity. Review IDs are never used as comment aliases, and a
 root-producing operation cannot be confirmed with an empty or partial alias set.
+Distinct defects receive separate identities and roots even within one review.
+When equivalent observations in the same batch reuse a blocker, their complete
+finding sections and evidence are combined under one root at the first anchor;
+the native review summary reports the actual attached thread count. This prevents
+multiple roots declaring one blocker from stranding publication confirmation.
+This change does not rewrite already-pending requests or historical GitHub roots.
 
 If acknowledgement or root discovery is interrupted, the durable operation remains
 pending and suppresses another publication for the same blockers. A later ordinary
@@ -114,3 +128,22 @@ publication entry reconciles the accepted review from the retained request, reco
 its receipt, and completes the original root associations without rerunning semantic
 review. Ambiguous, missing, conflicting, or unauthenticated evidence stays explicitly
 incomplete; genuinely root-free reviews retain their existing behavior.
+
+GitHub's review-specific comment listing can omit `line`/`side` anchors or return
+them as null while the individual comment endpoint retains the submitted anchor.
+Recovery
+fetches that individual receipt when the listing lacks these anchors, verifies
+its comment ID, review ID, body, path, and reply relationship against the listing,
+and then applies the existing author, blocker, and exact request-payload checks.
+Missing or inconsistent receipts remain pending. Recovery uses GET requests and
+never creates a replacement review or rewrites the retained request.
+
+After a later commit relocates a comment, recovery compares `original_line` and
+`original_start_line` from the individual receipt against the retained submission,
+bound by `original_commit_id` to the validated head. Current line coordinates are
+not evidence of the original publication position. A contradictory original
+commit, missing required original coordinate, changed body/path, or mismatched
+side still leaves publication pending. Recovery runs before a fresh ordinary
+validation, including when the current head has no saved verdict, so an incomplete
+older publication cannot cause repeated model runs whose publication is blocked
+by that same operation.

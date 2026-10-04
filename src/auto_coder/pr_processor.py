@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -27,7 +27,7 @@ from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, 
 from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager, claude_session_alias
 from auto_coder.github_ci_observer import ci_observation_merge_authority, ci_read_phase, end_ci_read_phase
-from auto_coder.util.gh_cache import GitHubClient, PullRequestRoutingMetadata, ReviewThread, get_ghapi_client
+from auto_coder.util.gh_cache import GitHubClient, PullRequestRoutingMetadata, ReviewThread, ReviewThreadComment, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, is_ci_observation_recovered
 
 from .accepted_finding_bridge import AcceptedFindingBridge, ProjectionTarget
@@ -39,6 +39,7 @@ from .adversarial_validator import (
     adversarial_validation_comment_marker,
     count_adversarial_validation_comments,
     format_adversarial_finding_comment,
+    format_adversarial_review_summary,
     format_adversarial_validation_comment,
     format_test_oracle_gap_comment,
     run_adversarial_validation,
@@ -123,6 +124,7 @@ from .review_thread_validation import (
     retry_pending_stale_review_thread_rollbacks,
 )
 from .reviewer_session_registry import ReviewerSessionRegistry
+from .runtime_locks import LockAcquisitionTimeout, ensure_lock_directory, file_lock, lock_path
 from .security_utils import redact_string
 from .shutdown_context import new_work_allowed
 from .speculative_jules_lifecycle import get_speculative_jules_lifecycle
@@ -582,6 +584,7 @@ class CloudConflictDeliveryRecord:
 
     task_id: str
     status: str
+    logical_identity: str = ""
 
 
 @dataclass
@@ -627,6 +630,15 @@ class CloudReviewRepairResult(list[str]):
         self.retry_not_before = retry_not_before
         self.route_disposition = route_disposition
         self.local_phase = local_phase
+
+
+def _adversarial_repair_outcome(actions: List[str]) -> Outcome:
+    """Distinguish local pending repair from confirmed cloud handoff."""
+    if getattr(actions, "deferred", False) or getattr(actions, "quota_deferred", False):
+        return Outcome.DEFERRED
+    if getattr(actions, "route_disposition", "CLOUD") != "CLOUD":
+        return Outcome.FAILED
+    return Outcome.ACCEPTED_HANDOFF if any("sent" in action.lower() or "Requested" in action for action in actions) else Outcome.UNKNOWN
 
 
 class ReviewRepairRouteDisposition(Enum):
@@ -1059,6 +1071,137 @@ def _allow_older_head_adversarial_threads(
         has_blocking_unresolved=bool(remaining),
         lookup_error=state.lookup_error,
     )
+
+
+def _include_pending_local_repair_threads(
+    github_client: Any,
+    repo_name: str,
+    pr_number: int,
+    reviewer_login: str,
+    claimed: Sequence[ClaimedReviewThread],
+    *,
+    allow_incomplete: bool = False,
+) -> Tuple[ClaimedReviewThread, ...]:
+    """Keep completed repair roots in independent validation after UI resolution."""
+    from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
+
+    snapshot = RepairAllowanceLedger().get_snapshot("https://api.github.com", repo_name, pr_number)
+    generation = snapshot.get_outstanding_generation()
+    if generation is None or generation.owning_identity != "local-review-repair" or generation.lifecycle_state != GenerationLifecycleState.PENDING_REVALIDATION:
+        return tuple(claimed)
+    settled = {item.blocker_id for item in generation.settlements}
+    pending = set(generation.covered_blocker_ids) - settled
+    threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+    existing = {thread.thread_id: thread for thread in claimed}
+    selected_existing = []
+    retained = []
+    found = set()
+    for thread in threads:
+        if not thread.comments:
+            continue
+        identity = _review_feedback_identity(f"{repo_name}#{pr_number}:local:", thread, 0)
+        if identity not in pending:
+            continue
+        found.add(identity)
+        current = existing.get(thread.id)
+        if current is not None and not thread.comments_truncated and current.root_comment_database_id == thread.comments[0].database_id:
+            # Already-classified claims retain their supported reviewer authority.
+            selected_existing.append(current)
+            continue
+        # Resolution is presentation state, never independent correctness evidence.
+        retained.append(replace(thread, is_resolved=False))
+    promoted = _allow_older_head_adversarial_threads(ClaimedReviewThreadGateState(blocking_unresolved=tuple(retained)), reviewer_login, forced=True)
+    if not allow_incomplete and (found != pending or promoted.blocking_unresolved):
+        raise RuntimeError("pending local repair roots are missing, incomplete, or unauthenticated")
+    return tuple(selected_existing) + tuple(promoted.claimed)
+
+
+def _verify_pending_local_correction(
+    github_client: Any,
+    repo_name: str,
+    pr_data: dict,
+    config: AutomationConfig,
+    actions: List[str],
+    processing_status: Optional[Any],
+) -> None:
+    """Verify the pending generation once, without starting a full PR review."""
+    from .local_review_validation import run_pending_local_repair_verification
+
+    pr_number = int(pr_data["number"])
+    head_sha = str((pr_data.get("head") or {}).get("sha") or "")
+    try:
+        if github_client.get_pull_request_head_sha_strict(repo_name, pr_number) != head_sha:
+            actions.append(f"Deferred local correction verification for PR #{pr_number}: the published repair changed the head; refresh the PR before verification")
+            _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.DEFERRED, {"route_disposition": "LOCAL_EXECUTION", "local_phase": "awaiting_validation", "effect": "local-validation-head-refresh", "examined_head": head_sha})
+            if processing_status is not None:
+                processing_status.outcome = PRProcessingOutcome.DEFERRED
+            return
+        reviewer_identity = resolve_reviewer_app_identity(repo_name)
+
+        def publish(result: AdversarialValidationResult, may_send: bool) -> bool:
+            if github_client.get_pull_request_head_sha_strict(repo_name, pr_number) != head_sha:
+                return False
+            expected = format_adversarial_review_summary(result, head_sha)
+            for review in github_client.get_pr_reviews_strict(repo_name, pr_number):
+                login = _comment_value(_comment_value(review, "user") or {}, "login", "")
+                if reviewer_identity.matches_login(login) and _comment_value(review, "body", "") == expected and _comment_value(review, "commit_id", "") == head_sha:
+                    return True
+            if not may_send:
+                return False
+            return publish_adversarial_review(repo_name, pr_number, head_sha, result).success
+
+        observed_targets: dict[str, ClaimedReviewThread] = {}
+
+        def select_threads() -> Tuple[ClaimedReviewThread, ...]:
+            state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
+            if state.lookup_error:
+                raise RuntimeError(state.lookup_error)
+            selected = _include_pending_local_repair_threads(github_client, repo_name, pr_number, reviewer_identity.login, state.claimed, allow_incomplete=True)
+            observed_targets.update((thread.thread_id, thread) for thread in selected)
+            return selected
+
+        result = run_pending_local_repair_verification(
+            repo_name,
+            pr_number,
+            head_sha,
+            select_threads=select_threads,
+            linked_issue_contract=lambda: get_linked_issues_context(github_client, repo_name, pr_data.get("body", "")),
+            worktree=lambda: isolated_pr_head_worktree(repo_name, pr_number, head_sha),
+            publish=publish,
+            head_is_current=lambda: github_client.get_pull_request_head_sha_strict(repo_name, pr_number) == head_sha,
+        )
+        pending_count = len(result.unverified_local_repairs)
+        if any(item.status == "ADDRESSED" for item in result.thread_dispositions):
+            closure = resolve_addressed_review_threads(github_client, repo_name, pr_number, head_sha, tuple(observed_targets.values()), result.thread_dispositions, ledger=CanonicalPRBlockerLedger(), base_sha=str((pr_data.get("base") or {}).get("sha") or ""))
+            unfinished = tuple(getattr(closure, "unfinished_outcomes", ()))
+            actions.append(f"Scoped local correction thread closure for PR #{pr_number}: {len(closure)} confirmed, {len(unfinished)} unfinished")
+            _record_pr_stage(pr_number, "pr.review-thread-closure", f"pr#{pr_number} review-thread closure", Outcome.BLOCKED if unfinished else Outcome.COMPLETED, {"confirmed_count": len(closure), "unfinished_count": len(unfinished), "effect": "local-validation-scoped", "examined_head": head_sha})
+        outcome = Outcome.BLOCKED if pending_count else Outcome.COMPLETED
+        actions.append(f"Scoped local correction verification for PR #{pr_number}: {len(result.thread_dispositions)} disposition(s), {pending_count} target(s) NOT verified; no full PR validation was started")
+        _record_pr_stage(
+            pr_number,
+            "pr.repair-delegation",
+            f"pr#{pr_number} repair delegation",
+            outcome,
+            {
+                "route_disposition": "LOCAL_EXECUTION",
+                "local_phase": "awaiting_validation" if pending_count else "validation_complete",
+                "effect": "local-validation-scoped",
+                "generation_id": result.local_repair_generation_id,
+                "examined_head": head_sha,
+                "unverified_count": pending_count,
+                "unverified_targets": [asdict(item) for item in result.unverified_local_repairs],
+            },
+        )
+        if processing_status is not None:
+            processing_status.outcome = PRProcessingOutcome.DEFERRED
+    except Exception as exc:
+        reason = redact_string(str(exc))[:2000]
+        actions.append(f"Local repair verification failed for PR #{pr_number}: {reason}; no full PR validation was started")
+        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"route_disposition": "LOCAL_EXECUTION", "local_phase": "awaiting_validation", "effect": "local-validation-scoped", "reason": reason})
+        if processing_status is not None:
+            processing_status.error = reason
+            processing_status.outcome = PRProcessingOutcome.FAILED
 
 
 def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
@@ -3642,9 +3785,25 @@ def _handle_pr_merge(
             adv_enabled = _is_pr_adversarial_validation_enabled(config, repo_name)
             revalidating_older_head_threads = False
             forced_same_head_revalidation = False
-            local_revalidation_due = False
             reviewer_login = ""
             claimed_review_threads: Sequence[Any] = ()
+
+            if adv_enabled and any(marker in str(pr_data.get("body") or "") for marker in _LOCAL_REPAIR_MARKERS):
+                from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
+
+                try:
+                    snapshot = RepairAllowanceLedger().initialize_namespace("https://api.github.com", repo_name, pr_number)
+                    generation = snapshot.get_outstanding_generation()
+                except Exception as exc:
+                    actions.append(f"Local repair allowance could not be read for PR #{pr_number}: {exc}")
+                    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"route_disposition": "LOCAL_EXECUTION", "effect": "local-validation-scoped", "reason": str(exc)})
+                    if processing_status is not None:
+                        processing_status.error = str(exc)
+                        processing_status.outcome = PRProcessingOutcome.FAILED
+                    return actions
+                if generation is not None and generation.owning_identity == "local-review-repair" and generation.lifecycle_state == GenerationLifecycleState.PENDING_REVALIDATION:
+                    _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                    return actions
 
             if thread_gate_enabled:
                 claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
@@ -3657,7 +3816,7 @@ def _handle_pr_merge(
                     return actions
                 force_admission_eligible = False
                 if adv_enabled:
-                    if claimed_thread_state.has_blocking_unresolved and not _is_dependabot_pr(pr_data):
+                    if (claimed_thread_state.has_blocking_unresolved or any(not thread.is_change_provenance for thread in claimed_thread_state.claimed) or any(not is_change_provenance_thread(thread) for thread in claimed_thread_state.unresolved)) and not _is_dependabot_pr(pr_data):
                         # An authentic validator finding remains a merge blocker, but it
                         # must not prevent validation of a newer head, nor prevent an
                         # explicit --force run from reaching a fresh current-head
@@ -3668,6 +3827,27 @@ def _handle_pr_merge(
                         if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                             current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
                             if not current_status_error:
+                                if current_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not adjudication_forces_revalidation:
+                                    report, report_error = _get_published_adversarial_validation_comment(github_client, repo_name, pr_number, head_sha_for_gate)
+                                    if report_error or not report:
+                                        actions.append(f"Cannot replay current-head adversarial feedback for PR #{pr_number}: {report_error or 'published report is unavailable'}")
+                                        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"effect": "adversarial-feedback-replay", "examined_head": head_sha_for_gate, "reason": report_error or "published report is unavailable"})
+                                        return actions
+                                    repair_result = _send_adversarial_validation_feedback_to_cloud_task(repo_name, pr_data, head_sha_for_gate, report, github_client, config=config)
+                                    actions.extend(repair_result)
+                                    actions.append(f"Reused unresolved {current_status} validation for PR #{pr_number} at unchanged commit {head_sha_for_gate[:8]}; repair takes priority over another full validation")
+                                    _record_pr_stage(
+                                        pr_number,
+                                        "pr.repair-delegation",
+                                        f"pr#{pr_number} repair delegation",
+                                        _adversarial_repair_outcome(repair_result),
+                                        {"effect": "adversarial-feedback-replay", "examined_head": head_sha_for_gate, "route_disposition": getattr(repair_result, "route_disposition", "CLOUD"), "local_phase": getattr(repair_result, "local_phase", "")},
+                                    )
+                                    if getattr(repair_result, "local_phase", "") in {"completed_no_change", "awaiting_validation"}:
+                                        _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                                    elif processing_status is not None and getattr(repair_result, "deferred", False):
+                                        processing_status.outcome = PRProcessingOutcome.DEFERRED
+                                    return actions
                                 if current_status is None or force_adversarial_validation or adjudication_forces_revalidation:
                                     try:
                                         reviewer_login = resolve_reviewer_app_identity(repo_name).login
@@ -3707,17 +3887,6 @@ def _handle_pr_merge(
                                 repair_kwargs["config"] = config
                             repair_result = _delegate_cloud_review_thread_repair(repo_name, pr_data, **repair_kwargs)
                             actions.extend(repair_result)
-                            if repair_result.local_phase in {"completed_no_change", "awaiting_validation"} and adv_enabled:
-                                local_revalidation_due = True
-                                force_adversarial_validation = True
-                                force_admission_eligible = True
-                                try:
-                                    reviewer_login = resolve_reviewer_app_identity(repo_name).login
-                                except Exception as exc:
-                                    logger.error(f"Could not authenticate local-correction revalidation for PR #{pr_number}: {exc}")
-                                else:
-                                    claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login, forced=True)
-                                actions.append(f"Continuing to independent validation for completed local correction on PR #{pr_number}")
                             if repair_result.deferred and processing_status is not None:
                                 processing_status.error = None
                                 processing_status.outcome = PRProcessingOutcome.DEFERRED
@@ -3729,18 +3898,18 @@ def _handle_pr_merge(
                                 "pr.repair-delegation",
                                 f"pr#{pr_number} repair delegation",
                                 Outcome.ACCEPTED_HANDOFF if repair_result.delivered else (Outcome.DEFERRED if repair_result.deferred else Outcome.FAILED),
-                                {"effect": "review-thread-repair", "thread_count": len(repair_threads), "route_disposition": repair_result.route_disposition},
+                                {"effect": "review-thread-repair", "thread_count": len(repair_threads), "route_disposition": repair_result.route_disposition, "local_phase": repair_result.local_phase},
                             )
+                            if repair_result.local_phase in {"completed_no_change", "awaiting_validation"} and adv_enabled:
+                                _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                                return actions
                     if not force_admission_eligible:
                         return actions
                     # REQ-001/REQ-009: an explicit --force run still reaches a fresh
                     # current-head validation attempt; the remaining unresolved
                     # threads above are not eligible for independent rereview and
                     # remain a merge blocker (enforced again at the merge boundary).
-                    if local_revalidation_due:
-                        actions.append(f"Continuing to independent validation for PR #{pr_number} despite unresolved review threads; merge remains blocked while they are unresolved")
-                    else:
-                        actions.append(f"Continuing to forced adversarial validation for PR #{pr_number} despite unresolved review threads (explicit --force); merge remains blocked while they are unresolved")
+                    actions.append(f"Continuing to forced adversarial validation for PR #{pr_number} despite unresolved review threads (explicit --force); merge remains blocked while they are unresolved")
 
                 claimed_review_threads = claimed_thread_state.claimed
                 if claimed_review_threads:
@@ -3930,6 +4099,18 @@ def _handle_pr_merge(
                         logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
                         return actions
 
+                    # Recover older accepted reviews before invoking another LLM:
+                    # pending roots otherwise block every new publication too.
+                    publication_recovery = recover_pending_adversarial_publications(repo_name, pr_number)
+                    if not publication_recovery.success:
+                        reason = publication_recovery.reason or "review-root association remains incomplete"
+                        actions.append(f"Adversarial review publication incomplete for PR #{pr_number}: {reason}")
+                        _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"examined_head": head_sha, "reason": reason, "phase": "publication-recovery"})
+                        if processing_status is not None:
+                            processing_status.error = reason
+                            processing_status.outcome = PRProcessingOutcome.FAILED
+                        return actions
+
                     published_status, lookup_error = _get_published_adversarial_validation_status(
                         github_client,
                         repo_name,
@@ -3975,15 +4156,7 @@ def _handle_pr_merge(
                             processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
 
-                    if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and not force_adversarial_validation:
-                        publication_recovery = recover_pending_adversarial_publications(repo_name, pr_number)
-                        if not publication_recovery.success:
-                            reason = publication_recovery.reason or "review-root association remains incomplete"
-                            actions.append(f"Adversarial review publication incomplete for PR #{pr_number}: {reason}")
-                            if processing_status is not None:
-                                processing_status.error = reason
-                                processing_status.outcome = PRProcessingOutcome.FAILED
-                            return actions
+                    if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and (not force_adversarial_validation or published_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES):
                         # REQ-005/REQ-011: an authoritative same-head result is
                         # consumed without a new reviewer-backend invocation.
                         # Provenance for the producing review may be genuinely
@@ -4026,15 +4199,27 @@ def _handle_pr_merge(
                                         publish_exhaustion_comment_deduped(github_client, repo_name, pr_number, exhaustion_info)
                                         _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.BLOCKED, {"effect": "adversarial-feedback-replay", "reason": "repair allowance exhausted", "blocker_ids": list(exhaustion_info.exhausted_blocker_ids)})
                                     else:
-                                        actions.extend(
-                                            _send_adversarial_validation_feedback_to_cloud_task(
-                                                repo_name,
-                                                pr_data,
-                                                head_sha,
-                                                published_report,
-                                                github_client,
-                                            )
+                                        feedback_actions = _send_adversarial_validation_feedback_to_cloud_task(
+                                            repo_name,
+                                            pr_data,
+                                            head_sha,
+                                            published_report,
+                                            github_client,
+                                            config=config,
                                         )
+                                        actions.extend(feedback_actions)
+                                        _record_pr_stage(
+                                            pr_number,
+                                            "pr.repair-delegation",
+                                            f"pr#{pr_number} repair delegation",
+                                            _adversarial_repair_outcome(feedback_actions),
+                                            {"effect": "adversarial-feedback-replay", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
+                                        )
+                                        if getattr(feedback_actions, "deferred", False) and processing_status is not None:
+                                            processing_status.error = None
+                                            processing_status.outcome = PRProcessingOutcome.DEFERRED
+                                        if getattr(feedback_actions, "local_phase", "") in {"completed_no_change", "awaiting_validation"}:
+                                            _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
                             return actions
                     else:
                         if force_adversarial_validation:
@@ -4313,7 +4498,7 @@ def _handle_pr_merge(
                                 if not publication_confirmed:
                                     reconciliation_suffix = f"; reconciliation failed: {reconciliation_error}" if reconciliation_error else ""
                                     actions.append(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
-                                    logger.warning(f"Adversarial review publication blocked PR #{pr_number}")
+                                    logger.warning(f"Adversarial review publication blocked PR #{pr_number}: {publication.reason}{reconciliation_suffix}")
                                     _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.FAILED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "reason": publication.reason, "phase": "publication"})
                                     # An ordinary publication failure must not erase the
                                     # already-retained semantic review report (REQ-006).
@@ -4361,19 +4546,21 @@ def _handle_pr_merge(
                             format_adversarial_validation_comment(val_result, head_sha),
                             github_client,
                             [format_adversarial_finding_comment(finding) for finding in val_result.findings] + [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
+                            config=config,
                         )
                         actions.extend(feedback_actions)
-                        if getattr(feedback_actions, "quota_deferred", False) and processing_status is not None:
+                        if (getattr(feedback_actions, "quota_deferred", False) or getattr(feedback_actions, "deferred", False)) and processing_status is not None:
                             processing_status.error = None
                             processing_status.outcome = PRProcessingOutcome.DEFERRED
                         _record_pr_stage(
                             pr_number,
                             "pr.repair-delegation",
                             f"pr#{pr_number} repair delegation",
-                            Outcome.ACCEPTED_HANDOFF if any("Sent" in a or "Requested" in a or "sent" in a for a in feedback_actions) else Outcome.UNKNOWN,
-                            {"effect": "adversarial-fix-feedback", "examined_head": head_sha},
+                            _adversarial_repair_outcome(feedback_actions),
+                            {"effect": "adversarial-fix-feedback", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
                         )
-                        actions.append(f"Awaiting PR author or originating cloud-provider changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
+                        if getattr(feedback_actions, "route_disposition", "CLOUD") == "CLOUD":
+                            actions.append(f"Awaiting PR author or originating cloud-provider changes for PR #{pr_number}; no local automatic adversarial fix was attempted")
                         return actions
 
                     elif val_result.needs_tests:
@@ -4391,17 +4578,18 @@ def _handle_pr_merge(
                             format_adversarial_validation_comment(val_result, head_sha),
                             github_client,
                             [format_test_oracle_gap_comment(gap) for gap in val_result.open_test_oracle_gaps],
+                            config=config,
                         )
                         actions.extend(feedback_actions)
-                        if getattr(feedback_actions, "quota_deferred", False) and processing_status is not None:
+                        if (getattr(feedback_actions, "quota_deferred", False) or getattr(feedback_actions, "deferred", False)) and processing_status is not None:
                             processing_status.error = None
                             processing_status.outcome = PRProcessingOutcome.DEFERRED
                         _record_pr_stage(
                             pr_number,
                             "pr.repair-delegation",
                             f"pr#{pr_number} repair delegation",
-                            Outcome.ACCEPTED_HANDOFF if any("Sent" in a or "Requested" in a or "sent" in a for a in feedback_actions) else Outcome.UNKNOWN,
-                            {"effect": "adversarial-test-feedback", "examined_head": head_sha},
+                            _adversarial_repair_outcome(feedback_actions),
+                            {"effect": "adversarial-test-feedback", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
                         )
                         actions.append(f"Awaiting focused regression tests for PR #{pr_number}; production-code changes were not requested by test-oracle gaps")
                         return actions
@@ -6564,7 +6752,7 @@ def _record_cloud_conflict_deliveries(state_path: Path, delivered: dict[str, Clo
     """Atomically persist conflict delivery reservations and receipts."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = state_path.with_suffix(f"{state_path.suffix}.{os.getpid()}.tmp")
-    serialized = {fingerprint: {"task_id": record.task_id, "status": record.status} for fingerprint, record in delivered.items()}
+    serialized = {fingerprint: {"task_id": record.task_id, "status": record.status, **({"logical_identity": record.logical_identity} if record.logical_identity else {})} for fingerprint, record in delivered.items()}
     temporary.write_text(json.dumps(serialized, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(temporary, state_path)
 
@@ -6583,9 +6771,10 @@ def _load_cloud_conflict_deliveries(state_path: Path) -> dict[str, CloudConflict
             raise ValueError("delivery state contains an invalid record")
         task_id = value.get("task_id")
         status = value.get("status")
-        if not isinstance(task_id, str) or status not in {"pending", "confirmed"}:
+        logical_identity = value.get("logical_identity", "")
+        if not isinstance(task_id, str) or status not in {"pending", "confirmed"} or not isinstance(logical_identity, str):
             raise ValueError("delivery state contains an invalid record")
-        records[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status=status)
+        records[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status=status, logical_identity=logical_identity)
     return records
 
 
@@ -7040,6 +7229,8 @@ def _delegate_cloud_review_thread_repair(
     github_client: Optional[Any] = None,
     unresolved_threads: Tuple[ReviewThread, ...] = (),
     config: Optional[AutomationConfig] = None,
+    validated_feedback: Sequence[str] = (),
+    validated_head_sha: str = "",
 ) -> CloudReviewRepairResult:
     """Assign unresolved review feedback to its originating cloud task.
 
@@ -7050,17 +7241,35 @@ def _delegate_cloud_review_thread_repair(
     """
     pr_number = int(pr_data["number"])
     route = _select_review_repair_route(repo_name, pr_data, github_client)
+    if validated_head_sha and route.disposition is ReviewRepairRouteDisposition.CLOUD:
+        return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: explicit-local route has changed"], route_disposition="CONFLICT")
     if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED:
         route = _revalidate_local_review_repair_route(route, repo_name, pr_data, github_client)
         if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED and config is not None:
-            from .local_review_repair import LocalReviewRepairRequest, admit_local_repair_allowance, execute_local_review_repair
+            from .local_review_repair import LocalRepairValidationRequired, LocalReviewRepairRequest, admit_local_repair_allowance, execute_local_review_repair
 
             evidence = route.evidence
             if evidence is None:
                 return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: authoritative target evidence is absent"], route_disposition="LOCAL_REQUIRED")
+            if validated_head_sha and evidence.head_sha != validated_head_sha:
+                return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: validated head has changed"], route_disposition="CONFLICT")
             implementer = (get_pr_author_login(pr_data) or "").lower()
             feedback_entries = []
+            from .review_adjudication_orchestrator import extract_test_oracle_gap_id
+
             for thread in unresolved_threads:
+                if validated_feedback:
+                    if not thread.is_resolved and thread.comments:
+                        root_body = thread.comments[0].body
+                        gap_id = extract_test_oracle_gap_id(root_body)
+                        current_feedback = next((body for body in validated_feedback if body == root_body or (gap_id and extract_test_oracle_gap_id(body) == gap_id)), None)
+                        if current_feedback is None:
+                            continue
+                        # Independent validation overrides an implementer's addressed
+                        # claim. Keep the root identity stable for durable deduplication.
+                        identity = _review_feedback_identity(f"{repo_name}#{pr_number}:local:", thread, 0)
+                        feedback_entries.append((thread.id, current_feedback, identity))
+                    continue
                 addressed_through = max(
                     (index for index, comment in enumerate(thread.comments) if "<!-- auto-coder-review-addressed:v1 -->" in comment.body),
                     default=-1,
@@ -7094,6 +7303,13 @@ def _delegate_cloud_review_thread_repair(
             )
             try:
                 allowance_authority, allowance_reason = admit_local_repair_allowance(request)
+            except LocalRepairValidationRequired as exc:
+                return CloudReviewRepairResult(
+                    [f"Local review correction for PR #{pr_number} awaits independent validation: {exc}"],
+                    deferred=True,
+                    route_disposition="LOCAL_EXECUTION",
+                    local_phase="awaiting_validation",
+                )
             except Exception as exc:
                 return CloudReviewRepairResult(
                     [f"Local review repair was not admitted for PR #{pr_number}: repair allowance authority is unavailable: {exc}"],
@@ -7627,6 +7843,26 @@ def _delegate_cloud_merge_conflict_repair_result(
     pr_data: Dict[str, Any],
     github_client: Optional[Any] = None,
 ) -> CloudConflictDelegationResult:
+    """Fence journal reconciliation and transport against overlapping senders."""
+    state_path = _cloud_conflict_state_path(repo_name)
+    delivery_lock = lock_path(repo_name, state_path, "cloud-conflict-delivery")
+    try:
+        ensure_lock_directory(delivery_lock)
+        # Do not wait while an existing sender may hold an implementation lock.
+        # This order avoids a journal/implementation-owner lock inversion.
+        with file_lock(delivery_lock, timeout=0.0, reentrant=False):
+            return _delegate_cloud_merge_conflict_repair_locked(repo_name, pr_data, github_client)
+    except (LockAcquisitionTimeout, OSError, RuntimeError) as exc:
+        reason = f"cloud conflict delivery coordination is unavailable: {exc}"
+        logger.warning(reason)
+        return CloudConflictDelegationResult(reason=reason)
+
+
+def _delegate_cloud_merge_conflict_repair_locked(
+    repo_name: str,
+    pr_data: dict,
+    github_client: Optional[Any] = None,
+) -> CloudConflictDelegationResult:
     """Delegate a current conflict to its originating cloud session when possible.
 
     ``True`` means this conflict state was either just delegated or was already
@@ -7657,6 +7893,8 @@ def _delegate_cloud_merge_conflict_repair_result(
         return CloudConflictDelegationResult(reason="the PR head/base metadata required for repair is unavailable")
 
     fingerprint = f"{repo_name}#{pr_number}:{target.head_sha}:{base_state}:{task_id}"
+    delivery_reader = getattr(type(client), "get_followup_delivery", None)
+    logical_identity = "merge-conflict-repair:" + hashlib.sha256(fingerprint.encode("utf-8")).hexdigest() if callable(delivery_reader) else ""
     retained_wait = get_claude_followup_wait_store().get(repo_name, task_id, "merge-conflict-repair", fingerprint)
     if retained_wait and (retained_wait.certainty is DeliveryCertainty.INDETERMINATE or retained_wait.retry_not_before > time.time()):
         return CloudConflictDelegationResult(
@@ -7675,6 +7913,23 @@ def _delegate_cloud_merge_conflict_repair_result(
             return CloudConflictDelegationResult(reason=f"prior repair delivery state could not be read: {exc}")
 
         existing = delivered.get(fingerprint)
+        if existing and existing.status == "pending" and existing.logical_identity and existing.logical_identity == logical_identity and callable(delivery_reader):
+            from .codex_wham_client import FollowUpDeliveryOutcome
+
+            try:
+                delivery = delivery_reader(client, task_id, logical_identity)
+            except Exception as exc:
+                return CloudConflictDelegationResult(reason=f"prior conflict delivery could not be reconciled: {exc}")
+            if delivery is FollowUpDeliveryOutcome.DELIVERED:
+                existing = CloudConflictDeliveryRecord(task_id, "confirmed", logical_identity)
+                delivered[fingerprint] = existing
+                _record_cloud_conflict_deliveries(state_path, delivered)
+            elif delivery is FollowUpDeliveryOutcome.NOT_DELIVERED:
+                # The journal lock proves no cooperating sender is still between
+                # reservation and transport. The provider journal proves this
+                # exact operation never reached its non-idempotent POST boundary.
+                delivered.pop(fingerprint)
+                existing = None
         if existing and existing.status == "confirmed":
             logger.info(f"Conflict repair for PR #{pr_number} at the current head/base state was already delegated")
             try:
@@ -7692,7 +7947,7 @@ def _delegate_cloud_merge_conflict_repair_result(
         # Reserve the conflict identity before the non-idempotent follow-up call.
         # Pending state prevents speculative redelivery but is never evidence
         # that the cloud session accepted the request. If this write fails, do not send.
-        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="pending")
+        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="pending", logical_identity=logical_identity)
         try:
             _record_cloud_conflict_deliveries(state_path, delivered)
         except OSError as exc:
@@ -7716,7 +7971,7 @@ def _delegate_cloud_merge_conflict_repair_result(
                 delivered.pop(fingerprint, None)
                 _record_cloud_conflict_deliveries(state_path, delivered)
             return CloudConflictDelegationResult(reason=final_origin.reason)
-        accepted = _send_followup_with_quota_admission(client, repo_name, task_id, message)
+        accepted = _send_followup_with_quota_admission(client, repo_name, task_id, message, (logical_identity,) if logical_identity else ())
     except ClaudeFollowupHoldActive as exc:
         return CloudConflictDelegationResult(reason=str(exc), deferred=True, retry_not_before=exc.retry_not_before)
     except ClaudeFollowupUsageLimitError as exc:
@@ -7749,7 +8004,7 @@ def _delegate_cloud_merge_conflict_repair_result(
     get_claude_followup_wait_store().retire(repo_name, task_id, "merge-conflict-repair", fingerprint)
 
     with _cloud_conflict_delivery_lock:
-        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="confirmed")
+        delivered[fingerprint] = CloudConflictDeliveryRecord(task_id=task_id, status="confirmed", logical_identity=logical_identity)
         try:
             _record_cloud_conflict_deliveries(state_path, delivered)
         except OSError as exc:
@@ -7900,8 +8155,9 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     validation_report: str,
     github_client: Optional[Any] = None,
     actionable_feedback: Sequence[str] = (),
+    config: Optional[AutomationConfig] = None,
 ) -> List[str]:
-    """Send actionable findings only to the owning provider task."""
+    """Route validated findings to explicit-local repair or the owning task."""
     pr_number = pr_data["number"]
     exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
     if exhaustion_info and exhaustion_info.is_exhausted:
@@ -7910,6 +8166,32 @@ def _send_adversarial_validation_feedback_to_cloud_task(
 
     if not new_work_allowed():
         return [f"Deferred adversarial correction feedback for PR #{pr_number}: graceful shutdown is draining"]
+    route = _select_review_repair_route(repo_name, pr_data, github_client)
+    if route.disposition is not ReviewRepairRouteDisposition.CLOUD:
+        if route.disposition is not ReviewRepairRouteDisposition.LOCAL_REQUIRED:
+            return CloudReviewRepairResult([f"Review repair routing {route.disposition.value} for PR #{pr_number}: {route.reason}"], route_disposition=route.disposition.value)
+        if github_client is None:
+            return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}; GitHub client is unavailable"], route_disposition="UNAVAILABLE")
+        try:
+            review_threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
+        except Exception as exc:
+            return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}: {exc}"], route_disposition="UNAVAILABLE")
+        requested_feedback = tuple(actionable_feedback) or tuple(
+            thread.comments[0].body
+            for thread in review_threads
+            if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap")) and _adversarial_feedback_belongs_to_report(thread.comments[0].body, validation_report)
+        )
+        if not requested_feedback:
+            return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}; local repair was not attempted"], route_disposition="UNAVAILABLE")
+        return _delegate_cloud_review_thread_repair(
+            repo_name,
+            pr_data,
+            github_client=github_client,
+            unresolved_threads=tuple(review_threads),
+            config=config,
+            validated_feedback=requested_feedback,
+            validated_head_sha=head_sha,
+        )
     feedback_marker = adversarial_validation_codex_feedback_marker(head_sha)
     source_validation_report = validation_report
 

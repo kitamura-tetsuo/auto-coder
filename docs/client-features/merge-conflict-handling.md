@@ -1,5 +1,23 @@
 # Merge Conflict Handling
 
+Cloud conflict repair serializes its journal and provider send under a shared
+repository lock. A concurrent sender causes an immediate deferral rather than
+waiting while holding an implementation-owner lock. Codex repairs persist a
+stable logical delivery identity for the repository, PR, head, base, and task.
+After interruption, a pending receipt is reconciled with the Codex provider
+journal while this lock excludes a live sender. Confirmed delivery repairs the
+local receipt without another POST; definite non-delivery permits the existing
+guarded send path; indeterminate delivery remains blocked. A pending legacy
+receipt without a logical identity, or a provider without a typed delivery
+reader, still requires operator verification and is never blindly resent by
+`--force`.
+
+The dashboard's existing `pr.mergeability-remediation` stage reports
+`ACCEPTED_HANDOFF` only after a confirmed send or provider receipt, and `DEFERRED`
+when delivery remains unconfirmed. Lock contention and unknown receipt state
+must not appear as a successful repair. Runnable regressions are in
+`tests/test_cloud_conflict_delegation.py` and `tests/test_codex_work_fence.py`.
+
   mergeability_check:
     description: "Decides whether merging the base branch into a PR would degrade code quality before conflicts are resolved."
     implementation: "check_mergeability_with_llm in src/auto_coder/conflict_resolver.py"

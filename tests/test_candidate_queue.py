@@ -20,7 +20,9 @@ def test_dedicated_workers_progress_while_other_type_is_busy(tmp_path, monkeypat
     completed = threading.Event()
     other_type = "pr" if blocked_type == "issue" else "issue"
 
-    def fetch(repo, kind, number, propagate_errors=False):
+    def fetch(repo, kind, number, propagate_errors=False, cancel_initial_refusal=False):
+        assert propagate_errors is True
+        assert cancel_initial_refusal is (kind == "issue")
         return Candidate(type=kind, data={"number": number, "state": "open"}, priority=0)
 
     def process(repo, candidate, **kwargs):
@@ -35,6 +37,7 @@ def test_dedicated_workers_progress_while_other_type_is_busy(tmp_path, monkeypat
     monkeypatch.setattr(engine, "_process_single_candidate", process)
     monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *args: None)
     monkeypatch.setattr(engine, "_refresh_issue_stage_routing", lambda *args: None)
+    monkeypatch.setattr(engine, "_route_issue_stages_authoritatively", lambda *args: None)
 
     async def scenario():
         workers = [asyncio.create_task(engine._worker_loop("owner/repo", i, kind)) for i, kind in enumerate(("issue", "pr"))]
@@ -110,7 +113,9 @@ def test_durable_prs_overtake_issue_backlog_without_losing_generations(tmp_path,
             engine.invalidations.recover("owner/repo")
             await engine._enqueue_pending_invalidations("owner/repo")
 
-        def fetch(repo, kind, number, propagate_errors=False):
+        def fetch(repo, kind, number, propagate_errors=False, cancel_initial_refusal=False):
+            assert propagate_errors is True
+            assert cancel_initial_refusal is (kind == "issue")
             fetched.append((kind, number))
             return Candidate(type=kind, data={"number": number, "state": "open"}, priority=0)
 
@@ -122,6 +127,7 @@ def test_durable_prs_overtake_issue_backlog_without_losing_generations(tmp_path,
         monkeypatch.setattr(engine, "_process_single_candidate", process)
         monkeypatch.setattr(engine, "_validate_submitted_parent_generation_for_child", lambda *args: None)
         monkeypatch.setattr(engine, "_refresh_issue_stage_routing", lambda *args: None)
+        monkeypatch.setattr(engine, "_route_issue_stages_authoritatively", lambda *args: None)
         status = engine.get_status()
         assert [item["number"] for item in status["queue_items"]] == [2004, 2005, 1980, 1981]
         worker = asyncio.create_task(engine._worker_loop("owner/repo", 0))

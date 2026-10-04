@@ -5553,7 +5553,26 @@ class AutomationEngine:
                 if refusal is not None:
                     self._record_cached_issue_refusal(repo_name, refusal, origin)
                     return refusal
-            result = self._process_single_candidate_unified_impl(*impl_args)
+            try:
+                result = self._process_single_candidate_unified_impl(*impl_args)
+            except ImplementationSlotUnavailable as exc:
+                # Owner serialization and durable-state reads precede the
+                # admission handler below. Their failure must defer this item
+                # rather than terminate the daemon's capacity-refill task.
+                reason = f"Implementation ownership is temporarily unavailable: {exc}"
+                logger.warning("Deferred {}/{}#{}: {}", repo_name, candidate.type, item_number, reason)
+                result = CandidateProcessingResult(
+                    type=candidate.type,
+                    number=item_number,
+                    title=candidate.data.get("title"),
+                    error=reason,
+                    target_outcome=ExplicitTargetOutcome.DEFERRED,
+                    actions=["Deferred - implementation ownership requires retry"],
+                    refill_retry_required=True,
+                )
+                if isinstance(item_number, int) and not isinstance(item_number, bool):
+                    record_stage = _record_issue_stage_result if candidate.type == "issue" else _record_pr_stage_result
+                    record_stage(item_number, f"{candidate.type}.implementation-admission", f"{candidate.type}#{item_number} implementation admission", Outcome.DEFERRED, {"reason": reason})
             if cache_issue and observed:
                 self.issue_admission_cache.remember(repo_name, cast(int, item_number), policy, epoch, result)
             return result

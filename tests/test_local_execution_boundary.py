@@ -63,7 +63,7 @@ def test_incomplete_evidence_cannot_authorize_confined_result(tmp_path: Path) ->
     assert evidence.confined_result_authorized is False
 
 
-def test_complete_matching_evidence_authorizes_but_violation_is_sticky(tmp_path: Path) -> None:
+def test_complete_matching_evidence_authorizes_with_recorded_denial(tmp_path: Path) -> None:
     boundary = LocalExecutionBoundary(_binding(tmp_path), "muse", editable=True)
     invocation_id = boundary.binding.invocation_id
     boundary.record_backend_success(invocation_id)
@@ -78,10 +78,38 @@ def test_complete_matching_evidence_authorizes_but_violation_is_sticky(tmp_path:
     boundary.report_policy_violation(invocation_id, "external publication denied")
     boundary.record_backend_success(invocation_id)
 
-    with pytest.raises(LocalBoundaryError, match="lacks complete"):
-        boundary.require_promotable()
+    assert boundary.require_promotable().confined_result_authorized is True
     assert boundary.evidence().policy_violation is True
-    assert boundary.evidence().promotable is False
+    assert boundary.evidence().failure is None
+    assert boundary.evidence().promotable is True
+
+
+@pytest.mark.parametrize("failure", ["backend", "filesystem", "writers", "observation"])
+def test_policy_denial_does_not_override_execution_failure(tmp_path: Path, failure: str) -> None:
+    boundary = LocalExecutionBoundary(_binding(tmp_path), "codex", editable=True)
+    invocation_id = boundary.binding.invocation_id
+    boundary.record_backend_success(invocation_id)
+    boundary.record_enforcement(
+        invocation_id,
+        filesystem=EvidenceStatus.FAILED if failure == "filesystem" else EvidenceStatus.ESTABLISHED,
+        publication=EvidenceStatus.UNKNOWN,
+        writers=EvidenceStatus.UNKNOWN if failure == "writers" else EvidenceStatus.ESTABLISHED,
+        violations_observed=EvidenceStatus.UNKNOWN if failure == "observation" else EvidenceStatus.ESTABLISHED,
+    )
+    if failure == "backend":
+        boundary.record_backend_failure(invocation_id, "provider failed")
+    boundary.report_policy_violation(invocation_id, "filesystem policy denied /dev/tty")
+
+    evidence = boundary.evidence()
+    assert evidence.policy_violation is True
+    assert evidence.confined_result_authorized is False
+    assert evidence.handoff_authorized is False
+    if failure == "backend":
+        assert evidence.failure == "provider failed"
+    elif failure == "filesystem":
+        assert evidence.failure == "local execution enforcement failed"
+    else:
+        assert evidence.failure is None
 
 
 def test_operational_success_does_not_require_retired_publication_certificate(tmp_path: Path) -> None:
@@ -721,7 +749,7 @@ def test_retained_continuation_with_unknown_current_writer_settlement_is_incompl
     assert (repository / "tracked.txt").read_text() == "initial\n"
 
 
-def test_retained_continuation_policy_violation_blocks_caller_handoff(tmp_path: Path, _use_real_commands: None) -> None:
+def test_retained_continuation_policy_denial_allows_caller_handoff(tmp_path: Path, _use_real_commands: None) -> None:
     class ViolatingContinuationClient:
         supports_retained_local_continuation = True
         use_noedit_options = False
@@ -741,7 +769,8 @@ def test_retained_continuation_policy_violation_blocks_caller_handoff(tmp_path: 
             (boundary.binding.workspace / "tracked.txt").write_text("denied continuation edit\n")
             boundary.record_writer_completion(boundary.binding.invocation_id)
             boundary.report_policy_violation(boundary.binding.invocation_id, "filesystem policy denied an operation")
-            return "textually successful but policy-invalid"
+            boundary.record_violation_observation(boundary.binding.invocation_id)
+            return "successful with denied operation"
 
         def get_last_session_id(self) -> str:
             return "retained-session"
@@ -764,13 +793,12 @@ def test_retained_continuation_policy_violation_blocks_caller_handoff(tmp_path: 
     try:
         assert manager._run_llm_cli("first") == "fresh"
         manager.authorize_retained_local_session_reuse("retained-session")
-        with pytest.raises(LocalContinuationError, match="lacks authorized result-handoff evidence"):
-            manager.continue_session("retained-session", "second")
+        assert manager.continue_session("retained-session", "second") == "successful with denied operation"
     finally:
         reset_command_execution_cwd(token)
 
-    assert manager._last_continue_session_resumed is False
-    assert (repository / "tracked.txt").read_text() == "initial\n"
+    assert manager._last_continue_session_resumed is True
+    assert (repository / "tracked.txt").read_text() == "denied continuation edit\n"
 
 
 @pytest.mark.parametrize("failure", ["policy", "owner"])

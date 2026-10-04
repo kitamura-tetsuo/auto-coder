@@ -95,3 +95,9 @@ A confirmed reviewer-App findings comment delivered back as its own
 and does not enqueue a redundant re-evaluation; this check is scoped to that
 exact combination and is not a general bot/comment filter, so an unrelated
 comment, human reply, or genuine Issue edit is unaffected.
+
+Pending accepted publications are reconciled before starting another ordinary
+adversarial validation. Review roots moved by later commits are verified using
+their original coordinates and original reviewed commit. Unconfirmed recovery
+remains merge-blocking and is reported as a processing failure with its reason;
+it does not consume another reviewer invocation.

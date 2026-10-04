@@ -492,7 +492,11 @@ def run_due_reclamation_checks(
     released = 0
     for obligation in store.due(now):
         owner = obligation.owner
-        with slots.serialize(owner):
+        with slots.try_serialize(owner) as acquired:
+            if not acquired:
+                logger.debug(f"Reclamation deferred for busy owner {owner.key} (incarnation={obligation.incarnation})")
+                store.replace(_rescheduled(obligation, now, reason="owner-lock-busy"))
+                continue
             current_incarnation = slots.owner_incarnation(owner)
             if current_incarnation != obligation.incarnation:
                 # Either already retired, or retired-and-recreated under a

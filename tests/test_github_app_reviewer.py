@@ -1026,8 +1026,79 @@ def test_retained_root_payload_requires_exact_body_and_anchor() -> None:
     intended = json.dumps([{"body": f"finding\n\nBlocker identity: `{blocker_id}`", "path": "src/a.py", "line": 7, "side": "RIGHT"}])
     exact = [{"id": 701, "body": f"finding\n\nBlocker identity: `{blocker_id}`", "path": "src/a.py", "line": 7, "side": "RIGHT"}]
 
-    assert GitHubAppReviewer._root_payloads_match(intended, exact, {blocker_id: 701}) is True
+    assert GitHubAppReviewer._root_payloads_match(intended, exact, {blocker_id: 701}, reviewed_head_sha="head") is True
     changed_body = [dict(exact[0], body=f"different\n\nBlocker identity: `{blocker_id}`")]
     changed_path = [dict(exact[0], path="src/other.py")]
-    assert GitHubAppReviewer._root_payloads_match(intended, changed_body, {blocker_id: 701}) is False
-    assert GitHubAppReviewer._root_payloads_match(intended, changed_path, {blocker_id: 701}) is False
+    assert GitHubAppReviewer._root_payloads_match(intended, changed_body, {blocker_id: 701}, reviewed_head_sha="head") is False
+    assert GitHubAppReviewer._root_payloads_match(intended, changed_path, {blocker_id: 701}, reviewed_head_sha="head") is False
+
+
+@pytest.mark.parametrize("relocated", [False, True])
+@pytest.mark.parametrize("missing_shape", ["null", "absent"])
+@pytest.mark.parametrize("mismatch", [None, "id", "pull_request_review_id", "body", "path", "in_reply_to_id", "line", "side", "user", "original_commit_id", "original_line", "original_start_line", "unavailable"])
+def test_recovers_retained_review_with_missing_list_anchors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mismatch: str | None, missing_shape: str, relocated: bool) -> None:
+    ledger = CanonicalPRBlockerLedger(db_path=tmp_path / "ledger.db")
+    snapshot = ledger.initialize_namespace("https://api.github.test", "owner/repo", 42)
+    blocker_id, snapshot = ledger.admit_blocker(
+        "https://api.github.test",
+        "owner/repo",
+        42,
+        "admit",
+        snapshot.ledger_revision,
+        BlockerAdmissionPayload(
+            category="IMPLEMENTATION",
+            authoritative_boundary="src/a.py",
+            incorrect_behavior_or_missing_invariant="Missing validation",
+            required_correction_outcome="Validate input",
+            accepted_scope=CorrectionScope(description="Validate input"),
+        ),
+    )
+    intended = {"body": f"### Auto-Coder adversarial finding\n\nBlocker identity: `{blocker_id}`", "path": "src/a.py", "line": 211, "side": "RIGHT", "start_line": 209, "start_side": "RIGHT"}
+    ledger.record_publication_intent(
+        "https://api.github.test",
+        "owner/repo",
+        42,
+        "operation",
+        snapshot.ledger_revision,
+        (blocker_id,),
+        "owner/repo",
+        42,
+        "old-head",
+        submitted_event="REQUEST_CHANGES",
+        submitted_body="summary",
+        submitted_comments_json=json.dumps([intended]),
+    )
+    ledger.record_publication_acceptance("https://api.github.test", "owner/repo", 42, "operation", 501)
+    root = dict(intended, id=701, pull_request_review_id=501, in_reply_to_id=None, user={"login": "reviewer[bot]"})
+    detail = dict(root, commit_id="old-head", original_commit_id="old-head", original_line=211, original_start_line=209)
+    if relocated:
+        detail.update(commit_id="new-head", line=228, start_line=226)
+    if mismatch is not None and mismatch != "unavailable":
+        detail[mismatch] = {"id": 702, "pull_request_review_id": 502, "body": "changed", "path": "src/other.py", "in_reply_to_id": 700, "line": 212, "side": "LEFT", "user": {"login": "human"}, "original_commit_id": "other-head", "original_line": 212, "original_start_line": 208}[mismatch]
+    listed = dict(root, line=None, side=None, position=211)
+    if missing_shape == "absent":
+        del listed["line"]
+        del listed["side"]
+    client = RecordingClient(
+        [
+            response(200, {"id": 501, "body": "summary", "commit_id": "old-head", "state": "CHANGES_REQUESTED", "user": {"login": "reviewer[bot]"}}),
+            response(200, [listed]),
+            response(503 if mismatch == "unavailable" else 200, detail),
+        ]
+    )
+    reviewer = configured_reviewer(tmp_path, client, monkeypatch)
+    monkeypatch.setattr(reviewer, "get_identity", lambda: ReviewerAppIdentity("reviewer[bot]", 4765828))
+
+    result = reviewer._recover_publication_intent("owner/repo", 42, "operation", (blocker_id,), "token", ledger)
+
+    successful = mismatch is None or mismatch == "line"
+    assert result.success is successful
+    intent = ledger.get_publication_intent("https://api.github.test", "owner/repo", 42, "operation")
+    assert intent is not None
+    assert intent.status == ("CONFIRMED" if successful else "PENDING")
+    assert intent.confirmed_roots == (((blocker_id, 701),) if successful else ())
+    assert [call[:2] for call in client.calls] == [
+        ("GET", "https://api.github.test/repos/owner/repo/pulls/42/reviews/501"),
+        ("GET", "https://api.github.test/repos/owner/repo/pulls/42/reviews/501/comments?per_page=100&page=1"),
+        ("GET", "https://api.github.test/repos/owner/repo/pulls/comments/701"),
+    ]
