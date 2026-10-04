@@ -55,7 +55,15 @@ then stashes the handle via `set_pending_invocation_handle` instead of
 settling it, and the caller retrieves it with `take_pending_invocation_handle`
 once its own write commits, calling `confirm_settled()` on success or
 `record_checkpoint_attempt_failed(...)` (leaving it unsettled and retriable)
-on a write failure. A failed invocation (any exception from the provider
+on a write failure. Provider completion enters `CHECKPOINTING` before local
+result handoff, retained-session checkpoint advancement, and session-state
+persistence. A successful checkpoint is confirmed only after those operations
+finish. A failure in these operations retains the original exception and records
+a checkpoint failure without starting the transition again or confirming success;
+the pending handle remains available for an explicitly confirmed recovery.
+Failures in session invalidation, failure bookkeeping, or failure-state persistence
+are logged separately and never replace the original exception.
+A failed invocation (any exception from the provider
 call) always settles immediately regardless of `defer_checkpoint`, since a
 failure has no reusable result to protect.
 
@@ -75,7 +83,8 @@ Wired callers:
   refusal already is when admission is refused during draining.
 - `issue_processor.py`'s local-implementation call and `pr_processor.py`'s
   GitHub-Actions-log repair call bind an accurate repository/target/stage for
-  diagnostics; both use the default (non-deferred) settlement, since their
+  diagnostics. The Issue caller defers settlement until its returned handle is
+  confirmed; the PR repair caller uses the default settlement. Their
   produced workspace edits are already durable on disk once the call returns
   and commit/push/PR-creation are unfinished post-processing outside this
   checkpoint, not something this gate needs to wait on.

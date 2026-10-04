@@ -15,6 +15,7 @@ import json
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
@@ -119,9 +120,9 @@ def test_run_llm_cli_admits_and_settles_around_the_real_provider_call(tmp_path):
             result = manager._run_llm_cli("prompt")
         assert result == "fresh response"
         assert client.calls == 1
-        # A default (non-deferred) call settles as soon as the provider
-        # returns: there is no separate durable write for the caller to wait
-        # on, so nothing is left unsettled.
+        # A default (non-deferred) call settles after manager-owned handoff
+        # and session persistence: there is no separate caller-owned durable
+        # write to wait on, so nothing is left unsettled.
         assert gate.unsettled_snapshot() == []
     finally:
         reset_invocation_gate(token)
@@ -201,6 +202,47 @@ def test_failed_invocation_settles_immediately_with_no_reusable_result(tmp_path)
         assert gate.unsettled_snapshot() == []
         assert take_pending_invocation_handle() is None
     finally:
+        reset_invocation_gate(token)
+
+
+@pytest.mark.parametrize("defer_checkpoint", [False, True])
+@pytest.mark.parametrize("failure_stage", ["handoff", "session_persistence"])
+def test_post_provider_failure_preserves_original_error_and_unfinished_checkpoint(tmp_path, defer_checkpoint, failure_stage):
+    client = ScriptedClient(["completed result"])
+    manager = _manager(tmp_path, {"claude": client})
+    gate = InvocationAdmissionGate()
+    primary = OSError(f"original {failure_stage} failure")
+    cleanup = OSError("secondary session cleanup failure")
+
+    @contextmanager
+    def workspace(**kwargs):
+        yield None
+        assert len(gate.unsettled_snapshot()) == 1
+        assert gate.unsettled_snapshot()[0].state is InvocationState.CHECKPOINTING
+        if failure_stage == "handoff":
+            raise primary
+
+    token = install_invocation_gate(gate)
+    try:
+        save_errors = [cleanup] if failure_stage == "handoff" else [primary, cleanup]
+        with patch("auto_coder.backend_manager.isolated_local_llm_worktree", workspace), patch.object(manager, "_save_session_state", side_effect=save_errors), bind_invocation_target("owner/repo", "issue#5457", "local_implementation", defer_checkpoint=defer_checkpoint):
+            with pytest.raises(OSError) as caught:
+                manager._run_llm_cli("prompt")
+        assert caught.value is primary
+        assert client.calls == 1
+        snapshot = gate.unsettled_snapshot()
+        assert len(snapshot) == 1
+        assert snapshot[0].state is InvocationState.CHECKPOINTING
+        assert snapshot[0].checkpoint_failure_count == 1
+        gate.close_admission()
+        assert gate.is_graceful_ready is False
+        handle = take_pending_invocation_handle()
+        assert handle is not None
+        # Only a confirmed recovery of this exact checkpoint permits draining.
+        assert handle.confirm_settled("recovered-result") is True
+        assert gate.is_graceful_ready is True
+    finally:
+        take_pending_invocation_handle()
         reset_invocation_gate(token)
 
 

@@ -25,6 +25,12 @@ completion. Missing audit, report, trace, model, or legacy reuse provenance is
 shown as unavailable rather than inferred. The Execution Trace remains a
 separate, process-local panel.
 
+If a provider returns but result handoff or session persistence fails, its
+interaction remains `RAISED` in review history. A further failure while recording
+session cleanup does not replace the original operational error or turn the
+interaction into a completed result. Invocation checkpoint protection remains
+process-local and does not certify publication or recovery in this view.
+
 For explicit-local PRs, the Execution Trace's existing repair-delegation stage
 also covers adversarial failure and saved-report replay. It displays
 `route_disposition=LOCAL_EXECUTION` and `local_phase` for a pending local

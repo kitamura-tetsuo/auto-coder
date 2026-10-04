@@ -785,7 +785,7 @@ class BackendManager(LLMBackendManagerBase):
             raise AutoCoderRetryableBackendError("LLM invocation refused because graceful shutdown is draining")
         return handle
 
-    def _settle_admitted_invocation(self, handle: Optional[InvocationHandle], *, success: bool) -> None:
+    def _settle_admitted_invocation(self, handle: Optional[InvocationHandle], *, success: bool, checkpoint_started: bool = False) -> None:
         """Move an admitted invocation from IN_FLIGHT into its post-response state.
 
         A failed invocation carries no reusable result, so it settles
@@ -797,7 +797,8 @@ class BackendManager(LLMBackendManagerBase):
         """
         if handle is None:
             return
-        handle.begin_checkpointing("result" if success else "terminal_failure")
+        if not checkpoint_started:
+            handle.begin_checkpointing("result" if success else "terminal_failure")
         target_ctx = current_invocation_target()
         if success and target_ctx is not None and target_ctx.defer_checkpoint:
             set_pending_invocation_handle(handle)
@@ -882,6 +883,7 @@ class BackendManager(LLMBackendManagerBase):
                 # backend/provider rotation attempt (Issue #2009, REQ-001/002).
                 invocation_handle = self._admit_invocation(is_noedit=is_noedit, has_session=session_id is not None)
                 provider_started = False
+                checkpoint_started = False
                 try:
                     completed_turn_evidence = None
                     config_backend = getattr(cli, "config_backend", None)
@@ -952,6 +954,9 @@ class BackendManager(LLMBackendManagerBase):
                                         out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
                                     else:
                                         out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                                    if invocation_handle is not None:
+                                        invocation_handle.begin_checkpointing("result")
+                                        checkpoint_started = True
                             except BaseException as exc:
                                 if local_boundary is not None:
                                     local_boundary.record_backend_failure(local_boundary.binding.invocation_id, type(exc).__name__)
@@ -991,7 +996,6 @@ class BackendManager(LLMBackendManagerBase):
                                         )
                                         if not supports_retained and session_id is None and handoff_evidence.provider_session_id:
                                             self._released_local_workspace_sessions.add(handoff_evidence.provider_session_id)
-                        self._settle_admitted_invocation(invocation_handle, success=True)
                         if workspace_ownership is not None:
                             workspace_ownership.release_execution()
 
@@ -1018,26 +1022,6 @@ class BackendManager(LLMBackendManagerBase):
                     end_time_iso = end_dt.isoformat()
                     duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
 
-                    if review_ctx and interaction_rec:
-                        interaction_rec.end_time = end_time_iso
-                        interaction_rec.duration_ms = duration_ms
-                        interaction_rec.completion_status = "RETURNED"
-
-                        # Try to find reported model
-                        reported_model = getattr(cli, "model_name", None)
-                        if reported_model and reported_model != interaction_rec.requested_model:
-                            interaction_rec.reported_model = reported_model
-
-                        # If a new session was created
-                        new_session = getattr(cli, "get_last_session_id", lambda: None)()
-                        if new_session:
-                            interaction_rec.session_identity = new_session
-
-                        try:
-                            get_review_audit_store().record_interaction(repository=review_ctx.repository, interaction=interaction_rec)
-                        except Exception as e:
-                            logger.warning(f"Failed to record review interaction success: {e}")
-
                     self._last_backend = backend_name
                     self._last_model = getattr(cli, "model_name", None)
                     self._provider_manager.mark_provider_used(backend_name, provider_name)
@@ -1045,23 +1029,52 @@ class BackendManager(LLMBackendManagerBase):
                     self._last_session_id = cli.get_last_session_id()
                     # Persist session state to allow resume on subsequent executions
                     self._save_session_state(backend_name, self._last_session_id)
+                    self._settle_admitted_invocation(invocation_handle, success=True, checkpoint_started=checkpoint_started)
+                    if review_ctx and interaction_rec:
+                        interaction_rec.end_time = end_time_iso
+                        interaction_rec.duration_ms = duration_ms
+                        interaction_rec.completion_status = "RETURNED"
+                        reported_model = getattr(cli, "model_name", None)
+                        if reported_model and reported_model != interaction_rec.requested_model:
+                            interaction_rec.reported_model = reported_model
+                        interaction_rec.session_identity = self._last_session_id or interaction_rec.session_identity
+                        try:
+                            get_review_audit_store().record_interaction(repository=review_ctx.repository, interaction=interaction_rec)
+                        except Exception as e:
+                            logger.warning(f"Failed to record review interaction success: {e}")
                     return out
                 except Exception as exc:
-                    if "retained_session" in locals() and retained_session is not None:
-                        retained_session.fail()
-                    self._settle_admitted_invocation(invocation_handle, success=False)
+                    # A returned result can still fail during handoff or session
+                    # persistence. Keep that checkpoint protected and preserve
+                    # its original exception instead of beginning it twice.
+                    try:
+                        if "retained_session" in locals() and retained_session is not None:
+                            retained_session.fail()
+                    except Exception as cleanup_error:
+                        logger.warning("Could not invalidate failed retained session: {}", cleanup_error)
+                    try:
+                        if checkpoint_started and invocation_handle is not None:
+                            invocation_handle.record_checkpoint_attempt_failed(str(exc))
+                            set_pending_invocation_handle(invocation_handle)
+                        else:
+                            self._settle_admitted_invocation(invocation_handle, success=False)
+                    except Exception as cleanup_error:
+                        logger.warning("Could not record invocation failure: {}", cleanup_error)
                     # The client owns whether a failed invocation established a
                     # usable session. Mirror that result on failure as well as
                     # success so a fail-closed client cannot leave an earlier
                     # manager-level session looking like the failed call's result.
-                    if provider_started:
-                        self._last_session_id = getattr(cli, "get_last_session_id", lambda: None)()
-                    else:
-                        clear_last_session_id = getattr(cli, "clear_last_session_id", None)
-                        if callable(clear_last_session_id):
-                            clear_last_session_id()
-                        self._last_session_id = None
-                    self._save_session_state(backend_name, self._last_session_id)
+                    try:
+                        if provider_started:
+                            self._last_session_id = getattr(cli, "get_last_session_id", lambda: None)()
+                        else:
+                            clear_last_session_id = getattr(cli, "clear_last_session_id", None)
+                            if callable(clear_last_session_id):
+                                clear_last_session_id()
+                            self._last_session_id = None
+                        self._save_session_state(backend_name, self._last_session_id)
+                    except Exception as cleanup_error:
+                        logger.warning("Could not persist failed invocation session state: {}", cleanup_error)
                     end_dt = datetime.now(timezone.utc)
                     end_time_iso = end_dt.isoformat()
                     duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
@@ -1075,7 +1088,7 @@ class BackendManager(LLMBackendManagerBase):
                         except Exception as e:
                             logger.warning(f"Failed to record review interaction failure: {e}")
 
-                    if isinstance(exc, AutoCoderUsageLimitError):
+                    if isinstance(exc, AutoCoderUsageLimitError) and not checkpoint_started:
                         if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:
                             if not new_work_allowed():
                                 raise

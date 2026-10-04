@@ -1190,6 +1190,19 @@ state (unsettled invocation identity/stage/lifecycle-state/checkpoint-failure
 count) with no prompt/response/credential content; it is not wired into any
 dashboard panel or `TraceCollector` event.
 
+Post-provider handoff and session-persistence failures preserve their original
+exception and leave the invocation checkpoint protected. Failure-bookkeeping
+errors are separate log diagnostics, rather than replacement outcomes. The
+existing backend interaction audit still records `RAISED`, including when
+failure-state persistence also fails; the mounted review history consumes that
+same completion status without a new event schema, stage, origin, or renderer.
+`tests/test_backend_manager_review_audit.py::test_post_provider_checkpoint_failure_records_raised_interaction`
+verifies the durable interaction row, and
+`tests/test_invocation_admission_wiring.py::test_post_provider_failure_preserves_original_error_and_unfinished_checkpoint`
+verifies original exception identity, one provider call, failure-count retention,
+and explicit checkpoint recovery for deferred and ordinary callers. Run both
+files through `bash scripts/test.sh` with the invocation tests below.
+
 `tests/test_invocation_admission_wiring.py` drives the real production
 boundaries end to end with a fake CLI client at the outermost provider-
 transport seam: per-attempt admission across backend rotation, a deferred

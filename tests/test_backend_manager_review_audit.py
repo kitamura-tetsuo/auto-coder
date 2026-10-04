@@ -151,6 +151,17 @@ def test_as_001_success_followed_by_backend_rotation(backend_manager, temp_audit
     assert res_json["interaction_id"] == interaction["interaction_id"]
 
 
+def test_post_provider_checkpoint_failure_records_raised_interaction(backend_manager, temp_audit_db):
+    primary = OSError("original checkpoint persistence failure")
+    with bind_review_context("failed-checkpoint", "org/repo", "Issue", "5457", "spec", "generation"), patch.object(backend_manager, "_save_session_state", side_effect=[primary, OSError("cleanup persistence failure")]):
+        with pytest.raises(OSError) as caught:
+            backend_manager.run_prompt("hello")
+    assert caught.value is primary
+    with sqlite3.connect(temp_audit_db._get_db_path("org/repo")) as connection:
+        rows = connection.execute("SELECT backend_alias, completion_status FROM interaction WHERE review_id = ?", ("failed-checkpoint",)).fetchall()
+    assert rows == [("backend-A", "RAISED")]
+
+
 def test_as_002_fallback_preserves_actual_invocation(backend_manager, temp_audit_db, mock_llm_config):
     """
     AS-002 — Fallback preserves every actual invocation
