@@ -434,7 +434,7 @@ initial `scripts/test.sh` run in each newly created editable clone. Its facts
 identify the invocation and script; the result adds the exit code and the private
 log's relative path. Ordinary test failures are baseline evidence for repair,
 whereas launch failure or timeout prevents provider submission. Neither a passed
-baseline nor a failed baseline asserts implementation completion. No-edit roots
+baseline nor a failed baseline asserts implementation completion. A controller-designated CI-repair invocation instead emits only a result with outcome `skipped`, `baseline: not_run`, and `reason: ci_repair_policy` (no exit code or log path). No-edit roots
 and retained-root continuation emit no new initial-test stage.
 
 `llm.muse-interactive-request` emits a blocked result when an unattended MSP host

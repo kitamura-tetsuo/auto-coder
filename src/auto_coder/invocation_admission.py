@@ -395,6 +395,32 @@ def current_invocation_target() -> Optional[InvocationTarget]:
     return _current_target.get()
 
 
+_ci_repair_designated: ContextVar[bool] = ContextVar("auto_coder_ci_repair_designated", default=False)
+
+
+@contextmanager
+def bind_ci_repair_designation() -> Iterator[None]:
+    """Designate the invocation(s) made in this block as PR CI-failure repair.
+
+    This is controller-supplied bootstrap policy only: it exempts the
+    automatic unscoped baseline test run for fresh editable local clones. It
+    lives in a per-context variable, so it spans backend/provider fallback
+    within the block, never leaks to a concurrent or later invocation (it is
+    reset even when the block raises or is cancelled), and carries no
+    admission or publication authority.
+    """
+    token = _ci_repair_designated.set(True)
+    try:
+        yield
+    finally:
+        _ci_repair_designated.reset(token)
+
+
+def ci_repair_designated() -> bool:
+    """Return whether the ambient invocation is explicitly designated CI repair."""
+    return _ci_repair_designated.get()
+
+
 _pending_handle: ContextVar[Optional[InvocationHandle]] = ContextVar("auto_coder_pending_invocation_handle", default=None)
 
 

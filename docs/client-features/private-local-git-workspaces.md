@@ -38,6 +38,17 @@ whose purpose may be to fix those failures. Exit codes indicating launch failure
 or timeout refuse provider submission. Sanitized output is saved in the private
 `.agent-tmp/initial-tests.log`, which is excluded from result handoff. Read-only
 reviews and reuse of a retained implementation clone do not run this preparation.
+
+A controller may designate an invocation as PR CI-failure repair with
+`invocation_admission.bind_ci_repair_designation()`. Within that block (including
+automatic backend/provider fallback), a fresh editable clone does not run the
+unscoped test script. The omission is reported as a `local.workspace-tests` result
+with outcome `skipped`, `baseline: not_run`, and `reason: ci_repair_policy` for the
+affected invocation; no baseline log is written and nothing is claimed about
+dependency preparation or verification. The designation is an explicit per-context
+input (never inferred from prompts, branch names, or providers), is reset when the
+block exits for any reason, and does not affect concurrent or later invocations.
+Private workspace creation, ownership, and stale-caller handoff checks are unchanged.
 The `local.workspace-tests` trace stage records start, result, invocation identity,
 and exit code; its completion proves only initial-test success, never successful
 implementation or publication.
