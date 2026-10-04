@@ -343,7 +343,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_number=5, repo_name=repo_name)
         mock_api.actions.get_workflow_run.assert_called_with("test", "repo", run_id)
-        mock_api.actions.list_jobs_for_workflow_run.assert_called_with("test", "repo", run_id)
+        mock_api.actions.list_jobs_for_workflow_run.assert_called_with("test", "repo", run_id, per_page=100, page=1)
         assert jobs == jobs_payload["jobs"]
 
 

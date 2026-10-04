@@ -700,6 +700,29 @@ def get_ghapi_client(
     return cast(GhApi, SafeGhApiProxy(api))
 
 
+def list_all_workflow_jobs(api: GhApi, owner: str, repo: str, run_id: int | str) -> list[dict]:
+    """Read every latest-attempt job through the cached REST API boundary.
+
+    Never return a partial listing when a later page is unavailable.
+    """
+    jobs: list[dict] = []
+    page = 1
+    per_page = 100
+    while True:
+        response = api.actions.list_jobs_for_workflow_run(owner, repo, run_id, per_page=per_page, page=page)
+        page_jobs = response.get("jobs", [])
+        total_count = response.get("total_count")
+        jobs.extend(page_jobs)
+        if isinstance(total_count, int):
+            if len(jobs) >= total_count:
+                return jobs
+            if not page_jobs:
+                raise RuntimeError(f"Incomplete workflow job listing for run {run_id}: {len(jobs)} of {total_count}")
+        elif len(page_jobs) < per_page:
+            return jobs
+        page += 1
+
+
 def evict_github_cache_by_pattern(pattern: str, db_path: str = ".cache/gh_cache.db") -> int:
     """Evict entries from Hishel HTTP cache whose request URL contains pattern.
 

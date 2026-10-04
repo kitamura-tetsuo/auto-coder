@@ -34,7 +34,7 @@ from ..logger_config import get_logger
 from ..security_utils import redact_string
 from ..test_log_utils import generate_merged_playwright_report
 from ..utils import CommandExecutor, log_action
-from .gh_cache import GitHubClient, get_ghapi_client
+from .gh_cache import GitHubClient, get_ghapi_client, list_all_workflow_jobs
 from .github_cache import get_github_cache
 from .github_request_outcome import GitHubRequestError, GitHubRequestRefused, github_http_client
 
@@ -607,9 +607,7 @@ def _get_jobs_for_run_filtered_by_pr_number(run_id: int, pr_number: Optional[int
             # So if API returns empty list, we continue.
 
         # Get jobs
-        # API: api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
-        jobs_res = api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
-        return jobs_res.get("jobs", [])
+        return list_all_workflow_jobs(api, owner, repo, run_id)
     except json.JSONDecodeError as e:
         logger.debug(f"Failed to parse jobs JSON for run {run_id}: {e}")
         return []
@@ -865,9 +863,7 @@ def get_detailed_checks_from_history(
                     continue
                 processed_run_ids.append(run_id)
 
-                # API: api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
-                jobs_res = api.actions.list_jobs_for_workflow_run(owner, repo, run_id)
-                jobs = jobs_res.get("jobs", [])
+                jobs = list_all_workflow_jobs(api, owner, repo, run_id)
 
                 for job in jobs:
                     job_name = job.get("name", "")
@@ -1178,8 +1174,7 @@ def get_github_actions_logs_from_url(url: str, config: Optional[AutomationConfig
                     token = GitHubClient.get_instance().token
                     api = get_ghapi_client(token)
 
-                    jobs_res = api.actions.list_jobs_for_workflow_run(owner=owner, repo=repo, run_id=run_id)
-                    jobs = jobs_res.get("jobs", [])
+                    jobs = list_all_workflow_jobs(api, owner, repo, run_id)
 
                     failed_jobs = [j for j in jobs if j.get("conclusion") == "failure"]
 
@@ -1484,8 +1479,7 @@ def _search_github_actions_logs_from_history(
 
             try:
                 # Get jobs for this run
-                jobs_data = api.actions.list_jobs_for_workflow_run(owner=owner, repo=repo, run_id=run_id)
-                jobs = jobs_data.get("jobs", [])
+                jobs = list_all_workflow_jobs(api, owner, repo, run_id)
 
                 # Check if any job matches our failed checks
                 matching_failed_job = None
@@ -2556,8 +2550,7 @@ def _create_github_action_log_summary(
 
                 # B. Get all jobs for this run (to get names, ids, order)
                 try:
-                    jobs_data = api.actions.list_jobs_for_workflow_run(owner=owner, repo=repo, run_id=run_id)
-                    jobs = jobs_data.get("jobs", [])
+                    jobs = list_all_workflow_jobs(api, owner, repo, run_id)
 
                     # C. Sort jobs by workflow
                     jobs = _sort_jobs_by_workflow(jobs, owner, repo, run_id, token)
