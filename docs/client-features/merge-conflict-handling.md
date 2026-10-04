@@ -1,5 +1,21 @@
 # Merge Conflict Handling
 
+Local LLM PRs (including the explicit `auto-coder:local-llm` marker) resolve
+conflicts in one editable LLM execution without a separate analysis-only call.
+Before invoking the backend, the controller stages the current merge files,
+including their conflict markers, so the independent private repository can
+capture a stage-zero index. The caller retains its merge operation; the backend
+edits files and runs tests without changing Git history or lifecycle state.
+After handoff the controller stages the repaired files, checks changed working
+files for markers even when the index is staged, and commits and pushes only
+when none remain. `CANNOT_FIX`, leftover markers, and failed publication are
+repair failures, never successful remediation or evidence of quality degradation.
+Only a confirmed push produces `pr.mergeability-remediation` `COMPLETED`;
+failed local repair produces `FAILED`, without closing the PR as a degrading merge.
+Real Git/private-clone regressions are in `tests/test_local_conflict_workspace.py`;
+single-execution and production outcome coverage are in
+`tests/test_conflict_resolver.py` and `tests/test_cloud_conflict_delegation.py`.
+
 Cloud conflict repair serializes its journal and provider send under a shared
 repository lock. A concurrent sender causes an immediate deferral rather than
 waiting while holding an implementation-owner lock. Codex repairs persist a
@@ -22,7 +38,8 @@ must not appear as a successful repair. Runnable regressions are in
     description: "Decides whether merging the base branch into a PR would degrade code quality before conflicts are resolved."
     implementation: "check_mergeability_with_llm in src/auto_coder/conflict_resolver.py"
     behavior:
-      - "For regular PRs the LLM is asked once and must answer SAFE_TO_MERGE or DEGRADING_MERGE; unclear or missing answers are treated as unsafe."
+      - "Local LLM PRs bypass this analysis-only check and perform safety assessment and repair in the same editable execution."
+      - "The legacy Jules path uses SAFE_TO_MERGE or DEGRADING_MERGE; unclear or missing answers are treated as unsafe."
       - "Dependency-bot PRs never reach this check because their conflicts are not resolved at all (see dependency_bot_conflict_skip)."
       - "Jules PRs (google-labs-jules[bot]) are not treated as dependency bots and still go through the LLM check."
 

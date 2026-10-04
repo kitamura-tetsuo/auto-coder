@@ -165,17 +165,17 @@ def scan_conflict_markers() -> List[str]:
             conflict_files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
             flagged.extend(conflict_files)
 
-        # Also check for actual conflict markers in files
-        status_result = cmd.run_command(["git", "status", "--porcelain"])
+        # Staging the merge snapshot makes it suitable for private workspaces,
+        # but does not prove that the working files have been repaired.
+        status_result = cmd.run_command(["git", "diff", "HEAD", "--name-only", "-z"])
         if status_result.success:
-            for line in status_result.stdout.splitlines():
-                if line.strip() and line.startswith("UU "):  # Both modified (merge conflict)
-                    filename = line[3:].strip()
+            for filename in status_result.stdout.split("\0"):
+                if filename and os.path.isfile(filename):
                     # Read the file and check for conflict markers
                     try:
                         with open(filename, "r", encoding="utf-8", errors="ignore") as f:
                             content = f.read()
-                            if "<<<<<<< " in content or "=======" in content or ">>>>>>> " in content:
+                            if re.search(r"^(?:<{7}(?: |$)|={7}$|>{7}(?: |$)|\|{7}(?: |$))", content, re.MULTILINE):
                                 flagged.append(filename)
                     except Exception:
                         # If we can't read the file, still flag it
@@ -317,6 +317,14 @@ def resolve_merge_conflicts_with_llm(
 
         logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_number}")
 
+        # The controller owns the index. Preserve conflict-marker file contents
+        # in stage zero so the independent clone can capture this merge snapshot.
+        prepare_result = cmd.run_command(["git", "add", "-A"])
+        if not prepare_result.success:
+            actions.append(f"Failed to prepare merge snapshot: {prepare_result.stderr}")
+            _trigger_fallback_for_conflict_failure(repo_name or "", pr_number, "Failed to prepare merge snapshot")
+            return actions
+
         # Call LLM to resolve conflicts
         high_score_backend_manager = create_high_score_backend_manager()
         if high_score_backend_manager:
@@ -326,7 +334,7 @@ def resolve_merge_conflicts_with_llm(
             response = run_llm_prompt(prompt)
 
         # Parse the response
-        if response and len(response.strip()) > 0:
+        if response and response.strip() and response.strip() != "CANNOT_FIX":
             actions.append(f"LLM resolved merge conflicts: {response[:200]}...")
 
             # Stage any changes made by LLM
@@ -585,7 +593,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             pr_data = {**pr_data, "base_branch": base_branch}
 
             # Check if merge would degrade code quality before attempting resolution
-            safe_to_merge = check_mergeability_with_llm(pr_data, conflict_info, config)
+            safe_to_merge = _is_local_llm_pr(pr_data) or check_mergeability_with_llm(pr_data, conflict_info, config)
 
             if not safe_to_merge:
                 logger.info(f"LLM determined merge would degrade code quality for PR #{pr_number}, skipping merge attempt")
@@ -657,7 +665,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             # Check if conflicts were resolved successfully
             status_result = cmd.run_command(["git", "status", "--porcelain"])
 
-            if status_result.success and not status_result.stdout.strip():
+            if "ACTION_FLAG:SKIP_ANALYSIS" in resolve_actions and status_result.success and not status_result.stdout.strip():
                 logger.info(f"Merge conflicts resolved for PR #{pr_number}")
                 return True
             else:

@@ -1,5 +1,15 @@
 # Dashboard observability verification
 
+Local conflict repair retains the existing remediation stage and schema.
+`pr.mergeability-remediation` reports `COMPLETED` with `result=success` only
+after the local resolver confirms its push; a failed repair (including retained
+markers) reports `FAILED` with `result=failed`, rather than an invented degrading
+merge verdict. No new dashboard projection or provider-handoff outcome is added.
+Run `bash scripts/test.sh tests/test_local_conflict_workspace.py
+tests/test_conflict_resolver.py tests/test_cloud_conflict_delegation.py`.
+`test_local_conflict_repair_emits_confirmed_remediation_outcome` drives production
+remediation for both outcomes and verifies the execution-scoped stage and facts.
+
 Per-item runtime owner-lock acquisition timeouts now return retryable `DEFERRED`
 results through the unified dispatch boundary. They emit
 `issue.implementation-admission` or `pr.implementation-admission` with the failure

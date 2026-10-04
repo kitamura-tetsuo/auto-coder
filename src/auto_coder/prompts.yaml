@@ -182,9 +182,11 @@ pr:
     2. When conflicts occur, prefer the newer code (the changes from the PR branch) over the older code (from the base branch). Choose the resolution that maintains the most recent implementation.
     3. You can recreate package manager lock files like package-lock.json or yarn.lock files if needed.
     4. Editing files to fully remove all conflict markers
-    5. Do NOT run git add/commit/push; the system will handle committing.
+    5. Preserve the PR's intended behavior and the linked issue's explicit requirements. If a safe resolution cannot be implemented, respond CANNOT_FIX.
+    6. Run the target repository's test script and fix failures related to the resolution within this same execution.
+    7. Do NOT change branches/HEAD, stage, commit, push, merge, rebase, or mutate GitHub state; the controller owns those operations. The conflict files were staged only to prepare this private workspace and may still contain conflict markers. Edit their contents directly.
 
-    After resolving the conflicts, respond with a single-line summary of what you resolved.
+    On success, output only one line beginning with ACTION_SUMMARY: describing what you resolved. If you cannot fix the conflicts safely, output CANNOT_FIX.
 
     Please proceed with resolving these merge conflicts now.
 

@@ -419,3 +419,21 @@ def test_resolve_merge_conflicts_commit_message_uses_pr_number():
         mock_commit.assert_called_once_with("Resolve merge conflicts for PR #4809")
         assert "Committed resolved merge for PR #4809" in actions
         assert "Pushed resolved merge for PR #4809" in actions
+
+
+def test_local_base_merge_runs_repair_without_analysis():
+    """A local PR conflict reaches the editable turn without an analysis-only call."""
+    pr = {"number": 5465, "body": "<!-- auto-coder:local-llm -->", "author": {"login": "kitamura-tetsuo"}, "baseRefName": "main", "head_branch": "issue-5456"}
+    with (
+        patch("src.auto_coder.conflict_resolver.cmd") as commands,
+        patch("src.auto_coder.conflict_resolver.GitHubClient.get_instance") as github,
+        patch("src.auto_coder.conflict_resolver.scan_conflict_markers", return_value=["app.txt"]),
+        patch("src.auto_coder.conflict_resolver.check_mergeability_with_llm") as analysis,
+        patch("src.auto_coder.conflict_resolver.resolve_merge_conflicts_with_llm", return_value=["ACTION_FLAG:SKIP_ANALYSIS"]) as repair,
+    ):
+        github.return_value.get_pr_details.return_value = pr
+        commands.run_command.side_effect = [CommandResult(True, "", "", 0)] * 7 + [CommandResult(False, "CONFLICT", "", 1), CommandResult(True, "", "", 0)]
+        assert _perform_base_branch_merge_and_conflict_resolution(5465, "main", AutomationConfig(), pr, "owner/repo") is True
+    analysis.assert_not_called()
+    repair.assert_called_once()
+    assert repair.call_args.args[1] == "app.txt"

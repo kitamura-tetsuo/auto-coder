@@ -13,6 +13,12 @@ with those directory names remain present. Preparation fails closed if the sourc
 changes during capture, isolation or seeding fails, or the source has an unborn
 HEAD, unmerged index, sparse checkout, or gitlink entries.
 
+For local merge-conflict repair, the controller first stages the merge snapshot
+to remove unmerged index entries while preserving conflict-marker file contents.
+The independent clone receives those contents, without the caller's active merge
+metadata. The controller checks markers after handoff before committing the merge;
+staging alone never proves resolution. See `merge-conflict-handling.md`.
+
 The clone does not use hard-linked objects or alternates. Its refs, index,
 configuration, objects, and worktree registrations are therefore private to one
 invocation. Cleanup removes only that invocation's temporary clone after execution

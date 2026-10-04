@@ -661,3 +661,39 @@ def test_authoritative_cloud_run_association_precedes_pr_author_heuristics() -> 
     assert client is client_type.return_value
     assert task_id == "task_e_authoritative"
     client_type.assert_called_once_with(repo_name="owner/repo")
+
+
+@pytest.mark.parametrize("resolved", [True, False])
+def test_local_conflict_repair_emits_confirmed_remediation_outcome(tmp_path, resolved):
+    """Local publication completes remediation; leftover markers do not close PRs."""
+    collector = TraceCollector()
+    api = MagicMock()
+    local_pr = pr_data()
+    local_pr["body"] = "<!-- auto-coder:local-llm -->\nCloses #5456"
+    local_pr["user"] = {"login": "kitamura-tetsuo"}
+    local_pr["head"]["ref"] = "issue-5456"
+    api.pulls.get.return_value = local_pr
+    with (
+        patch("src.auto_coder.pr_processor._resolve_cloud_conflict_origin", return_value=None),
+        patch("src.auto_coder.pr_processor._cloud_conflict_state_path", return_value=tmp_path / "repairs.json"),
+        patch("src.auto_coder.pr_processor.get_trace_collector", return_value=collector),
+        patch("src.auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+        patch("src.auto_coder.pr_processor.GitHubClient.get_instance") as github,
+        patch("src.auto_coder.pr_processor.get_ghapi_client", return_value=api),
+        patch("src.auto_coder.pr_processor._checkout_pr_branch", return_value=True),
+        patch("src.auto_coder.pr_processor.BranchManager", return_value=nullcontext()),
+        patch("src.auto_coder.conflict_resolver._perform_base_branch_merge_and_conflict_resolution", return_value=resolved) as repair,
+        patch("src.auto_coder.conflict_resolver.scan_conflict_markers", return_value=[] if resolved else ["app.txt"]),
+        patch("src.auto_coder.pr_processor.cmd") as commands,
+    ):
+        commands.run_command.side_effect = [CommandResult(True, "", "", 0), CommandResult(True, "3\n", "", 0), CommandResult(False, "CONFLICT", "", 1)]
+        with collector.start_execution("owner/repo", "pr", 1589, origin="explicit-only") as execution:
+            actions = _start_mergeability_remediation(1589, "dirty", "owner/repo")
+
+    repair.assert_called_once()
+    github.return_value.close_pr.assert_not_called()
+    assert "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" not in actions
+    events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=1589).events if event.stage_id == "pr.mergeability-remediation" and event.execution_id == execution.scope.execution_id]
+    assert len(events) == 1
+    assert events[0].outcome == ("completed" if resolved else "failed")
+    assert events[0].facts["result"] == ("success" if resolved else "failed")

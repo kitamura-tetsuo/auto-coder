@@ -5486,11 +5486,13 @@ def _update_with_base_branch(
 
             if conflict_resolved:
                 actions.append(f"Successfully resolved merge conflicts for PR #{pr_number}")
+                actions.append(f"Pushed updated branch for PR #{pr_number}")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             else:
-                # Check if conflicts are still present (indicating LLM determined degradation)
+                # Unresolved local conflicts are repair failures, not evidence
+                # that a read-only quality check rejected the merge.
                 remaining_conflicts = scan_conflict_markers()
-                if remaining_conflicts:
+                if remaining_conflicts and not _is_local_llm_pr(pr_data):
                     actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, skipping merge attempt")
                     actions.append("ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE")
                 else:
@@ -9018,9 +9020,10 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
 
             # Use LLM to resolve conflicts
             resolve_actions = resolve_merge_conflicts_with_llm(
-                {"number": pr_number, "base_branch": base_branch},
+                {**(pr_data or {}), "number": pr_number, "base_branch": base_branch},
                 conflict_info,
                 config,
+                repo_name,
             )
 
             # Log the resolution actions
@@ -9030,7 +9033,7 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
             # Check if conflicts were resolved successfully
             status_result = cmd.run_command(["git", "status", "--porcelain"])
 
-            if status_result.success and not status_result.stdout.strip():
+            if "ACTION_FLAG:SKIP_ANALYSIS" in resolve_actions and status_result.success and not status_result.stdout.strip():
                 logger.info(f"Merge conflicts resolved for PR #{pr_number}")
                 get_trace_logger().log("Conflict Resolution", f"Resolved merge conflicts for PR #{pr_number}", item_type="pr", item_number=pr_number)
                 return True
