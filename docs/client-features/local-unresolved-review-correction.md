@@ -24,6 +24,14 @@ to repair instead of another full validation, including an explicit `--force`
 run. A pending local correction generation takes priority over full validation.
 An explicit changed-contract adjudication can still invalidate the old verdict.
 
+Saved reports select existing unresolved findings by their exact native thread ID
+and `STILL_VALID` disposition, including strong-audit roots. Reworded summaries
+need not repeat the original finding body. `ADDRESSED`, `INCONCLUSIVE`, and
+conflicting dispositions do not authorize repair. Reports without a disposition
+for the target retain the existing substantive-text matching rule. A local
+routing or admission failure propagates a failed processing result; accepted or
+pending correction work remains deferred.
+
 The correction runs in a detached worktree at the captured PR head. A SQLite claim
 serializes execution for the whole pull request and retains executing,
 indeterminate, publication-pending, no-change, and awaiting-validation states so a

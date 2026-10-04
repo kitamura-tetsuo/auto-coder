@@ -4144,6 +4144,10 @@ class AutomationEngine:
                     if result.error:
                         logger.error(f"Worker {worker_id} failed to process {candidate.type} #{item_number}: {result.error}")
                         get_trace_logger().log("Worker", f"Worker {worker_id} failed to process {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id, "error": result.error})
+                    elif candidate.type == "pr" and result.outcome is PRProcessingOutcome.DEFERRED:
+                        diagnostic = "; ".join(result.actions)
+                        logger.info(f"Worker {worker_id} deferred pr #{item_number}: {diagnostic}")
+                        get_trace_logger().log("Worker", f"Worker {worker_id} deferred pr #{item_number}", item_type="pr", item_number=item_number, details={"worker_id": worker_id, "outcome": result.outcome.value, "actions": result.actions})
                     else:
                         logger.info(f"Worker {worker_id} successfully processed {candidate.type} #{item_number}")
                         get_trace_logger().log("Worker", f"Worker {worker_id} successfully processed {candidate.type} #{item_number}", item_type=candidate.type, item_number=item_number, details={"worker_id": worker_id})

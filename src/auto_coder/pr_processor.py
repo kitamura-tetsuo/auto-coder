@@ -632,13 +632,19 @@ class CloudReviewRepairResult(list[str]):
         self.local_phase = local_phase
 
 
-def _adversarial_repair_outcome(actions: List[str]) -> Outcome:
+def _adversarial_repair_outcome(actions: List[str], processing_status: Optional[ProcessedPRResult] = None) -> Outcome:
     """Distinguish local pending repair from confirmed cloud handoff."""
     if getattr(actions, "deferred", False) or getattr(actions, "quota_deferred", False):
-        return Outcome.DEFERRED
-    if getattr(actions, "route_disposition", "CLOUD") != "CLOUD":
-        return Outcome.FAILED
-    return Outcome.ACCEPTED_HANDOFF if any("sent" in action.lower() or "Requested" in action for action in actions) else Outcome.UNKNOWN
+        outcome = Outcome.DEFERRED
+    elif getattr(actions, "route_disposition", "CLOUD") != "CLOUD":
+        outcome = Outcome.FAILED
+    else:
+        outcome = Outcome.ACCEPTED_HANDOFF if any("sent" in action.lower() or "Requested" in action for action in actions) else Outcome.UNKNOWN
+    if processing_status is not None:
+        processing_status.outcome = PRProcessingOutcome.FAILED if outcome is Outcome.FAILED else PRProcessingOutcome.DEFERRED
+        if outcome is Outcome.FAILED:
+            processing_status.error = actions[0] if actions else "Adversarial repair was not delivered"
+    return outcome
 
 
 class ReviewRepairRouteDisposition(Enum):
@@ -3840,7 +3846,7 @@ def _handle_pr_merge(
                                         pr_number,
                                         "pr.repair-delegation",
                                         f"pr#{pr_number} repair delegation",
-                                        _adversarial_repair_outcome(repair_result),
+                                        _adversarial_repair_outcome(repair_result, processing_status),
                                         {"effect": "adversarial-feedback-replay", "examined_head": head_sha_for_gate, "route_disposition": getattr(repair_result, "route_disposition", "CLOUD"), "local_phase": getattr(repair_result, "local_phase", "")},
                                     )
                                     if getattr(repair_result, "local_phase", "") in {"completed_no_change", "awaiting_validation"}:
@@ -4212,7 +4218,7 @@ def _handle_pr_merge(
                                             pr_number,
                                             "pr.repair-delegation",
                                             f"pr#{pr_number} repair delegation",
-                                            _adversarial_repair_outcome(feedback_actions),
+                                            _adversarial_repair_outcome(feedback_actions, processing_status),
                                             {"effect": "adversarial-feedback-replay", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
                                         )
                                         if getattr(feedback_actions, "deferred", False) and processing_status is not None:
@@ -4556,7 +4562,7 @@ def _handle_pr_merge(
                             pr_number,
                             "pr.repair-delegation",
                             f"pr#{pr_number} repair delegation",
-                            _adversarial_repair_outcome(feedback_actions),
+                            _adversarial_repair_outcome(feedback_actions, processing_status),
                             {"effect": "adversarial-fix-feedback", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
                         )
                         if getattr(feedback_actions, "route_disposition", "CLOUD") == "CLOUD":
@@ -4588,7 +4594,7 @@ def _handle_pr_merge(
                             pr_number,
                             "pr.repair-delegation",
                             f"pr#{pr_number} repair delegation",
-                            _adversarial_repair_outcome(feedback_actions),
+                            _adversarial_repair_outcome(feedback_actions, processing_status),
                             {"effect": "adversarial-test-feedback", "examined_head": head_sha, "route_disposition": getattr(feedback_actions, "route_disposition", "CLOUD"), "local_phase": getattr(feedback_actions, "local_phase", "")},
                         )
                         actions.append(f"Awaiting focused regression tests for PR #{pr_number}; production-code changes were not requested by test-oracle gaps")
@@ -6890,8 +6896,12 @@ def _adversarial_validation_delivery_identity(feedback_identity: str, validation
     return f"{feedback_identity}:validation:{hashlib.sha256(source.encode('utf-8')).hexdigest()}"
 
 
-def _adversarial_feedback_belongs_to_report(body: str, validation_report: str) -> bool:
+def _adversarial_feedback_belongs_to_report(body: str, validation_report: str, thread_id: str = "") -> bool:
     """Return whether a standalone adversarial finding is represented in a report."""
+    if thread_id:
+        dispositions = re.findall(rf"^#### `{re.escape(thread_id)}`: (\w+)\s*$", validation_report, re.MULTILINE)
+        if dispositions:
+            return set(dispositions) == {"STILL_VALID"}
     blocks = [block.strip() for block in re.split(r"\n\s*\n", body) if block.strip()]
     substantive = [block for block in blocks if not block.startswith(("#", "**", "Gap identity:")) and len(block) >= 12]
     return bool(substantive) and any(block in validation_report for block in substantive)
@@ -8177,9 +8187,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
         except Exception as exc:
             return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}: {exc}"], route_disposition="UNAVAILABLE")
         requested_feedback = tuple(actionable_feedback) or tuple(
-            thread.comments[0].body
-            for thread in review_threads
-            if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap")) and _adversarial_feedback_belongs_to_report(thread.comments[0].body, validation_report)
+            thread.comments[0].body for thread in review_threads if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS) and _adversarial_feedback_belongs_to_report(thread.comments[0].body, validation_report, thread.id)
         )
         if not requested_feedback:
             return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}; local repair was not attempted"], route_disposition="UNAVAILABLE")
@@ -8219,10 +8227,7 @@ def _send_adversarial_validation_feedback_to_cloud_task(
     matching_threads = [
         thread
         for thread in review_threads
-        if not thread.is_resolved
-        and thread.comments
-        and thread.comments[0].body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"))
-        and (thread.comments[0].body in requested_bodies if requested_bodies else _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report))
+        if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS) and (thread.comments[0].body in requested_bodies if requested_bodies else _adversarial_feedback_belongs_to_report(thread.comments[0].body, source_validation_report, thread.id))
     ]
     feedback_bodies = [(thread.comments[0].body, _review_feedback_identity(prefix, thread, 0)) for thread in matching_threads]
     if not feedback_bodies:

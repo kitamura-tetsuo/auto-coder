@@ -33,6 +33,10 @@ human-readable action diagnostics and are also added to the top-level errors, so
 single-item completion output cannot report a false success. Expected states such
 as red CI, merge gates, and cloud-task waits remain deferred rather than failures.
 
+The durable worker logs deferred PR processing explicitly, with the action
+diagnostics that explain the wait. Its `Worker` trace carries `outcome=deferred`
+and those actions; a deferred repair is never logged as successfully processed.
+
 A successful exact-head CI evaluation selects the merge route once. If its final
 strong-audit gate is still pending or the merge operation does not confirm
 completion, processing returns a deferred merge disposition and does not fall

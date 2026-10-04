@@ -831,6 +831,36 @@ def test_five_webhooks_before_worker_cause_one_fetch_and_decision(tmp_path: Path
     assert processed == [100]
 
 
+def test_worker_reports_deferred_pr_with_repair_diagnostic(tmp_path: Path, monkeypatch):
+    from src.auto_coder.automation_config import PRProcessingOutcome
+    from src.auto_coder.trace_logger import get_trace_logger
+
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    processed = []
+    diagnostic = "Local correction awaits independent validation"
+    monkeypatch.setattr(engine, "_create_candidate_from_single", _candidate)
+    monkeypatch.setattr(engine, "_process_single_candidate", lambda repo, candidate, **kwargs: processed.append(candidate.data["number"]) or CandidateProcessingResult(type="pr", number=100, success=True, outcome=PRProcessingOutcome.DEFERRED, actions=[diagnostic]))
+    monkeypatch.setattr("src.auto_coder.automation_engine.is_item_closed_on_github", lambda *args: False)
+    output = io.StringIO()
+    sink = loguru_logger.add(output, format="{level}|{message}")
+
+    async def scenario():
+        await engine.invalidate_entity("owner/repo", "pr", 100)
+        await _run_worker_until(engine, 1, processed)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        loguru_logger.remove(sink)
+    assert processed == [100]
+    assert f"INFO|Worker 0 deferred pr #100: {diagnostic}" in output.getvalue()
+    assert "successfully processed pr #100" not in output.getvalue()
+    event = [event for event in get_trace_logger().get_logs(item_type="pr", item_number=100) if event["category"] == "Worker"][-1]
+    assert event["message"] == "Worker 0 deferred pr #100"
+    assert event["details"] == {"worker_id": 0, "outcome": "deferred", "actions": [diagnostic]}
+
+
 def test_fetch_failure_remains_durable_and_restart_retries(tmp_path: Path, monkeypatch):
     path = tmp_path / "invalidations.sqlite3"
     monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(path))

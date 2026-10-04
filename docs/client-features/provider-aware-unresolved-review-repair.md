@@ -13,3 +13,9 @@ indeterminate state explicitly. Provenance-clarification threads remain excluded
 Missing or ambiguous ownership, unsupported providers, rejected requests, and
 transport failures produce an explicit failed processing outcome rather than a
 successful defer.
+
+Saved adversarial reports can identify existing actionable roots by an exact
+native thread ID with a `STILL_VALID` disposition, including strong-audit roots.
+This preserves repair routing when the latest report rewords the original
+finding rather than reproducing its paragraphs. Other explicit dispositions
+do not authorize corrective delivery.

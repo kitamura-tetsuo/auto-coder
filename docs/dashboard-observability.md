@@ -1493,6 +1493,19 @@ production routing boundary, authoritative reread, stale-decision invalidation,
 and zero-cloud-send behavior; the joined existing cloud controls are in
 `tests/test_codex_cloud_pr_review_flow.py` and
 `tests/test_verified_codex_pr_repair_routing.py`.
+
+Saved non-pass replay selects exact `STILL_VALID` native thread dispositions,
+including strong-audit roots. `pr.repair-delegation` preserves the existing
+route/effect facts and propagates local failures into the processing result;
+pending repairs remain deferred. The existing `Worker` trace reports deferred
+PRs with `outcome=deferred` and action diagnostics instead of a success message.
+The generic dashboard detail projection already displays these facts.
+Runnable regressions:
+`tests/test_local_review_repair.py::test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelated_threads`,
+`tests/test_local_review_repair.py::test_report_disposition_does_not_repair_unverified_or_addressed_root`,
+`tests/test_local_review_repair.py::test_adversarial_repair_processing_status_matches_stage`,
+and `tests/test_entity_invalidation.py::test_worker_reports_deferred_pr_with_repair_diagnostic`.
+
 | Parent/dependency reconciliation admission deferral (issue #2302) | `tests/test_pending_work_resumption.py::test_wrapped_reconciliation_admission_deferral_is_durably_retained`, `tests/test_pending_work_resumption.py::test_capacity_refill_durably_retains_wrapped_admission_deferral`, and `tests/test_entity_invalidation.py::test_worker_retains_wrapped_stage_routing_admission_deferral` exercise the production Issue-processing, capacity-refill, and durable-invalidation boundaries. A typed, definitely-not-sent governor refusal wrapped by parent reconciliation is emitted as `Deferred`, with repository, Issue, stage, reason, API origin, retry deadline, and delivery certainty in the existing loguru stream, and is retained by the existing pending-work or invalidation stage. No dashboard schema changes are required: the existing Issue stage outcome remains `Deferred`; this change preserves typed admission evidence and durable resumption rather than introducing a new outcome or event shape. |
 
 # Local unresolved-review correction

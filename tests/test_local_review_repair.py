@@ -482,14 +482,22 @@ def test_exact_head_push_uses_lease_and_never_enters_recovery_fallback() -> None
     fallback.assert_not_called()
 
 
-@pytest.mark.parametrize("heading", ["### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap"])
-@pytest.mark.parametrize("replay", [False, True])
-def test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelated_threads(heading: str, replay: bool) -> None:
+@pytest.mark.parametrize("heading", ["### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap", "<!-- auto-coder-two-tier-finding:v1:accepted:finding -->"])
+@pytest.mark.parametrize("replay", ["fresh", "verbatim", "disposition"])
+def test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelated_threads(heading: str, replay: str) -> None:
     from auto_coder.pr_processor import _send_adversarial_validation_feedback_to_cloud_task
 
     evidence = PullRequestRoutingMetadata("https://api.github.com", "owner/repo", 42, "open", "<!-- auto-coder:local-llm -->", "owner/repo", "repair-head", "abc123")
     route = ReviewRepairRouteDecision(ReviewRepairRouteDisposition.LOCAL_REQUIRED, "local", evidence)
     finding = f"{heading}\n\nCorrect the broken invariant."
+    report = finding
+    if replay == "disposition":
+        from auto_coder.adversarial_validator import AdversarialValidationResult, ReviewThreadDisposition, format_adversarial_review_summary
+
+        report = format_adversarial_review_summary(
+            AdversarialValidationResult(result="NEEDS_FIX", thread_dispositions=[ReviewThreadDisposition(thread_id="validated", status="STILL_VALID", rationale="The correction remains necessary.", evidence="Current implementation retains the defect.")]),
+            "abc123",
+        )
     thread = ReviewThread(id="validated", comments=[ReviewThreadComment(database_id=1, body=finding, author_login="reviewer"), ReviewThreadComment(database_id=2, body="<!-- auto-coder-review-addressed:v1 -->", author_login="implementer")])
     unrelated = ReviewThread(id="unrelated", comments=[ReviewThreadComment(database_id=3, body="Unrelated request", author_login="reviewer")])
     github = MagicMock()
@@ -503,7 +511,7 @@ def test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelat
         patch("auto_coder.local_review_repair.execute_local_review_repair", return_value=LocalReviewRepairOutcome("awaiting_validation", "published", True, True)) as execute,
         patch("auto_coder.pr_processor._resolve_cloud_task_origin") as cloud,
     ):
-        result = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "abc123", finding, github, () if replay else [finding], config=MagicMock())
+        result = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "abc123", report, github, [finding] if replay == "fresh" else (), config=MagicMock())
     execute.assert_called_once()
     request = execute.call_args.args[0]
     assert finding in request.prompt
@@ -513,6 +521,30 @@ def test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelat
     assert result.route_disposition == "LOCAL_EXECUTION"
     assert result.local_phase == "awaiting_validation"
     cloud.assert_not_called()
+
+
+@pytest.mark.parametrize("status", ["ADDRESSED", "INCONCLUSIVE", "STILL_VALID_EXTRA"])
+def test_report_disposition_does_not_repair_unverified_or_addressed_root(status: str) -> None:
+    from auto_coder.pr_processor import _adversarial_feedback_belongs_to_report
+
+    finding = "### Auto-Coder adversarial finding\n\nOriginal correction instructions."
+    report = f"{finding}\n\n#### `target`: {status}\n\nCurrent rationale."
+    assert _adversarial_feedback_belongs_to_report(finding, report, "target") is False
+    assert _adversarial_feedback_belongs_to_report(finding, "#### `other`: STILL_VALID", "target") is False
+
+
+@pytest.mark.parametrize("phase,expected_outcome,expected_stage", [("not_admitted", "failed", "failed"), ("awaiting_validation", "deferred", "deferred")])
+def test_adversarial_repair_processing_status_matches_stage(phase: str, expected_outcome: str, expected_stage: str) -> None:
+    from auto_coder.automation_config import ProcessedPRResult
+    from auto_coder.pr_processor import CloudReviewRepairResult, _adversarial_repair_outcome
+
+    status = ProcessedPRResult(pr_data={"number": 42})
+    diagnostic = f"Local correction is {phase}"
+    actions = CloudReviewRepairResult([diagnostic], route_disposition="LOCAL_EXECUTION", local_phase=phase, deferred=phase == "awaiting_validation")
+    stage = _adversarial_repair_outcome(actions, status)
+    assert status.outcome.value == expected_outcome
+    assert stage.value == expected_stage
+    assert status.error == (diagnostic if phase == "not_admitted" else None)
 
 
 def test_local_adversarial_repair_rejects_changed_validated_head() -> None:

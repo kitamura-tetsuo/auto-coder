@@ -64,3 +64,9 @@ failed outcome when recovery cannot confirm the receipt. The reason is retained
 in processing status and the trace. Confirming original anchors after a later
 commit allows normal validation and repair routing to resume; it does not grant
 merge approval from an older verdict.
+
+Saved non-pass review replay recognizes exact `STILL_VALID` thread dispositions,
+including strong-audit roots, without requiring repeated finding prose. The
+existing repair-delegation stage reflects local admission failure as `FAILED`
+and pending correction as `DEFERRED`. The worker diagnostic also exposes the
+deferred outcome and its actions through the existing generic trace details.
