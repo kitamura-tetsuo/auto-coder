@@ -180,9 +180,14 @@ def test_reload_recovers_original_attempt_without_submit_or_draft(_use_real_slee
     state["status_reads"].clear()
     with headless_page(viewport={"width": 1200, "height": 900}) as page:
         page.goto(f"{base_url}/adjudication/pr/45")
+        # NiceGUI boots the controller asynchronously after navigation. Wait for
+        # findings, rendered after recovery, before seeding the reload attempt.
+        page.wait_for_selector(f"text=Reader-issued context identity: {CONTEXT}")
+        assert state["status_reads"] == []
         page.evaluate("id => sessionStorage.setItem('adj-publication-45', id)", decision_id)
         page.reload()
         page.wait_for_selector(f"text=Recovered publication outcome-unknown for decision {decision_id}")
+        page.wait_for_selector(f"text=Reader-issued context identity: {CONTEXT}")
         assert state["status_reads"] == [decision_id]
         assert state["drafts"] == 0
         assert state["submits"] == []

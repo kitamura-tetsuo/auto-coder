@@ -1559,6 +1559,10 @@ rationale-preserving authoritative refresh, and reload recovery of an uncertain
 publication ID without another draft or submit. Run them with
 `bash scripts/test.sh tests/test_dashboard_adjudication_browser.py` in a
 Playwright-provisioned environment.
+The reload regression waits for initial findings before saving the uncertain
+publication ID, verifies no initial status lookup, then waits for recovery and
+findings after reload and asserts exactly one lookup of the original ID. This
+test synchronization changes no production trace emission or dashboard state.
 ## Codex PR attribution observability boundary
 
 Codex PR-origin attribution is local bookkeeping evaluated during existing PR
