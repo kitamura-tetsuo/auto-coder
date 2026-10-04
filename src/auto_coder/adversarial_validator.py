@@ -32,6 +32,7 @@ from .backend_manager import BackendManager, run_llm_prompt
 from .ci_observation import CIConclusion, ObservationAvailability, WorkflowObservation
 from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linked_issues_context, resolve_issue_oracles
 from .logger_config import get_logger
+from .pr_review_execution import ReviewExecutionInput, ReviewExecutionResult, build_review_prompt, parse_review_result
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import build_normative_issue_manifest, is_explicit_test_deliverable
@@ -62,6 +63,53 @@ TEST_ORACLE_GAP_REREVIEW_EXCEPTIONS = {
     "PROTECTION_WEAKENED",
     "REVALIDATION_EXPOSED_UNTESTED_BOUNDARY",
 }
+
+
+class _DuplicateAwareDict(dict[str, Any]):
+    """JSON object retaining duplicate-member evidence for extension checks."""
+
+    duplicate_keys: tuple[str, ...]
+
+
+def _retain_duplicate_json_members(pairs: list[tuple[str, Any]]) -> _DuplicateAwareDict:
+    result = _DuplicateAwareDict()
+    duplicates: list[str] = []
+    for key, value in pairs:
+        if key in result:
+            duplicates.append(key)
+        result[key] = value
+    result.duplicate_keys = tuple(duplicates)
+    return result
+
+
+def _closure_input_unavailable_reason(closure_input: ReviewExecutionInput) -> str:
+    """Return the missing controller context that forbids closure assessment."""
+    missing: list[str] = []
+    required_strings = {
+        "repository": closure_input.repository,
+        "round_id": closure_input.round_id,
+        "attempt_id": closure_input.attempt_id,
+        "head_sha": closure_input.head_sha,
+        "base_sha": closure_input.base_sha,
+        "audited_head_sha": closure_input.audited_head_sha,
+        "requirements_snapshot": closure_input.contract.requirements_text,
+        "policy_identity": closure_input.policy.identity,
+        "repository_evidence": closure_input.repository_evidence,
+        "cumulative_diff_evidence": closure_input.diff_evidence,
+    }
+    missing.extend(name for name, value in required_strings.items() if not value.strip())
+    if not closure_input.contract.issue_ids:
+        missing.append("issue_identities")
+    for name, value in {
+        "pr_number": closure_input.pr_number,
+        "open_epoch": closure_input.open_epoch,
+        "attempt_sequence": closure_input.attempt_sequence,
+    }.items():
+        if value <= 0:
+            missing.append(name)
+    if not closure_input.findings:
+        missing.append("accepted_finding_bundle")
+    return ", ".join(missing)
 
 
 @dataclass
@@ -475,6 +523,10 @@ class AdversarialValidationResult:
     # automatic retry may run (REQ-006). Published durably in the comment
     # marker so a deferred retry survives restart without local state (REQ-007).
     retry_not_before_epoch: Optional[float] = None
+    # Optional, non-authorizing assessment produced by this same ordinary
+    # semantic response.  Durable acceptance remains owned by the review cycle.
+    closure_assessment: Optional[ReviewExecutionResult] = None
+    closure_assessment_diagnostic: str = ""
     local_repair_generation_id: str = ""
     local_repair_verification_pending: bool = False
     unverified_local_repairs: List[UnverifiedLocalRepair] = field(default_factory=list)
@@ -1885,6 +1937,8 @@ def _extract_test_oracle_gaps(
 def parse_adversarial_validation_response(
     response: str,
     recorded_test_oracle_gaps: Sequence[TestOracleGap] = (),
+    closure_input: Optional[ReviewExecutionInput] = None,
+    reviewer_provenance: str = "",
 ) -> AdversarialValidationResult:
     """Parse the strong model's adversarial validation output.
 
@@ -1954,7 +2008,7 @@ def parse_adversarial_validation_response(
     json_failure_reason: Optional[str] = None
     if json_str:
         try:
-            parsed = json.loads(json_str)
+            parsed = json.loads(json_str, object_pairs_hook=_retain_duplicate_json_members)
             if isinstance(parsed, dict):
                 raw_result = str(parsed.get("result", "")).strip().upper()
                 summary = str(parsed.get("summary", "")).strip()
@@ -2275,7 +2329,7 @@ def parse_adversarial_validation_response(
 
                 thread_dispositions = _extract_thread_dispositions(parsed.get("thread_dispositions", []))
 
-                return AdversarialValidationResult(
+                result_object = AdversarialValidationResult(
                     result=result_val,
                     summary=summary or ("Validation passed" if result_val == "PASS" else f"Validation status: {result_val}"),
                     findings=findings,
@@ -2289,6 +2343,52 @@ def parse_adversarial_validation_response(
                     thread_dispositions=thread_dispositions,
                     unexplained_changes=unexplained_changes,
                 )
+                if closure_input is not None:
+                    unavailable_reason = _closure_input_unavailable_reason(closure_input)
+                    assessment = parsed.get("closure_assessment")
+                    if unavailable_reason:
+                        result_object.closure_assessment_diagnostic = f"Closure context unavailable: {unavailable_reason}"
+                    elif not isinstance(assessment, dict):
+                        result_object.closure_assessment_diagnostic = "Closure assessment is absent or malformed"
+                    elif isinstance(assessment, _DuplicateAwareDict) and assessment.duplicate_keys:
+                        duplicate_names = ", ".join(dict.fromkeys(assessment.duplicate_keys))
+                        result_object.closure_assessment_diagnostic = f"Closure assessment contains duplicate JSON members: {duplicate_names}"
+                    else:
+                        bound_assessment = dict(assessment)
+                        identities = {
+                            "round_id": closure_input.round_id,
+                            "attempt_id": closure_input.attempt_id,
+                            "head_sha": closure_input.head_sha,
+                            "base_sha": closure_input.base_sha,
+                            "contract_identity": closure_input.contract.identity,
+                            "policy_identity": closure_input.policy.identity,
+                            "finding_set_revision": closure_input.finding_set_revision,
+                            "repository": closure_input.repository,
+                            "pr_number": closure_input.pr_number,
+                            "open_epoch": closure_input.open_epoch,
+                            "attempt_sequence": closure_input.attempt_sequence,
+                            "audited_head_sha": closure_input.audited_head_sha,
+                        }
+                        contradiction = next(
+                            (key for key, value in identities.items() if key in bound_assessment and bound_assessment[key] != value),
+                            None,
+                        )
+                        if contradiction is not None:
+                            result_object.closure_assessment_diagnostic = f"Closure assessment contradicts controller-owned {contradiction}"
+                        else:
+                            bound_assessment.update(identities)
+                            try:
+                                closure_result = parse_review_result(
+                                    json.dumps(bound_assessment),
+                                    closure_input,
+                                    reviewer_provenance or "unavailable",
+                                )
+                            except (TypeError, ValueError) as exc:
+                                result_object.closure_assessment_diagnostic = f"Malformed closure assessment: {exc}"
+                            else:
+                                result_object.closure_assessment = closure_result
+                                result_object.closure_assessment_diagnostic = closure_result.diagnostic
+                return result_object
             else:
                 return _parse_error(
                     raw_response,
@@ -2774,6 +2874,8 @@ def _complete_changed_file_evidence(
     requirement_manifest: str,
     head_sha: str,
     recorded_test_oracle_gaps: Sequence[TestOracleGap] = (),
+    closure_input: Optional[ReviewExecutionInput] = None,
+    reviewer_provenance: str = "",
 ) -> AdversarialValidationResult:
     """Perform the one controller-driven, same-session coverage continuation."""
     unresolved = _remaining_unverified_paths(result, context)
@@ -2810,7 +2912,7 @@ def _complete_changed_file_evidence(
         prior_adjudication=result.raw_response or result.summary,
         prior_test_oracle_gaps=json.dumps([gap.__dict__ for gap in recorded_test_oracle_gaps], indent=2, sort_keys=True),
         controller_retrievals=json.dumps(retrievals, indent=2),
-    )
+    ) + _closure_prompt_extension(closure_input)
     initial_identity = backend_manager.get_current_backend_identity()
     try:
         response = backend_manager.continue_session(session_id, prompt, is_noedit=True)
@@ -2829,7 +2931,12 @@ def _complete_changed_file_evidence(
             diagnostic_category="changed_file_completion_session_discontinuity",
             diagnostic_reason=f"Backend started a fresh session or switched identity instead of resuming the original reviewer session while completing: {', '.join(unresolved)}",
         )
-    completion = parse_adversarial_validation_response(response, recorded_test_oracle_gaps)
+    completion = parse_adversarial_validation_response(
+        response,
+        recorded_test_oracle_gaps,
+        closure_input,
+        reviewer_provenance,
+    )
     _log_contextual_parse_diagnostics(completion, response, backend_manager, context.pr_number, "evidence_completion")
     supplied_complete = {item["path"] for item in retrievals if item["status"] == "COMPLETE"}
     # Only this round's entries (for paths that were actually unresolved coming
@@ -3568,6 +3675,16 @@ def _apply_coverage_and_verdict_precedence(
     return _enforce_inconclusive_recovery_contract(result, incomplete_requirement_ids)
 
 
+def _closure_prompt_extension(closure_input: Optional[ReviewExecutionInput]) -> str:
+    """Render optional closure work without changing ordinary-only prompts."""
+    if closure_input is None:
+        return ""
+    unavailable_reason = _closure_input_unavailable_reason(closure_input)
+    if unavailable_reason:
+        return f"\n\nORDINARY STRONG-FINDING CLOSURE EXTENSION UNAVAILABLE: {unavailable_reason}. Do not return a closure_assessment."
+    return "\n\nORDINARY STRONG-FINDING CLOSURE EXTENSION (non-authorizing):\n" + build_review_prompt(closure_input) + "\nReturn that role's semantic fields in a top-level `closure_assessment` object " "inside the ordinary validation JSON. The ordinary result remains independent."
+
+
 def _default_accepted_finding_bridge(repo_name: str) -> AcceptedFindingBridge:
     from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
     from .pr_review_cycle import PrReviewCycleRepository
@@ -3653,6 +3770,7 @@ def run_adversarial_validation(
     defer_session_persistence: bool = False,
     ci_status: Optional["GitHubActionsStatusResult"] = None,
     refresh_ci_status: Optional[Callable[[], "GitHubActionsStatusResult"]] = None,
+    closure_input: Optional[ReviewExecutionInput] = None,
     accepted_finding_bridge: Optional[AcceptedFindingBridge] = None,
 ) -> AdversarialValidationResult:
     """Run strong-model adversarial validation on a green PR.
@@ -3833,6 +3951,7 @@ def run_adversarial_validation(
             sort_keys=True,
         )
 
+    closure_extension = _closure_prompt_extension(closure_input)
     prompt = render_prompt(
         "pr.adversarial_validation",
         review_policy=review_policy,
@@ -3852,6 +3971,7 @@ def run_adversarial_validation(
         ci_execution_evidence=format_ci_execution_evidence(ci_status),
         adjacent_exploration_budget=ADVERSARIAL_ADJACENT_EXPLORATION_BUDGET,
         evidence_recovery_budget=ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET,
+        closure_extension=closure_extension,
     )
 
     # 4. Invoke the strong model
@@ -3876,7 +3996,8 @@ def run_adversarial_validation(
 
     # 5. Parse response
     canonical_recorded_gaps = effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else ()
-    result = parse_adversarial_validation_response(response, canonical_recorded_gaps)
+    reviewer_provenance = "/".join(part for part in (used_backend, used_type, used_model) if part) or "unavailable"
+    result = parse_adversarial_validation_response(response, canonical_recorded_gaps, closure_input, reviewer_provenance)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
     result = _reconcile_test_oracle_gap_lifecycle(
@@ -3897,6 +4018,8 @@ def run_adversarial_validation(
         requirement_manifest,
         head_sha,
         result.test_oracle_gaps,
+        closure_input,
+        reviewer_provenance,
     )
     result = _apply_coverage_and_verdict_precedence(result, context)
     current_run_recovered_evidence = [replace(entry, requirement_ids=list(entry.requirement_ids)) for entry in result.evidence_recovery if entry.status in {"RECOVERED", "IRRELEVANT"} and (entry.path in context.unverified_files or entry.provenance == "REUSED_EQUIVALENT")]
@@ -3918,11 +4041,14 @@ def run_adversarial_validation(
             correction_used = True
             correction_ci_status = ci_status
             correction_ci_evidence = format_ci_execution_evidence(ci_status)
-            correction_prompt = render_prompt(
-                "pr.adversarial_validation_target_correction",
-                invalid_target=check_target,
-                target_diagnostic=target_error,
-                ci_evidence=correction_ci_evidence,
+            correction_prompt = (
+                render_prompt(
+                    "pr.adversarial_validation_target_correction",
+                    invalid_target=check_target,
+                    target_diagnostic=target_error,
+                    ci_evidence=correction_ci_evidence,
+                )
+                + closure_extension
             )
             correction_session_id = getattr(backend_manager, "_last_session_id", None)
             if not isinstance(correction_session_id, str) or not correction_session_id:
@@ -3936,7 +4062,7 @@ def run_adversarial_validation(
                 correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
                 if refresh_ci_status is not None:
                     ci_status = refresh_ci_status()
-                result = parse_adversarial_validation_response(correction_response, result.test_oracle_gaps)
+                result = parse_adversarial_validation_response(correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
                 _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_correction")
                 corrected_target = (result.dynamic_check_requested or "").strip()
                 repeated_error = validate_dynamic_check_target(corrected_target, Path(execution_cwd).resolve()) if corrected_target and execution_cwd else None
@@ -3975,11 +4101,14 @@ def run_adversarial_validation(
                         ci_status = refresh_ci_status()
                     correction_ci_status = ci_status
                     correction_ci_evidence = format_ci_execution_evidence(ci_status)
-                    correction_prompt = render_prompt(
-                        "pr.adversarial_validation_target_correction",
-                        invalid_target=check_target,
-                        target_diagnostic=test_res.target_selection_error,
-                        ci_evidence=correction_ci_evidence,
+                    correction_prompt = (
+                        render_prompt(
+                            "pr.adversarial_validation_target_correction",
+                            invalid_target=check_target,
+                            target_diagnostic=test_res.target_selection_error,
+                            ci_evidence=correction_ci_evidence,
+                        )
+                        + closure_extension
                     )
                     correction_session_id = getattr(backend_manager, "_last_session_id", None)
                     if not isinstance(correction_session_id, str) or not correction_session_id:
@@ -3992,7 +4121,7 @@ def run_adversarial_validation(
                     correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
                     if refresh_ci_status is not None:
                         ci_status = refresh_ci_status()
-                    result = parse_adversarial_validation_response(correction_response, result.test_oracle_gaps)
+                    result = parse_adversarial_validation_response(correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
                     _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_selection_correction")
                     corrected_target = (result.dynamic_check_requested or "").strip()
                     if not corrected_target:
@@ -4052,23 +4181,26 @@ def run_adversarial_validation(
 
                     logger.info(f"Dynamic check executed on {check_target} (success={test_success}); querying reviewer with raw test output for final decision")
                     initial_thread_dispositions_str = "\n".join(f"- {d.thread_id}: {d.status} — {d.rationale}" for d in initial_thread_dispositions) if initial_thread_dispositions else "(No initial thread dispositions recorded)"
-                    followup_prompt = render_prompt(
-                        "pr.adversarial_validation_followup",
-                        repo_name=repo_name,
-                        pr_number=pr_number,
-                        pr_title=context.pr_title,
-                        check_target=check_target,
-                        test_status="PASSED" if test_success else "FAILED",
-                        test_success="True" if test_success else "False",
-                        test_output=test_output[: config.MAX_PROMPT_SIZE * 2],
-                        original_summary=result.summary,
-                        original_findings=original_findings_str,
-                        prior_test_oracle_gaps=json.dumps([gap.__dict__ for gap in result.test_oracle_gaps], indent=2, sort_keys=True),
-                        linked_issues_context=context.issue_context,
-                        pr_diff=context.pr_diff,
-                        requirement_manifest=requirement_manifest,
-                        claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
-                        initial_thread_dispositions=initial_thread_dispositions_str,
+                    followup_prompt = (
+                        render_prompt(
+                            "pr.adversarial_validation_followup",
+                            repo_name=repo_name,
+                            pr_number=pr_number,
+                            pr_title=context.pr_title,
+                            check_target=check_target,
+                            test_status="PASSED" if test_success else "FAILED",
+                            test_success="True" if test_success else "False",
+                            test_output=test_output[: config.MAX_PROMPT_SIZE * 2],
+                            original_summary=result.summary,
+                            original_findings=original_findings_str,
+                            prior_test_oracle_gaps=json.dumps([gap.__dict__ for gap in result.test_oracle_gaps], indent=2, sort_keys=True),
+                            linked_issues_context=context.issue_context,
+                            pr_diff=context.pr_diff,
+                            requirement_manifest=requirement_manifest,
+                            claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
+                            initial_thread_dispositions=initial_thread_dispositions_str,
+                        )
+                        + closure_extension
                     )
                     with ProgressStage("Adversarial dynamic check follow-up"):
                         followup_session_id = getattr(backend_manager, "_last_session_id", None)
@@ -4078,7 +4210,7 @@ def run_adversarial_validation(
                             # Never guess an implicit last session. A provider that did not
                             # expose an ID cannot safely retain dynamic-check context.
                             raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
-                    result = parse_adversarial_validation_response(followup_response, result.test_oracle_gaps)
+                    result = parse_adversarial_validation_response(followup_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
                     _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
                     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
                     result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)

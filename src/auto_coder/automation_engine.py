@@ -5,6 +5,7 @@ Main automation engine for Auto-Coder.
 import asyncio
 import dataclasses
 import hashlib
+import inspect
 import json
 import os
 import threading
@@ -3356,7 +3357,15 @@ class AutomationEngine:
     def _create_and_prepare_closed_issue_candidate(self, repo_name: str, issue_number: int) -> tuple[Optional[Candidate], bool]:
         """Bind a worker's strict closed read to all closure/family effects."""
         with self._issue_routing_lock(repo_name, issue_number):
-            candidate = self._create_candidate_from_single(repo_name, "issue", issue_number, True, True)
+            factory = self._create_candidate_from_single
+            # Candidate sources can implement the established four-argument
+            # protocol. The production factory additionally accepts the
+            # narrowly scoped cancellation flag; detect that capability rather
+            # than breaking alternate sources with a fifth positional value.
+            if "cancel_initial_refusal" in inspect.signature(factory).parameters:
+                candidate = factory(repo_name, "issue", issue_number, True, cancel_initial_refusal=True)
+            else:
+                candidate = factory(repo_name, "issue", issue_number, True)
             if candidate is None or candidate.data.get("state") != "closed":
                 return candidate, False
             self.issue_admission_cache.observe(repo_name, candidate.data, authoritative=True)
@@ -8573,9 +8582,8 @@ class AutomationEngine:
             repo_name: Repository name
             target_type: Type of target ('issue' or 'pr')
             number: Issue or PR number
-            cancel_initial_refusal: Allow the worker's initial Issue GET to use
-                a completed local refusal received during admission waiting.
-
+            cancel_initial_refusal: Allow this initial Issue GET to use a
+                completed local refusal received during admission waiting.
         Returns:
             Candidate or None if failed
         """
