@@ -207,7 +207,7 @@ def _parse_comment_section(
     commit_id: str,
 ) -> Optional[HistoricalCorrection]:
     """Parse a single finding or gap section within a review comment."""
-    authoritative_text = _mask_fenced_markdown(section_text)
+    authoritative_text = re.sub(r"<!--.*?-->", "", _mask_fenced_markdown(section_text), flags=re.DOTALL)
     lower_text = authoritative_text.lower()
     is_gap = "test-oracle gap" in lower_text or "test oracle gap" in lower_text or "test_oracle" in lower_text or "gap identity" in lower_text
     is_finding = "adversarial finding" in lower_text or "finding" in lower_text or "violated requirement" in lower_text or "requirement:" in lower_text or bool(_REQ_ID_RE.search(authoritative_text))
@@ -225,11 +225,13 @@ def _parse_comment_section(
     req_ids = tuple(dict.fromkeys(_REQ_ID_RE.findall(authoritative_text)))
     category = "TEST_ORACLE" if is_gap else "IMPLEMENTATION"
 
-    boundary = _extract_section_field(section_text, "Authoritative boundary")
+    boundary = _extract_section_field(authoritative_text, "Authoritative boundary")
+    if not boundary:
+        boundary = _extract_section_field(authoritative_text, "Affected boundary")
     if not boundary:
         boundary = _extract_section_field(section_text, "Reachable path")
     if not boundary:
-        bound_m = re.search(r"(?:Path|Boundary|File):\s*([^\s\n]+)", section_text, re.IGNORECASE)
+        bound_m = re.search(r"^\s*(?:Path|Boundary|File):\s*([^\s\n]+)", authoritative_text, re.IGNORECASE | re.MULTILINE)
         if bound_m:
             boundary = bound_m.group(1).strip()
         else:
@@ -239,23 +241,27 @@ def _parse_comment_section(
     if not invariant:
         invariant = _extract_section_field(section_text, "Actual behavior")
     if not invariant:
+        invariant = _extract_section_field(authoritative_text, "Actual")
+    if not invariant:
         invariant = _extract_section_field(section_text, "Minimal plausible incorrect implementation")
     if not invariant:
-        for line_entry in section_text.splitlines():
+        for line_entry in authoritative_text.splitlines():
             l_str = line_entry.strip()
             if l_str and not l_str.startswith("#") and not l_str.startswith("*") and not l_str.lower().startswith("requirement") and not l_str.lower().startswith("path"):
                 invariant = l_str
                 break
     if not invariant:
-        invariant = section_text[:200].strip()
+        invariant = authoritative_text[:200].strip()
 
     outcome = _extract_section_field(section_text, "Focused regression scenario requested")
     if not outcome:
         outcome = _extract_section_field(section_text, "Required behavior")
     if not outcome:
+        outcome = _extract_section_field(authoritative_text, "Expected")
+    if not outcome:
         outcome = _extract_section_field(section_text, "Suggested regression scenario")
     if not outcome:
-        outcome = invariant or section_text[:200].strip()
+        outcome = invariant
 
     return HistoricalCorrection(
         comment_id=comment_id,
@@ -292,11 +298,14 @@ def _standalone_blocker_identities(text: str) -> tuple[str, ...]:
 
 
 def _extract_section_field(text: str, heading: str) -> str:
-    """Extract the markdown content under a bold heading `**<heading>**`."""
-    pattern = rf"\*\*{re.escape(heading)}\*\*\s*\n+([^\n*#]+(?:\n[^\n*#]+)*)"
-    match = re.search(pattern, text, re.IGNORECASE)
+    """Read inline or multiline bold fields without consuming the next field."""
+    pattern = rf"^\s*\*\*{re.escape(heading)}(?::\*\*|\*\*:?)\s*"
+    text = _mask_fenced_markdown(text)
+    match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
     if match:
-        return match.group(1).strip()
+        remainder = text[match.end() :]
+        end = re.search(r"^\s*(?:\*\*[^\n]+?\*\*|#{1,6}\s|---\s*$|<!--)", remainder, re.MULTILINE)
+        return remainder[: end.start() if end else len(remainder)].strip()
     return ""
 
 

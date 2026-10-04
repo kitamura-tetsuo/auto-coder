@@ -53,6 +53,12 @@ publication confirmation still appears as a separate effect. Blocker identity
 matching and same-batch root consolidation do not change this view's audit schema,
 polling, or authorization boundaries.
 
+Historical two-tier root parsing preserves each distinct correction's retained
+owner during publication reconciliation. This prevents a false ambiguity from
+blocking publication while keeping the native report and publication effect
+separate in this view. Genuine ambiguity remains a publication failure in the
+existing validation trace; parsing success alone does not confirm publication.
+
 Recovery of missing GitHub review-list anchors uses an individually verified
 comment receipt before confirming publication. It preserves the same separate
 publication effect and historical native report; an unavailable or mismatched

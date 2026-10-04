@@ -712,6 +712,98 @@ def test_fenced_finding_heading_cannot_supply_blocker_identity(
 # ---------------------------------------------------------------------------
 
 
+def test_two_tier_historical_roots_preserve_distinct_retained_owners(ledger: CanonicalPRBlockerLedger) -> None:
+    """PR #2417: actual two-tier markup must not merge two corrected defects."""
+    comments = json.loads((Path(__file__).parent / "fixtures/pr_finding_reconciliation/pr2417_roots.json").read_text())
+    parsed = parse_historical_pr_review_roots(
+        comments,
+        reviewer_identity=ReviewerAppIdentity(login=comments[0]["user"]["login"], app_id=4765828),
+    )
+    expected = [
+        (
+            4176063590,
+            "OrdinaryClosureEvidence.retain and durable reconstruction of ordinary_closure_evidence.json.",
+            "Retention stores a lossy OrdinaryOutcome. Coverage evidence is dropped, findings and gaps become counts or generic blocker messages, and raw_response becomes only a digest. Thread dispositions, recovery evidence and diagnostic details are not retained.",
+            "Persist the complete ordinary semantic result alongside its assessment before granting reusable closure authority.",
+        ),
+        (
+            4176063592,
+            "Semantic PASS validation before durable bounded closure certification.",
+            "_ordinary_outcome treats any nonempty list of VERIFIED/IRRELEVANT entries as complete coverage. Application never compares those identities with the observed Requirements snapshot, so this subset satisfies _authority_gap and reaches certify_closure.",
+            "The durable boundary must refuse certification because REQ-002 was never verified in that ordinary evaluation.",
+        ),
+    ]
+    assert [(c.comment_id, c.authoritative_boundary, c.incorrect_behavior_or_invariant, c.required_outcome) for c in parsed.corrections] == expected
+    snapshot = ledger.initialize_namespace(API_ORIGIN, REPO, PR_NUMBER)
+    owners = {}
+    for root_id, boundary, actual, outcome in expected:
+        blocker_id, snapshot = ledger.admit_blocker(
+            API_ORIGIN,
+            REPO,
+            PR_NUMBER,
+            operation_id=f"seed-{root_id}",
+            expected_ledger_revision=snapshot.ledger_revision,
+            payload=BlockerAdmissionPayload(
+                category="IMPLEMENTATION",
+                qualified_requirements=(QualifiedRequirement(issue_number=2406, requirement_id="REQ-002"),),
+                authoritative_boundary=boundary,
+                incorrect_behavior_or_missing_invariant=actual,
+                required_correction_outcome=outcome,
+                evidence_needed=outcome,
+                accepted_scope=CorrectionScope(description=actual, concern_ids=(f"concern-{root_id}",)),
+                aliases=(BlockerAlias(alias_type="github_root_comment", alias_value=str(root_id)),),
+            ),
+        )
+        owners[root_id] = blocker_id
+    for attempt in range(2):
+        reconciled = reconcile_pr_findings_before_publication(
+            ledger,
+            API_ORIGIN,
+            REPO,
+            PR_NUMBER,
+            issue_number=2406,
+            head_sha="fixed-head",
+            base_sha="base",
+            val_result=AdversarialValidationResult(result="PASS"),
+            historical_parse=parsed,
+            attempt_id=f"replay-{attempt}",
+        )
+        assert reconciled.is_ambiguous is False
+        assert reconciled.unrooted_blocker_ids == ()
+        snapshot = ledger.get_snapshot(API_ORIGIN, REPO, PR_NUMBER, require_retained_state=True)
+        assert len(snapshot.blockers) == 2
+        for root_id, owner in owners.items():
+            assert [b.blocker_id for b in snapshot.get_blockers_for_alias("github_root_comment", str(root_id))] == [owner]
+
+
+@pytest.mark.parametrize("heading", ["**{name}:** {value}", "**{name}**: {value}", "**{name}**\n{value}"])
+def test_historical_scope_fields_support_inline_and_multiline_markdown(heading: str) -> None:
+    fields = [("Authoritative boundary", "service.verify"), ("Actual behavior", "Accepts invalid tokens.\nDrops *signature* evidence."), ("Required behavior", "Reject invalid tokens.")]
+    body = "<!-- shared publication marker -->\nRequirement: REQ-001\n" + "\n\n".join(heading.format(name=name, value=value) for name, value in fields)
+    parsed = parse_historical_pr_review_roots([{"id": 1, "path": "service.py", "body": body}])
+    assert len(parsed.corrections) == 1
+    correction = parsed.corrections[0]
+    assert correction.authoritative_boundary == "service.verify"
+    assert correction.incorrect_behavior_or_invariant == "Accepts invalid tokens.\nDrops *signature* evidence."
+    assert correction.required_outcome == "Reject invalid tokens."
+
+
+def test_historical_fallback_ignores_publication_markers() -> None:
+    parsed = parse_historical_pr_review_roots(
+        [
+            {
+                "id": 1,
+                "path": "service.py",
+                "body": "<!-- shared publication marker -->\nRequirement: REQ-001\nPath: service.py\nMissing signature verification.",
+            }
+        ]
+    )
+    assert len(parsed.corrections) == 1
+    assert parsed.corrections[0].authoritative_boundary == "service.py"
+    assert parsed.corrections[0].incorrect_behavior_or_invariant == "Missing signature verification."
+    assert parsed.corrections[0].required_outcome == "Missing signature verification."
+
+
 def test_as002_already_duplicated_legacy_pr(ledger: CanonicalPRBlockerLedger) -> None:
     """AS-002: Given a PR with duplicate historical root comments 201 and 202 describing
 

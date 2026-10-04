@@ -36,6 +36,12 @@ tests/test_dashboard_reviews.py` to exercise root confirmation, retained
 audit effects, production-stage consumption, and the existing history projection.
 `test_publication_confirms_one_root_per_blocker` verifies both distinct-defect
 publication and equivalent-observation consolidation without a pending intent.
+`tests/test_pr_finding_reconciliation.py::test_two_tier_historical_roots_preserve_distinct_retained_owners`
+replays the PR #2417 two-tier comment format through the real ledger and verifies
+that distinct scopes do not create a false publication ambiguity. Historical
+scope parsing changes no trace schema: genuine ambiguity still reaches the
+existing `pr.adversarial-validation` publication failure, and confirmed publication
+continues through the existing audit effect and dashboard history projection.
 `tests/test_github_app_reviewer.py::test_recovers_retained_review_with_missing_list_anchors`
 drives the same durable confirmation boundary when GitHub omits list anchors:
 an authenticated individual receipt confirms the original roots; mismatched

@@ -53,6 +53,15 @@ When bootstrapping from existing GitHub review threads on a PR:
   (such as human contributor comments claiming "fixed") grant no authority, create
   no aliases, and do not resolve active blockers.
 
+Historical two-tier finding roots use their `Affected boundary`, `Actual`, and
+`Expected` fields as the correction scope. Bold fields support inline values
+(with the colon inside or after the bold label) and multiline values. Values stop
+at the next field or section without discarding inline emphasis. Publication HTML
+markers are metadata, never fallback defect descriptions. Distinct roots with
+overlapping requirement references therefore retain their separate canonical
+owners when replayed, rather than being grouped by a shared publication marker.
+The existing conservative ambiguity gate still rejects genuinely ambiguous scopes.
+
 ## Justified Category Transitions
 
 The reconciliation lifecycle supports justified category transitions (such as
