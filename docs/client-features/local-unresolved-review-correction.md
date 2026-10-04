@@ -19,6 +19,11 @@ and the durable local claim prevent duplicate execution on replay. Cloud-owned
 PRs retain their existing provider follow-up route; missing cloud ownership alone
 does not authorize local repair.
 
+An existing actionable same-head `NEEDS_FIX` or `NEEDS_TESTS` verdict routes
+to repair instead of another full validation, including an explicit `--force`
+run. A pending local correction generation takes priority over full validation.
+An explicit changed-contract adjudication can still invalidate the old verdict.
+
 The correction runs in a detached worktree at the captured PR head. A SQLite claim
 serializes execution for the whole pull request and retains executing,
 indeterminate, publication-pending, no-change, and awaiting-validation states so a
@@ -35,15 +40,18 @@ The production repair-allowance ledger is acquired before the local claim or any
 workspace mutation. Unreadable allowance state fails closed, while a temporary
 absence of a synchronous backend remains definitely not started and retryable.
 Backend `CANNOT_FIX` output is retained as terminal failure rather than successful
-no-change completion. Successful no-change and published completions proceed to
-independent same-head revalidation. Ordinary unstaged model edits are staged by the
+no-change completion. A no-change completion reports that verification was not
+performed and suppresses another reviewer invocation on the unchanged commit.
+A later new commit can receive scoped verification of the still-pending targets.
+Published corrections proceed to scoped independent verification after the
+authoritative PR head is refreshed. Ordinary unstaged model edits are staged by the
 controller; if staging or committing fails, the detached workspace path is retained
 with the durable attempt for recovery.
 
 A completed allowance generation is never reused as delivery authority for a
 new attempt. Its pending-revalidation state instead sends ordinary PR processing
-through independent validation, even when unresolved threads would otherwise stop
-that pass. After confirmed review publication, exact-current-head dispositions
+through independent verification of only its unsettled covered roots, even when
+unresolved threads would otherwise stop that pass. After confirmed review publication, exact-current-head dispositions
 settle only the original covered root identities: `ADDRESSED` clears that blocker
 and `STILL_VALID` charges one failed generation. Missing or inconclusive
 observations retain the outstanding generation. Validation must examine the
@@ -64,14 +72,31 @@ not discard an existing open gap: the correction uses the current validated
 instructions while preserving the original root's durable feedback identity.
 Different gap identities remain excluded even when their prose is identical.
 
-When a completed generation requires revalidation, its original unsettled roots
-remain part of the independent review input even if GitHub already displays
-them as resolved. Auto-Coder retrieves the complete threads again, matches the
-original durable feedback identities, and authenticates the reviewer before
-including them alongside current findings. This recovery occurs after the
-post-Codex thread refresh so that refresh cannot discard the covered roots.
-Only fresh current-head dispositions settle the generation; resolved UI state
-alone does not clear an allowance. Missing, truncated, or unauthenticated roots,
-and failed reads, stop before another model invocation with an explicit
-`local-validation-input` failure instead of repeatedly reviewing unrelated
-findings while the original generation remains pending.
+When a completed generation requires verification, its original unsettled roots
+are the entire review scope, even if GitHub displays them as resolved.
+Auto-Coder retrieves complete threads, matches durable feedback identities, and
+authenticates the reviewer. Unrelated findings and settled roots are excluded.
+The read-only prompt requests only per-target `ADDRESSED`, `STILL_VALID`, or
+`INCONCLUSIVE` dispositions; it does not request a new PR-wide review.
+
+A separate SQLite checkpoint reserves the reviewer invocation by generation and
+head before model entry. Restarts reuse its retained response; an interrupted or
+indeterminate invocation is reported without repeating it on the same commit.
+Publication is separately reserved and reconciled against the exact native
+review receipt, preventing blind resend after an uncertain publication. Pending
+execution diagnostics and completed reports have separate publication receipts.
+
+The GitHub native review uses a distinct local-repair-verification marker and
+cannot supersede the ordinary adversarial verdict or authorize merge. Its
+`Pending local corrections NOT verified` section lists each missing, truncated,
+unauthenticated, omitted, inconclusive, or failed target with its blocker identity,
+available thread identity, and reason. Such targets remain pending and are never
+presented as `STILL_VALID` merely because verification failed. Partial results
+settle only targets actually verified, after confirmed publication and a current
+head check. Resolved UI state alone does not clear an allowance.
+
+The repair-delegation dashboard stage exposes the generation, examined head,
+unverified target count and reasons with `effect=local-validation-scoped`.
+Incomplete verification is `BLOCKED`; a completed scoped check is `COMPLETED`
+but remains a deferred PR-processing result rather than merge approval.
+Publication or settlement failures are explicitly `FAILED`.

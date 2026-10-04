@@ -2151,7 +2151,7 @@ class TestAdversarialValidationPRFlow:
         assert any("Published APPROVE adversarial review" in a for a in actions)
         assert any("Successfully merged PR #100" in a for a in actions)
 
-    @pytest.mark.parametrize("local,pending,resolved_prior", [(False, False, False), (True, False, False), (True, True, False), (True, True, True), (True, True, "missing")])
+    @pytest.mark.parametrize("local", [False, True])
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
@@ -2172,31 +2172,21 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
         dedicated_reviewer_publication,
         local,
-        pending,
-        resolved_prior,
         monkeypatch,
-        tmp_path,
     ):
-        """A violation is reported without checking out or modifying the PR branch."""
+        """A fresh violation is published and delegated once before another pass."""
         mock_checks.return_value = GitHubActionsStatusResult(success=True, ids=[1])
         mock_worktree.return_value.__enter__.return_value = "/tmp/worktree"
-        mock_run_validation.return_value = AdversarialValidationResult(
+        result = AdversarialValidationResult(
             result="NEEDS_FIX",
             summary="Found specification violation",
-            findings=[
-                AdversarialValidationFinding(
-                    violated_requirement="Spec requires idempotency",
-                    counterexample="Given state S, when action A occurs, then R, but produces duplicate X, tests pass because only 1 call is made in test",
-                    test_gap="Tests only test single execution",
-                    suggested_regression_scenario="Call action twice and verify state",
-                )
-            ],
+            findings=[AdversarialValidationFinding(violated_requirement="Spec requires idempotency", counterexample="Repeated reachable action duplicates the effect", test_gap="Only one execution was tested", suggested_regression_scenario="Call action twice and verify state")],
         )
+        mock_run_validation.return_value = result
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": "abc123456789"}}
-
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
         if local:
@@ -2210,62 +2200,12 @@ class TestAdversarialValidationPRFlow:
             route = ReviewRepairRouteDecision(ReviewRepairRouteDisposition.LOCAL_REQUIRED, "local", evidence)
             monkeypatch.setattr("auto_coder.pr_processor._select_review_repair_route", lambda *args: route)
             monkeypatch.setattr("auto_coder.pr_processor._revalidate_local_review_repair_route", lambda *args: route)
-            finding_body = format_adversarial_finding_comment(mock_run_validation.return_value.findings[0])
+            finding_body = format_adversarial_finding_comment(result.findings[0])
             client.get_pr_review_threads_strict.return_value = [ReviewThread(id="finding", comments=[ReviewThreadComment(database_id=1, author_login="reviewer", body=finding_body)])]
             monkeypatch.setattr("auto_coder.pr_processor._get_claimed_review_thread_state", lambda *args, **kwargs: ClaimedReviewThreadGateState())
             monkeypatch.setattr("auto_coder.local_review_repair.admit_local_repair_allowance", lambda request: (object(), ""))
             execute = MagicMock(return_value=LocalReviewRepairOutcome("awaiting_validation", "published", True, True))
             monkeypatch.setattr("auto_coder.local_review_repair.execute_local_review_repair", execute)
-            if pending:
-                from auto_coder.adversarial_validator import ReviewThreadDisposition
-                from auto_coder.durable_repair_allowance import RepairAllowanceLedger
-                from auto_coder.local_review_repair import LocalRepairValidationRequired
-                from auto_coder.pr_processor import _allow_older_head_adversarial_threads
-                from auto_coder.review_thread_validation import ClaimedReviewThread
-
-                ledger = RepairAllowanceLedger(tmp_path / "allowance.sqlite3")
-                ledger.initialize_namespace("https://api.github.com", "owner/repo", 100)
-                monkeypatch.setattr("auto_coder.durable_repair_allowance.RepairAllowanceLedger", lambda: ledger)
-
-                root = client.get_pr_review_threads_strict.return_value[0]
-                blocked = ClaimedReviewThreadGateState(unresolved=(root,), blocking_unresolved=(root,), has_blocking_unresolved=True)
-                claimed = ClaimedReviewThreadGateState(claimed=(ClaimedReviewThread(thread_id="finding", root_comment_database_id=1, original_finding=finding_body, revalidation_forced=True),))
-                monkeypatch.setattr("auto_coder.pr_processor._get_claimed_review_thread_state", lambda *args, **kwargs: blocked)
-                monkeypatch.setattr("auto_coder.pr_processor._allow_older_head_adversarial_threads", lambda *args, **kwargs: claimed)
-                monkeypatch.setattr("auto_coder.pr_processor.resolve_addressed_review_threads", lambda *args, **kwargs: [])
-                monkeypatch.setattr("auto_coder.pr_processor._get_published_adversarial_validation_status", lambda *args: ("NEEDS_FIX", None))
-                admission = MagicMock(side_effect=[LocalRepairValidationRequired("completed generation"), (object(), "")])
-                monkeypatch.setattr("auto_coder.local_review_repair.admit_local_repair_allowance", admission)
-                settlement = MagicMock()
-                monkeypatch.setattr("auto_coder.local_review_repair.settle_local_review_repair_validation", settlement)
-                client.get_pull_request_head_sha_strict.return_value = "abc123456789"
-                mock_run_validation.return_value.thread_dispositions = [ReviewThreadDisposition(thread_id="finding", status="STILL_VALID", evidence="defect independently reproduced")]
-                if resolved_prior:
-                    from auto_coder.local_review_repair import LocalReviewRepairRequest
-
-                    prior = ReviewThread(id="prior", is_resolved=True, comments=[ReviewThreadComment(database_id=17, author_login="auto-coder-reviewer[bot]", body="### Auto-Coder material test-oracle gap\nPrior invariant")])
-                    client.get_pr_review_threads_strict.return_value = [root, prior]
-                    prior_identity = _review_feedback_identity("owner/repo#100:local:", prior, 0)
-                    request = LocalReviewRepairRequest("owner/repo", 100, "owner/repo", "feature-branch", "abc123456789", (prior_identity,), "repair")
-                    from auto_coder.durable_repair_allowance import CorrectiveGenerationBundle
-                    from auto_coder.local_review_repair import LocalRepairAllowanceAuthority
-
-                    snapshot = ledger.initialize_namespace("https://api.github.com", "owner/repo", 100)
-                    admitted = ledger.admit_generation(
-                        "https://api.github.com", "owner/repo", 100, "admit-prior", snapshot.epoch, CorrectiveGenerationBundle(request.attempt_id, (prior_identity,), owning_identity="local-review-repair", observed_baseline=request.head_sha), open_blocker_ids=(prior_identity,)
-                    )
-                    authority = LocalRepairAllowanceAuthority(ledger, request, admitted.generation_id, admitted.snapshot.epoch)
-                    authority.mark_invocation()
-                    authority.mark_completion(code_changed=True, evidence="published prior correction")
-                    monkeypatch.setattr("auto_coder.durable_repair_allowance.RepairAllowanceLedger", lambda: ledger)
-                    mock_run_validation.return_value.thread_dispositions.append(ReviewThreadDisposition(thread_id="prior", status="ADDRESSED", evidence="prior invariant independently verified"))
-                    # Preserve the production promotion adapter for the retained root.
-                    from auto_coder import pr_processor
-
-                    promote = _allow_older_head_adversarial_threads
-                    monkeypatch.setattr(pr_processor, "_allow_older_head_adversarial_threads", lambda state, login, **kwargs: promote(state, login, **kwargs) if state.blocking_unresolved and state.blocking_unresolved[0].id == "prior" else claimed)
-                    if resolved_prior == "missing":
-                        client.get_pr_review_threads_strict.return_value = [root]
             monkeypatch.setattr("auto_coder.pr_processor.get_linked_issues_context", lambda *args: "REQ-001: idempotency")
         from auto_coder.execution_trace import TraceCollector, get_trace_collector
 
@@ -2273,66 +2213,31 @@ class TestAdversarialValidationPRFlow:
         collector = get_trace_collector()
         with collector.start_execution("owner/repo", "pr", 100, origin="worker"):
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
-
-        if resolved_prior == "missing":
-            from auto_coder.execution_trace import Outcome
-            from tests.test_dashboard_observability import _mounted_detail
-
-            mock_run_validation.assert_not_called()
-            mock_merge_pr.assert_not_called()
-            execute.assert_not_called()
-            settlement.assert_not_called()
-            assert any("Local repair validation input failed" in action for action in actions)
-            events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=100).events if event.stage_id == "pr.repair-delegation"]
-            assert events[-1].outcome == Outcome.FAILED.value
-            assert events[-1].facts["effect"] == "local-validation-input"
-            assert events[-1].facts["local_phase"] == "awaiting_validation"
-            with patch("auto_coder.dashboard.ui") as mock_ui:
-                _mounted_detail(mock_ui, "pr", 100)
-            assert any("local-validation-input" in str(call) for call in mock_ui.table.call_args_list)
-            assert ledger.get_snapshot("https://api.github.com", "owner/repo", 100).get_outstanding_generation() is not None
-            return
-
         mock_worktree.assert_called_once_with("owner/repo", 100, "abc123456789")
         mock_run_validation.assert_called_once()
         mock_checkout.assert_not_called()
         mock_merge_pr.assert_not_called()
         client.add_comment_to_pr.assert_not_called()
-        dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, "abc123456789", mock_run_validation.return_value)
-        assert any("Adversarial validation failed for PR #100" in a for a in actions)
+        dedicated_reviewer_publication.assert_called_once_with("owner/repo", 100, "abc123456789", result)
+        assert any("Adversarial validation failed for PR #100" in action for action in actions)
         if local:
             from auto_coder.execution_trace import Outcome
+            from tests.test_dashboard_observability import _mounted_detail
 
             execute.assert_called_once()
             assert finding_body in execute.call_args.args[0].prompt
             assert execute.call_args.args[0].head_sha == "abc123456789"
-            repair_events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=100).events if event.stage_id == "pr.repair-delegation"]
-            assert len(repair_events) == (2 if pending else 1)
-            if pending:
-                settlement.assert_called_once()
-                observations = settlement.call_args.args[3]
-                assert len(observations) == (2 if resolved_prior else 1)
-                assert observations[0].blocker_id == _review_feedback_identity("owner/repo#100:local:", root, 0)
-                assert observations[0].still_unmet is True
-                if resolved_prior:
-                    assert [thread.thread_id for thread in mock_run_validation.call_args.kwargs["claimed_review_threads"]] == ["finding", "prior"]
-                    assert observations[1].blocker_id == prior_identity
-                    assert observations[1].still_unmet is False
-                assert admission.call_count == 2
-                assert any("Continuing to independent validation for completed local correction" in action for action in actions)
-            assert repair_events[0].outcome == Outcome.DEFERRED.value
-            assert repair_events[0].facts["route_disposition"] == "LOCAL_EXECUTION"
-            assert repair_events[0].facts["local_phase"] == "awaiting_validation"
-            from tests.test_dashboard_observability import _mounted_detail
-
+            events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=100).events if event.stage_id == "pr.repair-delegation"]
+            assert len(events) == 1
+            assert events[0].outcome == Outcome.DEFERRED.value
+            assert events[0].facts["route_disposition"] == "LOCAL_EXECUTION"
+            assert events[0].facts["local_phase"] == "awaiting_validation"
             with patch("auto_coder.dashboard.ui") as mock_ui:
                 diagram = _mounted_detail(mock_ui, "pr", 100)
-            assert "repair delegation" in diagram
-            assert "deferred" in diagram
+            assert "repair delegation" in diagram and "deferred" in diagram
             assert any("LOCAL_EXECUTION" in str(call) for call in mock_ui.table.call_args_list)
-            assert not any("no local automatic adversarial fix" in action for action in actions)
         else:
-            assert any("no local automatic adversarial fix was attempted" in a for a in actions)
+            assert any("no local automatic adversarial fix was attempted" in action for action in actions)
 
     def test_handle_pr_merge_persists_nonempty_provider_snapshot_for_restart_delivery(self, tmp_path, dedicated_reviewer_publication):
         """The production validation boundary preserves B through publication and restart."""

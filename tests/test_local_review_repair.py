@@ -662,10 +662,10 @@ def test_pending_local_repair_includes_original_root_after_resolution(tmp_path, 
     other = ClaimedReviewThread(thread_id="new-finding")
     with patch("auto_coder.durable_repair_allowance.RepairAllowanceLedger", return_value=ledger):
         claimed = _include_pending_local_repair_threads(client, "owner/repo", 42, "reviewer", (other,))
-    assert [thread.thread_id for thread in claimed] == ["new-finding", "original"]
-    assert claimed[1].root_comment_database_id == 17
-    assert claimed[1].original_finding == root.comments[0].body
-    assert claimed[1].revalidation_forced is True
+    assert [thread.thread_id for thread in claimed] == ["original"]
+    assert claimed[0].root_comment_database_id == 17
+    assert claimed[0].original_finding == root.comments[0].body
+    assert claimed[0].revalidation_forced is True
     assert root.is_resolved is resolved
     # Independent evidence, rather than the UI state, settles the old generation.
     disposition = ReviewThreadDisposition(thread_id="original", status="ADDRESSED", evidence="original invariant independently verified")

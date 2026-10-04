@@ -90,6 +90,7 @@ def settle_local_review_repair_validation(
     *,
     ledger: Optional[RepairAllowanceLedger] = None,
     store: Optional[LocalReviewRepairStore] = None,
+    expected_generation_id: Optional[str] = None,
 ) -> None:
     """Settle only independently adjudicated feedback after the published result."""
     ledger = ledger or RepairAllowanceLedger()
@@ -97,6 +98,8 @@ def settle_local_review_repair_validation(
     generation = snapshot.get_outstanding_generation()
     if generation is None or generation.owning_identity != "local-review-repair" or generation.lifecycle_state != GenerationLifecycleState.PENDING_REVALIDATION:
         return
+    if expected_generation_id is not None and generation.generation_id != expected_generation_id:
+        raise RuntimeError("pending local repair generation changed before verification settlement")
     store = store or LocalReviewRepairStore(local_review_repair_db_path(repository))
     request = LocalReviewRepairRequest(repository, pr_number, repository, "", head_sha, (), "")
     record = store.get(request, generation.bundle_reference)

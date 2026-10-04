@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -39,6 +39,7 @@ from .adversarial_validator import (
     adversarial_validation_comment_marker,
     count_adversarial_validation_comments,
     format_adversarial_finding_comment,
+    format_adversarial_review_summary,
     format_adversarial_validation_comment,
     format_test_oracle_gap_comment,
     run_adversarial_validation,
@@ -1078,6 +1079,8 @@ def _include_pending_local_repair_threads(
     pr_number: int,
     reviewer_login: str,
     claimed: Sequence[ClaimedReviewThread],
+    *,
+    allow_incomplete: bool = False,
 ) -> Tuple[ClaimedReviewThread, ...]:
     """Keep completed repair roots in independent validation after UI resolution."""
     from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
@@ -1090,6 +1093,7 @@ def _include_pending_local_repair_threads(
     pending = set(generation.covered_blocker_ids) - settled
     threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
     existing = {thread.thread_id: thread for thread in claimed}
+    selected_existing = []
     retained = []
     found = set()
     for thread in threads:
@@ -1102,13 +1106,102 @@ def _include_pending_local_repair_threads(
         current = existing.get(thread.id)
         if current is not None and not thread.comments_truncated and current.root_comment_database_id == thread.comments[0].database_id:
             # Already-classified claims retain their supported reviewer authority.
+            selected_existing.append(current)
             continue
         # Resolution is presentation state, never independent correctness evidence.
         retained.append(replace(thread, is_resolved=False))
     promoted = _allow_older_head_adversarial_threads(ClaimedReviewThreadGateState(blocking_unresolved=tuple(retained)), reviewer_login, forced=True)
-    if found != pending or promoted.blocking_unresolved:
+    if not allow_incomplete and (found != pending or promoted.blocking_unresolved):
         raise RuntimeError("pending local repair roots are missing, incomplete, or unauthenticated")
-    return tuple(claimed) + tuple(thread for thread in promoted.claimed if thread.thread_id not in existing)
+    return tuple(selected_existing) + tuple(promoted.claimed)
+
+
+def _verify_pending_local_correction(
+    github_client: Any,
+    repo_name: str,
+    pr_data: dict,
+    config: AutomationConfig,
+    actions: List[str],
+    processing_status: Optional[Any],
+) -> None:
+    """Verify the pending generation once, without starting a full PR review."""
+    from .local_review_validation import run_pending_local_repair_verification
+
+    pr_number = int(pr_data["number"])
+    head_sha = str((pr_data.get("head") or {}).get("sha") or "")
+    try:
+        if github_client.get_pull_request_head_sha_strict(repo_name, pr_number) != head_sha:
+            actions.append(f"Deferred local correction verification for PR #{pr_number}: the published repair changed the head; refresh the PR before verification")
+            _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.DEFERRED, {"route_disposition": "LOCAL_EXECUTION", "local_phase": "awaiting_validation", "effect": "local-validation-head-refresh", "examined_head": head_sha})
+            if processing_status is not None:
+                processing_status.outcome = PRProcessingOutcome.DEFERRED
+            return
+        reviewer_identity = resolve_reviewer_app_identity(repo_name)
+
+        def publish(result: AdversarialValidationResult, may_send: bool) -> bool:
+            if github_client.get_pull_request_head_sha_strict(repo_name, pr_number) != head_sha:
+                return False
+            expected = format_adversarial_review_summary(result, head_sha)
+            for review in github_client.get_pr_reviews_strict(repo_name, pr_number):
+                login = _comment_value(_comment_value(review, "user") or {}, "login", "")
+                if reviewer_identity.matches_login(login) and _comment_value(review, "body", "") == expected and _comment_value(review, "commit_id", "") == head_sha:
+                    return True
+            if not may_send:
+                return False
+            return publish_adversarial_review(repo_name, pr_number, head_sha, result).success
+
+        observed_targets: dict[str, ClaimedReviewThread] = {}
+
+        def select_threads() -> Tuple[ClaimedReviewThread, ...]:
+            state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
+            if state.lookup_error:
+                raise RuntimeError(state.lookup_error)
+            selected = _include_pending_local_repair_threads(github_client, repo_name, pr_number, reviewer_identity.login, state.claimed, allow_incomplete=True)
+            observed_targets.update((thread.thread_id, thread) for thread in selected)
+            return selected
+
+        result = run_pending_local_repair_verification(
+            repo_name,
+            pr_number,
+            head_sha,
+            select_threads=select_threads,
+            linked_issue_contract=lambda: get_linked_issues_context(github_client, repo_name, pr_data.get("body", "")),
+            worktree=lambda: isolated_pr_head_worktree(repo_name, pr_number, head_sha),
+            publish=publish,
+            head_is_current=lambda: github_client.get_pull_request_head_sha_strict(repo_name, pr_number) == head_sha,
+        )
+        pending_count = len(result.unverified_local_repairs)
+        if any(item.status == "ADDRESSED" for item in result.thread_dispositions):
+            closure = resolve_addressed_review_threads(github_client, repo_name, pr_number, head_sha, tuple(observed_targets.values()), result.thread_dispositions, ledger=CanonicalPRBlockerLedger(), base_sha=str((pr_data.get("base") or {}).get("sha") or ""))
+            unfinished = tuple(getattr(closure, "unfinished_outcomes", ()))
+            actions.append(f"Scoped local correction thread closure for PR #{pr_number}: {len(closure)} confirmed, {len(unfinished)} unfinished")
+            _record_pr_stage(pr_number, "pr.review-thread-closure", f"pr#{pr_number} review-thread closure", Outcome.BLOCKED if unfinished else Outcome.COMPLETED, {"confirmed_count": len(closure), "unfinished_count": len(unfinished), "effect": "local-validation-scoped", "examined_head": head_sha})
+        outcome = Outcome.BLOCKED if pending_count else Outcome.COMPLETED
+        actions.append(f"Scoped local correction verification for PR #{pr_number}: {len(result.thread_dispositions)} disposition(s), {pending_count} target(s) NOT verified; no full PR validation was started")
+        _record_pr_stage(
+            pr_number,
+            "pr.repair-delegation",
+            f"pr#{pr_number} repair delegation",
+            outcome,
+            {
+                "route_disposition": "LOCAL_EXECUTION",
+                "local_phase": "awaiting_validation" if pending_count else "validation_complete",
+                "effect": "local-validation-scoped",
+                "generation_id": result.local_repair_generation_id,
+                "examined_head": head_sha,
+                "unverified_count": pending_count,
+                "unverified_targets": [asdict(item) for item in result.unverified_local_repairs],
+            },
+        )
+        if processing_status is not None:
+            processing_status.outcome = PRProcessingOutcome.DEFERRED
+    except Exception as exc:
+        reason = redact_string(str(exc))[:2000]
+        actions.append(f"Local repair verification failed for PR #{pr_number}: {reason}; no full PR validation was started")
+        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"route_disposition": "LOCAL_EXECUTION", "local_phase": "awaiting_validation", "effect": "local-validation-scoped", "reason": reason})
+        if processing_status is not None:
+            processing_status.error = reason
+            processing_status.outcome = PRProcessingOutcome.FAILED
 
 
 def _comment_value(comment: Any, key: str, default: Any = None) -> Any:
@@ -3692,9 +3785,25 @@ def _handle_pr_merge(
             adv_enabled = _is_pr_adversarial_validation_enabled(config, repo_name)
             revalidating_older_head_threads = False
             forced_same_head_revalidation = False
-            local_revalidation_due = False
             reviewer_login = ""
             claimed_review_threads: Sequence[Any] = ()
+
+            if adv_enabled and any(marker in str(pr_data.get("body") or "") for marker in _LOCAL_REPAIR_MARKERS):
+                from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
+
+                try:
+                    snapshot = RepairAllowanceLedger().initialize_namespace("https://api.github.com", repo_name, pr_number)
+                    generation = snapshot.get_outstanding_generation()
+                except Exception as exc:
+                    actions.append(f"Local repair allowance could not be read for PR #{pr_number}: {exc}")
+                    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"route_disposition": "LOCAL_EXECUTION", "effect": "local-validation-scoped", "reason": str(exc)})
+                    if processing_status is not None:
+                        processing_status.error = str(exc)
+                        processing_status.outcome = PRProcessingOutcome.FAILED
+                    return actions
+                if generation is not None and generation.owning_identity == "local-review-repair" and generation.lifecycle_state == GenerationLifecycleState.PENDING_REVALIDATION:
+                    _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                    return actions
 
             if thread_gate_enabled:
                 claimed_thread_state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
@@ -3707,7 +3816,7 @@ def _handle_pr_merge(
                     return actions
                 force_admission_eligible = False
                 if adv_enabled:
-                    if claimed_thread_state.has_blocking_unresolved and not _is_dependabot_pr(pr_data):
+                    if (claimed_thread_state.has_blocking_unresolved or any(not thread.is_change_provenance for thread in claimed_thread_state.claimed) or any(not is_change_provenance_thread(thread) for thread in claimed_thread_state.unresolved)) and not _is_dependabot_pr(pr_data):
                         # An authentic validator finding remains a merge blocker, but it
                         # must not prevent validation of a newer head, nor prevent an
                         # explicit --force run from reaching a fresh current-head
@@ -3718,6 +3827,27 @@ def _handle_pr_merge(
                         if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                             current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
                             if not current_status_error:
+                                if current_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not adjudication_forces_revalidation:
+                                    report, report_error = _get_published_adversarial_validation_comment(github_client, repo_name, pr_number, head_sha_for_gate)
+                                    if report_error or not report:
+                                        actions.append(f"Cannot replay current-head adversarial feedback for PR #{pr_number}: {report_error or 'published report is unavailable'}")
+                                        _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"effect": "adversarial-feedback-replay", "examined_head": head_sha_for_gate, "reason": report_error or "published report is unavailable"})
+                                        return actions
+                                    repair_result = _send_adversarial_validation_feedback_to_cloud_task(repo_name, pr_data, head_sha_for_gate, report, github_client, config=config)
+                                    actions.extend(repair_result)
+                                    actions.append(f"Reused unresolved {current_status} validation for PR #{pr_number} at unchanged commit {head_sha_for_gate[:8]}; repair takes priority over another full validation")
+                                    _record_pr_stage(
+                                        pr_number,
+                                        "pr.repair-delegation",
+                                        f"pr#{pr_number} repair delegation",
+                                        _adversarial_repair_outcome(repair_result),
+                                        {"effect": "adversarial-feedback-replay", "examined_head": head_sha_for_gate, "route_disposition": getattr(repair_result, "route_disposition", "CLOUD"), "local_phase": getattr(repair_result, "local_phase", "")},
+                                    )
+                                    if getattr(repair_result, "local_phase", "") in {"completed_no_change", "awaiting_validation"}:
+                                        _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                                    elif processing_status is not None and getattr(repair_result, "deferred", False):
+                                        processing_status.outcome = PRProcessingOutcome.DEFERRED
+                                    return actions
                                 if current_status is None or force_adversarial_validation or adjudication_forces_revalidation:
                                     try:
                                         reviewer_login = resolve_reviewer_app_identity(repo_name).login
@@ -3757,17 +3887,6 @@ def _handle_pr_merge(
                                 repair_kwargs["config"] = config
                             repair_result = _delegate_cloud_review_thread_repair(repo_name, pr_data, **repair_kwargs)
                             actions.extend(repair_result)
-                            if repair_result.local_phase in {"completed_no_change", "awaiting_validation"} and adv_enabled:
-                                local_revalidation_due = True
-                                force_adversarial_validation = True
-                                force_admission_eligible = True
-                                try:
-                                    reviewer_login = resolve_reviewer_app_identity(repo_name).login
-                                except Exception as exc:
-                                    logger.error(f"Could not authenticate local-correction revalidation for PR #{pr_number}: {exc}")
-                                else:
-                                    claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login, forced=True)
-                                actions.append(f"Continuing to independent validation for completed local correction on PR #{pr_number}")
                             if repair_result.deferred and processing_status is not None:
                                 processing_status.error = None
                                 processing_status.outcome = PRProcessingOutcome.DEFERRED
@@ -3781,16 +3900,16 @@ def _handle_pr_merge(
                                 Outcome.ACCEPTED_HANDOFF if repair_result.delivered else (Outcome.DEFERRED if repair_result.deferred else Outcome.FAILED),
                                 {"effect": "review-thread-repair", "thread_count": len(repair_threads), "route_disposition": repair_result.route_disposition, "local_phase": repair_result.local_phase},
                             )
+                            if repair_result.local_phase in {"completed_no_change", "awaiting_validation"} and adv_enabled:
+                                _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                                return actions
                     if not force_admission_eligible:
                         return actions
                     # REQ-001/REQ-009: an explicit --force run still reaches a fresh
                     # current-head validation attempt; the remaining unresolved
                     # threads above are not eligible for independent rereview and
                     # remain a merge blocker (enforced again at the merge boundary).
-                    if local_revalidation_due:
-                        actions.append(f"Continuing to independent validation for PR #{pr_number} despite unresolved review threads; merge remains blocked while they are unresolved")
-                    else:
-                        actions.append(f"Continuing to forced adversarial validation for PR #{pr_number} despite unresolved review threads (explicit --force); merge remains blocked while they are unresolved")
+                    actions.append(f"Continuing to forced adversarial validation for PR #{pr_number} despite unresolved review threads (explicit --force); merge remains blocked while they are unresolved")
 
                 claimed_review_threads = claimed_thread_state.claimed
                 if claimed_review_threads:
@@ -3980,18 +4099,6 @@ def _handle_pr_merge(
                         logger.warning(f"Adversarial validation blocked PR #{pr_number}: Missing head.sha in PR data")
                         return actions
 
-                    if local_revalidation_due:
-                        try:
-                            claimed_review_threads = _include_pending_local_repair_threads(github_client, repo_name, pr_number, reviewer_login, claimed_review_threads)
-                        except Exception as exc:
-                            reason = str(exc)
-                            actions.append(f"Local repair validation input failed for PR #{pr_number}: {reason}")
-                            _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"route_disposition": "LOCAL_EXECUTION", "local_phase": "awaiting_validation", "reason": reason, "effect": "local-validation-input"})
-                            if processing_status is not None:
-                                processing_status.error = reason
-                                processing_status.outcome = PRProcessingOutcome.FAILED
-                            return actions
-
                     # Recover older accepted reviews before invoking another LLM:
                     # pending roots otherwise block every new publication too.
                     publication_recovery = recover_pending_adversarial_publications(repo_name, pr_number)
@@ -4049,7 +4156,7 @@ def _handle_pr_merge(
                             processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
 
-                    if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and not force_adversarial_validation:
+                    if published_status and not has_new_provenance_evidence and not exhaustion_retry_due and (not force_adversarial_validation or published_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES):
                         # REQ-005/REQ-011: an authoritative same-head result is
                         # consumed without a new reviewer-backend invocation.
                         # Provenance for the producing review may be genuinely
@@ -4111,6 +4218,8 @@ def _handle_pr_merge(
                                         if getattr(feedback_actions, "deferred", False) and processing_status is not None:
                                             processing_status.error = None
                                             processing_status.outcome = PRProcessingOutcome.DEFERRED
+                                        if getattr(feedback_actions, "local_phase", "") in {"completed_no_change", "awaiting_validation"}:
+                                            _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
                             return actions
                     else:
                         if force_adversarial_validation:
@@ -4413,36 +4522,6 @@ def _handle_pr_merge(
                                 _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "post-publication"})
                                 record_effect(review_target, active_review_id, "superseded", {"phase": "post-publication"})
                                 return actions
-                            if local_revalidation_due:
-                                try:
-                                    if github_client.get_pull_request_head_sha_strict(repo_name, pr_number) != head_sha:
-                                        raise RuntimeError("current head changed before local repair settlement")
-                                    from .durable_repair_allowance import ValidationObservation
-                                    from .local_review_repair import settle_local_review_repair_validation
-
-                                    dispositions = {item.thread_id: item for item in val_result.thread_dispositions}
-                                    observations = []
-                                    for thread in claimed_review_threads:
-                                        disposition = dispositions.get(thread.thread_id)
-                                        if disposition is None or disposition.status not in {"ADDRESSED", "STILL_VALID"}:
-                                            continue
-                                        root = ReviewThread(id=thread.thread_id, comments=[ReviewThreadComment(database_id=thread.root_comment_database_id)])
-                                        observations.append(
-                                            ValidationObservation(
-                                                blocker_id=_review_feedback_identity(f"{repo_name}#{pr_number}:local:", root, 0),
-                                                still_unmet=disposition.status == "STILL_VALID",
-                                                validation_seq=time.time_ns(),
-                                                evidence=f"independent review {attempt.attempt_id} at {head_sha}: {disposition.status}; {disposition.evidence}",
-                                            )
-                                        )
-                                    settle_local_review_repair_validation(repo_name, pr_number, head_sha, tuple(observations))
-                                except Exception as exc:
-                                    actions.append(f"Local repair validation settlement failed for PR #{pr_number}: {exc}")
-                                    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", Outcome.FAILED, {"route_disposition": "LOCAL_EXECUTION", "local_phase": "awaiting_validation", "reason": str(exc), "effect": "local-validation-settlement"})
-                                    if processing_status is not None:
-                                        processing_status.error = str(exc)
-                                        processing_status.outcome = PRProcessingOutcome.FAILED
-                                    return actions
                     if published_status == "PASS" and unfinished_closure_outcomes:
                         reason = f"Review-thread closure remains unfinished for {len(unfinished_closure_outcomes)} " f"thread(s): {', '.join(outcome.thread_id for outcome in unfinished_closure_outcomes)}"
                         if processing_status is not None:

@@ -1679,36 +1679,36 @@ model invocation or merge and the emitted recovery phase and failed status.
 
 ## Local repair generation revalidation
 
-Pending local generations retain their original covered roots in the fresh
-validation input even after GitHub thread resolution. Failure to acquire or
-authenticate those roots emits `FAILED` on `pr.repair-delegation` with
-`effect=local-validation-input`, `route_disposition=LOCAL_EXECUTION`,
-`local_phase=awaiting_validation`, and the reason, before reviewer invocation.
-This uses the existing stage-detail renderer and schema.
-`tests/test_local_review_repair.py::test_pending_local_repair_includes_original_root_after_resolution`
-and `test_pending_local_repair_root_evidence_fails_closed` cover exact-root
-retention, settlement, fresh admission, and unavailable/untrusted evidence.
-The `resolved_prior=True` variant of the production regression below also
-asserts that the resolved prior root reaches the reviewer and the independent
-settlement boundary alongside the new unresolved finding; the mounted dashboard
-assertions retain the local phase and deferred route.
+Pending local generations receive verification of only their unsettled covered
+roots, including already-resolved original roots. Unrelated findings are excluded.
+The generation/head checkpoint prevents duplicate reviewer invocation after restart
+or `--force`. An actionable same-head ordinary verdict routes to repair rather
+than repeated full validation.
 
-Ordinary unresolved-thread repair emits `local_phase` on `pr.repair-delegation`
-alongside `route_disposition=LOCAL_EXECUTION`. A completed allowance awaiting
-independent validation emits `DEFERRED` with `local_phase=awaiting_validation` and
-continues to the existing adversarial-validation stage. Fresh confirmed,
-current-head review dispositions settle the prior generation before further
-repair admission. Settlement errors emit `FAILED` on `pr.repair-delegation`, with
-`effect=local-validation-settlement`, the retained phase and a diagnostic reason.
-The generic dashboard stage-detail table already displays these facts; no new
-schema, processing origin, or renderer is required.
-`tests/test_local_review_repair.py::test_delivery_authority_failure_is_not_started_and_retries`,
-`test_completed_generation_requires_validation_before_new_attempt`, and
-`test_independent_validation_settles_only_covered_causal_feedback` exercise the
-retry, admission, and settlement boundaries. Run `bash scripts/test.sh
-tests/test_local_review_repair.py tests/test_adversarial_validation_pr_flow.py
-tests/test_dashboard_observability.py`.
-`tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationPRFlow::test_green_ci_with_adversarial_needs_fix_comments_and_stops[True-True]`
-drives ordinary blocked-thread admission through independent validation,
-settlement, and renewed repair; its collector and mounted detail assertions
-verify both `LOCAL_EXECUTION` deferred stages and their retained local phase.
+The scoped producer emits `pr.repair-delegation` with
+`effect=local-validation-scoped`, `route_disposition=LOCAL_EXECUTION`,
+`generation_id`, `examined_head`, `unverified_count`, and `unverified_targets`
+(blocker ID, available thread ID, reason). Missing or inconclusive targets produce
+`BLOCKED` and `local_phase=awaiting_validation`; complete scoped verification
+produces `COMPLETED` and `local_phase=validation_complete`. Both defer PR
+processing and never imply a full validation PASS or merge approval. Publication
+and settlement failures emit `FAILED` with the retained phase and reason. A head
+refresh emits `DEFERRED` with `effect=local-validation-head-refresh`.
+Confirmed addressed-thread closure uses `pr.review-thread-closure` with confirmed
+and unfinished counts and the scoped effect. The generic detail table displays
+these facts without a schema or renderer change.
+
+`tests/test_local_review_validation.py::test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_target_in_mounted_view`
+drives the production admission and scoped reviewer through partial results,
+native GitHub report publication, settlement, and forced replay. Its collector and
+mounted detail assertions retain the same unverified target and reason exposed in
+the GitHub report. `test_same_commit_actionable_validation_routes_to_local_repair_even_with_force`
+asserts repair routing and zero full-review or merge calls for both actionable
+verdicts. `test_pending_scope_partial_result_is_visible_and_not_repeated_after_restart`,
+`test_incomplete_verification_is_published_as_unverified_not_still_valid`, and
+`test_pending_diagnostic_cannot_absorb_later_completed_report` cover durable
+partial replay, malformed/omitted evidence, and concurrent publication scopes.
+The existing local repair tests retain exact-root authentication, admission, and
+causal settlement coverage. Run `bash scripts/test.sh
+tests/test_local_review_validation.py tests/test_local_review_repair.py
+tests/test_adversarial_validation_pr_flow.py tests/test_dashboard_observability.py`.

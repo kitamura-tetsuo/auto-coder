@@ -65,12 +65,16 @@ outcome rather than a coerced boolean.
 
 Local review correction exposes the pending allowance generation through the
 existing repair-delegation stage's `local_phase=awaiting_validation` fact and
-continues to independent validation. A settlement failure is `FAILED`, with the
-local route, retained phase and reason visible in the generic detail table.
+continues to scoped verification of only unsettled covered targets. Its
+`effect=local-validation-scoped` facts include the generation, exact head,
+unverified count, and each unverified target's identity and reason. Incomplete
+verification is `BLOCKED`; publication or settlement failure is `FAILED`, with
+the local route, retained phase and reason visible in the generic detail table.
 The local repair generation revalidation inventory in
 `docs/dashboard-observability.md` records the regression commands; the trace
 schema and renderer remain unchanged.
-That inventory also covers revalidation of already-resolved original repair
-roots alongside new findings. Missing or unauthenticated original roots emit
-`FAILED` with `effect=local-validation-input` before reviewer execution; the
-existing detail table displays the local phase, route, and failure reason.
+That inventory also covers already-resolved original repair roots while excluding
+unrelated findings. A production-to-mounted-view regression asserts that an
+omitted verification target remains pending and is visible with the same identity
+and reason in both the dashboard and the GitHub native review. Completed scoped
+verification remains a deferred processing result and does not imply merge approval.
