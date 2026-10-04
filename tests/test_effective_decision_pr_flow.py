@@ -65,7 +65,9 @@ class ClosureScript:
 
     status: str = "FIXED"  # FIXED | INVALID | STILL_VALID
     finding_id: str = "finding-a"
+    available: bool = True
     calls: list[Any] = field(default_factory=list)
+    on_review: Any = None
 
 
 class FakeProvider:
@@ -234,7 +236,7 @@ class Flow:
             patch("auto_coder.adversarial_validator.default_accepted_finding_bridge", lambda repo: env.bridge()),
             patch("auto_coder.github_app_reviewer.load_reviewer_app_config", return_value=ReviewerAppConfig("4765828", "client", key)),
             patch("auto_coder.github_app_reviewer.GitHubAppReviewer", reviewer_factory),
-            patch("auto_coder.pr_processor._observe_codex_cloud_remediation_activity", side_effect=lambda *_a, **_k: self.activity),
+            patch("auto_coder.pr_processor._observe_codex_cloud_remediation_activity", side_effect=lambda *_a, **_k: self.activity if self.provider_name == "codex-cloud" else None),  # production: only Codex Cloud has a completed-turn observer
             patch("auto_coder.pr_processor._select_review_repair_route", return_value=route),
             patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),
             patch("auto_coder.pr_processor._resolve_cloud_task_origin", return_value=CloudTaskOriginResolution(origin=CloudTaskOrigin(self.provider_name, "task-1", self.provider)) if self.origin_available else CloudTaskOriginResolution(reason="the configured origin has no route")),
@@ -298,6 +300,8 @@ class Flow:
                     diagnostic="strong reviewer is unavailable",
                 )
             script.calls.append(review_input)
+            if script.on_review is not None:
+                script.on_review()
             assert review_input.mode is ReviewMode.ORDINARY_CLOSURE and review_input.head_sha == head
             common: dict[str, Any] = dict(
                 mode=ReviewMode.ORDINARY_CLOSURE,
@@ -316,7 +320,7 @@ class Flow:
 
         return [
             patch("auto_coder.pr_processor._two_tier_gate_inputs", side_effect=lambda *_a, **_k: TwoTierGateInputs(self.gate_inputs.gate, CONTRACT, POLICY, head, env.base)),
-            patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=AdversarialValidationAvailability(backend_manager=MagicMock())),
+            patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=AdversarialValidationAvailability(backend_manager=MagicMock() if script.available else None)),
             patch("auto_coder.pr_processor.CommandExecutor.run_command", side_effect=lambda *_a, **_k: CommandResult(True, "cumulative repair\n", "", 0)),
             patch("auto_coder.pr_processor.execute_review", side_effect=execute),
             patch("auto_coder.pr_processor.load_reviewer_app_config", return_value=ReviewerAppConfig("4765828", "client", key)),
@@ -481,16 +485,16 @@ def race_at_the_authorization_point(monkeypatch: pytest.MonkeyPatch, race: Any) 
     """Run ``race`` (another participant's committed change) exactly once, immediately before approval authorization."""
     from auto_coder.effective_decision_application import ApprovalAuthority
 
-    original_call = ApprovalAuthority.__call__
+    original_fence = ApprovalAuthority.transition_fence
     log: list[str] = []
 
-    def racing_call(self: ApprovalAuthority) -> str:
+    def racing_fence(self: ApprovalAuthority) -> Any:
         if not log:
             log.append("raced")
             race()
-        return original_call(self)
+        return original_fence(self)
 
-    monkeypatch.setattr(ApprovalAuthority, "__call__", racing_call)
+    monkeypatch.setattr(ApprovalAuthority, "transition_fence", racing_fence)
     yield log
 
 
@@ -876,3 +880,118 @@ def test_genuinely_ambiguous_association_spends_one_focused_attempt_per_evidence
     assert flow.model_calls == 2  # eligible again on relevant new evidence
     resumed = flow.retained()
     assert resumed is not None and resumed.next_action != "RECONCILIATION" and resumed.status in {"NEEDS_TESTS", "NEEDS_FIX"}
+
+
+# -- review findings on the first push --------------------------------------
+
+
+def test_acceptance_after_the_authority_check_is_ordered_after_the_authorized_transmission(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    pr = 9300
+    flow = make_flow(flow_env, monkeypatch, pr, "cloud", saved_status=None)
+    save_empty_session(flow_env, pr, flow.head)
+    flow.model_responses = [ordinary_response("none", status="ADDRESSED")]
+    assert flow.router is not None
+    outcome: dict[str, bool] = {}
+
+    def concurrent_acceptance() -> None:
+        accept_strong(flow_env, pr, [finding_json("finding-late")], head=flow.head)
+        outcome["accepted"] = True
+
+    worker = threading.Thread(target=concurrent_acceptance)
+
+    def pause_before_transport() -> None:  # the authority callback already succeeded; the request is about to be sent
+        worker.start()
+        worker.join(timeout=1.0)
+        outcome["blocked_until_send"] = worker.is_alive()
+
+    flow.router.before_review = pause_before_transport
+    flow.run()
+    worker.join(timeout=30)
+
+    assert outcome == {"blocked_until_send": True, "accepted": True}  # acceptance could not interleave between the check and the send
+    assert [review["event"] for review in flow.reviews] == ["APPROVE"]  # it followed the authorized transmission
+
+
+def test_failed_checkpoint_write_is_not_overwritten_by_the_precomputed_decision(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from auto_coder.reviewer_session_registry import ReviewerSessionRegistry
+
+    pr = 9301
+    flow = make_flow(flow_env, monkeypatch, pr, "cloud", saved_status=None)
+    save_empty_session(flow_env, pr, flow.head)
+    flow.model_responses = [ordinary_response("none", status="ADDRESSED")]
+
+    def failing_save(self: ReviewerSessionRegistry, *_args: object, **_kwargs: object) -> None:
+        raise OSError("registry unavailable")
+
+    monkeypatch.setattr(ReviewerSessionRegistry, "save", failing_save)
+    actions = flow.run()
+
+    assert all(review["event"] != "APPROVE" for review in flow.reviews), actions
+    assert flow.handoffs == 0 and flow.merge.call_count == 0
+    assert flow.status.outcome is not PRProcessingOutcome.SUCCESS
+
+
+def test_closure_proposal_superseded_by_a_head_change_during_external_review_is_not_accepted(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = make_flow(flow_env, monkeypatch, 9302, "cloud")
+    flow.accept_finding()
+    flow.model_responses = [ordinary_response(flow.thread_id)]
+    flow.run()
+    h2 = _repair_to(flow, "h2")
+    h3 = _commit(flow_env.worktree, "h3")
+    flow.saved_status = None
+    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py asserts the invariant")]
+    script = ClosureScript(status="FIXED")
+    script.on_review = lambda: setattr(flow.client.get_pull_request_head_sha_strict, "return_value", h3)  # the PR advances while the reviewer runs
+
+    flow.run(closure=script)
+
+    assert len(script.calls) == 1
+    snapshot = flow_env.cycle.snapshot(9302)
+    assert snapshot.accepted_closure is None and [item.finding_id for item in snapshot.open_findings] == ["finding-a"]
+    assert h2 != h3
+
+
+def test_transient_closure_reviewer_outage_stays_resumable_at_the_same_head(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = make_flow(flow_env, monkeypatch, 9303, "cloud")
+    flow.accept_finding()
+    flow.model_responses = [ordinary_response(flow.thread_id)]
+    flow.run()
+    request_identity = _review_feedback_identity(f"{REPO}#{flow.pr}:{flow.provider_name}:task-1:", flow.threads()[0], 0)
+    flow.activity = {request_identity: "completed-turn"}
+    flow.provider.completed_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    flow.saved_status = "NEEDS_TESTS"
+    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py asserts the invariant")]
+    outage = ClosureScript(status="FIXED", available=False)
+    flow.run(closure=outage)
+    assert outage.calls == [] and flow_env.cycle.snapshot(flow.pr).accepted_closure is None
+    retained = flow.retained()
+    assert retained is not None and retained.closure_attempts == []  # the unavailable reviewer did not spend the attempt
+
+    flow.auto_status = True  # GitHub now holds the BLOCKED/CLOSURE_ACCEPTANCE review for this head
+    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py asserts the invariant")]
+    restored = ClosureScript(status="FIXED")
+    actions = flow.run(closure=restored)  # normal processing, same head, no commit, no store reset
+
+    assert len(restored.calls) == 1, actions
+    events = [review["event"] for review in flow.reviews]
+    assert events[-1] == "APPROVE" and "APPROVE" not in events[:-1]
+
+
+def test_jules_origin_completion_without_a_commit_reaches_reassessment_through_the_task_record(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = make_flow(flow_env, monkeypatch, 9304, "cloud")  # provider "jules": no Codex completed-turn observer exists
+    flow.accept_finding()
+    flow.model_responses = [ordinary_response(flow.thread_id)]
+    flow.run()
+    retained = flow.retained()
+    assert retained is not None and retained.handoff_observation == "task:"  # delivered while the task was still running
+
+    flow.provider.completed_at = datetime(2026, 1, 1, tzinfo=timezone.utc)  # the task record now reports completion; the head is unchanged
+    flow.saved_status = "NEEDS_TESTS"
+    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py asserts the invariant")]
+    script = ClosureScript(status="INVALID")
+    flow.run(closure=script)
+
+    assert len(script.calls) == 1
+    assert flow_env.cycle.snapshot(flow.pr).open_findings == ()

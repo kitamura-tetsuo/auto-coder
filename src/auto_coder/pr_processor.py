@@ -420,6 +420,13 @@ def _run_ordinary_closure(repo_name: str, pr_number: int, inputs: TwoTierGateInp
                 acceptance.enter_context(fence.attempts.serialized_transition())
                 if fence.attempts.latest_sequence(fence.pr_number, fence.head_sha) > fence.attempt_sequence:
                     return OrdinaryClosureOutcome(False, "closure proposal was superseded by a later applicable validation attempt before acceptance", result.reviewer_provenance)
+                if fence.current_head is not None:
+                    try:
+                        observed_head = fence.current_head()
+                    except Exception as exc:
+                        return OrdinaryClosureOutcome(False, f"the authoritative target could not be reconfirmed before closure acceptance: {exc}", result.reviewer_provenance)
+                    if observed_head != inputs.head_sha:
+                        return OrdinaryClosureOutcome(False, "the authoritative head changed during the independent closure review; the proposal is superseded", result.reviewer_provenance)
             inputs.gate.state.certify_closure(
                 pr_number,
                 RoundProvenance(inputs.head_sha, inputs.base_sha),
@@ -3593,6 +3600,7 @@ def _assess_saved_review_state(
     saved_status: Optional[str],
     claimed_review_threads: Sequence[Any],
     force: bool,
+    github_client: Any = None,
 ) -> SavedReviewAssessment:
     """Re-acquire accepted-finding applicability before consuming a saved verdict.
 
@@ -3618,6 +3626,11 @@ def _assess_saved_review_state(
         return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a saved PASS is not clearance while accepted findings are open or their state is unavailable", projection)
     if saved_status == "BLOCKED" and resumable:
         return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "retained reconciliation work has new authority or association evidence", projection)
+    if saved_status == "BLOCKED" and retained is not None and retained.head_sha == head_sha and retained.next_action == EffectiveNextAction.CLOSURE_ACCEPTANCE.value:
+        key = closure_attempt_key(head_sha, projection.finding_set_revision, retained.handoff_generation)
+        marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
+        if key not in retained.closure_attempts and closure_ready(projection, head_sha, marker):
+            return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a pending closure acceptance has not completed and may now be attempted", projection)
     if saved_status in {"NEEDS_FIX", "NEEDS_TESTS"} and projection.complete and not outstanding_records(projection) and retained is not None and retained.head_sha == head_sha and retained.source_identities:
         return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "every accepted correction behind the saved verdict is now closed by its lifecycle owner", projection)
     return SavedReviewAssessment(SAVED_REVIEW_REUSE, "", projection)
@@ -3674,12 +3687,27 @@ def _compose_actionable_feedback(
     return tuple(dict.fromkeys(bodies)), tuple(dict.fromkeys(record.canonical_blocker_id for record in records if record.canonical_blocker_id))
 
 
+def _provider_activity_digest(repo_name: str, pr_data: Dict[str, Any], github_client: Any) -> Optional[str]:
+    """Provider-neutral identity of the owning task's corrective activity (None when unobservable).
+
+    Codex Cloud reports completed follow-up turns; every other supported cloud
+    origin is observed through its own task record, whose completion token only
+    exists once the task has completed.
+    """
+    snapshot = _observe_codex_cloud_remediation_activity(repo_name, pr_data, github_client)
+    if snapshot is not None:
+        return hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()[:16]
+    resolution = _resolve_cloud_task_origin(repo_name, pr_data, github_client)
+    if resolution.origin is None:
+        return None
+    return "task:" + _cloud_task_remediation_token(resolution.origin.client, resolution.origin.task_id)[:16]
+
+
 def _provider_observation_digest(repo_name: str, pr_data: Dict[str, Any], github_client: Any, result: Sequence[str]) -> str:
     """Identity of the provider-side activity when a corrective request was confirmed."""
     if getattr(result, "local_phase", "") == "completed_no_change":
         return "local:completed_no_change"
-    snapshot = _observe_codex_cloud_remediation_activity(repo_name, pr_data, github_client)
-    return hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()[:16] if snapshot is not None else ""
+    return _provider_activity_digest(repo_name, pr_data, github_client) or ""
 
 
 def _record_handoff_state(repo_name: str, pr_data: Dict[str, Any], github_client: Any, feedback_actions: Sequence[str]) -> Tuple[str, str]:
@@ -3714,19 +3742,17 @@ def _corrective_completion_marker(repo_name: str, pr_data: Dict[str, Any], head_
         retained = EffectiveDecisionStore(repo_name).load(int(pr_data["number"]))
     except DecisionRetentionError:
         return ""
-    if retained is None or retained.handoff != HANDOFF_DISPATCHED:
-        return ""
+    if retained is None or retained.handoff_generation == 0:
+        return ""  # no corrective request was ever delivered, so none can have completed
     if retained.head_sha != head_sha:
         return f"head:{head_sha}"
     if local_phase in {"completed_no_change", "awaiting_validation"}:
         return f"local:{local_phase}"
     if retained.handoff_observation.startswith("local:"):
         return retained.handoff_observation
-    snapshot = _observe_codex_cloud_remediation_activity(repo_name, pr_data, github_client)
-    if snapshot is not None:
-        digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()[:16]
-        if retained.handoff_observation and digest != retained.handoff_observation:
-            return f"provider:{digest}"
+    digest = _provider_activity_digest(repo_name, pr_data, github_client)
+    if digest is not None and retained.handoff_observation and digest != retained.handoff_observation and digest != "task:":
+        return f"provider:{digest}"
     return ""
 
 
@@ -3762,12 +3788,16 @@ def _pursue_effective_closure(
         store = EffectiveDecisionStore(repo_name)
         retained = store.load(pr_number)
         key = closure_attempt_key(head_sha, projection.finding_set_revision, retained.handoff_generation if retained is not None else 0)
-        if not store.record_closure_attempt(pr_number, key, head_sha):
-            return OrdinaryClosureOutcome(reason="the closure attempt for this corrective generation was already spent")
+        if retained is not None and key in retained.closure_attempts:
+            return OrdinaryClosureOutcome(reason="the closure review for this corrective generation already completed")
         snapshot = inputs.gate.state.snapshot(pr_number)
         if snapshot.ordinary_pass_head_sha != inputs.head_sha:
             return OrdinaryClosureOutcome(reason="no applicable ordinary PASS is recorded for this head")
         outcome = _run_ordinary_closure(repo_name, pr_number, inputs, fence)
+        if outcome.accepted or outcome.upheld:
+            # Only a completed independent review spends the attempt; an unavailable
+            # reviewer or superseded proposal stays resumable at the same head.
+            store.record_closure_attempt(pr_number, key, head_sha)
         published = False
         publication_reason = ""
         if outcome.accepted:
@@ -3973,7 +4003,13 @@ def _publish_effective_review(repo_name: str, pr_number: int, head_sha: str, res
     """Publish the effective review; an approval carries its last pre-send authority check."""
     if authority is None:
         return publish_adversarial_review(repo_name, pr_number, head_sha, result)
-    return publish_adversarial_review(repo_name, pr_number, head_sha, result, approval_authority=authority)
+    with contextlib.ExitStack() as ordering:
+        if result.allows_auto_merge:
+            # An APPROVE can be sent: hold the accepted-state lifecycle's transition fence from the
+            # authority check through transmission, so a newly accepted finding either precedes
+            # (and refuses) the approval or follows it.
+            ordering.enter_context(authority.transition_fence())
+        return publish_adversarial_review(repo_name, pr_number, head_sha, result, approval_authority=authority)
 
 
 def _authentic_root_threads(repo_name: str, state: ClaimedReviewThreadGateState) -> Sequence[ClaimedReviewThread]:
@@ -4337,7 +4373,7 @@ def _handle_pr_merge(
                         if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                             current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
                             if not current_status_error:
-                                gate_assessment = _assess_saved_review_state(repo_name, pr_data, head_sha_for_gate, current_status, _authentic_root_threads(repo_name, claimed_thread_state), force_adversarial_validation)
+                                gate_assessment = _assess_saved_review_state(repo_name, pr_data, head_sha_for_gate, current_status, _authentic_root_threads(repo_name, claimed_thread_state), force_adversarial_validation, github_client)
                                 if gate_assessment.action == SAVED_REVIEW_WAIT:
                                     _record_review_wait(repo_name, pr_number, head_sha_for_gate, actions, processing_status, gate_assessment.reason)
                                     return actions
@@ -4686,7 +4722,7 @@ def _handle_pr_merge(
                     # state is re-acquired: a saved PASS is not clearance while an
                     # accepted correction is open, retained reconciliation resumes on
                     # new evidence, and unchanged evidence waits without repeating work.
-                    reuse_assessment = _assess_saved_review_state(repo_name, pr_data, head_sha, published_status, claimed_review_threads, force_adversarial_validation)
+                    reuse_assessment = _assess_saved_review_state(repo_name, pr_data, head_sha, published_status, claimed_review_threads, force_adversarial_validation, github_client)
                     if reuse_assessment.action == SAVED_REVIEW_WAIT:
                         _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, reuse_assessment.reason)
                         return actions
@@ -4856,7 +4892,7 @@ def _handle_pr_merge(
                                 val_result,
                                 claimed_review_threads,
                                 github_client,
-                                AcceptanceFence(attempt_repository, pr_number, head_sha, attempt.sequence),
+                                AcceptanceFence(attempt_repository, pr_number, head_sha, attempt.sequence, lambda: github_client.get_pull_request_head_sha_strict(repo_name, pr_number)),
                             )
                         except Exception as e:
                             logger.error(f"Effective review decision for PR #{pr_number} could not be derived: {e}")
@@ -4936,6 +4972,7 @@ def _handle_pr_merge(
                                     val_result.diagnostic_reason = str(e)
                                     val_result.thread_dispositions = []
                                     active_attempt_status = "ERROR"
+                                    effective_application = None  # an unconfirmed checkpoint write must not be overwritten by the precomputed decision
                             if effective_application is not None:
                                 try:
                                     _retain_effective_decision(repo_name, pr_data, head_sha, effective_application)

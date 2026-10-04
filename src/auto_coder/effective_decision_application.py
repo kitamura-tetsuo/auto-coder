@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Iterator, Optional, Sequence
+from typing import Callable, ContextManager, Iterator, Optional, Sequence
 
 from .accepted_finding_bridge import (
     AMBIGUOUS,
@@ -399,6 +399,9 @@ class AcceptanceFence:
     pr_number: int
     head_sha: str
     attempt_sequence: int
+    # Reads the authoritative PR head so a closure accepted after external review
+    # can reject a proposal the target has since superseded.
+    current_head: Optional[Callable[[], str]] = None
 
 
 class ApprovalAuthority:
@@ -430,6 +433,10 @@ class ApprovalAuthority:
         self._attempts = attempts
         self._attempt_sequence = attempt_sequence
         self._head_sha = head_sha
+
+    def transition_fence(self) -> ContextManager[None]:
+        """The accepted-state owner's transition lock; holding it orders acceptance against transmission."""
+        return self._bridge.cycle.serialized_transition()
 
     def __call__(self) -> str:
         if self._attempt_sequence and self._attempts.latest_sequence(self._target.pr_number, self._head_sha) > self._attempt_sequence:
