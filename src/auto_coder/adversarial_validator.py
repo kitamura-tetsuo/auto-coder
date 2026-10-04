@@ -519,6 +519,9 @@ class AdversarialValidationResult:
     reviewer_session_checkpoint: Optional[ReviewerSession] = field(default=None, repr=False)
     reviewer_session_registry: Optional[ReviewerSessionRegistry] = field(default=None, repr=False)
     accepted_finding_projection: Optional[AcceptedFindingProjection] = field(default=None, repr=False)
+    # The unmodified model verdict once an effective decision replaced it. It is
+    # historical diagnostic evidence and never publication or merge authority.
+    raw_model_result: str = ""
     # Only set for result="EXHAUSTED": the earliest epoch time at which an
     # automatic retry may run (REQ-006). Published durably in the comment
     # marker so a deferred retry survives restart without local state (REQ-007).
@@ -752,6 +755,7 @@ def format_adversarial_validation_comment(result: AdversarialValidationResult, h
         f"Validated commit: `{head_sha}`",
         "",
         _bounded_comment_field(result.summary) or "No validation summary was provided.",
+        *(["", f"Raw model verdict `{result.raw_model_result}` is historical diagnostic evidence only; the effective decision above governs this review."] if result.raw_model_result and result.raw_model_result.strip().upper() != status else []),
     ]
 
     if result.local_repair_generation_id:
@@ -879,6 +883,7 @@ def format_adversarial_review_summary(
         specification_gaps=result.specification_gaps,
         attempt_id=result.attempt_id,
         attempt_sequence=result.attempt_sequence,
+        raw_model_result=result.raw_model_result,
         local_repair_generation_id=result.local_repair_generation_id,
         local_repair_verification_pending=result.local_repair_verification_pending,
         unverified_local_repairs=result.unverified_local_repairs,
@@ -3685,27 +3690,27 @@ def _closure_prompt_extension(closure_input: Optional[ReviewExecutionInput]) -> 
     return "\n\nORDINARY STRONG-FINDING CLOSURE EXTENSION (non-authorizing):\n" + build_review_prompt(closure_input) + "\nReturn that role's semantic fields in a top-level `closure_assessment` object " "inside the ordinary validation JSON. The ordinary result remains independent."
 
 
-def _default_accepted_finding_bridge(repo_name: str) -> AcceptedFindingBridge:
+def default_accepted_finding_bridge(repo_name: str) -> AcceptedFindingBridge:
     from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
     from .pr_review_cycle import PrReviewCycleRepository
 
     return AcceptedFindingBridge(PrReviewCycleRepository(repo_name), CanonicalPRBlockerLedger())
 
 
-def _observed_roots_from_claimed_threads(claimed_review_threads: Sequence["ClaimedReviewThread"]) -> RootObservation:
+def observed_roots_from_claimed_threads(claimed_review_threads: Sequence["ClaimedReviewThread"]) -> RootObservation:
     """Roots of claimed threads were already filtered to the eligible reviewer identity."""
     roots = tuple(ObservedRoot(comment_id=thread.root_comment_database_id, body=thread.original_finding, authenticated=True, thread_id=thread.thread_id) for thread in claimed_review_threads if thread.root_comment_database_id is not None)
     return RootObservation(roots=roots, complete=False)
 
 
-def _project_accepted_findings(
+def project_accepted_findings(
     bridge: AcceptedFindingBridge,
     target: ProjectionTarget,
     claimed_review_threads: Sequence["ClaimedReviewThread"],
     dispositions: Sequence[OrdinaryDisposition] = (),
 ) -> AcceptedFindingProjection:
     try:
-        return bridge.project(target, _observed_roots_from_claimed_threads(claimed_review_threads), dispositions)
+        return bridge.project(target, observed_roots_from_claimed_threads(claimed_review_threads), dispositions)
     except Exception as exc:  # the bridge must never turn a store fault into "no findings"
         logger.warning(f"Accepted-finding projection failed for PR #{target.pr_number}: {exc}")
         return AcceptedFindingProjection(target=target, complete=False, diagnostics=(BridgeDiagnostic("projection_failed", "", str(exc)),))
@@ -3728,7 +3733,7 @@ def _lifecycle_session_with_accepted_gaps(
     return replace(base, last_head_sha=base.last_head_sha or fallback_head_sha, test_oracle_gaps=merged)
 
 
-def _accepted_finding_dispositions(
+def accepted_finding_dispositions(
     result: AdversarialValidationResult,
     claimed_review_threads: Sequence["ClaimedReviewThread"],
     projection: AcceptedFindingProjection,
@@ -3927,9 +3932,9 @@ def run_adversarial_validation(
     lifecycle_session = stored_session if stored_session is not None and stored_session.last_head_sha else None
     # Accepted Strong findings are known findings independently of reviewer-session
     # identity, so they join the lifecycle snapshot before prompt assembly.
-    bridge = accepted_finding_bridge or _default_accepted_finding_bridge(repo_name)
+    bridge = accepted_finding_bridge or default_accepted_finding_bridge(repo_name)
     projection_target = ProjectionTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha, base_sha=str((pr_data.get("base") or {}).get("sha") or ""))
-    accepted_projection = _project_accepted_findings(bridge, projection_target, claimed_review_threads)
+    accepted_projection = project_accepted_findings(bridge, projection_target, claimed_review_threads)
     accepted_known_gaps = [known_gap_from_record(record) for record in accepted_projection.known_gap_records]
     accepted_gap_ids = frozenset(gap.gap_id for gap in accepted_known_gaps)
     context.accepted_known_gap_ids = accepted_gap_ids
@@ -4272,7 +4277,7 @@ def run_adversarial_validation(
             )
 
     result = _apply_coverage_and_verdict_precedence(result, context)
-    result.accepted_finding_projection = _project_accepted_findings(bridge, projection_target, claimed_review_threads, _accepted_finding_dispositions(result, claimed_review_threads, accepted_projection, head_sha)) if accepted_projection.records else accepted_projection
+    result.accepted_finding_projection = project_accepted_findings(bridge, projection_target, claimed_review_threads, accepted_finding_dispositions(result, claimed_review_threads, accepted_projection, head_sha)) if accepted_projection.records else accepted_projection
 
     if was_resumed:
         persisted_session_id = provider_session_id if isinstance(provider_session_id, str) and provider_session_id else stored_session.session_id if stored_session else ""
