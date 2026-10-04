@@ -212,6 +212,18 @@ deferred reason. No new dashboard projection is needed because these events use 
 existing PR stage timeline, while accepted closure remains distinct from publication
 or merge confirmation. Durable retry wakes reuse those stage identities and facts;
 their invalidation deadline is scheduling state, not a new dashboard event schema.
+Issue #2407 removes the closure-only reviewer invocation: the existing
+`pr.ordinary-closure` stage is now recorded when the retained assessment of the
+one ordinary attempt is applied (or deferred), and gains the facts
+`evidence_status`, `source_attempt_id`, `source_attempt_sequence`,
+`additional_model_execution` (always `false`), `renewed_strong_required`,
+`closure_published` and `publication_reason`, so a closure publication that
+consumed an existing ordinary attempt is distinguishable from model execution.
+Retained evidence waiting on an unavailable observation is a deferred
+`pr.ordinary-closure` event with `evidence_status: UNAVAILABLE`. No new origin,
+admission gate or dashboard projection is added; production-to-view coverage is
+`tests/test_single_review_ordinary_closure_flow.py` and
+`tests/test_effective_decision_pr_flow.py`.
 Issue #2260 adds `pr.review-thread-closure` to the existing PR stage timeline.
 Blocked events expose `confirmed_count`, `unfinished_count`, and an `unfinished`
 array whose entries contain the exact thread ID, failed or unconfirmed phase,

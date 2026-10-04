@@ -31,7 +31,7 @@ from auto_coder.util.gh_cache import GitHubClient, PullRequestRoutingMetadata, R
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, is_ci_observation_recovered
 
 from .accepted_finding_bridge import AcceptedFindingBridge, AcceptedFindingProjection, AcceptedFindingRecord, OrdinaryDisposition, ProjectionTarget
-from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
+from .adversarial_validation_attempts import AdversarialValidationAttempt, AdversarialValidationAttemptRepository
 from .adversarial_validation_scheduler import AdversarialValidationScheduler
 from .adversarial_validator import (
     AdversarialValidationResult,
@@ -83,7 +83,6 @@ from .effective_decision_application import (
     derive_application,
     evidence_revision,
     outstanding_records,
-    raw_ordinary_clear,
     saved_pass_is_clearance,
     settle_accepted_gaps,
 )
@@ -104,6 +103,7 @@ from .issue_stage_routing import IMPLEMENTATION_STAGE, ImplementationRetryReques
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
 from .llm_backend_config import get_pr_review_allowlist_from_config, get_review_adjudicator_allowlist_from_config
 from .logger_config import get_gh_logger, get_logger
+from .ordinary_closure_evidence import ApplicationStatus, ClosureEvidenceRecord, EvidenceState, ObservedTarget, restore_ordinary_result
 from .pr_blocker_closure import _BLOCKER_ID_RE, _GAP_ID_RE
 from .pr_repair import build_existing_pr_repair_prompt, resolve_existing_pr_repair_target
 from .pr_repair_guard import (
@@ -115,7 +115,7 @@ from .pr_review_cycle import PHASE_ORDINARY_CLOSURE, VERDICT_FINDINGS, VERDICT_P
 from .pr_review_cycle import FindingDisposition as DurableFindingDisposition
 from .pr_review_cycle import NotApplicableError, RoundProvenance, StrongAuditRound, StrongPolicyIdentity
 from .pr_review_effects import CONFIRMED, REJECTED, UNCERTAIN, AcceptedReviewPayload, EffectAttempt, EffectOperation, ReviewEffectExecutor, ReviewEffectRepository
-from .pr_review_execution import ReviewExecutionInput, ReviewMode, ScopeAssessment, execute_review
+from .pr_review_execution import ReviewExecutionInput, ReviewMode, execute_review
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import get_prompt_template, render_prompt
@@ -355,98 +355,316 @@ def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTie
 
 @dataclass(frozen=True)
 class OrdinaryClosureOutcome:
-    """The ordinary-closure producer's answer; ``upheld`` means a complete independent review retained the findings."""
+    """What the retained ordinary assessment achieved; ``upheld`` means a complete assessment retained a finding."""
 
     accepted: bool = False
     reason: str = ""
     provenance: str = ""
     upheld: bool = False
+    attempt_id: str = ""
+    attempt_sequence: int = 0
 
 
-def _execute_pending_ordinary_closure(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, fence: Optional[AcceptanceFence] = None) -> Tuple[bool, str, str]:
-    """Run ordinary verification for a retained strong finding bundle."""
-    outcome = _run_ordinary_closure(repo_name, pr_number, inputs, fence)
-    return outcome.accepted, outcome.reason, outcome.provenance
+@dataclass(frozen=True)
+class ClosureContextCapture:
+    """The controller-captured closure context for one ordinary invocation, or why none applies."""
+
+    review_input: Optional[ReviewExecutionInput] = None
+    reason: str = ""
 
 
-def _run_ordinary_closure(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, fence: Optional[AcceptanceFence] = None) -> OrdinaryClosureOutcome:
-    """Run ordinary verification for a retained strong finding bundle.
+@dataclass(frozen=True)
+class RetainedClosureResumption:
+    """Outcome of resuming retained closure evidence without any model call."""
 
-    A ``fence`` orders acceptance against validation-attempt registration: a
-    closure proposal superseded by a later applicable attempt is not committed.
-    """
+    ordinary_pass_retained: bool = False  # a retained, accepted semantic ordinary PASS covers this head
+    retained_record: Optional[ClosureEvidenceRecord] = None  # the accepted source that carries that PASS
+    revalidate: bool = False  # closure is outstanding with no retained evidence: one combined ordinary review is due
+    unavailable: bool = False  # an authoritative read or store failed; pending work is retained
+    reason: str = ""
+
+
+def _outstanding_strong_round(inputs: TwoTierGateInputs, pr_number: int) -> Tuple[Optional[Any], str]:
+    """The accepted strong round whose finding bundle a repair head must close, else why none applies."""
     snapshot = inputs.gate.state.snapshot(pr_number)
     strong_round = snapshot.accepted_strong_round
-    if snapshot.phase != PHASE_ORDINARY_CLOSURE or strong_round is None or not snapshot.open_findings:
-        return OrdinaryClosureOutcome(False, "ordinary closure is not currently applicable", "")
+    if snapshot.closed or snapshot.phase != PHASE_ORDINARY_CLOSURE or strong_round is None or strong_round.verdict != VERDICT_FINDINGS or not snapshot.open_findings:
+        return None, "no accepted strong finding bundle is outstanding"
     if strong_round.base_sha != inputs.base_sha or strong_round.contract_identity != inputs.contract.identity or strong_round.policy_identity != inputs.policy.identity:
-        return OrdinaryClosureOutcome(False, "retained strong evidence is stale for the current base, contract, or policy", "")
-    try:
-        with isolated_pr_head_worktree(repo_name, pr_number, inputs.head_sha) as worktree:
-            from .cli_helpers import resolve_adversarial_validation_availability
+        return None, "retained strong evidence is stale for the current base, contract, or policy"
+    return strong_round, ""
 
-            availability = resolve_adversarial_validation_availability("pr", execution_cwd=worktree)
-            if availability.backend_manager is None:
-                reason = "ordinary reviewer route is EXHAUSTED" if availability.exhausted else "ordinary reviewer route is UNAVAILABLE"
-                return OrdinaryClosureOutcome(False, reason, "")
-            diff = CommandExecutor.run_command(
-                ["git", "diff", "--no-ext-diff", "--binary", strong_round.head_sha, inputs.head_sha],
-                cwd=worktree,
-            )
-            tracked = CommandExecutor.run_command(["git", "ls-files"], cwd=worktree)
-            if not diff.success or not tracked.success:
-                return OrdinaryClosureOutcome(False, "required cumulative diff or repository evidence is unavailable", "")
-            review_input = ReviewExecutionInput(
-                mode=ReviewMode.ORDINARY_CLOSURE,
-                round_id=strong_round.round_id,
-                attempt_id=f"{snapshot.open_epoch}:{snapshot.transition_version}",
-                head_sha=inputs.head_sha,
-                base_sha=inputs.base_sha,
-                contract=inputs.contract,
-                policy=inputs.policy,
-                repository_evidence="Pinned read-only snapshot. Tracked paths:\n" + tracked.stdout,
-                diff_evidence=diff.stdout,
-                finding_set_revision=snapshot.finding_set_revision,
-                findings=snapshot.open_findings,
-                audited_head_sha=strong_round.head_sha,
-            )
-            result = execute_review(review_input, availability.backend_manager, worktree)
-        if not result.is_complete:
-            return OrdinaryClosureOutcome(False, result.diagnostic, result.reviewer_provenance)
-        if result.verdict != VERDICT_PASS:
-            return OrdinaryClosureOutcome(False, f"ordinary verification retained {result.verdict} findings", result.reviewer_provenance, upheld=True)
-        dispositions = [DurableFindingDisposition(item.finding_id, item.status, item.evidence, inputs.head_sha) for item in result.dispositions]
-        with contextlib.ExitStack() as acceptance:
-            if fence is not None:
-                acceptance.enter_context(fence.attempts.serialized_transition())
-                if fence.attempts.latest_sequence(fence.pr_number, fence.head_sha) > fence.attempt_sequence:
-                    return OrdinaryClosureOutcome(False, "closure proposal was superseded by a later applicable validation attempt before acceptance", result.reviewer_provenance)
-                if fence.current_head is not None:
-                    try:
-                        observed_head = fence.current_head()
-                    except Exception as exc:
-                        return OrdinaryClosureOutcome(False, f"the authoritative target could not be reconfirmed before closure acceptance: {exc}", result.reviewer_provenance)
-                    if observed_head != inputs.head_sha:
-                        return OrdinaryClosureOutcome(False, "the authoritative head changed during the independent closure review; the proposal is superseded", result.reviewer_provenance)
-            inputs.gate.state.certify_closure(
-                pr_number,
-                RoundProvenance(inputs.head_sha, inputs.base_sha),
-                inputs.contract,
-                inputs.policy,
-                strong_round.round_id,
-                snapshot.finding_set_revision,
-                dispositions,
-                bounded=result.scope is ScopeAssessment.BOUNDED,
-                bounded_evidence=result.scope_evidence,
-                new_findings=list(result.findings),
-                expected_version=snapshot.transition_version,
-            )
-        if result.scope is ScopeAssessment.BOUNDED:
-            return OrdinaryClosureOutcome(True, f"accepted bounded ordinary closure from {result.reviewer_provenance}; publication remains pending", result.reviewer_provenance)
-        scope = result.scope.value if result.scope is not None else "UNKNOWN"
-        return OrdinaryClosureOutcome(True, f"accepted ordinary convergence with {scope} scope; renewed strong audit is required", result.reviewer_provenance)
+
+def _capture_ordinary_closure_input(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, attempt: Any, worktree: str) -> ClosureContextCapture:
+    """Capture the authoritative closure context before the one ordinary invocation.
+
+    The finding bundle comes from the durable review cycle, never from the
+    GitHub thread view, so a finding whose thread is absent from the claimed view
+    is still presented to the reviewer. An unobservable input yields no context
+    and an explicit reason; the outstanding findings then keep blocking merge.
+    """
+    strong_round, reason = _outstanding_strong_round(inputs, pr_number)
+    if strong_round is None:
+        return ClosureContextCapture(reason=reason)
+    snapshot = inputs.gate.state.snapshot(pr_number)
+    diff = CommandExecutor.run_command(["git", "diff", "--no-ext-diff", "--binary", strong_round.head_sha, inputs.head_sha], cwd=worktree)
+    tracked = CommandExecutor.run_command(["git", "ls-files"], cwd=worktree)
+    if not diff.success or not tracked.success:
+        return ClosureContextCapture(reason="required cumulative diff or repository evidence is unavailable")
+    # An empty cumulative diff is itself observed evidence (a same-head correction
+    # or rebuttal changed nothing), not a missing observation.
+    cumulative_diff = diff.stdout if diff.stdout.strip() else "(the audited head and the current head are identical; the cumulative diff is empty)"
+    return ClosureContextCapture(
+        ReviewExecutionInput(
+            mode=ReviewMode.ORDINARY_CLOSURE,
+            round_id=strong_round.round_id,
+            attempt_id=attempt.attempt_id,
+            head_sha=inputs.head_sha,
+            base_sha=inputs.base_sha,
+            contract=inputs.contract,
+            policy=inputs.policy,
+            repository_evidence="Pinned read-only snapshot. Tracked paths:\n" + tracked.stdout,
+            diff_evidence=cumulative_diff,
+            repository=repo_name,
+            pr_number=pr_number,
+            open_epoch=snapshot.open_epoch,
+            attempt_sequence=attempt.sequence,
+            finding_set_revision=snapshot.finding_set_revision,
+            findings=snapshot.open_findings,
+            audited_head_sha=strong_round.head_sha,
+        )
+    )
+
+
+def _strict_pull_request_target(github_client: Any, repo_name: str, pr_number: int) -> Dict[str, Any]:
+    """Current live PR metadata (head and base identity included), read past every cache; fails closed."""
+    metadata = github_client.get_pull_request_metadata_strict(repo_name, pr_number)
+    if not isinstance(metadata, dict):
+        raise RuntimeError("GitHub returned malformed PR metadata")
+    head = metadata.get("head")
+    base = metadata.get("base")
+    if not (isinstance(head, dict) and isinstance(head.get("sha"), str) and head["sha"] and isinstance(base, dict) and isinstance(base.get("sha"), str) and base["sha"]):
+        raise RuntimeError(f"GitHub did not return the current head and base identity for PR #{pr_number}")
+    return metadata
+
+
+class _ClosureTargetObserver:
+    """Authoritative current H/B/M/P observed at the moment of use.
+
+    One strict read supplies the live head and base, and the Requirements and
+    policy are resolved from that same refreshed metadata, never from the
+    ``pr_data`` captured when processing began.
+    """
+
+    def __init__(self, github_client: Any, repo_name: str, pr_number: int) -> None:
+        self._github_client = github_client
+        self._repo_name = repo_name
+        self._pr_number = pr_number
+        self.inputs: Optional[TwoTierGateInputs] = None
+
+    def __call__(self) -> ObservedTarget:
+        metadata = _strict_pull_request_target(self._github_client, self._repo_name, self._pr_number)
+        inputs = _two_tier_gate_inputs(self._github_client, self._repo_name, metadata)
+        if inputs is None:
+            raise RuntimeError("the strong tier is not configured")
+        self.inputs = inputs
+        return ObservedTarget(metadata["head"]["sha"], metadata["base"]["sha"], inputs.contract, inputs.policy)
+
+
+def _closure_attempt_spent(repo_name: str, pr_number: int, head_sha: str, finding_set_revision: int) -> bool:
+    """Whether this corrective generation's closure-aware ordinary review already completed."""
+    retained = EffectiveDecisionStore(repo_name).load(pr_number)
+    if retained is None:
+        return False
+    return closure_attempt_key(head_sha, finding_set_revision, retained.handoff_generation) in retained.closure_attempts
+
+
+def _closure_review_due(repo_name: str, pr_number: int, head_sha: str, projection: AcceptedFindingProjection, completion_marker: str = "") -> bool:
+    """Whether a closure-aware ordinary review is applicable and this corrective generation has not spent it."""
+    if not closure_ready(projection, head_sha, completion_marker):
+        return False
+    try:
+        return not _closure_attempt_spent(repo_name, pr_number, head_sha, projection.finding_set_revision)
+    except DecisionRetentionError:
+        return False
+
+
+def _record_closure_attempt_spent(repo_name: str, pr_number: int, head_sha: str, finding_set_revision: int) -> None:
+    """Spend the single closure-aware ordinary review of this corrective generation."""
+    store = EffectiveDecisionStore(repo_name)
+    retained = store.load(pr_number)
+    store.record_closure_attempt(pr_number, closure_attempt_key(head_sha, finding_set_revision, retained.handoff_generation if retained is not None else 0), head_sha)
+
+
+def _apply_ordinary_closure_evidence(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    result: AdversarialValidationResult,
+    closure_input: ReviewExecutionInput,
+    gate: TwoTierPrGate,
+    github_client: Any,
+    fence: AcceptanceFence,
+) -> OrdinaryClosureOutcome:
+    """Retain the ordinary result's closure assessment and apply it to the owning cycle (no model call).
+
+    Retention precedes and survives any observation failure. Closure is
+    reachable on the assessment's own evidence prerequisites, before any
+    effective PASS exists; the durable owner decides, and a superseded or stale
+    proposal is rejected there.
+    """
+    pr_number = int(pr_data["number"])
+    head_sha = closure_input.head_sha
+    try:
+        evidence = gate.closure_evidence(attempts=fence.attempts)
+        # The accepted findings under closure legitimately resurface as ordinary
+        # gaps; settling them leaves only independent blockers, so the retained
+        # semantic result is the ordinary review of everything else.
+        projection = result.accepted_finding_projection
+        view = evidence.retain(settle_accepted_gaps(result, projection) if projection is not None else result)
+        if view.record is None:
+            return OrdinaryClosureOutcome(reason=f"closure evidence is {view.state.value}: {view.reason}", attempt_id=closure_input.attempt_id, attempt_sequence=closure_input.attempt_sequence)
+        record = view.record
+        observer = _ClosureTargetObserver(github_client, repo_name, pr_number)
+        applied = evidence.apply(record.source_id, observer)
+        committed = applied.status is ApplicationStatus.ACCEPTED or applied.cycle_committed
+        upheld = applied.status is ApplicationStatus.NON_AUTHORIZING and not record.diagnostic and any(item.status == "OPEN" for item in record.dispositions)
+        if not record.diagnostic:
+            # Only a complete assessment spends the attempt; a malformed or
+            # missing one stays eligible for a normally admitted combined retry.
+            try:
+                _record_closure_attempt_spent(repo_name, pr_number, head_sha, closure_input.finding_set_revision)
+            except DecisionRetentionError as exc:
+                logger.warning(f"Closure attempt for PR #{pr_number} could not be retained: {exc}")
+        published = False
+        publication_reason = "no accepted closure publication is pending"
+        if committed and observer.inputs is not None:  # a committed application always observed the target
+            published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, observer.inputs, observer, github_client=github_client)
+        _record_pr_stage(
+            pr_number,
+            "pr.ordinary-closure",
+            f"pr#{pr_number} ordinary closure",
+            Outcome.COMPLETED if committed else Outcome.DEFERRED,
+            {
+                "backend": applied.reviewer_provenance,
+                "head": head_sha,
+                "reason": applied.reason,
+                "closure_published": published,
+                "publication_reason": publication_reason,
+                "effect": "effective-decision-closure",
+                "evidence_status": applied.status.value,
+                "source_attempt_id": applied.attempt_id,
+                "source_attempt_sequence": applied.attempt_sequence,
+                "additional_model_execution": False,
+                "renewed_strong_required": applied.requires_strong_audit,
+            },
+        )
+        reason = applied.reason
+        if committed and not applied.requires_strong_audit:
+            reason = f"accepted bounded ordinary closure from ordinary attempt {applied.attempt_sequence} ({applied.reviewer_provenance}); publication remains pending; no additional model execution"
+        return OrdinaryClosureOutcome(committed, reason, applied.reviewer_provenance, upheld, applied.attempt_id, applied.attempt_sequence)
     except Exception as exc:
-        return OrdinaryClosureOutcome(False, f"ordinary closure execution failed: {exc}", "")
+        logger.warning(f"Ordinary closure evidence for PR #{pr_number} could not be applied: {exc}")
+        return OrdinaryClosureOutcome(reason=f"ordinary closure evidence could not be applied: {exc}")
+
+
+def _closure_completion_authority(inputs: TwoTierGateInputs, github_client: Any, repo_name: str, pr_number: int) -> Tuple[bool, str]:
+    """Whether a completion that rests on a retained ordinary closure may still be reused or merged.
+
+    The accepted closure itself is never reopened, but its dependent effects and
+    merge authority need the closure source's current ordinary-attempt authority
+    (no unresolved or non-PASS newer attempt, an unchanged authoritative target).
+    A completion that does not rest on a retained source carries no such condition.
+    """
+    snapshot = inputs.gate.state.snapshot(pr_number)
+    closure = snapshot.accepted_closure
+    completion = snapshot.completion
+    if completion is None or completion.basis != "ORDINARY_CLOSURE" or closure is None or not closure.source_identity:
+        return True, ""
+    return inputs.gate.closure_evidence().dependent_effects_allowed(closure.source_identity, _ClosureTargetObserver(github_client, repo_name, pr_number))
+
+
+def _resume_retained_closure(repo_name: str, pr_number: int, head_sha: str, inputs: TwoTierGateInputs, github_client: Any) -> RetainedClosureResumption:
+    """Finish outstanding closure work from retained evidence before any reviewer is admitted.
+
+    Reconciles every retained source (certification/bookkeeping only), reports
+    whether an accepted retained semantic PASS already covers this head, and
+    decides whether a legacy ordinary PASS with no retained assessment needs its
+    single closure-aware revalidation. No reviewer is ever invoked here.
+    """
+    evidence = inputs.gate.closure_evidence()
+    unavailable: List[str] = []
+    for outcome in evidence.reconcile(pr_number, _ClosureTargetObserver(github_client, repo_name, pr_number)):
+        if outcome.status in {ApplicationStatus.UNAVAILABLE, ApplicationStatus.DEFERRED} and not outcome.cycle_committed:
+            unavailable.append(outcome.reason)
+    snapshot = inputs.gate.state.snapshot(pr_number)
+    retained_pass = False
+    retained_record: Optional[ClosureEvidenceRecord] = None
+    closure = snapshot.accepted_closure
+    if closure is not None and closure.source_identity:
+        view = evidence.inspect(closure.source_identity)
+        if view.state is EvidenceState.UNAVAILABLE:
+            unavailable.append(view.reason)
+        elif view.record is not None:
+            # The retained PASS speaks for this head only while its attempt is the newest one:
+            # a later attempt's own verdict (even a failing one) supersedes it as the ordinary result.
+            retained_pass = view.record.head_sha == head_sha and view.record.ordinary.is_semantic_pass and evidence.attempts.latest_sequence(pr_number, head_sha) == view.record.attempt_sequence
+            retained_record = view.record if retained_pass else None
+    if unavailable:
+        return RetainedClosureResumption(ordinary_pass_retained=retained_pass, retained_record=retained_record, unavailable=True, reason="; ".join(dict.fromkeys(unavailable)))
+    strong_round, reason = _outstanding_strong_round(inputs, pr_number)
+    if strong_round is None:
+        return RetainedClosureResumption(ordinary_pass_retained=retained_pass, retained_record=retained_record, reason=reason)
+    try:
+        spent = _closure_attempt_spent(repo_name, pr_number, head_sha, snapshot.finding_set_revision)
+    except DecisionRetentionError as exc:
+        return RetainedClosureResumption(unavailable=True, reason=f"the closure attempt record is unavailable: {exc}")
+    if strong_round.head_sha == head_sha:
+        return RetainedClosureResumption(reason="no repair head exists yet; same-head reassessment follows a completed correction or rebuttal")
+    if spent:
+        return RetainedClosureResumption(reason="the closure-aware ordinary review for this corrective generation already completed")
+    return RetainedClosureResumption(revalidate=True, reason="closure is outstanding and no retained ordinary assessment exists")
+
+
+def _resume_closure_before_admission(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    head_sha: str,
+    force: bool,
+    actions: List[str],
+    processing_status: Optional[ProcessedPRResult],
+) -> Tuple[Optional[RetainedClosureResumption], bool]:
+    """Resume retained closure evidence before any same-head shortcut or reviewer admission.
+
+    Returns the resumption (None when the strong tier does not apply) and
+    whether processing must stop here because retained evidence is pending on an
+    unavailable observation: that work is retained as a deferral and resumes from
+    the same evidence, never by admitting a reviewer that would supersede it.
+    """
+    pr_number = int(pr_data["number"])
+    try:
+        inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
+    except Exception as exc:
+        actions.append(f"Skipping merge for PR #{pr_number}: strong-audit identity could not be resolved: {exc}")
+        _record_pr_stage(pr_number, "pr.strong-audit-gate", f"pr#{pr_number} strong-audit gate", Outcome.DEFERRED, {"reason": str(exc), "phase": "identity-resolution"})
+        return None, True
+    if inputs is None:
+        return None, False
+    try:
+        resumption = _resume_retained_closure(repo_name, pr_number, head_sha, inputs, github_client)
+    except Exception as exc:  # an unreadable owning store retains the pending work; it never authorizes or erases it
+        resumption = RetainedClosureResumption(unavailable=True, reason=f"the owning review state could not be read: {exc}")
+    if resumption.unavailable and not force:
+        actions.append(f"Retained closure evidence for PR #{pr_number} is pending: {resumption.reason}; no reviewer was admitted and the same evidence will be resumed when it is observable again")
+        _record_pr_stage(pr_number, "pr.ordinary-closure", f"pr#{pr_number} ordinary closure", Outcome.DEFERRED, {"head": head_sha, "reason": resumption.reason, "evidence_status": "UNAVAILABLE", "additional_model_execution": False})
+        actions.quota_deferred = True  # type: ignore[attr-defined]
+        actions.retry_not_before = time.time() + 60.0  # type: ignore[attr-defined]
+        if processing_status is not None:
+            processing_status.error = None
+            processing_status.outcome = PRProcessingOutcome.DEFERRED
+            processing_status.retry_not_before = actions.retry_not_before  # type: ignore[attr-defined]
+        return resumption, True
+    return resumption, False
 
 
 TWO_TIER_REVIEW_DESTINATION = "github-reviewer-app:threads-v1"
@@ -477,15 +695,18 @@ def _render_two_tier_review(payload: AcceptedReviewPayload) -> str:
     """Render the review summary; strong findings are separate root threads."""
     title = "Strong audit" if payload.mode == "STRONG_AUDIT" else "Ordinary closure"
     marker = f"<!-- auto-coder-two-tier-review:v1:{payload.identity} -->"
+    attempt = payload.ordinary_attempt_sequence or payload.attempt
+    source = f"Source: retained ordinary attempt `{payload.ordinary_attempt_id}`; reviewer `{payload.ordinary_reviewer}`; " f"evaluated head `{payload.target_head}`; consumed without an additional model execution.  \n" if payload.ordinary_attempt_id else ""
     if payload.mode == "STRONG_AUDIT":
         readable_findings = f"{len(payload.findings)} actionable finding thread(s) are attached to this review.\n\n" if payload.findings else "No findings.\n\n"
     else:
         readable_findings = "".join(_render_two_tier_finding(finding) for finding in payload.findings)
     return (
-        f"{marker}\n## {title} evidence (attempt {payload.attempt})\n\n"
+        f"{marker}\n## {title} evidence (attempt {attempt})\n\n"
         f"Verdict: **{payload.verdict}**  \n"
         f"Target head: `{payload.target_head}`  \n"
-        f"Round: `{payload.round_id}`  \n\n"
+        f"Round: `{payload.round_id}`  \n"
+        f"{source}\n"
         f"{readable_findings}"
         "<details><summary>Exact accepted payload</summary>\n\n"
         f"```json\n{payload.canonical_json()}\n```\n\n</details>"
@@ -653,8 +874,15 @@ def _consume_closure_thread_resolutions(payload: AcceptedReviewPayload, strong: 
     return not unfinished, "accepted finding thread resolution confirmed" if not unfinished else "accepted finding thread resolution remains unfinished"
 
 
-def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, *, github_client: Optional[GitHubClient] = None) -> Tuple[bool, str]:
-    """Publish only a current, durably accepted two-tier result and acknowledge it."""
+def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, observe: Optional[Callable[[], ObservedTarget]] = None, *, github_client: Optional[GitHubClient] = None) -> Tuple[bool, str]:
+    """Publish only a current, durably accepted two-tier result and acknowledge it.
+
+    A closure publication also requires the closure source's ordinary-attempt
+    authority (``observe`` supplies the authoritative current target; by default
+    the processing pass's own target). A lapsed authority defers the effect
+    before any transport work, leaving the accepted closure and any uncertain
+    receipt intact for the same pending effect to resume.
+    """
     snapshot = inputs.gate.state.snapshot(pr_number)
     strong = snapshot.accepted_strong_round
     if strong is None or not snapshot.pending_effect:
@@ -663,7 +891,18 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
         closure = snapshot.accepted_closure
         if closure is None:
             return False, "accepted closure payload is unavailable"
-        payload = AcceptedReviewPayload.closure(repo_name, pr_number, strong, closure, snapshot.findings)
+        ordinary_attempt_id, ordinary_attempt_sequence, ordinary_reviewer = "", 0, ""
+        if closure.source_identity:
+            # The publication is derived from the retained ordinary source and
+            # names its real attempt and reviewer; it never implies a model run.
+            view = inputs.gate.closure_evidence().inspect(closure.source_identity)
+            if view.record is None:
+                return False, "the retained ordinary source of the accepted closure is unavailable; publication was not started"
+            ordinary_attempt_id, ordinary_attempt_sequence, ordinary_reviewer = view.record.attempt_id, view.record.attempt_sequence, view.record.reviewer_provenance
+            authorized, authority_reason = inputs.gate.closure_evidence().dependent_effects_allowed(closure.source_identity, observe or (lambda: ObservedTarget(inputs.head_sha, inputs.base_sha, inputs.contract, inputs.policy)))
+            if not authorized:
+                return False, f"closure publication is deferred until its ordinary-attempt authority is current: {authority_reason}"
+        payload = AcceptedReviewPayload.closure(repo_name, pr_number, strong, closure, snapshot.findings, ordinary_attempt_id, ordinary_attempt_sequence, ordinary_reviewer)
     else:
         payload = AcceptedReviewPayload.strong(repo_name, pr_number, strong, snapshot.findings)
 
@@ -700,9 +939,7 @@ def _consume_pending_two_tier_publication(repo_name: str, pr_number: int, inputs
                 return False
             current_closure = inputs.gate.state.snapshot(pr_number).accepted_closure
             if current_closure is not None and current_closure.source_identity:
-                from .ordinary_closure_evidence import ObservedTarget
-
-                allowed, _ = inputs.gate.closure_evidence().dependent_effects_allowed(current_closure.source_identity, lambda: ObservedTarget(payload.target_head, inputs.base_sha, inputs.contract, inputs.policy))
+                allowed, _ = inputs.gate.closure_evidence().dependent_effects_allowed(current_closure.source_identity, observe or (lambda: ObservedTarget(payload.target_head, inputs.base_sha, inputs.contract, inputs.policy)))
                 return allowed
             return True
 
@@ -3874,65 +4111,6 @@ def _corrective_completion_marker(repo_name: str, pr_data: Dict[str, Any], head_
     return ""
 
 
-def _pursue_effective_closure(
-    repo_name: str,
-    pr_data: Dict[str, Any],
-    head_sha: str,
-    github_client: Any,
-    projection: AcceptedFindingProjection,
-    *,
-    fence: Optional[AcceptanceFence] = None,
-    completion_marker: str = "",
-) -> OrdinaryClosureOutcome:
-    """Reach bounded ordinary closure on its own evidence, not on an aggregate PASS.
-
-    The caller establishes that the ordinary session itself cleared coverage and
-    records its applicable PASS; this only consumes closure eligibility. An
-    accepted outcome means the owning lifecycle committed the closure, so the
-    caller re-reads the projection and re-derives; ``upheld`` means a complete
-    independent review retained the finding for further correction.
-    """
-    pr_number = int(pr_data["number"])
-    if not closure_ready(projection, head_sha, completion_marker):
-        return OrdinaryClosureOutcome(reason="closure is not applicable")
-    try:
-        inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
-    except Exception as exc:
-        logger.warning(f"Ordinary closure for PR #{pr_number} is unavailable: strong-tier identity could not be resolved: {exc}")
-        return OrdinaryClosureOutcome(reason=f"strong-tier identity could not be resolved: {exc}")
-    if inputs is None:
-        return OrdinaryClosureOutcome(reason="the strong tier is not configured")
-    try:
-        store = EffectiveDecisionStore(repo_name)
-        retained = store.load(pr_number)
-        key = closure_attempt_key(head_sha, projection.finding_set_revision, retained.handoff_generation if retained is not None else 0)
-        if retained is not None and key in retained.closure_attempts:
-            return OrdinaryClosureOutcome(reason="the closure review for this corrective generation already completed")
-        snapshot = inputs.gate.state.snapshot(pr_number)
-        if snapshot.ordinary_pass_head_sha != inputs.head_sha:
-            return OrdinaryClosureOutcome(reason="no applicable ordinary PASS is recorded for this head")
-        outcome = _run_ordinary_closure(repo_name, pr_number, inputs, fence)
-        if outcome.accepted or outcome.upheld:
-            # Only a completed independent review spends the attempt; an unavailable
-            # reviewer or superseded proposal stays resumable at the same head.
-            store.record_closure_attempt(pr_number, key, head_sha)
-        published = False
-        publication_reason = ""
-        if outcome.accepted:
-            published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, inputs, github_client=github_client)
-        _record_pr_stage(
-            pr_number,
-            "pr.ordinary-closure",
-            f"pr#{pr_number} ordinary closure",
-            Outcome.COMPLETED if outcome.accepted else Outcome.DEFERRED,
-            {"backend": outcome.provenance, "head": head_sha, "reason": outcome.reason, "closure_published": published, "publication_reason": publication_reason, "effect": "effective-decision-closure"},
-        )
-        return outcome
-    except DecisionRetentionError as exc:
-        logger.warning(f"Ordinary closure attempt for PR #{pr_number} could not be retained: {exc}")
-        return OrdinaryClosureOutcome(reason=str(exc))
-
-
 def _derive_effective_application(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -3940,45 +4118,29 @@ def _derive_effective_application(
     raw_result: AdversarialValidationResult,
     claimed_review_threads: Sequence[Any],
     github_client: Any,
-    fence: Optional[AcceptanceFence],
+    closure: Optional[OrdinaryClosureOutcome] = None,
 ) -> Optional[DecisionApplication]:
     """Derive the effective decision from this attempt's parsed result and the accepted state.
 
-    Bounded closure runs here, before anything is published, whenever the
-    ordinary session cleared coverage and a corrective generation exists; the
-    projection is then re-read and the decision re-derived, so only the
-    consistent outcome is ever published. A closure review that retains the
-    finding is independent evidence that it is still upheld.
+    ``closure`` is what the same attempt's retained assessment achieved. Closure
+    acceptance is independent of the effective decision, so it is applied before
+    this derivation; the projection is then re-read and the decision re-derived,
+    so only the consistent outcome is ever published. A complete assessment that
+    retains the finding is independent evidence that it is still upheld.
     """
     projection = raw_result.accepted_finding_projection
     if projection is None or raw_result.result.strip().upper() in {"ERROR", "EXHAUSTED"}:
         return None
     application = derive_application(raw_result, projection)
-    settled = settle_accepted_gaps(raw_result, projection)
-    if not (raw_ordinary_clear(settled) and application.decision.next_action in {EffectiveNextAction.CLOSURE_ACCEPTANCE, EffectiveNextAction.RECONCILIATION} and application.decision.corrections):
-        return application
-    marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
-    if not closure_ready(projection, head_sha, marker):
-        return application
-    # The applicable ordinary PASS is the session's own coverage result; the
-    # effective decision stays nonpassing until the lifecycle accepts closure.
-    try:
-        inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
-        if inputs is not None:
-            inputs.gate.ordinary_pass(int(pr_data["number"]), inputs.head_sha, inputs.base_sha, inputs.contract)
-    except Exception as exc:
-        logger.warning(f"The ordinary PASS for PR #{pr_data['number']} could not be recorded for closure: {exc}")
-        return application
-    outcome = _pursue_effective_closure(repo_name, pr_data, head_sha, github_client, projection, fence=fence, completion_marker=marker)
-    if not outcome.accepted and not outcome.upheld:
+    if closure is None or not (closure.accepted or closure.upheld):
         return application
     bridge, target = _accepted_state_inputs(repo_name, pr_data, head_sha)
     dispositions = accepted_finding_dispositions(raw_result, claimed_review_threads, projection, head_sha)
-    if outcome.upheld:
+    if closure.upheld:
         # The independent review supersedes the session's closure proposal for these findings.
         upheld_roots = {root for record in outstanding_records(projection) for root in record.root_comment_ids}
         dispositions = [item for item in dispositions if item.root_comment_id not in upheld_roots]
-        dispositions.extend(OrdinaryDisposition(status="STILL_VALID", rationale="An independent ordinary closure review retained this finding.", evidence=outcome.reason, head_sha=head_sha, source_identity=record.source_identity) for record in outstanding_records(projection))
+        dispositions.extend(OrdinaryDisposition(status="STILL_VALID", rationale="An independent ordinary closure review retained this finding.", evidence=closure.reason, head_sha=head_sha, source_identity=record.source_identity) for record in outstanding_records(projection))
     refreshed = project_accepted_findings(bridge, target, claimed_review_threads, dispositions)
     return derive_application(raw_result, refreshed)
 
@@ -4040,12 +4202,12 @@ def _replay_saved_nonpass_review(
     records = outstanding_records(projection) if projection is not None else ()
     if projection is not None and records:
         marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
-        if marker and closure_ready(projection, head_sha, marker):
+        if marker and _closure_review_due(repo_name, pr_number, head_sha, projection, marker):
             return [f"The corrective request for PR #{pr_number} completed ({marker.split(':')[0]}); independently reassessing the accepted finding"], True
     bodies, blocker_ids = _compose_actionable_feedback(github_client, repo_name, pr_number, records)
     result = _send_adversarial_validation_feedback_to_cloud_task(repo_name, pr_data, head_sha, report, github_client, bodies, config=config, canonical_blocker_ids=blocker_ids)
     _record_handoff_state(repo_name, pr_data, github_client, result)
-    if projection is not None and records and getattr(result, "local_phase", "") == "completed_no_change" and closure_ready(projection, head_sha, "local:completed_no_change"):
+    if projection is not None and records and getattr(result, "local_phase", "") == "completed_no_change" and _closure_review_due(repo_name, pr_number, head_sha, projection, "local:completed_no_change"):
         return [*result, f"A supported no-change completion was reported for PR #{pr_number}; independently reassessing the accepted finding"], True
     return result, False
 
@@ -4449,6 +4611,7 @@ def _handle_pr_merge(
             revalidating_older_head_threads = False
             forced_same_head_revalidation = False
             saved_review_revalidation = False
+            gate_retained_resume = False
             reviewer_login = ""
             claimed_review_threads: Sequence[Any] = ()
 
@@ -4491,14 +4654,21 @@ def _handle_pr_merge(
                         if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                             current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
                             if not current_status_error:
+                                _gate_resumption, gate_resume_stop = _resume_closure_before_admission(github_client, repo_name, pr_data, head_sha_for_gate, force_adversarial_validation, actions, processing_status)
+                                if gate_resume_stop:
+                                    return actions
+                                # A retained ordinary PASS whose closure was accepted completes its own
+                                # outstanding publication/thread effects below; its accepted finding is
+                                # closed, so no repair is replayed or requested for it.
+                                gate_retained_resume = _gate_resumption is not None and _gate_resumption.ordinary_pass_retained and current_status != "PASS"
                                 gate_assessment = _assess_saved_review_state(repo_name, pr_data, head_sha_for_gate, current_status, _authentic_root_threads(repo_name, claimed_thread_state), force_adversarial_validation, github_client)
                                 if gate_assessment.action == SAVED_REVIEW_WAIT:
                                     _record_review_wait(repo_name, pr_number, head_sha_for_gate, actions, processing_status, gate_assessment.reason)
                                     return actions
-                                saved_review_revalidation = gate_assessment.action == SAVED_REVIEW_REVALIDATE
+                                saved_review_revalidation = gate_assessment.action == SAVED_REVIEW_REVALIDATE or gate_retained_resume
                                 if saved_review_revalidation:
-                                    actions.append(f"Saved {current_status} review for PR #{pr_number} is not clearance: {gate_assessment.reason}")
-                                if current_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not adjudication_forces_revalidation:
+                                    actions.append(f"Saved {current_status} review for PR #{pr_number} is not clearance: {gate_assessment.reason or 'its closure was accepted from the retained ordinary result'}")
+                                if current_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not adjudication_forces_revalidation and not gate_retained_resume:
                                     report, report_error = _get_published_adversarial_validation_comment(github_client, repo_name, pr_number, head_sha_for_gate)
                                     if report_error or not report:
                                         actions.append(f"Cannot replay current-head adversarial feedback for PR #{pr_number}: {report_error or 'published report is unavailable'}")
@@ -4552,7 +4722,7 @@ def _handle_pr_merge(
                     repair_threads = tuple(thread for thread in claimed_thread_state.blocking_unresolved if not is_change_provenance_thread(thread))
                     if pending_provenance:
                         actions.append(f"Awaiting implementer provenance clarification on {len(pending_provenance)} review thread(s); no code change was requested")
-                    if repair_threads:
+                    if repair_threads and not gate_retained_resume:
                         exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
                         if exhaustion_info and exhaustion_info.is_exhausted:
                             actions.append(f"Review repair stopped for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
@@ -4804,6 +4974,25 @@ def _handle_pr_merge(
                             processing_status.error = lookup_error
                             processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
+                    # Retained closure evidence is consumed before any same-head shortcut
+                    # or new reviewer admission: outstanding certification, bookkeeping
+                    # and publication work resume from the durable sources with no model
+                    # call, and a legacy PASS with closure still outstanding is routed to
+                    # one combined (closure-aware) ordinary revalidation.
+                    resumption, resume_stop = _resume_closure_before_admission(github_client, repo_name, pr_data, head_sha, force_adversarial_validation, actions, processing_status)
+                    if resume_stop:
+                        return actions
+                    retained_reuse: Optional[ClosureEvidenceRecord] = None
+                    if resumption is not None:
+                        if resumption.ordinary_pass_retained and published_status != "PASS":
+                            retained_reuse = resumption.retained_record
+                            saved_review_revalidation = True
+                            actions.append(
+                                f"Resuming PR #{pr_number} at commit {head_sha[:8]} from the retained ordinary result of attempt {retained_reuse.attempt_sequence if retained_reuse else '?'}: its closure was accepted; outstanding publication and thread effects complete without another reviewer"
+                            )
+                        elif resumption.revalidate and published_status == "PASS":
+                            saved_review_revalidation = True
+                            actions.append(f"Revalidating PR #{pr_number} at unchanged commit {head_sha[:8]}: {resumption.reason}")
                     provenance_fingerprint = change_provenance_reply_fingerprint(claimed_review_threads)
                     has_new_provenance_evidence = False
                     saved_pass_has_unresolved_provenance = published_status == "PASS" and bool(provenance_fingerprint)
@@ -4847,7 +5036,7 @@ def _handle_pr_merge(
                     saved_review_revalidation = saved_review_revalidation or reuse_assessment.action == SAVED_REVIEW_REVALIDATE
                     if published_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not saved_review_revalidation and reuse_assessment.projection is not None and outstanding_records(reuse_assessment.projection):
                         completion_marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
-                        if completion_marker and closure_ready(reuse_assessment.projection, head_sha, completion_marker):
+                        if completion_marker and _closure_review_due(repo_name, pr_number, head_sha, reuse_assessment.projection, completion_marker):
                             saved_review_revalidation = True
                     if saved_review_revalidation and published_status:
                         actions.append(f"Re-deriving the effective decision for PR #{pr_number} at unchanged commit {head_sha[:8]}: the saved {published_status} review is not current clearance")
@@ -4936,7 +5125,10 @@ def _handle_pr_merge(
                                 actions.append(f"Skipped duplicate local adversarial-validation trigger for PR #{pr_number}")
                                 return actions
                         attempt_repository = AdversarialValidationAttemptRepository(repo_name)
-                        attempt = attempt_repository.start(pr_number, head_sha)
+                        if retained_reuse is not None and attempt_repository.latest_sequence(pr_number, head_sha) != retained_reuse.attempt_sequence:
+                            retained_reuse = None  # a newer attempt exists: its own verdict governs, never the older retained result
+                        # Reusing the retained result consumes its existing attempt; no new attempt is registered.
+                        attempt = AdversarialValidationAttempt(retained_reuse.attempt_id, retained_reuse.attempt_sequence) if retained_reuse is not None else attempt_repository.start(pr_number, head_sha)
                         active_attempt_id = attempt.attempt_id
                         decision_attempt_repository = attempt_repository
                         decision_attempt_sequence = attempt.sequence
@@ -4948,26 +5140,51 @@ def _handle_pr_merge(
                         review_policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
                         review_related_issue_membership = _pr_adversarial_linked_issue_membership(repo_name, pr_data, adversarial_eligibility.issue_numbers)
                         active_review_id: Optional[str] = None
+                        closure_input: Optional[ReviewExecutionInput] = None
+                        closure_gate: Optional[TwoTierPrGate] = None
                         try:
-                            with begin_executed_review(
-                                review_target,
-                                policy_identity=review_policy_identity,
-                                related_issue_membership=review_related_issue_membership,
-                            ) as active_review_id:
-                                with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
-                                    actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
-                                    val_result = run_adversarial_validation(
-                                        repo_name,
-                                        pr_data,
-                                        config,
-                                        github_client=github_client,
-                                        claimed_review_threads_section=claimed_review_threads_section,
-                                        claimed_review_threads=claimed_review_threads,
-                                        execution_cwd=validation_worktree,
-                                        defer_session_persistence=True,
-                                        ci_status=github_checks,
-                                        refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
-                                    )
+                            if retained_reuse is not None:
+                                # The accepted closure's own ordinary result is consumed without a reviewer.
+                                val_result = restore_ordinary_result(retained_reuse)
+                                active_review_id = record_reused(review_target, policy_identity=review_policy_identity, source_review_id=None, native_verdict=val_result.result, related_issue_membership=review_related_issue_membership)
+                                bridge, projection_target = _accepted_state_inputs(repo_name, pr_data, head_sha)
+                                base_projection = project_accepted_findings(bridge, projection_target, claimed_review_threads)
+                                val_result.accepted_finding_projection = project_accepted_findings(bridge, projection_target, claimed_review_threads, accepted_finding_dispositions(val_result, claimed_review_threads, base_projection, head_sha)) if base_projection.records else base_projection
+                            else:
+                                with begin_executed_review(
+                                    review_target,
+                                    policy_identity=review_policy_identity,
+                                    related_issue_membership=review_related_issue_membership,
+                                ) as active_review_id:
+                                    with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
+                                        actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")
+                                        # The authoritative closure context is captured before the
+                                        # ordinary invocation and rides with that same invocation, so
+                                        # one review yields both ordinary validation and closure evidence.
+                                        try:
+                                            closure_inputs = _two_tier_gate_inputs(github_client, repo_name, pr_data)
+                                            if closure_inputs is not None:
+                                                closure_gate = closure_inputs.gate
+                                                closure_capture = _capture_ordinary_closure_input(repo_name, pr_number, closure_inputs, attempt, validation_worktree)
+                                                closure_input = closure_capture.review_input
+                                                if closure_input is not None:
+                                                    actions.append(f"Supplying {len(closure_input.findings)} outstanding strong finding(s) and the cumulative {closure_input.audited_head_sha[:8]}..{head_sha[:8]} diff to the ordinary validation of PR #{pr_number}")
+                                        except Exception as closure_exc:
+                                            logger.warning(f"Closure context for PR #{pr_number} could not be captured: {closure_exc}")
+                                            actions.append(f"Closure context for PR #{pr_number} could not be captured: {closure_exc}; outstanding strong findings remain blocking")
+                                        val_result = run_adversarial_validation(
+                                            repo_name,
+                                            pr_data,
+                                            config,
+                                            github_client=github_client,
+                                            claimed_review_threads_section=claimed_review_threads_section,
+                                            claimed_review_threads=claimed_review_threads,
+                                            execution_cwd=validation_worktree,
+                                            defer_session_persistence=True,
+                                            ci_status=github_checks,
+                                            refresh_ci_status=lambda: _refresh_adversarial_ci_status(repo_name, pr_data, config, github_client),
+                                            closure_input=closure_input,
+                                        )
                         except Exception as e:
                             exception_preview = redact_string(str(e))[:2000]
                             logger.error(f"Adversarial validation execution failed for PR #{pr_number} " f"({type(e).__name__}): {exception_preview}")
@@ -4983,7 +5200,7 @@ def _handle_pr_merge(
 
                         val_result.attempt_id = attempt.attempt_id
                         val_result.attempt_sequence = attempt.sequence
-                        if active_review_id:
+                        if active_review_id and retained_reuse is None:
                             finish_executed_review(active_review_id, review_target, val_result)
                         active_attempt_status = val_result.result.strip().upper() or "ERROR"
 
@@ -5001,6 +5218,21 @@ def _handle_pr_merge(
                         # here (it needs the ordinary session's coverage, not an effective
                         # PASS) and is fenced against newer attempts at its own acceptance.
                         raw_val_result = val_result
+                        closure_outcome: Optional[OrdinaryClosureOutcome] = None
+                        if closure_input is not None and closure_gate is not None:
+                            if val_result.closure_assessment is not None:
+                                closure_outcome = _apply_ordinary_closure_evidence(
+                                    repo_name,
+                                    pr_data,
+                                    val_result,
+                                    closure_input,
+                                    closure_gate,
+                                    github_client,
+                                    AcceptanceFence(attempt_repository, pr_number, head_sha, attempt.sequence, lambda: github_client.get_pull_request_head_sha_strict(repo_name, pr_number)),
+                                )
+                                actions.append(f"Ordinary closure evidence for PR #{pr_number} from ordinary attempt {attempt.sequence}: {closure_outcome.reason}")
+                            else:
+                                actions.append(f"Ordinary closure evidence for PR #{pr_number} is unavailable: {val_result.closure_assessment_diagnostic or 'no assessment was returned'}; the outstanding strong findings remain blocking")
                         effective_application: Optional[DecisionApplication] = None
                         try:
                             effective_application = _derive_effective_application(
@@ -5010,7 +5242,7 @@ def _handle_pr_merge(
                                 val_result,
                                 claimed_review_threads,
                                 github_client,
-                                AcceptanceFence(attempt_repository, pr_number, head_sha, attempt.sequence, lambda: github_client.get_pull_request_head_sha_strict(repo_name, pr_number)),
+                                closure_outcome,
                             )
                         except Exception as e:
                             logger.error(f"Effective review decision for PR #{pr_number} could not be derived: {e}")
@@ -5456,6 +5688,7 @@ def _handle_pr_merge(
                         two_tier_inputs.base_sha,
                         two_tier_inputs.contract,
                     )
+                    closure_resumption = _resume_retained_closure(repo_name, pr_number, two_tier_inputs.head_sha, two_tier_inputs, github_client)
                     pending_snapshot = two_tier_inputs.gate.state.snapshot(pr_number)
                     reusable_completion = two_tier_inputs.gate.reusable_completion(
                         pr_number,
@@ -5464,12 +5697,23 @@ def _handle_pr_merge(
                         current_contract=two_tier_inputs.contract,
                         current_policy=two_tier_inputs.policy,
                     )
+                    closure_authority_reason = ""
+                    if reusable_completion is not None:
+                        closure_authorized, closure_authority_reason = _closure_completion_authority(two_tier_inputs, github_client, repo_name, pr_number)
+                        if not closure_authorized:
+                            reusable_completion = None
                     if reusable_completion is not None:
                         accepted = True
                         reason = f"reused existing {reusable_completion.basis} completion"
                         reviewer_backend = two_tier_inputs.policy.strong_route
                         stage_id = "pr.strong-audit"
                         stage_label = f"pr#{pr_number} strong audit"
+                    elif closure_authority_reason:
+                        accepted = False
+                        reason = f"the accepted closure remains intact but its dependent effects and merge wait for current ordinary-attempt authority: {closure_authority_reason}"
+                        reviewer_backend = ""
+                        stage_id = "pr.ordinary-closure"
+                        stage_label = f"pr#{pr_number} ordinary closure"
                     elif pending_snapshot.pending_effect:
                         accepted = False
                         reason = "resuming accepted review publication without model execution"
@@ -5477,7 +5721,16 @@ def _handle_pr_merge(
                         stage_id = "pr.strong-audit"
                         stage_label = f"pr#{pr_number} strong audit"
                     elif pending_snapshot.phase == PHASE_ORDINARY_CLOSURE and pending_snapshot.open_findings:
-                        accepted, reason, reviewer_backend = _execute_pending_ordinary_closure(repo_name, pr_number, two_tier_inputs)
+                        # Closure is accepted only from the retained assessment of an ordinary
+                        # attempt; a separate closure-only reviewer is never invoked here.
+                        accepted = False
+                        if closure_resumption.unavailable:
+                            reason = f"retained closure evidence is pending; the same evidence will be resumed when it is observable again: {closure_resumption.reason}"
+                        elif closure_resumption.revalidate:
+                            reason = "closure remains outstanding; a closure-aware ordinary validation must be admitted for this head"
+                        else:
+                            reason = f"closure remains outstanding: {closure_resumption.reason}"
+                        reviewer_backend = ""
                         stage_id = "pr.ordinary-closure"
                         stage_label = f"pr#{pr_number} ordinary closure"
                     else:
@@ -5499,7 +5752,7 @@ def _handle_pr_merge(
                         if reusable_completion is not None:
                             accepted = True
                             reason = f"reused existing {reusable_completion.basis} completion"
-                    published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, two_tier_inputs, github_client=github_client)
+                    published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, two_tier_inputs, _ClosureTargetObserver(github_client, repo_name, pr_number), github_client=github_client)
                     if reusable_completion is not None:
                         published = True
                         publication_reason = f"no publication required; reused {reusable_completion.basis} completion"
@@ -5546,12 +5799,16 @@ def _handle_pr_merge(
                     # Acceptance by itself is never merge authority. A confirmed
                     # exact strong PASS may continue to the ordinary final gate;
                     # findings and unresolved effects remain blocked here.
-                    if not two_tier_inputs.gate.authorize_merge(
-                        pr_number,
-                        current_head_sha=two_tier_inputs.head_sha,
-                        current_base_sha=two_tier_inputs.base_sha,
-                        current_contract=two_tier_inputs.contract,
-                        current_policy=two_tier_inputs.policy,
+                    if (
+                        closure_authority_reason
+                        or not _closure_completion_authority(two_tier_inputs, github_client, repo_name, pr_number)[0]
+                        or not two_tier_inputs.gate.authorize_merge(
+                            pr_number,
+                            current_head_sha=two_tier_inputs.head_sha,
+                            current_base_sha=two_tier_inputs.base_sha,
+                            current_contract=two_tier_inputs.contract,
+                            current_policy=two_tier_inputs.policy,
+                        )
                     ):
                         # Retain an authoritative due wake for the daemon. A
                         # quota deadline is preserved exactly; contention and

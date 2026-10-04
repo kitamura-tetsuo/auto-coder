@@ -149,6 +149,13 @@ class AdversarialValidationAttemptRepository:
             default=0,
         )
 
+    def has_unresolved_attempt_after(self, pr_number: int, head_sha: str, sequence: int) -> bool:
+        """Whether a newer attempt for this head is still running or ended without a clean PASS."""
+        with self._locked():
+            attempts = self._read()["attempts"]
+        assert isinstance(attempts, list)
+        return any(isinstance(item, dict) and item.get("pr_number") == pr_number and item.get("head_sha") == head_sha and int(item["sequence"]) > sequence and item.get("status") != "PASS" for item in attempts)
+
     def latest_sequence(self, pr_number: int, head_sha: str) -> int:
         """Return the newest attempt, including one that is still in progress."""
         with self._locked():
