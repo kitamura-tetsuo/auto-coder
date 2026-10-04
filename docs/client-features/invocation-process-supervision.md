@@ -34,8 +34,11 @@ replacement decision.
 
 The deterministic conformance coverage is in
 `tests/test_invocation_process_supervisor.py`; run it with
-`bash scripts/test.sh tests/test_invocation_process_supervisor.py`. Production
-startup compatibility can be checked by ensuring `/sys/fs/cgroup/cgroup.controllers`
+`bash scripts/test.sh tests/test_invocation_process_supervisor.py`. The peer
+cancellation regression uses readiness and release files to keep the peer active
+until the cancelled invocation settles, then verifies that the peer completes
+successfully. It does not rely on observing a short, fixed-duration active state.
+Production startup compatibility can be checked by ensuring `/sys/fs/cgroup/cgroup.controllers`
 and `cgroup.kill` exist, the controller runs as root, a non-root worker identity is
 configured, and `/sys/fs/cgroup/auto-coder` is root-owned and not worker-writable.
 The tested profile is CPython 3.12 on Linux cgroup v2 with Landlock ABI 3 or newer.
