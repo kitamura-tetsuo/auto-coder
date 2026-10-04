@@ -516,7 +516,7 @@ def test_new_gap_admission_is_unchanged_when_no_accepted_source_exists(env: Env,
     }
     response = _ordinary_response([gap], result="NEEDS_TESTS")
     with_bridge, _ = run_ordinary(env, pr, response, bridge=env.bridge())
-    with patch("auto_coder.adversarial_validator._default_accepted_finding_bridge", return_value=env.bridge()):
+    with patch("auto_coder.adversarial_validator.default_accepted_finding_bridge", return_value=env.bridge()):
         default, _ = run_ordinary(env, pr, response)
     save_empty_session(env, pr)
     plain = _reconcile_test_oracle_gap_lifecycle(parse_adversarial_validation_response(response, []), env.registry.get(REPO, pr, "reviewer", "codex", "strong"), env.head)

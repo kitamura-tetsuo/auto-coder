@@ -76,6 +76,10 @@ class ReviewPublicationResult:
     success: bool = False
     event: str = ""
     reason: str = ""
+    # True only when the pre-send authority check proved that nothing was
+    # transmitted. It is a policy/applicability refusal, never a transport
+    # failure and never an ambiguously sent request.
+    policy_refusal: bool = False
 
 
 @dataclass(frozen=True)
@@ -535,8 +539,14 @@ class GitHubAppReviewer:
         ledger: Optional[CanonicalPRBlockerLedger] = None,
         operation_id: Optional[str] = None,
         expected_ledger_revision: Optional[int] = None,
+        approval_authority: Optional[Callable[[], str]] = None,
     ) -> ReviewPublicationResult:
-        """Submit a native review, failing closed on auth, head races, or API errors."""
+        """Submit a native review, failing closed on auth, head races, or API errors.
+
+        ``approval_authority`` is consulted immediately before an APPROVE
+        request can be transmitted and returns an empty string while approval
+        remains authorized, otherwise the refusal reason.
+        """
         event = "APPROVE" if result.allows_auto_merge else "REQUEST_CHANGES" if result.needs_fix or result.needs_tests else "COMMENT"
         try:
             token = self._installation_token(repo_name, frozenset([("pull_requests", "write")]))
@@ -692,6 +702,13 @@ class GitHubAppReviewer:
                 except (PublicationContentionError, StaleLedgerRevisionError) as exc:
                     return ReviewPublicationResult(False, event, f"Publication authority refused: {exc}")
 
+            if event == "APPROVE" and approval_authority is not None:
+                refusal = self._approval_refusal(approval_authority)
+                if refusal:
+                    if effective_ledger is not None and unrooted_blocker_ids:
+                        effective_ledger.reject_publication_intent(self._api_url, repo_name, pr_number, intent_id, reason=refusal)
+                    return ReviewPublicationResult(False, event, refusal, policy_refusal=True)
+
             # A standalone file-level review comment is the only supported REST
             # shape when no changed file exposes a represented diff line. Create
             # it before the durable verdict so a failed comment request cannot
@@ -758,6 +775,14 @@ class GitHubAppReviewer:
             # include credential-bearing request details.
             logger.bind(repository=repo_name, target=str(pr_number), phase="publication").error("Dedicated reviewer GitHub App could not publish the adversarial verdict")
             return ReviewPublicationResult(False, event, "Dedicated reviewer GitHub App publication failed")
+
+    @staticmethod
+    def _approval_refusal(approval_authority: Callable[[], str]) -> str:
+        """Fail closed: an unavailable authority check refuses approval."""
+        try:
+            return approval_authority()
+        except Exception as exc:
+            return f"Approval authority could not be confirmed: {type(exc).__name__}"
 
     def _recover_publication_intent(
         self,
@@ -1108,6 +1133,7 @@ def publish_adversarial_review(
     ledger: Optional[CanonicalPRBlockerLedger] = None,
     operation_id: Optional[str] = None,
     expected_ledger_revision: Optional[int] = None,
+    approval_authority: Optional[Callable[[], str]] = None,
 ) -> ReviewPublicationResult:
     """Load dedicated credentials and publish without touching the user client."""
     try:
@@ -1124,6 +1150,7 @@ def publish_adversarial_review(
         ledger=effective_ledger,
         operation_id=operation_id,
         expected_ledger_revision=expected_ledger_revision,
+        approval_authority=approval_authority,
     )
 
 
