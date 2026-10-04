@@ -13,12 +13,12 @@ accepted closure stays pending until the cycle's publication acknowledgement.
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
+import re
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator, Optional, Tuple
@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from .adversarial_validator import AdversarialValidationResult
 
 _VERIFIED_COVERAGE = {"VERIFIED", "IRRELEVANT"}
+_REQUIREMENT_LINE = re.compile(r"^(?:Issue\s+#(\d+)\s+)?(REQ-\d+):")
+_COVERAGE_ID = re.compile(r"^(?:#(\d+)/)?(REQ-\d+)$")
 
 
 class EvidenceState(str, Enum):
@@ -71,7 +73,7 @@ class OrdinaryOutcome:
     open_test_oracle_gap_count: int = 0
     specification_gap_count: int = 0
     blockers: Tuple[str, ...] = ()
-    raw_response_digest: str = ""
+    payload: str = ""  # JSON of the complete ordinary semantic result, including the raw response
 
     @property
     def is_semantic_pass(self) -> bool:
@@ -205,7 +207,7 @@ def _record_to_raw(record: ClosureEvidenceRecord) -> dict:
             "open_test_oracle_gap_count": ordinary.open_test_oracle_gap_count,
             "specification_gap_count": ordinary.specification_gap_count,
             "blockers": list(ordinary.blockers),
-            "raw_response_digest": ordinary.raw_response_digest,
+            "payload": ordinary.payload,
         },
         "retained_at": record.retained_at,
         "state": record.state.value,
@@ -246,7 +248,7 @@ def _record_from_raw(raw: dict) -> ClosureEvidenceRecord:
             open_test_oracle_gap_count=int(ordinary["open_test_oracle_gap_count"]),
             specification_gap_count=int(ordinary["specification_gap_count"]),
             blockers=tuple(str(item) for item in ordinary["blockers"]),
-            raw_response_digest=str(ordinary["raw_response_digest"]),
+            payload=str(ordinary["payload"]),
         ),
         retained_at=float(raw["retained_at"]),
         state=EvidenceState(raw["state"]),
@@ -348,6 +350,45 @@ class OrdinaryClosureEvidenceRepository:
             self._write(state)
 
 
+def _plain(value: object) -> object:
+    """Reduce a validator result value to JSON-safe data without losing fields."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return {item.name: _plain(getattr(value, item.name)) for item in fields(value) if item.repr}
+    if isinstance(value, dict):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_plain(item) for item in value]
+    if isinstance(value, Enum):
+        return value.value
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _coverage_gap(coverage: Tuple[Tuple[str, str], ...], contract: ContractSnapshot) -> str:
+    """Require the ordinary evaluation to verify exactly the observed Requirements."""
+    expected = set()
+    for line in contract.requirements_text.splitlines():
+        match = _REQUIREMENT_LINE.match(line.strip())
+        if match:
+            expected.add((match.group(1) or "", match.group(2)))
+    if not expected:
+        return "the observed Requirements snapshot declares no verifiable Requirement"
+    tokens = [token for _, token in expected]
+    covered = set()
+    for identity, status in coverage:
+        match = _COVERAGE_ID.match(identity.strip())
+        if match is None or status not in _VERIFIED_COVERAGE:
+            return f"coverage entry {identity!r} is not a verified identity from the observed Requirements"
+        issue, token = match.group(1) or "", match.group(2)
+        matches = {item for item in expected if item[1] == token and (not issue or item[0] == issue)}
+        if not matches or (not issue and tokens.count(token) > 1):
+            return f"coverage entry {identity!r} is unknown or ambiguous for the observed Requirements"
+        covered |= matches
+    missing = sorted(f"{issue and '#' + issue + '/'}{token}" for issue, token in expected - covered)
+    return f"ordinary evaluation did not verify Requirement(s): {', '.join(missing)}" if missing else ""
+
+
 def _ordinary_outcome(result: "AdversarialValidationResult") -> OrdinaryOutcome:
     verdict = result.result.strip().upper()
     blockers = []
@@ -378,7 +419,7 @@ def _ordinary_outcome(result: "AdversarialValidationResult") -> OrdinaryOutcome:
         open_test_oracle_gap_count=len(result.open_test_oracle_gaps),
         specification_gap_count=len(result.specification_gaps),
         blockers=tuple(blockers),
-        raw_response_digest=hashlib.sha256(result.raw_response.encode("utf-8")).hexdigest(),
+        payload=json.dumps(_plain({item.name: getattr(result, item.name) for item in fields(result) if item.repr and item.name != "closure_assessment"}), sort_keys=True),
     )
 
 
@@ -508,7 +549,7 @@ class OrdinaryClosureEvidence:
         rejection = self._stale_reason(record, observed, snapshot)
         if rejection:
             return self._reject(record, rejection)
-        authority_gap = self._authority_gap(record, snapshot)
+        authority_gap = self._authority_gap(record, observed)
         if authority_gap:
             return self._outcome(ApplicationStatus.NON_AUTHORIZING, record, authority_gap)
 
@@ -563,13 +604,16 @@ class OrdinaryClosureEvidence:
             return "the evidence does not cover exactly the current outstanding finding identities"
         return ""
 
-    def _authority_gap(self, record: ClosureEvidenceRecord, snapshot: PrReviewCycleSnapshot) -> str:
+    def _authority_gap(self, record: ClosureEvidenceRecord, observed: ObservedTarget) -> str:
         if record.diagnostic:
             return f"assessment is incomplete and remains pending evidence: {record.diagnostic}"
         if record.verdict != "PASS":
             return f"closure assessment verdict is {record.verdict}"
         if not record.ordinary.is_semantic_pass:
             return "ordinary evaluation is not a complete semantic PASS: " + "; ".join(record.ordinary.blockers or ("not PASS",))
+        coverage_gap = _coverage_gap(record.ordinary.requirement_coverage, observed.contract)
+        if coverage_gap:
+            return coverage_gap
         if any(item.status not in {FIXED, INVALID} or not item.evidence.strip() for item in record.dispositions):
             return "every outstanding finding requires an evidence-backed FIXED or INVALID disposition"
         if record.new_findings:
@@ -636,6 +680,13 @@ class OrdinaryClosureEvidence:
             return False, f"authoritative state unavailable: {exc}"
         if not any(item.source_identity == source_id for item in snapshot.closures):
             return False, "the owning review cycle does not hold this source"
+        strong_round = snapshot.accepted_strong_round
+        if snapshot.active_claim is not None or snapshot.requires_new_strong_round:
+            return False, "a newer strong audit is pending or required"
+        if strong_round is None or strong_round.round_id != record.round_id or snapshot.finding_set_revision != record.finding_set_revision:
+            return False, "the accepted strong round or finding set changed"
+        if snapshot.accepted_closure is None or snapshot.accepted_closure.source_identity != source_id:
+            return False, "this source is not the cycle's accepted closure"
         if newest > record.attempt_sequence:
             return False, "a newer ordinary attempt is applicable"
         if (observed.head_sha, observed.base_sha) != (record.head_sha, record.base_sha) or observed.contract.identity != record.contract_identity or observed.policy.identity != record.policy_identity:

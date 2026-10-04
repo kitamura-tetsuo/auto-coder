@@ -42,7 +42,7 @@ from auto_coder.two_tier_pr_gate import TwoTierPrGate
 
 REPO = "owner/repo"
 PR = 77
-CONTRACT = ContractSnapshot(("#2406",), "Issue #2406 REQ-001: retain closure evidence")
+CONTRACT = ContractSnapshot(("#2406",), "Issue #2406 REQ-001: retain closure evidence\nIssue #2406 REQ-002: apply it once")
 POLICY = StrongPolicyIdentity("strong-route", "model-1", "v1")
 
 
@@ -126,7 +126,9 @@ def world(tmp_path: Path, _use_real_commands: None) -> World:
     return World(tmp_path, git_dir, base, h0, h2, strong.round_id)
 
 
-def _produce(world: World, *, scope: str = "BOUNDED", statuses: Optional[dict[str, str]] = None, verdict: str = "PASS", ordinary: str = "PASS", coverage: str = "VERIFIED", extra: Optional[dict] = None, register: bool = True) -> AdversarialValidationResult:
+def _produce(
+    world: World, *, scope: str = "BOUNDED", statuses: Optional[dict[str, str]] = None, verdict: str = "PASS", ordinary: str = "PASS", coverage: str = "VERIFIED", extra: Optional[dict] = None, coverage_ids: tuple[str, ...] = ("REQ-001", "REQ-002"), evidence: str = "verified"
+) -> AdversarialValidationResult:
     """Run the production ordinary producer for a real registered attempt."""
     attempts = world.attempts()
     attempt = attempts.start(PR, world.h2)
@@ -162,7 +164,7 @@ def _produce(world: World, *, scope: str = "BOUNDED", statuses: Optional[dict[st
         "result": ordinary,
         "summary": "ordinary summary",
         "findings": [],
-        "requirement_coverage": [{"requirement_id": "REQ-001", "status": coverage, "evidence": "verified"}],
+        "requirement_coverage": [{"requirement_id": identity, "status": coverage, "evidence": evidence} for identity in coverage_ids],
         "closure_assessment": assessment,
     }
     result = parse_adversarial_validation_response(json.dumps(payload), closure_input=closure_input, reviewer_provenance="codex/ordinary-model")
@@ -580,3 +582,58 @@ def test_expanded_replay_after_crash_does_not_duplicate_certificate(world: World
 
     assert world.service().apply(source_id, world.observe()).requires_strong_audit
     assert len(world.cycle().snapshot(PR).closures) == 1
+
+
+# -- review findings: complete retention, coverage, committed-effect gates ---
+
+
+def test_complete_ordinary_result_is_recoverable_after_reconstruction(world: World) -> None:
+    result = _produce(world, evidence="distinctive-coverage-evidence-7731")
+    view = world.service().retain(result)
+    assert view.record is not None
+
+    recovered = world.service().inspect(view.record.source_id).record  # every store reconstructed from disk
+    assert recovered is not None
+    payload = json.loads(recovered.ordinary.payload)
+    assert [(item["requirement_id"], item["evidence"]) for item in payload["requirement_coverage"]] == [("REQ-001", "distinctive-coverage-evidence-7731"), ("REQ-002", "distinctive-coverage-evidence-7731")]
+    assert payload["summary"] == "ordinary summary" and payload["raw_response"] == result.raw_response
+    for name in ("thread_dispositions", "evidence_recovery", "specification_gaps", "findings", "decision_critical_evidence_gaps"):
+        assert name in payload
+
+
+@pytest.mark.parametrize("coverage_ids", [("REQ-001",), ("REQ-001", "REQ-002", "REQ-999"), ("REQ-001", "#9999/REQ-002")])
+def test_ordinary_coverage_must_match_the_observed_requirements(world: World, coverage_ids: tuple[str, ...]) -> None:
+    source_id = _retain(world, coverage_ids=coverage_ids)
+
+    outcome = world.service().apply(source_id, world.observe())
+
+    assert outcome.status is ApplicationStatus.NON_AUTHORIZING
+    snapshot = world.cycle().snapshot(PR)
+    assert snapshot.closures == () and len(snapshot.open_findings) == 2
+    assert world.service().inspect(source_id).state is EvidenceState.RETAINED
+
+
+def test_qualified_coverage_identities_are_accepted(world: World) -> None:
+    source_id = _retain(world, coverage_ids=("#2406/REQ-001", "#2406/REQ-002"))
+
+    assert world.service().apply(source_id, world.observe()).status is ApplicationStatus.ACCEPTED
+
+
+@pytest.mark.parametrize("new_round", [False, True])
+def test_committed_closure_effects_are_denied_after_newer_strong_state(world: World, new_round: bool) -> None:
+    source_id = _retain(world)
+    assert world.service().apply(source_id, world.observe()).status is ApplicationStatus.ACCEPTED
+    assert world.service().dependent_effects_allowed(source_id, world.observe())[0] is True
+
+    cycle = world.cycle()
+    claim = cycle.claim_strong_audit(PR, RoundProvenance(world.h2, world.base), CONTRACT, POLICY)  # same target, no new ordinary attempt
+    allowed, reason = world.service().dependent_effects_allowed(source_id, world.observe())
+    assert not allowed and "strong audit" in reason
+    if new_round:
+        cycle.record_strong_result(PR, claim.claim_id, VERDICT_FINDINGS, "codex/strong", [_finding("f9", claim.claim_id)])
+        allowed, reason = world.service().dependent_effects_allowed(source_id, world.observe())
+        assert not allowed
+
+    snapshot = cycle.snapshot(PR)
+    assert [item.source_identity for item in snapshot.closures] == [source_id]  # historical closure intact
+    assert world.service().inspect(source_id).state is EvidenceState.ACCEPTED

@@ -12,7 +12,7 @@ authority.
 ## Retention
 
 `OrdinaryClosureEvidence.retain()` journals the complete ordinary outcome
-(verdict, requirement coverage, blockers) with the assessment (repository, PR,
+(the full validator result as recoverable JSON, plus derived blockers) with the assessment (repository, PR,
 open epoch, attempt ID/sequence, H2/B/M/P, accepted strong round and audited H0,
 finding-set revision, dispositions, scope and evidence, reviewer provenance) in
 `ordinary_closure_evidence.json`, keyed by an immutable source identity. The
@@ -28,8 +28,9 @@ overwritten.
 a source when a newer ordinary attempt (even pending or failed), a newer strong
 claim or round, a changed finding set, an open-epoch change, or a changed
 H/B/M/P exists. An unavailable observation or store defers without erasing the
-retained source. Certification requires semantic PASS with fully verified
-Requirements and no ordinary blocker, exact FIXED/INVALID evidence for every
+retained source. Certification requires semantic PASS whose coverage verifies exactly the
+observed Requirements snapshot (a subset, unknown, or ambiguous identity is
+non-authorizing) and no ordinary blocker, exact FIXED/INVALID evidence for every
 outstanding finding, and no new finding. `BOUNDED` scope certifies bounded
 closure through `certify_closure`; `EXPANDED`/`UNKNOWN` scope records
 convergence that requires a renewed strong audit. Incomplete or blocked evidence
@@ -44,7 +45,8 @@ or when a local acknowledgement is lost) only finishes the outstanding local
 transition and never creates a second closure. `reconcile()` resumes all
 retained sources for a PR. A committed closure is not reopened by a later
 attempt, but `dependent_effects_allowed()` refuses subsequent effects once a
-newer attempt or changed target exists.
+newer attempt, changed target, newer strong claim/round, or changed finding set
+exists.
 
 ## Boundaries
 
