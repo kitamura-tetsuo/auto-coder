@@ -28,6 +28,7 @@ from .exceptions import (
 )
 from .invocation_admission import (
     InvocationHandle,
+    ci_repair_designated,
     current_invocation_gate,
     current_invocation_target,
     set_pending_invocation_handle,
@@ -52,6 +53,7 @@ from .worktree_utils import (
     current_local_caller_identity,
     get_current_local_workspace,
     isolated_local_llm_worktree,
+    record_implementation_workspace_tests_skipped,
     refresh_local_workspace_binding,
     run_implementation_workspace_tests,
     sync_worktree_changes_back,
@@ -927,7 +929,10 @@ class BackendManager(LLMBackendManagerBase):
                     with worktree_ctx:
                         workspace_binding = get_current_local_workspace()
                         if is_local and workspace_binding is not None and not is_noedit and retained_session is None:
-                            run_implementation_workspace_tests(workspace_binding, AutomationConfig().TEST_SCRIPT_PATH)
+                            if ci_repair_designated():
+                                record_implementation_workspace_tests_skipped(workspace_binding)
+                            else:
+                                run_implementation_workspace_tests(workspace_binding, AutomationConfig().TEST_SCRIPT_PATH)
                         boundary_ctx = (
                             bind_local_execution_boundary(
                                 workspace_binding,
