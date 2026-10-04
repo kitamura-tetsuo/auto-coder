@@ -35,6 +35,7 @@ from auto_coder.pr_processor import (
     ReviewRepairRouteDecision,
     ReviewRepairRouteDisposition,
     TwoTierGateInputs,
+    _consume_pending_two_tier_publication,
     _handle_pr_merge,
     _review_feedback_identity,
 )
@@ -54,7 +55,7 @@ from tests.test_accepted_finding_bridge import (  # noqa: F401  (env is a shared
     published_roots,
     save_empty_session,
 )
-from tests.test_effective_decision_application import RouterClient
+from tests.test_effective_decision_application import RouterClient, reviewer_for
 
 REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
 
@@ -147,7 +148,8 @@ class Flow:
     quota_hold: bool = False
     post_ci: Optional[GitHubActionsStatusResult] = None
     extra_threads: tuple[ReviewThread, ...] = ()
-    resolve_on_approve: bool = False  # GitHub marks the accepted thread resolved once the PASS review is posted
+    resolve_on_approve: bool = False  # The GitHub boundary confirms resolution by the controller or after approval.
+    thread_resolved: bool = False
     live_head: str = ""  # the live PR head when it differs from the head being processed
     current_base: str = ""  # the live PR base; defaults to the environment base and may advance while a reviewer runs
 
@@ -163,15 +165,24 @@ class Flow:
         inputs = accept_strong(self.env, self.pr, [finding_json(finding_id, gap=gap)])
         strong = self.env.cycle.snapshot(self.pr).accepted_strong_round
         assert strong is not None
-        inputs.gate.state.acknowledge_publication(self.pr, strong.round_id)
-        observation = published_roots(self.env, self.pr, self.monkeypatch, root_ids={finding_id: self.root_id})
+        assert self.router is not None
+        self.router.next_root_id = self.root_id
+        reviewer = reviewer_for(self.env.tmp, self.monkeypatch, self.router)
+        config = ReviewerAppConfig("4765828", "client", self.env.tmp / "reviewer.pem")
+        with patch("auto_coder.pr_processor.load_reviewer_app_config", return_value=config), patch("auto_coder.pr_processor.GitHubAppReviewer", return_value=reviewer):
+            published, reason = _consume_pending_two_tier_publication(REPO, self.pr, inputs)
+        assert published, reason
+        observation = reviewer.observe_authenticated_review_roots(REPO, self.pr, strong.head_sha)
+        assert observation.complete and len(observation.roots) == 1
         self.root_body = observation.roots[0].body
+        self.router.calls.clear()  # Only subsequent processing effects are counted by flow.reviews.
         self.gate_inputs = inputs
 
     def threads(self) -> tuple[ReviewThread, ...]:
-        if not self.root_body or (self.resolve_on_approve and self.router is not None and any(review["event"] == "APPROVE" for review in self.reviews)):
+        if not self.root_body:
             return self.extra_threads
-        return self.extra_threads + (ReviewThread(id=self.thread_id, comments=[ReviewThreadComment(database_id=self.root_id, author_login=REVIEWER_LOGIN, body=self.root_body)]),)
+        resolved = self.thread_resolved or (self.resolve_on_approve and any(review["event"] == "APPROVE" for review in self.reviews))
+        return self.extra_threads + (ReviewThread(id=self.thread_id, is_resolved=resolved, comments=[ReviewThreadComment(database_id=self.root_id, author_login=REVIEWER_LOGIN, body=self.root_body)]),)
 
     def pr_data(self) -> dict[str, Any]:
         body = "<!-- auto-coder:local-llm -->\nFixes #2401" if self.origin == "local" else "Fixes #2401"
@@ -184,6 +195,8 @@ class Flow:
         env = self.env
         client = self.client
         client.get_pr_review_threads_strict.side_effect = lambda *_a, **_k: list(self.threads())
+        client.resolve_review_thread.side_effect = lambda thread: self._set_thread_resolved(thread, self.resolve_on_approve)
+        client.unresolve_review_thread.side_effect = lambda thread: self._set_thread_resolved(thread, False)
         client.get_pr_comments.return_value = []
         client.get_pr_reviews_strict.return_value = []
         client.get_pull_request_head_sha_strict.side_effect = lambda *_a, **_k: self.live_head or self.head
@@ -193,7 +206,7 @@ class Flow:
         def current_state(*_a: object, **_k: object) -> ClaimedReviewThreadGateState:
             if thread_state is not None:
                 return thread_state
-            live = self.threads()
+            live = tuple(thread for thread in self.threads() if not thread.is_resolved)
             return ClaimedReviewThreadGateState(unresolved=live, blocking_unresolved=live, has_blocking_unresolved=bool(live))
 
         manager = MagicMock()
@@ -303,6 +316,10 @@ class Flow:
         """Pre-validation CI is green; later reads (the post-validation refresh) may differ."""
         green = GitHubActionsStatusResult(success=True, ids=[1])
         return [green, *([self.post_ci] * 8 if self.post_ci is not None else [green] * 8)]
+
+    def _set_thread_resolved(self, thread: str, resolved: bool) -> None:
+        assert thread == self.thread_id
+        self.thread_resolved = resolved
 
     def _published_status(self) -> Optional[str]:
         """What GitHub durably holds: the newest review this test's transport accepted, else the arranged status."""

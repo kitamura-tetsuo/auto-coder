@@ -86,6 +86,9 @@ class RouterClient:
         self.calls: list[tuple[str, str, Optional[dict[str, Any]]]] = []
         self.review_failure: Optional[Exception] = None
         self.before_review: Callable[[], None] = lambda: None
+        self.review_records: list[dict[str, Any]] = []
+        self.review_roots: dict[int, list[dict[str, Any]]] = {}
+        self.next_root_id = 9000
 
     @property
     def posted_reviews(self) -> list[dict[str, Any]]:
@@ -110,12 +113,21 @@ class RouterClient:
             return reply({"token": "t", "expires_at": "2099-01-01T00:00:00Z"}, 201)
         if method == "GET" and path.endswith(f"/pulls/{self._pr(path)}"):
             return reply({"head": {"sha": self.head_sha}})
+        if method == "GET" and path.endswith("/files"):
+            return reply([{"filename": "src/state.py", "patch": "@@ -39,1 +39,2 @@\n state = True\n+guard = True"}])
+        if method == "GET" and path.endswith("/reviews"):
+            return reply(self.review_records)
         if method == "GET" and path.endswith("/comments"):
-            return reply([])
+            review_id = int(path.split("/")[-2]) if "/reviews/" in path else 0
+            return reply(self.review_roots.get(review_id, []))
         if method == "POST" and path.endswith("/reviews"):
             if self.review_failure is not None:
                 raise self.review_failure
-            return reply({"id": 4242}, 200)
+            review_id = 4242 + len(self.review_records)
+            self.review_records.append({"id": review_id, **payload, "user": {"login": "auto-coder-reviewer[bot]"}})
+            self.review_roots[review_id] = [{"id": self.next_root_id + index, "body": comment["body"], "user": {"login": "auto-coder-reviewer[bot]"}} for index, comment in enumerate(payload.get("comments", []))]
+            self.next_root_id += len(self.review_roots[review_id])
+            return reply({"id": review_id}, 200)
         return reply([])
 
     @staticmethod

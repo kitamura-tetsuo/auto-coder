@@ -66,3 +66,11 @@ freshly resolved base, Requirements and policy), reconciles retained sources
 before any same-head shortcut or reviewer admission, and publishes the closure
 evidence with its real ordinary attempt and reviewer. See
 `independent-strong-audit-and-ordinary-closure.md`.
+
+The production-flow regression fixture publishes its initial strong finding
+through the authenticated reviewer adapter and durable effect journal. Its
+GitHub transport retains exact review roots and reports resolved threads as
+resolved rather than removing them. This lets the single-review and restart
+scenarios verify closure acknowledgement against actual publication receipts
+and observed thread state, while still checking that independent merge gates
+remain blocking.

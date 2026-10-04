@@ -111,9 +111,17 @@ def test_canonical_task_url_and_closed_publication(tmp_path, merged):
 
 @pytest.mark.parametrize("state", ["", "unknown", None])
 def test_missing_pr_lifecycle_never_proves_closed_publication(tmp_path, state):
-    pr = {"number": 45, "state": state, "body": f"https://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
+    pr = {"number": 45, "state": state, "body": f"Fixes #1863\nhttps://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
     result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
     assert result.pull_request.presence is PullRequestPresence.UNKNOWN
+
+
+@pytest.mark.parametrize("state", ["open", "closed", "", "unknown", None])
+def test_task_url_without_closing_reference_never_establishes_publication(tmp_path, state):
+    pr = {"number": 45, "state": state, "body": f"https://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
+    result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
+    assert result.pull_request.presence is PullRequestPresence.NO_MATCHING_PR
+    assert result.pull_request.number is None
 
 
 def test_pending_new_user_turn_blocks_old_completed_assistant(tmp_path):

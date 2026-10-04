@@ -243,6 +243,8 @@ def test_cancelling_one_owner_does_not_stop_peer_or_delete_results(tmp_path: Pat
     supervisor = make_supervisor(ProcessGroupOwner(tmp_path / "owners"))
     cancel = threading.Event()
     first_result = tmp_path / "first-result"
+    second_ready = tmp_path / "second-ready"
+    second_release = tmp_path / "second-release"
     second_heartbeat = tmp_path / "second-heartbeat"
     first_result.mkdir()
     results = []
@@ -250,27 +252,48 @@ def test_cancelling_one_owner_does_not_stop_peer_or_delete_results(tmp_path: Pat
     first = request(tmp_path, "import time; time.sleep(30)", invocation_id="first", cancellation=cancel)
     second = request(
         tmp_path,
-        f"import pathlib,time; time.sleep(.15); pathlib.Path({str(second_heartbeat)!r}).write_text('alive')",
+        f"""import pathlib, time
+pathlib.Path({str(second_ready)!r}).touch()
+while not pathlib.Path({str(second_release)!r}).exists():
+    time.sleep(.01)
+pathlib.Path({str(second_heartbeat)!r}).write_text('alive')
+""",
         invocation_id="second",
     )
     one = threading.Thread(target=lambda: results.append(supervisor.run(first)))
     two = threading.Thread(target=lambda: results.append(supervisor.run(second)))
-    one.start()
-    first_deadline = time.monotonic() + 15
-    while supervisor.state("first") is not WriterState.ACTIVE:
-        assert time.monotonic() < first_deadline
-        time.sleep(0.01)
-    # Serialize only the fork/pre-exec setup. The two owned provider processes
-    # still overlap, which is the boundary this test exercises, while avoiding
-    # a test-only concurrent preexec_fn deadlock under coverage instrumentation.
-    two.start()
-    second_deadline = time.monotonic() + 15
-    while supervisor.state("second") is not WriterState.ACTIVE:
-        assert time.monotonic() < second_deadline
-        time.sleep(0.01)
-    cancel.set()
-    one.join(3)
-    two.join(3)
+    try:
+        one.start()
+        first_deadline = time.monotonic() + 15
+        while supervisor.state("first") is not WriterState.ACTIVE:
+            assert one.is_alive(), "first invocation exited before becoming active"
+            assert time.monotonic() < first_deadline
+            time.sleep(0.01)
+        # Serialize only the fork/pre-exec setup. The two owned provider processes
+        # still overlap, which is the boundary this test exercises, while avoiding
+        # a test-only concurrent preexec_fn deadlock under coverage instrumentation.
+        two.start()
+        second_deadline = time.monotonic() + 15
+        while not second_ready.exists() or supervisor.state("second") is not WriterState.ACTIVE:
+            assert two.is_alive(), "peer invocation exited before becoming active"
+            assert time.monotonic() < second_deadline
+            time.sleep(0.01)
+        cancel.set()
+        one.join(3)
+
+        assert not one.is_alive()
+        assert two.is_alive()
+        assert supervisor.state("second") is WriterState.ACTIVE
+        assert not second_heartbeat.exists()
+        second_release.touch()
+        two.join(3)
+        assert not two.is_alive()
+    finally:
+        cancel.set()
+        second_release.touch()
+        for worker in (one, two):
+            if worker.ident is not None:
+                worker.join(3)
 
     by_id = {item.invocation_id: item for item in results}
     assert by_id["first"].outcome is InvocationOutcome.CANCELLED
