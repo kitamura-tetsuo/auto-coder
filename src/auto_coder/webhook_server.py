@@ -11,12 +11,12 @@ from pydantic import BaseModel
 from .automation_engine import AutomationEngine
 from .dashboard import init_dashboard
 from .dashboard_adjudication import init_dashboard_adjudication
-from .public_api import init_public_api, public_api_enabled
 from .decomposition_validation_lifecycle import DECOMPOSITION_FINDINGS_MARKER
 from .entity_invalidation import ISSUE_STABILIZATION_SECONDS, CIWebhookDelivery, issue_stabilization_deadline
 from .github_ci_observer import accept_and_fence_ci_delivery
 from .label_manager import LEGACY_AUTO_CODER_LABEL
 from .logger_config import get_logger
+from .public_api import init_public_api, public_api_enabled
 from .specification_validation_lifecycle import FINDINGS_MARKER_PREFIX
 from .util.gh_cache import evict_github_ci_cache, evict_github_entity_cache
 
