@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Iterator, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Iterator, Optional, Tuple, Union, get_args, get_origin, get_type_hints
 
 from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from .pr_review_cycle import (
@@ -365,6 +365,45 @@ def _plain(value: object) -> object:
     return str(value)
 
 
+def _decode(annotation: object, value: object) -> object:
+    """Rebuild a typed value from the JSON-safe form produced by ``_plain``."""
+    if value is None:
+        return None
+    origin = get_origin(annotation)
+    arguments = get_args(annotation)
+    if origin is Union:
+        candidates = [item for item in arguments if item is not type(None)]
+        return _decode(candidates[0], value) if len(candidates) == 1 else value
+    if origin in (list, set, frozenset) and isinstance(value, list):
+        return origin(_decode(arguments[0], item) for item in value) if arguments else list(value)
+    if origin is tuple and isinstance(value, list):
+        if len(arguments) == 2 and arguments[1] is Ellipsis:
+            return tuple(_decode(arguments[0], item) for item in value)
+        return tuple(_decode(kind, item) for kind, item in zip(arguments, value))
+    if origin is dict and isinstance(value, dict):
+        return {key: _decode(arguments[1], item) for key, item in value.items()} if len(arguments) == 2 else dict(value)
+    if isinstance(annotation, type) and is_dataclass(annotation) and isinstance(value, dict):
+        hints = get_type_hints(annotation)
+        return annotation(**{item.name: _decode(hints[item.name], value[item.name]) for item in fields(annotation) if item.init and item.name in value})
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return annotation(value)
+    return value
+
+
+def restore_ordinary_result(record: "ClosureEvidenceRecord") -> "AdversarialValidationResult":
+    """The complete ordinary semantic result retained with the evidence, rebuilt without a model call.
+
+    Fields that are never retained (session checkpoint/registry and the accepted-finding
+    projection) are left unset; the caller re-derives them from their owning stores.
+    """
+    from .adversarial_validator import AdversarialValidationResult
+
+    raw = json.loads(record.ordinary.payload)
+    restored = _decode(AdversarialValidationResult, raw)
+    assert isinstance(restored, AdversarialValidationResult)
+    return restored
+
+
 def _coverage_gap(coverage: Tuple[Tuple[str, str], ...], contract: ContractSnapshot) -> str:
     """Require the ordinary evaluation to verify exactly the observed Requirements."""
     expected = set()
@@ -664,8 +703,10 @@ class OrdinaryClosureEvidence:
         """Whether an effect depending on this source's closure may still run.
 
         Committed evidence is never reopened by a later attempt, but it cannot
-        bypass the newer-attempt or changed-target gates for subsequent effects.
-        Final merge additionally requires the cycle's own acknowledgements.
+        bypass the changed-target gates, nor a newer ordinary attempt that is
+        still running or ended without a clean PASS (a newer clean PASS leaves the
+        closed findings closed). Final merge additionally requires the cycle's own
+        acknowledgements.
         """
         view = self.evidence.inspect(source_id)
         if view.state is not EvidenceState.ACCEPTED or view.record is None:
@@ -675,7 +716,7 @@ class OrdinaryClosureEvidence:
             observed = observe()
             with self.attempts.serialized_transition():
                 snapshot = self.cycle.snapshot(record.pr_number)
-                newest = self.attempts.latest_sequence(record.pr_number, record.head_sha)
+                newer_unresolved = self.attempts.has_unresolved_attempt_after(record.pr_number, record.head_sha, record.attempt_sequence)
         except Exception as exc:
             return False, f"authoritative state unavailable: {exc}"
         if not any(item.source_identity == source_id for item in snapshot.closures):
@@ -687,8 +728,8 @@ class OrdinaryClosureEvidence:
             return False, "the accepted strong round or finding set changed"
         if snapshot.accepted_closure is None or snapshot.accepted_closure.source_identity != source_id:
             return False, "this source is not the cycle's accepted closure"
-        if newest > record.attempt_sequence:
-            return False, "a newer ordinary attempt is applicable"
+        if newer_unresolved:
+            return False, "a newer ordinary attempt is unresolved or did not end in a clean PASS"
         if (observed.head_sha, observed.base_sha) != (record.head_sha, record.base_sha) or observed.contract.identity != record.contract_identity or observed.policy.identity != record.policy_identity:
             return False, "the authoritative target changed"
         if snapshot.closed or snapshot.open_epoch != record.open_epoch:

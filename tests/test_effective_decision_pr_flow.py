@@ -148,9 +148,12 @@ class Flow:
     post_ci: Optional[GitHubActionsStatusResult] = None
     extra_threads: tuple[ReviewThread, ...] = ()
     resolve_on_approve: bool = False  # GitHub marks the accepted thread resolved once the PASS review is posted
+    live_head: str = ""  # the live PR head when it differs from the head being processed
+    current_base: str = ""  # the live PR base; defaults to the environment base and may advance while a reviewer runs
 
     def __post_init__(self) -> None:
         self.head = self.head or self.env.head
+        self.current_base = self.current_base or self.env.base
         self.router = RouterClient(self.head)
 
     # -- arrangement ---------------------------------------------------
@@ -183,8 +186,9 @@ class Flow:
         client.get_pr_review_threads_strict.side_effect = lambda *_a, **_k: list(self.threads())
         client.get_pr_comments.return_value = []
         client.get_pr_reviews_strict.return_value = []
-        client.get_pull_request_head_sha_strict.return_value = self.head
-        client.get_pull_request.return_value = {"head": {"sha": self.head}}
+        client.get_pull_request_head_sha_strict.side_effect = lambda *_a, **_k: self.live_head or self.head
+        client.get_pull_request.side_effect = lambda *_a, **_k: {"head": {"sha": self.live_head or self.head}, "base": {"sha": self.current_base}}
+        client.get_pull_request_metadata_strict.side_effect = lambda *_a, **_k: {**self.pr_data(), "head": {"ref": "feature-branch", "sha": self.live_head or self.head}, "base": {"ref": "main", "sha": self.current_base}, "state": "open"}
 
         def current_state(*_a: object, **_k: object) -> ClaimedReviewThreadGateState:
             if thread_state is not None:
@@ -331,10 +335,10 @@ class Flow:
             script.closure_only_calls.append(review_input)  # a closure-only reviewer must never be reachable
             raise AssertionError("a separate closure-only reviewer invocation is forbidden")
 
-        def observe(*_a: object, **_k: object) -> TwoTierGateInputs:
+        def observe(_client: object, _repo: object, pr_data: Any, *_a: object, **_k: object) -> TwoTierGateInputs:
             if not script.observable:
                 raise ConnectionError("authoritative target is unavailable")
-            return TwoTierGateInputs(self.gate_inputs.gate, CONTRACT, POLICY, head, env.base)
+            return TwoTierGateInputs(self.gate_inputs.gate, CONTRACT, POLICY, pr_data["head"]["sha"], pr_data["base"]["sha"])
 
         return [
             patch("auto_coder.pr_processor._two_tier_gate_inputs", side_effect=observe),
@@ -961,7 +965,7 @@ def test_closure_proposal_superseded_by_a_head_change_during_external_review_is_
     flow.saved_status = None
     flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py asserts the invariant")]
     script = ClosureScript(status="FIXED")
-    script.on_review = lambda: setattr(flow.client.get_pull_request_head_sha_strict, "return_value", h3)  # the PR advances while the reviewer runs
+    script.on_review = lambda: setattr(flow, "live_head", h3)  # the PR advances while the reviewer runs
 
     flow.run(closure=script)
 

@@ -112,6 +112,32 @@ which carries the same closure context). Bounded convergence records a pending
 closure certification; expanded or semantically unknown convergence records the
 non-closing assessment and requires a renewed strong round.
 
+The authoritative target observation used for application and reconciliation is
+one strict (cache-bypassing) read of the live PR metadata: head and base come
+from that read, and the Requirements snapshot and strong policy are resolved
+from the same refreshed metadata, never from the `pr_data` captured when
+processing began. A base that advanced or was retargeted while the reviewer ran
+therefore refuses the stale assessment (the source is rejected and journaled).
+
+When closure was accepted from a retained semantic ordinary PASS whose attempt is
+still the newest for the head, but the published review for the head is absent
+or a stale non-pass headline (for example BLOCKED/CLOSURE_ACCEPTANCE published
+before a transient observation outage cleared), processing rebuilds that
+attempt's complete ordinary result from the retained payload
+(`restore_ordinary_result()`), re-derives the accepted-finding projection from
+the owning stores and runs the normal effective-decision, publication and
+thread-resolution path with that result. The existing attempt is consumed (no
+new attempt is registered), the audit trail records a REUSED observation, no
+reviewer is invoked, and no repair is replayed for the already closed finding.
+
+Dependent effects of an accepted closure need the closure source's current
+ordinary-attempt authority: the closure itself is never reopened, but the
+closure publication (checked before any transport work, so an uncertain receipt
+is preserved for the same effect) and the reuse of the closure completion as
+merge authority wait while a newer ordinary attempt for the head is running or
+ended without a clean PASS, or the authoritative target changed. A newer clean
+PASS leaves the closed findings closed.
+
 The closure publication is derived deterministically from the accepted ordinary
 source and names its real ordinary attempt, evaluated head and actual reviewer
 and states that it consumed an existing attempt without an additional model

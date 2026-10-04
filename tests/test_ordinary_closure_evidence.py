@@ -479,6 +479,20 @@ def test_committed_closure_is_not_reopened_but_gates_later_effects(world: World)
     assert world.service().apply(source_id, world.observe()).status is ApplicationStatus.ACCEPTED  # replay stays idempotent
 
 
+def test_a_newer_clean_pass_attempt_leaves_committed_closure_effects_allowed(world: World) -> None:
+    source_id = _retain(world)
+    assert world.service().apply(source_id, world.observe()).status is ApplicationStatus.ACCEPTED
+    newer = world.attempts().start(PR, world.h2)
+
+    assert world.service().dependent_effects_allowed(source_id, world.observe())[0] is False  # still running: unresolved
+    world.attempts().finish(newer.attempt_id, "NEEDS_FIX")
+    assert world.service().dependent_effects_allowed(source_id, world.observe())[0] is False  # ended with a blocker
+    clean = world.attempts().start(PR, world.h2)
+    world.attempts().finish(clean.attempt_id, "PASS")
+    world.attempts().finish(newer.attempt_id, "PASS")
+    assert world.service().dependent_effects_allowed(source_id, world.observe()) == (True, "")  # every newer attempt ended clean
+
+
 def test_dependent_effects_require_accepted_evidence_and_unchanged_target(world: World) -> None:
     source_id = _retain(world)
     assert world.service().dependent_effects_allowed(source_id, world.observe())[0] is False  # merely retained
@@ -637,3 +651,36 @@ def test_committed_closure_effects_are_denied_after_newer_strong_state(world: Wo
     snapshot = cycle.snapshot(PR)
     assert [item.source_identity for item in snapshot.closures] == [source_id]  # historical closure intact
     assert world.service().inspect(source_id).state is EvidenceState.ACCEPTED
+
+
+def test_restored_ordinary_result_round_trips_the_retained_semantic_result() -> None:
+    """The retained payload rebuilds the complete ordinary result (nested findings, gaps, dispositions) with no model call."""
+    import json
+    from dataclasses import replace
+
+    from auto_coder.adversarial_validator import (
+        AdversarialValidationFinding,
+        AdversarialValidationResult,
+        RequirementCoverageEntry,
+        ReviewThreadDisposition,
+        SpecificationGap,
+        TestOracleGap,
+    )
+    from auto_coder.ordinary_closure_evidence import _decode, _ordinary_outcome
+
+    original = AdversarialValidationResult(
+        result="PASS",
+        summary="settled",
+        findings=[AdversarialValidationFinding(requirement_id="#1/REQ-001", requirement_ids=["#1/REQ-001"], finding_identity="f1")],
+        requirement_coverage=[RequirementCoverageEntry(requirement_id="REQ-001", status="VERIFIED", evidence="e")],
+        specification_gaps=[SpecificationGap(question="q", candidate_options=["a", "b"])],
+        test_oracle_gaps=[TestOracleGap(gap_id="g1", status="RESOLVED")],
+        thread_dispositions=[ReviewThreadDisposition(thread_id="T", status="ADDRESSED", concern_ids=("c1", "c2"))],
+        provenance_thread_comment_ids={"T": 5},
+        raw_model_result="NEEDS_TESTS",
+        retry_not_before_epoch=12.5,
+    )
+
+    restored = _decode(AdversarialValidationResult, json.loads(_ordinary_outcome(original).payload))
+
+    assert restored == replace(original, closure_assessment=None)

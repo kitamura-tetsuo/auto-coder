@@ -156,6 +156,7 @@ def test_interruption_between_retention_and_application_resumes_without_a_model_
 
     assert flow.model_calls == calls_after_crash and restarted.calls == [], actions
     assert flow_env.cycle.snapshot(7307).accepted_closure is not None and flow_env.cycle.snapshot(7307).open_findings == ()
+    assert flow.merge.call_count == 1, actions  # the retained result's ordinary publication and thread effects completed
 
 
 def test_a_newer_ordinary_attempt_prevents_the_older_result_from_closing_findings(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,3 +200,92 @@ def test_authority_state_is_the_owning_cycle_not_a_helper_flag(flow_env: Env, mo
     reconstructed = PrReviewCycleRepository(REPO).snapshot(7311)
     assert reconstructed.completion is not None and reconstructed.completion.basis == "ORDINARY_CLOSURE"
     assert reconstructed.accepted_closure is not None and reconstructed.accepted_closure.source_identity
+
+
+def test_base_advanced_during_the_review_refuses_the_stale_assessment(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = _repaired_flow(flow_env, monkeypatch, 7312)
+    script = ClosureScript(status="FIXED")
+    script.on_review = lambda: setattr(flow, "current_base", "d" * 40)  # the PR is retargeted while the reviewer runs; H2 is unchanged
+
+    flow.run(closure=script)
+
+    snapshot = flow_env.cycle.snapshot(7312)
+    assert snapshot.accepted_closure is None and [item.finding_id for item in snapshot.open_findings] == ["finding-a"]
+    assert not any("Ordinary closure evidence" in review["body"] for review in flow.reviews)  # no dependent publication
+    assert flow.merge.call_count == 0
+    sources = OrdinaryClosureEvidenceRepository(REPO).pending_for_pr(7312)
+    assert sources == ()  # the stale source was rejected, not left resumable
+
+
+def test_retained_unapplied_source_is_refused_when_the_base_changed_before_restart(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = _repaired_flow(flow_env, monkeypatch, 7313)
+    outage = ClosureScript(status="FIXED")
+    outage.on_review = lambda: setattr(outage, "observable", False)  # the observation fails when the evidence is applied: retained, unapplied
+    flow.run(closure=outage)
+    assert len(OrdinaryClosureEvidenceRepository(REPO).pending_for_pr(7313)) == 1
+
+    flow.current_base = "e" * 40  # the base advances before the restart; the head is identical
+    restarted = ClosureScript(status="FIXED")
+    flow.run(closure=restarted)
+
+    assert OrdinaryClosureEvidenceRepository(REPO).pending_for_pr(7313) == ()
+    snapshot = flow_env.cycle.snapshot(7313)
+    assert snapshot.accepted_closure is None and [item.finding_id for item in snapshot.open_findings] == ["finding-a"]
+    assert flow.merge.call_count == 0
+
+
+def test_newer_unresolved_attempt_after_certification_defers_publication_and_merge_until_authority_is_current(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    import auto_coder.pr_processor as pr_processor
+
+    flow = _repaired_flow(flow_env, monkeypatch, 7314, resolve_on_approve=True)
+    real_consume = pr_processor._consume_pending_two_tier_publication
+    monkeypatch.setattr(pr_processor, "_consume_pending_two_tier_publication", lambda *_a, **_k: (False, "publication uncertain: lookup unavailable"))
+    flow.run(closure=ClosureScript(status="FIXED"))
+    pending = flow_env.cycle.snapshot(7314)
+    assert pending.accepted_closure is not None and pending.accepted_closure.publication_status == "PENDING"  # certified; publication unconfirmed
+    monkeypatch.setattr(pr_processor, "_consume_pending_two_tier_publication", real_consume)
+
+    newer = AdversarialValidationAttemptRepository(REPO).start(7314, flow.h2)  # another participant registers attempt A+1 at the identical head
+    flow.saved_status = "PASS"
+    calls_before = flow.model_calls
+    actions = flow.run(closure=ClosureScript(status="FIXED"))  # reconstructed processing with a saved PASS
+
+    after = flow_env.cycle.snapshot(7314)
+    assert after.accepted_closure is not None and after.accepted_closure.publication_status == "PENDING"  # retained, not acknowledged under A's authority
+    assert not any("Ordinary closure evidence" in review["body"] for review in flow.reviews)
+    assert flow.merge.call_count == 0 and flow.model_calls == calls_before
+    assert any("ordinary-attempt authority" in action for action in actions)
+
+    AdversarialValidationAttemptRepository(REPO).finish(newer.attempt_id, "PASS")  # the newer attempt ends clean
+    actions = flow.run(closure=ClosureScript(status="FIXED"))
+
+    assert flow_env.cycle.snapshot(7314).accepted_closure.publication_status == "ACKNOWLEDGED"
+    assert len([review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]) == 1
+    assert flow.merge.call_count == 1, actions
+
+
+@pytest.mark.parametrize("origin", ["cloud", "local"])
+def test_retained_result_after_a_target_outage_completes_publication_and_threads_without_a_reviewer_or_repair(flow_env: Env, monkeypatch: pytest.MonkeyPatch, origin: str) -> None:
+    flow = _repaired_flow(flow_env, monkeypatch, 7315 if origin == "cloud" else 7316, origin, resolve_on_approve=True)
+    handoffs_before = flow.handoffs
+    outage = ClosureScript(status="FIXED")
+    outage.on_review = lambda: setattr(outage, "observable", False)  # the target becomes unreadable after the combined review returns
+    flow.auto_status = True  # GitHub holds whatever review this run publishes
+    flow.run(closure=outage)
+    pending = flow_env.cycle.snapshot(flow.pr)
+    assert pending.accepted_closure is None and [item.finding_id for item in pending.open_findings] == ["finding-a"]  # retained, unapplied
+    assert [review["event"] for review in flow.reviews][-1] != "APPROVE"  # the effective BLOCKED/CLOSURE_ACCEPTANCE result was published
+    calls_before = flow.model_calls
+    reviews_before = len(flow.reviews)
+
+    restored = ClosureScript(status="FIXED")
+    actions = flow.run(closure=restored)  # normal same-head processing; the target is observable again and the thread is still unresolved
+
+    assert flow.model_calls == calls_before and restored.calls == [] and restored.closure_only_calls == [], actions  # no reviewer
+    assert flow.handoffs == handoffs_before, actions  # no further repair request for the now-closed finding
+    snapshot = flow_env.cycle.snapshot(flow.pr)
+    assert snapshot.open_findings == () and snapshot.accepted_closure is not None and snapshot.accepted_closure.publication_status == "ACKNOWLEDGED"
+    new_reviews = flow.reviews[reviews_before:]
+    assert [review["event"] for review in new_reviews if "Ordinary closure evidence" not in review["body"]] == ["APPROVE"]  # the ordinary publication completes
+    assert len([review for review in flow.reviews if "Ordinary closure evidence" in review["body"]]) == 1  # exactly one closure publication
+    assert flow.merge.call_count == 1, actions  # retained thread/publication effects done: the remaining gates pass
