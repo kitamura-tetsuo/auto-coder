@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
+from .ordinary_closure_evidence import OrdinaryClosureEvidence, OrdinaryClosureEvidenceRepository
 from .pr_review_cycle import (
     CompletionRecord,
     ContractSnapshot,
@@ -36,6 +38,18 @@ class TwoTierPrGate:
     def __init__(self, repository: str, state: Optional[PrReviewCycleRepository] = None) -> None:
         self.repository = repository
         self.state = state or PrReviewCycleRepository(repository)
+
+    def closure_evidence(
+        self,
+        attempts: Optional[AdversarialValidationAttemptRepository] = None,
+        evidence: Optional[OrdinaryClosureEvidenceRepository] = None,
+    ) -> OrdinaryClosureEvidence:
+        """Bind durable ordinary closure evidence to this gate's review-cycle owner."""
+        return OrdinaryClosureEvidence(
+            evidence or OrdinaryClosureEvidenceRepository(self.repository),
+            self.state,
+            attempts or AdversarialValidationAttemptRepository(self.repository),
+        )
 
     def ordinary_pass(
         self,
