@@ -153,7 +153,7 @@ def _produce(
     )
     statuses = statuses or {"f1": "FIXED", "f2": "INVALID"}
     assessment = {
-        "verdict": verdict,
+        "result": verdict,
         "findings": [],
         "dispositions": [{"finding_id": key, "status": value, "evidence": f"{key} evidence at H2"} for key, value in statuses.items()],
         "scope": scope,

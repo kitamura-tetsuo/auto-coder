@@ -135,7 +135,7 @@ def accept_strong(env: Env, pr: int, findings: list[dict[str, Any]], *, head: Op
             "contract_identity": review_input.contract.identity,
             "policy_identity": review_input.policy.identity,
             "finding_set_revision": review_input.finding_set_revision,
-            "verdict": "FINDINGS",
+            "result": "FINDINGS",
             "findings": findings,
         }
         return parse_review_result(json.dumps(payload), review_input, "strong/codex/model")
@@ -198,7 +198,7 @@ def _context() -> AdversarialValidationContext:
         pr_diff="diff --git a/src/state.py b/src/state.py\n+guard = True",
         all_changed_files=["src/state.py"],
         issue_context="Issue #2401 requires preserving accepted findings.",
-        issue_requirements=[IssueRequirement("REQ-001", "Preserve accepted findings.")],
+        issue_requirements=[IssueRequirement("#2401/REQ-001", "Preserve accepted findings.")],
     )
 
 
@@ -207,7 +207,7 @@ def _ordinary_response(gaps: list[dict[str, Any]], result: str = "PASS", threads
         {
             "result": result,
             "summary": "Production behavior is correct.",
-            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "The guard enforces the requirement."}],
+            "requirement_coverage": [{"requirement_id": "#2401/REQ-001", "status": "VERIFIED", "evidence": "The guard enforces the requirement."}],
             "findings": [],
             "test_oracle_gaps": gaps,
             "thread_dispositions": threads or [],
@@ -295,7 +295,7 @@ def test_tog_representation_variants_never_erase_or_duplicate_the_known_finding(
     gap_id = record.known_gap_id
     new_gap = {
         "gap_id": "TOG-model-invented",
-        "requirement_id": "REQ-001",
+        "requirement_id": "#2401/REQ-001",
         "authoritative_boundary": "src/state.py:delete_two",
         "invariant": "A relabelled duplicate.",
         "plausible_incorrect_implementation": "x",
@@ -314,7 +314,7 @@ def test_tog_representation_variants_never_erase_or_duplicate_the_known_finding(
     if variant == "new_label":
         with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=_context()):
             parsed = parse_adversarial_validation_response(_ordinary_response([new_gap]), [])
-        reconciled = _reconcile_test_oracle_gap_lifecycle(parsed, ReviewerSession(repository=REPO, pr_number=pr, last_head_sha=env.head, test_oracle_gaps=[TestOracleGap(gap_id=gap_id, requirement_id="REQ-001", status="OPEN")]), env.head, None, frozenset({gap_id}))
+        reconciled = _reconcile_test_oracle_gap_lifecycle(parsed, ReviewerSession(repository=REPO, pr_number=pr, last_head_sha=env.head, test_oracle_gaps=[TestOracleGap(gap_id=gap_id, requirement_id="#2401/REQ-001", status="OPEN")]), env.head, None, frozenset({gap_id}))
         assert [gap.gap_id for gap in reconciled.test_oracle_gaps] == [gap_id]
     result, _ = run_ordinary(env, pr, response)
     assert result.result == "NEEDS_TESTS"
@@ -480,7 +480,7 @@ def test_shared_requirement_and_path_stay_distinct_and_weaker_scope_is_rejected(
     assert a.canonical_blocker_id != b.canonical_blocker_id and a.requirement_ids == b.requirement_ids and a.affected_boundary == b.affected_boundary
     weaker = {
         "gap_id": a.known_gap_id,
-        "requirement_id": "REQ-001",
+        "requirement_id": "#2401/REQ-001",
         "authoritative_boundary": "src/state.py",
         "invariant": "Something much weaker.",
         "plausible_incorrect_implementation": "p",
@@ -501,7 +501,7 @@ def test_new_gap_admission_is_unchanged_when_no_accepted_source_exists(env: Env,
     pr = 91
     save_empty_session(env, pr)
     gap = {
-        "requirement_id": "REQ-001",
+        "requirement_id": "#2401/REQ-001",
         "authoritative_boundary": "src/other.py",
         "invariant": "Unrelated invariant.",
         "plausible_incorrect_implementation": "p",
@@ -635,3 +635,58 @@ def test_unobserved_roots_for_untouched_ordinary_review_do_not_create_authority(
     stray = ObservedRoot(comment_id=1, body="A human comment mentioning finding-a", authenticated=False)
     projection = env.bridge().project(env.target(pr), RootObservation(roots=(stray,), complete=True))
     assert _only(projection, "finding-a").root_comment_ids == () and any(d.code == "unauthenticated_root_ignored" for d in projection.diagnostics)
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_shared_root_non_strong_owner_does_not_make_accepted_disposition_ambiguous(env: Env, closed: bool) -> None:
+    from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerAlias, CorrectionScope
+
+    pr = 101
+    inputs = accept_strong(env, pr, [finding_json("finding-a")])
+    bridge = env.bridge()
+    record = _only(bridge.project(env.target(pr)), "finding-a")
+    snapshot = env.ledger.get_snapshot("https://api.github.com", REPO, pr)
+    snapshot = env.ledger.add_alias("https://api.github.com", REPO, pr, operation_id="accepted-root", expected_ledger_revision=snapshot.ledger_revision, blocker_id=record.canonical_blocker_id, alias_type="github_root_comment", alias_value="555")
+    other_id, snapshot = env.ledger.admit_blocker(
+        "https://api.github.com",
+        REPO,
+        pr,
+        operation_id="historical-owner",
+        expected_ledger_revision=snapshot.ledger_revision,
+        payload=BlockerAdmissionPayload(
+            category="IMPLEMENTATION",
+            authoritative_boundary="src/state.py:delete_two",
+            incorrect_behavior_or_missing_invariant="Historical correction",
+            required_correction_outcome="Keep independent scope",
+            evidence_needed="Independent evidence",
+            accepted_scope=CorrectionScope(description="Historical correction", concern_ids=("historical",)),
+            aliases=(BlockerAlias(alias_type="github_root_comment", alias_value="555"),),
+        ),
+    )
+    if closed:
+        _close(env, pr, inputs, env.head, {"finding-a": FIXED})
+    projection = bridge.project(env.target(pr), dispositions=[OrdinaryDisposition(status="ADDRESSED", rationale="Regression added", evidence="tests/test_state.py:40", root_comment_id=555, thread_id="PRRT_shared")])
+    assert projection.complete
+    assert [(outcome.source_identity, outcome.outcome) for outcome in projection.disposition_outcomes] == [(record.source_identity, OUTCOME_ACCEPTED_CLOSURE_RETAINED if closed else OUTCOME_CLOSURE_PROPOSAL_NOT_ACCEPTED)]
+    current = _only(projection, "finding-a")
+    assert current.accepted_state == (FIXED if closed else OPEN)
+    snapshot = env.ledger.get_snapshot("https://api.github.com", REPO, pr)
+    assert snapshot.get_blocker(other_id).disposition is BlockerDisposition.OPEN
+    assert len(snapshot.get_blockers_for_alias("github_root_comment", "555")) == 2
+    assert current.requirement_ids == ("#2401/REQ-001",)
+
+
+def test_shared_root_multiple_strong_owners_remains_ambiguous(env: Env) -> None:
+    from auto_coder.accepted_finding_bridge import OUTCOME_AMBIGUOUS
+
+    pr = 102
+    accept_strong(env, pr, [finding_json("finding-a"), finding_json("finding-b", boundary="src/other.py")])
+    bridge = env.bridge()
+    projection = bridge.project(env.target(pr))
+    snapshot = env.ledger.get_snapshot("https://api.github.com", REPO, pr)
+    for record in projection.records:
+        snapshot = env.ledger.add_alias("https://api.github.com", REPO, pr, operation_id=f"root-{record.finding_id}", expected_ledger_revision=snapshot.ledger_revision, blocker_id=record.canonical_blocker_id, alias_type="github_root_comment", alias_value="555")
+    projection = bridge.project(env.target(pr), dispositions=[OrdinaryDisposition(status="ADDRESSED", rationale="Fixed", evidence="tests/test_state.py:40", root_comment_id=555)])
+    assert projection.disposition_outcomes[0].outcome == OUTCOME_AMBIGUOUS
+    assert projection.disposition_outcomes[0].source_identity == ""
+    assert all(record.accepted_state == OPEN for record in projection.records)

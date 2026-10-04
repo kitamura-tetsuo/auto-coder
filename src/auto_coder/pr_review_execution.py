@@ -98,15 +98,18 @@ class ReviewExecutionResult:
         return self.is_complete and self.mode is ReviewMode.ORDINARY_CLOSURE and self.verdict == "PASS" and self.scope is ScopeAssessment.BOUNDED
 
 
-def build_review_prompt(review_input: ReviewExecutionInput) -> str:
+def build_review_prompt(review_input: ReviewExecutionInput, *, embedded_closure: bool = False) -> str:
     """Render a self-contained role prompt; no provider memory is an input."""
     if review_input.mode is ReviewMode.STRONG_AUDIT and review_input.findings:
         raise ValueError("STRONG_AUDIT cannot preload prior findings")
     if review_input.mode is ReviewMode.ORDINARY_CLOSURE and not review_input.findings:
         raise ValueError("ORDINARY_CLOSURE requires the accepted finding bundle")
+    if embedded_closure and review_input.mode is not ReviewMode.ORDINARY_CLOSURE:
+        raise ValueError("Only ORDINARY_CLOSURE can be embedded in ordinary validation")
     findings = json.dumps([_finding_payload(item) for item in review_input.findings], indent=2, sort_keys=True)
     return render_prompt(
         "pr.two_tier_review_execution",
+        response_object="the nested `closure_assessment` object" if embedded_closure else "the JSON response",
         mode=review_input.mode.value,
         round_id=review_input.round_id,
         attempt_id=review_input.attempt_id,
@@ -421,9 +424,9 @@ def parse_review_result(response: str, expected: ReviewExecutionInput, reviewer_
     for key, value in identities.items():
         if raw.get(key) != value:
             return _diagnostic(expected, reviewer_provenance, f"Mismatched or missing {key}")
-    verdict = raw.get("verdict")
+    verdict = raw.get("result")
     if not isinstance(verdict, str) or verdict not in {"PASS", "FINDINGS", "INCONCLUSIVE"}:
-        return _diagnostic(expected, reviewer_provenance, "Invalid verdict")
+        return _diagnostic(expected, reviewer_provenance, "Invalid result")
 
     if expected.mode is ReviewMode.STRONG_AUDIT:
         findings = _parse_findings(raw.get("findings"), expected.round_id)

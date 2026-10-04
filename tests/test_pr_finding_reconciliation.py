@@ -1737,3 +1737,14 @@ def test_req011_advisory_semantic_matching_isolated(ledger: CanonicalPRBlockerLe
     decision, associated_id, reason = advisory_semantic_match(cand_diff_req, (b1,))
     assert decision == ReconciliationDecision.DISTINCT_DEFECT
     assert associated_id is None
+
+
+@pytest.mark.parametrize("gap_fields", [True, False])
+def test_strong_regression_root_category_uses_declared_oracle_fields(gap_fields: bool) -> None:
+    body = "### fallback-baseline-regression-gap\n\n**Requirements:** #2422/REQ-002\n\n**Affected boundary:** replacement clone\n\n**Actual:** Missing fallback coverage.\n\n**Expected:** Preserve designation across fallback.\n"
+    if gap_fields:
+        body += "\n**Incorrect implementation admitted by tests:** Exempt only the first attempt.\n\n**Why tests admit it:** No replacement attempt is exercised.\n"
+    parsed = parse_historical_pr_review_roots([{"id": 4178383641, "body": body}])
+    assert len(parsed.corrections) == 1
+    assert parsed.corrections[0].category == ("TEST_ORACLE" if gap_fields else "IMPLEMENTATION")
+    assert parsed.corrections[0].authoritative_boundary == "replacement clone"

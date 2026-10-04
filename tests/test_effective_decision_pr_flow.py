@@ -111,7 +111,7 @@ def ordinary_response(thread_id: str, status: str = "STILL_VALID", *, result: st
         {
             "result": result,
             "summary": "All requirement coverage is verified.",
-            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "The guard enforces the requirement."}],
+            "requirement_coverage": [{"requirement_id": "#2401/REQ-001", "status": "VERIFIED", "evidence": "The guard enforces the requirement."}],
             "findings": [],
             "test_oracle_gaps": [],
             "thread_dispositions": [{"thread_id": thread_id, "status": status, "rationale": "Re-inspected the current head.", "evidence": evidence}],
@@ -226,7 +226,7 @@ class Flow:
                 closure.on_review()
             payload = json.loads(raw)
             payload["closure_assessment"] = {
-                "verdict": "FINDINGS" if closure.status == "STILL_VALID" else "PASS",
+                "result": "FINDINGS" if closure.status == "STILL_VALID" else "PASS",
                 "findings": [],
                 "dispositions": [{"finding_id": closure.finding_id, "status": "OPEN" if closure.status == "STILL_VALID" else closure.status, "evidence": f"Independent exact-finding {closure.status} evidence at {self.head[:8]}"}],
                 "scope": closure.scope,

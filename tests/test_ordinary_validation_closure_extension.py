@@ -48,7 +48,7 @@ def _ordinary_payload() -> dict[str, object]:
         "summary": "Ordinary requirements are satisfied.",
         "findings": [],
         "closure_assessment": {
-            "verdict": "PASS",
+            "result": "PASS",
             "findings": [],
             "dispositions": [
                 {
@@ -220,7 +220,7 @@ def test_malformed_closure_verdict_preserves_ordinary_result(malformed_verdict: 
         ]
     assessment = payload["closure_assessment"]
     assert isinstance(assessment, dict)
-    assessment["verdict"] = malformed_verdict
+    assessment["result"] = malformed_verdict
 
     result = parse_adversarial_validation_response(json.dumps(payload), closure_input=_closure_input())
 
@@ -230,7 +230,7 @@ def test_malformed_closure_verdict_preserves_ordinary_result(malformed_verdict: 
     assert result.closure_assessment is not None
     assert not result.closure_assessment.is_complete
     assert not result.closure_assessment.grants_closure_evidence
-    assert result.closure_assessment_diagnostic == "Invalid verdict"
+    assert result.closure_assessment_diagnostic == "Invalid result"
 
 
 def test_missing_or_inconclusive_assessment_never_grants_closure_evidence() -> None:
@@ -244,7 +244,7 @@ def test_missing_or_inconclusive_assessment_never_grants_closure_evidence() -> N
     dispositions = assessment["dispositions"]
     assert isinstance(dispositions, list) and isinstance(dispositions[0], dict)
     dispositions[0]["status"] = "INCONCLUSIVE"
-    assessment["verdict"] = "INCONCLUSIVE"
+    assessment["result"] = "INCONCLUSIVE"
     inconclusive = parse_adversarial_validation_response(json.dumps(payload), closure_input=_closure_input())
 
     assert missing.result == "PASS"
@@ -261,3 +261,29 @@ def test_first_open_epoch_zero_is_valid_closure_context() -> None:
 
     assert result.closure_assessment_diagnostic == ""
     assert result.closure_assessment is not None and result.closure_assessment.open_epoch == 0
+
+
+def test_closure_prompt_uses_one_result_envelope_and_exact_requirement_ids() -> None:
+    from auto_coder.adversarial_validator import IssueRequirement, _closure_prompt_extension
+
+    prompt = _closure_prompt_extension(_closure_input(), [IssueRequirement(requirement_id="#2405/REQ-003", text="Assess every supplied finding.")])
+    assert '"closure_assessment": {' in prompt
+    assert '"result": "PASS"' in prompt
+    assert '"verdict"' not in prompt
+    assert "copy every value exactly into the nested `closure_assessment` object" in prompt
+    assert '["#2405/REQ-003"]' in prompt
+    result = parse_adversarial_validation_response(json.dumps(_ordinary_payload()), closure_input=_closure_input())
+    assert result.result == "PASS"
+    assert result.closure_assessment is not None
+    assert result.closure_assessment.grants_closure_evidence
+
+
+def test_nested_obsolete_verdict_cannot_authorize_closure() -> None:
+    payload = _ordinary_payload()
+    assessment = payload["closure_assessment"]
+    assert isinstance(assessment, dict)
+    assessment["verdict"] = assessment.pop("result")
+    result = parse_adversarial_validation_response(json.dumps(payload), closure_input=_closure_input())
+    assert result.result == "PASS"
+    assert result.closure_assessment_diagnostic == "Invalid result"
+    assert result.closure_assessment is not None and not result.closure_assessment.grants_closure_evidence

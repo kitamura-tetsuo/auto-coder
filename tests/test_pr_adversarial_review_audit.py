@@ -63,7 +63,7 @@ DUPLICATE_REQUIREMENT_ISSUE_BODY = '## Objective\nAdd a greet() function that re
 
 PASS_PAYLOAD = (
     '{"result":"PASS","summary":"greet() returns hello at the reviewed head.",'
-    '"findings":[],"requirement_coverage":[{"requirement_id":"REQ-001","status":"VERIFIED",'
+    '"findings":[],"requirement_coverage":[{"requirement_id":"#99/REQ-001","status":"VERIFIED",'
     '"evidence":"sample.py: greet() returns hello."}],"specification_gaps":[],'
     '"test_oracle_gaps":[],"thread_dispositions":[],"dynamic_check_requested":null}'
 )
@@ -469,7 +469,7 @@ for line in sys.stdin:
         config = _build_config()
         payload = (
             '{"result":"PASS","summary":"greet() returns hello, but scope is unclear.",'
-            '"findings":[],"requirement_coverage":[{"requirement_id":"REQ-001","status":"VERIFIED",'
+            '"findings":[],"requirement_coverage":[{"requirement_id":"#99/REQ-001","status":"VERIFIED",'
             '"evidence":"sample.py: greet() returns hello."}],'
             '"specification_gaps":[{"question":"Should greet() accept a name argument?",'
             '"why_existing_issue_is_insufficient":"The Issue never mentions parameters.",'
@@ -513,7 +513,7 @@ for line in sys.stdin:
             '"finding_identity":"greet-return-value",'
             '"correction_identity":"greet-return-value-fix",'
             '"violated_requirement":"greet() returns the string hello",'
-            '"requirement_id":"REQ-001",'
+            '"requirement_id":"#99/REQ-001",'
             '"evidence_classification":"DEMONSTRATED",'
             '"reachability":"The public greet() function is called directly and its return value is observable",'
             '"required_behavior":"greet() must return the exact string \'hello\'",'
@@ -561,11 +561,11 @@ for line in sys.stdin:
         payload = (
             '{"result":"INCONCLUSIVE","summary":"greet() behavior could not be fully confirmed on the reviewed head.",'
             '"findings":[],'
-            '"requirement_coverage":[{"requirement_id":"REQ-001","status":"UNVERIFIED","evidence":"sample.py could not be fully inspected."}],'
+            '"requirement_coverage":[{"requirement_id":"#99/REQ-001","status":"UNVERIFIED","evidence":"sample.py could not be fully inspected."}],'
             '"specification_gaps":[],"test_oracle_gaps":[],"thread_dispositions":[],"dynamic_check_requested":null,'
             '"evidence_recovery":[{"path":"sample.py","source":"repository inspection","status":"UNAVAILABLE",'
-            '"evidence":"Attempted inspection did not resolve REQ-001.","requirement_ids":["REQ-001"]}],'
-            '"decision_critical_evidence_gaps":[{"requirement_id":"REQ-001",'
+            '"evidence":"Attempted inspection did not resolve REQ-001.","requirement_ids":["#99/REQ-001"]}],'
+            '"decision_critical_evidence_gaps":[{"requirement_id":"#99/REQ-001",'
             '"evidence_needed":"Confirmed runtime behavior of greet()",'
             '"recovery_attempts":["Inspected sample.py source"]}]}'
         )
@@ -588,7 +588,7 @@ for line in sys.stdin:
         assert record.native_report is not None
         assert record.native_report["result"] == "INCONCLUSIVE"
         assert len(record.native_report["decision_critical_evidence_gaps"]) == 1
-        assert record.native_report["decision_critical_evidence_gaps"][0]["requirement_id"] == "REQ-001"
+        assert record.native_report["decision_critical_evidence_gaps"][0]["requirement_id"] == "#99/REQ-001"
         assert len(record.native_report["evidence_recovery"]) == 1
         assert not any("Successfully merged" in action for action in actions)
 
@@ -810,7 +810,7 @@ class TestReq012MultiCallFixtures:
 
         initial_payload = (
             '{"result":"PASS","summary":"Needs a focused dynamic check.",'
-            '"findings":[],"requirement_coverage":[{"requirement_id":"REQ-001","status":"VERIFIED",'
+            '"findings":[],"requirement_coverage":[{"requirement_id":"#99/REQ-001","status":"VERIFIED",'
             '"evidence":"sample.py: greet() returns hello."}],"specification_gaps":[],'
             '"test_oracle_gaps":[],"thread_dispositions":[],'
             '"dynamic_check_requested":"tests/test_sample.py::test_greet"}'

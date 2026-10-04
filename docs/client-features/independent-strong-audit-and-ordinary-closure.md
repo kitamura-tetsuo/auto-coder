@@ -147,3 +147,5 @@ Trace events use the `pr.ordinary-closure` stage and expose the head, backend,
 `evidence_status`, `source_attempt_id`, `source_attempt_sequence`,
 `additional_model_execution` (always `false`), `renewed_strong_required`, the
 publication result, and the acceptance/defer reason.
+
+Model JSON responses use `result` for both Strong and ordinary closure decisions. Internal typed and durable verdict attributes retain their existing representation. Explicit requirement references always use `#<issue>/REQ-NNN` across ordinary coverage and Strong findings, including single-Issue contracts; original Issue declarations and text remain unchanged.

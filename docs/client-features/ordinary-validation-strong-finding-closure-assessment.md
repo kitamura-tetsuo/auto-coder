@@ -26,3 +26,5 @@ findings, complete a review cycle, resolve threads, publish a review, or merge a
 PR. Follow-up semantic responses must contain their own complete assessment;
 favorable evidence is never carried forward from an earlier response. Calls
 without closure input preserve the existing ordinary-only prompt and result.
+
+The ordinary invocation returns one JSON object with an outer `result` and a nested `closure_assessment` object using its own `result`. All closure identity, findings, dispositions and cumulative scope fields belong to that nested object. The embedded prompt declares this envelope and the exact ordinary requirement-ID manifest. Both review roles use `#<issue>/REQ-NNN` for explicit requirements. Unqualified or unknown coverage IDs remain invalid; no implicit alias translation is performed. Legacy extracted IDs retain their deterministic hash format. An obsolete `verdict` response cannot authorize closure.

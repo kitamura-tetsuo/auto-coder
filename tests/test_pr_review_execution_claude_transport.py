@@ -71,7 +71,7 @@ def _strong_pass_payload(expected: ReviewExecutionInput) -> dict:
         "contract_identity": expected.contract.identity,
         "policy_identity": expected.policy.identity,
         "finding_set_revision": expected.finding_set_revision,
-        "verdict": "PASS",
+        "result": "PASS",
         "findings": [],
     }
 
@@ -85,7 +85,7 @@ def _closure_pass_payload(expected: ReviewExecutionInput) -> dict:
         "contract_identity": expected.contract.identity,
         "policy_identity": expected.policy.identity,
         "finding_set_revision": expected.finding_set_revision,
-        "verdict": "PASS",
+        "result": "PASS",
         "findings": [],
         "dispositions": [{"finding_id": "finding-a", "status": "FIXED", "evidence": "Both paths preserve state."}],
         "scope": "BOUNDED",
@@ -147,7 +147,7 @@ def test_terminal_findings_win_over_intermediate_pass() -> None:
     expected = _strong_input()
     pass_payload = json.dumps(_strong_pass_payload(expected))
     findings_payload = dict(_strong_pass_payload(expected))
-    findings_payload["verdict"] = "FINDINGS"
+    findings_payload["result"] = "FINDINGS"
     findings_payload["findings"] = [
         {
             "finding_id": "f-1",
@@ -246,7 +246,7 @@ def test_presentation_rejects_ambiguity_and_repairs() -> None:
     check(f"{good}\n{wrong_text}")
     check(json.dumps([_strong_pass_payload(expected)]))
     check(good.replace("}", ",}"))
-    duplicated = good.replace('"verdict"', '"verdict": "PASS", "verdict"', 1)
+    duplicated = good.replace('"result"', '"result": "PASS", "result"', 1)
     assert duplicated  # Guards against accidental test simplification.
     check('{"round_id": "x", "round_id": "y"}')
     # Truncated outer object containing a complete inner review object.
@@ -322,7 +322,7 @@ def test_execute_review_accepts_stream_json_fenced_pass_once(tmp_path: Path, _us
         "contract_identity": contract.identity,
         "policy_identity": policy.identity,
         "finding_set_revision": 0,
-        "verdict": "PASS",
+        "result": "PASS",
         "findings": [],
     }
     stream = _stream_json(f"Here is the audit:\n```json\n{json.dumps(payload)}\n```\nDone.")

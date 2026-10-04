@@ -1848,3 +1848,5 @@ processing origin, admission gate, outcome, provider route, durable resumption
 path, or trace schema change. Existing CI eligibility and repair execution
 stages remain the dashboard's evidence; retrieving all jobs never implies
 repair completion. See `docs/client-features/complete-workflow-job-pagination.md`.
+
+Shared review-root association regression coverage: `tests/test_accepted_finding_bridge.py::test_shared_root_non_strong_owner_does_not_make_accepted_disposition_ambiguous` verifies that an accepted closure survives a separately retained historical owner without changing that owner; `test_shared_root_multiple_strong_owners_remains_ambiguous` preserves the reconciliation gate for genuinely ambiguous accepted sources. `tests/test_pr_finding_reconciliation.py::test_strong_regression_root_category_uses_declared_oracle_fields` checks historical oracle classification. Production continues to emit the existing `pr.adversarial-validation` and `pr.review-thread-closure` events with the derived `review_disposition`; this correction changes neither their schema nor the dashboard mapping of `RECONCILIATION_WAIT` and `REVIEW_VERIFIED`.

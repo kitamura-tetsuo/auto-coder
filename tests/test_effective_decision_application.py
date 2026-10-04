@@ -67,7 +67,7 @@ def ordinary_pass_response(thread_id: str, status: str = "STILL_VALID", evidence
         {
             "result": "PASS",
             "summary": "All requirement coverage is verified.",
-            "requirement_coverage": [{"requirement_id": "REQ-001", "status": "VERIFIED", "evidence": "The guard enforces the requirement."}],
+            "requirement_coverage": [{"requirement_id": "#2401/REQ-001", "status": "VERIFIED", "evidence": "The guard enforces the requirement."}],
             "findings": [],
             "test_oracle_gaps": [],
             "thread_dispositions": [{"thread_id": thread_id, "status": status, "rationale": "Re-inspected the current head.", "evidence": evidence}],
@@ -147,7 +147,7 @@ def passing_result(attempt_sequence: int = 1) -> AdversarialValidationResult:
     return AdversarialValidationResult(
         result="PASS",
         summary="All requirement coverage is verified.",
-        requirement_coverage=[RequirementCoverageEntry(requirement_id="REQ-001", status="VERIFIED", evidence="The guard enforces the requirement.")],
+        requirement_coverage=[RequirementCoverageEntry(requirement_id="#2401/REQ-001", status="VERIFIED", evidence="The guard enforces the requirement.")],
         attempt_id=f"attempt-{attempt_sequence}",
         attempt_sequence=attempt_sequence,
     )

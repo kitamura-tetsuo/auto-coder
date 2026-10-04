@@ -1157,3 +1157,17 @@ def test_non_authoritative_resolved_response_preserves_the_open_checkpoint(tmp_p
     assert saved.last_head_sha == "sha-a"
     assert saved.test_oracle_gaps[0].status == "OPEN"
     assert initial.status == "OPEN"
+
+
+@pytest.mark.parametrize("root_requirement, matches", [("#2422/REQ-001", True), ("#2423/REQ-001", False), ("REQ-001", False)])
+def test_qualified_gap_thread_evidence_requires_exact_issue_and_requirement(root_requirement: str, matches: bool) -> None:
+    gap = parsed_result(gap_payload()).test_oracle_gaps[0]
+    gap.requirement_id = "#2422/REQ-001"
+    result = parsed_result(gap_payload())
+    result.test_oracle_gaps = [gap]
+    result.thread_dispositions = [ReviewThreadDisposition(thread_id="thread-gap", status="ADDRESSED", rationale="Regression added", evidence="tests/test_grid.py:40 exercises the invariant.")]
+    claimed = ClaimedReviewThread(thread_id="thread-gap", original_finding=f"### Auto-Coder material test-oracle gap\n\nGap identity: `{gap.gap_id}`\n\n**Issue requirement**\n\n`{root_requirement}`: Preserve stored state")
+    evidence = _addressed_test_oracle_gap_evidence(result, (claimed,), (gap,))
+    assert bool(evidence) is matches
+    if matches:
+        assert set(evidence) == {gap.gap_id}

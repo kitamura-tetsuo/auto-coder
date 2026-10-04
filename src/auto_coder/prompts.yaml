@@ -643,7 +643,7 @@ pr:
     Requirements below are the only normative implementation contract. Objective,
     Context, acceptance examples, prior reviewers, and model reputation are evidence only.
 
-    Identity (copy every value exactly into the JSON response):
+    Identity (copy every value exactly into $response_object):
     round_id=$round_id
     attempt_id=$attempt_id
     head_sha=$head_sha
@@ -660,6 +660,11 @@ pr:
 
     Authoritative Requirements:
     $requirements_text
+
+    REQUIREMENT ID FORMAT: Every explicit Requirement reference uses
+    #<owning Issue number>/REQ-NNN, including when only one Issue is linked.
+    Use that same canonical ID in findings and ordinary requirement coverage.
+    Preserve the source REQ-NNN declaration and its text when quoting it.
 
     Current repository and test evidence:
     $repository_evidence
@@ -716,7 +721,7 @@ pr:
     `finding_id`, `status` (FIXED, INVALID, OPEN, or INCONCLUSIVE), and non-empty
     `evidence`. Include exactly one disposition for every supplied finding.
 
-    Return one JSON object with the identity fields above, `verdict` (PASS,
+    Populate $response_object with the identity fields above, `result` (PASS,
     FINDINGS, or INCONCLUSIVE), `findings`, and, for ORDINARY_CLOSURE,
     `dispositions`, `scope`, and non-empty `scope_evidence`. PASS is permitted only
     when no finding remains/newly exists. For ORDINARY_CLOSURE, report scope
@@ -725,6 +730,60 @@ pr:
     Never report
     a test as executed unless the supplied evidence proves its execution.
     The caller owns the review mode; do not include a `mode` field in the response.
+    The decision key is `result`; never return a `verdict` key.
+
+  adversarial_validation_closure_extension: |-
+    ORDINARY STRONG-FINDING CLOSURE EXTENSION (non-authorizing):
+    This is additional work inside the ordinary validation response, not a
+    separate reviewer response. All instructions below about identity, result,
+    findings, dispositions, and scope apply only to `closure_assessment`.
+
+    $review_prompt
+
+    COMBINED RESPONSE CONTRACT:
+    Return exactly one JSON object using the ordinary validation OUTPUT FORMAT.
+    Its top-level `result` is required and must be PASS, NEEDS_FIX, NEEDS_TESTS,
+    INCONCLUSIVE, or BLOCKED. Keep ordinary findings, coverage, test_oracle_gaps,
+    and thread_dispositions at the top level. Add the independent assessment as
+    a nested `closure_assessment` object. Use `result` for both assessments;
+    never return a `verdict` key. Never flatten closure identity, dispositions,
+    or scope into the ordinary response. `closure_assessment.result` uses PASS, FINDINGS, or
+    INCONCLUSIVE; it does not determine the ordinary `result`.
+    ORDINARY REQUIREMENT ID AUTHORITY:
+    $ordinary_requirement_ids
+    This exact ID list belongs to ordinary requirement_coverage, findings,
+    test_oracle_gaps, evidence_recovery, and decision_critical_evidence_gaps.
+    Explicit Requirements always use #<owning Issue number>/REQ-NNN in both
+    ordinary validation and strong-finding closure, even for a single Issue or
+    unique source ID. Copy these canonical IDs exactly in every assessment;
+    never omit the Issue prefix or invent a different owning Issue. Legacy
+    extracted requirements retain their exact generated IDs from the manifest.
+    This illustrative envelope omits ordinary coverage fields for brevity;
+    supply all applicable ordinary fields and one disposition per accepted finding:
+    ```json
+    {
+      "result": "PASS",
+      "summary": "Ordinary requirements are independently verified.",
+      "findings": [],
+      "closure_assessment": {
+        "result": "PASS",
+        "findings": [],
+        "dispositions": [
+          {
+            "finding_id": "<exact accepted finding_id>",
+            "status": "FIXED",
+            "evidence": "Current production-boundary evidence establishes the correction."
+          }
+        ],
+        "scope": "BOUNDED",
+        "scope_evidence": "The cumulative diff contains only corrections and associated regressions."
+      }
+    }
+    ```
+
+  adversarial_validation_closure_unavailable: |-
+    ORDINARY STRONG-FINDING CLOSURE EXTENSION UNAVAILABLE: $reason.
+    Do not return a closure_assessment.
 
   adversarial_validation: |-
     You are an expert adversarial software correctness reviewer with deep domain expertise.

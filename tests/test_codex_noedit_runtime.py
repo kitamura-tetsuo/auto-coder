@@ -50,7 +50,7 @@ class ReviewProvider:
                         key, sep, value = line.strip().partition("=")
                         if sep:
                             payload[key] = int(value) if key == "finding_set_revision" else value
-                    payload.update(verdict=outer.verdict, findings=[])
+                    payload.update(result=outer.verdict, findings=[])
                     if outer.verdict == "FINDINGS":
                         payload["findings"] = [
                             {

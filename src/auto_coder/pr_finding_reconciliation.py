@@ -214,6 +214,10 @@ def _parse_comment_section(
     authoritative_text = re.sub(r"<!--.*?-->", "", _mask_fenced_markdown(section_text), flags=re.DOTALL)
     lower_text = authoritative_text.lower()
     is_gap = "test-oracle gap" in lower_text or "test oracle gap" in lower_text or "test_oracle" in lower_text or "gap identity" in lower_text
+    # Strong regression-gap roots declare these fields without the ordinary
+    # validator's gap heading. Both fields distinguish them from findings that
+    # merely mention regression tests as supporting evidence.
+    is_gap = is_gap or bool(_extract_section_field(authoritative_text, "Incorrect implementation admitted by tests") and _extract_section_field(authoritative_text, "Why tests admit it"))
     is_finding = "adversarial finding" in lower_text or "finding" in lower_text or "violated requirement" in lower_text or "requirement:" in lower_text or bool(_REQ_ID_RE.search(authoritative_text))
     if not (is_gap or is_finding or _standalone_blocker_identities(section_text) or _GAP_ID_RE.search(authoritative_text)):
         return None

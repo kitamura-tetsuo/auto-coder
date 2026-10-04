@@ -176,7 +176,7 @@ def _pr_validation_pass_payload() -> str:
             "findings": [],
             "requirement_coverage": [
                 {
-                    "requirement_id": "REQ-001",
+                    "requirement_id": "#42/REQ-001",
                     "status": "VERIFIED",
                     "evidence": "sample.py: greet() returns hello.",
                 }
@@ -196,7 +196,7 @@ def _pr_validation_fail_payload() -> str:
             "summary": "State update failure",
             "findings": [
                 {
-                    "requirement_id": "REQ-001",
+                    "requirement_id": "#42/REQ-001",
                     "finding_identity": "state-update-discard",
                     "correction_identity": "test-correction",
                     "violated_requirement": "REQ-001",
@@ -213,7 +213,7 @@ def _pr_validation_fail_payload() -> str:
             ],
             "requirement_coverage": [
                 {
-                    "requirement_id": "REQ-001",
+                    "requirement_id": "#42/REQ-001",
                     "status": "VIOLATED",
                     "evidence": "sample.py: returns placeholder",
                 }

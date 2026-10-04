@@ -91,3 +91,10 @@ including strong-audit roots, without requiring repeated finding prose. The
 existing repair-delegation stage reflects local admission failure as `FAILED`
 and pending correction as `DEFERRED`. The worker diagnostic also exposes the
 deferred outcome and its actions through the existing generic trace details.
+
+Accepted-finding adjudication of a shared historical review root uses Strong
+source aliases, and historical roots with the declared oracle-gap fields retain
+the test-oracle category. The dashboard continues to display the existing
+effective `review_disposition` and publication outcomes; an ambiguous accepted
+source remains reconciliation, while an accepted current closure can proceed to
+verification. There are no new history fields or inferred completion states.

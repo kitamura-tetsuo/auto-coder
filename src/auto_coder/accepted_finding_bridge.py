@@ -686,14 +686,14 @@ class AcceptedFindingBridge:
             owners.update(blocker.blocker_id for blocker in snapshot.get_blockers_for_alias(ROOT_ALIAS_TYPE, str(disposition.root_comment_id)))
         if disposition.thread_id:
             owners.update(blocker.blocker_id for blocker in snapshot.get_blockers_for_alias(THREAD_ALIAS_TYPE, disposition.thread_id))
-        if len(owners) > 1:
-            return None, "ambiguous"
         if not owners:
             return None, "no authenticated association for this root/thread"
-        blocker_id = next(iter(owners))
-        sources = [identity for identity in by_source if (blocker := snapshot.get_blocker(blocker_id)) is not None and any(a.alias_type == SOURCE_ALIAS_TYPE and a.alias_value == identity for a in blocker.aliases)]
+        # A compound or previously imported root can have non-Strong owners.
+        # Resolve only the accepted Strong component; other owners retain their
+        # independent scope and disposition in the ledger.
+        sources = {identity for blocker_id in owners if (blocker := snapshot.get_blocker(blocker_id)) is not None for identity in by_source if any(a.alias_type == SOURCE_ALIAS_TYPE and a.alias_value == identity for a in blocker.aliases)}
         if len(sources) == 1:
-            return sources[0], ""
+            return next(iter(sources)), ""
         return None, "ambiguous" if sources else "associated blocker is not an accepted Strong finding"
 
     def _build_record(
@@ -803,11 +803,10 @@ def known_gap_from_record(record: AcceptedFindingRecord) -> TestOracleGap:
     original scope is carried verbatim and is never rewritten by rereview.
     """
     requirement_id = record.requirement_ids[0] if record.requirement_ids else ""
-    match = _QUALIFIED_REQUIREMENT.match(requirement_id)
     anchor = _EVIDENCE_ANCHOR.search(record.evidence)
     return TestOracleGap(
         gap_id=record.known_gap_id,
-        requirement_id=match.group(2) if match else requirement_id,
+        requirement_id=requirement_id,
         requirement_text=record.requirement_texts[0] if record.requirement_texts else "",
         authoritative_boundary=record.affected_boundary,
         invariant=record.original_scope,

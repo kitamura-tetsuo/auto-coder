@@ -1199,16 +1199,10 @@ def build_issue_requirement_manifest(resolution: IssueOracleResolution) -> Issue
             legacy = [(requirement.requirement_id, requirement.text) for requirement in extract_issue_requirements(issue.body)]
             parsed.append((issue, False, legacy))
 
-    explicit_id_counts: Dict[str, int] = {}
-    for _, explicit, entries in parsed:
-        if explicit:
-            for requirement_id, _ in entries:
-                explicit_id_counts[requirement_id] = explicit_id_counts.get(requirement_id, 0) + 1
-
     requirements: List[IssueRequirement] = []
     for issue, explicit, entries in parsed:
         for requirement_id, requirement_text in entries:
-            validator_id = f"#{issue.number}/{requirement_id}" if explicit and explicit_id_counts[requirement_id] > 1 else requirement_id
+            validator_id = f"#{issue.number}/{requirement_id}" if explicit else requirement_id
             requirements.append(IssueRequirement(requirement_id=validator_id, text=requirement_text))
     mode = "mixed" if len(modes) > 1 else next(iter(modes), "legacy-extraction")
     return IssueRequirementManifest(requirements=requirements, mode=mode)
@@ -2685,7 +2679,7 @@ def _addressed_test_oracle_gap_evidence(
         if disposition is None:
             continue
         gap_match = re.search(r"^Gap identity:\s*`(TOG-[^`]+)`\s*$", thread.original_finding, re.MULTILINE)
-        requirement_match = re.search(r"^`(REQ-[^`]+)`:\s*\S", thread.original_finding, re.MULTILINE)
+        requirement_match = re.search(r"^`((?:#\d+/)?REQ-[^`]+)`:\s*\S", thread.original_finding, re.MULTILINE)
         current_gap = gaps_by_id.get(gap_match.group(1)) if gap_match else None
         if gap_match and requirement_match and current_gap is not None and current_gap.requirement_id == requirement_match.group(1):
             if not is_valid_test_oracle_resolution_evidence(disposition.evidence):
@@ -2918,7 +2912,7 @@ def _complete_changed_file_evidence(
         prior_adjudication=result.raw_response or result.summary,
         prior_test_oracle_gaps=json.dumps([gap.__dict__ for gap in recorded_test_oracle_gaps], indent=2, sort_keys=True),
         controller_retrievals=json.dumps(retrievals, indent=2),
-    ) + _closure_prompt_extension(closure_input)
+    ) + _closure_prompt_extension(closure_input, context.issue_requirements)
     initial_identity = backend_manager.get_current_backend_identity()
     try:
         response = backend_manager.continue_session(session_id, prompt, is_noedit=True)
@@ -3681,14 +3675,18 @@ def _apply_coverage_and_verdict_precedence(
     return _enforce_inconclusive_recovery_contract(result, incomplete_requirement_ids)
 
 
-def _closure_prompt_extension(closure_input: Optional[ReviewExecutionInput]) -> str:
+def _closure_prompt_extension(closure_input: Optional[ReviewExecutionInput], ordinary_requirements: Sequence[IssueRequirement]) -> str:
     """Render optional closure work without changing ordinary-only prompts."""
     if closure_input is None:
         return ""
     unavailable_reason = _closure_input_unavailable_reason(closure_input)
     if unavailable_reason:
-        return f"\n\nORDINARY STRONG-FINDING CLOSURE EXTENSION UNAVAILABLE: {unavailable_reason}. Do not return a closure_assessment."
-    return "\n\nORDINARY STRONG-FINDING CLOSURE EXTENSION (non-authorizing):\n" + build_review_prompt(closure_input) + "\nReturn that role's semantic fields in a top-level `closure_assessment` object " "inside the ordinary validation JSON. The ordinary result remains independent."
+        return "\n\n" + render_prompt("pr.adversarial_validation_closure_unavailable", reason=unavailable_reason)
+    return "\n\n" + render_prompt(
+        "pr.adversarial_validation_closure_extension",
+        review_prompt=build_review_prompt(closure_input, embedded_closure=True),
+        ordinary_requirement_ids=json.dumps([requirement.requirement_id for requirement in ordinary_requirements]),
+    )
 
 
 def default_accepted_finding_bridge(repo_name: str) -> AcceptedFindingBridge:
@@ -3957,7 +3955,7 @@ def run_adversarial_validation(
             sort_keys=True,
         )
 
-    closure_extension = _closure_prompt_extension(closure_input)
+    closure_extension = _closure_prompt_extension(closure_input, context.issue_requirements)
     prompt = render_prompt(
         "pr.adversarial_validation",
         review_policy=review_policy,

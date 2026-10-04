@@ -164,3 +164,5 @@ side still leaves publication pending. Recovery runs before a fresh ordinary
 validation, including when the current head has no saved verdict, so an incomplete
 older publication cannot cause repeated model runs whose publication is blocked
 by that same operation.
+
+Strong roots declaring both `Incorrect implementation admitted by tests` and `Why tests admit it` are classified as test-oracle gaps, even when their heading lacks the ordinary test-oracle wording. A reference to regression tests alone does not change an implementation finding's category. This prevents a retained Strong test-oracle root from acquiring a second implementation owner solely through historical reimport.

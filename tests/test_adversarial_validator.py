@@ -1223,8 +1223,8 @@ diff --git a/src/service_test.py b/src/service_test.py
         assert manifest.mode == "explicit-contract"
         assert manifest.error is None
         assert [(item.requirement_id, item.text) for item in manifest.requirements] == [
-            ("REQ-001", "Preserve IDs."),
-            ("REQ-002", "Preserve Origin: #12/REQ-007"),
+            ("#1591/REQ-001", "Preserve IDs."),
+            ("#1591/REQ-002", "Preserve Origin: #12/REQ-007"),
         ]
 
     def test_explicit_contract_accepts_backticked_requirement_labels(self):
@@ -1237,9 +1237,9 @@ diff --git a/src/service_test.py b/src/service_test.py
 
         assert manifest.error is None
         assert [(item.requirement_id, item.text) for item in manifest.requirements] == [
-            ("REQ-001", "Classify only materially relevant unspecified policy choices."),
-            ("REQ-002", "Do not invent policy."),
-            ("REQ-003", "Keep gaps separate from findings."),
+            ("#1588/REQ-001", "Classify only materially relevant unspecified policy choices."),
+            ("#1588/REQ-002", "Do not invent policy."),
+            ("#1588/REQ-003", "Keep gaps separate from findings."),
         ]
 
     @pytest.mark.parametrize("extra_line", ["```", "    code example", "continuation text", "- [ ] task prose"])
@@ -4203,3 +4203,28 @@ class TestParseThreadDispositions:
         result = parse_adversarial_validation_response(json_resp)
         assert result.result == "NEEDS_FIX"
         assert result.thread_dispositions[0].status == "ADDRESSED"
+
+
+@pytest.mark.parametrize(
+    "issues, expected",
+    [
+        ((VerifiedIssueOracle(number=2422, body="## Requirements\nREQ-001: First."),), ["#2422/REQ-001"]),
+        ((VerifiedIssueOracle(number=2422, body="## Requirements\nREQ-001: First."), VerifiedIssueOracle(number=2423, body="## Requirements\nREQ-002: Second.")), ["#2422/REQ-001", "#2423/REQ-002"]),
+    ],
+)
+def test_explicit_requirement_ids_are_always_issue_qualified(issues, expected) -> None:
+    manifest = build_issue_requirement_manifest(IssueOracleResolution(issues=issues))
+    assert manifest.error is None
+    assert [requirement.requirement_id for requirement in manifest.requirements] == expected
+
+
+@pytest.mark.parametrize("reported_id", ["#2422/REQ-001", "REQ-001", "#2423/REQ-001"])
+def test_qualified_coverage_requires_the_exact_manifest_id(reported_id: str) -> None:
+    from auto_coder.adversarial_validator import _apply_coverage_and_verdict_precedence
+
+    context = AdversarialValidationContext(issue_requirements=[IssueRequirement("#2422/REQ-001", "Preserve IDs")])
+    parsed = parse_adversarial_validation_response(json.dumps({"result": "PASS", "summary": "Verified", "findings": [], "requirement_coverage": [{"requirement_id": reported_id, "status": "VERIFIED", "evidence": "Current-head source inspected"}]}))
+    checked = _apply_coverage_and_verdict_precedence(parsed, context)
+    assert checked.result == ("PASS" if reported_id == "#2422/REQ-001" else "ERROR")
+    if reported_id != "#2422/REQ-001":
+        assert checked.diagnostic_category == "unknown_requirement_coverage_id"

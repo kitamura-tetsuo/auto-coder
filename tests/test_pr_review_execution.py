@@ -67,7 +67,7 @@ def test_prompt_identity_instructions_produce_parseable_response(mode: ReviewMod
         if separator:
             payload[key] = int(value) if key == "finding_set_revision" else value
     assert "mode" not in payload
-    payload.update(verdict="PASS", findings=[])
+    payload.update(result="PASS", findings=[])
     if mode is ReviewMode.ORDINARY_CLOSURE:
         payload.update(
             dispositions=[{"finding_id": "finding-a", "status": "FIXED", "evidence": "Both production paths preserve state."}],
@@ -83,7 +83,7 @@ def test_prompt_identity_instructions_produce_parseable_response(mode: ReviewMod
 @pytest.mark.parametrize("reported_mode", [None, "STRONG_AUDIT", "ORDINARY_CLOSURE", "unknown"])
 def test_response_mode_cannot_bypass_closure_requirements(reported_mode: str | None) -> None:
     expected = _input(ReviewMode.ORDINARY_CLOSURE)
-    payload = {**_identity(expected), "verdict": "PASS", "findings": []}
+    payload = {**_identity(expected), "result": "PASS", "findings": []}
     if reported_mode is not None:
         payload["mode"] = reported_mode
     result = parse_review_result(json.dumps(payload), expected, "reviewer/model")
@@ -94,7 +94,7 @@ def test_response_mode_cannot_bypass_closure_requirements(reported_mode: str | N
 
 def test_response_mode_cannot_change_strong_result_role() -> None:
     expected = _input()
-    payload = {**_identity(expected), "mode": "ORDINARY_CLOSURE", "verdict": "PASS", "findings": []}
+    payload = {**_identity(expected), "mode": "ORDINARY_CLOSURE", "result": "PASS", "findings": []}
     result = parse_review_result(json.dumps(payload), expected, "reviewer/model")
     assert result.is_complete
     assert result.mode is ReviewMode.STRONG_AUDIT
@@ -110,7 +110,7 @@ def test_prompt_finding_schema_is_accepted_without_key_or_type_translation(regre
     if regression_gap:
         finding["plausible_incorrect_implementation"] = "Only one deletion path checks the guard."
         finding["why_tests_admit_it"] = "The test exercises only the guarded path."
-    payload = {**_identity(expected), "verdict": "FINDINGS", "findings": [finding]}
+    payload = {**_identity(expected), "result": "FINDINGS", "findings": [finding]}
     result = parse_review_result(json.dumps(payload), expected, "reviewer/model")
     assert result.diagnostic == ""
     assert result.verdict == "FINDINGS"
@@ -124,7 +124,7 @@ def test_strong_parser_preserves_portable_finding_fields() -> None:
     expected = _input()
     payload = {
         **_identity(expected),
-        "verdict": "FINDINGS",
+        "result": "FINDINGS",
         "findings": [
             {
                 "finding_id": "stable-a",
@@ -152,7 +152,7 @@ def test_strong_parser_preserves_portable_finding_fields() -> None:
 
 def test_closure_rejects_missing_disposition_and_identity_mismatch() -> None:
     expected = _input(ReviewMode.ORDINARY_CLOSURE)
-    missing = {**_identity(expected), "verdict": "PASS", "findings": [], "dispositions": [], "scope": "BOUNDED", "scope_evidence": "Only the guard and regression changed."}
+    missing = {**_identity(expected), "result": "PASS", "findings": [], "dispositions": [], "scope": "BOUNDED", "scope_evidence": "Only the guard and regression changed."}
     assert "Every accepted finding" in parse_review_result(json.dumps(missing), expected, "ordinary/model").diagnostic
     missing["head_sha"] = "d" * 40
     assert parse_review_result(json.dumps(missing), expected, "ordinary/model").diagnostic == "Mismatched or missing head_sha"
@@ -162,7 +162,7 @@ def test_closure_pass_requires_fixed_or_invalid_and_bounded_scope() -> None:
     expected = _input(ReviewMode.ORDINARY_CLOSURE)
     payload = {
         **_identity(expected),
-        "verdict": "PASS",
+        "result": "PASS",
         "findings": [],
         "dispositions": [{"finding_id": "finding-a", "status": "FIXED", "evidence": "Both production paths now enforce the invariant."}],
         "scope": "BOUNDED",
@@ -178,7 +178,7 @@ def test_closure_unknown_scope_preserves_convergence_without_granting_closure() 
     expected = _input(ReviewMode.ORDINARY_CLOSURE)
     payload = {
         **_identity(expected),
-        "verdict": "PASS",
+        "result": "PASS",
         "findings": [],
         "dispositions": [{"finding_id": "finding-a", "status": "FIXED", "evidence": "The named path is corrected."}],
         "scope": "UNKNOWN",
@@ -195,7 +195,7 @@ def test_closure_expanded_scope_preserves_convergence_for_renewed_audit() -> Non
     expected = _input(ReviewMode.ORDINARY_CLOSURE)
     payload = {
         **_identity(expected),
-        "verdict": "PASS",
+        "result": "PASS",
         "findings": [],
         "dispositions": [{"finding_id": "finding-a", "status": "INVALID", "evidence": "The cited path is unreachable under REQ-007."}],
         "scope": "EXPANDED",
@@ -206,3 +206,15 @@ def test_closure_expanded_scope_preserves_convergence_for_renewed_audit() -> Non
     assert not result.grants_closure_evidence
     assert result.verdict == "PASS"
     assert result.scope is ScopeAssessment.EXPANDED
+
+
+def test_obsolete_verdict_key_is_rejected() -> None:
+    expected = _input()
+    result = parse_review_result(json.dumps({**_identity(expected), "verdict": "PASS", "findings": []}), expected, "reviewer/model")
+    assert result.diagnostic == "Invalid result"
+    assert not result.is_complete
+
+
+def test_strong_prompt_cannot_be_embedded_as_ordinary_closure() -> None:
+    with pytest.raises(ValueError):
+        build_review_prompt(_input(), embedded_closure=True)

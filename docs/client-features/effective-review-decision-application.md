@@ -101,3 +101,5 @@ Repair-delegation, validation and merge stages carry a `review_disposition` fact
 `CORRECTIVE_HANDOFF`, `CORRECTION_WAITING`, `RECONCILIATION_WAIT`,
 `OPERATIONAL_FAILURE`, `REVIEW_VERIFIED` or `MERGE_COMPLETED`. An enqueued repair,
 a refused approval, a COMMENT or a raw PASS is none of the last two.
+
+For a root shared with a historical non-Strong owner, accepted-finding adjudication uses the Strong source aliases and retains the other owner unchanged. The existing reconciliation and verification trace events and `review_disposition` fields continue to report the derived decision; no event schema, processing origin, provider route, or durable record format changes.

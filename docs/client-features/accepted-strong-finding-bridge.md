@@ -64,3 +64,5 @@ contract/policy or a prior reopen epoch requires reconciliation. After Strong
 publication is acknowledged the bridge also runs once (best effort) to retain
 identities and roots; affected PRs are reconstructed idempotently on the next
 ordinary read.
+
+Explicit requirement references retain their qualified `#<issue>/REQ-NNN` identity in accepted gap representations. A root or thread can have independently retained non-Strong owners, including historical imports. Ordinary dispositions resolve against the accepted Strong source aliases: one accepted source is unambiguous, while multiple accepted sources still require reconciliation. The bridge leaves every other owner and its disposition intact. An already accepted exact closure remains authoritative when the root is reobserved.
