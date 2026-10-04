@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from .automation_engine import AutomationEngine
 from .dashboard import init_dashboard
 from .dashboard_adjudication import init_dashboard_adjudication
+from .public_api import init_public_api, public_api_enabled
 from .decomposition_validation_lifecycle import DECOMPOSITION_FINDINGS_MARKER
 from .entity_invalidation import ISSUE_STABILIZATION_SECONDS, CIWebhookDelivery, issue_stabilization_deadline
 from .github_ci_observer import accept_and_fence_ci_delivery
@@ -367,5 +368,7 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
 
     init_dashboard(app, engine, repo_name)
     init_dashboard_adjudication(app, engine, repo_name)
+    if public_api_enabled():
+        init_public_api(app, engine, repo_name)
 
     return app
