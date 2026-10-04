@@ -391,3 +391,38 @@ def test_production_consumer_recovers_with_a_new_executor(tmp_path, monkeypatch,
     assert calls == (["send", "reconcile", "send"] if remote_state == "absent" else ["send", "reconcile"])
     assert cycle.snapshot(42).accepted_strong_round.publication_status == ("PENDING" if remote_state == "unavailable" else PUBLICATION_ACKNOWLEDGED)
     assert "publication uncertain" in reason if remote_state == "unavailable" else "receipt receipt" in reason
+
+
+def test_closure_payload_attribution_is_explicit_and_leaves_legacy_identity_unchanged() -> None:
+    import json
+
+    from auto_coder.pr_review_effects import AcceptedReviewPayload
+
+    base = dict(
+        repository="owner/repo",
+        pr_number=7,
+        open_epoch=0,
+        mode="ORDINARY_CLOSURE",
+        round_id="round",
+        attempt=1,
+        audited_head="a" * 40,
+        target_head="b" * 40,
+        base_sha="c" * 40,
+        contract_identity="m",
+        contract_issue_ids=("#1",),
+        requirements_text="REQ-001: x",
+        policy_identity="p",
+        policy_route="strong",
+        policy_options="",
+        policy_protocol="v1",
+        finding_set_revision=1,
+        reviewer_provenance="strong/model",
+        verdict="CLOSURE",
+        findings=(),
+    )
+    legacy = AcceptedReviewPayload(**base)
+    attributed = AcceptedReviewPayload(**base, ordinary_attempt_id="attempt-9", ordinary_attempt_sequence=9, ordinary_reviewer="ordinary/model")
+
+    assert "ordinary_attempt_id" not in json.loads(legacy.canonical_json())  # a payload that predates attribution keeps its identity
+    assert json.loads(attributed.canonical_json())["ordinary_reviewer"] == "ordinary/model"
+    assert attributed.identity != legacy.identity

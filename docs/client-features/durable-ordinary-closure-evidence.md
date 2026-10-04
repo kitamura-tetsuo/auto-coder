@@ -45,13 +45,24 @@ or when a local acknowledgement is lost) only finishes the outstanding local
 transition and never creates a second closure. `reconcile()` resumes all
 retained sources for a PR. A committed closure is not reopened by a later
 attempt, but `dependent_effects_allowed()` refuses subsequent effects once a
-newer attempt, changed target, newer strong claim/round, or changed finding set
-exists.
+newer ordinary attempt is still running or ended without a clean PASS (a newer
+clean PASS leaves the closed findings closed), or the target changed, a newer
+strong claim/round exists, or the finding set changed. Production consults it
+before sending or reconciling the closure publication and before reusing the
+closure completion as merge authority.
 
 ## Boundaries
 
 No GitHub mutation is performed and merge authority is never granted here: an
 accepted closure exposes `pending_publication` and its producing provenance,
 and merge stays blocked until the cycle's publication acknowledgement and other
-gates complete. Wiring the observer and retention call into PR processing
-belongs to the integration stage.
+gates complete.
+
+## Production integration
+
+`pr_processor` retains and applies the evidence returned by the single ordinary
+validation of a repaired head, supplies the observer (strict head read plus
+freshly resolved base, Requirements and policy), reconciles retained sources
+before any same-head shortcut or reviewer admission, and publishes the closure
+evidence with its real ordinary attempt and reviewer. See
+`independent-strong-audit-and-ordinary-closure.md`.

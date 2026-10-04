@@ -981,7 +981,7 @@ def test_pending_publication_reentry_never_invokes_a_reviewer(tmp_path, monkeypa
     strong = MagicMock(side_effect=AssertionError("pending publication must not invoke strong audit"))
     closure = MagicMock(side_effect=AssertionError("pending publication must not invoke closure"))
     monkeypatch.setattr("auto_coder.pr_processor._execute_pending_strong_audit", strong)
-    monkeypatch.setattr("auto_coder.pr_processor._execute_pending_ordinary_closure", closure)
+    monkeypatch.setattr("auto_coder.pr_processor.execute_review", closure)
     publication = MagicMock(return_value=(False, "publication uncertain: lookup unavailable"))
     monkeypatch.setattr("auto_coder.pr_processor._consume_pending_two_tier_publication", publication)
     collector = get_trace_collector()

@@ -61,12 +61,19 @@ REVIEWER_LOGIN = "auto-coder-reviewer[bot]"
 
 @dataclass
 class ClosureScript:
-    """The independent ordinary-closure producer's controlled answer for the one accepted finding."""
+    """The one ordinary reviewer's controlled closure assessment for the one accepted finding.
+
+    ``calls`` holds the closure context the production path supplied to each
+    ordinary invocation; a separate closure-only reviewer is never reachable.
+    """
 
     status: str = "FIXED"  # FIXED | INVALID | STILL_VALID
     finding_id: str = "finding-a"
-    available: bool = True
+    observable: bool = True  # False: the authoritative target cannot be read when the evidence is applied
+    scope: str = "BOUNDED"  # BOUNDED | EXPANDED | UNKNOWN
+    omit_assessment: bool = False  # the reviewer returns no closure assessment at all
     calls: list[Any] = field(default_factory=list)
+    closure_only_calls: list[Any] = field(default_factory=list)
     on_review: Any = None
 
 
@@ -140,9 +147,13 @@ class Flow:
     quota_hold: bool = False
     post_ci: Optional[GitHubActionsStatusResult] = None
     extra_threads: tuple[ReviewThread, ...] = ()
+    resolve_on_approve: bool = False  # GitHub marks the accepted thread resolved once the PASS review is posted
+    live_head: str = ""  # the live PR head when it differs from the head being processed
+    current_base: str = ""  # the live PR base; defaults to the environment base and may advance while a reviewer runs
 
     def __post_init__(self) -> None:
         self.head = self.head or self.env.head
+        self.current_base = self.current_base or self.env.base
         self.router = RouterClient(self.head)
 
     # -- arrangement ---------------------------------------------------
@@ -158,7 +169,7 @@ class Flow:
         self.gate_inputs = inputs
 
     def threads(self) -> tuple[ReviewThread, ...]:
-        if not self.root_body:
+        if not self.root_body or (self.resolve_on_approve and self.router is not None and any(review["event"] == "APPROVE" for review in self.reviews)):
             return self.extra_threads
         return self.extra_threads + (ReviewThread(id=self.thread_id, comments=[ReviewThreadComment(database_id=self.root_id, author_login=REVIEWER_LOGIN, body=self.root_body)]),)
 
@@ -175,7 +186,9 @@ class Flow:
         client.get_pr_review_threads_strict.side_effect = lambda *_a, **_k: list(self.threads())
         client.get_pr_comments.return_value = []
         client.get_pr_reviews_strict.return_value = []
-        client.get_pull_request_head_sha_strict.return_value = self.head
+        client.get_pull_request_head_sha_strict.side_effect = lambda *_a, **_k: self.live_head or self.head
+        client.get_pull_request.side_effect = lambda *_a, **_k: {"head": {"sha": self.live_head or self.head}, "base": {"sha": self.current_base}}
+        client.get_pull_request_metadata_strict.side_effect = lambda *_a, **_k: {**self.pr_data(), "head": {"ref": "feature-branch", "sha": self.live_head or self.head}, "base": {"ref": "main", "sha": self.current_base}, "state": "open"}
 
         def current_state(*_a: object, **_k: object) -> ClaimedReviewThreadGateState:
             if thread_state is not None:
@@ -189,9 +202,26 @@ class Flow:
         manager._last_continue_session_resumed = True
         responses = self.model_responses
 
+        supplied: list[Any] = []
+
         def next_response(*_args: object, **_kwargs: object) -> str:
             self.model_calls += 1
-            return responses.pop(0) if len(responses) > 1 else responses[0]
+            raw = responses.pop(0) if len(responses) > 1 else responses[0]
+            if closure is None or not supplied:
+                return raw
+            if closure.on_review is not None:
+                closure.on_review()
+            payload = json.loads(raw)
+            payload["closure_assessment"] = {
+                "verdict": "FINDINGS" if closure.status == "STILL_VALID" else "PASS",
+                "findings": [],
+                "dispositions": [{"finding_id": closure.finding_id, "status": "OPEN" if closure.status == "STILL_VALID" else closure.status, "evidence": f"Independent exact-finding {closure.status} evidence at {self.head[:8]}"}],
+                "scope": closure.scope,
+                "scope_evidence": "Only the repair and its regression changed.",
+            }
+            if closure.omit_assessment:
+                del payload["closure_assessment"]
+            return json.dumps(payload)
 
         manager.continue_session.side_effect = next_response
 
@@ -204,6 +234,9 @@ class Flow:
             ):
                 kwargs.pop("claimed_review_threads_section", None)
                 kwargs.pop("execution_cwd", None)  # the controlled worktree is not a git checkout
+                if closure is not None and kwargs.get("closure_input") is not None:
+                    closure.calls.append(kwargs["closure_input"])
+                    supplied.append(kwargs["closure_input"])
                 return run_adversarial_validation(*args, backend_manager=manager, session_registry=env.registry, claimed_review_threads_section="", **kwargs)
 
         key = env.tmp / "reviewer.pem"
@@ -299,28 +332,17 @@ class Flow:
                     verdict="ERROR",
                     diagnostic="strong reviewer is unavailable",
                 )
-            script.calls.append(review_input)
-            if script.on_review is not None:
-                script.on_review()
-            assert review_input.mode is ReviewMode.ORDINARY_CLOSURE and review_input.head_sha == head
-            common: dict[str, Any] = dict(
-                mode=ReviewMode.ORDINARY_CLOSURE,
-                round_id=review_input.round_id,
-                attempt_id=review_input.attempt_id,
-                head_sha=head,
-                base_sha=env.base,
-                contract_identity=CONTRACT.identity,
-                policy_identity=POLICY.identity,
-                finding_set_revision=review_input.finding_set_revision,
-                reviewer_provenance="ordinary/model",
-            )
-            if script.status == "STILL_VALID":
-                return ReviewExecutionResult(verdict="FINDINGS", **common)
-            return ReviewExecutionResult(verdict="PASS", dispositions=(FindingDisposition(script.finding_id, script.status, f"Independent exact-finding {script.status} evidence at {head[:8]}"),), scope=ScopeAssessment.BOUNDED, scope_evidence="Only the repair and its regression changed.", **common)
+            script.closure_only_calls.append(review_input)  # a closure-only reviewer must never be reachable
+            raise AssertionError("a separate closure-only reviewer invocation is forbidden")
+
+        def observe(_client: object, _repo: object, pr_data: Any, *_a: object, **_k: object) -> TwoTierGateInputs:
+            if not script.observable:
+                raise ConnectionError("authoritative target is unavailable")
+            return TwoTierGateInputs(self.gate_inputs.gate, CONTRACT, POLICY, pr_data["head"]["sha"], pr_data["base"]["sha"])
 
         return [
-            patch("auto_coder.pr_processor._two_tier_gate_inputs", side_effect=lambda *_a, **_k: TwoTierGateInputs(self.gate_inputs.gate, CONTRACT, POLICY, head, env.base)),
-            patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=AdversarialValidationAvailability(backend_manager=MagicMock() if script.available else None)),
+            patch("auto_coder.pr_processor._two_tier_gate_inputs", side_effect=observe),
+            patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=AdversarialValidationAvailability(backend_manager=MagicMock())),
             patch("auto_coder.pr_processor.CommandExecutor.run_command", side_effect=lambda *_a, **_k: CommandResult(True, "cumulative repair\n", "", 0)),
             patch("auto_coder.pr_processor.execute_review", side_effect=execute),
             patch("auto_coder.pr_processor.load_reviewer_app_config", return_value=ReviewerAppConfig("4765828", "client", key)),
@@ -943,7 +965,7 @@ def test_closure_proposal_superseded_by_a_head_change_during_external_review_is_
     flow.saved_status = None
     flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py asserts the invariant")]
     script = ClosureScript(status="FIXED")
-    script.on_review = lambda: setattr(flow.client.get_pull_request_head_sha_strict, "return_value", h3)  # the PR advances while the reviewer runs
+    script.on_review = lambda: setattr(flow, "live_head", h3)  # the PR advances while the reviewer runs
 
     flow.run(closure=script)
 
@@ -953,7 +975,7 @@ def test_closure_proposal_superseded_by_a_head_change_during_external_review_is_
     assert h2 != h3
 
 
-def test_transient_closure_reviewer_outage_stays_resumable_at_the_same_head(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_transient_target_outage_retains_the_assessment_and_resumes_without_a_model_call(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     flow = make_flow(flow_env, monkeypatch, 9303, "cloud")
     flow.accept_finding()
     flow.model_responses = [ordinary_response(flow.thread_id)]
@@ -963,20 +985,25 @@ def test_transient_closure_reviewer_outage_stays_resumable_at_the_same_head(flow
     flow.provider.completed_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     flow.saved_status = "NEEDS_TESTS"
     flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py asserts the invariant")]
-    outage = ClosureScript(status="FIXED", available=False)
+    calls_before = flow.model_calls
+    outage = ClosureScript(status="FIXED")
+    outage.on_review = lambda: setattr(outage, "observable", False)  # the authoritative target becomes unreadable after the review returns
     flow.run(closure=outage)
-    assert outage.calls == [] and flow_env.cycle.snapshot(flow.pr).accepted_closure is None
-    retained = flow.retained()
-    assert retained is not None and retained.closure_attempts == []  # the unavailable reviewer did not spend the attempt
+    assert len(outage.calls) == 1 and flow.model_calls == calls_before + 1
+    assert flow_env.cycle.snapshot(flow.pr).accepted_closure is None  # retained, not applied: an unavailable read never certifies
+    assert [item.finding_id for item in flow_env.cycle.snapshot(flow.pr).open_findings] == ["finding-a"]
 
-    flow.auto_status = True  # GitHub now holds the BLOCKED/CLOSURE_ACCEPTANCE review for this head
-    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py asserts the invariant")]
+    flow.auto_status = True  # GitHub now holds the saved review for this head
     restored = ClosureScript(status="FIXED")
+    calls_before = flow.model_calls
     actions = flow.run(closure=restored)  # normal processing, same head, no commit, no store reset
 
-    assert len(restored.calls) == 1, actions
-    events = [review["event"] for review in flow.reviews]
-    assert events[-1] == "APPROVE" and "APPROVE" not in events[:-1]
+    # The retained assessment is applied from the durable source: no closure-only
+    # reviewer runs and the same evidence is never re-requested with closure context.
+    assert restored.calls == [] and restored.closure_only_calls == [], actions
+    snapshot = flow_env.cycle.snapshot(flow.pr)
+    assert snapshot.accepted_closure is not None and snapshot.open_findings == ()
+    assert snapshot.accepted_closure.head_sha == flow.head
 
 
 def test_jules_origin_completion_without_a_commit_reaches_reassessment_through_the_task_record(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:

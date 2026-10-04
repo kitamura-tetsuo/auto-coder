@@ -62,9 +62,20 @@ class AcceptedReviewPayload:
     verdict: str
     findings: tuple[Finding, ...]
     bounded_evidence: str = ""
+    # Closure publications derived from a retained ordinary attempt name that
+    # attempt and its actual reviewer; legacy payloads leave these empty.
+    ordinary_attempt_id: str = ""
+    ordinary_attempt_sequence: int = 0
+    ordinary_reviewer: str = ""
 
     def canonical_json(self) -> str:
-        return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        raw = asdict(self)
+        # Empty attribution is omitted so the identity of a payload that predates
+        # it (and of every strong payload) is unchanged.
+        for name in ("ordinary_attempt_id", "ordinary_attempt_sequence", "ordinary_reviewer"):
+            if not raw[name]:
+                del raw[name]
+        return json.dumps(raw, sort_keys=True, separators=(",", ":"))
 
     @property
     def identity(self) -> str:
@@ -112,6 +123,9 @@ class AcceptedReviewPayload:
         record: StrongAuditRound,
         closure: ClosureCertification,
         findings: tuple[Finding, ...],
+        ordinary_attempt_id: str = "",
+        ordinary_attempt_sequence: int = 0,
+        ordinary_reviewer: str = "",
     ) -> "AcceptedReviewPayload":
         return cls(
             repository,
@@ -135,6 +149,9 @@ class AcceptedReviewPayload:
             "CLOSURE",
             findings,
             closure.bounded_evidence,
+            ordinary_attempt_id,
+            ordinary_attempt_sequence,
+            ordinary_reviewer,
         )
 
 

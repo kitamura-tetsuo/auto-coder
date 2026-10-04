@@ -178,7 +178,7 @@ def test_duplicate_closure_identity_is_non_authorizing(identity: str, first: obj
     [
         replace(_closure_input(), repository=""),
         replace(_closure_input(), pr_number=0),
-        replace(_closure_input(), open_epoch=0),
+        replace(_closure_input(), open_epoch=-1),
         replace(_closure_input(), attempt_sequence=0),
         replace(_closure_input(), audited_head_sha=""),
         replace(_closure_input(), repository_evidence=""),
@@ -253,3 +253,11 @@ def test_missing_or_inconclusive_assessment_never_grants_closure_evidence() -> N
     assert inconclusive.closure_assessment is not None
     assert inconclusive.closure_assessment.is_complete
     assert not inconclusive.closure_assessment.grants_closure_evidence
+
+
+def test_first_open_epoch_zero_is_valid_closure_context() -> None:
+    """The review cycle's first open epoch is 0; it must not make production closure context unavailable."""
+    result = parse_adversarial_validation_response(json.dumps(_ordinary_payload()), closure_input=replace(_closure_input(), open_epoch=0))
+
+    assert result.closure_assessment_diagnostic == ""
+    assert result.closure_assessment is not None and result.closure_assessment.open_epoch == 0
