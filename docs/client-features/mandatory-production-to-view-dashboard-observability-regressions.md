@@ -1,5 +1,14 @@
 # Mandatory production-to-view dashboard observability regressions
 
+Local PR conflict repair uses the existing `pr.mergeability-remediation` stage:
+confirmed repair publication is `COMPLETED` with `result=success`, and failed
+repair is `FAILED` with `result=failed`. A staged index or leftover conflict
+markers never justify completion or a degrading-merge verdict. The generic
+dashboard detail projection and structured schema remain unchanged.
+`tests/test_cloud_conflict_delegation.py::test_local_conflict_repair_emits_confirmed_remediation_outcome`
+checks both production outcomes; the real Git/private-workspace checks and run
+command are recorded in `docs/dashboard-observability.md`.
+
 Local Issue PR recovery uses the existing commit/push and PR-publication stages.
 Successful publication of existing commits is `COMPLETED`; an empty base diff
 is `SKIPPED` for commit/push and `BLOCKED` for PR publication, with a reason in

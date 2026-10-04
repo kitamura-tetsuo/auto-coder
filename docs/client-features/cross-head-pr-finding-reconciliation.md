@@ -31,10 +31,17 @@ Blocker Ledger:
   least two shared content tokens covering half of each description, or identical
   nonempty token sets, separately for behavior and outcome. It is an advisory
   heuristic, not proof of semantic equivalence.
-- **Non-Authorizing Ambiguity:** When reconciliation encounters ambiguous
-  association across multiple active blockers or candidate roots, the ambiguity is
-  treated as non-authorizing: it blocks speculative publications, resolves no
-  blockers, and admits no spurious roots.
+- **Ambiguous Scope Splitting:** When an observation cannot select exactly one
+  existing owner, the controller retains it as an independent blocker instead of
+  stopping review publication. Existing blockers keep their scopes, aliases, and
+  dispositions; similarity alone never merges or resolves them. A historical
+  correction retains its authenticated root as an alias of the split owner, while
+  an unrooted current finding receives its own publication root. A controller-owned
+  exact-scope fingerprint (category, requirements, boundary, incorrect behavior,
+  and required outcome) reuses the split across attempts, moved diff lines, and
+  restarts. Changing the correction scope can create a further independent split.
+  Unknown or contradictory explicit identities and unverified publication receipts
+  continue to block publication.
 
 ## Historical Review Root Bootstrapping
 
@@ -52,6 +59,16 @@ When bootstrapping from existing GitHub review threads on a PR:
 - **Unverified Author Comments Ignored:** Comments by non-bot or unverified authors
   (such as human contributor comments claiming "fixed") grant no authority, create
   no aliases, and do not resolve active blockers.
+
+Historical two-tier finding roots use their `Affected boundary`, `Actual`, and
+`Expected` fields as the correction scope. Bold fields support inline values
+(with the colon inside or after the bold label) and multiline values. Values stop
+at the next field or section without discarding inline emphasis. Publication HTML
+markers are metadata, never fallback defect descriptions. Distinct roots with
+overlapping requirement references therefore retain their separate canonical
+owners when replayed, rather than being grouped by a shared publication marker.
+Multiple retained owners that cannot be distinguished by correction scope are
+handled by the split lifecycle above, preserving every original obligation.
 
 ## Justified Category Transitions
 

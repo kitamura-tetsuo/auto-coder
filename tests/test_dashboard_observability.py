@@ -52,6 +52,68 @@ def _assert_required_stage_visible(diagram: str, display_text: str) -> None:
     assert display_text in diagram, f"required production stage {display_text!r} did not reach the mounted detail view"
 
 
+@patch("auto_coder.dashboard.ui")
+def test_ambiguous_review_split_reaches_mounted_detail(mock_ui, tmp_path):
+    from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult
+    from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerDisposition, CanonicalPRBlockerLedger, CorrectionScope
+    from auto_coder.pr_finding_reconciliation import HistoricalRootParseResult, reconcile_pr_findings_before_publication
+
+    ledger = CanonicalPRBlockerLedger(db_path=tmp_path / "blockers.db")
+    snapshot = ledger.initialize_namespace("https://api.github.com", "owner/repo", 2417)
+    for index in range(2):
+        _, snapshot = ledger.admit_blocker(
+            "https://api.github.com",
+            "owner/repo",
+            2417,
+            operation_id=f"owner-{index}",
+            expected_ledger_revision=snapshot.ledger_revision,
+            payload=BlockerAdmissionPayload(
+                category="IMPLEMENTATION",
+                authoritative_boundary="service.py",
+                incorrect_behavior_or_missing_invariant="Missing token expiration validation",
+                required_correction_outcome="Reject expired tokens before dispatch",
+                accepted_scope=CorrectionScope(description=f"Retained concern {index}"),
+            ),
+        )
+    collector = get_trace_collector()
+    with collector.start_execution("owner/repo", "pr", 2417, origin="worker") as execution:
+        result = reconcile_pr_findings_before_publication(
+            ledger,
+            "https://api.github.com",
+            "owner/repo",
+            2417,
+            0,
+            "head",
+            "base",
+            AdversarialValidationResult(
+                result="NEEDS_FIX",
+                findings=[
+                    AdversarialValidationFinding(
+                        anchor_path="service.py",
+                        actual_behavior="Missing token expiration validation",
+                        required_behavior="Reject expired tokens before dispatch",
+                    )
+                ],
+            ),
+            HistoricalRootParseResult(),
+        )
+        execution.finish(Outcome.BLOCKED)
+    assert result.is_ambiguous is False
+    assert len(result.unrooted_blocker_ids) == 1
+    assert result.snapshot is not None
+    assert len(result.snapshot.blockers) == 3
+    assert all(blocker.disposition == BlockerDisposition.OPEN for blocker in result.snapshot.blockers)
+    events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=2417).events if event.kind == EventKind.STAGE_RESULT.value]
+    assert len(events) == 1
+    assert events[0].outcome == Outcome.COMPLETED.value
+    assert events[0].facts["phase"] == "reconciliation-split"
+    assert result.unrooted_blocker_ids[0] in events[0].facts["reason"]
+    diagram = _mounted_detail(mock_ui, "pr", 2417)
+    _assert_required_stage_visible(diagram, "pr#35;2417 review finding split")
+    assert "completed" in diagram
+    assert "blocked" in diagram
+
+
 @pytest.mark.parametrize("origin", ["worker", "capacity-refill-intake", "explicit-single-target", "container-child"])
 @patch("auto_coder.dashboard.ui")
 def test_owner_lock_timeout_defers_and_retries_with_mounted_evidence(mock_ui, origin, tmp_path, monkeypatch):

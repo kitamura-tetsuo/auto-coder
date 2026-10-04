@@ -16,6 +16,7 @@ from .entity_invalidation import ISSUE_STABILIZATION_SECONDS, CIWebhookDelivery,
 from .github_ci_observer import accept_and_fence_ci_delivery
 from .label_manager import LEGACY_AUTO_CODER_LABEL
 from .logger_config import get_logger
+from .public_api import init_public_api, public_api_enabled
 from .specification_validation_lifecycle import FINDINGS_MARKER_PREFIX
 from .util.gh_cache import evict_github_ci_cache, evict_github_entity_cache
 
@@ -367,5 +368,7 @@ def create_app(engine: AutomationEngine, repo_name: str, github_secret: Optional
 
     init_dashboard(app, engine, repo_name)
     init_dashboard_adjudication(app, engine, repo_name)
+    if public_api_enabled():
+        init_public_api(app, engine, repo_name)
 
     return app

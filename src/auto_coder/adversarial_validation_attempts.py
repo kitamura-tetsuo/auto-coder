@@ -21,6 +21,17 @@ class AdversarialValidationAttempt:
     sequence: int = 0
 
 
+@dataclass(frozen=True)
+class RegisteredAttempt:
+    """Read-only view of one durably registered attempt."""
+
+    attempt_id: str = ""
+    sequence: int = 0
+    pr_number: int = 0
+    head_sha: str = ""
+    status: str = ""
+
+
 class AdversarialValidationAttemptRepository:
     """Allocate attempts atomically and update only the identified attempt."""
 
@@ -107,6 +118,16 @@ class AdversarialValidationAttemptRepository:
                     self._write(state)
                     return
             raise RuntimeError("Adversarial-validation attempt identity is unknown")
+
+    def get(self, attempt_id: str) -> Optional[RegisteredAttempt]:
+        """Return the registered attempt with this identity, if any."""
+        with self._locked():
+            attempts = self._read()["attempts"]
+        assert isinstance(attempts, list)
+        for item in attempts:
+            if isinstance(item, dict) and item.get("id") == attempt_id:
+                return RegisteredAttempt(attempt_id, int(item["sequence"]), int(item["pr_number"]), str(item["head_sha"]), str(item.get("status", "")))
+        return None
 
     def latest_published_sequence(self, pr_number: int, head_sha: str) -> int:
         """Return the newest start-ordered attempt with a durable verdict."""

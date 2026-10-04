@@ -1,5 +1,34 @@
 # Dashboard observability verification
 
+Ambiguous review scopes now retain an independent split owner rather than failing
+publication before repair. After durable admission, production emits the existing
+`pr.adversarial-validation` stage with `phase=reconciliation-split`,
+`outcome=completed`, and `reason` identifying the split and prior owners. This
+completion describes the ledger operation only: the existing review-audit effect
+still requires authenticated native publication confirmation, and later verdict,
+repair, and merge stages retain their meanings. No outcome enum or event-schema
+change is needed. Run `bash scripts/test.sh tests/test_pr_finding_reconciliation.py
+tests/test_dashboard_observability.py tests/test_pr_adversarial_review_audit.py`.
+`test_historical_multi_owner_root_splits_and_replays` drives production splitting,
+checks the execution-scoped event, preserves all original owners, and verifies
+restart-stable routing with root 4176063590. The ambiguous-owner cases of
+`test_publication_confirms_one_root_per_blocker` exercise actual publication intent
+confirmation after a fresh split. Dashboard review history documents that the
+split event and confirmed publication effect remain separate.
+`test_ambiguous_review_split_reaches_mounted_detail` verifies that the production
+split event is visible in the mounted detail view while the execution remains
+blocked for unresolved defects; splitting alone never renders a merge success.
+
+Local conflict repair retains the existing remediation stage and schema.
+`pr.mergeability-remediation` reports `COMPLETED` with `result=success` only
+after the local resolver confirms its push; a failed repair (including retained
+markers) reports `FAILED` with `result=failed`, rather than an invented degrading
+merge verdict. No new dashboard projection or provider-handoff outcome is added.
+Run `bash scripts/test.sh tests/test_local_conflict_workspace.py
+tests/test_conflict_resolver.py tests/test_cloud_conflict_delegation.py`.
+`test_local_conflict_repair_emits_confirmed_remediation_outcome` drives production
+remediation for both outcomes and verifies the execution-scoped stage and facts.
+
 Per-item runtime owner-lock acquisition timeouts now return retryable `DEFERRED`
 results through the unified dispatch boundary. They emit
 `issue.implementation-admission` or `pr.implementation-admission` with the failure
@@ -26,6 +55,12 @@ tests/test_dashboard_reviews.py` to exercise root confirmation, retained
 audit effects, production-stage consumption, and the existing history projection.
 `test_publication_confirms_one_root_per_blocker` verifies both distinct-defect
 publication and equivalent-observation consolidation without a pending intent.
+`tests/test_pr_finding_reconciliation.py::test_two_tier_historical_roots_preserve_distinct_retained_owners`
+replays the PR #2417 two-tier comment format through the real ledger and verifies
+that distinct scopes do not create a false publication ambiguity. Historical
+scope parsing changes no trace schema: contradictory explicit identities reach the
+existing `pr.adversarial-validation` publication failure, and confirmed publication
+continues through the existing audit effect and dashboard history projection.
 `tests/test_github_app_reviewer.py::test_recovers_retained_review_with_missing_list_anchors`
 drives the same durable confirmation boundary when GitHub omits list anchors:
 an authenticated individual receipt confirms the original roots; mismatched
@@ -1726,3 +1761,10 @@ The existing local repair tests retain exact-root authentication, admission, and
 causal settlement coverage. Run `bash scripts/test.sh
 tests/test_local_review_validation.py tests/test_local_review_repair.py
 tests/test_adversarial_validation_pr_flow.py tests/test_dashboard_observability.py`.
+
+## Public diagnostic API (read-only consumer)
+
+`/api/status` and `/api/logs` (see `docs/client-features/public-diagnostic-api.md`)
+are an additional read-only consumer of `TraceCollector` snapshots, engine
+worker/queue state and the slot snapshot. They add no trace emissions, origins,
+outcomes or event-schema fields; the runnable regression is `tests/test_public_api.py`.
