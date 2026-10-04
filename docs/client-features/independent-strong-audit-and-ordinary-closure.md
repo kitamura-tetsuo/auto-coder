@@ -73,13 +73,51 @@ under `burst` and below-reserve quota under `surplus` remain exhausted. Unknown
 quota and non-quota construction failures retain their existing unavailable,
 non-exhausted behavior, and a strong route never borrows an ordinary fallback.
 
-When accepted strong findings survive into a later ordinary-pass head,
-production processing instead runs `ORDINARY_CLOSURE` through the ordinary PR
-route. The invocation receives the retained finding payloads and revision, the
-fresh Requirements snapshot and repository paths, and the cumulative diff from
-the strong-audited head to the current head. Acceptance uses the pre-invocation
-durable transition version as a fence. Bounded convergence records a pending
+When accepted strong findings survive into a later head, production processing
+does not run a separate closure-only reviewer. Instead, before the one ordinary
+validation of that head is invoked, `_capture_ordinary_closure_input()` captures
+the authoritative closure context from the durable review cycle (never from the
+GitHub thread or reviewer-session view): repository, PR, open epoch, the
+registered ordinary attempt ID and sequence, H2/B/M/P, the accepted strong
+round and audited H0, the complete outstanding finding bundle and its revision,
+and the cumulative H0-to-H2 diff (an empty diff is reported as observed
+evidence, so a same-head correction or rebuttal needs no artificial new head).
+That context rides with the same ordinary invocation that performs the normal
+Requirements/code/test review, which returns the ordinary verdict and a
+`closure_assessment` together. The retained semantic result is the ordinary
+review with the accepted findings under closure settled, so independent
+blockers still count and closure is reachable before any effective PASS.
+
+`_apply_ordinary_closure_evidence()` then durably retains that result through
+`OrdinaryClosureEvidence` (retention precedes and survives any observation
+failure) and applies it to the owning cycle against a freshly observed H/B/M/P,
+the attempt fence, and the strict head read. No model is called after the
+ordinary result. A missing or malformed assessment, an `OPEN`/omitted/
+`INCONCLUSIVE` disposition, or an independent ordinary blocker certifies nothing
+and is reported as unavailable or retained; it never triggers an immediate
+closure-only fallback. A later normally admitted retry for genuinely incomplete
+validation uses the same combined path, and a complete assessment spends the
+single closure-aware review of its corrective generation (the existing
+`closure_attempts` record), so repeated scheduling cannot repeat it.
+
+Before any same-head cache or ordinary-PASS shortcut and before a reviewer is
+admitted (`_resume_closure_before_admission()`), retained sources are
+reconciled without a model: outstanding certification, bookkeeping and
+publication resume; an accepted retained semantic PASS at the current head is
+reused rather than re-reviewed; a legacy ordinary PASS with closure still
+outstanding and no retained assessment triggers one combined closure-aware
+revalidation; and an unreadable target or store defers with the evidence
+retained (a normal retry resumes it; `--force` may still start a fresh attempt,
+which carries the same closure context). Bounded convergence records a pending
 closure certification; expanded or semantically unknown convergence records the
-non-closing assessment and requires a renewed strong round. Trace events use the
-`pr.ordinary-closure` stage and expose the head/base, backend, contract and policy
-identities, finding revision and IDs, phase, and acceptance/defer reason.
+non-closing assessment and requires a renewed strong round.
+
+The closure publication is derived deterministically from the accepted ordinary
+source and names its real ordinary attempt, evaluated head and actual reviewer
+and states that it consumed an existing attempt without an additional model
+execution. An unconfirmed publication resumes through the existing effect owner
+and its acknowledgement; semantic certification alone is never merge authority.
+Trace events use the `pr.ordinary-closure` stage and expose the head, backend,
+`evidence_status`, `source_attempt_id`, `source_attempt_sequence`,
+`additional_model_execution` (always `false`), `renewed_strong_required`, the
+publication result, and the acceptance/defer reason.

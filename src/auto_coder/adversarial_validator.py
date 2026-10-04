@@ -102,11 +102,12 @@ def _closure_input_unavailable_reason(closure_input: ReviewExecutionInput) -> st
         missing.append("issue_identities")
     for name, value in {
         "pr_number": closure_input.pr_number,
-        "open_epoch": closure_input.open_epoch,
         "attempt_sequence": closure_input.attempt_sequence,
     }.items():
         if value <= 0:
             missing.append(name)
+    if closure_input.open_epoch < 0:  # a PR's first open epoch is 0 in the owning review cycle
+        missing.append("open_epoch")
     if not closure_input.findings:
         missing.append("accepted_finding_bundle")
     return ", ".join(missing)

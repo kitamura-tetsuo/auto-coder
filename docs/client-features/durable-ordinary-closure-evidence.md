@@ -53,5 +53,13 @@ exists.
 No GitHub mutation is performed and merge authority is never granted here: an
 accepted closure exposes `pending_publication` and its producing provenance,
 and merge stays blocked until the cycle's publication acknowledgement and other
-gates complete. Wiring the observer and retention call into PR processing
-belongs to the integration stage.
+gates complete.
+
+## Production integration
+
+`pr_processor` retains and applies the evidence returned by the single ordinary
+validation of a repaired head, supplies the observer (strict head read plus
+freshly resolved base, Requirements and policy), reconciles retained sources
+before any same-head shortcut or reviewer admission, and publishes the closure
+evidence with its real ordinary attempt and reviewer. See
+`independent-strong-audit-and-ordinary-closure.md`.
