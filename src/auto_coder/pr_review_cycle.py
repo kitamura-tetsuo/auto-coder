@@ -182,6 +182,7 @@ class ClosureCertification:
     accepted_at: float = 0.0
     publication_status: str = PUBLICATION_PENDING
     closure_id: str = ""
+    source_identity: str = ""
 
 
 @dataclass(frozen=True)
@@ -249,6 +250,7 @@ class PrReviewCycleSnapshot:
     pending_effect: str
     requires_new_strong_round: bool
     strong_rounds: Tuple[StrongAuditRound, ...] = field(default_factory=tuple)
+    closures: Tuple[ClosureCertification, ...] = field(default_factory=tuple)
 
 
 class PrReviewCycleRepository:
@@ -417,6 +419,7 @@ class PrReviewCycleRepository:
             accepted_at=float(raw.get("accepted_at", 0.0)),
             publication_status=str(raw.get("publication_status", PUBLICATION_PENDING)),
             closure_id=str(raw.get("closure_id", "")),
+            source_identity=str(raw.get("source_identity", "")),
         )
 
     def _completion_from_raw(self, raw: Optional[dict]) -> Optional[CompletionRecord]:
@@ -517,6 +520,7 @@ class PrReviewCycleRepository:
             pending_effect=pending_effect,
             requires_new_strong_round=requires_new_strong_round,
             strong_rounds=tuple(all_rounds),
+            closures=tuple(self._closure_from_raw(raw) for raw in raw_pr.get("closures", []) or [] if isinstance(raw, dict)),
         )
 
     @staticmethod
@@ -967,6 +971,8 @@ class PrReviewCycleRepository:
         bounded_evidence: str,
         new_findings: Optional[List[Finding]] = None,
         expected_version: Optional[int] = None,
+        source_identity: str = "",
+        expected_open_epoch: Optional[int] = None,
     ) -> PrReviewCycleSnapshot:
         """Certify an ordinary-closure result for repair head H2 (REQ-005/REQ-006).
 
@@ -978,6 +984,12 @@ class PrReviewCycleRepository:
         repair is BOUNDED. `new_findings` discovered during closure join the
         tracked obligations rather than being suppressed; if any remain OPEN
         after applying dispositions, the cycle does not complete.
+
+        A non-empty ``source_identity`` names the retained evidence that
+        produced this certification. Replaying a source that the cycle already
+        committed returns the current snapshot unchanged, so recovery after an
+        interrupted caller can never create a second closure identity.
+        ``expected_open_epoch`` fences the certification to one PR opening.
         """
         self._validate_identity(provenance, contract)
         self._validate_policy(policy)
@@ -990,7 +1002,11 @@ class PrReviewCycleRepository:
             pr_state = prs.get(self._pr_key(pr_number))
             if not isinstance(pr_state, dict):
                 raise NotApplicableError("No review-cycle state exists for this PR")
+            if source_identity and any(isinstance(raw, dict) and raw.get("source_identity") == source_identity for raw in pr_state.get("closures", []) or []):
+                return self._snapshot_from_raw(pr_state)
             self._check_version(pr_state, expected_version)
+            if expected_open_epoch is not None and int(pr_state.get("open_epoch", 0)) != expected_open_epoch:
+                raise NotApplicableError("The PR open epoch changed since the closure evidence was produced")
             if pr_state.get("closed"):
                 raise NotApplicableError("Cannot certify closure for a closed PR")
             if pr_state.get("requires_new_strong_round"):
@@ -1095,6 +1111,7 @@ class PrReviewCycleRepository:
                         "bounded": False,
                         "bounded_evidence": bounded_evidence,
                         "accepted_at": time.time(),
+                        "source_identity": source_identity,
                     }
                 )
                 pr_state["requires_new_strong_round"] = True
@@ -1129,6 +1146,7 @@ class PrReviewCycleRepository:
                     "accepted_at": closure.accepted_at,
                     "publication_status": closure.publication_status,
                     "closure_id": closure.closure_id,
+                    "source_identity": source_identity,
                 }
             )
             if not outstanding:
