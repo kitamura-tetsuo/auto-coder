@@ -1725,3 +1725,10 @@ The existing local repair tests retain exact-root authentication, admission, and
 causal settlement coverage. Run `bash scripts/test.sh
 tests/test_local_review_validation.py tests/test_local_review_repair.py
 tests/test_adversarial_validation_pr_flow.py tests/test_dashboard_observability.py`.
+
+## Public diagnostic API (read-only consumer)
+
+`/api/status` and `/api/logs` (see `docs/client-features/public-diagnostic-api.md`)
+are an additional read-only consumer of `TraceCollector` snapshots, engine
+worker/queue state and the slot snapshot. They add no trace emissions, origins,
+outcomes or event-schema fields; the runnable regression is `tests/test_public_api.py`.
