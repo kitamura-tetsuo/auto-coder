@@ -10231,7 +10231,8 @@ def _fix_pr_issues_with_testing(
                         backend_manager=current_backend_manager,
                     )
                 actions.extend(local_fix_actions)
-                if not llm_response:
+                if not llm_response and not math.isfinite(float(config.MAX_FIX_ATTEMPTS)):
+                    # An unbounded budget must not spin on a follow-up that produces no correction.
                     actions.append(f"No local correction was produced for {failing[0].target}; stopping local repair")
                     break
                 attempt_history.append({"attempt_number": follow_ups, "llm_output": llm_response, "test_result": failing[0].raw})
