@@ -577,6 +577,14 @@ def execute_durable_thread_closures(
                 errors.append(f"Stale ledger revision for {blocker_id}")
                 continue
 
+            existing = current_snapshot.get_blocker(blocker_id)
+            if existing is not None and existing.disposition == BlockerDisposition.AUTHORIZED_INVALIDATION:
+                # The accepted lifecycle already closed this finding as INVALID; the thread
+                # can complete without rewriting that authority as a verified correction.
+                persisted_blockers.append(blocker_id)
+                persisted_evaluations.append(eval_res)
+                continue
+
             try:
                 current_snapshot = ledger.record_transition(
                     api_origin=norm_origin,

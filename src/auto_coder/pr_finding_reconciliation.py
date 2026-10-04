@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Optional, Sequence
 
 if TYPE_CHECKING:
     from .github_app_reviewer import ReviewerAppIdentity
+from .accepted_finding_bridge import SOURCE_ALIAS_TYPE
 from .adversarial_validator import (
     AdversarialValidationFinding,
     AdversarialValidationResult,
@@ -614,10 +615,18 @@ def reconcile_pr_findings_before_publication(
                 if matched_blocker_id:
                     break
 
+        if not matched_blocker_id and cand.finding_ref is not None and cand.finding_ref.finding_identity:
+            # An accepted Strong finding is identified by its exact source alias,
+            # so a restatement references the existing root instead of a new one.
+            for b in all_blockers:
+                if any(alias.alias_type == SOURCE_ALIAS_TYPE and alias.alias_value == cand.finding_ref.finding_identity for alias in b.aliases):
+                    matched_blocker_id = b.blocker_id
+                    break
+
         if not matched_blocker_id:
             decision, associated_id, reason = advisory_semantic_match(cand, open_blockers)
         else:
-            decision, associated_id, reason = ReconciliationDecision.ASSOCIATE, matched_blocker_id, "Matched explicit TOG ID alias"
+            decision, associated_id, reason = ReconciliationDecision.ASSOCIATE, matched_blocker_id, "Matched explicit accepted-finding alias"
 
         if decision == ReconciliationDecision.AMBIGUOUS:
             return FindingReconciliationResult(
