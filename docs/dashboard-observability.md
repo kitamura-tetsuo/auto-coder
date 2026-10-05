@@ -1,5 +1,16 @@
 # Dashboard observability verification
 
+Unfinished authenticated adversarial threads after a saved current-head PASS
+reach independent closure instead of another implementation repair. Production
+emits `pr.review-thread-gate` with `DEFERRED`, the examined head, and reason
+`saved PASS requires independent thread closure`. The existing dashboard stage
+projection shows pending validation rather than an accepted repair handoff;
+PASS itself does not prove that the remaining GitHub thread was resolved.
+Run `bash scripts/test.sh tests/test_adversarial_validation_pr_flow.py
+-k unresolved_adversarial_finding_revalidates_new_head_or_saved_pass` for the
+production admission and trace regression, including the review-limit boundary
+and preservation of the post-Codex recheck input. No stage or outcome enum is added.
+
 Ambiguous review scopes now retain an independent split owner rather than failing
 publication before repair. After durable admission, production emits the existing
 `pr.adversarial-validation` stage with `phase=reconciliation-split`,

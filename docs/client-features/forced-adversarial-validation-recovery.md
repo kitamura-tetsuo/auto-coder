@@ -3,7 +3,10 @@
 An explicit `--only <PR> --force` run starts a new adversarial-validation
 attempt for the current head even when that head already has a non-actionable verdict or the
 normal review limit has been reached. Ordinary scheduling and non-forced
-`--only` runs retain same-head and review-limit suppression. Every attempt has
+`--only` runs retain same-head and review-limit suppression except when a saved
+PASS still has authenticated unresolved threads requiring independent closure.
+That closure recovery requests validation rather than another implementation fix;
+it does not require `--force`. Every attempt has
 a durable, start-ordered identity; prior reviews remain immutable, overlapping
 attempts remain distinct, and a late older completion cannot supersede the
 newer applicable verdict. Force changes retry eligibility only and does not

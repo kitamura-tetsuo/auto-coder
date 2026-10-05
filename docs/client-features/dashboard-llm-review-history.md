@@ -98,3 +98,9 @@ the test-oracle category. The dashboard continues to display the existing
 effective `review_disposition` and publication outcomes; an ambiguous accepted
 source remains reconciliation, while an accepted current closure can proceed to
 verification. There are no new history fields or inferred completion states.
+
+An unresolved authenticated adversarial thread after a saved current-head PASS
+appears as deferred independent closure in the existing review-thread gate stage,
+with its examined head and reason. It does not appear as a newly accepted repair
+handoff. The review-history PASS and confirmed GitHub thread-resolution effects
+remain separate evidence; neither is inferred from the other.

@@ -1,5 +1,26 @@
 # Independent Review-Thread Completion Validation
 
+A saved current-head PASS does not make an unresolved authenticated adversarial
+finding newly actionable implementation feedback. Such a remaining thread is
+admitted for independent per-thread closure, even without an implementer reply
+and even at the normal review-count limit. The saved PASS is not reused as a
+substitute for that thread's disposition. Initial admission and the post-Codex
+recheck retain the same closure input. The prompt identifies this as unfinished
+closure after PASS, without claiming a head change or an explicit `--force`.
+Its heading and discussion instructions live in `prompts.yaml` and use
+`render_prompt(..., include_header=False)` because they are fragments within
+the complete validator prompt. Ordinary prompt rendering still includes its
+global header by default; label-selected fragments preserve this option.
+Unauthenticated, truncated, and unrelated human-review blockers retain their
+ordinary blocking/repair behavior. No thread is resolved from PASS alone.
+
+Production emits `pr.review-thread-gate` with `DEFERRED` and reason
+`saved PASS requires independent thread closure`; it emits no corrective
+handoff for those remaining authenticated findings before independent validation.
+The production regression is
+`test_unresolved_adversarial_finding_revalidates_new_head_or_saved_pass` in
+`tests/test_adversarial_validation_pr_flow.py`.
+
   review_thread_completion_validation:
     description: "A fresh backend_adversarial_validation run also independently adjudicates any unresolved review thread an eligible automated reviewer authored and a cloud implementation agent explicitly claimed as addressed, and Auto-Coder resolves the thread only when that independent verdict, evidence, and the still-current PR head all confirm it."
     implementation: |

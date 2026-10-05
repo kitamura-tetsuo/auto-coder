@@ -6,6 +6,18 @@ from src.auto_coder import prompt_loader
 from src.auto_coder.prompt_loader import DEFAULT_PROMPTS_PATH, _get_prompt_for_labels, _is_breaking_change_issue, _resolve_label_priority, clear_prompt_cache, get_label_specific_prompt, get_prompt_template, render_prompt
 
 
+@pytest.mark.parametrize("label_selected", [False, True])
+def test_embedded_prompt_fragments_omit_only_the_global_header(tmp_path, label_selected):
+    path = tmp_path / "prompts.yaml"
+    path.write_text('header: "Global header"\npr:\n  default: "Default $thread"\n  selected: "Selected $thread"\n', encoding="utf-8")
+    params = {"path": str(path), "thread": "thread-1"}
+    if label_selected:
+        params.update(labels=["review"], label_prompt_mappings={"review": "pr.selected"}, label_priorities=["review"])
+    expected = "Selected thread-1" if label_selected else "Default thread-1"
+    assert render_prompt("pr.default", **params) == f"Global header\n\n{expected}"
+    assert render_prompt("pr.default", include_header=False, **params) == expected
+
+
 def test_adversarial_initial_review_retains_broad_falsification_policy():
     prompt = get_prompt_template("pr.adversarial_validation_initial_review")
 

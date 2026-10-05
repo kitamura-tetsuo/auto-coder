@@ -34,6 +34,7 @@ from typing import Any, Iterable, List, Optional, Sequence, Set
 
 from .adversarial_validator import CHANGE_PROVENANCE_CLARIFICATION_MARKER, ReviewThreadDisposition
 from .logger_config import get_logger
+from .prompt_loader import render_prompt
 from .review_feedback_marker import reply_claims_review_addressed
 from .util.gh_cache import ReviewThread
 from .utils import is_same_github_login
@@ -520,6 +521,7 @@ class ClaimedReviewThread:
     claim_evidence: str = ""
     revalidation_after_head_change: bool = False
     revalidation_forced: bool = False
+    revalidation_after_pass: bool = False
     blocker_ids: tuple[str, ...] = ()
     concern_ids: tuple[str, ...] = ()
     authoritative_boundary: str = ""
@@ -662,6 +664,9 @@ def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]
         elif thread.revalidation_forced:
             heading = "Forced adversarial-validation revalidation (explicit --force)"
             discussion_label = "Full thread discussion (chronological; this is an explicit forced same-head " "revalidation, not evidence that the head changed or that an implementer replied; " "no implementation-agent reply is required):"
+        elif thread.revalidation_after_pass:
+            heading = render_prompt("pr.review_thread_after_pass_heading", include_header=False)
+            discussion_label = render_prompt("pr.review_thread_after_pass_discussion", include_header=False)
         else:
             heading = "Claimed-addressed review thread"
             discussion_label = "Full thread discussion (chronological, includes the implementation-agent addressed claim and rationale):"

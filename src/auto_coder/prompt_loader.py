@@ -378,6 +378,7 @@ def render_prompt(
     label_priorities: Optional[List[str]] = None,
     parent_issue_body: Optional[str] = None,
     is_jules: bool = False,
+    include_header: bool = True,
     **kwargs: Any,
 ) -> str:
     """Render a prompt template identified by key with optional label-based selection.
@@ -391,6 +392,8 @@ def render_prompt(
         label_priorities: Optional list of labels in priority order (highest priority first)
         parent_issue_body: Optional parent issue body text for template substitution
         is_jules: Optional boolean to indicate if this is for Jules mode
+        include_header: Include the global header for a complete prompt; disable
+            it for fragments embedded inside an already-rendered prompt.
         **kwargs: Additional keyword arguments for template substitution
 
     Returns:
@@ -433,6 +436,7 @@ def render_prompt(
                     label_priorities=None,
                     parent_issue_body=parent_issue_body,
                     is_jules=is_jules,
+                    include_header=include_header,
                     **kwargs,
                 )
                 return result  # type: ignore[no-any-return]
@@ -475,7 +479,7 @@ def render_prompt(
             header = ""
 
         # Prepend header to the rendered prompt
-        if header:
+        if header and include_header:
             return f"{header.rstrip()}\n\n{rendered_prompt}"
         else:
             return rendered_prompt

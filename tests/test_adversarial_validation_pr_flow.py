@@ -3589,7 +3589,8 @@ class TestClaimedReviewThreadValidationFlow:
             ("auto-coder-reviewer", "### Auto-Coder adversarial finding", False, False),
         ],
     )
-    def test_older_head_revalidation_preserves_ineligible_blockers(self, author_login, body, truncated, has_root):
+    @pytest.mark.parametrize("after_pass", [False, True])
+    def test_older_head_revalidation_preserves_ineligible_blockers(self, author_login, body, truncated, has_root, after_pass):
         from auto_coder.pr_processor import ClaimedReviewThreadGateState, _allow_older_head_adversarial_threads
 
         thread = ReviewThread(
@@ -3604,7 +3605,7 @@ class TestClaimedReviewThreadValidationFlow:
             has_blocking_unresolved=True,
         )
 
-        result = _allow_older_head_adversarial_threads(state, "auto-coder-reviewer[bot]")
+        result = _allow_older_head_adversarial_threads(state, "auto-coder-reviewer[bot]", after_pass=after_pass)
 
         assert result is state
         assert result.claimed == ()
@@ -3613,7 +3614,8 @@ class TestClaimedReviewThreadValidationFlow:
         assert thread.is_resolved is False
 
     @pytest.mark.parametrize("app_identity_login", ["auto-coder-reviewer", "auto-coder-reviewer[bot]"])
-    def test_changed_head_revalidates_promoted_older_finding_at_review_limit(self, app_identity_login):
+    @pytest.mark.parametrize("saved_pass", [False, True])
+    def test_unresolved_adversarial_finding_revalidates_new_head_or_saved_pass(self, app_identity_login, saved_pass):
         """The supported GitHub thread/review inputs reach validation even
         when durable repair deduplication would otherwise leave the thread open."""
         from auto_coder.adversarial_validator import ReviewThreadDisposition, adversarial_validation_comment_marker
@@ -3648,6 +3650,8 @@ class TestClaimedReviewThreadValidationFlow:
                 },
             ]
         )
+        if saved_pass:
+            client.get_pr_reviews_strict.return_value.append({"body": f"{adversarial_validation_comment_marker(new_sha)}\n## ✅ Auto-Coder adversarial validation: PASS", "user": {"login": reviewer_login}})
         client.get_pr_comments = MagicMock(return_value=[])
         client.get_pr_comments_strict = MagicMock(return_value=[])
         client.get_pull_request = MagicMock(return_value={"head": {"sha": new_sha}})
@@ -3694,15 +3698,39 @@ class TestClaimedReviewThreadValidationFlow:
             patch("auto_coder.pr_processor.resolve_addressed_review_threads", return_value=[]) as resolve_threads,
             patch("auto_coder.pr_processor.isolated_pr_head_worktree"),
             patch("auto_coder.pr_processor._merge_pr") as merge_pr,
+            patch("auto_coder.pr_processor._delegate_cloud_review_thread_repair") as delegate,
         ):
-            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+            from auto_coder.execution_trace import Outcome, get_trace_collector
 
-        assert any("Allowing adversarial validation of new head" in action for action in actions)
-        assert any("beyond the review limit because unresolved findings" in action for action in actions)
+            collector = get_trace_collector()
+            with collector.start_execution("owner/repo", "pr", 123, origin="worker") as execution:
+                actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+
         run_validation.assert_called_once()
         validation_threads = run_validation.call_args.kwargs["claimed_review_threads_section"]
-        assert "### Older-head adversarial finding requiring revalidation: thread-old-finding" in validation_threads
-        assert "no implementation-agent reply is required for this revalidation" in validation_threads
+        if saved_pass:
+            assert "### Unresolved adversarial finding after PASS requiring independent closure: thread-old-finding" in validation_threads
+            assert "explicit --force" not in validation_threads
+            assert "no implementation-agent reply or code change is required" in validation_threads
+            assert any("beyond the review limit because the saved review requires independent closure" in action for action in actions)
+            events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=123).events if event.execution_id == execution.scope.execution_id and event.stage_id == "pr.review-thread-gate" and event.outcome == Outcome.DEFERRED]
+            assert len(events) == 1
+            assert events[0].facts["reason"] == "saved PASS requires independent thread closure"
+            assert events[0].facts["examined_head"] == new_sha
+            assert not any(event.stage_id == "pr.repair-delegation" for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=123).events if event.execution_id == execution.scope.execution_id)
+            from tests.test_dashboard_observability import _mounted_detail
+
+            with patch("auto_coder.dashboard.ui") as mounted_ui:
+                diagram = _mounted_detail(mounted_ui, "pr", 123)
+            assert "review-thread gate" in diagram
+            assert "deferred" in diagram
+            assert "repair delegation" not in diagram
+        else:
+            assert any("Allowing adversarial validation of new head" in action for action in actions)
+            assert any("beyond the review limit because unresolved findings" in action for action in actions)
+            assert "### Older-head adversarial finding requiring revalidation: thread-old-finding" in validation_threads
+            assert "no implementation-agent reply is required for this revalidation" in validation_threads
+        delegate.assert_not_called()
         assert client.get_pr_review_threads_strict.call_count >= 2
         resolve_threads.assert_called_once()
         merge_pr.assert_not_called()

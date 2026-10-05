@@ -109,6 +109,10 @@ opencode:
 
 
 pr:
+  review_thread_after_pass_heading: |-
+    Unresolved adversarial finding after PASS requiring independent closure
+  review_thread_after_pass_discussion: |-
+    Full thread discussion (chronological; the saved PR-level PASS did not close this exact thread; no implementation-agent reply or code change is required to admit independent validation):
   action: |-
     You are operating directly in the repository workspace with write access and the git and gh CLIs available.
 

@@ -1453,6 +1453,7 @@ def _allow_older_head_adversarial_threads(
     reviewer_login: str,
     *,
     forced: bool = False,
+    after_pass: bool = False,
 ) -> ClaimedReviewThreadGateState:
     """Make authentic validator findings eligible for independent rereview.
 
@@ -1465,6 +1466,8 @@ def _allow_older_head_adversarial_threads(
     #2106 REQ-001/REQ-003). The two cases are tagged with distinct
     ``ClaimedReviewThread`` flags so the validation prompt never misrepresents
     a forced same-head rereview as evidence that the head changed.
+    ``after_pass=True`` instead identifies unfinished per-thread closure after
+    a saved PASS, without implying an explicit force request or a head change.
     """
     promoted: List[ClaimedReviewThread] = []
     remaining: List[ReviewThread] = []
@@ -1481,8 +1484,9 @@ def _allow_older_head_adversarial_threads(
                 root_author_login=root.author_login,
                 original_finding=root.body,
                 discussion="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in comments),
-                revalidation_after_head_change=not forced,
-                revalidation_forced=forced,
+                revalidation_after_head_change=not forced and not after_pass,
+                revalidation_forced=forced and not after_pass,
+                revalidation_after_pass=after_pass,
             )
         )
     if not promoted:
@@ -3980,6 +3984,8 @@ def _assess_saved_review_state(
         return SavedReviewAssessment(SAVED_REVIEW_WAIT, "waiting for new authority or association evidence; the focused reconciliation for this evidence revision was already attempted", projection)
     if saved_status == "PASS" and not saved_pass_is_clearance(projection):
         return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a saved PASS is not clearance while accepted findings are open or their state is unavailable", projection)
+    if saved_status == "PASS" and claimed_review_threads:
+        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a saved PASS still has unresolved review threads requiring independent closure", projection)
     if saved_status == "BLOCKED" and resumable:
         return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "retained reconciliation work has new authority or association evidence", projection)
     if saved_status == "BLOCKED" and retained is not None and retained.head_sha == head_sha and retained.next_action == EffectiveNextAction.CLOSURE_ACCEPTANCE.value:
@@ -4669,6 +4675,10 @@ def _handle_pr_merge(
                                 saved_review_revalidation = gate_assessment.action == SAVED_REVIEW_REVALIDATE or gate_retained_resume
                                 if saved_review_revalidation:
                                     actions.append(f"Saved {current_status} review for PR #{pr_number} is not clearance: {gate_assessment.reason or 'its closure was accepted from the retained ordinary result'}")
+                                    if current_status == "PASS":
+                                        _record_pr_stage(
+                                            pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.DEFERRED, {"examined_head": head_sha_for_gate, "reason": "saved PASS requires independent thread closure", "blocking_count": len(claimed_thread_state.unresolved)}
+                                        )
                                 if current_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not adjudication_forces_revalidation and not gate_retained_resume:
                                     report, report_error = _get_published_adversarial_validation_comment(github_client, repo_name, pr_number, head_sha_for_gate)
                                     if report_error or not report:
@@ -4706,7 +4716,7 @@ def _handle_pr_merge(
                                         logger.error(f"Could not authenticate unresolved adversarial threads for PR #{pr_number}: {exc}")
                                     else:
                                         forced_same_head_revalidation = current_status is not None and (force_adversarial_validation or adjudication_forces_revalidation or saved_review_revalidation)
-                                        claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login, forced=forced_same_head_revalidation)
+                                        claimed_thread_state = _allow_older_head_adversarial_threads(claimed_thread_state, reviewer_login, forced=forced_same_head_revalidation, after_pass=current_status == "PASS" and not force_adversarial_validation)
                                         revalidating_older_head_threads = any(thread.revalidation_after_head_change for thread in claimed_thread_state.claimed)
                                         if revalidating_older_head_threads:
                                             actions.append(f"Allowing adversarial validation of new head {head_sha_for_gate[:8]} with older-head review findings still unresolved")
@@ -4852,7 +4862,7 @@ def _handle_pr_merge(
                             processing_status.error = exhaustion_retry_error
                             processing_status.outcome = PRProcessingOutcome.FAILED
                         return actions
-                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not exhaustion_retry_due:
+                    if adv_review_count >= max_adv_reviews and not provenance_fingerprint and not force_adversarial_validation and not revalidating_older_head_threads and not saved_review_revalidation and not exhaustion_retry_due:
                         exhaustion_info = check_pr_repair_exhaustion(repo_name, pr_number)
                         if exhaustion_info and exhaustion_info.is_exhausted:
                             actions.append(f"Automatic merge disabled for PR #{pr_number}: repair allowance exhausted for open blocker(s): {', '.join(exhaustion_info.exhausted_blocker_ids)}")
@@ -4887,6 +4897,8 @@ def _handle_pr_merge(
                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because unresolved findings have not been adjudicated on the current head")
                         elif adv_review_count >= max_adv_reviews and exhaustion_retry_due:
                             actions.append(f"Retrying adversarial validation for PR #{pr_number} beyond the review limit: prior backend quota/usage exhaustion is due for automatic retry")
+                        elif adv_review_count >= max_adv_reviews and saved_review_revalidation:
+                            actions.append(f"Revalidating PR #{pr_number} beyond the review limit because the saved review requires independent closure")
                         elif adv_review_count >= max_adv_reviews:
                             actions.append(f"Revalidating PR #{pr_number} beyond the review limit because new change-provenance evidence was supplied")
                         should_run_validation = True
@@ -4919,6 +4931,8 @@ def _handle_pr_merge(
                         else:
                             if revalidating_older_head_threads:
                                 post_codex_thread_state = _allow_older_head_adversarial_threads(post_codex_thread_state, reviewer_login)
+                            elif any(thread.revalidation_after_pass for thread in claimed_review_threads):
+                                post_codex_thread_state = _allow_older_head_adversarial_threads(post_codex_thread_state, reviewer_login, after_pass=True)
                             # REQ-001/REQ-002: the recheck is a second pre-validation
                             # gate, so an explicit --force run must not be blocked here
                             # either, even for a thread that only became visible after
