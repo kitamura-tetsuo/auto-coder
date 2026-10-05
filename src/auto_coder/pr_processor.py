@@ -30,7 +30,7 @@ from auto_coder.github_ci_observer import ci_observation_merge_authority, ci_rea
 from auto_coder.util.gh_cache import GitHubClient, PullRequestRoutingMetadata, ReviewThread, ReviewThreadComment, get_ghapi_client
 from auto_coder.util.github_action import DetailedChecksResult, GitHubActionsStatusResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history, is_ci_observation_recovered
 
-from .accepted_finding_bridge import AcceptedFindingBridge, AcceptedFindingProjection, AcceptedFindingRecord, OrdinaryDisposition, ProjectionTarget
+from .accepted_finding_bridge import AMBIGUOUS, BINDING_CURRENT, AcceptedFindingBridge, AcceptedFindingProjection, AcceptedFindingRecord, OrdinaryDisposition, ProjectionTarget
 from .adversarial_validation_attempts import AdversarialValidationAttempt, AdversarialValidationAttemptRepository
 from .adversarial_validation_scheduler import AdversarialValidationScheduler
 from .adversarial_validator import (
@@ -67,6 +67,7 @@ from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts
 from .dispatch_claim_store import DispatchIdentity, DispatchOutcome, get_dispatch_claim_store
 from .effective_decision_application import (
     HANDOFF_DISPATCHED,
+    HANDOFF_PENDING,
     PUBLICATION_CONFIRMED,
     WAIT_ALLOWANCE_EXHAUSTED,
     WAIT_INDETERMINATE,
@@ -656,6 +657,7 @@ def _resume_closure_before_admission(
     force: bool,
     actions: List[str],
     processing_status: Optional[ProcessedPRResult],
+    config: AutomationConfig,
 ) -> Tuple[Optional[RetainedClosureResumption], bool]:
     """Resume retained closure evidence before any same-head shortcut or reviewer admission.
 
@@ -673,6 +675,8 @@ def _resume_closure_before_admission(
         return None, True
     if inputs is None:
         return None, False
+    if _repair_strong_findings_before_validation(github_client, repo_name, pr_data, inputs, actions, processing_status, config):
+        return None, True
     try:
         resumption = _resume_retained_closure(repo_name, pr_number, head_sha, inputs, github_client)
     except Exception as exc:  # an unreadable owning store retains the pending work; it never authorizes or erases it
@@ -688,6 +692,88 @@ def _resume_closure_before_admission(
             processing_status.retry_not_before = actions.retry_not_before  # type: ignore[attr-defined]
         return resumption, True
     return resumption, False
+
+
+def _repair_strong_findings_before_validation(
+    github_client: Any,
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    inputs: TwoTierGateInputs,
+    actions: List[str],
+    processing_status: Optional[ProcessedPRResult],
+    config: AutomationConfig,
+) -> bool:
+    """Deliver accepted exact-head Strong findings before admitting another reviewer."""
+    pr_number = int(pr_data["number"])
+    retry_not_before = time.time() + 60.0
+    try:
+        strong_round, _ = _outstanding_strong_round(inputs, pr_number)
+        if strong_round is None or strong_round.head_sha != inputs.head_sha:
+            return False
+        if inputs.gate.state.snapshot(pr_number).pending_effect:
+            published, reason = _consume_pending_two_tier_publication(repo_name, pr_number, inputs, _ClosureTargetObserver(github_client, repo_name, pr_number), github_client=github_client)
+            if not published:
+                raise RuntimeError(f"Strong finding publication is pending: {reason}")
+        bridge, target = _accepted_state_inputs(repo_name, pr_data, inputs.head_sha)
+        projection = project_accepted_findings(bridge, target, ())
+        records = outstanding_records(projection)
+        if not projection.complete or not records or any(not record.canonical_blocker_id or record.target_binding != BINDING_CURRENT or record.association == AMBIGUOUS for record in records):
+            raise RuntimeError("accepted Strong finding identities are unavailable")
+        retained = EffectiveDecisionStore(repo_name).load(pr_number)
+        if retained is not None and {record.source_identity for record in records} <= set(retained.source_identities) and _corrective_completion_marker(repo_name, pr_data, inputs.head_sha, github_client):
+            return False
+        implementation_repair = any(not finding.is_regression_gap for finding in inputs.gate.state.snapshot(pr_number).open_findings)
+        # This is the accepted Strong result's corrective handoff, not a synthesized
+        # ordinary verdict. No ordinary attempt or review publication is created.
+        EffectiveDecisionStore(repo_name).retain(
+            RetainedDecision(
+                repository=repo_name,
+                pr_number=pr_number,
+                head_sha=inputs.head_sha,
+                base_sha=inputs.base_sha,
+                status="NEEDS_FIX" if implementation_repair else "NEEDS_TESTS",
+                next_action=(EffectiveNextAction.IMPLEMENTATION_REPAIR if implementation_repair else EffectiveNextAction.FOCUSED_TEST_REPAIR).value,
+                blocker_ids=sorted(record.canonical_blocker_id for record in records),
+                source_identities=sorted(record.source_identity for record in records),
+                source_revision=projection.source_revision,
+                finding_set_revision=projection.finding_set_revision,
+                association_revision=projection.ledger_revision,
+                reopen_epoch=projection.open_epoch,
+                evidence_revision=evidence_revision(projection),
+                publication=PUBLICATION_CONFIRMED,
+                handoff=HANDOFF_PENDING,
+            )
+        )
+        bodies, blocker_ids = _compose_actionable_feedback(github_client, repo_name, pr_number, records)
+        report = "\n\n".join(_render_two_tier_finding(finding) for finding in inputs.gate.state.snapshot(pr_number).open_findings)
+        result = _send_adversarial_validation_feedback_to_cloud_task(repo_name, pr_data, inputs.head_sha, report, github_client, bodies or (report,), config=config, canonical_blocker_ids=blocker_ids)
+        actions.extend(result)
+        handoff, wait_reason = _record_handoff_state(repo_name, pr_data, github_client, result)
+        retry_not_before = getattr(result, "retry_not_before", None) or retry_not_before
+        facts = {
+            "effect": "strong-findings-before-validation",
+            "examined_head": inputs.head_sha,
+            "handoff": handoff,
+            "wait_reason": wait_reason,
+            "blocker_ids": list(blocker_ids),
+            "ordinary_reviewer_admitted": False,
+            "route_disposition": getattr(result, "route_disposition", "CLOUD"),
+            "local_phase": getattr(result, "local_phase", ""),
+            "review_disposition": (ReviewDisposition.CORRECTIVE_HANDOFF if handoff == HANDOFF_DISPATCHED else ReviewDisposition.CORRECTION_WAITING).value,
+        }
+        outcome = Outcome.ACCEPTED_HANDOFF if handoff == HANDOFF_DISPATCHED else Outcome.DEFERRED
+    except Exception as exc:
+        facts = {"effect": "strong-findings-before-validation", "examined_head": inputs.head_sha, "reason": str(exc), "ordinary_reviewer_admitted": False, "review_disposition": ReviewDisposition.CORRECTION_WAITING.value}
+        outcome = Outcome.DEFERRED
+        actions.append(f"Strong finding correction for PR #{pr_number} is deferred: {exc}")
+    actions.append(f"Strong audit findings for PR #{pr_number} require completed correction before adversarial validation")
+    _record_pr_stage(pr_number, "pr.repair-delegation", f"pr#{pr_number} repair delegation", outcome, facts)
+    actions.quota_deferred = True  # type: ignore[attr-defined]
+    actions.retry_not_before = retry_not_before  # type: ignore[attr-defined]
+    if processing_status is not None:
+        processing_status.outcome = PRProcessingOutcome.DEFERRED
+        processing_status.retry_not_before = actions.retry_not_before  # type: ignore[attr-defined]
+    return True
 
 
 TWO_TIER_REVIEW_DESTINATION = "github-reviewer-app:threads-v1"
@@ -4699,7 +4785,7 @@ def _handle_pr_merge(
                         if head_sha_for_gate and gate_eligibility.is_applicable and not gate_eligibility.lookup_error:
                             current_status, current_status_error = _get_published_adversarial_validation_status(github_client, repo_name, pr_number, head_sha_for_gate)
                             if not current_status_error:
-                                _gate_resumption, gate_resume_stop = _resume_closure_before_admission(github_client, repo_name, pr_data, head_sha_for_gate, force_adversarial_validation, actions, processing_status)
+                                _gate_resumption, gate_resume_stop = _resume_closure_before_admission(github_client, repo_name, pr_data, head_sha_for_gate, force_adversarial_validation, actions, processing_status, config)
                                 if gate_resume_stop:
                                     return actions
                                 # A retained ordinary PASS whose closure was accepted completes its own
@@ -5032,7 +5118,7 @@ def _handle_pr_merge(
                     # and publication work resume from the durable sources with no model
                     # call, and a legacy PASS with closure still outstanding is routed to
                     # one combined (closure-aware) ordinary revalidation.
-                    resumption, resume_stop = _resume_closure_before_admission(github_client, repo_name, pr_data, head_sha, force_adversarial_validation, actions, processing_status)
+                    resumption, resume_stop = _resume_closure_before_admission(github_client, repo_name, pr_data, head_sha, force_adversarial_validation, actions, processing_status, config)
                     if resume_stop:
                         return actions
                     retained_reuse: Optional[ClosureEvidenceRecord] = None

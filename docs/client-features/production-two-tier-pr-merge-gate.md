@@ -62,3 +62,14 @@ policy, open-incarnation, findings, and renewed-round checks while holding the
 durable transition fence, so a stale participant cannot overwrite completion made
 by another controller. A changed identity remains eligible for a renewed audit;
 the persisted `COMPLETE` phase alone never suppresses new work.
+
+An accepted Strong FINDINGS result at the current audited head takes correction
+priority over ordinary adversarial validation, including saved PASS/non-PASS
+headlines and explicit `--force`. Before reviewer admission, production resumes
+pending finding publication, retains the original canonical blocker identities,
+and routes the accepted evidence to the originating local or cloud repair route.
+It creates no ordinary review or ordinary attempt merely to rediscover those
+findings. Undelivered or in-progress correction stays deferred across reentry;
+confirmed cloud delivery is deduplicated by the existing repair owner. A repaired
+head or observed same-head corrective completion (including an evidence-backed
+no-change rebuttal) permits the existing single combined validation/closure path.

@@ -112,3 +112,12 @@ schema changed; only which already-existing result is derived changed, so
   accepted finding (that decision is derived from current-target evidence). Otherwise the saved
   headline is only history: normal processing admits one fresh combined ordinary review, with no
   dummy commit, store reset or `--force`, and never sends the historical report as a repair.
+
+With the optional Strong tier still configured and its exact audited H/B/M/P
+binding unchanged, the accepted Strong finding bundle itself authorizes the
+initial correction handoff before ordinary reviewer admission. This takes
+priority over legacy saved-headline revalidation: a saved PASS or unbacked
+non-PASS cannot cause another review of the unchanged audited head before a
+correction has completed. The original source/canonical identities are retained
+without creating an ordinary verdict or attempt. On a repaired head, or after
+observed same-head completion, normal combined rereview and closure apply.

@@ -111,3 +111,11 @@ appears as deferred independent closure in the existing review-thread gate stage
 with its examined head and reason. It does not appear as a newly accepted repair
 handoff. The review-history PASS and confirmed GitHub thread-resolution effects
 remain separate evidence; neither is inferred from the other.
+
+Strong findings awaiting correction appear through the existing
+`pr.repair-delegation` stage with `effect="strong-findings-before-validation"`,
+the examined head, canonical blocker IDs, handoff and wait reason. Confirmed
+handoff is `ACCEPTED_HANDOFF`; unavailable publication, identity or repair route
+is `DEFERRED`. `ordinary_reviewer_admitted=false` indicates that no ordinary
+reviewer was admitted to rediscover the unchanged Strong findings. Correction
+completion subsequently uses the existing ordinary validation/closure history.
