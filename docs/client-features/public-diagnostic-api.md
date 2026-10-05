@@ -78,3 +78,28 @@ progress. Compare these local observations with GitHub independently and treat
 missing evidence as unknown. The API does not detect anomalies or guarantee
 continuous coverage. Data recorded or code deployed normally is visible at the
 same routes on the next request; no tool registration is involved.
+
+## Collector retention-continuity evidence
+
+`TraceCollector.get_snapshot()` also returns collector-wide continuity fields,
+captured under the publication lock together with `process_run_id` and the
+retained events, and computed before any item/repository filter or limit:
+
+- `sequence_high_watermark`: greatest sequence allocated in this process run
+  (0 initially). A sequence consumed by a failed publication counts, so numeric
+  holes are not evidence that a matching event was lost.
+- `oldest_retained_sequence`: least retained event sequence, `null` when the
+  buffer is empty.
+- `discarded_through_sequence`: greatest sequence of an actually stored event
+  removed by eviction or `clear()` (0 initially). It never decreases; `clear()`
+  keeps the run ID and sequence counter, so an old checkpoint cannot look
+  complete again.
+
+A fresh collector (restart) has a new `process_run_id` and zero/null state.
+These values describe stored process-local diagnostics only: not durable
+history, not proof that every business operation produced an event, and not a
+per-target loss verdict. The existing `events_truncated` flags keep their
+meaning. Reading them mutates no operational state.
+
+Observability checklist: no event emission, event schema or dashboard rendering
+changes; only snapshot metadata is added, so this is observability-neutral.

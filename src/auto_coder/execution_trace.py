@@ -146,6 +146,11 @@ class TraceSnapshot:
     events_truncated: bool
     execution_metadata_truncated: bool
     executions: Dict[str, ExecutionSummary]
+    # Collector-wide continuity evidence, captured under the publication lock and
+    # computed before any event filter or limit.
+    sequence_high_watermark: int = 0
+    oldest_retained_sequence: Optional[int] = None
+    discarded_through_sequence: int = 0
 
 
 _current_scope: "contextvars.ContextVar[Optional[ExecutionScope]]" = contextvars.ContextVar("auto_coder_execution_scope", default=None)
@@ -255,6 +260,7 @@ class TraceCollector:
         self._executions: "collections.OrderedDict[str, ExecutionSummary]" = collections.OrderedDict()
         self._max_executions = max_executions
         self._seq_counter = 0
+        self._discarded_through_sequence = 0
         self._publish_lock = threading.RLock()
         self.process_run_id = uuid.uuid4().hex
         self.events_dropped = 0
@@ -268,9 +274,14 @@ class TraceCollector:
                 self._seq_counter += 1
                 seq = self._seq_counter
                 event = build(seq)
-                if len(self._events) == (self._events.maxlen or 0):
-                    self.events_dropped += 1
+                evicted_sequence: Optional[int] = None
+                if self._events and len(self._events) == (self._events.maxlen or 0):
+                    evicted_sequence = self._events[0].sequence
                 self._events.append(event)
+                # Record loss only after the append actually succeeded.
+                if evicted_sequence is not None:
+                    self._discarded_through_sequence = max(self._discarded_through_sequence, evicted_sequence)
+                    self.events_dropped += 1
                 return event
         except Exception:
             logger.exception("TraceCollector: failed to publish structured event; continuing without it")
@@ -505,6 +516,10 @@ class TraceCollector:
             executions = dict(self._executions)
             events_truncated = self.events_dropped > 0
             executions_truncated = self.executions_dropped > 0
+            run_id = self.process_run_id
+            high_watermark = self._seq_counter
+            discarded_through = self._discarded_through_sequence
+            oldest_retained = events[0].sequence if events else None
 
         if item_type is not None:
             events = [e for e in events if e.item_type == item_type]
@@ -519,19 +534,26 @@ class TraceCollector:
         snapshot_executions = {k: v for k, v in executions.items()}
 
         return TraceSnapshot(
-            process_run_id=self.process_run_id,
+            process_run_id=run_id,
             schema_version=SCHEMA_VERSION,
             events=snapshot_events,
             events_truncated=events_truncated,
             execution_metadata_truncated=executions_truncated,
             executions=snapshot_executions,
+            sequence_high_watermark=high_watermark,
+            oldest_retained_sequence=oldest_retained,
+            discarded_through_sequence=discarded_through,
         )
 
     def clear(self) -> None:
-        self._events.clear()
-        self._executions.clear()
-        self.events_dropped = 0
-        self.executions_dropped = 0
+        """Drop retained data while preserving run identity and continuity-loss evidence."""
+        with self._publish_lock:
+            if self._events:
+                self._discarded_through_sequence = max(self._discarded_through_sequence, self._events[-1].sequence)
+            self._events.clear()
+            self._executions.clear()
+            self.events_dropped = 0
+            self.executions_dropped = 0
 
 
 def get_trace_collector() -> TraceCollector:
