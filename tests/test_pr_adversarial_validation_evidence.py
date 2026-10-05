@@ -663,3 +663,133 @@ def test_recorder_health_never_changes_validation_behavior(tmp_path, monkeypatch
         assert outcomes["healthy"][3] == "PASS" and outcomes["healthy"][2] == ["fresh"]
     if kind == "refusal":
         assert outcomes["healthy"][2] == []
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: failed follow-up attribution, model verdict, exact interaction
+# association and PR source metadata
+# ---------------------------------------------------------------------------
+
+
+def _dynamic_followup_scenario(tmp_path, monkeypatch, store, reviewer: RecordingReviewer) -> Scenario:
+    from tests.test_pr_adversarial_review_audit import _add_dynamic_check_script
+
+    repo, head_sha = _build_pr_repo(tmp_path)
+    head_sha = _add_dynamic_check_script(repo, head_sha)
+    scenario = Scenario(tmp_path / "unused", monkeypatch, store, issue_body=_issue_body(1), responses=[], reviewer=reviewer)
+    scenario.repo, scenario.head_sha = repo, head_sha
+    scenario.client = _build_github_client(head_sha, issue_body=_issue_body(1))
+    scenario.pr_data = _build_pr_data(head_sha)
+    scenario.config.TEST_SCRIPT_PATH = str(repo / "scripts" / "test.sh")
+    monkeypatch.setattr("auto_coder.pr_processor.isolated_pr_head_worktree", lambda *a, **k: _static_worktree(repo))
+    return scenario
+
+
+def _initial_with_dynamic_check() -> str:
+    initial = json.loads(_verified_payload(["#99/REQ-001"]))
+    initial["dynamic_check_requested"] = "tests/test_sample.py::test_greet"
+    return json.dumps(initial)
+
+
+def test_failed_followup_does_not_borrow_the_initial_response(tmp_path, monkeypatch, audit_store):
+    class FailingFollowup(RecordingReviewer):
+        def continue_session(self, session_id, prompt, is_noedit=False):
+            self.prompts.append(prompt)
+            self.calls.append("continue")
+            raise RuntimeError("follow-up transport failed")
+
+    reviewer = FailingFollowup("reviewer", responses=[_initial_with_dynamic_check()], session_id="session-S")
+    scenario = _dynamic_followup_scenario(tmp_path, monkeypatch, audit_store, reviewer)
+
+    scenario.run()
+
+    record, payload = scenario.evidence()
+    first, second = payload["responses"]
+    assert record.native_verdict == "BLOCKED"
+    assert first["parse"]["state"] == "parsed" and first["response_state"] == "nonempty"  # r1 stays as historical evidence
+    assert second["stage"] == "dynamic_check_followup" and second["response_state"] == "unavailable"
+    assert second["response"]["state"] == "unavailable"
+    final = payload["final"]
+    assert final["verdict"] == "BLOCKED"
+    assert final["kind"] == "local_without_semantic_response" and final["source_response_id"] is None
+    assert payload["coverage_checks"][-1]["response_id"] is None  # the final interpretation is not attached to r1's coverage
+
+
+def test_model_verdict_is_kept_apart_from_parser_finding_precedence(tmp_path, monkeypatch, audit_store):
+    payload_json = json.loads(_verified_payload(["#99/REQ-001"]))
+    payload_json["findings"] = [
+        {
+            "finding_identity": "greet-return-value",
+            "correction_identity": "greet-return-value-fix",
+            "violated_requirement": "greet() returns the string hello",
+            "requirement_id": "#99/REQ-001",
+            "evidence_classification": "DEMONSTRATED",
+            "reachability": "greet() is called directly",
+            "required_behavior": "greet() returns hello",
+            "actual_behavior": "greet() returns another string",
+            "evidence": "sample.py",
+            "counterexample": "greet() returns hell0",
+            "test_gap": "No assertion exists",
+            "suggested_regression_scenario": "Assert greet() == 'hello'",
+            "anchor_path": "sample.py",
+        }
+    ]
+    scenario = Scenario(tmp_path, monkeypatch, audit_store, issue_body=_issue_body(1), responses=[json.dumps(payload_json)])
+
+    scenario.run()
+
+    record, payload = scenario.evidence()
+    parse = payload["responses"][0]["parse"]
+    assert parse["parsed_verdict"] == "PASS"  # what the model said
+    assert parse["post_parse_verdict"] == "NEEDS_FIX"  # after the controller's finding precedence
+    assert payload["coverage_checks"][0]["verdict_after"] == "NEEDS_FIX" == payload["final"]["verdict"] == record.native_verdict
+
+
+def test_interaction_association_is_never_guessed_from_unassigned_records(tmp_path, monkeypatch, audit_store):
+    reviewer = RecordingReviewer("reviewer", responses=[_initial_with_dynamic_check(), _verified_payload(["#99/REQ-001"])], session_id="session-S")
+    scenario = _dynamic_followup_scenario(tmp_path, monkeypatch, audit_store, reviewer)
+    real_get = audit_store.get_evaluation
+    real_record = audit_store.record_interaction
+    reads = {"count": 0}
+    seen_interactions: List[str] = []
+
+    def flaky_get(repository, review_id):
+        reads["count"] += 1
+        if reads["count"] == 2:  # the initial response's post-invocation read
+            raise RuntimeError("transient read failure")
+        return real_get(repository, review_id)
+
+    def flaky_record(repository, interaction, credentials=None):
+        if interaction.interaction_id not in seen_interactions:
+            seen_interactions.append(interaction.interaction_id)
+        if interaction.interaction_id == (seen_interactions[1] if len(seen_interactions) > 1 else None):
+            return False  # the follow-up interaction write is lost
+        return real_record(repository, interaction, credentials)
+
+    monkeypatch.setattr(audit_store, "get_evaluation", flaky_get)
+    monkeypatch.setattr(audit_store, "record_interaction", flaky_record)
+
+    scenario.run()
+
+    monkeypatch.undo()
+    found = ReviewAuditStore(audit_root=audit_store._audit_root).get_validation_evidence(REPO_NAME, str(PR_NUMBER), attempt_sequence=1)
+    first, second = found.producer.payload["responses"]
+    assert first["interaction"]["association"] == "unavailable" and first["interaction"]["backend_alias"] is None
+    assert second["interaction"]["association"] == "unavailable" and second["interaction"]["interaction_ids"] == []
+    assert second["interaction"]["backend_alias"] is None and second["interaction"]["requested_model"] is None
+
+
+def test_pr_source_updated_at_is_retained_or_explicitly_unknown(tmp_path, monkeypatch, audit_store):
+    with_metadata = Scenario(tmp_path / "with", monkeypatch, audit_store, issue_body=_issue_body(1), responses=[PASS_PAYLOAD])
+    with_metadata.pr_data["updated_at"] = "2026-01-02T03:04:05Z"
+    with_metadata.run()
+    _record, payload = with_metadata.evidence()
+    assert payload["input"]["pr_source_updated_at"] == "2026-01-02T03:04:05Z"
+    assert payload["input"]["pr_source_updated_at"] != payload["input"]["captured_at"]
+
+    other_store = ReviewAuditStore(audit_root=tmp_path / "other-audit")
+    monkeypatch.setattr("auto_coder.review_capture.recorder._global_audit_store", other_store)
+    without = Scenario(tmp_path / "without", monkeypatch, other_store, issue_body=_issue_body(1), responses=[PASS_PAYLOAD])
+    without.run()
+    _record, payload = without.evidence()
+    assert payload["input"]["pr_source_updated_at"] is None

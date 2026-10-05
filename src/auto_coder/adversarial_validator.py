@@ -1388,7 +1388,7 @@ def build_adversarial_validation_context(
     manifest = build_issue_requirement_manifest(resolution)
     if not bypass_cache:
         # A cache-bypassing call only reconfirms a snapshot; the first construction is what the reviewer consumes.
-        validation_evidence.observe_context_inputs(repo_name, pr_body, resolution, issue_context)
+        validation_evidence.observe_context_inputs(repo_name, pr_body, resolution, issue_context, pr_data.get("updated_at"))
 
     # Extract changed test files from diff or all_changed_files
     changed_tests = [f for f in all_changed_files if is_test_file(f)] if all_changed_files else extract_changed_test_files(pr_diff)
@@ -2019,6 +2019,7 @@ def parse_adversarial_validation_response(
             parsed = json.loads(json_str, object_pairs_hook=_retain_duplicate_json_members)
             if isinstance(parsed, dict):
                 raw_result = str(parsed.get("result", "")).strip().upper()
+                validation_evidence.observe_model_verdict(raw_result)
                 summary = str(parsed.get("summary", "")).strip()
                 dynamic_check = parsed.get("dynamic_check_requested")
                 if dynamic_check:
@@ -4220,6 +4221,7 @@ def run_adversarial_validation(
                     pass
                 elif test_res.verification_error:
                     known_mismatch = test_res.executed_sha is not None
+                    result.source_response_id = ""  # a controller-local verdict never borrows the earlier response
                     result.result = "ERROR" if known_mismatch else "INCONCLUSIVE"
                     result.summary = f"Dynamic validation evidence rejected: {test_res.verification_error}"
                     result.diagnostic_category = "dynamic_check_head_mismatch" if known_mismatch else "dynamic_check_head_unverifiable"
@@ -4299,6 +4301,7 @@ def run_adversarial_validation(
             except Exception as e:
                 logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")
                 # Inability to complete a requested check must be treated as non-pass (fail-closed)
+                result.source_response_id = ""  # no semantic answer produced this outcome
                 result.result = "BLOCKED"
                 result.summary = f"Dynamic validation check '{check_target}' could not be completed: {e}"
                 if initial_thread_dispositions:

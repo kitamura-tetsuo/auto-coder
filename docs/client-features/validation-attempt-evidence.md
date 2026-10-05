@@ -31,7 +31,7 @@ version, embedded revision, origin, availability, reason).
 
 * **input** (captured by `build_adversarial_validation_context` before
   reviewer submission; the cache-bypassing reconfirmation call does not
-  overwrite it): SHA-256 and UTF-8 byte length of the PR body, of each resolved
+  overwrite it): SHA-256 and UTF-8 byte length of the PR body (with the supplied PR `updated_at` as `pr_source_updated_at`, `null` when absent), of each resolved
   Issue body (ordered, with repository/number, `source_updated_at` and
   `retrieval_mode` only when the retrieval supplied them, otherwise `null`) and of
   the linked-Issue-context representation; `rendered_pr_body` only when the clipped
@@ -48,11 +48,12 @@ version, embedded revision, origin, availability, reason).
   `evidence_completion`), the submitted prompt fingerprint recorded *before*
   invocation, `manifest_transmitted` and either `supplied_manifest_id` or
   `continues_manifest_id` (or `continues_unavailable_reason`), the review-scoped
-  interaction IDs/backend/provider/requested model/reported model verified from
-  the existing interaction records (otherwise `unavailable_reason`), the exact
+  interaction IDs/backend/provider/requested model/reported model, verified only
+  from the interaction set read before and after the invocation (an unreadable
+  or unchanged set leaves it `unavailable_reason`, never guessed), the exact
   response fingerprint and state (`pending|nonempty|empty|unavailable`), the
   `semantic_payload` fingerprint only when CLI-envelope normalization changed it,
-  and `parse` (state, failure category, parsed verdict, returned
+  and `parse` (state, failure category, `parsed_verdict` (the model's own label), `post_parse_verdict` (after the parser's finding precedence), returned
   `id/status` entries exactly as parsed, including duplicates and unknown IDs). A
   missing or failed parse has `returned_entries_observed: false`, never an empty
   successful coverage set.
@@ -63,8 +64,9 @@ version, embedded revision, origin, availability, reason).
   does not check records `performed: false` with `not_performed_reason`.
 * **final**: the result returned to the caller, its `kind`
   (`semantic_response|local_without_semantic_response|exception`) and the
-  `source_response_id` it came from. A later local override never borrows an
-  earlier response's coverage or model identity.
+  `source_response_id` it came from. A later local override (including a failed follow-up or a dynamic-check
+  rejection) clears the source link and never borrows an earlier response's
+  coverage or model identity.
 
 `completeness` is `partial` (with `unrecorded` listing absent sections) until the
 final result is recorded, so an interrupted writer reads as explicitly partial,

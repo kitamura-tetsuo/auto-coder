@@ -125,6 +125,7 @@ class IssueInputObservation:
 class InputObservation:
     captured_at: str = ""
     pr_body: Fingerprint = field(default_factory=Fingerprint)
+    pr_source_updated_at: Optional[str] = None  # observed in the supplied PR metadata; None means unknown
     resolved_issues: List[IssueInputObservation] = field(default_factory=list)
     linked_issue_context: Fingerprint = field(default_factory=Fingerprint)
     rendered_pr_body: Optional[Fingerprint] = None  # only when the supplied form differs from the consumed body
@@ -169,7 +170,8 @@ class ResponseObservation:
     semantic_payload: Optional[Fingerprint] = None  # only when transport normalization changed the payload
     parse_state: str = "pending"  # pending | parsed | failed
     parse_failure_category: Optional[str] = None
-    parsed_verdict: Optional[str] = None
+    parsed_verdict: Optional[str] = None  # the verdict label the model itself returned
+    post_parse_verdict: Optional[str] = None  # after the parser's finding precedence, before coverage checking
     returned_entries: List[ReturnedEntry] = field(default_factory=list)
     returned_entries_observed: bool = False
 
@@ -291,7 +293,7 @@ class AttemptEvidenceRecorder:
         self._responses: List[ResponseObservation] = []
         self._checks: List[CoverageCheckObservation] = []
         self._final: Optional[FinalObservation] = None
-        self._assigned_interactions: set[str] = set()
+        self._interaction_baselines: Dict[str, Optional[set[str]]] = {}
         self._flush_failures = 0
 
     # -- identity ----------------------------------------------------------
@@ -339,6 +341,7 @@ class AttemptEvidenceRecorder:
                     phase.continues_manifest_id = earlier[-1]
                 else:
                     phase.continues_unavailable_reason = "no_earlier_supplied_manifest_recorded"
+            self._interaction_baselines[phase.response_id] = self._read_interaction_ids()
             self._responses.append(phase)
         self.flush()
 
@@ -352,20 +355,35 @@ class AttemptEvidenceRecorder:
         self._responses.append(phase)
         return phase
 
-    def _associate_interactions(self, phase: ResponseObservation) -> None:
+    def _read_interactions(self) -> Optional[List[Any]]:
         try:
             read = get_review_audit_store().get_evaluation(self._identity.repository, self._identity.review_id)
-            if read.record is None:
-                phase.interaction_unavailable_reason = "interaction_records_unavailable"
-                return
-            fresh = [i for i in read.record.interactions if i.interaction_id not in self._assigned_interactions]
         except Exception:
-            phase.interaction_unavailable_reason = "interaction_read_failed"
+            return None
+        return list(read.record.interactions) if read.record is not None else None
+
+    def _read_interaction_ids(self) -> Optional[set[str]]:
+        interactions = self._read_interactions()
+        return None if interactions is None else {i.interaction_id for i in interactions}
+
+    def _associate_interactions(self, phase: ResponseObservation) -> None:
+        """Verified only when the interaction set was readable both before and after the call.
+
+        A response is never matched to an interaction that merely remains
+        unassigned: unreadable evidence leaves the association unavailable.
+        """
+        if phase.response_id not in self._interaction_baselines or self._interaction_baselines[phase.response_id] is None:
+            phase.interaction_unavailable_reason = "pre_invocation_interaction_snapshot_unavailable"
             return
+        baseline = self._interaction_baselines[phase.response_id] or set()
+        interactions = self._read_interactions()
+        if interactions is None:
+            phase.interaction_unavailable_reason = "interaction_records_unavailable"
+            return
+        fresh = [i for i in interactions if i.interaction_id not in baseline]
         if not fresh:
             phase.interaction_unavailable_reason = "no_new_interaction_recorded"
             return
-        self._assigned_interactions.update(i.interaction_id for i in fresh)
         producer = next((i for i in reversed(fresh) if i.completion_status == "RETURNED"), fresh[-1])
         phase.interaction_ids = [i.interaction_id for i in fresh]
         phase.interaction_association = "verified_review_scoped_interaction_records"
@@ -373,7 +391,7 @@ class AttemptEvidenceRecorder:
         phase.backend_alias, phase.backend_type, phase.provider_alias = producer.backend_alias, producer.backend_type, producer.provider_alias
         phase.requested_model, phase.reported_model = producer.requested_model, producer.reported_model
 
-    def complete_response(self, stage: str, response: Optional[str], semantic_payload: Optional[str], returned: Optional[List[ReturnedEntry]], parsed_verdict: Optional[str], failure_category: Optional[str]) -> str:
+    def complete_response(self, stage: str, response: Optional[str], semantic_payload: Optional[str], returned: Optional[List[ReturnedEntry]], parsed_verdict: Optional[str], post_parse_verdict: Optional[str], failure_category: Optional[str]) -> str:
         """Record the response exactly as passed to the parser; returns its response_id."""
         with self._lock:
             phase = self._pending_phase(stage)
@@ -386,6 +404,7 @@ class AttemptEvidenceRecorder:
             phase.parse_state = "failed" if failure_category else "parsed"
             phase.parse_failure_category = failure_category
             phase.parsed_verdict = parsed_verdict
+            phase.post_parse_verdict = post_parse_verdict
             self._associate_interactions(phase)
             response_id = phase.response_id
         self.flush()
@@ -481,6 +500,7 @@ class AttemptEvidenceRecorder:
                 "captured_at": observed.captured_at,
                 "capture_time_is_not_freshness": True,
                 "pr_body": _fp(observed.pr_body),
+                "pr_source_updated_at": limits.label("input.pr_source_updated_at", observed.pr_source_updated_at),
                 "rendered_pr_body": _fp(observed.rendered_pr_body),
                 "linked_issue_context": _fp(observed.linked_issue_context),
                 "resolved_issues": [
@@ -560,6 +580,7 @@ class AttemptEvidenceRecorder:
                 "state": response.parse_state,
                 "failure_category": limits.label("response.parse_failure_category", response.parse_failure_category),
                 "parsed_verdict": limits.label("response.parsed_verdict", response.parsed_verdict),
+                "post_parse_verdict": limits.label("response.post_parse_verdict", response.post_parse_verdict),
                 "returned_entries_observed": response.returned_entries_observed,
                 "returned_entry_count": len(response.returned_entries),
                 "returned_entries": [{"id": limits.identity(entry.requirement_id), "status": limits.label("response.returned_status", entry.status)} for entry in returned],
@@ -723,14 +744,15 @@ def _safe(action: str) -> Iterator[None]:
         logger.opt(exception=True).warning(f"Validation evidence: {action} capture failed; validation is unaffected")
 
 
-def observe_context_inputs(repository: str, pr_body: str, resolution: Any, issue_context: str) -> None:
+def observe_context_inputs(repository: str, pr_body: str, resolution: Any, issue_context: str, pr_updated_at: Optional[Any] = None) -> None:
     """Fingerprint the PR/Issue inputs consumed by context construction."""
     recorder = active_recorder()
     if recorder is None:
         return
     with _safe("inputs"):
         issues = [IssueInputObservation(repository=repository, number=int(issue.number), body=fingerprint_text(issue.body), source_updated_at=getattr(issue, "updated_at", None), retrieval_mode=getattr(issue, "retrieval_mode", None)) for issue in getattr(resolution, "issues", ())]
-        recorder.observe_inputs(InputObservation(captured_at=_now_iso(), pr_body=fingerprint_text(pr_body), resolved_issues=issues, linked_issue_context=fingerprint_text(issue_context)))
+        source_updated_at = pr_updated_at if isinstance(pr_updated_at, str) and pr_updated_at else None
+        recorder.observe_inputs(InputObservation(captured_at=_now_iso(), pr_body=fingerprint_text(pr_body), pr_source_updated_at=source_updated_at, resolved_issues=issues, linked_issue_context=fingerprint_text(issue_context)))
 
 
 def observe_prompt(stage: str, prompt: str, manifest: Optional[ManifestInput], rendered_pr_body: Optional[str] = None) -> None:
@@ -748,6 +770,7 @@ class ParseScope:
     response: Optional[str]
     semantic_payload: Optional[str] = None
     returned: Optional[List[ReturnedEntry]] = None
+    model_verdict: Optional[str] = None
     result: Any = None
 
 
@@ -775,6 +798,7 @@ def response_parse(stage: str, response: Optional[str]) -> Iterator[Optional[Par
                 response,
                 scope.semantic_payload,
                 scope.returned,
+                scope.model_verdict,
                 str(getattr(result, "result", "")) if result is not None else None,
                 (getattr(result, "diagnostic_category", None) or "parse_failed") if failed or result is None else None,
             )
@@ -786,6 +810,12 @@ def observe_semantic_payload(raw_response: str, effective_response: str) -> None
     scope = _active_parse.get()
     if scope is not None:
         scope.semantic_payload = effective_response
+
+
+def observe_model_verdict(raw_result: str) -> None:
+    scope = _active_parse.get()
+    if scope is not None:
+        scope.model_verdict = raw_result
 
 
 def observe_returned_coverage(raw_entries: Sequence[Any]) -> None:
