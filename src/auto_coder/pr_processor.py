@@ -5151,7 +5151,7 @@ def _handle_pr_merge(
                         # REQ-001/REQ-002/REQ-004: one review_id covers every backend
                         # invocation (initial round, dynamic-check follow-up, session
                         # continuation) belonging to this one logical validation job.
-                        review_target = PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha)
+                        review_target = PrAdversarialReviewTarget(repository=repo_name, pr_number=pr_number, head_sha=head_sha, base_sha=str((pr_data.get("base") or {}).get("sha") or "") or None)
                         review_policy_identity = _pr_adversarial_policy_identity(config, thread_gate_enabled)
                         review_related_issue_membership = _pr_adversarial_linked_issue_membership(repo_name, pr_data, adversarial_eligibility.issue_numbers)
                         active_review_id: Optional[str] = None
@@ -5161,7 +5161,15 @@ def _handle_pr_merge(
                             if retained_reuse is not None:
                                 # The accepted closure's own ordinary result is consumed without a reviewer.
                                 val_result = restore_ordinary_result(retained_reuse)
-                                active_review_id = record_reused(review_target, policy_identity=review_policy_identity, source_review_id=None, native_verdict=val_result.result, related_issue_membership=review_related_issue_membership)
+                                active_review_id = record_reused(
+                                    review_target,
+                                    policy_identity=review_policy_identity,
+                                    source_review_id=None,
+                                    native_verdict=val_result.result,
+                                    related_issue_membership=review_related_issue_membership,
+                                    attempt_id=attempt.attempt_id,
+                                    attempt_sequence=attempt.sequence,
+                                )
                                 bridge, projection_target = _accepted_state_inputs(repo_name, pr_data, head_sha)
                                 base_projection = project_accepted_findings(bridge, projection_target, claimed_review_threads)
                                 val_result.accepted_finding_projection = project_accepted_findings(bridge, projection_target, claimed_review_threads, accepted_finding_dispositions(val_result, claimed_review_threads, base_projection, head_sha)) if base_projection.records else base_projection
@@ -5170,6 +5178,8 @@ def _handle_pr_merge(
                                     review_target,
                                     policy_identity=review_policy_identity,
                                     related_issue_membership=review_related_issue_membership,
+                                    attempt_id=attempt.attempt_id,
+                                    attempt_sequence=attempt.sequence,
                                 ) as active_review_id:
                                     with isolated_pr_head_worktree(repo_name, pr_number, head_sha) as validation_worktree:
                                         actions.append(f"Validated PR #{pr_number} in isolated worktree pinned to SHA {head_sha[:8]}")

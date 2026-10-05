@@ -36,6 +36,7 @@ from .pr_review_execution import ReviewExecutionInput, ReviewExecutionResult, bu
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .requirement_contract import build_normative_issue_manifest, is_explicit_test_deliverable
+from .review_capture import validation_evidence
 from .reviewer_session_registry import RecoveredFileEvidence, ReviewerSession, ReviewerSessionRegistry, TestOracleGap
 from .security_utils import redact_string
 from .trace_logger import get_trace_logger
@@ -534,6 +535,9 @@ class AdversarialValidationResult:
     local_repair_generation_id: str = ""
     local_repair_verification_pending: bool = False
     unverified_local_repairs: List[UnverifiedLocalRepair] = field(default_factory=list)
+    # Diagnostic-only link to the attempt-local response this result was parsed
+    # from; empty for a local outcome with no semantic answer. Never authority.
+    source_response_id: str = field(default="", repr=False)
 
     @property
     def is_pass(self) -> bool:
@@ -1382,6 +1386,9 @@ def build_adversarial_validation_context(
     resolution = resolve_issue_oracles(client, repo_name, pr_data=pr_data, pr_body=pr_body, bypass_cache=bypass_cache)
     issue_context = get_linked_issues_context(client, repo_name, pr_body=pr_body, pr_data=pr_data, resolution=resolution)
     manifest = build_issue_requirement_manifest(resolution)
+    if not bypass_cache:
+        # A cache-bypassing call only reconfirms a snapshot; the first construction is what the reviewer consumes.
+        validation_evidence.observe_context_inputs(repo_name, pr_body, resolution, issue_context, pr_data.get("updated_at"))
 
     # Extract changed test files from diff or all_changed_files
     changed_tests = [f for f in all_changed_files if is_test_file(f)] if all_changed_files else extract_changed_test_files(pr_diff)
@@ -1993,6 +2000,7 @@ def parse_adversarial_validation_response(
                 jsonl_error,
             )
     effective_response = extracted_message if jsonl_detected and extracted_message is not None else raw_response
+    validation_evidence.observe_semantic_payload(raw_response, effective_response)
     cleaned_response = effective_response.strip()
 
     # 1. Try parsing JSON block from markdown codeblock or direct JSON
@@ -2011,6 +2019,7 @@ def parse_adversarial_validation_response(
             parsed = json.loads(json_str, object_pairs_hook=_retain_duplicate_json_members)
             if isinstance(parsed, dict):
                 raw_result = str(parsed.get("result", "")).strip().upper()
+                validation_evidence.observe_model_verdict(raw_result)
                 summary = str(parsed.get("summary", "")).strip()
                 dynamic_check = parsed.get("dynamic_check_requested")
                 if dynamic_check:
@@ -2065,6 +2074,7 @@ def parse_adversarial_validation_response(
                         "Malformed validator schema: requirement_coverage must be a list",
                         f"requirement_coverage must be a list, got {type(raw_requirement_coverage).__name__}",
                     )
+                validation_evidence.observe_returned_coverage(raw_requirement_coverage)
                 requirement_coverage: List[RequirementCoverageEntry] = []
                 seen_requirement_ids: set[str] = set()
                 valid_coverage_statuses = {"VERIFIED", "VIOLATED", "IRRELEVANT", "UNVERIFIED"}
@@ -2914,6 +2924,7 @@ def _complete_changed_file_evidence(
         controller_retrievals=json.dumps(retrievals, indent=2),
     ) + _closure_prompt_extension(closure_input, context.issue_requirements)
     initial_identity = backend_manager.get_current_backend_identity()
+    validation_evidence.observe_prompt("evidence_completion", prompt, _manifest_input(context))
     try:
         response = backend_manager.continue_session(session_id, prompt, is_noedit=True)
         current_identity = backend_manager.get_current_backend_identity()
@@ -2931,7 +2942,8 @@ def _complete_changed_file_evidence(
             diagnostic_category="changed_file_completion_session_discontinuity",
             diagnostic_reason=f"Backend started a fresh session or switched identity instead of resuming the original reviewer session while completing: {', '.join(unresolved)}",
         )
-    completion = parse_adversarial_validation_response(
+    completion = _parse_reviewer_response(
+        "evidence_completion",
         response,
         recorded_test_oracle_gaps,
         closure_input,
@@ -2963,6 +2975,7 @@ def _complete_changed_file_evidence(
             requirement_coverage=completion.requirement_coverage,
             test_oracle_gaps=completion.test_oracle_gaps,
             thread_dispositions=completion.thread_dispositions,
+            source_response_id=completion.source_response_id,
         )
     # Round entries are the authoritative, current-round decision for every
     # path they cover (including a previously UNAVAILABLE path now resolved),
@@ -3479,11 +3492,52 @@ def assemble_adversarial_repair_prompt(
     return build_existing_pr_repair_prompt(target, rendered_payload, bundle=synth_bundle)
 
 
+def _manifest_input(context: AdversarialValidationContext) -> validation_evidence.ManifestInput:
+    return validation_evidence.ManifestInput(mode=context.requirement_manifest_mode, entries=[(requirement.requirement_id, requirement.text) for requirement in context.issue_requirements], validation_snapshot=context.validation_snapshot)
+
+
+def _parse_reviewer_response(
+    stage: str,
+    response: str,
+    recorded_test_oracle_gaps: Sequence[TestOracleGap] = (),
+    closure_input: Optional[ReviewExecutionInput] = None,
+    reviewer_provenance: str = "",
+) -> AdversarialValidationResult:
+    """Parse one semantic reviewer response, giving it its own diagnostic identity."""
+    with validation_evidence.response_parse(stage, response) as scope:
+        result = parse_adversarial_validation_response(response, recorded_test_oracle_gaps, closure_input, reviewer_provenance)
+        if scope is not None:
+            scope.result = result
+    return result
+
+
 def _apply_coverage_and_verdict_precedence(
     result: AdversarialValidationResult,
     context: AdversarialValidationContext,
 ) -> AdversarialValidationResult:
-    """Apply deterministic finding-first and complete-coverage verdict rules."""
+    """Apply deterministic finding-first and complete-coverage verdict rules.
+
+    The interpretation is recorded as diagnostic evidence bound to the response
+    the result came from; recording never alters the verdict.
+    """
+    manifest = _manifest_input(context)
+    skip = result.result == "ERROR" and bool(result.diagnostic_category)
+    handle = validation_evidence.observe_coverage_check_begin(
+        result.source_response_id,
+        manifest,
+        [entry.requirement_id for entry in result.requirement_coverage],
+        result.result,
+        "result_already_error_with_diagnostic" if skip else None,
+    )
+    checked = _enforce_coverage_and_verdict_precedence(result, context)
+    validation_evidence.observe_coverage_check_end(handle, checked.result, checked.diagnostic_category, checked.diagnostic_reason)
+    return checked
+
+
+def _enforce_coverage_and_verdict_precedence(
+    result: AdversarialValidationResult,
+    context: AdversarialValidationContext,
+) -> AdversarialValidationResult:
     if result.result == "ERROR" and result.diagnostic_category:
         return result
 
@@ -3978,6 +4032,7 @@ def run_adversarial_validation(
         evidence_recovery_budget=ADVERSARIAL_EVIDENCE_RECOVERY_BUDGET,
         closure_extension=closure_extension,
     )
+    validation_evidence.observe_prompt("initial", prompt, _manifest_input(context), context.pr_body[: config.MAX_PROMPT_SIZE * 2])
 
     # 4. Invoke the strong model
     with ProgressStage("Adversarial validation"):
@@ -4002,7 +4057,7 @@ def run_adversarial_validation(
     # 5. Parse response
     canonical_recorded_gaps = effective_lifecycle_session.test_oracle_gaps if effective_lifecycle_session else ()
     reviewer_provenance = "/".join(part for part in (used_backend, used_type, used_model) if part) or "unavailable"
-    result = parse_adversarial_validation_response(response, canonical_recorded_gaps, closure_input, reviewer_provenance)
+    result = _parse_reviewer_response("initial", response, canonical_recorded_gaps, closure_input, reviewer_provenance)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
     result = _reconcile_test_oracle_gap_lifecycle(
@@ -4064,10 +4119,11 @@ def run_adversarial_validation(
                     diagnostic_reason=target_error,
                 )
             else:
+                validation_evidence.observe_prompt("target_correction", correction_prompt, None)
                 correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
                 if refresh_ci_status is not None:
                     ci_status = refresh_ci_status()
-                result = parse_adversarial_validation_response(correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
+                result = _parse_reviewer_response("target_correction", correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
                 _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_correction")
                 corrected_target = (result.dynamic_check_requested or "").strip()
                 repeated_error = validate_dynamic_check_target(corrected_target, Path(execution_cwd).resolve()) if corrected_target and execution_cwd else None
@@ -4123,10 +4179,11 @@ def run_adversarial_validation(
                             diagnostic_category="dynamic_check_target_protocol_error",
                             diagnostic_reason=test_res.target_selection_error,
                         )
+                    validation_evidence.observe_prompt("target_selection_correction", correction_prompt, None)
                     correction_response = backend_manager.continue_session(correction_session_id, correction_prompt, is_noedit=True)
                     if refresh_ci_status is not None:
                         ci_status = refresh_ci_status()
-                    result = parse_adversarial_validation_response(correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
+                    result = _parse_reviewer_response("target_selection_correction", correction_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
                     _log_contextual_parse_diagnostics(result, correction_response, backend_manager, pr_number, "target_selection_correction")
                     corrected_target = (result.dynamic_check_requested or "").strip()
                     if not corrected_target:
@@ -4164,6 +4221,7 @@ def run_adversarial_validation(
                     pass
                 elif test_res.verification_error:
                     known_mismatch = test_res.executed_sha is not None
+                    result.source_response_id = ""  # a controller-local verdict never borrows the earlier response
                     result.result = "ERROR" if known_mismatch else "INCONCLUSIVE"
                     result.summary = f"Dynamic validation evidence rejected: {test_res.verification_error}"
                     result.diagnostic_category = "dynamic_check_head_mismatch" if known_mismatch else "dynamic_check_head_unverifiable"
@@ -4207,6 +4265,7 @@ def run_adversarial_validation(
                         )
                         + closure_extension
                     )
+                    validation_evidence.observe_prompt("dynamic_check_followup", followup_prompt, _manifest_input(context))
                     with ProgressStage("Adversarial dynamic check follow-up"):
                         followup_session_id = getattr(backend_manager, "_last_session_id", None)
                         if isinstance(followup_session_id, str) and followup_session_id:
@@ -4215,7 +4274,7 @@ def run_adversarial_validation(
                             # Never guess an implicit last session. A provider that did not
                             # expose an ID cannot safely retain dynamic-check context.
                             raise RuntimeError("Reviewer provider did not return an explicit session ID for dynamic follow-up")
-                    result = parse_adversarial_validation_response(followup_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
+                    result = _parse_reviewer_response("dynamic_check_followup", followup_response, result.test_oracle_gaps, closure_input, reviewer_provenance)
                     _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
                     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
                     result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
@@ -4242,6 +4301,7 @@ def run_adversarial_validation(
             except Exception as e:
                 logger.warning(f"Failed to execute dynamic validation check '{check_target}': {e}")
                 # Inability to complete a requested check must be treated as non-pass (fail-closed)
+                result.source_response_id = ""  # no semantic answer produced this outcome
                 result.result = "BLOCKED"
                 result.summary = f"Dynamic validation check '{check_target}' could not be completed: {e}"
                 if initial_thread_dispositions:

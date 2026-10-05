@@ -89,6 +89,45 @@ class ReviewEffectRecord:
     details: Optional[Dict[str, Any]] = None
 
 
+class ValidationEvidenceReadStatus(str, Enum):
+    """Distinguishable outcomes of an exact attempt-evidence lookup."""
+
+    AVAILABLE = "AVAILABLE"
+    NOT_FOUND = "NOT_FOUND"
+    PRE_FEATURE = "PRE_FEATURE"  # the audit predates this extension (no table, or only a legacy evaluation exists)
+    UNSUPPORTED_SCHEMA = "UNSUPPORTED_SCHEMA"
+    CORRUPT = "CORRUPT"
+    UNINITIALIZED = "UNINITIALIZED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclasses.dataclass
+class ValidationEvidenceRow:
+    """One attempt-bound diagnostic row; ``payload`` is the bounded, redacted JSON object."""
+
+    review_id: str
+    repository: str
+    pr_number: str
+    attempt_id: str
+    attempt_sequence: int
+    role: str  # "producer" or "reuse"
+    schema_version: int
+    completeness: str  # "partial" or "complete"
+    updated_at: str
+    payload: Dict[str, Any] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
+class ValidationEvidenceReadResult:
+    status: ValidationEvidenceReadStatus
+    producer: Optional[ValidationEvidenceRow] = None
+    reuse_observations: List[ValidationEvidenceRow] = dataclasses.field(default_factory=list)
+    effects: List[ReviewEffectRecord] = dataclasses.field(default_factory=list)
+
+
+VALIDATION_EVIDENCE_SCHEMA_VERSION = 1
+
+
 @dataclasses.dataclass
 class ReviewInteractionRecord:
     interaction_id: str
@@ -295,6 +334,24 @@ class ReviewAuditStore:
                     )
                 """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS validation_evidence (
+                        review_id TEXT PRIMARY KEY,
+                        repository TEXT,
+                        pr_number TEXT,
+                        attempt_id TEXT,
+                        attempt_sequence INTEGER,
+                        role TEXT,
+                        schema_version INTEGER,
+                        completeness TEXT,
+                        updated_at TEXT,
+                        payload TEXT -- JSON object
+                    )
+                """
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS validation_evidence_attempt_id ON validation_evidence (pr_number, attempt_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS validation_evidence_attempt_sequence ON validation_evidence (pr_number, attempt_sequence)")
             return conn
         except Exception as e:
             logger.error(f"Failed to ensure audit db for {repository}: {e}")
@@ -590,6 +647,131 @@ class ReviewAuditStore:
                     return True  # already recorded
         except Exception as e:
             logger.error(f"Failed to record effect {effect.effect_id}: {e}")
+            return False
+
+    def record_validation_evidence(self, row: ValidationEvidenceRow, credentials: Optional[Sequence[str]] = None) -> bool:
+        """Insert or replace one attempt-bound diagnostic row for ``row.review_id``.
+
+        Best-effort and non-authorizing. The payload is redacted again here so a
+        caller cannot persist a configured credential or known token family.
+        """
+        conn = self._ensure_db(row.repository)
+        if not conn:
+            return False
+        try:
+            payload = json.dumps(redact_sensitive_data(row.payload, credentials), sort_keys=True, ensure_ascii=False)
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO validation_evidence (
+                        review_id, repository, pr_number, attempt_id, attempt_sequence,
+                        role, schema_version, completeness, updated_at, payload
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(review_id) DO UPDATE SET
+                        completeness = excluded.completeness,
+                        updated_at = excluded.updated_at,
+                        payload = excluded.payload
+                    """,
+                    (row.review_id, row.repository, row.pr_number, row.attempt_id, row.attempt_sequence, row.role, row.schema_version, row.completeness, row.updated_at, payload),
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to record validation evidence {row.review_id}: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def get_validation_evidence(
+        self,
+        repository: str,
+        pr_number: str,
+        attempt_id: Optional[str] = None,
+        attempt_sequence: Optional[int] = None,
+    ) -> ValidationEvidenceReadResult:
+        """Exact, read-only lookup by native attempt ID or sequence.
+
+        Uses the attempt indexes and never loads the repository's audit history.
+        The original producing row is returned separately from any reuse rows;
+        effects remain attributable to the review row they were recorded for.
+        """
+        if attempt_id is None and attempt_sequence is None:
+            return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.NOT_FOUND)
+        conn, health = self._connect_readonly(repository)
+        if conn is None:
+            status = ValidationEvidenceReadStatus.UNINITIALIZED if health == StorageHealth.UNINITIALIZED else ValidationEvidenceReadStatus.UNAVAILABLE
+            return ValidationEvidenceReadResult(status=status)
+        try:
+            has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'validation_evidence'").fetchone() is not None
+            if not has_table:
+                return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.PRE_FEATURE)
+            conditions = ["pr_number = ?"]
+            params: list[Any] = [str(pr_number)]
+            if attempt_id is not None:
+                conditions.append("attempt_id = ?")
+                params.append(attempt_id)
+            if attempt_sequence is not None:
+                conditions.append("attempt_sequence = ?")
+                params.append(int(attempt_sequence))
+            rows = conn.execute(f"SELECT rowid AS rid, * FROM validation_evidence WHERE {' AND '.join(conditions)} ORDER BY rid ASC LIMIT 501", params).fetchall()
+            if not rows:
+                if self._has_legacy_attempt_evaluation(conn, str(pr_number), attempt_id, attempt_sequence):
+                    return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.PRE_FEATURE)
+                return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.NOT_FOUND)
+            parsed: List[ValidationEvidenceRow] = []
+            for row in rows[:500]:
+                if row["schema_version"] != VALIDATION_EVIDENCE_SCHEMA_VERSION:
+                    return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.UNSUPPORTED_SCHEMA)
+                try:
+                    payload = json.loads(row["payload"])
+                except (TypeError, ValueError):
+                    return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.CORRUPT)
+                if not isinstance(payload, dict):
+                    return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.CORRUPT)
+                parsed.append(
+                    ValidationEvidenceRow(
+                        review_id=row["review_id"],
+                        repository=row["repository"],
+                        pr_number=row["pr_number"],
+                        attempt_id=row["attempt_id"],
+                        attempt_sequence=row["attempt_sequence"],
+                        role=row["role"],
+                        schema_version=row["schema_version"],
+                        completeness=row["completeness"],
+                        updated_at=row["updated_at"],
+                        payload=payload,
+                    )
+                )
+            producers = [row for row in parsed if row.role == "producer"]
+            effects: List[ReviewEffectRecord] = []
+            for row in parsed:
+                effect_rows = conn.execute("SELECT * FROM effect WHERE review_id = ? ORDER BY seq ASC", (row.review_id,)).fetchall()
+                effects.extend(self._row_to_effect(effect_row) for effect_row in effect_rows)
+            return ValidationEvidenceReadResult(
+                status=ValidationEvidenceReadStatus.AVAILABLE,
+                producer=producers[0] if producers else None,
+                reuse_observations=[row for row in parsed if row.role != "producer"],
+                effects=effects,
+            )
+        except Exception as e:
+            logger.error(f"Failed to read validation evidence for PR {pr_number}: {e}")
+            return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.UNAVAILABLE)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _has_legacy_attempt_evaluation(conn: sqlite3.Connection, pr_number: str, attempt_id: Optional[str], attempt_sequence: Optional[int]) -> bool:
+        """Whether a pre-feature evaluation retained this native attempt in its report."""
+        conditions = ["target_type = 'pr'", "target_number = ?"]
+        params: list[Any] = [pr_number]
+        if attempt_id is not None:
+            conditions.append("json_extract(native_report, '$.attempt_id') = ?")
+            params.append(attempt_id)
+        if attempt_sequence is not None:
+            conditions.append("json_extract(native_report, '$.attempt_sequence') = ?")
+            params.append(int(attempt_sequence))
+        try:
+            return conn.execute(f"SELECT 1 FROM evaluation WHERE {' AND '.join(conditions)} LIMIT 1", params).fetchone() is not None
+        except sqlite3.Error:
             return False
 
     def get_evaluation(self, repository: str, review_id: str) -> AuditSingleReadResult:
