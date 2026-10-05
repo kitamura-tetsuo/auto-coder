@@ -85,6 +85,12 @@ never overwriting it:
   changed) appends `superseded` and leaves the original review's own result
   untouched as historical evidence for its own head.
 
+## Attempt-bound diagnostic evidence
+
+Each executed attempt additionally carries a bounded input/manifest/response/
+coverage diagnostic record, documented in
+`validation-attempt-evidence.md`.
+
 ## Non-interference guarantee
 
 All audit recording is best-effort and wrapped so a failure (a full disk, a

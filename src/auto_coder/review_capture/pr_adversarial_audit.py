@@ -35,6 +35,7 @@ from ..review_audit import (
     ReviewAuditRecord,
     ReviewEffectRecord,
 )
+from . import validation_evidence
 from .context import bind_review_context
 from .recorder import get_review_audit_store
 
@@ -66,6 +67,7 @@ class PrAdversarialReviewTarget:
     repository: str
     pr_number: int
     head_sha: str
+    base_sha: Optional[str] = None
 
 
 def compute_policy_identity(*, max_adversarial_reviews: Optional[int], thread_gate_enabled: bool) -> str:
@@ -223,10 +225,17 @@ def record_reused(
     source_review_id: Optional[str],
     native_verdict: Optional[str] = None,
     related_issue_membership: Optional[str] = None,
+    attempt_id: Optional[str] = None,
+    attempt_sequence: Optional[int] = None,
 ) -> str:
     """Record a REUSED observation: an existing authoritative result was consumed
     without a new reviewer-backend invocation. ``source_review_id`` is None when
-    provenance is genuinely unavailable (legacy pre-instrumentation result)."""
+    provenance is genuinely unavailable (legacy pre-instrumentation result).
+
+    When the reused result's native attempt is known, a separate reuse
+    observation references the attempt's recorded producer (if any); it never
+    copies or replaces the producer's build/input evidence.
+    """
     review_id = _new_id()
     record = ReviewAuditRecord(
         review_id=review_id,
@@ -249,6 +258,15 @@ def record_reused(
         source_review_id=source_review_id,
     )
     _record_evaluation_best_effort(record)
+    if attempt_id and attempt_sequence:
+        validation_evidence.record_reuse_observation(
+            repository=target.repository,
+            pr_number=target.pr_number,
+            head_sha=target.head_sha,
+            review_id=review_id,
+            attempt_id=attempt_id,
+            attempt_sequence=attempt_sequence,
+        )
     return review_id
 
 
@@ -258,10 +276,16 @@ def begin_executed_review(
     *,
     policy_identity: str,
     related_issue_membership: Optional[str] = None,
+    attempt_id: Optional[str] = None,
+    attempt_sequence: Optional[int] = None,
 ) -> Iterator[str]:
     """Allocate a review_id, record QUEUED then RUNNING, and bind the shared
     review-invocation context so every actual backend call made inside the
     ``with`` block is captured as this review's interaction (REQ-001, REQ-004).
+
+    When the native attempt identity is supplied, attempt-bound diagnostic
+    evidence capture is started and bound for the block (Issue #2433); it is
+    observation only and never changes validation.
 
     Callers must call :func:`finish_executed_review` after the block with the
     final (or absent, on an unrecovered exception) ``AdversarialValidationResult``.
@@ -294,13 +318,25 @@ def begin_executed_review(
         lifecycle=EvaluationLifecycle.RUNNING,
         execution_mode=ExecutionMode.UNKNOWN,
     )
-    with bind_review_context(
-        review_id=review_id,
+    recorder = validation_evidence.start_attempt_capture(
         repository=target.repository,
-        target_type="pr",
-        target_number=str(target.pr_number),
-        review_kind=REVIEW_KIND_PR_ADVERSARIAL,
-        generation_identity=target.head_sha,
+        pr_number=target.pr_number,
+        head_sha=target.head_sha,
+        base_sha=target.base_sha,
+        review_id=review_id,
+        attempt_id=attempt_id,
+        attempt_sequence=attempt_sequence,
+    )
+    with (
+        bind_review_context(
+            review_id=review_id,
+            repository=target.repository,
+            target_type="pr",
+            target_number=str(target.pr_number),
+            review_kind=REVIEW_KIND_PR_ADVERSARIAL,
+            generation_identity=target.head_sha,
+        ),
+        validation_evidence.bind_recorder(recorder),
     ):
         yield review_id
 
@@ -340,6 +376,7 @@ def finish_executed_review(
         native_verdict=native_verdict,
         native_report=native_report,
     )
+    validation_evidence.finish_attempt_capture(review_id, result)
     return execution_mode
 
 

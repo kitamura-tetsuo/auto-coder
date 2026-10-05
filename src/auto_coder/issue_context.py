@@ -12,6 +12,9 @@ class VerifiedIssueOracle:
     number: int
     title: str = "Unknown"
     body: str = ""
+    # Observed only when the retrieval actually supplied them; ``None`` means unknown.
+    updated_at: Optional[str] = None
+    retrieval_mode: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -254,10 +257,13 @@ def resolve_issue_oracles(
     for issue_number in candidates:
         try:
             if bypass_cache and callable(strict_snapshot_getter):
+                retrieval_mode = "strict_snapshot"
                 issue = github_client.get_issue_dispatch_snapshot_strict(repo_name, issue_number)
             elif callable(strict_getter):
+                retrieval_mode = "strict"
                 issue = github_client.get_issue_strict(repo_name, issue_number)
             else:
+                retrieval_mode = "default"
                 issue = github_client.get_issue(repo_name, issue_number)
         except Exception as e:
             return IssueOracleResolution(candidates=candidates, error=f"Failed to retrieve referenced Issue #{issue_number}: {e}")
@@ -270,14 +276,17 @@ def resolve_issue_oracles(
                 return IssueOracleResolution(candidates=candidates, error=f"Reference #{issue_number} resolves to a pull request, not an Issue")
             title = issue.get("title") or "Unknown"
             body = issue.get("body") or ""
+            observed_updated_at = issue.get("updated_at")
         else:
             raw_data = getattr(issue, "_rawData", None)
             if isinstance(raw_data, dict) and raw_data.get("pull_request") is not None:
                 return IssueOracleResolution(candidates=candidates, error=f"Reference #{issue_number} resolves to a pull request, not an Issue")
             title = getattr(issue, "title", "Unknown") or "Unknown"
             body = getattr(issue, "body", "") or ""
+            observed_updated_at = raw_data.get("updated_at") if isinstance(raw_data, dict) else None
 
-        verified_issues.append(VerifiedIssueOracle(number=issue_number, title=str(title), body=str(body)))
+        updated_at = observed_updated_at if isinstance(observed_updated_at, str) and observed_updated_at else None
+        verified_issues.append(VerifiedIssueOracle(number=issue_number, title=str(title), body=str(body), updated_at=updated_at, retrieval_mode=retrieval_mode))
 
     return IssueOracleResolution(candidates=candidates, issues=tuple(verified_issues))
 
