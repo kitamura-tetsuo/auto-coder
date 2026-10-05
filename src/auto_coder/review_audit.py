@@ -118,8 +118,20 @@ class ValidationEvidenceRow:
 
 
 @dataclasses.dataclass
+class LegacyAttemptRecord:
+    """Known metadata of a pre-feature evaluation that retained the selected native attempt."""
+
+    review_id: str
+    attempt_id: Optional[str]
+    attempt_sequence: Optional[int]
+    reviewed_generation: Optional[str]
+    creation_time: Optional[str]
+
+
+@dataclasses.dataclass
 class ValidationEvidenceReadResult:
     status: ValidationEvidenceReadStatus
+    legacy: Optional[LegacyAttemptRecord] = None
     producer: Optional[ValidationEvidenceRow] = None
     reuse_observations: List[ValidationEvidenceRow] = dataclasses.field(default_factory=list)
     effects: List[ReviewEffectRecord] = dataclasses.field(default_factory=list)
@@ -703,7 +715,7 @@ class ReviewAuditStore:
         try:
             has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'validation_evidence'").fetchone() is not None
             if not has_table:
-                return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.PRE_FEATURE)
+                return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.PRE_FEATURE, legacy=self._legacy_attempt_evaluation(conn, str(pr_number), attempt_id, attempt_sequence))
             conditions = ["pr_number = ?"]
             params: list[Any] = [str(pr_number)]
             if attempt_id is not None:
@@ -714,8 +726,9 @@ class ReviewAuditStore:
                 params.append(int(attempt_sequence))
             rows = conn.execute(f"SELECT rowid AS rid, * FROM validation_evidence WHERE {' AND '.join(conditions)} ORDER BY rid ASC LIMIT 501", params).fetchall()
             if not rows:
-                if self._has_legacy_attempt_evaluation(conn, str(pr_number), attempt_id, attempt_sequence):
-                    return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.PRE_FEATURE)
+                legacy = self._legacy_attempt_evaluation(conn, str(pr_number), attempt_id, attempt_sequence)
+                if legacy is not None:
+                    return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.PRE_FEATURE, legacy=legacy)
                 return ValidationEvidenceReadResult(status=ValidationEvidenceReadStatus.NOT_FOUND)
             parsed: List[ValidationEvidenceRow] = []
             for row in rows[:500]:
@@ -759,8 +772,8 @@ class ReviewAuditStore:
             conn.close()
 
     @staticmethod
-    def _has_legacy_attempt_evaluation(conn: sqlite3.Connection, pr_number: str, attempt_id: Optional[str], attempt_sequence: Optional[int]) -> bool:
-        """Whether a pre-feature evaluation retained this native attempt in its report."""
+    def _legacy_attempt_evaluation(conn: sqlite3.Connection, pr_number: str, attempt_id: Optional[str], attempt_sequence: Optional[int]) -> Optional[LegacyAttemptRecord]:
+        """The pre-feature evaluation that retained this native attempt in its report, if any."""
         conditions = ["target_type = 'pr'", "target_number = ?"]
         params: list[Any] = [pr_number]
         if attempt_id is not None:
@@ -770,9 +783,22 @@ class ReviewAuditStore:
             conditions.append("json_extract(native_report, '$.attempt_sequence') = ?")
             params.append(int(attempt_sequence))
         try:
-            return conn.execute(f"SELECT 1 FROM evaluation WHERE {' AND '.join(conditions)} LIMIT 1", params).fetchone() is not None
+            row = conn.execute(
+                "SELECT review_id, reviewed_generation, creation_time, json_extract(native_report, '$.attempt_id') AS attempt_id, " f"json_extract(native_report, '$.attempt_sequence') AS attempt_sequence FROM evaluation WHERE {' AND '.join(conditions)} ORDER BY creation_sequence ASC LIMIT 1",
+                params,
+            ).fetchone()
         except sqlite3.Error:
-            return False
+            return None
+        if row is None:
+            return None
+        sequence = row["attempt_sequence"]
+        return LegacyAttemptRecord(
+            review_id=row["review_id"],
+            attempt_id=row["attempt_id"] if isinstance(row["attempt_id"], str) else None,
+            attempt_sequence=sequence if isinstance(sequence, int) and not isinstance(sequence, bool) else None,
+            reviewed_generation=row["reviewed_generation"] or None,
+            creation_time=row["creation_time"] or None,
+        )
 
     def get_evaluation(self, repository: str, review_id: str) -> AuditSingleReadResult:
         """Gets a single evaluation and its interactions/effects."""

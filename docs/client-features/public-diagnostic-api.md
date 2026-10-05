@@ -8,8 +8,8 @@ existing runtime status and bounded diagnostic events. It is implemented in
 ## Enablement
 
 Set `AUTO_CODER_PUBLIC_API_ENABLED=1` in the daemon's environment before it
-starts. With any other value (or none) `GET/POST/... /api/`, `/api/status` and
-`/api/logs` return plain 404 and disclose nothing, regardless of method or query.
+starts. With any other value (or none) `GET/POST/... /api/`, `/api/status`,
+`/api/logs` and `/api/validation-attempts` return plain 404 and disclose nothing, regardless of method or query.
 Enabling publishes data only for the daemon's configured repository; no request
 can select another repository, path, URL or command. No login, cookie, token,
 OAuth or MCP is involved. Existing dashboard, webhook and operator-write
@@ -23,6 +23,8 @@ curl -s https://HOST/api/status                 # workers, queue, implementation
 curl -s 'https://HOST/api/logs?limit=50'        # newest 50 retained events, ascending sequence
 curl -s 'https://HOST/api/logs?item_type=pr&item_number=123'
 curl -s "https://HOST/api/logs?item_type=pr&item_number=123&execution_id=$EXEC&process_run_id=$RUN"
+curl -s 'https://HOST/api/validation-attempts?pr_number=123&attempt_sequence=42'
+curl -s 'https://HOST/api/validation-attempts?pr_number=123&attempt_id=0123456789abcdef0123456789abcdef'
 ```
 
 Both data routes accept `limit` (integer 1-500, default 100, applied per
@@ -55,6 +57,82 @@ original timestamp, origin, stage, label, kind and outcome. Only the facts
 `reason`, `error`, `phase`, `backend`, `provider`, `attempt_id`, `request_id`,
 `provider_task_id`, `head_sha` and `exit_code` are exported. Unscoped structured
 events appear only in unfiltered reads and are marked `scope: "unscoped"`.
+
+## `/api/validation-attempts` (durable attempt diagnostics)
+
+Answers "why did this validation attempt report VERIFIED entries yet reject
+their IDs?" from the attempt-bound record captured by ordinary PR adversarial
+validation (see `validation-attempt-evidence.md`). It is read from the existing
+review audit root (`AUTO_CODER_REVIEW_AUDIT_ROOT`, default
+`~/.auto-coder/review_audit`) through the exact, read-only
+`ReviewAuditStore.get_validation_evidence` lookup, so a committed record stays
+selectable after the serving process restarts. It is not a log tail and
+`/api/logs` is not turned into a durable archive.
+
+Parameters: positive integer `pr_number` and **exactly one** of `attempt_id`
+(the native 32-lowercase-hex attempt ID, as in the
+`auto-coder-adversarial-validation-attempt:v1:<sequence>:<id>` PR marker) or
+positive integer `attempt_sequence`. Neither, both, duplicate, unknown (for
+example `repository`, `path`, `url`, `command`), malformed or oversized values
+return a non-echoing 422. No newest-record guess, substring match, history scan or
+current-GitHub reconstruction ever stands in for a missing exact match.
+
+`result` values (HTTP 200): `attempt` (a recorded attempt; `evidence` set),
+`no_retained_match` (nothing retained for that exact repository/PR/attempt; this
+does **not** prove the attempt never occurred), `evidence_unavailable` (a
+pre-feature audit retained the attempt without the extension; reason
+`pre_feature_audit_record`; `evidence` carries the known attempt/review identity and
+evaluated head, with every diagnostic section `unavailable` / `pre_feature_capture_not_recorded`) and `audit_not_initialized` (no audit exists yet; the
+read never creates it). An unreadable, corrupt, unsupported or unprojectable
+source returns 503 `observation_unavailable` with `data: null` and no source
+detail; there is no fallback to another attempt or a cached/empty success.
+
+An `attempt` carries (typed allowlist only):
+
+* `identity`: exact attempt ID/sequence, review ID, repository/PR, evaluated head
+  and base, and the producing process/execution when recorded
+  (`identity.unavailable` lists what was not).
+* `producing_artifact`: the installed controller version and embedded source
+  revision recorded by the **producing** process at capture (with origin and
+  explicit unavailable reasons) — never the reviewed PR head or latest main.
+  `serving` (top level) separately gives the process that answered this request
+  and its sampling time; a restart never relabels an old record.
+* `input`: SHA-256/byte-length fingerprints of the consumed PR body, each resolved
+  Issue body and the linked-Issue context, with observed source-time/retrieval
+  provenance. `captured_at` is capture time, not freshness.
+* `manifests` / `responses` / `coverage_checks`: supplied and checked manifest
+  mode, ordered IDs, per-entry text digests, counts and identity digest; per
+  response its stage, prompt/response fingerprints, backend/model provenance (only
+  what was verified), parse state, model verdict and the returned `id/status`
+  entries exactly as parsed; per check the expected/returned/missing/duplicate/
+  unknown IDs, `verdict_before`/`verdict_after` and diagnostic category/reason,
+  bound to its `response_id`; `final` with the result and `source_response_id`.
+* `effects` and `reuse_observations`, attributed to their own review rows.
+
+Meanings: returned `VERIFIED` counts, a recorded `PASS` or a confirmed
+publication are recorded observations, never accepted coverage, provider
+liveness, merge permission or current GitHub state. Sections can be
+`not_recorded` (interrupted/partial capture), `omitted` (capture could not fit
+it) or `unavailable`; none of these is "empty" or "complete". Hashes are
+comparison fingerprints of capture-time input, not links to raw content; no
+Issue/PR bodies, requirement text, prompts, diffs, raw responses, paths, URLs,
+credentials or dereferencing endpoint are exposed.
+
+Bounds: at most 256 KiB, 500 entries per collection and 2,000 characters per text.
+Each collection reports `source_count`, `retained_in_source`, `returned`,
+`source_omitted` (capture-time loss, also in `source_limits`) and `http_clipped`
+(additional clipping by this response, also in `http_limits`) plus `incomplete`.
+Redaction (credential patterns, Bearer/Basic, URLs, paths) runs before clipping.
+Identities are exact or replaced by `{"omitted": true, "reason", "sha256",
+"byte_length"}` — never shortened. Only requirement IDs matching the supported
+grammar (`REQ-001`, `#99/REQ-001`, `owner/repo#99/REQ-001`) are plaintext;
+other returned IDs are digest/length only, and when any ID in the record is not
+plaintext, every `diagnostic_reason` (which can quote IDs) is withheld and replaced
+by `diagnostic_reason_omitted` (digest/length). A section's `state.incomplete` is
+true when its own, a nested collection's, or the capture's omission ledger shows loss. When the body is too large, entry caps
+shrink stepwise while the exact attempt identity, verdicts and availability
+states are kept. The route never mutates the audit, calls GitHub/providers/LLMs,
+validates or repairs anything, and its synchronous SQLite read runs off the event loop.
 
 ## Incremental reads (`after_sequence` / `cursor`)
 

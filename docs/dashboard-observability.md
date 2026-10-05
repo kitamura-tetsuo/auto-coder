@@ -1870,6 +1870,10 @@ worker/queue state and the slot snapshot. They add no trace emissions, origins,
 outcomes or event-schema fields; the runnable regressions are `tests/test_public_api.py` and
 `tests/test_public_api_incremental.py` (incremental `after_sequence`/`cursor` pages adopt the
 collector's continuity snapshot at the HTTP boundary only, adding no emission authority).
+`/api/validation-attempts` is observability-neutral for trace emission: it reads only the durable
+review-audit attempt record captured by ordinary PR adversarial validation (no new origin, admission gate,
+outcome, routing, resumption path or event schema), and `tests/test_public_validation_attempts.py` proves the
+production `_handle_pr_merge` origin → audit capture → mounted HTTP route path.
 
 # Complete CI job detail pagination
 

@@ -81,6 +81,7 @@ OMIT_RESPONSE_BOUND = "representation_exceeds_response_bound"
 
 _STATUS_PARAMS = frozenset({"limit"})
 _LOGS_PARAMS = frozenset({"limit", "item_type", "item_number", "execution_id", "process_run_id", "after_sequence", "cursor"})
+_VALIDATION_ATTEMPT_PARAMS = frozenset({"pr_number", "attempt_id", "attempt_sequence"})
 _SELECTOR_PARAMS = ("after_sequence", "process_run_id", "item_type", "item_number", "execution_id")
 
 
@@ -829,7 +830,15 @@ def public_api_enabled() -> bool:
 
 
 def init_public_api(app: FastAPI, engine: Any, repo_name: str) -> None:
-    """Register the three read-only routes on ``app`` (GET only; other methods get 405)."""
+    """Register the four read-only routes on ``app`` (GET only; other methods get 405)."""
+    from .public_validation_attempts import (
+        InvalidSelection,
+        ObservationFailed,
+        ValidationAttemptUnavailable,
+        build_validation_attempt,
+        parse_selection,
+    )
+    from .review_capture.recorder import get_review_audit_store
 
     def error(status: int, code: str, message: str, run_id: Optional[str] = None) -> Response:
         return _json_response(ErrorResponse(repo_name, ErrorDetail(code, message), run_id), status)
@@ -895,6 +904,29 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str) -> None:
             logger.exception("public API logs: projection failed")
             return error(503, "observation_unavailable", "Diagnostic events could not be projected.")
 
+    @app.get("/api/validation-attempts", include_in_schema=False)
+    async def api_validation_attempts(request: Request) -> Response:
+        try:
+            selection = parse_selection(_parse_params(request, _VALIDATION_ATTEMPT_PARAMS))
+        except (InvalidRequest, InvalidSelection):
+            return invalid()
+        unavailable = Response(
+            _dump(ValidationAttemptUnavailable(repo_name, "observation_unavailable", "Validation-attempt evidence could not be read or projected.")),
+            status_code=503,
+            media_type="application/json",
+            headers={"Cache-Control": "no-store"},
+        )
+        try:
+            # The audit read is synchronous SQLite I/O: keep it off the event loop.
+            body = await asyncio.to_thread(lambda: build_validation_attempt(get_review_audit_store(), repo_name, selection))
+        except ObservationFailed:
+            logger.warning("public API validation-attempts: evidence unavailable")
+            return unavailable
+        except Exception:
+            logger.exception("public API validation-attempts: observation failed")
+            return unavailable
+        return Response(body, media_type="application/json", headers={"Cache-Control": "no-store"})
+
 
 def _index_document(repo_name: str, run_id: Optional[str]) -> dict:
     return {
@@ -921,6 +953,15 @@ def _index_document(repo_name: str, run_id: Optional[str]) -> dict:
                     "cursor": "opaque next_cursor from an incremental response; only limit may accompany it",
                 },
             },
+            "validation_attempts": {
+                "path": "/api/validation-attempts",
+                "method": "GET",
+                "parameters": {
+                    "pr_number": "required positive integer",
+                    "attempt_id": "native attempt ID (32 lowercase hex characters); exactly one of attempt_id / attempt_sequence",
+                    "attempt_sequence": "native positive integer attempt sequence; exactly one of attempt_id / attempt_sequence",
+                },
+            },
         },
         "limits": {"max_entries_per_collection": MAX_LIMIT, "max_text_chars": MAX_TEXT_CHARS, "max_response_bytes": MAX_RESPONSE_BYTES},
         "meanings": {
@@ -933,6 +974,14 @@ def _index_document(repo_name: str, run_id: Optional[str]) -> dict:
                 "has_more/next_cursor continue the fixed interval ending at snapshot_upper_sequence, and omissions lists matching "
                 "records consumed but not returned. 409 retention_gap: coverage of the pending interval is unknown; "
                 "409 process_run_changed: the process restarted. Acknowledge next_after_sequence only after processing a page."
+            ),
+            "validation_attempts": (
+                "One attempt's durable, capture-time diagnostic evidence from the existing review audit root (not process-local logs, not current GitHub content): "
+                "exact attempt identity, the producing build/process recorded at capture (separate from serving), input and requirement-ID fingerprints, "
+                "supplied/checked manifests, response fingerprints, parsed returned entries and the deterministic coverage interpretation. "
+                "result no_retained_match does not mean the attempt never occurred; evidence_unavailable / audit_not_initialized / not_recorded / omitted sections are unknown, not empty or complete; "
+                "returned VERIFIED counts, a recorded PASS or publication are not accepted coverage or merge permission; hashes are comparison fingerprints, not raw content. "
+                "503 observation_unavailable carries null data."
             ),
             "process_local_logs": "Logs are structured diagnostic events held in this process's memory; they reset on restart and are not raw logs or a durable history.",
         },
