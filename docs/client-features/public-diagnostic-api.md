@@ -126,7 +126,9 @@ retention flags; `text_truncated` marks clipped text and `filtered` marks
 redaction. Identity fields are never truncated; an event whose identity cannot be
 represented exactly is omitted and counted in `omitted_unrepresentable`.
 Redaction runs before clipping: GitHub/Google/OpenAI-style/AWS/Slack/GitLab token
-patterns, `Bearer`/`Basic` values, and HTTP(S) URLs are replaced with markers.
+patterns, `Bearer`/`Basic` values, and HTTP(S) URLs are replaced with markers, and
+absolute POSIX/home/Windows filesystem paths in event labels and facts become
+`[REDACTED_PATH]` (identity fields are never rewritten).
 This is bounded hygiene for the exported fields, not universal secret discovery.
 
 ## Limitations and interpretation

@@ -47,6 +47,7 @@ MAX_TEXT_CHARS = 2000
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_MEMBERSHIPS = 100
 REDACTION_MARKER = "[REDACTED]"
+PATH_MARKER = "[REDACTED_PATH]"
 URL_MARKER = "[REDACTED_URL]"
 RETENTION_SCOPE = "process_local_bounded"
 FACT_KEYS = ("reason", "error", "phase", "backend", "provider", "attempt_id", "request_id", "provider_task_id", "head_sha", "exit_code")
@@ -65,6 +66,7 @@ _CREDENTIAL_PATTERNS = re.compile(
     )
 )
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+_PATH_PATTERN = re.compile(r"(?<![\w:/.@+-])(?:/(?:[\w.@+-]+/)+[\w.@+-]*|~/[\w.@+/-]+|[A-Za-z]:\\[^\s\"']+)")
 _AUTH_PATTERN = re.compile(r"\b(bearer|basic)[ \t]+\S+", re.IGNORECASE)
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.:/#-]{1,200}")
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
@@ -315,11 +317,16 @@ class ErrorResponse:
 # -- redaction / clipping -------------------------------------------------------
 
 
-def sanitize_text(value: str) -> tuple[str, bool, bool]:
-    """Redact credentials/URLs first, then clip. Returns (text, filtered, clipped)."""
+def sanitize_text(value: str, paths: bool = False) -> tuple[str, bool, bool]:
+    """Redact credentials/URLs (and, for free text, filesystem paths) first, then clip.
+
+    Returns (text, filtered, clipped).
+    """
     text = _URL_PATTERN.sub(URL_MARKER, value)
     text = _AUTH_PATTERN.sub(lambda m: f"{m.group(1)} {REDACTION_MARKER}", text)
     text = _CREDENTIAL_PATTERNS.sub(REDACTION_MARKER, text)
+    if paths:
+        text = _PATH_PATTERN.sub(PATH_MARKER, text)
     filtered = text != value
     clipped = len(text) > MAX_TEXT_CHARS
     if clipped:
@@ -449,7 +456,7 @@ def _facts(raw: object) -> tuple[dict, bool, bool]:
             if isinstance(value, int):
                 out.exit_code = value
         elif isinstance(value, (str, int, float)):
-            text, was_filtered, was_clipped = sanitize_text(str(value))
+            text, was_filtered, was_clipped = sanitize_text(str(value), paths=True)
             setattr(out, key, text)
             filtered, clipped = filtered or was_filtered, clipped or was_clipped
     return {k: v for k, v in dataclasses.asdict(out).items() if v is not None}, filtered, clipped
@@ -467,7 +474,7 @@ def project_event(event: StructuredEvent, repo_name: str) -> Optional[EventEntry
         return None
     if scoped and event.item_type not in ("issue", "pr"):
         return None
-    label, label_filtered, label_clipped = sanitize_text(str(event.label))
+    label, label_filtered, label_clipped = sanitize_text(str(event.label), paths=True)
     facts, facts_filtered, facts_clipped = _facts(event.facts)
     number = event.item_number if scoped and isinstance(event.item_number, int) and event.item_number > 0 else None
     if scoped and number is None:

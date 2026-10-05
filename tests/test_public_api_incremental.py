@@ -342,3 +342,24 @@ def test_continuity_contradicting_retained_events_is_503(client, override):
         response = client.get(f"/api/logs?after_sequence=0&process_run_id={_run()}")
     assert response.status_code == 503 and response.json()["error"]["code"] == "observation_unavailable"
     assert "next_cursor" not in response.text and "next_after_sequence" not in response.text
+
+
+def test_filesystem_paths_in_free_text_are_redacted_on_both_surfaces(client):
+    collector = get_trace_collector()
+    reason = "Cannot open /srv/private/credentials.json and ~/.config/x/y or C:\\Users\\bob\\tok.txt; owner/repo#12 ok"
+    with collector.start_execution(REPO, "pr", 41, origin="worker") as execution:
+        collector.record_event(EventKind.STAGE_RESULT, "pr.review", "worker", label="read /var/lib/app/state.db", outcome=Outcome.FAILED, facts={"reason": reason, "error": "x" * 1990 + " /srv/private/secret.json"})
+        execution.finish(Outcome.FAILED)
+    run = collector.process_run_id
+    first = client.get(f"/api/logs?after_sequence=0&process_run_id={run}&item_type=pr&item_number=41&limit=1").json()
+    rest, _ = _walk(client, f"/api/logs?cursor={first['next_cursor']}")
+    recent = client.get("/api/logs?item_type=pr&item_number=41").json()
+    raw = json.dumps([first, *rest, recent])
+    for leaked in ("/srv/private", "credentials.json", ".config/x", "Users", "bob", "/var/lib", "state.db", "secret.json"):
+        assert leaked not in raw
+    result = next(e for p in [first, *rest] for e in p["events"] if e["stage_id"] == "pr.review")
+    assert result["outcome"] == "failed" and result["execution_id"] == execution.scope.execution_id
+    assert result["facts"]["reason"].startswith("Cannot open [REDACTED_PATH] and") and "owner/repo#12 ok" in result["facts"]["reason"]
+    assert result["filtered"] is True and result["label"] == "read [REDACTED_PATH]"
+    stored = next(e for e in collector.get_snapshot().events if e.stage_id == "pr.review")
+    assert stored.facts["reason"] == reason  # collector keeps the original
