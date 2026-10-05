@@ -281,3 +281,84 @@ class TestNonAuthoritativeDiagnostics:
 
         with pytest.raises(ValueError):
             self.business_operation(collector, should_raise=True)
+
+
+class TestRetentionContinuity:
+    """Collector-wide continuity boundaries (retention authority)."""
+
+    @staticmethod
+    def _fresh(max_events=3):
+        TraceCollector._instance = None
+        return TraceCollector(max_events=max_events, max_executions=5)
+
+    def test_eviction_filters_and_insulation(self):
+        c = self._fresh()
+        for i in range(4):
+            c.start_execution("o/r", "issue", i, origin="t", stage_id=f"s{i}")
+        snap = c.get_snapshot()
+        assert [e.sequence for e in snap.events] == [2, 3, 4]
+        assert (snap.sequence_high_watermark, snap.oldest_retained_sequence, snap.discarded_through_sequence) == (4, 2, 1)
+        f = c.get_snapshot(item_number=3, repository="o/r", limit=1)
+        assert [e.sequence for e in f.events] == [4]
+        assert (f.sequence_high_watermark, f.oldest_retained_sequence, f.discarded_through_sequence) == (4, 2, 1)
+
+    def test_clear_preserves_loss_evidence(self):
+        c = self._fresh()
+        for i in range(4):
+            c.record_event(EventKind.STAGE_STARTED, stage_id=f"s{i}", origin="t")
+        run_id = c.process_run_id
+        c.clear()
+        snap = c.get_snapshot()
+        assert snap.events == [] and snap.process_run_id == run_id
+        assert (snap.sequence_high_watermark, snap.oldest_retained_sequence, snap.discarded_through_sequence) == (4, None, 4)
+        c.record_event(EventKind.STAGE_STARTED, stage_id="s5", origin="t")
+        snap = c.get_snapshot()
+        assert [e.sequence for e in snap.events] == [5]
+        assert snap.discarded_through_sequence == 4
+        TraceCollector._instance = None
+        fresh = TraceCollector()
+        fs = fresh.get_snapshot()
+        assert fs.process_run_id != run_id
+        assert (fs.sequence_high_watermark, fs.oldest_retained_sequence, fs.discarded_through_sequence) == (0, None, 0)
+
+    def test_failed_publication_allocates_without_loss(self):
+        c = self._fresh(max_events=2)
+        c.record_event(EventKind.STAGE_STARTED, stage_id="a", origin="t")
+
+        def boom(seq):
+            raise RuntimeError("build failed")
+
+        assert c._publish(boom) is None
+        c.record_event(EventKind.STAGE_STARTED, stage_id="b", origin="t")
+        snap = c.get_snapshot()
+        assert [e.sequence for e in snap.events] == [1, 3]
+        assert (snap.sequence_high_watermark, snap.oldest_retained_sequence, snap.discarded_through_sequence) == (3, 1, 0)
+
+    def test_snapshot_blocks_during_publication_and_is_coherent(self):
+        import threading
+
+        c = self._fresh(max_events=2)
+        c.record_event(EventKind.STAGE_STARTED, stage_id="a", origin="t")
+        c.record_event(EventKind.STAGE_STARTED, stage_id="b", origin="t")
+        in_build = threading.Event()
+        release = threading.Event()
+
+        def slow(seq):
+            in_build.set()
+            assert release.wait(5)
+            return c._events[-1].__class__(**{**c._events[-1].__dict__, "sequence": seq})
+
+        pub = threading.Thread(target=c._publish, args=(slow,))
+        pub.start()
+        assert in_build.wait(5)
+        result = []
+        reader = threading.Thread(target=lambda: result.append(c.get_snapshot()))
+        reader.start()
+        reader.join(0.3)
+        assert reader.is_alive()  # blocked on the publication lock: contested state reached
+        release.set()
+        pub.join(5)
+        reader.join(5)
+        snap = result[0]
+        assert [e.sequence for e in snap.events] == [2, 3]
+        assert (snap.sequence_high_watermark, snap.oldest_retained_sequence, snap.discarded_through_sequence) == (3, 2, 1)
