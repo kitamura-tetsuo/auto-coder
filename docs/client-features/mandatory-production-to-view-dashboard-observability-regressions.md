@@ -68,7 +68,13 @@ execution stays deferred. Indeterminate delivery remains visible as retained
 operational work rather than implementation completion.
 
 Initial implementation-clone tests emit `local.workspace-tests` before the
-provider runs. Unexpected Muse approval or user-input requests emit
+provider runs. The shared BackendManager dispatch emits `llm.local-execution`
+immediately before calling a local client, with matching start logs and a
+completed/failed result on return/error. The mounted-view regression
+`test_local_llm_dispatch_reaches_mounted_detail_before_return` verifies pending
+visibility, caller identity, local aliases, continuation, error pairing and cloud
+exclusion. Dispatch is not a provider-liveness or implementation-success claim.
+Unexpected Muse approval or user-input requests emit
 `llm.muse-interactive-request` with a blocked outcome instead of remaining hidden
 until the invocation timeout. The mounted detail view presents these observed
 stages under the caller's execution identity. Initial-test completion never means

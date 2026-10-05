@@ -467,6 +467,32 @@ for the production lifecycle regressions, including
 
 ## Implementation workspace tests and Muse interactive refusal
 
+`llm.local-execution` now brackets each local client call at BackendManager's
+shared dispatch boundary, after preparation and initial tests. Its start reaches
+the mounted detail view before the client returns, including named aliases,
+fresh calls and explicit continuations, and read-only reviews. Cloud calls and
+refused/preparation-failed calls do not produce a local start. Facts include
+backend alias/type, provider, requested model, invocation ID, invocation mode,
+and implementation/read-only phase. Matching logs include the current repository,
+Issue/PR target and execution ID. Prompts, responses, commands and raw errors are
+excluded. The result is completed for a normal client return and failed for a
+raised exception/interruption (exception class only); neither means successful
+implementation, handoff, publication or merge. Start is dispatch evidence, not
+provider liveness. Existing schema version 1, scope propagation, generic diagram
+and decision-log rendering, and the public API fact allowlist are preserved.
+
+`tests/test_dashboard_observability.py::test_local_llm_dispatch_reaches_mounted_detail_before_return`
+drives the real shared manager boundary with controlled client calls, asserts
+the start and log while the client is pending, exact caller attribution, fresh
+and continuation modes, provider attribution, success/failure/interruption pairing,
+decision-log visibility, payload exclusion and negative controls for all cloud
+backend types.
+`tests/test_dashboard_observability.py::test_local_llm_preparation_failure_never_emits_start`
+checks draining admission and failed workspace preparation without any provider
+call, start event or start log. The executable Muse regression below also checks the new stage
+on interactive failure. Run
+`bash scripts/test.sh tests/test_dashboard_observability.py tests/test_muse_msp.py`.
+
 `local.workspace-tests` emits a start and a result for the target repository's
 initial `scripts/test.sh` run in each newly created editable clone. Its facts
 identify the invocation and script; the result adds the exit code and the private

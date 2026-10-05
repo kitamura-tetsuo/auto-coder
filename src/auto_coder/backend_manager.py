@@ -37,6 +37,7 @@ from .invocation_process_supervisor import CgroupV2Owner, InvocationProcessSuper
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
 from .local_execution_boundary import EvidenceStatus, bind_local_execution_boundary
+from .local_llm_observability import observe_local_llm_call
 from .local_session_continuation import LiveRootReuseDecision, LocalContinuationError, LocalResultLifecycleAuthority, RetainedLocalSession
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
@@ -955,10 +956,24 @@ class BackendManager(LLMBackendManagerBase):
                             try:
                                 with mark_invocation_active(), supervised_ctx:
                                     provider_started = True
-                                    if session_id:
-                                        out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
-                                    else:
-                                        out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
+                                    observation_ctx = (
+                                        observe_local_llm_call(
+                                            backend=backend_name,
+                                            backend_type=backend_type,
+                                            provider=provider_name,
+                                            model=getattr(cli, "model_name", None) or getattr(cli, "model", None),
+                                            invocation_id=workspace_binding.invocation_id if workspace_binding is not None else interaction_id,
+                                            continuation=session_id is not None,
+                                            is_noedit=is_noedit,
+                                        )
+                                        if is_local
+                                        else contextlib.nullcontext()
+                                    )
+                                    with observation_ctx:
+                                        if session_id:
+                                            out = cli.continue_session(session_id=session_id, prompt=prompt, is_noedit=is_noedit)
+                                        else:
+                                            out = cli._run_llm_cli(prompt, is_noedit=is_noedit)
                                     if invocation_handle is not None:
                                         invocation_handle.begin_checkpointing("result")
                                         checkpoint_started = True

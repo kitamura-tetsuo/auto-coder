@@ -208,8 +208,10 @@ def test_muse_initial_tests_and_interactive_refusal_reach_mounted_detail(mock_ui
         execution.finish(Outcome.FAILED)
     snapshot = collector.get_snapshot(repository="owner/repo", item_type="issue", item_number=5407)
     events = [event for event in snapshot.events if event.kind == EventKind.STAGE_RESULT.value]
-    assert [(event.stage_id, event.outcome) for event in events] == [("local.workspace-tests", "failed"), ("llm.muse-interactive-request", "blocked")]
+    assert [(event.stage_id, event.outcome) for event in events] == [("local.workspace-tests", "failed"), ("llm.muse-interactive-request", "blocked"), ("llm.local-execution", "failed")]
     assert events[0].facts["exit_code"] == 1
+    assert events[2].facts["invocation_id"] == events[0].facts["invocation_id"]
+    assert events[2].facts["phase"] == "implementation"
     assert events[1].facts == {
         "method": "approval/requested",
         "requested_approval_policy": "allowAll",
@@ -222,9 +224,122 @@ def test_muse_initial_tests_and_interactive_refusal_reach_mounted_detail(mock_ui
     diagram = _mounted_detail(mock_ui, "issue", 5407)
     _assert_required_stage_visible(diagram, "Implementation workspace initial tests")
     _assert_required_stage_visible(diagram, "Muse interactive request blocked")
+    _assert_required_stage_visible(diagram, "Local LLM call: muse")
     assert "failed" in diagram
     assert "blocked" in diagram
     assert "outcome: completed" not in diagram
+
+
+@patch("auto_coder.dashboard.ui")
+@pytest.mark.parametrize("backend_type", ["muse", "codex", "claude", "gemini", "qwen", "opencode", "codex-cloud", "claude-routine", "jules"])
+@pytest.mark.parametrize("continuation,error_type", [(False, None), (True, None), (False, RuntimeError), (True, KeyboardInterrupt)])
+def test_local_llm_dispatch_reaches_mounted_detail_before_return(mock_ui, tmp_path, backend_type, continuation, error_type):
+    import contextlib
+
+    from auto_coder.backend_manager import BackendManager
+    from auto_coder.local_llm_observability import logger
+
+    collector = get_trace_collector()
+    captured_logs = []
+    sink = logger.add(lambda message: captured_logs.append(str(message)))
+    client = MagicMock()
+    client.config_backend = SimpleNamespace(backend_type=backend_type)
+    client.model_name = "test-model"
+    client.use_noedit_options = True
+    client.supports_retained_local_continuation = False
+    client.get_last_session_id.return_value = None
+    is_local = backend_type not in {"codex-cloud", "claude-routine", "jules"}
+
+    def provider_call(*args, **kwargs):
+        events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=5467).events if event.stage_id == "llm.local-execution"]
+        if is_local:
+            assert len(events) == 1
+            event = events[0]
+            assert event.kind == EventKind.STAGE_STARTED.value
+            assert event.outcome is None
+            assert event.execution_id == execution.scope.execution_id
+            assert event.facts == {
+                "backend": "local-alias",
+                "backend_type": backend_type,
+                "provider": "test-provider",
+                "model": "test-model",
+                "invocation_id": event.facts["invocation_id"],
+                "invocation_mode": "continuation" if continuation else "fresh",
+                "phase": "read-only",
+            }
+            assert len(event.facts["invocation_id"]) == 32
+            _assert_required_stage_visible(_mounted_detail(mock_ui, "pr", 5467), "Local LLM call: local-alias")
+            decision_rows = [row for call in mock_ui.table.call_args_list for row in call.kwargs.get("rows", []) if row.get("stage") == "Local LLM call: local-alias"]
+            assert any(row["kind"] == "stage-started" and "backend: local-alias" in row["facts"] for row in decision_rows)
+            assert any("Local LLM call started:" in message and "repository=owner/repo" in message and "target=pr#5467" in message and "backend=local-alias" in message and "provider=test-provider" in message and f"execution_id={execution.scope.execution_id}" in message for message in captured_logs)
+        else:
+            assert events == []
+        if error_type:
+            raise error_type("private-provider-error")
+        return "private-provider-response"
+
+    client._run_llm_cli.side_effect = provider_call
+    client.continue_session.side_effect = provider_call
+    try:
+        with patch("pathlib.Path.home", return_value=tmp_path), patch("auto_coder.backend_manager.isolated_local_llm_worktree", return_value=contextlib.nullcontext()):
+            manager = BackendManager(default_backend="local-alias", default_client=client, factories={"local-alias": lambda: client}, order=["local-alias"])
+            manager._get_current_provider_name = lambda backend: "test-provider"
+            with collector.start_execution("owner/repo", "pr", 5467, origin="worker") as execution:
+                call = partial(manager._execute_backend_with_providers, "local-alias", client, "private-prompt", 1, lambda env: contextlib.nullcontext(), session_id="session" if continuation else None, requested_noedit=True)
+                if error_type:
+                    with pytest.raises(error_type, match="private-provider-error"):
+                        call()
+                else:
+                    assert call() == "private-provider-response"
+        events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=5467).events if event.stage_id == "llm.local-execution"]
+        if is_local:
+            assert [event.kind for event in events] == ["stage-started", "stage-result"]
+            assert events[-1].outcome == ("failed" if error_type else "completed")
+            assert events[0].facts["invocation_id"] == events[1].facts["invocation_id"]
+            assert events[1].facts.get("error") == (error_type.__name__ if error_type else None)
+            assert any(("Local LLM call failed:" if error_type else "Local LLM call returned:") in message for message in captured_logs)
+        else:
+            assert events == []
+            assert not any("Local LLM call" in message for message in captured_logs)
+        assert "private-prompt" not in str(events) + str(captured_logs)
+        assert "private-provider-response" not in str(events) + str(captured_logs)
+        assert "private-provider-error" not in str(events) + str(captured_logs)
+    finally:
+        logger.remove(sink)
+
+
+@pytest.mark.parametrize("failure_boundary", ["admission", "workspace"])
+def test_local_llm_preparation_failure_never_emits_start(tmp_path, failure_boundary):
+    import contextlib
+
+    from auto_coder.backend_manager import BackendManager
+    from auto_coder.exceptions import AutoCoderRetryableBackendError
+    from auto_coder.invocation_admission import InvocationAdmissionGate, install_invocation_gate, reset_invocation_gate
+    from auto_coder.local_llm_observability import logger
+
+    client = MagicMock()
+    client.config_backend = SimpleNamespace(backend_type="codex")
+    client.supports_retained_local_continuation = False
+    gate = InvocationAdmissionGate()
+    if failure_boundary == "admission":
+        gate.close_admission("shutdown")
+    token = install_invocation_gate(gate)
+    captured_logs = []
+    sink = logger.add(lambda message: captured_logs.append(str(message)))
+    try:
+        with patch("pathlib.Path.home", return_value=tmp_path), patch("auto_coder.backend_manager.isolated_local_llm_worktree", side_effect=RuntimeError("workspace unavailable")) as workspace:
+            manager = BackendManager(default_backend="codex", default_client=client, factories={"codex": lambda: client}, order=["codex"])
+            with get_trace_collector().start_execution("owner/repo", "issue", 5468, origin="worker"):
+                with pytest.raises(AutoCoderRetryableBackendError if failure_boundary == "admission" else RuntimeError):
+                    manager._execute_backend_with_providers("codex", client, "prompt", 1, lambda env: contextlib.nullcontext())
+            assert workspace.call_count == (0 if failure_boundary == "admission" else 1)
+        client._run_llm_cli.assert_not_called()
+        client.continue_session.assert_not_called()
+        assert not any(event.stage_id == "llm.local-execution" for event in get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=5468).events)
+        assert not any("Local LLM call" in message for message in captured_logs)
+    finally:
+        logger.remove(sink)
+        reset_invocation_gate(token)
 
 
 @patch("auto_coder.dashboard.ui")
