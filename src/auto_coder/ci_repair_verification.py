@@ -31,6 +31,14 @@ _UNSUPPORTED_SELECTOR_MARKERS = (
 )
 # Shell exit codes meaning the command could not be launched at all.
 _LAUNCH_FAILURE_CODES = (126, 127)
+# Output fragments showing that the target container/runtime was unavailable (non-zero exit).
+_LAUNCH_FAILURE_MARKERS = (
+    "no such container",
+    "is not running",
+    "cannot connect to the docker daemon",
+    "error response from daemon",
+    "docker: command not found",
+)
 
 
 class TargetStatus(str, Enum):
@@ -97,6 +105,8 @@ def classify_target_result(target: str, raw: Dict[str, Any]) -> TargetResult:
     if isinstance(return_code, int) and (return_code < 0 or return_code in _LAUNCH_FAILURE_CODES):
         return TargetResult(target, TargetStatus.UNVERIFIED, f"test command could not be launched or timed out (exit {return_code})", raw)
     combined = f"{raw.get('output', '')}\n{raw.get('errors', '')}".lower()
+    if not raw.get("success") and any(marker in combined for marker in _LAUNCH_FAILURE_MARKERS):
+        return TargetResult(target, TargetStatus.UNVERIFIED, "test runtime or container could not be launched", raw)
     if any(marker in combined for marker in _NO_EXECUTION_MARKERS):
         return TargetResult(target, TargetStatus.UNVERIFIED, "runner reported no matching tests", raw)
     if not raw.get("success") and any(marker in combined for marker in _UNSUPPORTED_SELECTOR_MARKERS):

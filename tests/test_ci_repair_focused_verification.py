@@ -313,3 +313,58 @@ def test_handle_pr_merge_origin_reaches_every_target_and_initial_correction(harn
     assert len(h.invocations()) == 8 and "UNSCOPED" not in h.invocations() and not h.sentinel.exists()
     assert (h.commits, h.pushes) == (1, 1)
     assert any("passed locally on the latest corrected state" in a for a in actions)
+
+
+def test_production_extraction_selects_every_reported_file_including_missing(harness):
+    """Two pytest FAILED summaries plus a missing file, without a preassembled target list."""
+    h = harness
+    h.set_state("test_a.py", True)
+    h.set_state("test_b.py", False)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qam", "baseline"], cwd=h.repo, check=True)
+    h.follow_ups = [lambda: h.set_state("test_b.py", True)]
+    logs = "FAILED tests/test_a.py::test_x - AssertionError\nFAILED tests/test_b.py::test_y - AssertionError\nFAILED tests/test_gone.py::test_z - AssertionError"
+    actions = pr_processor._fix_pr_issues_with_testing("o/r", {"number": 7, "title": "t", "body": ""}, AutomationConfig(), logs, None)
+    assert h.invocations()[:2] == ["tests/test_a.py", "tests/test_b.py"]
+    assert "Focused check unverified: tests/test_gone.py (target file not found in the working tree)" in actions
+    assert not any("passed locally" in a for a in actions)
+    assert not h.sentinel.exists()
+
+
+def test_container_launch_failure_is_unverified_and_starts_no_correction(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "t.py").write_text("")
+    raw = {
+        "success": False,
+        "output": "",
+        "errors": "Error response from daemon: No such container: app",
+        "return_code": 1,
+        "command": "docker exec app bash scripts/test.sh t.py",
+        "test_file": "t.py",
+    }
+    result = classify_target_result("t.py", raw)
+    assert result.status is TargetStatus.UNVERIFIED and "container" in result.reason
+
+
+def test_summary_builder_keeps_every_failed_job_and_file_identity():
+    """Real summary builder with GitHub retrieval controlled: a later job's distinct error survives bounding."""
+    from src.auto_coder.util import github_action
+
+    big = "FAILED tests/test_first.py::test_a - AssertionError\n" + ("noise line\n" * 8000)
+    second = "=== Job: lint ===\nFAILED tests/test_second.py::test_b - AssertionError\nruff: E501 unique-lint-failure"
+    jobs = [{"name": "tests", "conclusion": "failure", "html_url": "u1"}, {"name": "lint", "conclusion": "failure", "html_url": "u2"}]
+    by_url = {"u1": "=== Job: tests ===\n" + big, "u2": second}
+    checks = [{"name": "tests", "details_url": "https://github.com/o/r/actions/runs/1/job/1"}]
+    with (
+        patch.object(github_action.GitHubClient, "get_instance", return_value=SimpleNamespace(token="t")),
+        patch.object(github_action, "get_ghapi_client", return_value=object()),
+        patch.object(github_action, "filter_actionable_github_checks", side_effect=lambda repo, c: c),
+        patch.object(github_action, "_get_playwright_artifact_logs", return_value=(None, [])),
+        patch.object(github_action, "list_all_workflow_jobs", return_value=jobs),
+        patch.object(github_action, "_sort_jobs_by_workflow", side_effect=lambda j, *a, **k: j),
+        patch.object(github_action, "get_github_actions_logs_from_url", side_effect=lambda url: by_url[url]),
+    ):
+        summary, files = github_action._create_github_action_log_summary("o/r", AutomationConfig(), checks)
+    assert "unique-lint-failure" in summary
+    assert "tests/test_first.py" in summary
+    assert files == ["tests/test_first.py", "tests/test_second.py"]
+    assert len(summary) < 60000
