@@ -45,3 +45,18 @@ Deferral diagnostics identify the repository, Issue, interrupted stage, original
 reason, API origin, deadline, and delivery certainty at warning level. A durable
 write failure remains fatal to that evaluation and no dependent implementation
 or validation is authorized.
+
+Typed GitHub transport failures in an explicit `ParentOperationalError` cause
+chain are also retained as unfinished Issue evaluation, with the original delivery
+certainty. An indeterminate delivery remains an operational block in the existing
+pending-work store; it is not relabeled as a definitely-unsent admission refusal
+or automatically retried as a successful relationship read. Diagnostic text and
+implicit exception context are never used to classify the failure.
+
+The common candidate-processing boundary catches operational reconciliation
+errors escaping later hierarchy checks and returns `Deferred` with refill retry
+required, preventing one unavailable parent read from terminating the worker.
+Untyped operational failures retain that retry result without inventing a typed
+durable obligation. Transport failures emit the existing
+`issue.parent-reconciliation` stage with a deferred outcome, reason, and delivery
+certainty; the dashboard shows the evaluation as deferred, never completed.

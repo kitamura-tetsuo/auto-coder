@@ -213,6 +213,23 @@ def _reconciliation_admission_deferral(error: BaseException) -> GitHubRequestDef
     return None
 
 
+def _reconciliation_request_error(error: BaseException) -> GitHubRequestError | None:
+    """Preserve supported admission refusals and typed transport failures."""
+    deferred = _reconciliation_admission_deferral(error)
+    if deferred is not None:
+        return deferred
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, GitHubRequestError) and current.outcome.classification is GitHubApiOutcome.TRANSPORT_FAILURE:
+            return current
+        if not isinstance(current, ParentOperationalError):
+            return None
+        current = current.__cause__
+    return None
+
+
 JULES_SESSION_LIST_REFRESH_INTERVAL_SECONDS = 60 * 60
 MAINTENANCE_INTERVAL_SECONDS = 60
 CAPACITY_STATE_CHECK_INTERVAL_SECONDS = 1
@@ -5559,6 +5576,27 @@ class AutomationEngine:
                     return refusal
             try:
                 result = self._process_single_candidate_unified_impl(*impl_args)
+            except ParentOperationalError as exc:
+                # Hierarchy rechecks can run before or after the inner admission
+                # handlers. Never let an unavailable relationship stop the worker.
+                if candidate.type != "issue" or not isinstance(item_number, int) or isinstance(item_number, bool):
+                    raise
+                reason = f"Parent-Issue reconciliation is temporarily unavailable: {exc}"
+                result = CandidateProcessingResult(
+                    type="issue",
+                    number=item_number,
+                    title=candidate.data.get("title"),
+                    error=reason,
+                    target_outcome=ExplicitTargetOutcome.DEFERRED,
+                    actions=["Deferred - Parent-Issue reconciliation requires retry"],
+                    refill_retry_required=True,
+                )
+                deferred_result = self._defer_wrapped_reconciliation(repo_name, item_number, candidate.data, exc, result)
+                if deferred_result is not None:
+                    result = deferred_result
+                logger.warning("Deferred relationship reconciliation for {}/#{}: {}", repo_name, item_number, exc)
+                if deferred_result is None:
+                    _record_issue_stage_result(item_number, "issue.parent-reconciliation", f"issue#{item_number} parent reconciliation", Outcome.DEFERRED, {"reason": result.error})
             except ImplementationSlotUnavailable as exc:
                 # Owner serialization and durable-state reads precede the
                 # admission handler below. Their failure must defer this item
@@ -7104,11 +7142,14 @@ class AutomationEngine:
         error: BaseException,
         result: CandidateProcessingResult,
     ) -> CandidateProcessingResult | None:
-        """Durably retain only the narrowly-defined admission deferral cause."""
-        deferred = _reconciliation_admission_deferral(error)
+        """Retain typed admission or transport failures without losing certainty."""
+        deferred = _reconciliation_request_error(error)
         if deferred is None:
             return None
-        return self._defer_issue_evaluation(repo_name, item_number, issue_data, deferred, result)
+        result = self._defer_issue_evaluation(repo_name, item_number, issue_data, deferred, result)
+        if deferred.outcome.classification is GitHubApiOutcome.TRANSPORT_FAILURE:
+            _record_issue_stage_result(item_number, "issue.parent-reconciliation", f"issue#{item_number} parent reconciliation", Outcome.DEFERRED, {"reason": str(deferred), "delivery": deferred.outcome.delivery.value})
+        return result
 
     def _defer_validation_publication(
         self,

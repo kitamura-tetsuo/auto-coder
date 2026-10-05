@@ -806,6 +806,26 @@ recorded meaning of an owner, an execution, or an admission flag is
 entirely owned by `implementation_slots.py` and Issue #1992's snapshot
 contract; this panel only renders that already-defined observation.
 
+## Parent relationship transport failure isolation
+
+Candidate evaluation retains a typed parent-read transport failure as deferred
+pending Issue work and emits `issue.parent-reconciliation` with `DEFERRED`, the
+original diagnostic, and delivery certainty. The shared outer boundary also
+records untyped operational reconciliation failures as deferred. These reuse the
+existing stage and execution outcome schema. Indeterminate delivery remains an
+operational block rather than fabricated completion or an unsent retry.
+`tests/test_dashboard_observability.py::test_parent_transport_failure_reaches_mounted_detail`
+executes the real native-parent reconciliation wrapper, verifies no implementation
+dispatch, and checks matching stage/execution identity and deferred outcomes in the
+mounted detail view. The candidate boundary and durable certainty are covered by
+`tests/test_pending_work_resumption.py::test_native_parent_transport_failure_defers_candidate_without_dispatch`
+and `test_unwrapped_parent_operational_failure_does_not_stop_candidate_worker`.
+`test_retained_owner_parent_generation_preflight_isolates_transport_failure`
+reproduces the retained-owner generation check through relationship preflight,
+family refresh, and the failing native-parent read, verifying that the existing
+provider session and occupied implementation slot survive.
+Run `bash scripts/test.sh tests/test_pending_work_resumption.py tests/test_dashboard_observability.py`.
+
 ## Startup PR ownership lookup recovery
 
 Startup PR ownership discovery preserves typed GitHub lookup failures instead

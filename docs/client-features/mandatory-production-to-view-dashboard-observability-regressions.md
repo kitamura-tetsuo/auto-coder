@@ -50,6 +50,13 @@ pending-work handoff. Governor process-order regressions and the production wrap
 reconciliation regression are recorded in `docs/dashboard-observability.md`; the
 processing trace schema and rendered outcome meanings remain unchanged.
 
+Parent relationship transport failures reach the mounted detail view through
+`issue.parent-reconciliation` as deferred, with the original reason and delivery
+certainty. `test_parent_transport_failure_reaches_mounted_detail` drives the real
+reconciliation wrapper and verifies that implementation never starts and the
+execution stays deferred. Indeterminate delivery remains visible as retained
+operational work rather than implementation completion.
+
 Initial implementation-clone tests emit `local.workspace-tests` before the
 provider runs. Unexpected Muse approval or user-input requests emit
 `llm.muse-interactive-request` with a blocked outcome instead of remaining hidden

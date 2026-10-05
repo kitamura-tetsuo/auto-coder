@@ -53,6 +53,34 @@ def _assert_required_stage_visible(diagram: str, display_text: str) -> None:
 
 
 @patch("auto_coder.dashboard.ui")
+def test_parent_transport_failure_reaches_mounted_detail(mock_ui, tmp_path, monkeypatch):
+    from auto_coder.util.github_request_outcome import DeliveryCertainty, GitHubApiOutcome
+    from tests.test_pending_work_resumption import _admitted_issue_engine, _github_error
+
+    issue = {"id": 70, "number": 7, "title": "T", "body": "Parent-Issue: #6", "labels": [], "state": "open", "user": {"id": 1}}
+    engine, _store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    error = _github_error(GitHubApiOutcome.TRANSPORT_FAILURE, delivery=DeliveryCertainty.INDETERMINATE, status=None)
+    engine.github.get_parent_issue_details_strict = MagicMock(side_effect=error)
+    engine._reconcile_parent_issue = AutomationEngine._reconcile_parent_issue.__get__(engine)
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", issue, 0), engine.config, origin="capacity-refill")
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.success is False
+    implementation.assert_not_called()
+    events = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=7).events
+    started = next(event for event in events if event.kind == EventKind.EXECUTION_STARTED.value)
+    stage = next(event for event in events if event.stage_id == "issue.parent-reconciliation")
+    finished = next(event for event in events if event.kind == EventKind.EXECUTION_FINISHED.value)
+    assert started.origin == "capacity-refill"
+    assert stage.execution_id == finished.execution_id == started.execution_id
+    assert stage.outcome == finished.outcome == Outcome.DEFERRED.value
+    assert stage.facts == {"reason": "GitHub request failed: transport_failure", "delivery": DeliveryCertainty.INDETERMINATE.value}
+    diagram = _mounted_detail(mock_ui, "issue", 7)
+    _assert_required_stage_visible(diagram, "parent reconciliation")
+    assert "outcome: deferred" in diagram
+
+
+@patch("auto_coder.dashboard.ui")
 def test_ambiguous_review_split_reaches_mounted_detail(mock_ui, tmp_path):
     from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult
     from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerDisposition, CanonicalPRBlockerLedger, CorrectionScope

@@ -29,6 +29,7 @@ from auto_coder.automation_engine import (
     _IssueProcessingStageHandler,
     _PrProcessingStageHandler,
     _reconciliation_admission_deferral,
+    _reconciliation_request_error,
     _StartupReconciliationHandler,
 )
 from auto_coder.github_pending_work import (
@@ -565,6 +566,70 @@ def test_reconciliation_deferral_classification_never_parses_messages():
     assert _reconciliation_admission_deferral(misleading) is None
 
 
+@pytest.mark.parametrize("declared_parent", [True, False])
+def test_native_parent_transport_failure_defers_candidate_without_dispatch(tmp_path, monkeypatch, declared_parent):
+    issue = {
+        "id": 70,
+        "number": 7,
+        "title": "T",
+        "body": ("Parent-Issue: #6\n" if declared_parent else "") + "## Requirements\nREQ-001: Preserve behavior.",
+        "labels": [{"name": "implementation-ready"}],
+        "state": "open",
+        "user": {"id": 1},
+    }
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    error = _github_error(GitHubApiOutcome.TRANSPORT_FAILURE, delivery=DeliveryCertainty.INDETERMINATE, status=None)
+    engine.github.get_parent_issue_details_strict = MagicMock(side_effect=error)
+    # Exercise the real reconciliation wrapper, both at initial admission and
+    # through the later native-parent lookup boundary.
+    engine._reconcile_parent_issue = AutomationEngine._reconcile_parent_issue.__get__(engine)
+    if not declared_parent:
+
+        def read_parent(repo, number, snapshot):
+            engine._reconcile_parent_issue(repo, number, snapshot)
+
+        engine._get_authoritative_parent_number = read_parent
+
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data=dict(issue), priority=0), engine.config)
+
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.success is False
+    assert result.refill_retry_required is True
+    assert result.error == "GitHub request failed: transport_failure"
+    assert "delivery=indeterminate_after_possible_send" in result.target_reason
+    obligation = store.get(WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue)))
+    assert obligation is not None
+    assert obligation.reason is PendingReason.INDETERMINATE
+    assert obligation.throttle_attempts == 0
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    engine.github.get_parent_issue_details_strict.assert_called_once_with("owner/repo", 7)
+    implementation.assert_not_called()
+
+
+def test_reconciliation_transport_classification_requires_explicit_typed_cause():
+    misleading = ParentOperationalError("GitHub request failed: transport_failure")
+    assert _reconciliation_request_error(misleading) is None
+    transport = _github_error(GitHubApiOutcome.TRANSPORT_FAILURE, delivery=DeliveryCertainty.INDETERMINATE, status=None)
+    misleading.__context__ = transport
+    assert _reconciliation_request_error(misleading) is None
+    misleading.__cause__ = transport
+    assert _reconciliation_request_error(misleading) is transport
+
+
+def test_unwrapped_parent_operational_failure_does_not_stop_candidate_worker(tmp_path, monkeypatch):
+    issue = {"id": 70, "number": 7, "title": "T", "body": "## Requirements\nREQ-001: Preserve behavior.", "labels": [], "state": "open", "user": {"id": 1}}
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    engine._get_authoritative_parent_number = MagicMock(side_effect=ParentOperationalError("native parent unavailable"))
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate(type="issue", data=issue, priority=0), engine.config)
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.refill_retry_required is True
+    assert result.error == "Parent-Issue reconciliation is temporarily unavailable: native parent unavailable"
+    assert store.get(WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue))) is None
+    implementation.assert_not_called()
+
+
 def test_reconciliation_deferral_classification_ignores_unrelated_suppressed_context():
     deferred = _admission_deferral()
     independent = None
@@ -911,6 +976,57 @@ def test_retained_owner_family_recheck_retains_admission_deferral(tmp_path, monk
     assert obligation.reason is PendingReason.ADMISSION_DEFERRED
     assert obligation.not_before >= deferred.retry_at
     assert slots.has_provider_sessions(owner) is True
+    engine.pending_work_scheduler.wake.assert_called_once_with()
+    implementation.assert_not_called()
+
+
+def test_retained_owner_parent_generation_preflight_isolates_transport_failure(tmp_path, monkeypatch):
+    """Reproduce the retained-owner -> preflight -> family -> native-parent stack."""
+    issue = {"id": 70, "number": 7, "title": "T", "body": "Parent-Issue: #6\n## Requirements\nREQ-001: Preserve behavior.", "labels": [], "state": "open", "user": {"id": 1}}
+    parent = {**issue, "id": 60, "number": 6, "body": "## Objective\nCoordinate work.", "labels": [{"name": "implementation-ready"}]}
+    engine, store = _admitted_issue_engine(monkeypatch, tmp_path, issue)
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    owner = ImplementationOwner("issue", 7)
+    execution_id = slots.start_execution(owner)
+    assert execution_id is not None
+    assert slots.record_provider_session(owner, "provider-session") is True
+    slots.finish_execution(owner, execution_id)
+    engine.implementation_slots = slots
+    engine._get_authoritative_parent_number = MagicMock(return_value=6)
+    engine.github.get_open_issue_declarations = MagicMock(return_value=[])
+    engine.github.get_issue_dispatch_snapshot_strict = MagicMock(side_effect=lambda _repo, number: dict(parent if number == 6 else issue))
+    error = _github_error(GitHubApiOutcome.TRANSPORT_FAILURE, delivery=DeliveryCertainty.INDETERMINATE, status=None)
+
+    def native_parent(_repo, number):
+        if number == 6:
+            raise error
+        return dict(parent)
+
+    engine.github.get_parent_issue_details_strict = MagicMock(side_effect=native_parent)
+    engine._reconcile_parent_issue = AutomationEngine._reconcile_parent_issue.__get__(engine)
+    engine._reconcile_declared_family = MagicMock()
+    family_reads = 0
+
+    def family(repo, number):
+        nonlocal family_reads
+        family_reads += 1
+        if family_reads == 1:
+            return dict(parent), [dict(issue)]
+        return AutomationEngine._fetch_authoritative_decomposition_set(engine, repo, number)
+
+    engine._fetch_authoritative_decomposition_set = family
+    with patch.object(engine, "_process_single_candidate_reserved") as implementation:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", dict(issue), 0), engine.config, origin="capacity-refill-intake")
+
+    assert family_reads == 2
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.error == "GitHub request failed: transport_failure"
+    assert result.refill_retry_required is True
+    obligation = store.get(WorkIdentity("owner/repo", "issue:7", ISSUE_PROCESSING_STAGE, _issue_content_revision(issue)))
+    assert obligation is not None
+    assert obligation.reason is PendingReason.INDETERMINATE
+    assert slots.has_provider_sessions(owner) is True
+    assert slots.active_owners() == (owner,)
     engine.pending_work_scheduler.wake.assert_called_once_with()
     implementation.assert_not_called()
 
