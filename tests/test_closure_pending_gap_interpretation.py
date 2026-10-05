@@ -21,7 +21,8 @@ from auto_coder.automation_config import AutomationConfig
 from auto_coder.effective_decision_application import HANDOFF_NOT_REQUIRED, HANDOFF_PENDING, build_retained_record, derive_application, raw_ordinary_clear, settle_accepted_gaps
 from auto_coder.effective_review_decision import EffectiveNextAction
 from auto_coder.review_thread_validation import ClaimedReviewThread
-from tests.test_accepted_finding_bridge import Env, _close, _commit, _only, accept_strong, env, finding_json, save_empty_session  # noqa: F401
+from auto_coder.two_tier_pr_gate import TwoTierPrGate
+from tests.test_accepted_finding_bridge import Env, _close, _commit, _only, accept_strong, env, finding_json, published_roots, save_empty_session  # noqa: F401
 
 REQ = "#2401/REQ-001"
 REQ_RUNTIME = "#2401/REQ-002"
@@ -181,7 +182,6 @@ def test_completed_closure_rederives_pass_and_pending_and_upheld_route_different
     # ordinary attempt (same production path) rederives an approval-eligible PASS with no obligations.
     h2 = _commit(env.worktree, "repair-head")
     from auto_coder.pr_processor import TwoTierGateInputs
-    from auto_coder.two_tier_pr_gate import TwoTierPrGate
     from tests.test_accepted_finding_bridge import CONTRACT, POLICY
 
     _close(env, pr, TwoTierGateInputs(TwoTierPrGate(REPO, env.cycle), CONTRACT, POLICY, h2, env.base), h2, {"wheel": "FIXED"})
@@ -190,3 +190,27 @@ def test_completed_closure_rederives_pass_and_pending_and_upheld_route_different
     assert done_application.decision.status == "PASS" and done_application.decision.approval_eligible
     assert done_application.result.findings == [] and done_application.result.open_test_oracle_gaps == []
     assert build_retained_record(done_application.decision, done_application.projection, h2, env.base).handoff == HANDOFF_NOT_REQUIRED
+
+
+def test_upheld_deliverable_is_associated_through_the_native_strong_root(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The published Strong root carries no ordinary gap prose; association is by its exact native root."""
+    pr = 2441
+    gap_id = _accept(env, pr)
+    strong = env.cycle.snapshot(pr).accepted_strong_round
+    assert strong is not None
+    TwoTierPrGate(REPO, env.cycle).state.acknowledge_publication(pr, strong.round_id)
+    observation = published_roots(env, pr, monkeypatch, root_ids={"wheel": 4242})
+    assert _only(env.bridge().project(env.target(pr), observation), "wheel").root_comment_ids == (4242,)
+
+    thread = ClaimedReviewThread(thread_id="T-native", root_comment_database_id=4242, original_finding="### wheel\n\n**Requirements:** #2401/REQ-001")
+    threads = [{"thread_id": "T-native", "status": "STILL_VALID", "rationale": "Independently inspected.", "evidence": "tests/test_build_provenance.py still only copies source; no wheel is built."}]
+    result = _run(env, pr, _response(gaps=[{"gap_id": gap_id, "status": "OPEN"}], threads=threads, result="NEEDS_TESTS"), claimed=(thread,))
+    assert result.result == "NEEDS_FIX"
+    assert [finding.correction_identity for finding in result.findings] == [gap_id]
+    assert {entry.requirement_id: entry.status for entry in result.requirement_coverage}[REQ] == "VIOLATED"
+
+    # The effective decision keeps the original identity but routes it as an implementation repair, without a second gap obligation.
+    application = derive_application(result, result.accepted_finding_projection)
+    assert application.decision.status == "NEEDS_FIX" and application.decision.next_action is EffectiveNextAction.IMPLEMENTATION_REPAIR
+    assert [finding.correction_identity for finding in application.result.findings] == [gap_id]
+    assert application.result.open_test_oracle_gaps == []

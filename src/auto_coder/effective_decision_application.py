@@ -318,6 +318,8 @@ def apply_effective_decision(
             if record is None:
                 continue
             if record.category == CATEGORY_REGRESSION_GAP and record.known_gap_id:
+                if record.known_gap_id in {identity for finding in findings for identity in (finding.finding_identity, finding.correction_identity)}:
+                    continue  # already carried as its promoted implementation finding
                 gap = known_gap_from_record(record)
                 gaps = [existing for existing in gaps if existing.gap_id != gap.gap_id]
                 gaps.append(gap)

@@ -167,6 +167,10 @@ def derive_effective_review_decision(
             [],
         )
 
+    # An accepted regression gap that normalization promoted to a finding (an explicit test
+    # deliverable independently upheld for this target) keeps its identity but is an implementation repair.
+    promoted_gap_ids = {identity for finding in result.findings for identity in (finding.finding_identity, finding.correction_identity) if identity}
+    promoted_sources: set[str] = set()
     repairs: list[EffectiveCorrection] = []
     pending_closure: list[EffectiveCorrection] = []
     reconciliation: list[EffectiveCorrection] = []
@@ -185,6 +189,8 @@ def derive_effective_review_decision(
             pending_closure.append(_correction(record, closure.detail or "Exact closure proposal awaits lifecycle acceptance"))
         elif record.evidence_currency == CURRENCY_CURRENT_HEAD or any(outcome.outcome == OUTCOME_STILL_VALID_OBSERVED for outcome in observations):
             repairs.append(_correction(record, "Accepted OPEN finding is independently upheld for the current target"))
+            if record.category == CATEGORY_REGRESSION_GAP and record.known_gap_id in promoted_gap_ids:
+                promoted_sources.add(record.source_identity)
         else:
             reconciliation.append(_correction(record, "Accepted OPEN finding lacks current-target adjudication"))
 
@@ -195,8 +201,8 @@ def derive_effective_review_decision(
         retained = [*pending_closure, *repairs]
         return _decision(result, projection, "BLOCKED", EffectiveNextAction.CLOSURE_ACCEPTANCE, [item.reason for item in retained], retained)
 
-    implementation = [item for item in repairs if item.category == CATEGORY_IMPLEMENTATION]
-    tests = [item for item in repairs if item.category == CATEGORY_REGRESSION_GAP]
+    implementation = [item for item in repairs if item.category == CATEGORY_IMPLEMENTATION or item.source_identity in promoted_sources]
+    tests = [item for item in repairs if item.category == CATEGORY_REGRESSION_GAP and item.source_identity not in promoted_sources]
     unknown = [item for item in repairs if item.category not in {CATEGORY_IMPLEMENTATION, CATEGORY_REGRESSION_GAP}]
     if unknown:
         return _decision(result, projection, "BLOCKED", EffectiveNextAction.RECONCILIATION, ["Accepted finding has an unsupported category"], unknown)

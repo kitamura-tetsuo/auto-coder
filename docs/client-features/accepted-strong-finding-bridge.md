@@ -94,3 +94,21 @@ Consequences:
 Observability-neutral: no trace emission, admission gate, outcome or event
 schema changed; only which already-existing result is derived changed, so
 `docs/dashboard-observability.md` needs no update.
+
+### Association, routing and recovery details
+
+- **Native-root association.** A published Strong root carries no ordinary gap prose, so an
+  independent `STILL_VALID` disposition is associated with its accepted gap through the exact
+  native root (`record.root_comment_ids`) as well as through the gap prose of the thread. A root
+  shared by several accepted gaps is ambiguous and upholds none of them.
+- **Implementation routing under the original identity.** An upheld explicit deliverable becomes an
+  implementation finding that keeps the gap identity: the effective decision is `NEEDS_FIX` /
+  `IMPLEMENTATION_REPAIR` (not a focused test repair), the gap is not carried a second time, and
+  publication reconciliation matches the finding to the original blocker (and its existing root)
+  through the `test_oracle_gap` alias while preserving the blocker's authoritative boundary, so no
+  new blocker, root or allowance is created.
+- **Legacy saved results.** A saved `NEEDS_FIX`/`NEEDS_TESTS` headline for the current head replays
+  as a repair only when a retained effective decision at that head covers every outstanding
+  accepted finding (that decision is derived from current-target evidence). Otherwise the saved
+  headline is only history: normal processing admits one fresh combined ordinary review, with no
+  dummy commit, store reset or `--force`, and never sends the historical report as a repair.
