@@ -33,6 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 RUN groupadd --gid 65532 auto-coder-worker && useradd --uid 65532 --gid 65532 --no-create-home auto-coder-worker
 COPY --from=build /wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+# Embed the trusted build input so the installed artifact reports it without Docker/Git/network access.
+RUN python -m auto_coder.build_provenance embed
 COPY --from=build /usr/local/bin/opencode /usr/local/bin/opencode
 COPY --from=build /usr/local/bin/codex /usr/local/bin/codex
 ENV PATH="/home/node/.opencode/bin:${PATH}"
