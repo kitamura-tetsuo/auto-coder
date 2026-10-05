@@ -15,11 +15,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from auto_coder.accepted_finding_bridge import OrdinaryDisposition
 from auto_coder.adversarial_validator import AdversarialValidationContext, IssueRequirement, run_adversarial_validation
 from auto_coder.automation_config import AutomationConfig
-from auto_coder.effective_decision_application import derive_application, raw_ordinary_clear, settle_accepted_gaps
+from auto_coder.effective_decision_application import HANDOFF_NOT_REQUIRED, HANDOFF_PENDING, build_retained_record, derive_application, raw_ordinary_clear, settle_accepted_gaps
+from auto_coder.effective_review_decision import EffectiveNextAction
 from auto_coder.review_thread_validation import ClaimedReviewThread
-from tests.test_accepted_finding_bridge import Env, _only, accept_strong, env, finding_json, save_empty_session  # noqa: F401
+from tests.test_accepted_finding_bridge import Env, _close, _commit, _only, accept_strong, env, finding_json, save_empty_session  # noqa: F401
 
 REQ = "#2401/REQ-001"
 REQ_RUNTIME = "#2401/REQ-002"
@@ -53,14 +55,14 @@ def _response(*, coverage: str = "VERIFIED", findings: Optional[list[dict[str, A
     )
 
 
-def _run(env: Env, pr: int, response: str, *, deliverable: bool = True, claimed: tuple[ClaimedReviewThread, ...] = ()):
+def _run(env: Env, pr: int, response: str, *, deliverable: bool = True, claimed: tuple[ClaimedReviewThread, ...] = (), head: str = ""):
     manager = MagicMock()
     manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
     manager._last_session_id = "provider-session"
     manager._last_continue_session_resumed = True
     manager.continue_session.return_value = response
     with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=_context(deliverable=deliverable)), patch("auto_coder.adversarial_validator.run_llm_prompt", return_value=response):
-        return run_adversarial_validation(REPO, {"number": pr, "head": {"sha": env.head}, "base": {"sha": env.base}}, AutomationConfig(), backend_manager=manager, session_registry=env.registry, claimed_review_threads=claimed, accepted_finding_bridge=env.bridge())
+        return run_adversarial_validation(REPO, {"number": pr, "head": {"sha": head or env.head}, "base": {"sha": env.base}}, AutomationConfig(), backend_manager=manager, session_registry=env.registry, claimed_review_threads=claimed, accepted_finding_bridge=env.bridge())
 
 
 REPO = "owner/repo"
@@ -149,3 +151,42 @@ def test_missing_test_under_runtime_only_requirement_stays_a_test_gap(env: Env) 
     assert result.findings == []
     assert {entry.requirement_id: entry.status for entry in result.requirement_coverage}[REQ] == "VERIFIED"
     assert result.result == "NEEDS_TESTS"
+
+
+def test_completed_closure_rederives_pass_and_pending_and_upheld_route_differently(env: Env) -> None:
+    pr = 2440
+    gap_id = _accept(env, pr)
+    inputs_strong = env.cycle.snapshot(pr)
+    assert inputs_strong.accepted_strong_round is not None
+
+    # Pending: nonapproving, and no repair handoff is requested for the retained obligation.
+    pending = _run(env, pr, _response(gaps=[{"gap_id": gap_id, "status": "OPEN"}]))
+    addressed = OrdinaryDisposition(status="ADDRESSED", rationale="Independently inspected the repaired fixture.", evidence="tests/test_build_provenance.py:43-65 builds and installs a wheel", finding_id="wheel")
+    addressed_projection = env.bridge().project(env.target(pr), dispositions=[addressed])
+    application = derive_application(pending, addressed_projection)
+    assert application.decision.status == "BLOCKED" and application.decision.next_action is EffectiveNextAction.CLOSURE_ACCEPTANCE
+    assert not application.decision.approval_eligible
+    pending_record = build_retained_record(application.decision, application.projection, env.head, env.base)
+    assert pending_record.handoff == HANDOFF_NOT_REQUIRED
+    assert application.result.findings == []
+
+    # Upheld: a genuine violation routes to a code/test repair under the original identity.
+    thread, threads = _thread(gap_id, "STILL_VALID")
+    upheld = _run(env, pr, _response(gaps=[{"gap_id": gap_id, "status": "OPEN"}], threads=threads, result="NEEDS_TESTS"), claimed=(thread,))
+    upheld_application = derive_application(upheld, upheld.accepted_finding_projection)
+    assert not upheld_application.decision.approval_eligible and upheld_application.decision.next_action in {EffectiveNextAction.IMPLEMENTATION_REPAIR, EffectiveNextAction.FOCUSED_TEST_REPAIR}
+    assert build_retained_record(upheld_application.decision, upheld_application.projection, env.head, env.base).handoff == HANDOFF_PENDING
+
+    # Completed closure: the owning cycle accepts FIXED/BOUNDED at the repair head; the next
+    # ordinary attempt (same production path) rederives an approval-eligible PASS with no obligations.
+    h2 = _commit(env.worktree, "repair-head")
+    from auto_coder.pr_processor import TwoTierGateInputs
+    from auto_coder.two_tier_pr_gate import TwoTierPrGate
+    from tests.test_accepted_finding_bridge import CONTRACT, POLICY
+
+    _close(env, pr, TwoTierGateInputs(TwoTierPrGate(REPO, env.cycle), CONTRACT, POLICY, h2, env.base), h2, {"wheel": "FIXED"})
+    done = _run(env, pr, _response(), head=h2)
+    done_application = derive_application(done, done.accepted_finding_projection)
+    assert done_application.decision.status == "PASS" and done_application.decision.approval_eligible
+    assert done_application.result.findings == [] and done_application.result.open_test_oracle_gaps == []
+    assert build_retained_record(done_application.decision, done_application.projection, h2, env.base).handoff == HANDOFF_NOT_REQUIRED
