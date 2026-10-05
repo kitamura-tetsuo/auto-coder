@@ -66,3 +66,31 @@ identities and roots; affected PRs are reconstructed idempotently on the next
 ordinary read.
 
 Explicit requirement references retain their qualified `#<issue>/REQ-NNN` identity in accepted gap representations. A root or thread can have independently retained non-Strong owners, including historical imports. Ordinary dispositions resolve against the accepted Strong source aliases: one accepted source is unambiguous, while multiple accepted sources still require reconciliation. The bridge leaves every other owner and its disposition intact. An already accepted exact closure remains authoritative when the root is reobserved.
+
+## Closure-pending findings are not current-head violations
+
+A retained OPEN accepted regression gap records a lifecycle obligation owned by
+the review cycle; its original "tests are missing" prose is historical evidence
+attributed to the originating head. Explicit-deliverable normalization
+(`_normalize_findings_and_gaps`) therefore never promotes an accepted gap into a
+VIOLATED implementation finding merely because it is still OPEN. Promotion
+requires this attempt's own independent `STILL_VALID` thread disposition with
+rationale and evidence for that exact gap (`context.accepted_upheld_gap_ids`).
+Consequences:
+
+- Addressed or unobserved: the attempt's coverage stays as the model judged it
+  (for example VERIFIED), no missing-deliverable counterexample is synthesized,
+  and `settle_accepted_gaps` leaves the accepted obligation to the effective
+  decision, which is a nonapproving closure wait. The same retained evidence
+  keeps `raw_ordinary_clear` true, so same-attempt closure acceptance stays
+  reachable; once the owning cycle accepts it, the decision re-derives to PASS.
+- Upheld by an independent disposition: the explicit missing deliverable remains
+  a genuine NEEDS_FIX violation under the original correction identity.
+- A different finding under the same Requirement keeps the Requirement VIOLATED,
+  and a lexical overlap with it never drops the pending accepted gap, which only
+  collapses into a finding carrying its own identity.
+- A missing-test concern under a runtime-only Requirement stays a test gap.
+
+Observability-neutral: no trace emission, admission gate, outcome or event
+schema changed; only which already-existing result is derived changed, so
+`docs/dashboard-observability.md` needs no update.
