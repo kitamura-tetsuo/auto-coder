@@ -1713,6 +1713,27 @@ Backend-unavailable, allowance-not-admitted, and terminal-failure reasons use th
 same stage and existing reason/route fields; no dashboard event schema changes are
 required.
 
+## Interrupted local review correction recovery
+
+The production local correction store emits `pr.local-repair-recovery` only when
+OS process identity proves that an executing owner exited. Its deferred event
+records `attempt_id`, `owner_pid`, `local_phase`, `workspace_path`, and `reason`
+under the caller's PR execution. Admission selects `not_started` for a fresh
+checkout retry or `publication_pending` for retained committed output. Recovery
+is not implementation success or finding settlement. The generic detail
+projection displays the new stage without a renderer or schema change.
+
+`tests/test_dashboard_observability.py::test_interrupted_local_repair_recovery_reaches_mounted_detail`
+executes the real recovery and mounts the detail view after an exited controller,
+checks exact identity/facts and deferred outcome, and rejects duplicate recovery
+on completed replay. `tests/test_local_review_repair.py` additionally verifies
+real process exit with partial output, live-owner exclusion, PID reuse, reboot,
+zombie evidence, unreadable/missing identity, incarnation fencing, and committed
+publication recovery without another model call. Run
+`bash scripts/test.sh tests/test_local_review_repair.py tests/test_dashboard_observability.py tests/test_implementation_slots.py`.
+See `docs/client-features/local-unresolved-review-correction.md` for retention and
+legacy-record limits.
+
 ## Local Issue publication admission
 
 Local Issue implementation continues to emit `issue.local-commit-push` as

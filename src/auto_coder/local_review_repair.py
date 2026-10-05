@@ -21,10 +21,12 @@ from .durable_repair_allowance import (
     RepairAllowanceLedger,
     ValidationObservation,
 )
+from .execution_trace import EventKind, Outcome, get_trace_collector
 from .git_branch import git_commit_with_retry
 from .git_commit import git_push
 from .llm_backend_config import TASK_ONLY_BACKEND_TYPES, active_repo_context, get_llm_config
 from .logger_config import get_logger
+from .process_identity import ProcessIdentity, process_is_dead, read_process_identity
 from .utils import bind_command_execution_cwd, reset_command_execution_cwd
 
 logger = get_logger(__name__)
@@ -205,6 +207,7 @@ class LocalReviewRepairStore:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_review_repair_attempts (
                 repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
@@ -215,6 +218,11 @@ class LocalReviewRepairStore:
                 workspace_path TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY(repository, pr_number, attempt_id))"""
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(local_review_repair_attempts)")}
+            for name, declaration in (("owner_pid", "INTEGER"), ("owner_boot_id", "TEXT"), ("owner_start_ticks", "INTEGER")):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE local_review_repair_attempts ADD COLUMN {name} {declaration}")
+            connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
@@ -225,6 +233,7 @@ class LocalReviewRepairStore:
         """Atomically claim the PR, or describe the retained recovery phase."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._recover_dead_owners(connection, request)
             exact = connection.execute(
                 "SELECT phase, incarnation FROM local_review_repair_attempts " "WHERE repository=? AND pr_number=? AND attempt_id=?",
                 (request.repository, request.pr_number, request.attempt_id),
@@ -244,6 +253,7 @@ class LocalReviewRepairStore:
                         "UPDATE local_review_repair_attempts SET phase='executing', reason='', updated_at=?, incarnation=? " "WHERE repository=? AND pr_number=? AND attempt_id=?",
                         (time.time(), incarnation, request.repository, request.pr_number, request.attempt_id),
                     )
+                    self._set_owner(connection, request)
                     connection.commit()
                     return LocalReviewRepairClaim(True, "executing", request.attempt_id, incarnation)
                 connection.commit()
@@ -257,7 +267,7 @@ class LocalReviewRepairStore:
                 return LocalReviewRepairClaim(False, str(active[1]), str(active[0]), int(active[2]))
             incarnation = int(time.time_ns())
             connection.execute(
-                "INSERT INTO local_review_repair_attempts VALUES (?, ?, ?, ?, ?, ?, 'executing', '', '', ?, ?, '')",
+                "INSERT INTO local_review_repair_attempts " "(repository, pr_number, attempt_id, head_sha, head_ref, feedback_json, phase, result_sha, reason, updated_at, incarnation, workspace_path) " "VALUES (?, ?, ?, ?, ?, ?, 'executing', '', '', ?, ?, '')",
                 (
                     request.repository,
                     request.pr_number,
@@ -269,8 +279,53 @@ class LocalReviewRepairStore:
                     incarnation,
                 ),
             )
+            self._set_owner(connection, request)
             connection.commit()
             return LocalReviewRepairClaim(True, "executing", request.attempt_id, incarnation)
+
+    def _set_owner(self, connection: sqlite3.Connection, request: LocalReviewRepairRequest) -> None:
+        owner = read_process_identity(os.getpid())
+        connection.execute(
+            "UPDATE local_review_repair_attempts SET owner_pid=?, owner_boot_id=?, owner_start_ticks=? " "WHERE repository=? AND pr_number=? AND attempt_id=?",
+            (owner.pid if owner else None, owner.boot_id if owner else None, owner.start_ticks if owner else None, request.repository, request.pr_number, request.attempt_id),
+        )
+
+    def _recover_dead_owners(self, connection: sqlite3.Connection, request: LocalReviewRepairRequest) -> None:
+        rows = connection.execute(
+            "SELECT attempt_id, owner_pid, owner_boot_id, owner_start_ticks, workspace_path, head_sha " "FROM local_review_repair_attempts WHERE repository=? AND pr_number=? AND phase='executing'",
+            (request.repository, request.pr_number),
+        ).fetchall()
+        for attempt_id, pid, boot_id, start_ticks, workspace, head_sha in rows:
+            # Legacy or unavailable ownership evidence cannot prove an exit.
+            if pid is None or not boot_id or start_ticks is None:
+                continue
+            if not process_is_dead(ProcessIdentity(pid, boot_id, start_ticks), read_process_identity(pid)):
+                continue
+            phase, result_sha = "not_started", ""
+            if workspace and Path(workspace).exists():
+                result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=workspace, capture_output=True, text=True)
+                if result.returncode != 0:
+                    continue
+                if result.stdout.strip() != head_sha:
+                    # A controller commit may precede the publication checkpoint.
+                    phase, result_sha = "publication_pending", result.stdout.strip()
+            reason = f"Recovered interrupted local correction: owner process {pid} exited"
+            connection.execute(
+                "UPDATE local_review_repair_attempts SET phase=?, result_sha=?, reason=?, updated_at=? " "WHERE repository=? AND pr_number=? AND attempt_id=? AND phase='executing'",
+                (phase, result_sha, reason, time.time(), request.repository, request.pr_number, attempt_id),
+            )
+            logger.warning(f"{request.repository} PR #{request.pr_number}: {reason}; next phase={phase}")
+            try:
+                get_trace_collector().record_event(
+                    EventKind.STAGE_RESULT,
+                    "pr.local-repair-recovery",
+                    "local-review-repair",
+                    label="Interrupted local correction recovered",
+                    outcome=Outcome.DEFERRED,
+                    facts={"pr_number": request.pr_number, "attempt_id": attempt_id, "owner_pid": pid, "local_phase": phase, "reason": reason, "workspace_path": workspace},
+                )
+            except Exception:
+                logger.debug("Could not record local correction recovery trace", exc_info=True)
 
     def transition(
         self,
@@ -434,7 +489,10 @@ def execute_local_review_repair(
         if claim.phase == "publication_pending":
             record = store.get(request, claim.attempt_id)
             if record is not None:
-                return _resume_publication(request, store, record, Path.cwd())
+                outcome = _resume_publication(request, store, record, Path.cwd())
+                if outcome.published and allowance_authority is not None:
+                    allowance_authority.mark_completion(code_changed=True, evidence=f"local correction published as {record.result_sha}")
+                return outcome
         return LocalReviewRepairOutcome(claim.phase, f"retained local correction phase: {claim.phase}")
 
     root = Path.cwd()
@@ -450,6 +508,7 @@ def execute_local_review_repair(
         if added.returncode != 0:
             store.transition(request, claim, "not_started", reason=added.stderr.strip())
             return LocalReviewRepairOutcome("not_started", f"protected checkout failed: {added.stderr.strip()}")
+        store.transition(request, claim, "executing", workspace_path=worktree)
         if allowance_authority is not None:
             try:
                 allowance_authority.mark_invocation()

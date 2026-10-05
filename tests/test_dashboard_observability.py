@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -50,6 +52,47 @@ def _mounted_detail(mock_ui, item_type: str, item_number: int):
 
 def _assert_required_stage_visible(diagram: str, display_text: str) -> None:
     assert display_text in diagram, f"required production stage {display_text!r} did not reach the mounted detail view"
+
+
+@patch("auto_coder.dashboard.ui")
+def test_interrupted_local_repair_recovery_reaches_mounted_detail(mock_ui, tmp_path, monkeypatch, _use_custom_subprocess_mock):
+    from dataclasses import replace
+
+    from auto_coder.local_review_repair import LocalReviewRepairStore, execute_local_review_repair
+    from tests.test_local_review_repair import _repository, _request
+
+    repository, head = _repository(tmp_path)
+    monkeypatch.chdir(repository)
+    database = tmp_path / "repairs.sqlite3"
+    request = replace(_request(), head_sha=head)
+
+    def abandoned_owner():
+        LocalReviewRepairStore(database).admit(request)
+        os._exit(23)
+
+    process = multiprocessing.get_context("fork").Process(target=abandoned_owner)
+    process.start()
+    process.join(10)
+    try:
+        assert process.exitcode == 23
+        collector = get_trace_collector()
+        with collector.start_execution("owner/repo", "pr", 42, origin="worker"):
+            result = execute_local_review_repair(request, store=LocalReviewRepairStore(database), executor=lambda _request, _worktree: "ACTION_SUMMARY: checked")
+        assert result.phase == "completed_no_change"
+        events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=42).events if event.stage_id == "pr.local-repair-recovery"]
+        assert len(events) == 1
+        assert events[0].outcome == Outcome.DEFERRED
+        assert events[0].facts["local_phase"] == "not_started"
+        assert events[0].facts["owner_pid"] == process.pid
+        assert events[0].facts["attempt_id"] == request.attempt_id
+        _assert_required_stage_visible(_mounted_detail(mock_ui, "pr", 42), "Interrupted local correction recovered")
+        with collector.start_execution("owner/repo", "pr", 42, origin="worker"):
+            assert LocalReviewRepairStore(database).admit(request).admitted is False
+        assert len([event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=42).events if event.stage_id == "pr.local-repair-recovery"]) == 1
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join()
 
 
 @patch("auto_coder.dashboard.ui")

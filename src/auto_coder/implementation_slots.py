@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterator, NoReturn, Optional
 from .cloud_manager import claude_session_alias
 from .issue_context import extract_lifecycle_branch_issue_number, extract_lifecycle_directive_issue_references
 from .logger_config import get_logger
+from .process_identity import ProcessIdentity, process_is_dead, read_process_identity
 from .runtime_locks import LockAcquisitionTimeout, ensure_lock_directory, file_lock, lock_path
 from .util.github_request_outcome import GitHubRequestError
 
@@ -55,16 +56,6 @@ class ImplementationHierarchyUnavailable(RuntimeError):
 
 class ImplementationOwnerResolutionError(RuntimeError):
     """Raised when resolving a PR owner is uncertain and must fail closed."""
-
-
-@dataclass(frozen=True)
-class ProcessIdentity:
-    """OS identity that distinguishes a process from a reused numeric PID."""
-
-    pid: int
-    boot_id: str
-    start_ticks: int
-    state: str
 
 
 @dataclass(frozen=True)
@@ -889,21 +880,7 @@ class ImplementationSlotRepository:
         stable for a process lifetime and prevent a reused PID from being
         mistaken for the execution which originally wrote the record.
         """
-        try:
-            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
-            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-            closing_parenthesis = stat.rfind(")")
-            if not boot_id or closing_parenthesis < 0:
-                return None
-            fields_after_name = stat[closing_parenthesis + 2 :].split()
-            # The suffix begins at field 3 (state); process start time is field 22.
-            state = fields_after_name[0]
-            start_ticks = int(fields_after_name[19])
-            if len(state) != 1:
-                return None
-            return ProcessIdentity(pid=pid, boot_id=boot_id, start_ticks=start_ticks, state=state)
-        except (OSError, UnicodeError, ValueError, IndexError):
-            return None
+        return read_process_identity(pid)
 
     def _current_process_identity(self) -> Optional[ProcessIdentity]:
         return self._read_process_identity(os.getpid())
@@ -915,20 +892,7 @@ class ImplementationSlotRepository:
         start_ticks = execution.get("process_start_ticks")
         if isinstance(pid, bool) or not isinstance(pid, int) or not isinstance(boot_id, str) or isinstance(start_ticks, bool) or not isinstance(start_ticks, int):
             return False
-        current = self._read_process_identity(pid)
-        if current is not None:
-            identity_changed = current.boot_id != boot_id or current.start_ticks != start_ticks
-            # Zombie and dead tasks retain a procfs identity until their parent
-            # reaps them, but cannot execute and are conclusively no longer live.
-            return identity_changed or current.state in {"Z", "X", "x"}
-        try:
-            current_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
-            process_exists = Path(f"/proc/{pid}").exists()
-        except OSError:
-            return False
-        # A changed boot is conclusive. Within the same boot, an absent procfs
-        # entry is conclusive; an existing but unreadable entry is uncertain.
-        return bool(current_boot_id) and (current_boot_id != boot_id or not process_exists)
+        return process_is_dead(ProcessIdentity(pid, boot_id, start_ticks), self._read_process_identity(pid))
 
     def _remove_stale_executions(self, owners: Dict[str, Dict[str, object]]) -> tuple[str, ...]:
         """Remove only executions conclusively shown stale from locked state."""

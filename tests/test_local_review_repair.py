@@ -1,6 +1,10 @@
 """Regression tests for durable explicit-local review correction."""
 
+import multiprocessing
+import os
+import sqlite3
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -69,6 +73,193 @@ def test_store_serializes_same_pr_and_retains_indeterminate_execution(tmp_path: 
     assert first_store.transition(request, claim, "indeterminate", reason="provider response lost") is True
     retained = second_store.admit(request)
     assert (retained.admitted, retained.phase) == (False, "indeterminate")
+
+
+def test_dead_owner_restarts_in_fresh_checkout_and_preserves_partial_output(tmp_path, monkeypatch, _use_custom_subprocess_mock):
+    repository, head = _repository(tmp_path)
+    monkeypatch.chdir(repository)
+    database = tmp_path / "repairs.sqlite3"
+    request = replace(_request(), head_sha=head)
+
+    def crash():
+        def edit_and_exit(_request, worktree):
+            Path(worktree, "tracked.txt").write_text("interrupted edit\n", encoding="utf-8")
+            os._exit(17)
+
+        execute_local_review_repair(request, store=LocalReviewRepairStore(database), executor=edit_and_exit)
+
+    process = multiprocessing.get_context("fork").Process(target=crash)
+    process.start()
+    process.join(15)
+    try:
+        assert process.exitcode == 17
+        store = LocalReviewRepairStore(database)
+        old = store.get(request)
+        assert old.phase == "executing"
+        assert Path(old.workspace_path, "tracked.txt").read_text() == "interrupted edit\n"
+        invocations = []
+
+        def retry(_request, worktree):
+            invocations.append(worktree)
+            assert Path(worktree, "tracked.txt").read_text() == "base\n"
+            return "ACTION_SUMMARY: checked"
+
+        result = execute_local_review_repair(request, store=store, executor=retry)
+        assert result.phase == "completed_no_change"
+        assert len(invocations) == 1
+        assert invocations[0] != old.workspace_path
+        assert Path(old.workspace_path, "tracked.txt").read_text() == "interrupted edit\n"
+        assert store.get(request).incarnation != old.incarnation
+        from auto_coder.local_review_repair import LocalReviewRepairClaim
+
+        assert store.transition(request, LocalReviewRepairClaim(True, "executing", old.attempt_id, old.incarnation), "terminal_failure") is False
+        assert execute_local_review_repair(request, store=store, executor=retry).phase == "completed_no_change"
+        assert len(invocations) == 1
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join()
+
+
+def test_live_owner_in_another_process_is_never_restarted(tmp_path):
+    database = tmp_path / "repairs.sqlite3"
+    context = multiprocessing.get_context("fork")
+    ready, stop = context.Event(), context.Event()
+
+    def own_claim():
+        LocalReviewRepairStore(database).admit(_request())
+        ready.set()
+        stop.wait(15)
+
+    process = context.Process(target=own_claim)
+    process.start()
+    try:
+        assert ready.wait(10)
+        store = LocalReviewRepairStore(database)
+        claim = store.admit(_request())
+        assert (claim.admitted, claim.phase) == (False, "executing")
+        assert store.admit(_request(feedback=("different",))).admitted is False
+    finally:
+        stop.set()
+        process.join(10)
+        if process.is_alive():
+            process.kill()
+            process.join()
+
+
+def test_concurrent_dead_owner_recovery_admits_exactly_one_retry(tmp_path):
+    database = tmp_path / "repairs.sqlite3"
+
+    def abandoned():
+        LocalReviewRepairStore(database).admit(_request())
+        os._exit(27)
+
+    process = multiprocessing.get_context("fork").Process(target=abandoned)
+    process.start()
+    process.join(10)
+    try:
+        assert process.exitcode == 27
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            claims = list(pool.map(lambda _: LocalReviewRepairStore(database).admit(_request()), range(4)))
+        assert sum(claim.admitted for claim in claims) == 1
+        assert {claim.phase for claim in claims} == {"executing"}
+        assert len({claim.incarnation for claim in claims}) == 1
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join()
+
+
+def test_existing_database_migration_preserves_legacy_claim_without_guessing_owner(tmp_path):
+    database = tmp_path / "repairs.sqlite3"
+    store = LocalReviewRepairStore(database)
+    original = store.admit(_request())
+    with sqlite3.connect(database) as connection:
+        for column in ("owner_pid", "owner_boot_id", "owner_start_ticks"):
+            connection.execute(f"ALTER TABLE local_review_repair_attempts DROP COLUMN {column}")
+    migrated = LocalReviewRepairStore(database)
+    claim = migrated.admit(_request())
+    assert (claim.admitted, claim.phase, claim.incarnation) == (False, "executing", original.incarnation)
+    assert migrated.get(_request()).head_sha == "abc123"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT owner_pid, owner_boot_id, owner_start_ticks FROM local_review_repair_attempts").fetchone() == (None, None, None)
+
+
+@pytest.mark.parametrize("ownership", ["missing", "unreadable", "reused-pid", "reboot", "zombie"])
+def test_recovery_requires_positive_owner_exit_evidence(tmp_path, ownership):
+    from auto_coder.process_identity import ProcessIdentity, read_process_identity
+
+    store = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
+    request = _request()
+    original = store.admit(request)
+    owner = read_process_identity(os.getpid())
+    assert owner is not None
+    if ownership == "missing":
+        with sqlite3.connect(store.path) as connection:
+            connection.execute("UPDATE local_review_repair_attempts SET owner_pid=NULL, owner_boot_id=NULL, owner_start_ticks=NULL")
+        current = owner
+    elif ownership == "unreadable":
+        current = None
+    elif ownership == "reused-pid":
+        current = replace(owner, start_ticks=owner.start_ticks + 1)
+    elif ownership == "reboot":
+        current = replace(owner, boot_id="another-boot")
+    else:
+        current = ProcessIdentity(owner.pid, owner.boot_id, owner.start_ticks, "Z")
+    with patch("auto_coder.local_review_repair.read_process_identity", return_value=current):
+        claim = store.admit(request)
+    expected = ownership in {"reused-pid", "reboot", "zombie"}
+    assert claim.admitted is expected
+    assert claim.phase == "executing"
+    assert (claim.incarnation != original.incarnation) is expected
+
+
+def test_dead_owner_committed_output_resumes_publication_without_model(tmp_path, monkeypatch, _use_custom_subprocess_mock):
+    repository, head = _repository(tmp_path)
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "--bare", str(remote))
+    _git(repository, "remote", "add", "origin", str(remote))
+    _git(repository, "push", "origin", f"{head}:refs/heads/repair-head")
+    monkeypatch.chdir(repository)
+    database = tmp_path / "repairs.sqlite3"
+    allowance_database = tmp_path / "allowance.sqlite3"
+    request = replace(_request(), head_sha=head, head_ref="repair-head")
+    worktree = tmp_path / "retained"
+
+    def commit_then_crash():
+        authority, reason = admit_local_repair_allowance(request, RepairAllowanceLedger(allowance_database))
+        assert reason == ""
+        authority.mark_invocation()
+        store = LocalReviewRepairStore(database)
+        claim = store.admit(request)
+        _git(repository, "worktree", "add", "--detach", str(worktree), head)
+        store.transition(request, claim, "executing", workspace_path=str(worktree))
+        Path(worktree, "tracked.txt").write_text("committed correction\n")
+        _git(worktree, "add", "tracked.txt")
+        _git(worktree, "commit", "-m", "correction")
+        os._exit(19)
+
+    process = multiprocessing.get_context("fork").Process(target=commit_then_crash)
+    process.start()
+    process.join(15)
+    try:
+        assert process.exitcode == 19
+        executor = MagicMock()
+        ledger = RepairAllowanceLedger(allowance_database)
+        authority, reason = admit_local_repair_allowance(request, ledger)
+        assert reason == ""
+        result = execute_local_review_repair(request, store=LocalReviewRepairStore(database), executor=executor, allowance_authority=authority)
+        assert result.phase == "awaiting_validation"
+        assert result.published is True
+        executor.assert_not_called()
+        assert _git(tmp_path, "--git-dir", str(remote), "show", "refs/heads/repair-head:tracked.txt") == "committed correction"
+        from auto_coder.durable_repair_allowance import GenerationLifecycleState
+
+        assert ledger.get_snapshot("https://api.github.com", "owner/repo", 42).get_outstanding_generation().lifecycle_state == GenerationLifecycleState.PENDING_REVALIDATION
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join()
 
 
 def test_distinct_feedback_is_admitted_after_prior_completion(tmp_path: Path) -> None:

@@ -35,7 +35,25 @@ pending correction work remains deferred.
 The correction runs in a detached worktree at the captured PR head. A SQLite claim
 serializes execution for the whole pull request and retains executing,
 indeterminate, publication-pending, no-change, and awaiting-validation states so a
-restart cannot silently duplicate an uncertain model invocation. Commits publish
+restart cannot silently duplicate a live or uncertain model invocation. Execution
+ownership records the controller PID, kernel boot ID, and process start ticks.
+At the next PR repair admission, a missing process, changed process identity,
+changed boot, or zombie/dead process proves interruption and permits atomic
+readmission with a new incarnation. Elapsed time alone never expires a claim.
+Live owners, unreadable process evidence, and historical records without owner
+identity remain blocked. Existing databases gain nullable ownership columns
+without discarding their attempts; upgrading does not guess the owner of an old
+`executing` record. Such historical records require operator reconciliation.
+
+The detached workspace path is checkpointed before backend entry. Interrupted
+uncommitted output is preserved in that workspace, while a retry starts from the
+captured PR head in a fresh worktree. A retained committed result resumes
+publication without another model call. The existing allowance generation is
+reused for interrupted work and completed on confirmed recovered publication;
+independent validation is still required. Atomic SQLite admission and incarnation
+fencing prevent concurrent replays and stale-owner state writes. Recovery occurs
+on the next normal processing pass, rather than a separate background timer.
+Commits publish
 only to the existing same-repository head ref with an exact remote-SHA lease; a
 newer remote commit therefore leaves the correction recoverably pending rather
 than being overwritten. A retained commit is reconciled with the remote branch and
@@ -108,3 +126,8 @@ unverified target count and reasons with `effect=local-validation-scoped`.
 Incomplete verification is `BLOCKED`; a completed scoped check is `COMPLETED`
 but remains a deferred PR-processing result rather than merge approval.
 Publication or settlement failures are explicitly `FAILED`.
+
+Proven owner-exit recovery emits `pr.local-repair-recovery` with a deferred
+outcome, attempt identity, owner PID, next phase, retained workspace, and reason.
+The generic dashboard detail view shows this recovery separately from repair
+completion; recovery never claims that findings are resolved.

@@ -119,3 +119,11 @@ unrelated findings. A production-to-mounted-view regression asserts that an
 omitted verification target remains pending and is visible with the same identity
 and reason in both the dashboard and the GitHub native review. Completed scoped
 verification remains a deferred processing result and does not imply merge approval.
+
+Interrupted local review correction emits `pr.local-repair-recovery` with
+`DEFERRED`, the attempt identity, dead owner PID, next local phase, and preserved
+workspace. `test_interrupted_local_repair_recovery_reaches_mounted_detail` in
+`tests/test_dashboard_observability.py` runs recovery through the production
+executor and generic mounted detail projection. It checks a real exited owner,
+exact event facts, and absence of a second recovery on completed replay. Recovery
+is admission evidence and does not imply correction or merge success.
