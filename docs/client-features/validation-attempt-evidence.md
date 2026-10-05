@@ -6,8 +6,9 @@ adversarial-validation scheduler) records one bounded, redacted diagnostic
 record per native attempt so a mismatch (for example twelve returned `VERIFIED`
 entries rejected as `unknown_requirement_coverage_id`) can be diagnosed without
 rerunning the review. The record extends the existing non-authorizing
-`ReviewAuditStore`; it adds no archive, no retention policy and no public
-projection, and it never gates, repairs, publishes or merges anything.
+`ReviewAuditStore`; it adds no archive and no retention policy (a bounded public projection is
+served separately by `GET /api/validation-attempts`, see
+`public-diagnostic-api.md`), and it never gates, repairs, publishes or merges anything.
 
 Code: `review_capture/validation_evidence.py` (capture), `review_audit.py`
 (`validation_evidence` table, `record_validation_evidence`,
@@ -113,5 +114,7 @@ written onto a business object is the diagnostic `source_response_id` on
 
 No processing origin, admission gate, outcome, provider routing, durable
 resumption path or structured trace event changed, and no UI projection was
-added, so `docs/dashboard-observability.md` needs no update: this is audit-store
+added (the public HTTP projection only reads the audit store and emits no trace
+events; it is covered by production-origin-to-mounted-HTTP tests in
+`tests/test_public_validation_attempts.py`), so `docs/dashboard-observability.md` needs no update: this is audit-store
 diagnostic data read only through `ReviewAuditStore`.
