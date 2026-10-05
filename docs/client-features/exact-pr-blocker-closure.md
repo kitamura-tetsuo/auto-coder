@@ -14,6 +14,15 @@ When evaluating candidate closures for claimed review threads:
 - **Identity Integrity:** Candidate evaluation identifies the canonical GitHub API origin,
   target repository, PR number, blocker ID, owned concern IDs, thread root comments,
   requirement manifest revision, evaluated head/base SHAs, and ledger revision.
+- **Reviewer Input Matches Closure Scope:** Before an ordinary reviewer starts, the
+  controller reads the PR-scoped ledger and renders each native thread's canonical
+  blocker ID, immutable accepted correction scope, authoritative boundary, category,
+  and exact owned concern IDs. Rendering uses the same root/thread/historical alias
+  association as closure evaluation, including separate scopes for compound roots.
+  The prompt requires exact concern IDs rather than model-generated names; a missing
+  ledger observation defers review before invoking the model. A current-head PASS
+  with rejected or unfinished thread closure stops before the strong/final merge
+  gates and reports a failed processing outcome without issuing another repair.
 - **Anti-Substitution:** Dispositions cannot substitute a similarly worded finding, an
   array position, a shared requirement ID, or a different thread's finding.
 - **Mismatched Identity Rejection:** Unknown, duplicate, cross-target, or mismatched
@@ -98,4 +107,3 @@ When evaluating candidate closures for claimed review threads:
   operational error.
 - **No Blanket Waiver:** Receiving an aggregate PR-level `PASS` or exhausting repair
   retries does not bypass or close unresolved owned review obligations.
-

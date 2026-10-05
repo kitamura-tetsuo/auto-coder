@@ -143,6 +143,7 @@ class Flow:
     attempts_started: int = 0
     activity: dict[str, str] = field(default_factory=dict)
     model_calls: int = 0
+    validation_sections: list[str] = field(default_factory=list)
     origin_available: bool = True
     exhausted: bool = False
     quota_hold: bool = False
@@ -245,12 +246,13 @@ class Flow:
                 patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=_context()),
                 patch("auto_coder.adversarial_validator.run_llm_prompt", side_effect=next_response),
             ):
-                kwargs.pop("claimed_review_threads_section", None)
+                section = kwargs.pop("claimed_review_threads_section", "")
+                self.validation_sections.append(section)
                 kwargs.pop("execution_cwd", None)  # the controlled worktree is not a git checkout
                 if closure is not None and kwargs.get("closure_input") is not None:
                     closure.calls.append(kwargs["closure_input"])
                     supplied.append(kwargs["closure_input"])
-                return run_adversarial_validation(*args, backend_manager=manager, session_registry=env.registry, claimed_review_threads_section="", **kwargs)
+                return run_adversarial_validation(*args, backend_manager=manager, session_registry=env.registry, claimed_review_threads_section=section, **kwargs)
 
         key = env.tmp / "reviewer.pem"
         key.write_text("fake", encoding="utf-8")

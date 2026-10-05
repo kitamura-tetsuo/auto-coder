@@ -10,10 +10,16 @@ invocations, not calls to any named closure helper.
 
 from __future__ import annotations
 
+import json
+from unittest.mock import patch
+
 import pytest
 
 from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
+from auto_coder.automation_config import PRProcessingOutcome
+from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerAlias, CorrectionScope, QualifiedRequirement
 from auto_coder.ordinary_closure_evidence import EvidenceState, OrdinaryClosureEvidence, OrdinaryClosureEvidenceRepository
+from auto_coder.pr_processor import _record_pr_stage
 from auto_coder.pr_review_cycle import PrReviewCycleRepository
 from tests.test_accepted_finding_bridge import REPO, Env, env  # noqa: F401  (env is a shared fixture)
 from tests.test_effective_decision_pr_flow import flow_env  # noqa: F401  (shared fixture)
@@ -88,6 +94,99 @@ def test_finding_absent_from_the_claimed_thread_view_is_still_supplied(flow_env:
 
     assert [item.finding_id for item in script.calls[0].findings] == ["finding-a"]
     assert flow_env.cycle.snapshot(7301).accepted_closure is not None
+
+
+@pytest.mark.parametrize("matching_concerns", [True, False])
+def test_canonical_concern_ids_reach_ordinary_review_and_control_merge(flow_env: Env, monkeypatch: pytest.MonkeyPatch, matching_concerns: bool) -> None:
+    """A saved PASS's native root must receive the scope its resolver enforces."""
+    flow = make_flow(flow_env, monkeypatch, 7437, "cloud", resolve_on_approve=False)
+    flow.root_body = "### Auto-Coder adversarial finding\nThe state invariant is violated."
+    snapshot = flow_env.ledger.initialize_namespace("https://api.github.com", REPO, flow.pr)
+    _, snapshot = flow_env.ledger.admit_blocker(
+        "https://api.github.com",
+        REPO,
+        flow.pr,
+        operation_id="accept-native-finding",
+        expected_ledger_revision=snapshot.ledger_revision,
+        review_observation_identity="state-invariant-finding",
+        payload=BlockerAdmissionPayload(
+            category="IMPLEMENTATION",
+            qualified_requirements=(QualifiedRequirement(2401, "REQ-001"),),
+            authoritative_boundary="src/state.py",
+            incorrect_behavior_or_missing_invariant="The state invariant is violated.",
+            required_correction_outcome="Preserve state across the transition.",
+            evidence_needed="A regression exercises the state transition.",
+            accepted_scope=CorrectionScope(description="Correct the original state transition.", concern_ids=("native-state-transition-correction",)),
+            aliases=(BlockerAlias(alias_type="github_root_comment", alias_value=str(flow.root_id)),),
+            reviewed_head_sha=flow.head,
+            observation_identity="state-invariant-finding",
+        ),
+    )
+    snapshot = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr)
+    owners = snapshot.get_blockers_for_alias("github_root_comment", str(flow.root_id))
+    assert len(owners) == 1
+    blocker = owners[0]
+    concerns = blocker.concern_ids or blocker.accepted_scope.concern_ids
+    assert concerns
+    response = json.loads(ordinary_response(flow.thread_id, status="ADDRESSED", evidence="tests/test_state.py exercises the repaired state invariant"))
+    response["thread_dispositions"][0]["concern_ids"] = list(concerns) if matching_concerns else ["invented-correction-name"]
+    flow.model_responses = [json.dumps(response)]
+    # Resolve only when the real closure executor requests the GitHub mutation.
+    original_set_resolved = flow._set_thread_resolved
+    monkeypatch.setattr(flow, "_set_thread_resolved", lambda thread, resolved: original_set_resolved(thread, True))
+    calls_before = flow.model_calls
+
+    with patch("auto_coder.pr_processor._record_pr_stage", wraps=_record_pr_stage) as stages:
+        actions = flow.run()
+
+    section = flow.validation_sections[-1]
+    assert f"Canonical blocker identity: {blocker.blocker_id}" in section
+    assert f"Owned concrete concern IDs: {', '.join(concerns)}" in section
+    assert f"Accepted original correction scope: {blocker.accepted_scope.description}" in section
+    assert f"Authoritative production boundary: {blocker.authoritative_boundary}" in section
+    assert flow.model_calls == calls_before + 1
+    if matching_concerns:
+        assert flow.thread_resolved is True, actions
+        assert flow.merge.call_count == 1, actions
+        assert flow.status.error is None
+        # Reprocessing the same head consumes completion without another model call.
+        flow.auto_status = True
+        flow.run()
+        assert flow.model_calls == calls_before + 1
+        assert flow.status.outcome is PRProcessingOutcome.SUCCESS
+    else:
+        flow.client.resolve_review_thread.assert_not_called()
+        flow.merge.assert_not_called()
+        assert flow.status.outcome is PRProcessingOutcome.FAILED, actions
+        assert "Review-thread closure remains unfinished" in flow.status.error
+        assert any("Partial correction:" in action for action in actions)
+        assert not any("Adversarial validation passed" in action for action in actions)
+        closure_stages = [call for call in stages.call_args_list if call.args[1] == "pr.review-thread-closure"]
+        assert len(closure_stages) == 1
+        facts = closure_stages[0].args[4]
+        assert facts["confirmed_count"] == 0 and facts["unfinished_count"] == 1
+        assert facts["unfinished"][0]["thread_id"] == flow.thread_id
+        assert facts["unfinished"][0]["phase"] == "independent-decision"
+        assert facts["unfinished"][0]["effect_state"] == "NOT_ATTEMPTED"
+        assert not any(call.args[1] == "pr.merge-completion" for call in stages.call_args_list)
+    assert flow.provider.followups == []
+
+
+def test_unavailable_canonical_closure_scope_does_not_start_a_reviewer(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = make_flow(flow_env, monkeypatch, 7438, "cloud")
+    flow.root_body = "### Auto-Coder adversarial finding\nThe state transition loses data."
+
+    def unavailable(*_args: object) -> None:
+        raise OSError("ledger unavailable")
+
+    monkeypatch.setattr("auto_coder.pr_processor.CanonicalPRBlockerLedger.initialize_namespace", unavailable)
+
+    actions = flow.run()
+
+    assert flow.model_calls == 0
+    assert flow.merge.call_count == 0
+    assert flow.provider.followups == []
+    assert any("canonical thread-closure scope is unavailable: ledger unavailable" in action for action in actions)
 
 
 def test_legacy_ordinary_pass_without_assessment_triggers_one_combined_review(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:

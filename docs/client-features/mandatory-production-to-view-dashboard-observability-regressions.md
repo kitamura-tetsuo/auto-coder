@@ -9,6 +9,16 @@ parametrized production regression and runnable command are recorded in
 `docs/dashboard-observability.md`; no dashboard renderer or schema change is
 required.
 
+Canonical concern-ID delivery and unfinished ordinary thread closure are covered
+by `test_canonical_concern_ids_reach_ordinary_review_and_control_merge` in
+`tests/test_single_review_ordinary_closure_flow.py`. An unmatched concern ID keeps
+the existing `pr.review-thread-closure` event BLOCKED with the exact thread,
+independent-decision phase, and unattempted effect; a semantic PASS never emits
+merge completion for that run. Matching current evidence closes the thread and
+reaches merge; same-head reentry needs no additional reviewer. Scope lookup
+failure uses the existing review-wait stage. No trace schema or dashboard renderer
+change is required; see the runnable inventory in `docs/dashboard-observability.md`.
+
 Local PR conflict repair uses the existing `pr.mergeability-remediation` stage:
 confirmed repair publication is `COMPLETED` with `result=success`, and failed
 repair is `FAILED` with `result=failed`. A staged index or leftover conflict

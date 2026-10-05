@@ -244,6 +244,19 @@ schema migration is required. Run `bash scripts/test.sh
 tests/test_review_thread_validation.py tests/test_pr_blocker_closure.py
 tests/test_adversarial_validation_pr_flow.py` for producer, wrapper, and production
 consumer coverage.
+Canonical closure scope is now rendered from the PR ledger before reviewer
+admission, using the resolver's exact alias association. The existing
+`pr.review-thread-closure` BLOCKED facts remain authoritative when a fresh PASS
+contains unmatched concern IDs: processing fails and stops before the strong or
+final merge gates, with no `pr.merge-completion` emission or repair handoff.
+`tests/test_single_review_ordinary_closure_flow.py::test_canonical_concern_ids_reach_ordinary_review_and_control_merge`
+checks these producer facts, the exact reviewer input, successful resolution and
+merge, and unchanged-head reuse without another reviewer. The same file's
+`test_unavailable_canonical_closure_scope_does_not_start_a_reviewer` checks
+fail-closed scope acquisition before model invocation. Run both with
+`bash scripts/test.sh tests/test_single_review_ordinary_closure_flow.py`.
+These corrections use the existing timeline/detail projection and review-wait
+stage without introducing an event field, processing origin, or renderer change.
 Run `bash scripts/test.sh tests/test_pr_review_execution.py
 tests/test_pr_review_cycle.py tests/test_two_tier_pr_gate.py
 tests/test_strong_audit_producer.py` for prompt,

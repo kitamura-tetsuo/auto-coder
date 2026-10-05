@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Set
 
 from .adversarial_validator import CHANGE_PROVENANCE_CLARIFICATION_MARKER, ReviewThreadDisposition
+from .canonical_pr_blocker_ledger import BlockerLedgerSnapshot
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .review_feedback_marker import reply_claims_review_addressed
@@ -643,7 +644,7 @@ def change_provenance_reply_fingerprint(claimed: Sequence[ClaimedReviewThread]) 
     return f"<!-- auto-coder-change-provenance-evidence:v1:{digest} -->"
 
 
-def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]) -> str:
+def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread], *, snapshot: Optional[BlockerLedgerSnapshot] = None) -> str:
     """Render the evidence block the adversarial-validation prompt injects.
 
     Only threads listed here may receive a ``thread_dispositions`` entry; the
@@ -653,6 +654,11 @@ def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]
     if not claimed:
         return "(No claimed-addressed review threads for this run.)"
 
+    # Use the resolver's exact alias association, including historical and compound
+    # roots, so the reviewer sees the same immutable scope closure will enforce.
+    from .pr_blocker_closure import extract_closure_candidates
+
+    candidates = extract_closure_candidates(claimed, snapshot=snapshot)
     blocks = []
     for thread in claimed:
         if thread.is_change_provenance:
@@ -672,14 +678,26 @@ def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]
             discussion_label = "Full thread discussion (chronological, includes the implementation-agent addressed claim and rationale):"
 
         lines = [f"### {heading}: {thread.thread_id}"]
-        if thread.blocker_ids:
+        scoped_candidates = tuple(candidate for candidate in candidates if candidate.thread_id == thread.thread_id and candidate.blocker_id)
+        if not scoped_candidates and thread.blocker_ids:
             lines.append(f"Canonical blocker identity: {', '.join(thread.blocker_ids)}")
-        if thread.category:
+        if not scoped_candidates and thread.category:
             lines.append(f"Finding category: {thread.category}")
-        if thread.authoritative_boundary:
+        if not scoped_candidates and thread.authoritative_boundary:
             lines.append(f"Authoritative production boundary: {thread.authoritative_boundary}")
-        if thread.concern_ids:
+        if not scoped_candidates and thread.concern_ids:
             lines.append(f"Owned concrete concern IDs: {', '.join(thread.concern_ids)}")
+        if scoped_candidates:
+            for candidate in scoped_candidates:
+                lines.extend(
+                    [
+                        f"Canonical blocker identity: {candidate.blocker_id}",
+                        f"Finding category: {candidate.category}",
+                        f"Authoritative production boundary: {candidate.authoritative_boundary}",
+                        f"Accepted original correction scope: {candidate.accepted_scope_description}",
+                        f"Owned concrete concern IDs: {', '.join(candidate.owned_concern_ids)}",
+                    ]
+                )
         lines.extend(
             [
                 f"Original review finding (thread root, author: {thread.root_author_login or 'unknown'}):",

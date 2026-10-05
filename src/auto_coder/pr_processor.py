@@ -5150,7 +5150,14 @@ def _handle_pr_merge(
                         # From here onward only this attempt's validated result may
                         # drive the decision; a saved same-head verdict is history.
                         published_status = None
-                        claimed_review_threads_section = render_claimed_review_threads_section(claimed_review_threads)
+                        closure_snapshot = None
+                        if claimed_review_threads:
+                            try:
+                                closure_snapshot = CanonicalPRBlockerLedger().initialize_namespace("https://api.github.com", repo_name, pr_number)
+                            except Exception as exc:
+                                _record_review_wait(repo_name, pr_number, head_sha, actions, processing_status, f"canonical thread-closure scope is unavailable: {exc}")
+                                return actions
+                        claimed_review_threads_section = render_claimed_review_threads_section(claimed_review_threads, snapshot=closure_snapshot)
                         if adversarial_validation_scheduler is not None:
                             lease = validation_admission.enter_context(adversarial_validation_scheduler.admit(repo_name, pr_number))
                             if not lease.acquired:
@@ -5590,7 +5597,7 @@ def _handle_pr_merge(
                                 _record_pr_stage(pr_number, "pr.adversarial-validation", f"pr#{pr_number} adversarial validation", Outcome.SUPERSEDED, {"attempt_id": attempt.attempt_id, "examined_head": head_sha, "phase": "post-publication"})
                                 record_effect(review_target, active_review_id, "superseded", {"phase": "post-publication"})
                                 return actions
-                    if published_status == "PASS" and unfinished_closure_outcomes:
+                    if unfinished_closure_outcomes and val_result.is_pass:
                         reason = f"Review-thread closure remains unfinished for {len(unfinished_closure_outcomes)} " f"thread(s): {', '.join(outcome.thread_id for outcome in unfinished_closure_outcomes)}"
                         if processing_status is not None:
                             processing_status.error = reason

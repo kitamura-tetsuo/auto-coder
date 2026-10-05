@@ -597,6 +597,18 @@ class TestAS004GroupedRootAndIndependentAggregateVerdict:
         candidates = extract_closure_candidates(claimed, snapshot=snap, repository=repo_name, pr_number=pr_number)
 
         # Correct A, keep B open
+        rendered = render_claimed_review_threads_section(claimed, snapshot=snap)
+        compound, alias = rendered.split("### Claimed-addressed review thread: thread-alias-a")
+        assert f"Canonical blocker identity: {id_a}" in compound
+        assert f"Canonical blocker identity: {id_b}" in compound
+        assert "Accepted original correction scope: Scope A" in compound
+        assert "Accepted original correction scope: Scope B" in compound
+        assert "Owned concrete concern IDs: concern-a" in compound
+        assert "Owned concrete concern IDs: concern-b" in compound
+        assert f"Canonical blocker identity: {id_a}" in alias
+        assert f"Canonical blocker identity: {id_b}" not in alias
+        assert "Owned concrete concern IDs: concern-b" not in alias
+
         disp_compound = ReviewThreadDisposition(
             thread_id="thread-compound",
             status="ADDRESSED",
