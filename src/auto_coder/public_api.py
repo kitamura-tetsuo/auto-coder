@@ -15,20 +15,23 @@ application construction; otherwise the paths do not exist (plain 404).
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import dataclasses
+import hashlib
 import json
 import math
 import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, Callable, List, Optional, Sequence, Union
 
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from loguru import logger
 
-from .execution_trace import EventKind, StructuredEvent, get_trace_collector
+from .execution_trace import EventKind, StructuredEvent, TraceSnapshot, get_trace_collector
 from .implementation_slots import (
     ImplementationOwnerSnapshot,
     ImplementationSlotRepository,
@@ -44,6 +47,7 @@ MAX_TEXT_CHARS = 2000
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_MEMBERSHIPS = 100
 REDACTION_MARKER = "[REDACTED]"
+PATH_MARKER = "[REDACTED_PATH]"
 URL_MARKER = "[REDACTED_URL]"
 RETENTION_SCOPE = "process_local_bounded"
 FACT_KEYS = ("reason", "error", "phase", "backend", "provider", "attempt_id", "request_id", "provider_task_id", "head_sha", "exit_code")
@@ -62,14 +66,22 @@ _CREDENTIAL_PATTERNS = re.compile(
     )
 )
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+_PATH_PATTERN = re.compile(r"(?<![\w:/.@+-])(?:/(?:[\w.@+-]+/)+[\w.@+-]*|~/[\w.@+/-]+|[A-Za-z]:\\[^\s\"']+)")
 _AUTH_PATTERN = re.compile(r"\b(bearer|basic)[ \t]+\S+", re.IGNORECASE)
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.:/#-]{1,200}")
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _POSITIVE_INT = re.compile(r"[0-9]{1,9}")
 _TYPE_NAME = re.compile(r"[a-z0-9_-]{1,32}")
+_SEQUENCE = re.compile(r"[0-9]{1,15}")
+_CURSOR = re.compile(r"[A-Za-z0-9_-]{1,%d}" % 1024)
+MAX_SEQUENCE = 10**15
+CURSOR_VERSION = 1
+OMIT_IDENTITY = "identity_unrepresentable"
+OMIT_RESPONSE_BOUND = "representation_exceeds_response_bound"
 
 _STATUS_PARAMS = frozenset({"limit"})
-_LOGS_PARAMS = frozenset({"limit", "item_type", "item_number", "execution_id", "process_run_id"})
+_LOGS_PARAMS = frozenset({"limit", "item_type", "item_number", "execution_id", "process_run_id", "after_sequence", "cursor"})
+_SELECTOR_PARAMS = ("after_sequence", "process_run_id", "item_type", "item_number", "execution_id")
 
 
 # -- public schema (the only fields that can leave the process) --------------
@@ -223,6 +235,72 @@ class LogsResponse:
 
 
 @dataclass
+class IncrementalFilter:
+    process_run_id: str
+    item_type: Optional[str] = None
+    item_number: Optional[int] = None
+    execution_id: Optional[str] = None
+    limit: int = DEFAULT_LIMIT
+
+
+@dataclass
+class RetentionBoundaries:
+    sequence_high_watermark: int = 0
+    oldest_retained_sequence: Optional[int] = None
+    discarded_through_sequence: int = 0
+
+
+@dataclass
+class Omission:
+    reason: str
+    count: int
+    first_sequence: int
+    last_sequence: int
+
+
+@dataclass
+class IncrementalLogsResponse:
+    repository: str
+    sampled_at: float
+    process_run_id: str
+    events_truncated: bool
+    execution_metadata_truncated: bool
+    filter: IncrementalFilter
+    result: str
+    response: ResponseLimits
+    after_sequence: int
+    snapshot_upper_sequence: int
+    next_after_sequence: int
+    has_more: bool
+    next_cursor: Optional[str]
+    retention: RetentionBoundaries
+    omissions: List[Omission]
+    events: List[EventEntry]
+    retention_scope: str = RETENTION_SCOPE
+    availability: str = "available"
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass
+class RetentionGapResponse:
+    repository: str
+    error: ErrorDetail
+    process_run_id: str
+    after_sequence: int
+    snapshot_upper_sequence: int
+    retention: RetentionBoundaries
+    coverage: str = "unknown"
+    schema_version: int = SCHEMA_VERSION
+
+
+@dataclass
+class IncrementalRequest:
+    after_sequence: int
+    filter: IncrementalFilter
+    snapshot_upper_sequence: Optional[int] = None
+
+
+@dataclass
 class ErrorDetail:
     code: str
     message: str
@@ -239,11 +317,16 @@ class ErrorResponse:
 # -- redaction / clipping -------------------------------------------------------
 
 
-def sanitize_text(value: str) -> tuple[str, bool, bool]:
-    """Redact credentials/URLs first, then clip. Returns (text, filtered, clipped)."""
+def sanitize_text(value: str, paths: bool = False) -> tuple[str, bool, bool]:
+    """Redact credentials/URLs (and, for free text, filesystem paths) first, then clip.
+
+    Returns (text, filtered, clipped).
+    """
     text = _URL_PATTERN.sub(URL_MARKER, value)
     text = _AUTH_PATTERN.sub(lambda m: f"{m.group(1)} {REDACTION_MARKER}", text)
     text = _CREDENTIAL_PATTERNS.sub(REDACTION_MARKER, text)
+    if paths:
+        text = _PATH_PATTERN.sub(PATH_MARKER, text)
     filtered = text != value
     clipped = len(text) > MAX_TEXT_CHARS
     if clipped:
@@ -373,7 +456,7 @@ def _facts(raw: object) -> tuple[dict, bool, bool]:
             if isinstance(value, int):
                 out.exit_code = value
         elif isinstance(value, (str, int, float)):
-            text, was_filtered, was_clipped = sanitize_text(str(value))
+            text, was_filtered, was_clipped = sanitize_text(str(value), paths=True)
             setattr(out, key, text)
             filtered, clipped = filtered or was_filtered, clipped or was_clipped
     return {k: v for k, v in dataclasses.asdict(out).items() if v is not None}, filtered, clipped
@@ -391,7 +474,7 @@ def project_event(event: StructuredEvent, repo_name: str) -> Optional[EventEntry
         return None
     if scoped and event.item_type not in ("issue", "pr"):
         return None
-    label, label_filtered, label_clipped = sanitize_text(str(event.label))
+    label, label_filtered, label_clipped = sanitize_text(str(event.label), paths=True)
     facts, facts_filtered, facts_clipped = _facts(event.facts)
     number = event.item_number if scoped and isinstance(event.item_number, int) and event.item_number > 0 else None
     if scoped and number is None:
@@ -476,6 +559,163 @@ def build_logs(repo_name: str, flt: LogFilter) -> "LogsResponse | ErrorResponse"
     return response
 
 
+# -- incremental pages -----------------------------------------------------------
+
+
+class ObservationUnavailable(Exception):
+    """Raised when continuity evidence is missing or inconsistent; carries no source text."""
+
+
+def _repo_digest(repo_name: str) -> str:
+    return hashlib.sha256(repo_name.casefold().encode("utf-8")).hexdigest()[:16]
+
+
+def encode_cursor(repo_name: str, flt: IncrementalFilter, after: int, upper: int) -> str:
+    payload = {"v": CURSOR_VERSION, "r": flt.process_run_id, "p": _repo_digest(repo_name), "t": flt.item_type, "n": flt.item_number, "e": flt.execution_id, "a": after, "h": upper}
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _is_int(value: object, low: int = 0, high: int = MAX_SEQUENCE) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def decode_cursor(raw: str, repo_name: str, limit: int) -> IncrementalRequest:
+    """Strictly validate an opaque cursor; any defect raises ``InvalidRequest`` without echoing it."""
+    if not _CURSOR.fullmatch(raw):
+        raise InvalidRequest
+    try:
+        data = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4), altchars=b"-_", validate=True).decode("utf-8"))
+    except (binascii.Error, ValueError):
+        raise InvalidRequest from None
+    keys = {"v", "r", "p", "t", "n", "e", "a", "h"}
+    if not isinstance(data, dict) or set(data) != keys or data["v"] != CURSOR_VERSION:
+        raise InvalidRequest
+    run, item_type, number, execution_id = data["r"], data["t"], data["n"], data["e"]
+    if not isinstance(run, str) or not _OPAQUE_ID.fullmatch(run) or data["p"] != _repo_digest(repo_name):
+        raise InvalidRequest
+    if (item_type is None) != (number is None) or (item_type is not None and (item_type not in ("issue", "pr") or not _is_int(number, 1))):
+        raise InvalidRequest
+    if execution_id is not None and (not isinstance(execution_id, str) or not _OPAQUE_ID.fullmatch(execution_id)):
+        raise InvalidRequest
+    after, upper = data["a"], data["h"]
+    if not _is_int(after) or not _is_int(upper) or after > upper:
+        raise InvalidRequest
+    return IncrementalRequest(after, IncrementalFilter(run, item_type, number, execution_id, limit), upper)
+
+
+def _checked_continuity(snapshot: TraceSnapshot) -> RetentionBoundaries:
+    high, oldest, discarded = snapshot.sequence_high_watermark, snapshot.oldest_retained_sequence, snapshot.discarded_through_sequence
+    if not _is_int(high) or not _is_int(discarded, 0, high) or not isinstance(snapshot.process_run_id, str):
+        raise ObservationUnavailable
+    if oldest is not None and not _is_int(oldest, discarded + 1, high):
+        raise ObservationUnavailable
+    sequences = [e.sequence for e in snapshot.events]
+    if not all(_is_int(seq, 1, high) for seq in sequences) or (min(sequences) if sequences else None) != oldest:
+        raise ObservationUnavailable
+    return RetentionBoundaries(high, oldest, discarded)
+
+
+@dataclass
+class _Consumed:
+    sequence: int
+    entry: Optional[EventEntry]
+    reason: str = ""
+
+
+def _omissions(consumed: Sequence[_Consumed]) -> List[Omission]:
+    found: "dict[str, Omission]" = {}
+    for item in consumed:
+        if item.entry is not None:
+            continue
+        current = found.get(item.reason)
+        if current is None:
+            found[item.reason] = Omission(item.reason, 1, item.sequence, item.sequence)
+        else:
+            current.count += 1
+            current.last_sequence = item.sequence
+    return list(found.values())
+
+
+def build_incremental_logs(repo_name: str, request: IncrementalRequest) -> "IncrementalLogsResponse | ErrorResponse | RetentionGapResponse":
+    """Return the oldest unread representable prefix of a fixed ``(after, upper]`` interval."""
+    flt = request.filter
+    snapshot = get_trace_collector().get_snapshot()
+    retention = _checked_continuity(snapshot)
+    if flt.process_run_id != snapshot.process_run_id:
+        return ErrorResponse(repo_name, ErrorDetail("process_run_changed", "The supplied process_run_id is not the current process run."), snapshot.process_run_id)
+    after = request.after_sequence
+    upper = retention.sequence_high_watermark if request.snapshot_upper_sequence is None else request.snapshot_upper_sequence
+    if after > upper or upper > retention.sequence_high_watermark:
+        raise InvalidRequest
+    if after < upper and retention.discarded_through_sequence > after:
+        detail = ErrorDetail("retention_gap", "Retained events at or after the checkpoint were evicted or cleared; matching-filter coverage of the interval is unknown.")
+        return RetentionGapResponse(repo_name, detail, snapshot.process_run_id, after, upper, retention)
+    selection = LogFilter(flt.item_type, flt.item_number, flt.execution_id, flt.process_run_id, flt.limit)
+    matching = sorted((e for e in snapshot.events if after < e.sequence <= upper and _selectable(e, repo_name, selection)), key=lambda e: e.sequence)
+
+    consumed: List[_Consumed] = []
+    delivered = 0
+    cursor_index = 0
+    while cursor_index < len(matching) and delivered < flt.limit:
+        event = matching[cursor_index]
+        cursor_index += 1
+        entry = project_event(event, repo_name)
+        if entry is None:
+            consumed.append(_Consumed(event.sequence, None, OMIT_IDENTITY))
+        else:
+            delivered += 1
+            consumed.append(_Consumed(event.sequence, entry))
+    pending = matching[cursor_index:]
+
+    def page(prefix: int) -> IncrementalLogsResponse:
+        taken = consumed[:prefix]
+        unread = consumed[prefix].sequence if prefix < len(consumed) else pending[0].sequence if pending else None
+        next_after = upper if unread is None else unread - 1
+        events = [c.entry for c in taken if c.entry is not None]
+        omissions = _omissions(taken)
+        omitted = sum(o.count for o in omissions)
+        has_more = next_after < upper
+        if events:
+            result = "events"
+        else:
+            result = "omitted_only" if omitted else "no_retained_match"
+        return IncrementalLogsResponse(
+            repo_name,
+            time.time(),
+            snapshot.process_run_id,
+            snapshot.events_truncated,
+            snapshot.execution_metadata_truncated,
+            flt,
+            result,
+            ResponseLimits(len(matching), len(events), unread is not None, omitted, omitted > 0),
+            after,
+            upper,
+            next_after,
+            has_more,
+            encode_cursor(repo_name, flt, next_after, upper) if has_more else None,
+            retention,
+            omissions,
+            events,  # type: ignore[arg-type]
+        )
+
+    def fits(prefix: int) -> bool:
+        return len(_dump(page(prefix))) <= MAX_RESPONSE_BYTES
+
+    while True:
+        low, high = 0, len(consumed)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if fits(mid):
+                low = mid
+            else:
+                high = mid - 1
+        if low > 0 or not consumed:
+            return page(low)
+        # The oldest unread record alone exceeds the bound: omit and consume it explicitly.
+        consumed[0] = _Consumed(consumed[0].sequence, None, OMIT_RESPONSE_BOUND)
+
+
 # -- bounded serialization -----------------------------------------------------
 
 
@@ -555,20 +795,30 @@ def _parse_params(request: Request, allowed: frozenset) -> dict:
     return dict(params.items())
 
 
-def parse_log_filter(request: Request) -> LogFilter:
+def parse_log_request(request: Request, repo_name: str) -> Union[LogFilter, IncrementalRequest]:
     params = _parse_params(request, _LOGS_PARAMS)
+    limit = _parse_limit(params.get("limit"))
+    if "cursor" in params:
+        if any(name in params for name in _SELECTOR_PARAMS):
+            raise InvalidRequest
+        return decode_cursor(params["cursor"], repo_name, limit)
     item_type, number = params.get("item_type"), params.get("item_number")
     if (item_type is None) != (number is None):
         raise InvalidRequest
     if item_type is not None and (item_type not in ("issue", "pr") or not _POSITIVE_INT.fullmatch(number or "") or int(number or 0) < 1):
         raise InvalidRequest
-    execution_id, run_id = params.get("execution_id"), params.get("process_run_id")
-    if execution_id is not None and run_id is None:
+    execution_id, run_id, after = params.get("execution_id"), params.get("process_run_id"), params.get("after_sequence")
+    if (execution_id is not None or after is not None) and run_id is None:
         raise InvalidRequest
     for value in (execution_id, run_id):
         if value is not None and not _OPAQUE_ID.fullmatch(value):
             raise InvalidRequest
-    return LogFilter(item_type, int(number) if number is not None else None, execution_id, run_id, _parse_limit(params.get("limit")))
+    count = int(number) if number is not None else None
+    if after is not None:
+        if not _SEQUENCE.fullmatch(after) or run_id is None:
+            raise InvalidRequest
+        return IncrementalRequest(int(after), IncrementalFilter(run_id, item_type, count, execution_id, limit))
+    return LogFilter(item_type, count, execution_id, run_id, limit)
 
 
 # -- application wiring ---------------------------------------------------------
@@ -623,15 +873,21 @@ def init_public_api(app: FastAPI, engine: Any, repo_name: str) -> None:
     @app.get("/api/logs", include_in_schema=False)
     async def api_logs(request: Request) -> Response:
         try:
-            flt = parse_log_filter(request)
+            parsed = parse_log_request(request, repo_name)
         except InvalidRequest:
             return invalid()
         try:
-            result = await asyncio.to_thread(build_logs, repo_name, flt)
+            result: object
+            if isinstance(parsed, IncrementalRequest):
+                result = await asyncio.to_thread(build_incremental_logs, repo_name, parsed)
+            else:
+                result = await asyncio.to_thread(build_logs, repo_name, parsed)
+        except InvalidRequest:
+            return invalid()
         except Exception:
             logger.exception("public API logs: observation failed")
             return error(503, "observation_unavailable", "Diagnostic events could not be read.")
-        if isinstance(result, ErrorResponse):
+        if isinstance(result, (ErrorResponse, RetentionGapResponse)):
             return _json_response(result, 409)
         try:
             return await asyncio.to_thread(_json_response, result)
@@ -661,6 +917,8 @@ def _index_document(repo_name: str, run_id: Optional[str]) -> dict:
                     "item_number": "positive integer; must be paired with item_type",
                     "execution_id": "exact execution; requires process_run_id",
                     "process_run_id": "must equal the current process run, otherwise 409 process_run_changed",
+                    "after_sequence": "opt-in incremental mode: nonnegative checkpoint; requires process_run_id, at most the current sequence_high_watermark; pages the oldest unread matching events up to a fixed snapshot_upper_sequence",
+                    "cursor": "opaque next_cursor from an incremental response; only limit may accompany it",
                 },
             },
         },
@@ -670,6 +928,12 @@ def _index_document(repo_name: str, run_id: Optional[str]) -> dict:
             "no_retained_match": "No retained event matches the filter. It does not mean the item does not exist, nothing ran, or all is healthy.",
             "retention_loss": "events_truncated / execution_metadata_truncated report that the bounded process-local source evicted older records.",
             "response_clipping": "response.truncated / per-section truncated report entries omitted by limit or byte bound; text_truncated marks clipped text; filtered marks redaction.",
+            "incremental": (
+                "Incremental pages never skip unread retained events: next_after_sequence is the safely consumed boundary, "
+                "has_more/next_cursor continue the fixed interval ending at snapshot_upper_sequence, and omissions lists matching "
+                "records consumed but not returned. 409 retention_gap: coverage of the pending interval is unknown; "
+                "409 process_run_changed: the process restarted. Acknowledge next_after_sequence only after processing a page."
+            ),
             "process_local_logs": "Logs are structured diagnostic events held in this process's memory; they reset on restart and are not raw logs or a durable history.",
         },
     }
