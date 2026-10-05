@@ -362,3 +362,31 @@ class TestRetentionContinuity:
         snap = result[0]
         assert [e.sequence for e in snap.events] == [2, 3]
         assert (snap.sequence_high_watermark, snap.oldest_retained_sequence, snap.discarded_through_sequence) == (3, 2, 1)
+
+    def test_failed_append_does_not_record_eviction(self):
+        import collections
+
+        c = self._fresh(max_events=2)
+        c.record_event(EventKind.STAGE_STARTED, stage_id="a", origin="t")
+        c.record_event(EventKind.STAGE_STARTED, stage_id="b", origin="t")
+
+        class FailingDeque(collections.deque):
+            fail = True
+
+            def append(self, item):
+                if self.fail:
+                    raise MemoryError("append failed")
+                super().append(item)
+
+        failing = FailingDeque(c._events, maxlen=2)
+        c._events = failing
+        assert c.record_event(EventKind.STAGE_STARTED, stage_id="c", origin="t") is None
+        snap = c.get_snapshot()
+        assert [e.sequence for e in snap.events] == [1, 2]
+        assert (snap.sequence_high_watermark, snap.oldest_retained_sequence, snap.discarded_through_sequence) == (3, 1, 0)
+        assert snap.events_truncated is False
+        failing.fail = False
+        c.record_event(EventKind.STAGE_STARTED, stage_id="d", origin="t")
+        snap = c.get_snapshot()
+        assert [e.sequence for e in snap.events] == [2, 4]
+        assert (snap.sequence_high_watermark, snap.discarded_through_sequence) == (4, 1)

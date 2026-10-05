@@ -274,10 +274,14 @@ class TraceCollector:
                 self._seq_counter += 1
                 seq = self._seq_counter
                 event = build(seq)
+                evicted_sequence: Optional[int] = None
                 if self._events and len(self._events) == (self._events.maxlen or 0):
-                    self._discarded_through_sequence = max(self._discarded_through_sequence, self._events[0].sequence)
-                    self.events_dropped += 1
+                    evicted_sequence = self._events[0].sequence
                 self._events.append(event)
+                # Record loss only after the append actually succeeded.
+                if evicted_sequence is not None:
+                    self._discarded_through_sequence = max(self._discarded_through_sequence, evicted_sequence)
+                    self.events_dropped += 1
                 return event
         except Exception:
             logger.exception("TraceCollector: failed to publish structured event; continuing without it")
