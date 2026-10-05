@@ -84,9 +84,11 @@ class WorkspaceFileState:
     """A non-dereferencing snapshot of one supported working-tree path."""
 
     relative_path: str
-    contents: bytes
+    checksum: str
     mode: int
     symlink: bool
+    source_path: Path = field(compare=False, repr=False)
+    link_target: bytes = b""
 
 
 @dataclass
@@ -268,19 +270,11 @@ def refresh_local_workspace_binding(binding: LocalWorkspaceBinding) -> LocalWork
 
 
 @dataclass(frozen=True)
-class _CapturedFile:
-    relative_path: str
-    contents: bytes
-    mode: int
-    symlink: bool
-
-
-@dataclass(frozen=True)
 class _SourceSnapshot:
     binding: LocalWorkspaceBinding
-    staged_diff: bytes
-    unstaged_diff: bytes
-    untracked: tuple[_CapturedFile, ...]
+    staged_diff: Path
+    unstaged_diff: Path
+    untracked: tuple[WorkspaceFileState, ...]
     directories: tuple[tuple[str, int], ...]
     tracked_modes: tuple[tuple[str, int], ...]
     consistency_token: str
@@ -293,8 +287,8 @@ def _resolve_target(cwd: Optional[Union[Path, str]] = None) -> Path:
     return Path(cmd_cwd) if cmd_cwd else Path.cwd()
 
 
-def _git(target: Path, *args: str, input_data: Optional[bytes] = None) -> subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(["git", *args], cwd=target, input=input_data, capture_output=True)
+def _git(target: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    result = subprocess.run(["git", *args], cwd=target, capture_output=True)
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise WorkspacePreparationError(f"git {' '.join(args)} failed: {detail}")
@@ -318,21 +312,33 @@ def is_git_repository(cwd: Optional[Union[Path, str]] = None) -> bool:
         return False
 
 
-def _path_bytes(path: Path) -> tuple[bytes, int, bool]:
+def _file_checksum(path: Path) -> str:
+    """Hash regular files with bounded memory, including large runtime context."""
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _capture_file_state(root: Path, relative: str, storage: Optional[Path] = None) -> WorkspaceFileState:
+    path = root / relative
     if path.is_symlink():
-        return os.fsencode(os.readlink(path)), stat.S_IMODE(path.lstat().st_mode), True
-    return path.read_bytes(), stat.S_IMODE(path.stat().st_mode), False
+        target = os.fsencode(os.readlink(path))
+        return WorkspaceFileState(relative, hashlib.sha256(target).hexdigest(), stat.S_IMODE(path.lstat().st_mode), True, path, target)
+    mode = stat.S_IMODE(path.stat().st_mode)
+    source = path
+    if storage is not None:
+        # Flat, unique names avoid conflicts between deleted files and new directories.
+        source = storage / uuid.uuid4().hex
+        shutil.copyfile(path, source)
+    return WorkspaceFileState(relative, _file_checksum(source), mode, False, source)
 
 
 def _capture_file_states(root: Path, paths: set[str]) -> tuple[WorkspaceFileState, ...]:
     states: list[WorkspaceFileState] = []
     for relative in sorted(paths):
-        path = root / relative
         try:
-            contents, mode, symlink = _path_bytes(path)
+            states.append(_capture_file_state(root, relative))
         except (FileNotFoundError, IsADirectoryError):
             continue
-        states.append(WorkspaceFileState(relative, contents, mode, symlink))
     return tuple(states)
 
 
@@ -344,14 +350,13 @@ def _listed_paths(root: Path, *args: str) -> tuple[str, ...]:
 def _filesystem_token(root: Path, tracked: tuple[str, ...], untracked: tuple[str, ...]) -> str:
     digest = hashlib.sha256()
     for relative in sorted(set(tracked + untracked)):
-        path = root / relative
         digest.update(os.fsencode(relative) + b"\0")
         try:
-            data, mode, symlink = _path_bytes(path)
+            state = _capture_file_state(root, relative)
         except (FileNotFoundError, IsADirectoryError):
             digest.update(b"missing\0")
             continue
-        digest.update(str(mode).encode() + bytes([symlink]) + hashlib.sha256(data).digest())
+        digest.update(str(state.mode).encode() + bytes([state.symlink]) + bytes.fromhex(state.checksum))
     return digest.hexdigest()
 
 
@@ -364,7 +369,7 @@ def _source_token(root: Path, tracked: tuple[str, ...], untracked: tuple[str, ..
     if not index_path.is_absolute():
         index_path = root / index_path
     try:
-        index_digest = hashlib.sha256(index_path.read_bytes()).hexdigest()
+        index_digest = _file_checksum(index_path)
     except OSError as exc:
         raise WorkspacePreparationError(f"unable to read caller index: {exc}") from exc
     token = hashlib.sha256(head_identity + b"\0" + head.encode() + b"\0" + index_digest.encode() + b"\0" + _filesystem_token(root, tracked, untracked).encode()).hexdigest()
@@ -391,14 +396,14 @@ def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWork
     if not common_dir.is_absolute():
         common_dir = (root / common_dir).resolve()
 
-    files: list[_CapturedFile] = []
+    storage = workspace.parent / "source-snapshot"
+    storage.mkdir()
+    files: list[WorkspaceFileState] = []
     for relative in untracked_paths:
-        path = root / relative
         try:
-            contents, mode, symlink = _path_bytes(path)
+            files.append(_capture_file_state(root, relative, storage))
         except OSError as exc:
             raise WorkspacePreparationError(f"unable to capture {relative}: {exc}") from exc
-        files.append(_CapturedFile(relative, contents, mode, symlink))
 
     tracked_modes: list[tuple[str, int]] = []
     for relative in tracked:
@@ -434,13 +439,22 @@ def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWork
     )
     return _SourceSnapshot(
         binding=binding,
-        staged_diff=_git(root, "diff", "--cached", "--binary", "--full-index").stdout,
-        unstaged_diff=_git(root, "diff", "--binary", "--full-index").stdout,
+        staged_diff=_capture_git_patch(root, storage / "staged.patch", "--cached"),
+        unstaged_diff=_capture_git_patch(root, storage / "unstaged.patch"),
         untracked=tuple(files),
         directories=tuple(directories),
         tracked_modes=tuple(tracked_modes),
         consistency_token=token,
     )
+
+
+def _capture_git_patch(root: Path, destination: Path, *args: str) -> Path:
+    """Spool binary patches to disk instead of retaining their full stdout."""
+    with destination.open("wb") as stream:
+        result = subprocess.run(["git", "diff", *args, "--binary", "--full-index"], cwd=root, stdout=stream, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise WorkspacePreparationError(f"unable to capture Git patch: {os.fsdecode(result.stderr).strip()}")
+    return destination
 
 
 def _seed_private_repository(snapshot: _SourceSnapshot) -> None:
@@ -455,16 +469,16 @@ def _seed_private_repository(snapshot: _SourceSnapshot) -> None:
         value = subprocess.run(["git", "config", "--get", key], cwd=root, capture_output=True)
         if value.returncode == 0:
             _git(workspace, "config", "--local", key, value.stdout.rstrip(b"\n").decode())
-    if snapshot.staged_diff:
-        _git(workspace, "apply", "--cached", "--binary", input_data=snapshot.staged_diff)
+    if snapshot.staged_diff.stat().st_size:
+        _git(workspace, "apply", "--cached", "--binary", str(snapshot.staged_diff))
         _git(workspace, "checkout-index", "-a", "-f")
         removed = _git(workspace, "diff", "--cached", "--name-only", "--diff-filter=D", "-z").stdout
         for raw_path in filter(None, removed.split(b"\0")):
             path = workspace / os.fsdecode(raw_path)
             if path.exists() or path.is_symlink():
                 path.unlink()
-    if snapshot.unstaged_diff:
-        _git(workspace, "apply", "--binary", "--whitespace=nowarn", input_data=snapshot.unstaged_diff)
+    if snapshot.unstaged_diff.stat().st_size:
+        _git(workspace, "apply", "--binary", "--whitespace=nowarn", str(snapshot.unstaged_diff))
     for relative, mode in snapshot.tracked_modes:
         path = workspace / relative
         if path.exists() and not path.is_symlink():
@@ -475,14 +489,7 @@ def _seed_private_repository(snapshot: _SourceSnapshot) -> None:
         destination.chmod(mode)
     for item in snapshot.untracked:
         destination = workspace / item.relative_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists() or destination.is_symlink():
-            destination.unlink()
-        if item.symlink:
-            destination.symlink_to(os.fsdecode(item.contents))
-        else:
-            destination.write_bytes(item.contents)
-            destination.chmod(item.mode)
+        _restore_path(destination, item)
 
     tracked = _listed_paths(root, "--cached")
     untracked = tuple(path for path in _listed_paths(root, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
@@ -525,9 +532,9 @@ def _restore_path(path: Path, state: Optional[WorkspaceFileState]) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     if state.symlink:
-        path.symlink_to(os.fsdecode(state.contents))
+        path.symlink_to(os.fsdecode(state.link_target))
     else:
-        path.write_bytes(state.contents)
+        shutil.copyfile(state.source_path, path)
         path.chmod(state.mode)
 
 
@@ -575,7 +582,7 @@ def sync_worktree_changes_back(
     final_states = {item.relative_path: item for item in _capture_file_states(source, final_paths)}
     changed = sorted(path for path in baseline_states.keys() | final_states.keys() if baseline_states.get(path) != final_states.get(path))
 
-    with _handoff_lock(target):
+    with _handoff_lock(target), tempfile.TemporaryDirectory(prefix="handoff-", dir=binding.workspace.parent) as rollback_directory:
         tracked = _listed_paths(target, "--cached")
         context_untracked = tuple(path for path in _listed_paths(target, "--others") if not any(part in _DISPOSABLE_DIRECTORY_NAMES for part in Path(path).parts))
         current_token, _, current_git_dir = _source_token(target, tracked, context_untracked)
@@ -597,10 +604,19 @@ def sync_worktree_changes_back(
 
         destinations = {path: _assert_safe_destination(target, path) for path in changed}
         before: dict[str, Optional[WorkspaceFileState]] = {}
+        for relative in changed:
+            if relative not in final_states:
+                continue
+            try:
+                captured = _capture_file_state(source, relative, Path(rollback_directory))
+            except OSError as exc:
+                raise WorkspaceHandoffError(f"unable to capture final result {relative}: {exc}") from exc
+            if captured != final_states[relative]:
+                raise WorkspaceHandoffError("private result changed during handoff capture")
+            final_states[relative] = captured
         for relative, destination in destinations.items():
             try:
-                contents, mode, symlink = _path_bytes(destination)
-                before[relative] = WorkspaceFileState(relative, contents, mode, symlink)
+                before[relative] = _capture_file_state(target, relative, Path(rollback_directory))
             except (FileNotFoundError, IsADirectoryError):
                 before[relative] = None
             if destination.exists() and destination.is_dir() and not destination.is_symlink():

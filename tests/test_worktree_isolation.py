@@ -154,17 +154,17 @@ def test_failing_replacement_path_is_included_in_handoff_rollback(tmp_path: Path
     repo = _init_repo(tmp_path)
     original_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     original_index = (repo / ".git" / "index").read_bytes()
-    real_write_bytes = Path.write_bytes
+    real_copyfile = shutil.copyfile
     failed = False
 
-    def fail_once(path: Path, data: bytes) -> int:
+    def fail_once(source: Path, path: Path, *, follow_symlinks: bool = True) -> Path:
         nonlocal failed
-        if path == repo / "tracked.txt" and data == b"private result\n" and not failed:
+        if path == repo / "tracked.txt" and not failed:
             failed = True
             raise OSError("disk full")
-        return real_write_bytes(path, data)
+        return real_copyfile(source, path, follow_symlinks=follow_symlinks)
 
-    monkeypatch.setattr(Path, "write_bytes", fail_once)
+    monkeypatch.setattr(shutil, "copyfile", fail_once)
     with pytest.raises(WorkspacePreparationError, match="rolled back"):
         with isolated_local_llm_worktree(repo, is_noedit=False) as wt_path:
             (Path(wt_path) / "tracked.txt").write_text("private result\n")
@@ -601,3 +601,101 @@ def test_retained_checkpoint_keeps_ignored_caller_context_in_staleness_guard(tmp
         assert (repo / "tracked.txt").read_text() == "initial content\n"
     finally:
         ownership.release_session()
+
+
+def test_large_workspace_context_and_handoff_use_bounded_memory(tmp_path: Path) -> None:
+    """Real Git capture and handoff must not retain whole source files in RAM."""
+    import tracemalloc
+
+    repo = _init_repo(tmp_path)
+    (repo / ".gitignore").write_text("runtime/\n")
+    large_size = 16 * 1024 * 1024
+    for relative in ("tracked.bin", "untracked.bin", "runtime/ignored.bin"):
+        path = repo / relative
+        path.parent.mkdir(exist_ok=True)
+        with path.open("wb") as stream:
+            stream.truncate(large_size)
+    subprocess.run(["git", "add", ".gitignore", "tracked.bin"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "large baseline"], cwd=repo, check=True, capture_output=True)
+
+    tracemalloc.start()
+    try:
+        with isolated_local_llm_worktree(repo) as workspace_path:
+            workspace = Path(workspace_path)
+            for relative in ("tracked.bin", "untracked.bin", "runtime/ignored.bin"):
+                assert (workspace / relative).stat().st_size == large_size
+                assert worktree_utils._file_checksum(workspace / relative) == worktree_utils._file_checksum(repo / relative)
+            # Change a large non-ignored file without allocating its contents.
+            with (workspace / "untracked.bin").open("r+b") as stream:
+                stream.seek(large_size - 1)
+                stream.write(b"X")
+            binding = get_current_local_workspace()
+            assert binding is not None
+            assert worktree_utils._result_has_file_delta(workspace, binding)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 4 * 1024 * 1024, f"48 MiB source caused {peak / 1024**2:.2f} MiB Python allocations"
+    assert (repo / "untracked.bin").stat().st_size == large_size
+    with (repo / "untracked.bin").open("rb") as stream:
+        stream.seek(large_size - 2)
+        assert stream.read() == b"\0X"
+    assert not Path(workspace_path).parent.exists()
+
+
+def test_ignored_context_same_size_change_refuses_large_file_handoff(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    (repo / ".gitignore").write_text("context.bin\n")
+    context = repo / "context.bin"
+    with context.open("wb") as stream:
+        stream.truncate(8 * 1024 * 1024)
+    original_stat = context.stat()
+
+    with pytest.raises(WorkspacePreparationError, match="caller checkpoint changed"):
+        with isolated_local_llm_worktree(repo) as workspace_path:
+            (Path(workspace_path) / "tracked.txt").write_text("private result\n")
+            with context.open("r+b") as stream:
+                stream.seek(original_stat.st_size - 1)
+                stream.write(b"X")
+            os.utime(context, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    assert (repo / "tracked.txt").read_text() == "initial content\n"
+    with context.open("rb") as stream:
+        stream.seek(original_stat.st_size - 1)
+        assert stream.read() == b"X"
+
+
+def test_large_binary_staged_and_unstaged_patches_use_bounded_memory(tmp_path: Path) -> None:
+    import tracemalloc
+
+    repo = _init_repo(tmp_path)
+    binary = repo / "binary.dat"
+    with binary.open("wb") as stream:
+        for _ in range(32):
+            stream.write(os.urandom(256 * 1024))
+    subprocess.run(["git", "add", "binary.dat"], cwd=repo, check=True)
+    staged_checksum = worktree_utils._file_checksum(binary)
+    with binary.open("r+b") as stream:
+        stream.write(b"unstaged bytes\0")
+    working_checksum = worktree_utils._file_checksum(binary)
+    assert staged_checksum != working_checksum
+    caller_index_checksum = worktree_utils._file_checksum(repo / ".git" / "index")
+
+    tracemalloc.start()
+    try:
+        with isolated_local_llm_worktree(repo, is_noedit=True) as workspace_path:
+            workspace = Path(workspace_path)
+            assert worktree_utils._file_checksum(workspace / "binary.dat") == working_checksum
+            # Spool the private index blob too, so the test oracle stays bounded.
+            exported_index = tmp_path / "index-blob"
+            with exported_index.open("wb") as stream:
+                subprocess.run(["git", "show", ":binary.dat"], cwd=workspace, stdout=stream, check=True)
+            assert worktree_utils._file_checksum(exported_index) == staged_checksum
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 4 * 1024 * 1024, f"Binary patches caused {peak / 1024**2:.2f} MiB Python allocations"
+    assert worktree_utils._file_checksum(binary) == working_checksum
+    assert worktree_utils._file_checksum(repo / ".git" / "index") == caller_index_checksum

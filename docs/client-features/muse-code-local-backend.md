@@ -81,3 +81,11 @@ transient mutation, and recovery never replays unrelated or newer refs. Editable
 turns intentionally do not run this Git-mutation rejection or snapshot recovery;
 their exact current generation is instead validated and delivered through the
 shared local-result handoff.
+
+Editable turns also omit creation of the unused no-edit recovery snapshot. Large
+ignored or untracked runtime context is preserved by the shared private-workspace
+preparation without being loaded again into Muse's Python memory before submission.
+No-edit turns still capture and enforce their recovery snapshot and Git trace.
+The omission changes no admission, approval, provider-routing, handoff, or trace
+outcome; `test_muse_editable_large_context_does_not_allocate_recovery_snapshot` in
+`tests/test_muse_msp.py` covers the real protocol-host path with large context.

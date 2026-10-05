@@ -1455,3 +1455,36 @@ def test_muse_ignored_build_output_allows_handoff_and_retained_review(tmp_path, 
     finally:
         for retained_id in tuple(manager._retained_local_sessions):
             manager.release_local_session(retained_id)
+
+
+def test_muse_editable_large_context_does_not_allocate_recovery_snapshot(tmp_path, monkeypatch, _use_real_commands):
+    import tracemalloc
+
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    log = tmp_path / "msp.jsonl"
+    (repo / ".gitignore").write_text("runtime/\n")
+    (repo / "runtime").mkdir()
+    large_size = 48 * 1024 * 1024
+    with (repo / "runtime" / "context.bin").open("wb") as stream:
+        stream.truncate(large_size)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(log))
+    monkeypatch.setenv("MSP_MUTATE", "1")
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+
+    tracemalloc.start()
+    try:
+        assert manager._run_llm_cli("edit the source") == "answer:first"
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        for retained_id in tuple(manager._retained_local_sessions):
+            manager.release_local_session(retained_id)
+
+    assert peak < 8 * 1024 * 1024, f"Unused recovery capture allocated {peak / 1024**2:.2f} MiB"
+    assert (repo / "tracked.txt").read_text() == "mutated\n"
+    assert (repo / "runtime" / "context.bin").stat().st_size == large_size
+    assert manager.get_last_session_id() == "opaque/provider/session"

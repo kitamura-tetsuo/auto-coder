@@ -1023,7 +1023,7 @@ class MuseClient(LLMClientBase):
                 raise RuntimeError("Editable Muse execution requires a controller-owned local workspace binding")
             if not boundary.editable or boundary.backend_type.lower() != "muse" or boundary.binding.workspace.resolve() != cwd:
                 raise RuntimeError("Editable Muse execution has an incompatible local workspace binding")
-        before = self._snapshot_at(cwd)
+        before = self._snapshot_at(cwd) if effective_noedit else None
         rendered_prompt = render_prompt(
             "muse.execution",
             task_prompt=prompt,
@@ -1269,6 +1269,7 @@ class MuseClient(LLMClientBase):
                 # invariant.
                 if effective_noedit:
                     assert trace_path is not None
+                    assert before is not None
                     mutation_observed = self._trace_contains_git_mutation(trace_path)
                     self._assert_invariants(before, True, mutation_observed)
             except BaseException as invariant_error:

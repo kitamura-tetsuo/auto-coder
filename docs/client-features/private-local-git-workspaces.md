@@ -71,3 +71,21 @@ outputs and logs remain private runtime context and do not block successful
 handoff or a later retained review. They are not added to the next source baseline.
 The caller's complete context checkpoint still includes non-disposable ignored
 files, so concurrent caller changes continue to invalidate stale result handoff.
+
+Workspace preparation keeps file contents and binary staged/unstaged patches on
+invocation-owned temporary disk rather than retaining them as Python byte arrays.
+Regular-file and index checksums use bounded streaming reads; baseline and final
+file comparisons retain only hashes, modes, and symlink targets. Large ignored
+runtime files remain preserved context and still invalidate stale results when
+changed. Handoff copies changed files in bounded chunks and saves rollback copies
+on temporary disk before applying any change. Temporary snapshots share the
+private clone's ownership and cleanup lifecycle; retained sessions keep their
+snapshots until all owners release them. Disk capacity must accommodate the clone,
+captured context/patches, and changed-file rollback copies.
+
+This storage change is observability-neutral: processing origins, admission,
+provider routing, ownership releases, outcomes, and the `local.workspace-tests`
+trace schema/emissions are unchanged. Existing dashboard joins therefore retain
+their production contract. Real Git regressions in `tests/test_worktree_isolation.py`
+cover bounded memory across preparation and handoff, large ignored-context stale
+rejection, rollback, and cleanup.
