@@ -22,7 +22,7 @@ import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 OBSERVATION_SCHEMA_VERSION = 1
 RECORD_SCHEMA_VERSION = 1
@@ -89,9 +89,10 @@ def _read_source_revision() -> ArtifactField:
         if not path.is_file():
             return ArtifactField(reason=REASON_MISSING)
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # JSONDecodeError, UnicodeDecodeError and oversized-integer conversion are all ValueErrors.
         return ArtifactField(reason=REASON_MALFORMED)
-    except (OSError, UnicodeDecodeError):
+    except OSError:
         return ArtifactField(reason=REASON_UNREADABLE)
     if not isinstance(payload, dict):
         return ArtifactField(reason=REASON_MALFORMED)
@@ -127,18 +128,23 @@ def _read_process_run_id() -> ArtifactField:
     return ArtifactField(value=run_id, origin=ORIGIN_CONTROLLER_PROCESS, available=True)
 
 
+def _safely(read: Callable[[], ArtifactField], reason: str) -> ArtifactField:
+    """Isolate one field's failure so independently known fields stay usable."""
+    try:
+        return read()
+    except Exception:
+        return ArtifactField(reason=reason)
+
+
 def observe_controller_artifact() -> ControllerArtifactObservation:
     """Observe the running artifact. Never raises and has no side effects."""
-    try:
-        process_run = _read_process_run_id()
-        return ControllerArtifactObservation(
-            process_run_id=process_run.value,
-            process_run=process_run,
-            distribution_version=_read_distribution_version(),
-            source_revision=_read_source_revision(),
-        )
-    except Exception:
-        return ControllerArtifactObservation()
+    process_run = _safely(_read_process_run_id, REASON_PROCESS_RUN_UNAVAILABLE)
+    return ControllerArtifactObservation(
+        process_run_id=process_run.value,
+        process_run=process_run,
+        distribution_version=_safely(_read_distribution_version, REASON_VERSION_UNAVAILABLE),
+        source_revision=_safely(_read_source_revision, REASON_UNREADABLE),
+    )
 
 
 def embed_from_environment(env: Optional[dict[str, str]] = None) -> int:

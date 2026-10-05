@@ -15,6 +15,8 @@ import pytest
 
 from auto_coder import build_provenance as bp
 
+pytestmark = pytest.mark.usefixtures("_use_real_commands")
+
 REPO_ROOT = Path(__file__).parents[1]
 SHA_A = "a" * 39 + "1"
 SHA_ENV = "e" * 40
@@ -34,11 +36,32 @@ def _dockerfile_embed_command() -> str:
     return match[0]
 
 
-def _install(tmp_path: Path, name: str = "site") -> Installed:
-    site = tmp_path / name
-    package = site / "auto_coder"
-    shutil.copytree(REPO_ROOT / "src" / "auto_coder", package, ignore=shutil.ignore_patterns("__pycache__", "build_provenance.json"))
-    return Installed(site=site, package=package)
+def _uv() -> str:
+    uv = shutil.which("uv")
+    assert uv, "uv is the project's dependency tool and is required"
+    return uv
+
+
+@pytest.fixture(scope="module")
+def built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Build the project wheel through its normal build configuration (as the Dockerfile does)."""
+    out = tmp_path_factory.mktemp("wheel")
+    src = tmp_path_factory.mktemp("src")
+    for name in ("pyproject.toml", "README.md", "LICENSE", "MANIFEST.in"):
+        shutil.copy(REPO_ROOT / name, src / name)
+    shutil.copytree(REPO_ROOT / "src", src / "src", ignore=shutil.ignore_patterns("__pycache__", "build_provenance.json"))
+    result = subprocess.run([_uv(), "build", "--wheel", "--out-dir", str(out), str(src)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return next(out.glob("auto_coder-*.whl"))
+
+
+@pytest.fixture
+def installed(tmp_path: Path, built_wheel: Path) -> Installed:
+    """Install the built wheel into an isolated site directory, outside the source checkout."""
+    site = tmp_path / "site"
+    result = subprocess.run([_uv(), "pip", "install", "--python", sys.executable, "--no-deps", "--target", str(site), str(built_wheel)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return Installed(site=site, package=site / "auto_coder")
 
 
 def _run(args: list[str], installed: Installed, cwd: Path, env_extra: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess[str]:
@@ -72,9 +95,8 @@ def _head(repo: Path) -> str:
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def test_embedded_revision_survives_target_checkout_and_launch_environment(tmp_path: Path) -> None:
+def test_embedded_revision_survives_target_checkout_and_launch_environment(tmp_path: Path, installed: Installed) -> None:
     """AS-001/AS-002: embedded revision A wins over target commit B, env and head changes."""
-    installed = _install(tmp_path)
     repo = _target_repo(tmp_path)
     _embed(installed, tmp_path, SHA_A)
 
@@ -86,8 +108,8 @@ def test_embedded_revision_survives_target_checkout_and_launch_environment(tmp_p
     for obs in (first, second):
         assert obs["schema_version"] == 1
         assert obs["source_revision"] == {"value": SHA_A, "origin": "build_embedded", "available": True, "reason": None}
-        assert obs["distribution_version"]["origin"] in {"installed_distribution_metadata", "none"}
-        assert obs["distribution_version"]["value"] != SHA_A
+        assert obs["distribution_version"]["origin"] == "installed_distribution_metadata"
+        assert obs["distribution_version"]["value"] and obs["distribution_version"]["value"] != SHA_A
         assert obs["process_run_id"] == obs["process_run"]["value"]
         assert str(installed.site) not in json.dumps(obs)
     # A new process has its own process-run identity; earlier observation is unchanged.
@@ -95,8 +117,7 @@ def test_embedded_revision_survives_target_checkout_and_launch_environment(tmp_p
 
 
 @pytest.mark.parametrize("unset_or_unknown", [None, "unknown", "abc123", ""])
-def test_embed_of_invalid_build_input_is_null_not_guessed(tmp_path: Path, unset_or_unknown: Optional[str]) -> None:
-    installed = _install(tmp_path)
+def test_embed_of_invalid_build_input_is_null_not_guessed(tmp_path: Path, installed: Installed, unset_or_unknown: Optional[str]) -> None:
     _embed(installed, tmp_path, unset_or_unknown)
     obs = _observe(installed, _target_repo(tmp_path))
     assert obs["source_revision"]["value"] is None
@@ -115,8 +136,7 @@ def test_embed_of_invalid_build_input_is_null_not_guessed(tmp_path: Path, unset_
         (json.dumps({"schema_version": 1, "source_revision": "main"}), bp.REASON_REVISION_INVALID),
     ],
 )
-def test_unavailable_metadata_is_unknown_and_target_sha_never_fills_gap(tmp_path: Path, content: Optional[str], reason: str) -> None:
-    installed = _install(tmp_path)
+def test_unavailable_metadata_is_unknown_and_target_sha_never_fills_gap(tmp_path: Path, installed: Installed, content: Optional[str], reason: str) -> None:
     repo = _target_repo(tmp_path)
     if content is not None:
         (installed.package / bp.RECORD_FILENAME).write_text(content, encoding="utf-8")
@@ -125,13 +145,28 @@ def test_unavailable_metadata_is_unknown_and_target_sha_never_fills_gap(tmp_path
     assert obs["process_run_id"]
 
 
-def test_unreadable_record_is_unavailable(tmp_path: Path) -> None:
-    installed = _install(tmp_path)
-    # A directory in place of the record cannot be read as a file; is_file() is False -> missing.
+def test_oversized_integer_record_keeps_known_fields(tmp_path: Path, installed: Installed) -> None:
+    (installed.package / bp.RECORD_FILENAME).write_text('{"schema_version": 1, "source_revision": ' + "9" * 5000 + "}", encoding="utf-8")
+    obs = _observe(installed, tmp_path)
+    assert obs["source_revision"]["reason"] == bp.REASON_MALFORMED
+    assert obs["process_run_id"]
+    assert obs["distribution_version"]["available"] is True
+
+
+def test_unreadable_record_is_unavailable(tmp_path: Path, installed: Installed) -> None:
     (installed.package / bp.RECORD_FILENAME).write_bytes(b"\xff\xfe\x00")
     obs = _observe(installed, tmp_path)
     assert obs["source_revision"]["value"] is None
-    assert obs["source_revision"]["reason"] in {bp.REASON_UNREADABLE, bp.REASON_MALFORMED}
+    assert obs["source_revision"]["reason"] == bp.REASON_MALFORMED
+
+
+def test_one_field_failure_keeps_other_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom() -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bp, "_read_source_revision", boom)
+    obs = bp.observe_controller_artifact()
+    assert obs.process_run_id and obs.source_revision.value is None
 
 
 def test_read_failures_never_raise(monkeypatch: pytest.MonkeyPatch) -> None:
