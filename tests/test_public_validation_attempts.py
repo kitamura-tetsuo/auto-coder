@@ -210,10 +210,17 @@ def test_unavailable_evidence_states_are_distinct_and_not_initialized_by_reads(t
     with connection:
         connection.execute("DELETE FROM validation_evidence")
     pre = client.get(url).json()
-    assert (pre["result"], pre["reason"], pre["evidence"]) == ("evidence_unavailable", "pre_feature_audit_record", None)
+    assert (pre["result"], pre["reason"]) == ("evidence_unavailable", "pre_feature_audit_record")
+    known = pre["evidence"]
+    assert (known["identity"]["attempt_id"], known["identity"]["attempt_sequence"], known["identity"]["head_sha"]) == (attempt_id, sequence, scenario.head_sha)
+    assert known["identity"]["review_id"] and known["identity"]["repository"] == REPO_NAME
+    for section in ("input", "manifests", "responses", "coverage_checks", "final"):
+        assert known[section]["state"] == {"availability": "unavailable", "reason": "pre_feature_capture_not_recorded", "incomplete": True}
+    assert client.get(_url(pr_number=PR_NUMBER, attempt_sequence=sequence)).json()["evidence"] == known  # either selector, same metadata
+    assert "sha256" not in json.dumps(known)  # nothing is reconstructed
     with connection:
         connection.execute("DROP TABLE validation_evidence")
-    assert client.get(url).json()["result"] == "evidence_unavailable"
+    assert client.get(url).json()["evidence"] == known
     connection.close()
 
 
@@ -287,10 +294,47 @@ def test_public_projection_is_bounded_redacted_and_never_rewrites_the_source(tmp
     assert all(len(json.dumps(item)) < 400 for item in omitted)
     manifests = {m["role"]: m for m in body["evidence"]["manifests"]["items"]}
     assert manifests["supplied"]["entries_count"]["source_count"] == 600 and len(manifests["supplied"]["entries"]) <= 500
-    assert len(body["evidence"]["final"]["diagnostic_reason"]) <= 2000
+    final = body["evidence"]["final"]
+    assert final["diagnostic_reason"] is None and final["diagnostic_reason_omitted"]["reason"] == "may_quote_omitted_identity"  # omitted IDs may be quoted in the reason
+    assert len(final["diagnostic_reason_omitted"]["sha256"]) == 64 and final["diagnostic_reason_omitted"]["byte_length"] > 0
+    assert body["evidence"]["manifests"]["state"]["incomplete"] is True  # nested omitted entries propagate to the section
     assert body["evidence"]["source_limits"]["omissions"]  # capture-time loss is reported separately
     assert connection.execute("SELECT payload FROM validation_evidence").fetchone()[0] == stored_before
     connection.close()
+
+
+def test_malformed_returned_id_is_absent_from_every_public_byte(tmp_path, monkeypatch, audit_store, client):  # noqa: F811
+    marker = "PRIVATE-RETURNED-ID-WITH-ISSUE-TEXT"
+    scenario, attempt_id, _ = _run(tmp_path, monkeypatch, audit_store, body=_issue_body(1), responses=[_verified_payload([marker])])
+    stored = sqlite3.connect(audit_store._get_db_path(REPO_NAME)).execute("SELECT payload FROM validation_evidence").fetchone()[0]
+    assert marker in stored  # the diagnostic reason recorded at capture quotes it; only the public projection must not
+    response = client.get(_url(pr_number=PR_NUMBER, attempt_id=attempt_id))
+    assert response.status_code == 200 and marker not in response.text
+    evidence = response.json()["evidence"]
+    check = evidence["coverage_checks"]["items"][0]
+    omitted = check["unknown"]["ids"][0]
+    assert omitted["reason"] == "not_a_supported_requirement_id" and omitted["sha256"] == _sha(marker) and omitted["byte_length"] == len(marker)
+    assert check["diagnostic_category"] == "unknown_requirement_coverage_id" and check["diagnostic_reason"] is None
+    assert check["diagnostic_reason_omitted"]["reason"] == "may_quote_omitted_identity"
+    assert evidence["final"]["diagnostic_reason"] is None and evidence["final"]["diagnostic_reason_omitted"]["sha256"]
+
+
+def test_outer_capture_omissions_and_nested_loss_propagate_to_section_state(tmp_path, monkeypatch, audit_store, client):  # noqa: F811
+    _scenario, attempt_id, _ = _run(tmp_path, monkeypatch, audit_store)
+    url = _url(pr_number=PR_NUMBER, attempt_id=attempt_id)
+    evidence = client.get(url).json()["evidence"]
+    assert evidence["manifests"]["state"]["incomplete"] is False and evidence["manifests"]["count"]["source_omitted"] == 0
+
+    def record_outer_omission(payload):
+        payload["limits"]["omissions"].append({"section": "responses", "source_count": 3, "retained": 1, "omitted": 2})
+        payload["manifests"][0]["count"] = 99  # nested loss: 99 entries originally, fewer retained
+
+    _update_payload(audit_store, record_outer_omission)
+    body = client.get(url).json()["evidence"]
+    responses = body["responses"]
+    assert responses["count"] == {"source_count": 3, "retained_in_source": 1, "returned": 1, "source_omitted": 2, "http_clipped": 0, "incomplete": True}
+    assert responses["state"]["incomplete"] is True and responses["state"]["reason"] == "capture_omitted_entries"
+    assert body["manifests"]["state"]["incomplete"] is True and body["manifests"]["items"][0]["entries_count"]["source_omitted"] > 0
 
 
 def test_byte_bound_clips_collections_but_keeps_identity_and_verdicts(tmp_path, monkeypatch, audit_store, client):  # noqa: F811

@@ -81,7 +81,8 @@ current-GitHub reconstruction ever stands in for a missing exact match.
 `no_retained_match` (nothing retained for that exact repository/PR/attempt; this
 does **not** prove the attempt never occurred), `evidence_unavailable` (a
 pre-feature audit retained the attempt without the extension; reason
-`pre_feature_audit_record`) and `audit_not_initialized` (no audit exists yet; the
+`pre_feature_audit_record`; `evidence` carries the known attempt/review identity and
+evaluated head, with every diagnostic section `unavailable` / `pre_feature_capture_not_recorded`) and `audit_not_initialized` (no audit exists yet; the
 read never creates it). An unreadable, corrupt, unsupported or unprojectable
 source returns 503 `observation_unavailable` with `data: null` and no source
 detail; there is no fallback to another attempt or a cached/empty success.
@@ -125,7 +126,10 @@ Redaction (credential patterns, Bearer/Basic, URLs, paths) runs before clipping.
 Identities are exact or replaced by `{"omitted": true, "reason", "sha256",
 "byte_length"}` — never shortened. Only requirement IDs matching the supported
 grammar (`REQ-001`, `#99/REQ-001`, `owner/repo#99/REQ-001`) are plaintext;
-other returned IDs are digest/length only. When the body is too large, entry caps
+other returned IDs are digest/length only, and when any ID in the record is not
+plaintext, every `diagnostic_reason` (which can quote IDs) is withheld and replaced
+by `diagnostic_reason_omitted` (digest/length). A section's `state.incomplete` is
+true when its own, a nested collection's, or the capture's omission ledger shows loss. When the body is too large, entry caps
 shrink stepwise while the exact attempt identity, verdicts and availability
 states are kept. The route never mutates the audit, calls GitHub/providers/LLMs,
 validates or repairs anything, and its synchronous SQLite read runs off the event loop.

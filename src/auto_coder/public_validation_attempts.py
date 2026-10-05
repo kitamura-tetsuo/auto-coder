@@ -13,6 +13,7 @@ HTTP clipping separately from capture-time omissions.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import re
 import time
@@ -30,6 +31,7 @@ from .public_api import (
     sanitize_text,
 )
 from .review_audit import (
+    LegacyAttemptRecord,
     ReviewAuditStore,
     ReviewEffectRecord,
     ValidationEvidenceReadStatus,
@@ -263,6 +265,7 @@ class CoverageCheckView:
     diagnostic_category: Optional[str] = None
     diagnostic_reason: Optional[str] = None
     diagnostic_reason_clipped: bool = False
+    diagnostic_reason_omitted: Optional[OmittedIdentity] = None
 
 
 @dataclass
@@ -274,6 +277,7 @@ class FinalView:
     diagnostic_category: Optional[str] = None
     diagnostic_reason: Optional[str] = None
     diagnostic_reason_clipped: bool = False
+    diagnostic_reason_omitted: Optional[OmittedIdentity] = None
     source_response_id: Optional[str] = None
 
 
@@ -446,6 +450,7 @@ class _Projector:
         self.clipped_text: List[str] = []
         self.redacted = 0
         self.clipped = False
+        self.omitted_ids = 0  # requirement IDs not exported as plaintext (free text may still quote them)
 
     # -- text and identities ---------------------------------------------------
     def text(self, section: str, value: object, limit: int = MAX_TEXT_CHARS) -> Tuple[Optional[str], bool]:
@@ -470,6 +475,8 @@ class _Projector:
         if value is None:
             return None
         if isinstance(value, dict):  # an identity the capture already omitted
+            if requirement:
+                self.omitted_ids += 1
             sha, length = value.get("sha256"), _int(value.get("byte_length"))
             reason = self.label("identity.reason", value.get("reason")) or "omitted_at_capture"
             return OmittedIdentity(f"source_omitted:{reason}", sha if isinstance(sha, str) and _SHA256.fullmatch(sha) else None, length)
@@ -480,6 +487,7 @@ class _Projector:
         if requirement:
             if len(value) <= _LABEL_CHARS and _REQUIREMENT_ID.fullmatch(value):
                 return value
+            self.omitted_ids += 1
             return OmittedIdentity("not_a_supported_requirement_id", digest, len(raw))
         redacted = sanitize_text(value, paths=True)[0] != value
         if redacted:
@@ -515,8 +523,40 @@ class _Projector:
         state: str = raw["state"] if raw.get("state") in ("present", "empty", "unavailable") else "unavailable"
         return Fingerprint(state, sha if isinstance(sha, str) and _SHA256.fullmatch(sha) else None, _int(raw.get("byte_length")))
 
+    def scan_ids(self, payload: "dict[str, Any]") -> None:
+        """Pre-count requirement IDs that will not be plaintext, so every free-text reason in the record is decided consistently."""
+
+        def unsafe(values: object, count: object = None) -> bool:
+            items = _list(values)
+            declared = _int(count)
+            if len(items) > self.cap or (declared is not None and declared > len(items)):
+                return True
+            return any(not (isinstance(i, str) and len(i) <= _LABEL_CHARS and _REQUIREMENT_ID.fullmatch(i)) for i in items)
+
+        for check in (c for c in _list(payload.get("coverage_checks")) if isinstance(c, dict)):
+            for key, count in (("expected_ids", "expected_count"), ("returned_ids", "returned_count"), ("missing_ids", "missing_count"), ("duplicate_ids", "duplicate_count"), ("unknown_ids", "unknown_count")):
+                if unsafe(check.get(key), check.get(count)):
+                    self.omitted_ids += 1
+        for response in (r for r in _list(payload.get("responses")) if isinstance(r, dict)):
+            parse = _dict(response.get("parse"))
+            entries = [e.get("id") if isinstance(e, dict) else None for e in _list(parse.get("returned_entries"))]
+            if unsafe(entries, parse.get("returned_entry_count")):
+                self.omitted_ids += 1
+
+    def withheld_reason(self, section: str, raw: object, ids_omitted: bool) -> Tuple[Optional[str], bool, Optional[OmittedIdentity]]:
+        """Free-text reason, or its digest/length when it may quote an ID that is not exported as plaintext."""
+        if not isinstance(raw, str):
+            return None, False, None
+        if ids_omitted:
+            encoded = raw.encode("utf-8", errors="surrogatepass")
+            return None, False, OmittedIdentity("may_quote_omitted_identity", hashlib.sha256(encoded).hexdigest(), len(encoded))
+        text, clipped = self.text(section, raw)
+        return text, clipped, None
+
     def ids(self, raw: object, source_count: Optional[int]) -> IdSet:
         kept, count = self.capped(_list(raw), source_count)
+        if count.incomplete:
+            self.omitted_ids += 1
         return IdSet([self.identity(item, requirement=True) for item in kept], count)
 
     def artifact(self, raw: object) -> ArtifactView:
@@ -583,6 +623,8 @@ class _Projector:
         interaction, parse = _dict(raw.get("interaction")), _dict(raw.get("parse"))
         interaction_ids, interaction_count = self.capped(_list(interaction.get("interaction_ids")), None)
         returned, returned_count = self.capped([e for e in _list(parse.get("returned_entries")) if isinstance(e, dict)], _int(parse.get("returned_entry_count")))
+        if returned_count.incomplete:
+            self.omitted_ids += 1
         return ResponseView(
             self.label("response.id", raw.get("response_id")),
             self.label("response.stage", raw.get("stage")),
@@ -618,25 +660,26 @@ class _Projector:
         )
 
     def check(self, raw: "dict[str, Any]") -> CoverageCheckView:
-        reason, reason_clipped = self.text("check.diagnostic_reason", raw.get("diagnostic_reason"))
+        sets = [self.ids(raw.get(key), _int(raw.get(count))) for key, count in (("expected_ids", "expected_count"), ("returned_ids", "returned_count"), ("missing_ids", "missing_count"), ("duplicate_ids", "duplicate_count"), ("unknown_ids", "unknown_count"))]
+        reason, reason_clipped, reason_omitted = self.withheld_reason("check.diagnostic_reason", raw.get("diagnostic_reason"), self.omitted_ids > 0)
         return CoverageCheckView(
-            self.label("check.id", raw.get("check_id")),
-            self.label("check.response_id", raw.get("response_id")),
-            raw.get("performed") is True,
-            self.label("check.not_performed_reason", raw.get("not_performed_reason")),
-            self.label("check.supplied_manifest_id", raw.get("supplied_manifest_id")),
-            self.label("check.checked_manifest_id", raw.get("checked_manifest_id")),
-            True,
-            self.ids(raw.get("expected_ids"), _int(raw.get("expected_count"))),
-            self.ids(raw.get("returned_ids"), _int(raw.get("returned_count"))),
-            self.ids(raw.get("missing_ids"), _int(raw.get("missing_count"))),
-            self.ids(raw.get("duplicate_ids"), _int(raw.get("duplicate_count"))),
-            self.ids(raw.get("unknown_ids"), _int(raw.get("unknown_count"))),
-            self.label("check.verdict_before", raw.get("verdict_before")),
-            self.label("check.verdict_after", raw.get("verdict_after")),
-            self.label("check.diagnostic_category", raw.get("diagnostic_category")),
-            reason,
-            reason_clipped,
+            check_id=self.label("check.id", raw.get("check_id")),
+            response_id=self.label("check.response_id", raw.get("response_id")),
+            performed=raw.get("performed") is True,
+            not_performed_reason=self.label("check.not_performed_reason", raw.get("not_performed_reason")),
+            supplied_manifest_id=self.label("check.supplied_manifest_id", raw.get("supplied_manifest_id")),
+            checked_manifest_id=self.label("check.checked_manifest_id", raw.get("checked_manifest_id")),
+            expected=sets[0],
+            returned=sets[1],
+            missing=sets[2],
+            duplicate=sets[3],
+            unknown=sets[4],
+            verdict_before=self.label("check.verdict_before", raw.get("verdict_before")),
+            verdict_after=self.label("check.verdict_after", raw.get("verdict_after")),
+            diagnostic_category=self.label("check.diagnostic_category", raw.get("diagnostic_category")),
+            diagnostic_reason=reason,
+            diagnostic_reason_clipped=reason_clipped,
+            diagnostic_reason_omitted=reason_omitted,
         )
 
     def collection(self, payload: "dict[str, Any]", key: str, build: Any, section: Any, absent_marker: str, source_reason: Optional[str]) -> Any:
@@ -644,10 +687,14 @@ class _Projector:
         if not isinstance(raw, list):
             omitted = source_reason is not None
             return section(SectionState("omitted" if omitted else "unavailable", source_reason or f"{key}_unavailable", True))
-        kept, count = self.capped([item for item in raw if isinstance(item, dict)], None)
+        ledger = next((o for o in _list(_dict(payload.get("limits")).get("omissions")) if isinstance(o, dict) and o.get("section") == key), None)
+        kept, count = self.capped([item for item in raw if isinstance(item, dict)], _int(_dict(ledger).get("source_count")))
+        items = [build(item) for item in kept]
         unrecorded = absent_marker in _list(payload.get("unrecorded")) and not raw
-        state = SectionState("not_recorded" if unrecorded else "available", f"{key}_not_yet_recorded" if unrecorded else None, count.incomplete or unrecorded)
-        return section(state, [build(item) for item in kept], count)
+        nested = any(_has_incomplete(item) for item in items)
+        reason = f"{key}_not_yet_recorded" if unrecorded else ("capture_omitted_entries" if count.source_omitted or nested else ("response_clipped_entries" if count.http_clipped else None))
+        state = SectionState("not_recorded" if unrecorded else "available", reason, count.incomplete or unrecorded or nested)
+        return section(state, items, count)
 
     def final(self, payload: "dict[str, Any]", source_reason: Optional[str]) -> FinalView:
         raw = payload.get("final")
@@ -656,7 +703,7 @@ class _Projector:
                 return FinalView(SectionState("omitted", source_reason, True))
             pending = "final_result" in _list(payload.get("unrecorded"))
             return FinalView(SectionState("not_recorded" if pending else "unavailable", "final_result_not_yet_recorded" if pending else "final_unavailable", True))
-        reason, reason_clipped = self.text("final.diagnostic_reason", raw.get("diagnostic_reason"))
+        reason, reason_clipped, reason_omitted = self.withheld_reason("final.diagnostic_reason", raw.get("diagnostic_reason"), self.omitted_ids > 0)
         return FinalView(
             SectionState(),
             self.label("final.recorded_at", raw.get("recorded_at")),
@@ -665,6 +712,7 @@ class _Projector:
             self.label("final.diagnostic_category", raw.get("diagnostic_category")),
             reason,
             reason_clipped,
+            reason_omitted,
             self.label("final.source_response_id", raw.get("source_response_id")),
         )
 
@@ -673,6 +721,46 @@ class _Projector:
         omissions = [SourceOmission(self.label("source_omission.section", o.get("section")) or "", _int(o.get("source_count")), _int(o.get("retained")), _int(o.get("omitted"))) for o in _list(limits.get("omissions"))[:_MAX_LISTED_FIELDS] if isinstance(o, dict)]
         clipped = [text for text in (self.label("source_clipped_field", c) for c in _list(limits.get("clipped_fields"))[:_MAX_LISTED_FIELDS]) if text]
         return SourceLimits(_int(limits.get("applied_entry_cap")), _int(limits.get("applied_text_cap")), omissions, clipped, self.label("source_incomplete_reason", limits.get("incomplete_reason")))
+
+
+def _has_incomplete(value: object) -> bool:
+    """Whether a projected item carries any nested collection whose count is incomplete."""
+    if isinstance(value, CountInfo):
+        return value.incomplete
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return any(_has_incomplete(getattr(value, f.name)) for f in dataclasses.fields(value))
+    if isinstance(value, list):
+        return any(_has_incomplete(item) for item in value)
+    return False
+
+
+def _legacy_evidence(projector: _Projector, legacy: LegacyAttemptRecord, selection: Selection) -> Evidence:
+    """Known metadata of a pre-feature evaluation; every diagnostic section is explicitly uncaptured."""
+    generation = legacy.reviewed_generation
+    head = projector.identity(generation) if isinstance(generation, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", generation) else None
+    reason = SectionState("unavailable", "pre_feature_capture_not_recorded", True)
+    identity = AttemptIdentity(
+        projector.identity(legacy.attempt_id),
+        legacy.attempt_sequence,
+        projector.identity(legacy.review_id),
+        projector.identity(projector.repository),
+        selection.pr_number,
+        head,
+        None,
+        None,
+        None,
+        ["base_sha", "process_run_id", "execution_id"] + ([] if head else ["head_sha"]),
+        f"https://github.com/{projector.repository}/pull/{selection.pr_number}",
+    )
+    return Evidence(
+        identity=identity,
+        record=RecordMeta(completeness="unavailable", unrecorded=["validation_evidence"], source_updated_at=projector.label("record.creation_time", legacy.creation_time)),
+        input=InputSection(reason),
+        manifests=ManifestsSection(reason),
+        responses=ResponsesSection(reason),
+        coverage_checks=ChecksSection(reason),
+        final=FinalView(reason),
+    )
 
 
 def _attempt_identity(projector: _Projector, row: ValidationEvidenceRow, payload: "dict[str, Any]", pr_number: int) -> AttemptIdentity:
@@ -709,6 +797,7 @@ def _evidence(projector: _Projector, producer: Optional[ValidationEvidenceRow], 
         projector.label("record.updated_at", anchor.updated_at),
     )
     evidence = Evidence(identity=_attempt_identity(projector, anchor, payload, pr_number), record=meta, source_limits=source)
+    projector.scan_ids(payload)
     if producer is None:
         reason = SectionState("unavailable", producer_missing, True)
         evidence.input = InputSection(SectionState("unavailable", producer_missing, True))
@@ -767,7 +856,8 @@ def build_validation_attempt(store: ReviewAuditStore, repo_name: str, selection:
             ValidationEvidenceReadStatus.PRE_FEATURE: ("evidence_unavailable", "pre_feature_audit_record"),
             ValidationEvidenceReadStatus.UNINITIALIZED: ("audit_not_initialized", "audit_source_not_initialized"),
         }[status]
-        return _dump(ValidationAttemptResponse(repo_name, selection, result, serving, HttpLimits(), reason))
+        known = _legacy_evidence(_Projector(repo_name, MAX_LIMIT), found.legacy, selection) if status == ValidationEvidenceReadStatus.PRE_FEATURE and found.legacy is not None else None
+        return _dump(ValidationAttemptResponse(repo_name, selection, result, serving, HttpLimits(), reason, evidence=known))
     producer = found.producer
     reuse = list(found.reuse_observations)
     rows = ([producer] if producer is not None else []) + reuse
