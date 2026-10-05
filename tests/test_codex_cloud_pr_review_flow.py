@@ -18,6 +18,7 @@ from auto_coder.pr_processor import (
     _delegate_cloud_review_thread_repair,
     _handle_pr_merge,
     _process_pr_for_merge,
+    _record_pr_stage,
     _review_feedback_identity,
     _take_pr_actions,
 )
@@ -285,7 +286,8 @@ def test_single_pr_merge_entry_validates_claimed_thread_without_redelegating() -
             "auto_coder.pr_processor.publish_adversarial_review",
             return_value=ReviewPublicationResult(True, "APPROVE", ""),
         ),
-        patch("auto_coder.pr_processor._merge_pr", return_value=False),
+        patch("auto_coder.pr_processor._merge_pr", return_value=False) as merge,
+        patch("auto_coder.pr_processor._record_pr_stage", wraps=_record_pr_stage) as stages,
         patch("auto_coder.pr_processor._delegate_cloud_review_thread_repair") as delegate_review_repair,
     ):
         label_manager.return_value.__enter__.return_value = MagicMock()
@@ -293,9 +295,31 @@ def test_single_pr_merge_entry_validates_claimed_thread_without_redelegating() -
         result = _process_pr_for_merge("owner/repo", _pr_data(), config)
 
     assert any("claimed-addressed review thread" in action for action in result.actions_taken)
-    assert any("Adversarial validation passed" in action for action in result.actions_taken)
+    # A PR-level PASS without a disposition cannot complete the selected thread.
+    assert result.outcome is PRProcessingOutcome.FAILED, result.actions_taken
+    assert result.error == "Review-thread closure remains unfinished for 1 thread(s): PRRT_thread_1"
+    assert any("Review-thread closure incomplete" in action for action in result.actions_taken)
+    assert not any("Adversarial validation passed" in action for action in result.actions_taken)
+    closure_stages = [call for call in stages.call_args_list if call.args[1] == "pr.review-thread-closure"]
+    assert len(closure_stages) == 1
+    closure_facts = closure_stages[0].args[4]
+    assert closure_facts["confirmed_count"] == 0
+    assert closure_facts["unfinished_count"] == 1
+    assert closure_facts["unfinished"] == [
+        {
+            "thread_id": claimed.thread_id,
+            "phase": "independent-decision",
+            "reason": "Disposition omitted from validator response",
+            "decision": "MISSING",
+            "acceptance_state": "NOT_ACCEPTED",
+            "effect_state": "NOT_ATTEMPTED",
+        }
+    ]
     run_validation.assert_called_once()
     assert "PRRT_thread_1" in run_validation.call_args.kwargs["claimed_review_threads_section"]
+    merge.assert_not_called()
+    client.reply_to_review_thread.assert_not_called()
+    client.resolve_review_thread.assert_not_called()
     delegate_review_repair.assert_not_called()
 
 
