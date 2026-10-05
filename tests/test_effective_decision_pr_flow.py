@@ -260,6 +260,8 @@ class Flow:
         def reviewer_factory(config: ReviewerAppConfig, ledger: Optional[CanonicalPRBlockerLedger] = None) -> GitHubAppReviewer:
             return real_reviewer(config, ledger=ledger, api_url="https://api.github.com", client=self.router, clock=lambda: 1000.0)
 
+        reviewer_factory._anchored_comment = GitHubAppReviewer._anchored_comment  # type: ignore[attr-defined]  # static helpers stay reachable through the patched class name
+
         @contextlib.contextmanager
         def worktree(*_a: object, **_k: object) -> Iterator[str]:
             yield str(env.worktree)

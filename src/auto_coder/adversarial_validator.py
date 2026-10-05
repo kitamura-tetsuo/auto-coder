@@ -603,6 +603,11 @@ class AdversarialValidationContext:
     # Ordinary representations of accepted Strong findings are anchored by their
     # existing native root, not by this head's changed-file set.
     accepted_known_gap_ids: frozenset[str] = frozenset()
+    # The subset of those representations that this attempt's independent
+    # disposition upholds (STILL_VALID with evidence). Only these may be treated
+    # as a currently demonstrated violation; a retained OPEN lifecycle state alone
+    # is a closure wait, not current evidence.
+    accepted_upheld_gap_ids: frozenset[str] = frozenset()
 
     @property
     def has_complete_file_coverage(self) -> bool:
@@ -2675,15 +2680,16 @@ def _reconcile_test_oracle_gap_lifecycle(
     return result
 
 
-def _addressed_test_oracle_gap_evidence(
+def _dispositioned_test_oracle_gap_ids(
     result: AdversarialValidationResult,
     claimed_review_threads: Sequence["ClaimedReviewThread"],
-    recorded_gaps: Sequence[TestOracleGap] = (),
-) -> dict[str, str]:
-    """Map exact material-gap threads independently proven addressed this run."""
-    dispositions = {disposition.thread_id: disposition for disposition in result.thread_dispositions if disposition.status == "ADDRESSED" and disposition.rationale and disposition.evidence}
+    recorded_gaps: Sequence[TestOracleGap],
+    status: str,
+) -> dict[str, "ReviewThreadDisposition"]:
+    """Map exact material-gap threads to this run's evidenced disposition of ``status``."""
+    dispositions = {disposition.thread_id: disposition for disposition in result.thread_dispositions if disposition.status == status and disposition.rationale and disposition.evidence}
     gaps_by_id = {gap.gap_id: gap for gap in (*recorded_gaps, *result.test_oracle_gaps)}
-    evidence_by_gap: dict[str, str] = {}
+    by_gap: dict[str, "ReviewThreadDisposition"] = {}
     for thread in claimed_review_threads:
         disposition = dispositions.get(thread.thread_id)
         if disposition is None:
@@ -2692,10 +2698,48 @@ def _addressed_test_oracle_gap_evidence(
         requirement_match = re.search(r"^`((?:#\d+/)?REQ-[^`]+)`:\s*\S", thread.original_finding, re.MULTILINE)
         current_gap = gaps_by_id.get(gap_match.group(1)) if gap_match else None
         if gap_match and requirement_match and current_gap is not None and current_gap.requirement_id == requirement_match.group(1):
-            if not is_valid_test_oracle_resolution_evidence(disposition.evidence):
+            by_gap[gap_match.group(1)] = disposition
+    return by_gap
+
+
+def _addressed_test_oracle_gap_evidence(
+    result: AdversarialValidationResult,
+    claimed_review_threads: Sequence["ClaimedReviewThread"],
+    recorded_gaps: Sequence[TestOracleGap] = (),
+) -> dict[str, str]:
+    """Map exact material-gap threads independently proven addressed this run."""
+    return {gap_id: f"{disposition.rationale}\nEvidence: {disposition.evidence}" for gap_id, disposition in _dispositioned_test_oracle_gap_ids(result, claimed_review_threads, recorded_gaps, "ADDRESSED").items() if is_valid_test_oracle_resolution_evidence(disposition.evidence)}
+
+
+def _upheld_test_oracle_gap_ids(
+    result: AdversarialValidationResult,
+    claimed_review_threads: Sequence["ClaimedReviewThread"],
+    recorded_gaps: Sequence[TestOracleGap] = (),
+    projection: Optional[AcceptedFindingProjection] = None,
+) -> frozenset[str]:
+    """Gap identities this run's independent STILL_VALID disposition currently upholds.
+
+    A disposition is associated with an accepted gap either through the ordinary gap
+    prose of its thread or through the exact native root the accepted finding was
+    published under. A root shared by several accepted gaps is ambiguous and
+    upholds none of them.
+    """
+    upheld = set(_dispositioned_test_oracle_gap_ids(result, claimed_review_threads, recorded_gaps, "STILL_VALID"))
+    if projection is not None:
+        gaps_by_root: dict[int, set[str]] = {}
+        for record in projection.records:
+            if record.known_gap_id:
+                for root in record.root_comment_ids:
+                    gaps_by_root.setdefault(root, set()).add(record.known_gap_id)
+        threads = {thread.thread_id: thread for thread in claimed_review_threads}
+        for disposition in result.thread_dispositions:
+            thread = threads.get(disposition.thread_id)
+            if thread is None or thread.root_comment_database_id is None or disposition.status != "STILL_VALID" or not disposition.rationale or not disposition.evidence:
                 continue
-            evidence_by_gap[gap_match.group(1)] = f"{disposition.rationale}\nEvidence: {disposition.evidence}"
-    return evidence_by_gap
+            candidates = gaps_by_root.get(thread.root_comment_database_id, set())
+            if len(candidates) == 1:
+                upheld |= candidates
+    return frozenset(upheld)
 
 
 def _enforce_inconclusive_recovery_contract(
@@ -3323,7 +3367,11 @@ def _normalize_findings_and_gaps(
     promoted_gap_ids: set[str] = set()
     for oracle_gap in result.test_oracle_gaps:
         requirement_text = req_text_by_id.get(oracle_gap.requirement_id, "")
-        if oracle_gap.status == "OPEN" and is_explicit_test_deliverable(requirement_text) and _gap_establishes_missing_deliverable(oracle_gap):
+        # A retained OPEN accepted gap is a lifecycle obligation awaiting closure; its original
+        # absence prose is historical. It becomes a current violation only when this attempt's
+        # independent disposition upholds it.
+        pending_closure = oracle_gap.gap_id in context.accepted_known_gap_ids and oracle_gap.gap_id not in context.accepted_upheld_gap_ids
+        if oracle_gap.status == "OPEN" and not pending_closure and is_explicit_test_deliverable(requirement_text) and _gap_establishes_missing_deliverable(oracle_gap):
             if not any(_same_test_correction(finding, oracle_gap) for finding in retained_findings):
                 retained_findings.append(_deliverable_finding_from_gap(oracle_gap, requirement_text))
             promoted_gap_ids.add(oracle_gap.gap_id)
@@ -3340,7 +3388,9 @@ def _normalize_findings_and_gaps(
         is_deliverable = any(is_explicit_test_deliverable(req_text_by_id.get(rid, "")) for rid in finding.all_requirement_ids if rid in expected_requirement_ids)
         if is_deliverable:
             final_findings.append(finding)
-            retained_gaps = [gap for gap in retained_gaps if not _same_test_correction(finding, gap)]
+            # An accepted gap is a distinct durable obligation: only its own identity may collapse into
+            # a finding, never a lexical overlap with another concern under the same Requirement.
+            retained_gaps = [gap for gap in retained_gaps if not _same_test_correction(finding, gap) or (gap.gap_id in context.accepted_known_gap_ids and gap.gap_id not in {finding.finding_identity, finding.correction_identity})]
         else:
             if _is_missing_test_finding(finding):
                 has_matching_gap = any(gap.requirement_id in finding.all_requirement_ids for gap in retained_gaps)
@@ -4060,6 +4110,7 @@ def run_adversarial_validation(
     result = _parse_reviewer_response("initial", response, canonical_recorded_gaps, closure_input, reviewer_provenance)
     _log_contextual_parse_diagnostics(result, response, backend_manager, pr_number, "initial")
     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
+    context.accepted_upheld_gap_ids = accepted_gap_ids & _upheld_test_oracle_gap_ids(result, claimed_review_threads, canonical_recorded_gaps, accepted_projection)
     result = _reconcile_test_oracle_gap_lifecycle(
         result,
         effective_lifecycle_session,
@@ -4278,6 +4329,7 @@ def run_adversarial_validation(
                     _log_contextual_parse_diagnostics(result, followup_response, backend_manager, pr_number, "dynamic_check_followup")
                     result = _reconcile_reusable_recovered_evidence(result, effective_stored_session, context, head_sha)
                     result = _carry_forward_current_run_recovered_evidence(result, current_run_recovered_evidence)
+                    context.accepted_upheld_gap_ids = accepted_gap_ids & _upheld_test_oracle_gap_ids(result, claimed_review_threads, canonical_recorded_gaps, accepted_projection)
                     result = _reconcile_test_oracle_gap_lifecycle(
                         result,
                         effective_lifecycle_session,

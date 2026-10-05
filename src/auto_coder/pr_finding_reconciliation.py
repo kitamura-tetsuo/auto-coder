@@ -671,8 +671,11 @@ def reconcile_pr_findings_before_publication(
         if not matched_blocker_id and cand.finding_ref is not None and cand.finding_ref.finding_identity:
             # An accepted Strong finding is identified by its exact source alias,
             # so a restatement references the existing root instead of a new one.
+            # A regression gap promoted to a finding (an explicit test deliverable) keeps the gap
+            # identity, so its original blocker and root are referenced under that alias too.
+            finding_identities = {cand.finding_ref.finding_identity, cand.finding_ref.correction_identity} - {""}
             for b in all_blockers:
-                if any(alias.alias_type == SOURCE_ALIAS_TYPE and alias.alias_value == cand.finding_ref.finding_identity for alias in b.aliases):
+                if any(alias.alias_value in finding_identities and alias.alias_type in {SOURCE_ALIAS_TYPE, "test_oracle_gap"} for alias in b.aliases):
                     matched_blocker_id = b.blocker_id
                     break
 
@@ -699,10 +702,13 @@ def reconcile_pr_findings_before_publication(
                 justified_transition = True
                 transition_reason = f"Justified category transition from {target_blocker.category} to {cand.category}"
 
+            # An exact identity match preserves the blocker's original authoritative boundary; the
+            # observation may name it differently (a finding anchors to a file, a gap to a boundary).
+            boundary = target_blocker.authoritative_boundary if matched_blocker_id and target_blocker is not None and target_blocker.authoritative_boundary else cand.authoritative_boundary
             payload = BlockerAdmissionPayload(
                 category=cand.category,
                 qualified_requirements=tuple(QualifiedRequirement(issue_number=issue_number, requirement_id=r) for r in cand.requirement_ids),
-                authoritative_boundary=cand.authoritative_boundary,
+                authoritative_boundary=boundary,
                 incorrect_behavior_or_missing_invariant=cand.incorrect_behavior_or_invariant,
                 required_correction_outcome=cand.required_outcome,
                 evidence_needed=cand.required_outcome,

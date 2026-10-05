@@ -76,6 +76,7 @@ from .effective_decision_application import (
     DecisionApplication,
     DecisionRetentionError,
     EffectiveDecisionStore,
+    RetainedDecision,
     ReviewDisposition,
     build_retained_record,
     classify_repair_handoff,
@@ -3953,6 +3954,16 @@ def _accepted_state_inputs(repo_name: str, pr_data: Dict[str, Any], head_sha: st
     return default_accepted_finding_bridge(repo_name), target
 
 
+def _saved_repair_has_current_evidence(retained: Optional[RetainedDecision], head_sha: str, outstanding: Sequence[AcceptedFindingRecord]) -> bool:
+    """Whether a retained repair decision at this head covers every outstanding accepted finding.
+
+    The effective decision derives a repair for an open accepted finding only from current-target
+    evidence, so its retained record is the durable proof that a saved violation is current.
+    """
+    repair_actions = {EffectiveNextAction.IMPLEMENTATION_REPAIR.value, EffectiveNextAction.FOCUSED_TEST_REPAIR.value}
+    return retained is not None and retained.head_sha == head_sha and retained.next_action in repair_actions and {record.source_identity for record in outstanding} <= set(retained.source_identities)
+
+
 def _assess_saved_review_state(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -3993,7 +4004,13 @@ def _assess_saved_review_state(
         marker = _corrective_completion_marker(repo_name, pr_data, head_sha, github_client)
         if key not in retained.closure_attempts and closure_ready(projection, head_sha, marker):
             return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "a pending closure acceptance has not completed and may now be attempted", projection)
-    if saved_status in {"NEEDS_FIX", "NEEDS_TESTS"} and projection.complete and not outstanding_records(projection) and retained is not None and retained.head_sha == head_sha and retained.source_identities:
+    outstanding = outstanding_records(projection)
+    if saved_status in {"NEEDS_FIX", "NEEDS_TESTS"} and projection.complete and outstanding and not _saved_repair_has_current_evidence(retained, head_sha, outstanding):
+        # Open accepted obligations plus a saved violation are not themselves current evidence: the
+        # headline may be a legacy synthesis of the historical finding. Only a retained decision that
+        # derived the repair from this head's evidence authorizes replaying it.
+        return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "the saved nonpassing review is not backed by a retained current-evidence decision for the open accepted findings", projection)
+    if saved_status in {"NEEDS_FIX", "NEEDS_TESTS"} and projection.complete and not outstanding and retained is not None and retained.head_sha == head_sha and retained.source_identities:
         return SavedReviewAssessment(SAVED_REVIEW_REVALIDATE, "every accepted correction behind the saved verdict is now closed by its lifecycle owner", projection)
     return SavedReviewAssessment(SAVED_REVIEW_REUSE, "", projection)
 
@@ -4679,7 +4696,7 @@ def _handle_pr_merge(
                                         _record_pr_stage(
                                             pr_number, "pr.review-thread-gate", f"pr#{pr_number} review-thread gate", Outcome.DEFERRED, {"examined_head": head_sha_for_gate, "reason": "saved PASS requires independent thread closure", "blocking_count": len(claimed_thread_state.unresolved)}
                                         )
-                                if current_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not adjudication_forces_revalidation and not gate_retained_resume:
+                                if current_status in ADVERSARIAL_REVIEW_BLOCKING_STATUSES and not adjudication_forces_revalidation and not saved_review_revalidation:
                                     report, report_error = _get_published_adversarial_validation_comment(github_client, repo_name, pr_number, head_sha_for_gate)
                                     if report_error or not report:
                                         actions.append(f"Cannot replay current-head adversarial feedback for PR #{pr_number}: {report_error or 'published report is unavailable'}")
