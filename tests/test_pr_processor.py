@@ -11,6 +11,17 @@ import pytest
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
 
+# A focused runner result for the single reported failed file.
+_RUN = {"command": "bash scripts/test.sh tests/test_foo.py", "test_file": "tests/test_foo.py", "return_code": 1}
+
+
+@pytest.fixture(autouse=True)
+def reported_failed_test_file(tmp_path, monkeypatch):
+    """Focused verification only selects reported failed test files that exist."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_foo.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+
 
 class TestPRProcessorBackendSwitching:
     """Test cases for backend switching in PR processor."""
@@ -73,9 +84,9 @@ class TestPRProcessorBackendSwitching:
 
         # Mock the test results - fail first, pass on third
         # Use dicts with .get() method since the code uses test_result.get("success")
-        fail_result_1 = {"failed_tests": ["test_foo.py"], "success": False, "output": "Test failed", "errors": "Error details"}
-        fail_result_2 = {"failed_tests": ["test_foo.py"], "success": False, "output": "Test failed again", "errors": "More errors"}
-        pass_result = {"failed_tests": [], "success": True, "output": "All tests passed", "errors": ""}
+        fail_result_1 = {**_RUN, "success": False, "output": "Test failed", "errors": "Error details"}
+        fail_result_2 = {**_RUN, "success": False, "output": "Test failed again", "errors": "More errors"}
+        pass_result = {**_RUN, "success": True, "output": "All tests passed", "errors": ""}
 
         mock_run_tests.side_effect = [
             fail_result_1,  # attempt 1
@@ -150,7 +161,7 @@ class TestPRProcessorBackendSwitching:
         mock_git_push.return_value = MagicMock(success=True)
 
         # Mock test to pass on first attempt
-        mock_run_tests.return_value = Mock(failed_tests=[], success=True, output="Tests passed", errors="")
+        mock_run_tests.return_value = {**_RUN, "success": True, "output": "Tests passed", "errors": ""}
 
         # Mock local fix to return empty actions and no response
         mock_apply_local_fix.return_value = ([], "")
@@ -212,10 +223,10 @@ class TestPRProcessorBackendSwitching:
 
         # Mock test results - fail multiple times
         # Use dicts with .get() method since the code uses test_result.get("success")
-        fail_1 = {"failed_tests": ["test1.py"], "success": False, "output": "Test failed", "errors": "Error 1"}
-        fail_2 = {"failed_tests": ["test1.py"], "success": False, "output": "Test failed", "errors": "Error 2"}
-        fail_3 = {"failed_tests": ["test1.py"], "success": False, "output": "Test failed", "errors": "Error 3"}
-        pass_res = {"failed_tests": [], "success": True, "output": "Tests passed", "errors": ""}
+        fail_1 = {**_RUN, "success": False, "output": "Test failed", "errors": "Error 1"}
+        fail_2 = {**_RUN, "success": False, "output": "Test failed", "errors": "Error 2"}
+        fail_3 = {**_RUN, "success": False, "output": "Test failed", "errors": "Error 3"}
+        pass_res = {**_RUN, "success": True, "output": "Tests passed", "errors": ""}
 
         mock_run_tests.side_effect = [
             fail_1,  # attempt 1
@@ -291,7 +302,7 @@ class TestPRProcessorBackendSwitching:
 
         # Mock test results - always fail
         # Use dict with .get() method since the code uses test_result.get("success")
-        mock_run_tests.return_value = {"failed_tests": ["test1.py"], "success": False, "output": "Test failed", "errors": "Errors"}
+        mock_run_tests.return_value = {**_RUN, "success": False, "output": "Test failed", "errors": "Errors"}
 
         # Mock local fix to return empty actions and no response
         mock_apply_local_fix.return_value = ([], "")

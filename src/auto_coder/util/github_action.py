@@ -32,7 +32,7 @@ from ..execution_trace import EventKind, Outcome, get_trace_collector
 from ..github_ci_observer import approve_waiting_deployment, end_ci_read_phase, observe_ci
 from ..logger_config import get_logger
 from ..security_utils import redact_string
-from ..test_log_utils import generate_merged_playwright_report
+from ..test_log_utils import extract_all_failed_tests, generate_merged_playwright_report
 from ..utils import CommandExecutor, log_action
 from .gh_cache import GitHubClient, get_ghapi_client, list_all_workflow_jobs
 from .github_cache import get_github_cache
@@ -2472,6 +2472,17 @@ def _extract_failed_tests_from_playwright_reports(reports: List[Dict[str, Any]])
     return sorted(list(failed_tests))
 
 
+def _truncate_middle(text: str, limit: int) -> str:
+    """Keep the head and tail of text within roughly limit characters."""
+    if len(text) <= limit:
+        return text
+    marker = f"\n... {len(text) - limit} chars truncated due to length limit ...\n"
+    keep = max(limit - len(marker), 0)
+    head = keep // 2
+    tail = keep - head
+    return text[:head] + marker + (text[len(text) - tail :] if tail > 0 else "")
+
+
 def _create_github_action_log_summary(
     repo_name: str,
     config: AutomationConfig,
@@ -2622,6 +2633,9 @@ def _create_github_action_log_summary(
         logger.error(f"Error getting GitHub Actions logs: {e}")
         logs.append(f"Error getting logs: {e}")
 
+    # Failed-file identities come from every retrieved log, before any bounding below.
+    log_failed_files = extract_all_failed_tests("\n".join(logs)) if logs else []
+
     # Deduplicate similar logs
     if len(logs) > 1:
         try:
@@ -2656,7 +2670,13 @@ def _create_github_action_log_summary(
                         break
 
                 if is_duplicate:
-                    final_logs.append(f"=== Job: {job_name} ===\nFailure is similar to others (omitted).")
+                    # Keep any line the near-duplicate does not share: distinct failures must survive.
+                    kept_lines = set(kept_body.splitlines())
+                    distinct = [line for line in log_body.splitlines() if line.strip() and line not in kept_lines]
+                    if distinct:
+                        final_logs.append(f"=== Job: {job_name} ===\nFailure is similar to others; distinct lines:\n" + "\n".join(distinct))
+                    else:
+                        final_logs.append(f"=== Job: {job_name} ===\nFailure is similar to others (omitted).")
                 else:
                     final_logs.append(log)
                     kept_logs.append(log)
@@ -2665,23 +2685,17 @@ def _create_github_action_log_summary(
         except Exception as e:
             logger.warning(f"Error during log deduplication: {e}")
 
-    failed_test_files = []
+    failed_test_files: List[str] = []
     if artifacts_list:
         failed_test_files = _extract_failed_tests_from_playwright_reports(artifacts_list)
+    failed_test_files = list(dict.fromkeys([*failed_test_files, *log_failed_files]))
 
-    # Truncate logs if exceeding max_log_length
-    # Policy: Remove logs from the end until total size fits or only logs[0] remains.
-    # logs[0] is always preserved.
+    # Bound the summary without dropping any job: every log keeps a fair share of the limit
+    # (head and tail), so a distinct failure in a later job still reaches the corrective input.
     if logs and max_log_length > 0:
-        current_length = sum(len(log) for log in logs) + (len(logs) - 1) * 2  # Including newlines join
-        original_count = len(logs)
-
-        while len(logs) > 1 and current_length > max_log_length:
-            removed = logs.pop()
-            current_length = sum(len(log) for log in logs) + (len(logs) - 1) * 2
-
-        if len(logs) < original_count:
-            truncated_count = original_count - len(logs)
-            logs.append(f"\n... {truncated_count} more logs truncated due to length limit ({max_log_length} chars) ...")
+        separators = (len(logs) - 1) * 2
+        if sum(len(log) for log in logs) + separators > max_log_length:
+            share = max(max_log_length // len(logs), 200)
+            logs = [_truncate_middle(log, share) for log in logs]
 
     return "\n\n".join(logs) if logs else "No detailed logs available", failed_test_files if failed_test_files else None

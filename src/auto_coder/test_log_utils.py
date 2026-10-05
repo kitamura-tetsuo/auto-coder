@@ -95,15 +95,15 @@ def _collect_pytest_candidates(text: str) -> List[str]:
 
     found: List[str] = []
 
-    # 1) Extract from pytest FAILED summary lines
+    # 1) Extract every distinct file from pytest FAILED summary lines
     for pat in [
         r"^FAILED\s+([^\s:]+\.py)::",
         r"^FAILED\s+([^\s:]+\.py)\s*[-:]",
         r"^FAILED\s+([^\s:]+\.py)\b",
     ]:
-        m = re.search(pat, text, re.MULTILINE)
-        if m:
-            found.append(m.group(1))
+        matches = re.findall(pat, text, re.MULTILINE)
+        if matches:
+            found.extend(dict.fromkeys(matches))
             break
 
     # 2) Extract .py files under tests/ from pytest traceback lines
@@ -315,17 +315,9 @@ def extract_all_failed_tests(stdout: str, stderr: str = "") -> List[str]:
         if candidates_set:
             break
 
-    final_list = []
-    # Sort candidates to be deterministic
-    for path in sorted(list(candidates_set)):
-        if os.path.exists(path):
-            final_list.append(path)
-
-    # If no existing files found, return logical candidates
-    if not final_list and candidates_set:
-        return sorted(list(candidates_set))
-
-    return final_list
+    # Every reported candidate is kept (sorted for determinism): a target missing from
+    # the working tree must stay visible so callers can report it as unverified.
+    return sorted(candidates_set)
 
 
 def extract_important_errors(test_result: TestResult) -> str:

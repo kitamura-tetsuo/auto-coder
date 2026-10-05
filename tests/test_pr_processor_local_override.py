@@ -101,9 +101,9 @@ class TestPRProcessorLocalOverride:
         # 2. Should call _fix_pr_issues_with_testing
         mock_fix_issues.assert_called_once()
 
-        # 3. Should pass skip_github_actions_fix=True because we are on the branch
+        # 3. Resumption on the PR branch must not drop the CI evidence
         call_args = mock_fix_issues.call_args
-        assert call_args.kwargs.get("skip_github_actions_fix") is True
+        assert "skip_github_actions_fix" not in call_args.kwargs
 
         # 4. Verify actions contain expected messages
         assert any("Checked out PR #123 branch" in action for action in actions)

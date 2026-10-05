@@ -59,6 +59,7 @@ from .bounded_repair_bundle import (
 from .branch_manager import BranchManager
 from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
 from .ci_repair_authority import current_ci_failure_authority
+from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_up_budget_exhausted, verify_targets
 from .claude_followup_waits import ClaudeFollowupHoldActive, get_claude_followup_wait_store, wait_from_error
 from .codex_cloud_task import canonical_codex_cloud_task_url, extract_codex_cloud_task_id, is_valid_codex_cloud_task_id
 from .codex_pr_attribution import AttributionDisposition, CodexPrAttributionRepository, resolve_codex_pr_origin, task_ids_from_text
@@ -97,7 +98,7 @@ from .git_info import get_commit_log
 from .github_app_reviewer import ExactReviewComment, GitHubAppReviewer, ReviewerAppIdentity, load_reviewer_app_config, publish_adversarial_review, recover_pending_adversarial_publications, resolve_reviewer_app_identity
 from .github_pending_work import WorkIdentity, get_pending_work_store
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
-from .invocation_admission import bind_invocation_target
+from .invocation_admission import bind_ci_repair_designation, bind_invocation_target
 from .issue_context import extract_linked_issues_from_pr_body, get_linked_issues_context, resolve_issue_oracles, validate_issue_references
 from .issue_stage_routing import IMPLEMENTATION_STAGE, ImplementationRetryRequest, IssueStageRoutingStore
 from .label_manager import LabelManager, LabelOperationError, filter_legacy_auto_coder_label
@@ -6160,7 +6161,7 @@ def _handle_pr_merge(
                     # Proceed directly to extracting GitHub Actions logs and attempting fixes
                     if failed_checks:
                         github_logs, failed_test_files = _create_github_action_log_summary(repo_name, config, failed_checks)
-                        fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files, skip_github_actions_fix=already_on_pr_branch)
+                        fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, failed_test_files)
                         actions.extend(fix_actions)
                     else:
                         actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -6213,7 +6214,7 @@ def _handle_pr_merge(
                         if failed_checks:
                             # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
                             github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                            fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
+                            fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
                             actions.extend(fix_actions)
                         else:
                             actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -10143,34 +10144,25 @@ def _fix_pr_issues_with_testing(
     config: AutomationConfig,
     github_logs: str,
     failed_tests: List[str] | None = None,
-    skip_github_actions_fix: bool = False,
 ) -> List[str]:
-    # Extract failed tests from GitHub Actions logs
-    if failed_tests is None:
-        failed_tests = extract_all_failed_tests(github_logs)
+    """Repair a PR's CI failure from the reported failures with focused local checks.
 
-    if skip_github_actions_fix:
-        return _fix_pr_issues_with_local_testing(repo_name, pr_data, config, github_logs, test_files=failed_tests, skip_github_actions_fix=True)
-    else:
-        return _fix_pr_issues_with_github_actions_testing(repo_name, pr_data, config, github_logs, failed_tests=failed_tests)
-
-
-def _fix_pr_issues_with_github_actions_testing(
-    repo_name: str,
-    pr_data: Dict[str, Any],
-    config: AutomationConfig,
-    github_logs: str,
-    failed_tests: Optional[List[str]] = None,
-) -> List[str]:
-    """Fix PR issues using GitHub Actions logs, with intelligent routing.
-
-    If 1-3 tests failed: Run local testing/fixing loop (targeted).
-    If 4+ or 0 tests: Apply GHA log fix, commit, and push (trigger new run).
+    CI owns full validation. Every local corrective call carries the CI-repair
+    designation (no automatic unscoped baseline), the known-failure set F is the
+    distinct failed test files reported by the CI diagnostics, and after each edit
+    all of F is re-run through the explicit-file test runner. The resulting
+    candidate is submitted for CI validation without requiring local full-suite
+    success; local outcomes never establish CI clearance or merge authority.
     """
-    actions = []
+    actions: List[str] = []
     pr_number = pr_data["number"]
 
-    # Initialize backend managers
+    if failed_tests is None:
+        failed_tests = extract_all_failed_tests(github_logs)
+    known_failures = dedupe_targets(failed_tests)
+
+    # With automatic_test_fix disabled no backend is created, no correction starts and
+    # nothing is published; focused checks remain observational.
     current_backend_manager: Optional[BackendManager] = None
     high_score_backend_manager: Optional[BackendManager] = None
     if _is_automatic_test_fix_enabled(config, repo_name):
@@ -10183,38 +10175,37 @@ def _fix_pr_issues_with_github_actions_testing(
         except Exception as e:
             logger.debug(f"Could not create high score backend manager: {e}")
 
-    # Track history
     attempt_history: List[Dict[str, Any]] = []
 
     try:
-        # Strategy: GHA Iteration (Log Fix -> Commit -> Push)
-        # 1. Apply fix based on GHA logs
-        if not _is_automatic_test_fix_enabled(config, repo_name):
-            actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping GitHub Actions fix")
-        else:
+        # Initial correction from the CI diagnostics (all of them, including non-test failures).
+        if _is_automatic_test_fix_enabled(config, repo_name):
             get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs", item_type="pr", item_number=pr_number)
             actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-            initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs, backend_manager=high_score_backend_manager)
-            actions.extend(initial_fix_actions)
+        actions.extend(_apply_github_actions_fix(repo_name, pr_data, config, github_logs, backend_manager=high_score_backend_manager, focused_targets=known_failures))
 
-        # 2. Apply fix based on local tests when 1-3 tests failed
-        if failed_tests and 1 <= len(failed_tests) <= 3:
-            test_result = run_local_tests(config, test_file=failed_tests[0])
-
-            # Check if we should use local fix strategy (1-3 failed tests)
-            attempts_limit = config.MAX_FIX_ATTEMPTS
-            attempt = 0
-
-            while not test_result.get("success") and 1 <= len(failed_tests) <= 3 and attempt < attempts_limit:
+        # Focused verification loop over F only; the follow-up budget is shared across F.
+        verification = FocusedVerification()
+        if not known_failures:
+            actions.append("Local verification not performed: CI diagnostics identified no test file to select; full validation is left to CI")
+        else:
+            follow_ups = 0
+            while True:
+                with ProgressStage("Running focused local checks"):
+                    verification = verify_targets(known_failures, run_local_tests, config)
+                failing = verification.failed
+                if not failing:
+                    break
                 if not _is_automatic_test_fix_enabled(config, repo_name):
                     actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping local test repair")
+                    break
+                if follow_up_budget_exhausted(config.MAX_FIX_ATTEMPTS, follow_ups):
+                    actions.append(f"Max fix attempts ({config.MAX_FIX_ATTEMPTS}) reached for PR #{pr_number}")
                     break
                 if not new_work_allowed():
                     actions.append(f"Deferred another repair attempt for PR #{pr_number}: graceful shutdown is draining")
                     break
-                attempt += 1
 
-                # Check if PR is closed
                 from .util.gh_cache import GitHubClient
                 from .util.github_action import is_item_closed_on_github
 
@@ -10224,49 +10215,38 @@ def _fix_pr_issues_with_github_actions_testing(
                     actions.append(msg)
                     return actions
 
-                # Backend switching logic
-                if attempt >= 2 and high_score_backend_manager:
-                    if current_backend_manager != high_score_backend_manager:
-                        logger.info(f"Switching to fallback backend for PR #{pr_number} after {attempt} attempts")
-                        current_backend_manager = high_score_backend_manager
-                        actions.append(f"Switched to fallback backend for PR #{pr_number}")
+                follow_ups += 1
+                if follow_ups >= 2 and high_score_backend_manager and current_backend_manager != high_score_backend_manager:
+                    logger.info(f"Switching to fallback backend for PR #{pr_number} after {follow_ups} follow-up attempts")
+                    current_backend_manager = high_score_backend_manager
+                    actions.append(f"Switched to fallback backend for PR #{pr_number}")
 
-                with ProgressStage(f"Low-failure fix attempt {attempt}"):
+                with ProgressStage(f"Low-failure fix attempt {follow_ups}"):
                     local_fix_actions, llm_response = _apply_local_test_fix(
                         repo_name,
                         pr_data,
                         config,
-                        test_result,
+                        failing[0].raw,
                         attempt_history,
                         backend_manager=current_backend_manager,
                     )
-                    actions.extend(local_fix_actions)
+                actions.extend(local_fix_actions)
+                if not llm_response and not math.isfinite(float(config.MAX_FIX_ATTEMPTS)):
+                    # An unbounded budget must not spin on a follow-up that produces no correction.
+                    actions.append(f"No local correction was produced for {failing[0].target}; stopping local repair")
+                    break
+                attempt_history.append({"attempt_number": follow_ups, "llm_output": llm_response, "test_result": failing[0].raw})
 
-                test_result = run_local_tests(config, test_file=failed_tests[0])
+            actions.extend(verification.describe())
+            if verification.all_passed:
+                actions.append(f"All {len(verification.results)} known CI-failed test file(s) passed locally on the latest corrected state (focused scope only; full validation pending CI)")
+            else:
+                actions.append("Known CI-failed tests are not all verified locally; full validation pending CI")
 
         if not _is_automatic_test_fix_enabled(config, repo_name):
             return actions
 
-        # 3. Commit and Push
-        # Check if any changes were made
-        result = cmd.run_command(["git", "status", "--porcelain"])
-        if result.success and result.stdout.strip():
-            # Stage changes before committing
-            cmd.run_command(["git", "add", "."])
-
-            commit_msg = f"Auto-Coder: Fix issues based on GitHub Actions logs (PR #{pr_number})"
-            c_res = git_commit_with_retry(commit_msg)
-            if c_res.success:
-                actions.append("Committed fixes based on GitHub Actions logs")
-                p_res = git_push()
-                if p_res.success:
-                    actions.append("Pushed fixes to GitHub to trigger new Actions run")
-                else:
-                    actions.append(f"Failed to push fixes: {p_res.stderr}")
-            else:
-                actions.append(f"Failed to commit fixes: {c_res.stderr}")
-        else:
-            actions.append("No changes generated by GitHub Actions fix")
+        actions.extend(_submit_ci_repair_candidate(repo_name, pr_number))
 
     except AutoCoderRetryableBackendError:
         raise
@@ -10276,132 +10256,31 @@ def _fix_pr_issues_with_github_actions_testing(
     return actions
 
 
-def _fix_pr_issues_with_local_testing(
-    repo_name: str,
-    pr_data: Dict[str, Any],
-    config: AutomationConfig,
-    github_logs: str,
-    test_files: Optional[List[str]] = None,
-    skip_github_actions_fix: bool = False,
-) -> List[str]:
-    """Fix PR issues using local testing loop."""
-    actions = []
-    pr_number = pr_data["number"]
+def _submit_ci_repair_candidate(repo_name: str, pr_number: int) -> List[str]:
+    """Commit and push a real corrective diff for the still-open PR branch.
 
-    # Initialize backend managers
-    current_backend_manager: Optional[BackendManager] = None
-    high_score_backend_manager: Optional[BackendManager] = None
-    if _is_automatic_test_fix_enabled(config, repo_name):
-        try:
-            current_backend_manager = get_llm_backend_manager()
-        except Exception as e:
-            logger.debug(f"Could not get LLM backend manager: {e}")
-        try:
-            high_score_backend_manager = create_high_score_backend_manager()
-        except Exception as e:
-            logger.debug(f"Could not create high score backend manager: {e}")
+    Success means only that a candidate was submitted; CI validation of the
+    resulting head remains pending until CI reports on it.
+    """
+    from .util.gh_cache import GitHubClient
+    from .util.github_action import is_item_closed_on_github
 
-    # Track history of previous attempts for context
-    attempt_history: List[Dict[str, Any]] = []
-
-    try:
-        # Step 1: Initial fix using GitHub Actions logs
-        if skip_github_actions_fix:
-            msg = "Skipping GitHub Actions fix as we were already on the PR branch (assuming resumption)"
-            logger.info(msg)
-            actions.append(msg)
-        elif not _is_automatic_test_fix_enabled(config, repo_name):
-            actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping GitHub Actions fix")
-        else:
-            get_trace_logger().log("Fixing Issues", f"Fixing PR #{pr_number} using GHA logs (local loop)", item_type="pr", item_number=pr_number)
-            actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-            initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
-            actions.extend(initial_fix_actions)
-
-        # Step 2: Local testing and iterative fixing loop
-        attempts_limit = config.MAX_FIX_ATTEMPTS
-        attempt = 0
-        while True:
-            with ProgressStage(f"attempt: {attempt}"):
-                attempt += 1
-
-                # Check if PR is closed
-                from .util.gh_cache import GitHubClient
-                from .util.github_action import is_item_closed_on_github
-
-                if is_item_closed_on_github(repo_name, "pr", pr_number, GitHubClient.get_instance()):
-                    msg = f"PR #{pr_number} is closed on GitHub. Aborting fix loop."
-                    logger.info(msg)
-                    actions.append(msg)
-                    return actions
-
-                # Backend switching logic: switch to fallback after 2 attempts
-                if attempt >= 2 and high_score_backend_manager:
-                    if current_backend_manager != high_score_backend_manager:
-                        logger.info(f"Switching to fallback backend for PR #{pr_number} after {attempt} attempts")
-                        current_backend_manager = high_score_backend_manager
-                        actions.append(f"Switched to fallback backend for PR #{pr_number}")
-
-                actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")
-
-                with ProgressStage(f"Running local tests"):
-                    test_result = run_local_tests(config)
-
-                if test_result["success"]:
-                    actions.append(f"Local tests passed on attempt {attempt}")
-                    commit_and_push_changes({"summary": f"Auto-Coder: Address PR #{pr_number}"})
-                    break
-                else:
-                    actions.append(f"Local tests failed on attempt {attempt}")
-
-                    if not _is_automatic_test_fix_enabled(config, repo_name):
-                        actions.append(f"Automatic test fix is disabled for PR #{pr_number}; skipping local test repair")
-                        break
-
-                    # Apply local test failure fix (always try unless finite limit reached)
-                    # Stop if finite limit reached after this attempt
-                    # Otherwise, continue attempting fixes
-                    # Determine if we have remaining attempts (finite limit)
-                    finite_limit_reached = False
-                    try:
-                        if math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
-                            finite_limit_reached = True
-                    except Exception:
-                        finite_limit_reached = False
-
-                    if finite_limit_reached:
-                        actions.append(f"Max fix attempts ({attempts_limit}) reached for PR #{pr_number}")
-                        break
-                    else:
-                        if not new_work_allowed():
-                            actions.append(f"Deferred another repair attempt for PR #{pr_number}: graceful shutdown is draining")
-                            break
-                        local_fix_actions, llm_response = _apply_local_test_fix(
-                            repo_name,
-                            pr_data,
-                            config,
-                            test_result,
-                            attempt_history,
-                            backend_manager=current_backend_manager,
-                        )
-                        actions.extend(local_fix_actions)
-
-                        # Store this attempt in history for future reference
-                        if llm_response:
-                            attempt_history.append(
-                                {
-                                    "attempt_number": attempt,
-                                    "llm_output": llm_response,
-                                    "test_result": test_result,
-                                }
-                            )
-
-    except AutoCoderRetryableBackendError:
-        raise
-    except Exception as e:
-        actions.append(f"Error fixing PR issues with testing for PR #{pr_number}: {e}")
-
-    return actions
+    if is_item_closed_on_github(repo_name, "pr", pr_number, GitHubClient.get_instance()):
+        return [f"PR #{pr_number} is closed on GitHub; corrective changes were not submitted"]
+    status = cmd.run_command(["git", "status", "--porcelain"])
+    if not status.success or not status.stdout.strip():
+        return ["No changes generated by CI repair; nothing submitted"]
+    cmd.run_command(["git", "add", "."])
+    c_res = git_commit_with_retry(f"Auto-Coder: Fix issues based on GitHub Actions logs (PR #{pr_number})")
+    if not c_res.success:
+        return [f"Failed to commit fixes: {c_res.stderr}"]
+    p_res = git_push()
+    if not p_res.success:
+        return ["Committed fixes based on GitHub Actions logs", f"Failed to push fixes: {p_res.stderr}"]
+    return [
+        "Committed fixes based on GitHub Actions logs",
+        "Pushed fixes to GitHub to trigger new Actions run; full validation is pending CI on the new head",
+    ]
 
 
 def _apply_github_actions_fix(
@@ -10412,6 +10291,7 @@ def _apply_github_actions_fix(
     test_result: Optional[TestResult] = None,
     github_client: Optional[Any] = None,
     backend_manager: Optional[BackendManager] = None,
+    focused_targets: Optional[List[str]] = None,
 ) -> List[str]:
     """Apply initial fix using GitHub Actions error logs.
 
@@ -10447,6 +10327,7 @@ def _apply_github_actions_fix(
             # Structured additions (safe if None)
             structured_errors=(test_result.extraction_context if test_result else {}),
             framework_type=(test_result.framework_type if test_result else None),
+            focused_targets="\n".join(f"- {t}" for t in dedupe_targets(focused_targets)),
         )
         logger.debug(
             "Prepared GitHub Actions fix prompt for PR #%s (preview: %s)",
@@ -10459,7 +10340,7 @@ def _apply_github_actions_fix(
             actions.append(f"Deferred GitHub Actions repair for PR #{pr_number}: graceful shutdown is draining")
             return actions
         logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
-        with bind_invocation_target(repo_name, f"pr#{pr_number}", "github_actions_repair"):
+        with bind_ci_repair_designation(), bind_invocation_target(repo_name, f"pr#{pr_number}", "github_actions_repair"):
             response = run_llm_prompt(fix_prompt, backend_manager=backend_manager)
 
         if response:
@@ -10584,7 +10465,8 @@ def _apply_local_test_fix(
             if not new_work_allowed():
                 actions.append(f"Deferred local repair for PR #{pr_number}: graceful shutdown is draining")
                 return actions, llm_response
-            llm_response = manager.run_test_fix_prompt(fix_prompt, current_test_file=tr.test_file)
+            with bind_ci_repair_designation():
+                llm_response = manager.run_test_fix_prompt(fix_prompt, current_test_file=tr.test_file)
 
             if llm_response:
                 response_preview = llm_response.strip()[: config.MAX_RESPONSE_SIZE] if llm_response.strip() else "No response"
