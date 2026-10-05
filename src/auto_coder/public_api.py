@@ -603,6 +603,9 @@ def _checked_continuity(snapshot: TraceSnapshot) -> RetentionBoundaries:
         raise ObservationUnavailable
     if oldest is not None and not _is_int(oldest, discarded + 1, high):
         raise ObservationUnavailable
+    sequences = [e.sequence for e in snapshot.events]
+    if not all(_is_int(seq, 1, high) for seq in sequences) or (min(sequences) if sequences else None) != oldest:
+        raise ObservationUnavailable
     return RetentionBoundaries(high, oldest, discarded)
 
 

@@ -330,3 +330,15 @@ def test_incremental_page_does_not_block_event_loop(engine, monkeypatch):
                 assert (await task).status_code == 200
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [{"sequence_high_watermark": 0, "oldest_retained_sequence": None, "discarded_through_sequence": 0}, {"oldest_retained_sequence": None}, {"sequence_high_watermark": 1}, {"oldest_retained_sequence": 2}])
+def test_continuity_contradicting_retained_events_is_503(client, override):
+    import dataclasses
+
+    _unscoped(3)
+    bad = dataclasses.replace(get_trace_collector().get_snapshot(), **override)
+    with patch.object(TraceCollector, "get_snapshot", return_value=bad):
+        response = client.get(f"/api/logs?after_sequence=0&process_run_id={_run()}")
+    assert response.status_code == 503 and response.json()["error"]["code"] == "observation_unavailable"
+    assert "next_cursor" not in response.text and "next_after_sequence" not in response.text
