@@ -46,6 +46,104 @@ def _inputs(tmp_path: Path, base: str, head: str) -> TwoTierGateInputs:
     )
 
 
+def test_strong_audit_fetches_missing_exact_base_in_real_worktree(tmp_path: Path, monkeypatch, _use_real_commands: None) -> None:
+    remote, original_base, head = _repository(tmp_path)
+    _git(remote, "branch", "feature", head)
+    _git(remote, "update-ref", "refs/pull/18/head", head)
+    _git(remote, "checkout", "-b", "main", original_base)
+    (remote / "base-only.txt").write_text("advanced base\n")
+    _git(remote, "add", "base-only.txt")
+    _git(remote, "commit", "-m", "advance base independently")
+    base = _git(remote, "rev-parse", "HEAD")
+    checkout = tmp_path / "checkout"
+    _git(tmp_path, "clone", "--depth", "1", "--single-branch", "--branch", "feature", remote.as_uri(), str(checkout))
+    assert subprocess.run(["git", "cat-file", "-e", base], cwd=checkout, capture_output=True).returncode != 0
+    (checkout / "untracked.txt").write_text("preserve\n")
+    (checkout / "contract.txt").write_text("local dirty change\n")
+    _git(checkout, "add", "contract.txt")
+    status = _git(checkout, "status", "--porcelain")
+    monkeypatch.chdir(checkout)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, base, head)
+    inputs.gate.ordinary_pass(18, head, base, inputs.contract)
+    manager = MagicMock()
+
+    def result(review_input, backend_manager, execution_cwd):
+        assert backend_manager is manager
+        assert _git(Path(execution_cwd), "rev-parse", "HEAD") == head
+        assert review_input.base_sha == base
+        assert "-advanced base" in review_input.diff_evidence
+        assert "-base" in review_input.diff_evidence
+        assert "+head" in review_input.diff_evidence
+        assert "local dirty change" not in review_input.diff_evidence
+        # Base acquisition must not replace the PR fetch's FETCH_HEAD.
+        assert _git(checkout, "rev-parse", "FETCH_HEAD") == head
+        return ReviewExecutionResult(
+            mode=ReviewMode.STRONG_AUDIT,
+            round_id=review_input.round_id,
+            attempt_id=review_input.attempt_id,
+            head_sha=head,
+            base_sha=base,
+            contract_identity=inputs.contract.identity,
+            policy_identity=inputs.policy.identity,
+            finding_set_revision=0,
+            reviewer_provenance="strong/test/model",
+            verdict=VERDICT_PASS,
+        )
+
+    with (
+        patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=AdversarialValidationAvailability(backend_manager=manager)),
+        patch("auto_coder.pr_processor.execute_review", side_effect=result) as transport,
+    ):
+        accepted, reason = _execute_pending_strong_audit("owner/repo", 18, inputs)
+
+    assert accepted is True, reason
+    transport.assert_called_once()
+    assert _git(checkout, "cat-file", "-t", base) == "commit"
+    assert _git(checkout, "symbolic-ref", "HEAD") == "refs/heads/feature"
+    assert _git(checkout, "rev-parse", "HEAD") == head
+    assert _git(checkout, "status", "--porcelain") == status
+    assert (checkout / "contract.txt").read_text() == "local dirty change\n"
+    assert (checkout / "untracked.txt").read_text() == "preserve\n"
+    assert len(_git(checkout, "worktree", "list", "--porcelain").split("worktree ")) == 2
+    assert inputs.gate.state.snapshot(18).accepted_strong_round is not None
+
+
+@pytest.mark.parametrize(
+    ("commands", "diagnostic"),
+    [
+        ([CommandResult(False, "", "missing", 1), CommandResult(False, "", "fatal: remote unavailable", 128)], "fetch failed (exit=128): fatal: remote unavailable"),
+        ([CommandResult(False, "", "missing", 1), CommandResult(False, "", "token=ghp_example123", 128)], "fetch failed (exit=128): token=[REDACTED]"),
+        ([CommandResult(False, "", "missing", 1), CommandResult(False, "", "x" * 3000, 128)], "fetch failed (exit=128): " + "x" * 2000),
+        ([CommandResult(False, "", "missing", 1), CommandResult(True, "", "", 0), CommandResult(False, "", "fatal: missing commit", 128)], "verification failed (exit=128): fatal: missing commit"),
+        ([CommandResult(True, "", "", 0), CommandResult(False, "", "fatal: bad object", 128), CommandResult(True, "file.txt", "", 0)], "required reviewed diff evidence is unavailable (exit=128): fatal: bad object"),
+        ([CommandResult(True, "", "", 0), CommandResult(True, "diff", "", 0), CommandResult(False, "", "fatal: index unavailable", 128)], "required tracked repository paths evidence is unavailable (exit=128): fatal: index unavailable"),
+    ],
+)
+def test_evidence_failure_preserves_diagnostic_and_pending_claim(tmp_path: Path, monkeypatch, commands: list[CommandResult], diagnostic: str) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    inputs = _inputs(tmp_path, "base", "head")
+    inputs.gate.ordinary_pass(19, "head", "base", inputs.contract)
+    with (
+        patch("auto_coder.pr_processor.isolated_pr_head_worktree", return_value=contextlib.nullcontext(str(tmp_path))),
+        patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=AdversarialValidationAvailability(backend_manager=MagicMock())),
+        patch("auto_coder.pr_processor.CommandExecutor.run_command", side_effect=commands),
+        patch("auto_coder.pr_processor.execute_review") as transport,
+    ):
+        accepted, reason = _execute_pending_strong_audit("owner/repo", 19, inputs)
+    assert accepted is False
+    assert diagnostic in reason
+    assert reason.startswith("strong audit execution failed: ")
+    assert "ghp_example123" not in reason
+    assert "x" * 2001 not in reason
+    transport.assert_not_called()
+    snapshot = _inputs(tmp_path, "base", "head").gate.state.snapshot(19)
+    assert snapshot.phase == "STRONG_PENDING"
+    assert diagnostic in snapshot.waiting_reason
+    assert snapshot.active_claim is None
+    assert snapshot.accepted_strong_round is None
+
+
 def test_pending_strong_audit_calls_transport_once_and_durably_accepts(tmp_path: Path, monkeypatch) -> None:
     repository, base, head = _repository(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -88,6 +186,7 @@ def test_pending_strong_audit_calls_transport_once_and_durably_accepts(tmp_path:
         patch(
             "auto_coder.pr_processor.CommandExecutor.run_command",
             side_effect=[
+                CommandResult(True, "", "", 0),
                 CommandResult(True, "-base\n+head\n", "", 0),
                 CommandResult(True, "contract.txt\n", "", 0),
             ],
@@ -157,7 +256,7 @@ def test_execution_safety_diagnostic_remains_pending_after_restart(tmp_path: Pat
         ),
         patch(
             "auto_coder.pr_processor.CommandExecutor.run_command",
-            side_effect=[CommandResult(True, "diff", "", 0), CommandResult(True, "contract.txt", "", 0)],
+            side_effect=[CommandResult(True, "", "", 0), CommandResult(True, "diff", "", 0), CommandResult(True, "contract.txt", "", 0)],
         ),
         patch("auto_coder.pr_processor.execute_review", side_effect=LocalWriterSettlementError(diagnostic)) as transport,
     ):
@@ -257,6 +356,7 @@ def test_burst_quota_below_reserve_reaches_production_strong_reviewer(tmp_path: 
         patch(
             "auto_coder.pr_processor.CommandExecutor.run_command",
             side_effect=[
+                CommandResult(True, "", "", 0),
                 CommandResult(True, "-base\n+head\n", "", 0),
                 CommandResult(True, "contract.txt\n", "", 0),
             ],

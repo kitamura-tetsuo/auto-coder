@@ -65,6 +65,16 @@ and contended executions remain pending with diagnostic and retry evidence;
 accepted results remain blocked on their separately owned publication or repair
 effect and therefore do not grant merge authority.
 
+The PR-head fetch alone does not guarantee that the reviewed base is present,
+especially when the base branch has advanced or the checkout is shallow.
+Before collecting strong-audit evidence, production verifies the exact base
+commit and fetches that SHA from origin only when missing. This fetch does not
+move branches or overwrite `FETCH_HEAD`; it never substitutes a newer base.
+Fetch, commit-verification, diff, and tracked-path failures retain their distinct
+exit codes and up to 2,000 redacted characters of Git diagnostics in the durable
+waiting reason and existing dashboard trace. No reviewer is invoked without
+the required evidence and no failed preparation grants PASS.
+
 Availability resolution applies the loaded `quota_selection.strategy` at its
 initial candidate-classification boundary, consistently for issue, ordinary PR,
 and strong PR routes. Consequently, `burst` keeps a Codex reviewer runnable while

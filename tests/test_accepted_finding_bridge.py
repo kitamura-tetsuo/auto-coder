@@ -143,7 +143,7 @@ def accept_strong(env: Env, pr: int, findings: list[dict[str, Any]], *, head: Op
     with (
         patch("auto_coder.pr_processor.isolated_pr_head_worktree", worktree),
         patch("auto_coder.cli_helpers.resolve_adversarial_validation_availability", return_value=AdversarialValidationAvailability(backend_manager=manager)),
-        patch("auto_coder.pr_processor.CommandExecutor.run_command", side_effect=[CommandResult(True, "-base\n+head\n", "", 0), CommandResult(True, "contract.txt\n", "", 0)]),
+        patch("auto_coder.pr_processor.CommandExecutor.run_command", side_effect=[CommandResult(True, "", "", 0), CommandResult(True, "-base\n+head\n", "", 0), CommandResult(True, "contract.txt\n", "", 0)]),
         patch("auto_coder.pr_processor.execute_review", side_effect=transport),
     ):
         accepted, reason = _execute_pending_strong_audit(REPO, pr, inputs)

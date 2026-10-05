@@ -294,6 +294,24 @@ def _two_tier_gate_inputs(
     return TwoTierGateInputs(TwoTierPrGate(repo_name), contract, policy, head_sha, base_sha)
 
 
+def _ensure_review_base_commit(worktree: str, base_sha: str) -> None:
+    """Acquire the exact reviewed base without moving a branch or FETCH_HEAD."""
+    verify_command = ["git", "cat-file", "-e", f"{base_sha}^{{commit}}"]
+    if CommandExecutor.run_command(verify_command, cwd=worktree).success:
+        return
+    fetched = CommandExecutor.run_command(
+        ["git", "fetch", "--no-tags", "--no-write-fetch-head", "origin", base_sha],
+        cwd=worktree,
+    )
+    if not fetched.success:
+        diagnostic = redact_string(fetched.stderr.strip() or fetched.stdout.strip() or "no Git diagnostic")[:2000]
+        raise RuntimeError(f"reviewed base {base_sha} fetch failed (exit={fetched.returncode}): {diagnostic}")
+    verified = CommandExecutor.run_command(verify_command, cwd=worktree)
+    if not verified.success:
+        diagnostic = redact_string(verified.stderr.strip() or verified.stdout.strip() or "no Git diagnostic")[:2000]
+        raise RuntimeError(f"reviewed base {base_sha} verification failed (exit={verified.returncode}): {diagnostic}")
+
+
 def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTierGateInputs) -> Tuple[bool, str]:
     """Claim, execute, and durably accept one production strong-audit round."""
     provenance = RoundProvenance(inputs.head_sha, inputs.base_sha)
@@ -319,13 +337,16 @@ def _execute_pending_strong_audit(repo_name: str, pr_number: int, inputs: TwoTie
                 )
                 return False, reason
 
+            _ensure_review_base_commit(worktree, inputs.base_sha)
             diff = CommandExecutor.run_command(
                 ["git", "diff", "--no-ext-diff", "--binary", inputs.base_sha, inputs.head_sha],
                 cwd=worktree,
             )
             tracked = CommandExecutor.run_command(["git", "ls-files"], cwd=worktree)
-            if not diff.success or not tracked.success:
-                raise RuntimeError("required repository or reviewed-diff evidence is unavailable")
+            for evidence_name, evidence in (("reviewed diff", diff), ("tracked repository paths", tracked)):
+                if not evidence.success:
+                    diagnostic = redact_string(evidence.stderr.strip() or evidence.stdout.strip() or "no Git diagnostic")[:2000]
+                    raise RuntimeError(f"required {evidence_name} evidence is unavailable (exit={evidence.returncode}): {diagnostic}")
             review_input = ReviewExecutionInput(
                 mode=ReviewMode.STRONG_AUDIT,
                 round_id=claim.claim_id,

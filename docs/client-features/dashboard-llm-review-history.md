@@ -44,6 +44,13 @@ durable pending reason carry that diagnostic too, so missing worker credentials
 or failed cgroup confirmation remain visible while the review stays pending.
 These diagnostics do not certify review completion or authorize provider retry.
 
+Strong-audit preparation failures also appear in the existing Execution Trace
+reason: exact-base fetch/verification, reviewed-diff, and tracked-path failures
+include Git exit codes and bounded redacted diagnostics. They occur before a
+provider invocation, so no completed review-history interaction is implied.
+Missing base commits are fetched by their pinned SHA before evidence collection;
+failed preparation retains the pending audit without granting merge authority.
+
 The views poll the local audit once per second. They retain the last successful
 display as stale when a read fails, preserve a selected review by `review_id`,
 and avoid rebuilding unchanged report/list content. Dashboard actions only

@@ -1240,6 +1240,7 @@ class TestAdversarialValidationPRFlow:
         ) as publisher:
             yield publisher
 
+    @pytest.mark.parametrize("strong_reason", ["strong reviewer route is UNAVAILABLE", "strong audit execution failed: reviewed base " + "b" * 40 + " fetch failed (exit=128): fatal: remote unavailable"])
     @patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True)
     @patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"})
     @patch("auto_coder.pr_processor._check_github_actions_status")
@@ -1252,6 +1253,7 @@ class TestAdversarialValidationPRFlow:
         mock_exit_in_progress,
         tmp_path,
         monkeypatch,
+        strong_reason,
     ):
         """A legacy/cached ordinary PASS cannot bypass the production merge closure."""
         from auto_coder.llm_backend_config import BackendConfig
@@ -1289,6 +1291,10 @@ class TestAdversarialValidationPRFlow:
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
         processing_status = ProcessedPRResult(pr_data=pr_data)
+        from auto_coder.execution_trace import Outcome, TraceCollector, get_trace_collector
+
+        monkeypatch.setattr(TraceCollector, "_instance", None)
+        collector = get_trace_collector()
         with (
             patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
             patch("auto_coder.pr_processor.get_detailed_checks_from_history") as detailed_checks,
@@ -1297,10 +1303,11 @@ class TestAdversarialValidationPRFlow:
             patch("auto_coder.pr_processor.CommandExecutor.run_command") as checkout_or_local_repair,
             patch(
                 "auto_coder.pr_processor._execute_pending_strong_audit",
-                return_value=(False, "strong reviewer route is UNAVAILABLE"),
+                return_value=(False, strong_reason),
             ) as strong_producer,
         ):
-            actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, processing_status)
+            with collector.start_execution("owner/repo", "pr", 100, origin="worker"):
+                actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, processing_status)
 
         mock_merge_pr.assert_not_called()
         assert processing_status.outcome is PRProcessingOutcome.DEFERRED
@@ -1308,7 +1315,16 @@ class TestAdversarialValidationPRFlow:
         assert time.time() < processing_status.retry_not_before <= time.time() + 61
         assert actions.quota_deferred is True
         assert actions.retry_not_before == processing_status.retry_not_before
-        assert any("strong reviewer route is UNAVAILABLE" in action for action in actions)
+        assert any(strong_reason in action for action in actions)
+        events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=100).events if event.stage_id == "pr.strong-audit"]
+        assert len(events) == 1
+        assert events[0].outcome == Outcome.DEFERRED.value
+        assert events[0].facts["reason"] == strong_reason
+        from tests.test_dashboard_observability import _mounted_detail
+
+        with patch("auto_coder.dashboard.ui") as mock_ui:
+            _mounted_detail(mock_ui, "pr", 100)
+        assert any(strong_reason in str(call) for call in mock_ui.table.call_args_list)
         strong_producer.assert_called_once()
         assert all("GitHub Actions checks failed" not in action for action in actions)
         detailed_checks.assert_not_called()

@@ -274,6 +274,20 @@ tests/test_codex_client.py tests/test_strong_audit_producer.py` for diagnostic
 preservation, redaction, bounding, and restart-persistent pending-state coverage.
 Replacement remains withheld and no accepted strong result is fabricated.
 
+Strong-audit evidence preparation verifies and, when absent, fetches the exact
+reviewed base SHA. Preparation failures flow through the existing
+`pr.strong-audit` DEFERRED reason and durable waiting reason, distinguishing base
+fetch/verification, reviewed-diff, and tracked-path errors with exit codes and
+bounded redacted Git diagnostics. Successful acquisition continues the existing
+audit stage; origins, event fields, and dashboard projection remain unchanged.
+Run `bash scripts/test.sh tests/test_strong_audit_producer.py` for the real shallow
+checkout with an independently advanced missing base, caller-state preservation,
+and restart-persistent failure diagnostics without reviewer invocation.
+`tests/test_adversarial_validation_pr_flow.py::TestAdversarialValidationPRFlow::test_configured_strong_tier_blocks_real_merge_boundary_after_cached_ordinary_pass`
+also verifies that unavailable-route and base-fetch diagnostics reach the
+production `pr.strong-audit` DEFERRED event and mounted dashboard detail without
+merging or invoking CI repair.
+
 Two-tier finding publication retains the `pr.two-tier-review-effect` schema but
 uses the `github-reviewer-app:threads-v1` effect destination. Confirmation now
 includes each finding's native root review comment; a matching summary alone
