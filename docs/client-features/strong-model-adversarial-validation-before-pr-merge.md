@@ -64,3 +64,13 @@
         - "For PRs with neither an explicit-local declaration nor an existing provider task, the PR author or other recipient remains responsible for applying the correction. After a new commit and green CI, Auto-Coder validates the new head SHA and only merges after PASS."
 
 Every explicit Requirement in the validator manifest uses `#<issue>/REQ-NNN`, even for a single Issue or a unique ID across Issues. The Issue body keeps its original `REQ-NNN:` declaration. Coverage, findings, accepted gaps and thread resolution evidence must reference the exact qualified ID; legacy extracted hashed IDs remain unchanged.
+
+The ordinary validation prompt supplies the exact permitted ID list and explicitly
+forbids dropping Issue prefixes on both initial review and rereview, regardless of
+whether a strong-finding closure assessment is attached. Current manifest IDs take
+precedence over bare declarations in Issue bodies and historical session responses.
+Unknown or shortened IDs still fail closed; they are never silently remapped.
+
+This prompt correction is observability-neutral: it changes the ID instructions
+sent to the existing reviewer, while preserving verdict precedence, diagnostic
+categories, production trace emissions, and the dashboard's result projection.

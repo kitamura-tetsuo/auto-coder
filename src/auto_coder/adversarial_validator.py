@@ -3970,6 +3970,7 @@ def run_adversarial_validation(
         coverage_status=coverage_status,
         requirement_manifest=requirement_manifest,
         claimed_review_threads=claimed_review_threads_section or "(No claimed-addressed review threads for this run.)",
+        ordinary_requirement_ids=json.dumps([requirement.requirement_id for requirement in context.issue_requirements]),
         prior_test_oracle_gaps=prior_test_oracle_gaps,
         accepted_strong_findings=render_accepted_findings(accepted_projection),
         ci_execution_evidence=format_ci_execution_evidence(ci_status),

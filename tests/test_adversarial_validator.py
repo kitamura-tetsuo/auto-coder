@@ -4228,3 +4228,54 @@ def test_qualified_coverage_requires_the_exact_manifest_id(reported_id: str) -> 
     assert checked.result == ("PASS" if reported_id == "#2422/REQ-001" else "ERROR")
     if reported_id != "#2422/REQ-001":
         assert checked.diagnostic_category == "unknown_requirement_coverage_id"
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+@pytest.mark.parametrize(
+    "requirements",
+    [
+        [IssueRequirement("#2423/REQ-001", "Verify focused files")],
+        [IssueRequirement("#2422/REQ-001", "Preserve designation"), IssueRequirement("#2423/REQ-001", "Verify focused files")],
+        [IssueRequirement("REQ-001-legacy-hash", "Preserve legacy behavior")],
+    ],
+)
+def test_ordinary_reviewer_receives_exact_id_authority_without_closure(requirements, resumed: bool) -> None:
+    """Bare Issue declarations must not override the IDs in ordinary review."""
+    context = AdversarialValidationContext(
+        pr_title="Focused verification",
+        pr_body="Implements #2423",
+        pr_diff="diff --git a/fix.py b/fix.py\n+fixed = True",
+        issue_context="## Requirements\nREQ-001: Verify focused files",
+        issue_requirements=requirements,
+    )
+    response = json.dumps(
+        {
+            "result": "PASS",
+            "summary": "Verified current-head implementation",
+            "findings": [],
+            "requirement_coverage": [{"requirement_id": requirement.requirement_id, "status": "VERIFIED", "evidence": "Current-head source inspected"} for requirement in requirements],
+        }
+    )
+    registry = MagicMock()
+    registry.get.return_value = ReviewerSession(repository="owner/repo", pr_number=2428, session_id="prior-session", last_head_sha="prior-head") if resumed else None
+    manager = MagicMock()
+    manager.get_current_backend_identity.return_value = ("reviewer", "codex", "strong")
+    manager.continue_session.return_value = response
+    with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=context), patch("auto_coder.adversarial_validator.run_llm_prompt", return_value=response) as invoke:
+        result = run_adversarial_validation("owner/repo", {"number": 2428, "head": {"sha": "current-head"}}, AutomationConfig(), backend_manager=manager, session_registry=registry)
+
+    assert result.result == "PASS"
+    assert [entry.requirement_id for entry in result.requirement_coverage] == [requirement.requirement_id for requirement in requirements]
+    prompt = manager.continue_session.call_args.args[1] if resumed else invoke.call_args.args[0]
+    authority = prompt.split("REQUIREMENT ID AUTHORITY (applies to initial review and rereview):\n", 1)[1]
+    assert json.loads(authority.splitlines()[0]) == [requirement.requirement_id for requirement in requirements]
+    assert "even for a single Issue or a unique source" in authority
+    assert "Legacy\nextracted requirements retain their exact generated IDs" in authority
+    assert "Do not invent, renumber, or strip prefixes." in authority
+    assert "ORDINARY STRONG-FINDING CLOSURE EXTENSION" not in prompt
+    if resumed:
+        invoke.assert_not_called()
+        manager.continue_session.assert_called_once()
+    else:
+        invoke.assert_called_once()
+        manager.continue_session.assert_not_called()
