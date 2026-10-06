@@ -118,4 +118,26 @@ def test_active_turn_cannot_be_disposed(tmp_path: Path) -> None:
     session.admit(backend_name="opencode", session_id="session-1", caller_identity=str(tmp_path / "caller"), caller_checkpoint=session.binding.file_snapshot_checksum, lifecycle=authority)
     with pytest.raises(LocalContinuationError, match="turn is active"):
         session.dispose()
+
+
+def test_failed_retained_turn_keeps_current_unsettled_writer_evidence(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    session = _session(tmp_path)
+    session.binding.ownership.retain_session()
+    session.binding.ownership.release_execution()
+    session.binding.ownership.release_handoff()
+    deleted = []
+    session.binding.ownership.retain_until_released(lambda: deleted.append(session.binding.workspace))
+    session.binding.ownership.begin_execution()
+    failure = replace(session.predecessor, turn_id="failed-current-turn", backend_outcome=BackendOutcome.FAILED, writer_completion=EvidenceStatus.UNKNOWN)
+    session.fail(failure)
+    assert session.predecessor == failure
+    assert session.active_turn_id is None
+    assert session.binding.ownership.execution_released is False
+    session.dispose()
+    assert deleted == []
+    assert session.binding.workspace.is_dir()
+    session.binding.ownership.release_execution()
+    assert deleted == [session.binding.workspace]
     assert session.binding.workspace.is_dir()

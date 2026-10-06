@@ -239,10 +239,68 @@ def test_isolated_worktree_cleans_up_on_exception(tmp_path: Path) -> None:
 
     assert len(captured_wt) == 1
     assert Path(captured_wt[0]).exists()
+    assert ownership.handoff_released is True
     ownership.release_execution()
-    assert Path(captured_wt[0]).exists()
-    ownership.release_handoff()
     assert not Path(captured_wt[0]).exists()
+
+
+def test_unowned_exception_removes_workspace_and_snapshot(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path)
+    (repo / "context.txt").write_text("context\n")
+    with pytest.raises(RuntimeError, match="provider failed"):
+        with isolated_local_llm_worktree(repo) as text:
+            parent = Path(text).parent
+            assert (parent / "source-snapshot").is_dir()
+            raise RuntimeError("provider failed")
+    assert not parent.exists()
+    assert (repo / "tracked.txt").read_text() == "initial content\n"
+
+
+@pytest.mark.parametrize("directory", ["coverage", "coverage-backups", "htmlcov", "playwright-report", "test-results"])
+def test_generated_reports_are_not_copied_but_tracked_files_are_preserved(tmp_path: Path, directory: str) -> None:
+    repo = _init_repo(tmp_path)
+    (repo / directory).mkdir()
+    (repo / directory / "source.txt").write_text("tracked source\n")
+    subprocess.run(["git", "add", directory], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "tracked fixture"], cwd=repo, check=True, capture_output=True)
+    (repo / ".gitignore").write_text(f"{directory}/\ncontext.bin\n")
+    (repo / directory / "report.json").write_bytes(b"large generated output" * 10000)
+    (repo / "context.bin").write_bytes(b"preserved context")
+    with isolated_local_llm_worktree(repo) as text:
+        root = Path(text)
+        assert (root / directory / "source.txt").read_text() == "tracked source\n"
+        assert not (root / directory / "report.json").exists()
+        assert (root / "context.bin").read_bytes() == b"preserved context"
+        snapshots = list((root.parent / "source-snapshot").iterdir())
+        assert sum(p.stat().st_size for p in snapshots) < 1024
+        # Disposable report changes do not stale a source handoff.
+        (repo / directory / "report.json").write_bytes(b"new report")
+        (root / directory / "source.txt").write_text("updated source\n")
+    assert (repo / directory / "source.txt").read_text() == "updated source\n"
+    assert (repo / directory / "report.json").read_bytes() == b"new report"
+
+
+def test_insufficient_capacity_refuses_before_context_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    repo = _init_repo(tmp_path)
+    (repo / "context.bin").write_bytes(b"context")
+    parents: list[Path] = []
+    original_mkdtemp = worktree_utils.tempfile.mkdtemp
+
+    def create_parent(**kwargs: str) -> str:
+        result = original_mkdtemp(dir=tmp_path, **kwargs)
+        parents.append(Path(result))
+        return result
+
+    monkeypatch.setattr(worktree_utils.tempfile, "mkdtemp", create_parent)
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=worktree_utils._WORKSPACE_FREE_RESERVE + 1))
+    with pytest.raises(WorkspacePreparationError, match="insufficient disk space"):
+        with isolated_local_llm_worktree(repo):
+            pytest.fail("must not launch the provider")
+    assert len(parents) == 1
+    assert not parents[0].exists()
+    assert (repo / "context.bin").read_bytes() == b"context"
 
 
 def test_private_git_operations_do_not_change_caller_state(tmp_path: Path) -> None:
@@ -396,6 +454,7 @@ def test_preparation_refuses_source_changes_during_seed(tmp_path: Path, monkeypa
 def test_handoff_failure_retains_workspace_until_explicit_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = _init_repo(tmp_path)
     ownership = LocalWorkspaceOwnership()
+    ownership.retain_session()
     workspace_path: Path | None = None
 
     def fail_handoff(*args, **kwargs) -> None:
@@ -410,7 +469,8 @@ def test_handoff_failure_retains_workspace_until_explicit_release(tmp_path: Path
 
     assert workspace_path is not None
     assert (workspace_path / "recoverable.txt").read_text() == "retain me\n"
-    ownership.release_handoff()
+    assert ownership.handoff_released is True
+    ownership.release_session()
     assert not workspace_path.exists()
 
 

@@ -75,6 +75,14 @@ identifiers (session, turn, approval, request, plus a distinct method such as
 commands, prompt text, or approval subjects. The owned host and its process group
 are settled by the existing failure path.
 
+Positive process-group settlement records writer-completion evidence even when
+the protocol, invariant check, or host exit fails. A failed result remains failed
+and cannot authorize handoff, but its settled execution lease can be released so
+the private snapshot and clone do not accumulate. Settlement failure remains
+unknown and preserves the root. `tests/test_muse_msp.py::test_muse_failed_invocation_releases_settled_workspace`
+checks a real nonzero host exit and absence of provider dispatch on preparation
+failure; dispatch/result trace outcomes and dashboard error pairing are unchanged.
+
 No-edit validation and recovery remain bound to the captured worktree and
 worktree-private Git directory. Its snapshot and Git trace detect both final and
 transient mutation, and recovery never replays unrelated or newer refs. Editable

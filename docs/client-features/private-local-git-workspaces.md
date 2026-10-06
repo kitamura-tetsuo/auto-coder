@@ -9,7 +9,10 @@ index, and file snapshot before launch. That immutable binding is available thro
 Preparation preserves staged and unstaged tracked changes, files and symlinks,
 ignored and untracked source content, modes, and non-disposable empty directories.
 Disposable untracked cache/environment directories are omitted, but tracked paths
-with those directory names remain present. Preparation fails closed if the source
+with those directory names remain present. The omitted names include `coverage`,
+`coverage-backups`, `htmlcov`, `playwright-report`, and `test-results`, at any
+depth, so prior test reports are not duplicated into both the source snapshot
+and the clone. Other ignored source/context files remain preserved. Preparation fails closed if the source
 changes during capture, isolation or seeding fails, or the source has an unborn
 HEAD, unmerged index, sparse checkout, or gitlink entries.
 
@@ -81,11 +84,30 @@ changed. Handoff copies changed files in bounded chunks and saves rollback copie
 on temporary disk before applying any change. Temporary snapshots share the
 private clone's ownership and cleanup lifecycle; retained sessions keep their
 snapshots until all owners release them. Disk capacity must accommodate the clone,
-captured context/patches, and changed-file rollback copies.
+captured context/patches, and changed-file rollback copies. Before copying context,
+preparation estimates two copies of untracked context, three copies of tracked
+working files, and the common Git directory, plus a 1 GiB free-space reserve on
+the temporary filesystem. Insufficient space refuses preparation before provider
+submission and removes the partial temporary directory. This is a conservative
+preflight, not a filesystem quota: concurrent writes and new provider/test output
+can still consume additional space. It also refuses new copies when orphaned
+workspaces from a hard crash have consumed the available capacity; it does not
+delete other processes' roots or legacy directories based on age or names.
 
-This storage change is observability-neutral: processing origins, admission,
-provider routing, ownership releases, outcomes, and the `local.workspace-tests`
-trace schema/emissions are unchanged. Existing dashboard joins therefore retain
-their production contract. Real Git regressions in `tests/test_worktree_isolation.py`
-cover bounded memory across preparation and handoff, large ignored-context stale
-rejection, rollback, and cleanup.
+The handoff lease is released when its context exits, including failure or
+interruption. A direct context with no external execution owner also releases
+execution on exit. BackendManager releases a failed execution only before provider
+submission or with positive writer-settlement evidence. Uncertain descendant
+writers keep their execution lease; cleanup never assumes an exception stopped
+them. Session retention is bounded by the manager lifecycle described in
+[generation-safe local session continuation](generation-safe-local-session-continuation.md).
+
+Capacity refusal occurs at the existing preparation boundary, before
+`local.workspace-tests` or `llm.local-execution` dispatch. Session disposal produces
+no provider invocation or successful implementation evidence. Existing interaction
+completion and fresh/continuation identity emissions remain authoritative; no
+structured trace schema or dashboard rendering changes are needed. See runnable
+production-to-view checks in `docs/dashboard-observability.md`. Real Git regressions
+in `tests/test_worktree_isolation.py` cover report omission with tracked-source
+preservation, capacity refusal, failed-context cleanup, bounded memory, ignored
+context staleness, and rollback.

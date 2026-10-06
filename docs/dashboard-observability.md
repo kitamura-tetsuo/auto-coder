@@ -501,6 +501,27 @@ whereas launch failure or timeout prevents provider submission. Neither a passed
 baseline nor a failed baseline asserts implementation completion. A controller-designated CI-repair invocation instead emits only a result with outcome `skipped`, `baseline: not_run`, and `reason: ci_repair_policy` (no exit code or log path). No-edit roots
 and retained-root continuation emit no new initial-test stage.
 
+Private workspace storage admission estimates copy space plus a 1 GiB reserve
+before writing a snapshot. Insufficient capacity follows the preparation-failure
+path: no initial-test stage or `llm.local-execution` start is emitted, and no
+provider dispatch is claimed. Report-directory omission and disposal of settled
+idle sessions before fresh tasks, at close, or on manager collection emit no new
+provider interaction or implementation outcome. Existing fresh/continuation audit
+identity includes explicitly reserved sessions surviving intervening fresh tasks;
+`tests/test_local_execution_boundary.py::test_retained_continuation_survives_intervening_fresh_calls`
+checks exact-root continuity and retirement after consuming the reservation. Existing dispatch/result
+pairing is unchanged; no schema or renderer change
+is required. `tests/test_worktree_isolation.py::test_insufficient_capacity_refuses_before_context_copy`
+checks preparation cleanup, and
+`tests/test_muse_msp.py::test_muse_retained_workspace_has_bounded_manager_lifetime`,
+`test_muse_new_task_cannot_dispose_active_continuation`, and
+`test_muse_new_task_and_close_preserve_unsettled_writer_root`, along with
+`test_muse_failed_invocation_releases_settled_workspace` drive manager lifecycle
+through executable MSP hosts. The preparation negative control
+`tests/test_dashboard_observability.py::test_local_llm_preparation_failure_never_emits_start`
+covers the shared production-to-view boundary. Run
+`bash scripts/test.sh tests/test_worktree_isolation.py tests/test_muse_msp.py tests/test_dashboard_observability.py`.
+
 `llm.muse-interactive-request` emits a blocked result when an unattended MSP host
 requests approval or user input, or resumes with pending requests. It preserves
 only bounded correlation identifiers and the request method/reason. Raw commands,

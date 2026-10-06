@@ -145,17 +145,22 @@ class RetainedLocalSession:
                 raise LocalContinuationError("advanced checkpoint changed the retained binding identity")
             self.binding = binding
 
-    def fail(self) -> None:
+    def fail(self, evidence: Optional[LocalBoundaryEvidence] = None) -> None:
         with self._lock:
+            if evidence is not None:
+                self.predecessor = evidence
             self.active_turn_id = None
 
-    def dispose(self) -> None:
+    def dispose(self, *, preserve_reuse: bool = False) -> bool:
         with self._lock:
             if self.active_turn_id is not None:
                 raise LocalContinuationError("cannot release a retained session while its turn is active")
+            if preserve_reuse and self.reuse_decision is not None and self.reuse_decision.allowed:
+                return False
             self.disposed = True
             self.reuse_decision = None
             if self.workspace_fd is not None:
                 os.close(self.workspace_fd)
                 self.workspace_fd = None
         self.binding.ownership.release_session()
+        return True

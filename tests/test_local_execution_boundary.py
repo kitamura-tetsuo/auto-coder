@@ -688,6 +688,10 @@ def test_retained_continuation_survives_intervening_fresh_calls(tmp_path: Path, 
         assert manager.run_prompt("create S3") == "fresh session-s3"
         assert manager.get_last_session_id() == "session-s3"
         assert manager._last_continue_session_resumed is False
+        assert not manager.has_retained_local_session("session-s1")
+        assert not manager.has_retained_local_session("session-s2")
+        assert not s1_binding.workspace.parent.exists()
+        assert set(manager._retained_local_sessions) == {"session-s3"}
     finally:
         reset_command_execution_cwd(token)
 

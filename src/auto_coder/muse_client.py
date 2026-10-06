@@ -1254,6 +1254,10 @@ class MuseClient(LLMClientBase):
                     self._settle_process_group(process)
                     if process.poll() is None:
                         process.wait(timeout=2)
+                    if boundary is not None:
+                        # Settlement is independent of protocol/result success.
+                        # Failed turns must also release their execution lease.
+                        boundary.record_writer_completion(boundary.binding.invocation_id)
                 except BaseException as settlement_error:
                     if invocation_error is None:
                         invocation_error = settlement_error
@@ -1290,7 +1294,6 @@ class MuseClient(LLMClientBase):
             raise RuntimeError("Muse MSP invocation ended without a completed result")
         self._last_session_id = completed_session_id
         if boundary is not None:
-            boundary.record_writer_completion(boundary.binding.invocation_id)
             boundary.record_violation_observation(boundary.binding.invocation_id)
         return final_output
 

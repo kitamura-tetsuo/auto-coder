@@ -326,13 +326,15 @@ def test_initial_test_failure_cannot_report_a_previous_session(tmp_path, monkeyp
     previous_session = manager.get_last_session_id()
     assert previous_session == "opaque/provider/session"
     assert client.get_last_session_id() == previous_session
+    previous_root = manager._retained_local_sessions[previous_session].binding.workspace.parent
     previous_protocol = log.read_text()
     write_target_test_script(repo, "#!/bin/bash\nexit 127\n")
     with pytest.raises(WorkspacePreparationError, match="test script could not complete"):
         manager._run_llm_cli("second")
     assert manager.get_last_session_id() is None
     assert client.get_last_session_id() is None
-    assert manager.has_retained_local_session(previous_session)
+    assert not manager.has_retained_local_session(previous_session)
+    assert not previous_root.exists()
     assert log.read_text() == previous_protocol
 
 
@@ -1488,3 +1490,187 @@ def test_muse_editable_large_context_does_not_allocate_recovery_snapshot(tmp_pat
     assert (repo / "tracked.txt").read_text() == "mutated\n"
     assert (repo / "runtime" / "context.bin").stat().st_size == large_size
     assert manager.get_last_session_id() == "opaque/provider/session"
+
+
+@pytest.mark.parametrize("cleanup", ["fresh", "close", "abandoned"])
+def test_muse_retained_workspace_has_bounded_manager_lifetime(tmp_path, monkeypatch, _use_real_commands, cleanup):
+    import gc
+    import weakref
+
+    repo = _repository(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(_host(tmp_path)))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    assert manager._run_llm_cli("first") == "answer:first"
+    retained = manager._retained_local_sessions[manager.get_last_session_id()]
+    parent = retained.binding.workspace.parent
+    assert (parent / "source-snapshot").is_dir()
+    assert retained.workspace_fd is not None
+    if cleanup == "fresh":
+        for _ in range(3):
+            assert manager._run_llm_cli("new task") == "answer:first"
+            assert not parent.exists()
+            assert retained.workspace_fd is None
+            assert len(manager._retained_local_sessions) == 1
+            retained = manager._retained_local_sessions[manager.get_last_session_id()]
+            parent = retained.binding.workspace.parent
+        # Latest session still supports an explicit exact-root continuation.
+        session_id = manager.get_last_session_id()
+        manager.authorize_retained_local_session_reuse(session_id)
+        assert manager.continue_session(session_id, "second review", is_noedit=True) == "answer:second"
+        manager.close()
+    elif cleanup == "close":
+        manager.close()
+        manager.close()
+        assert manager._retained_local_sessions == {}
+    else:
+        reference = weakref.ref(manager)
+        del manager
+        gc.collect()
+        assert reference() is None
+    assert not parent.exists()
+    assert retained.workspace_fd is None
+    assert (repo / "tracked.txt").read_text() == "unchanged\n"
+
+
+def test_muse_new_task_cannot_dispose_active_continuation(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(_host(tmp_path)))
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    assert manager._run_llm_cli("first") == "answer:first"
+    retained = manager._retained_local_sessions[manager.get_last_session_id()]
+    original_log = log.read_bytes()
+    retained.active_turn_id = "pending-turn"
+    try:
+        with pytest.raises(LocalContinuationError, match="turn is active"):
+            manager._run_llm_cli("new task")
+        assert retained.binding.workspace.exists()
+        assert log.read_bytes() == original_log
+        assert retained.workspace_fd is not None
+    finally:
+        retained.fail()
+        manager.close()
+    assert not retained.binding.workspace.parent.exists()
+
+
+def test_muse_new_task_and_close_preserve_unsettled_writer_root(tmp_path, monkeypatch, _use_real_commands):
+    from dataclasses import replace
+
+    from src.auto_coder.exceptions import LocalWriterSettlementError
+    from src.auto_coder.local_execution_boundary import EvidenceStatus
+
+    repo = _repository(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(_host(tmp_path)))
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    assert manager._run_llm_cli("first") == "answer:first"
+    retained = manager._retained_local_sessions[manager.get_last_session_id()]
+    settled = retained.predecessor
+    original_log = log.read_bytes()
+    retained.predecessor = replace(settled, writer_completion=EvidenceStatus.UNKNOWN)
+    retained.binding.ownership.begin_execution()
+    try:
+        with pytest.raises(LocalWriterSettlementError, match="writer settlement is uncertain"):
+            manager._run_llm_cli("new task")
+        manager.close()
+        assert retained.binding.workspace.exists()
+        assert retained.workspace_fd is not None
+        assert log.read_bytes() == original_log
+    finally:
+        retained.predecessor = settled
+        retained.binding.ownership.release_execution()
+        manager.close()
+    assert not retained.binding.workspace.parent.exists()
+
+
+def test_muse_fresh_session_collision_preserves_reserved_workspace(tmp_path, monkeypatch, _use_real_commands):
+    repo = _repository(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(_host(tmp_path)))
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.setenv("MSP_LOG", str(log))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    assert manager._run_llm_cli("first") == "answer:first"
+    session_id = manager.get_last_session_id()
+    retained = manager._retained_local_sessions[session_id]
+    manager.authorize_retained_local_session_reuse(session_id)
+    monkeypatch.setenv("MSP_MUTATE", "1")
+    try:
+        # This host deliberately returns the same provider ID for fresh tasks.
+        with pytest.raises(LocalContinuationError, match="collides with a reserved"):
+            manager._run_llm_cli("unrelated task")
+        starts = [json.loads(line)["frame"] for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "session/start"]
+        assert len(starts) == 2
+        new_root = Path(starts[1]["params"]["workspaceRoot"])
+        assert new_root != retained.binding.workspace
+        assert not new_root.parent.exists()
+        assert manager._retained_local_sessions[session_id] is retained
+        assert retained.binding.workspace.exists()
+        assert retained.workspace_fd is not None
+        assert (repo / "tracked.txt").read_text() == "unchanged\n"
+    finally:
+        manager.close()
+    assert not retained.binding.workspace.parent.exists()
+
+
+@pytest.mark.parametrize("failure", ["initial-tests", "provider", "capacity"])
+def test_muse_failed_invocation_releases_settled_workspace(tmp_path, monkeypatch, _use_real_commands, failure):
+    import src.auto_coder.worktree_utils as worktree_utils
+
+    repo = _repository(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(_host(tmp_path)))
+    log = tmp_path / "msp.jsonl"
+    monkeypatch.setenv("MSP_LOG", str(log))
+    parents = []
+    original = worktree_utils.tempfile.mkdtemp
+
+    def record_parent(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if kwargs.get("prefix") == "auto_coder_llm_":
+            parents.append(Path(result))
+        return result
+
+    monkeypatch.setattr(worktree_utils.tempfile, "mkdtemp", record_parent)
+    if failure == "capacity":
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(worktree_utils.shutil, "disk_usage", lambda path: SimpleNamespace(free=0))
+        message = "insufficient disk space"
+    elif failure == "initial-tests":
+
+        def fail_initial_tests(*args):
+            raise RuntimeError("initial tests could not start")
+
+        monkeypatch.setattr("src.auto_coder.backend_manager.run_implementation_workspace_tests", fail_initial_tests)
+        message = "initial tests could not start"
+    else:
+        monkeypatch.setenv("MSP_EXIT_NONZERO", "1")
+        message = "nonzero status 7"
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    manager = _manager(config)
+    collector = get_trace_collector()
+    case_number = {"initial-tests": 30001, "provider": 30002, "capacity": 30003}[failure]
+    with collector.start_execution("owner/storage", "issue", case_number, origin="worker") as execution:
+        with pytest.raises(RuntimeError, match=message):
+            manager._run_llm_cli("task")
+        execution.finish(Outcome.FAILED)
+    assert parents
+    assert all(not parent.exists() for parent in parents)
+    assert manager._retained_local_sessions == {}
+    assert (repo / "tracked.txt").read_text() == "unchanged\n"
+    if failure in {"initial-tests", "capacity"}:
+        assert not log.exists()
+        assert not any(event.stage_id == "llm.local-execution" for event in collector.get_snapshot(repository="owner/storage", item_type="issue", item_number=case_number).events)
+    if failure == "capacity":
+        assert not any(event.stage_id == "local.workspace-tests" for event in collector.get_snapshot(repository="owner/storage", item_type="issue", item_number=case_number).events)

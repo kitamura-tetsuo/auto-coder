@@ -23,7 +23,8 @@ from .utils import _COMMAND_EXECUTION_CWD, CommandExecutor, bind_command_executi
 
 logger = get_logger(__name__)
 
-_DISPOSABLE_DIRECTORY_NAMES = frozenset({".venv", "venv", ".agent-tmp", ".mypy_cache", ".pytest_cache", ".cache", "__pycache__", "node_modules"})
+_DISPOSABLE_DIRECTORY_NAMES = frozenset({".venv", "venv", ".agent-tmp", ".mypy_cache", ".pytest_cache", ".cache", "__pycache__", "node_modules", "coverage", "coverage-backups", "htmlcov", "playwright-report", "test-results"})
+_WORKSPACE_FREE_RESERVE = 1024**3
 
 
 class WorkspacePreparationError(RuntimeError):
@@ -102,6 +103,11 @@ class LocalWorkspaceOwnership:
     authorized_turn_id: Optional[str] = None
     _disposer: Optional[Callable[[], None]] = field(default=None, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+
+    def begin_execution(self) -> None:
+        """A retained turn needs its own positive writer-settlement release."""
+        with self._lock:
+            self.execution_released = False
 
     def release_execution(self) -> None:
         with self._lock:
@@ -376,6 +382,28 @@ def _source_token(root: Path, tracked: tuple[str, ...], untracked: tuple[str, ..
     return token, index_digest, str(git_dir)
 
 
+def _check_workspace_capacity(root: Path, destination: Path, tracked: tuple[str, ...], untracked: tuple[str, ...], common_dir: Path) -> None:
+    """Reserve room for context copies, Git data, patches and source rollback.
+
+    This is a preflight estimate, not a quota on provider/test output. Count
+    logical sizes conservatively because copying can expand sparse files.
+    """
+    required = _WORKSPACE_FREE_RESERVE
+    for paths, copies in ((tracked, 3), (untracked, 2)):
+        for relative in paths:
+            path = root / relative
+            if not path.is_symlink() and path.is_file():
+                required += path.stat().st_size * copies
+    for current, _, files in os.walk(common_dir, followlinks=False):
+        for name in files:
+            path = Path(current) / name
+            if not path.is_symlink():
+                required += path.stat().st_size
+    free = shutil.disk_usage(destination).free
+    if free < required:
+        raise WorkspacePreparationError(f"insufficient disk space for private workspace: need {required} bytes including reserve, have {free}; remove inactive workspaces or generated artifacts before retrying")
+
+
 def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWorkspaceOwnership] = None) -> _SourceSnapshot:
     root = Path(_git(target, "rev-parse", "--show-toplevel").stdout.strip().decode()).resolve()
     if _git(root, "ls-files", "-u").stdout:
@@ -396,6 +424,7 @@ def _capture_source(target: Path, workspace: Path, ownership: Optional[LocalWork
     if not common_dir.is_absolute():
         common_dir = (root / common_dir).resolve()
 
+    _check_workspace_capacity(root, workspace.parent, tracked, untracked_paths, common_dir)
     storage = workspace.parent / "source-snapshot"
     storage.mkdir()
     files: list[WorkspaceFileState] = []
@@ -660,20 +689,26 @@ def isolated_local_llm_worktree(
     except (OSError, subprocess.SubprocessError) as exc:
         shutil.rmtree(parent, ignore_errors=True)
         raise WorkspacePreparationError(f"private workspace preparation failed: {exc}") from exc
+    except BaseException:
+        # No provider has started during preparation, including interruption.
+        shutil.rmtree(parent, ignore_errors=True)
+        raise
 
     try:
         binding_token = _CURRENT_LOCAL_WORKSPACE.set(snapshot.binding)
         execution_token = bind_command_execution_cwd(str(workspace))
         logger.debug("Bound private local LLM repository {} for invocation {}", workspace, snapshot.binding.invocation_id)
         yield str(workspace)
-        if ownership is None:
-            snapshot.binding.ownership.release_execution()
         if not is_noedit:
             if require_handoff_authorization and not snapshot.binding.ownership.handoff_authorized and _result_has_file_delta(workspace, snapshot.binding):
                 raise WorkspaceHandoffError("successful generation-bound handoff evidence is missing")
             sync_worktree_changes_back(workspace, snapshot.binding.caller_root, snapshot.binding)
-        snapshot.binding.ownership.release_handoff()
     finally:
+        # Handoff is finished or abandoned even if the provider or application
+        # failed. External execution owners still control writer settlement.
+        snapshot.binding.ownership.release_handoff()
+        if ownership is None:
+            snapshot.binding.ownership.release_execution()
         if execution_token is not None:
             reset_command_execution_cwd(execution_token)
         if binding_token is not None:

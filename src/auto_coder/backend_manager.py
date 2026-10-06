@@ -12,6 +12,7 @@ import re
 import threading
 import time
 import uuid
+import weakref
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -61,6 +62,19 @@ from .worktree_utils import (
 )
 
 logger = get_logger(__name__)
+
+
+def _dispose_local_sessions(sessions: dict[str, RetainedLocalSession]) -> None:
+    """Release abandoned manager leases without deleting active writer roots."""
+    for session_id, retained in tuple(sessions.items()):
+        if retained.predecessor.writer_completion is not EvidenceStatus.ESTABLISHED:
+            continue
+        try:
+            retained.dispose()
+            del sessions[session_id]
+        except LocalContinuationError as exc:
+            logger.warning("Could not release abandoned local session: {}", exc)
+
 
 _CLOUD_BACKEND_TYPES = frozenset({"claude-routine", "codex-cloud", "jules"})
 
@@ -282,6 +296,7 @@ class BackendManager(LLMBackendManagerBase):
         # root has since been released cannot be resumed in a newly cloned root.
         self._released_local_workspace_sessions: set[str] = set()
         self._retained_local_sessions: dict[str, RetainedLocalSession] = {}
+        self._session_finalizer = weakref.finalize(self, _dispose_local_sessions, self._retained_local_sessions)
         self._local_result_lifecycle = LocalResultLifecycleAuthority()
 
         # Whether the most recent continue_session() call actually resumed the
@@ -689,11 +704,10 @@ class BackendManager(LLMBackendManagerBase):
         retained.authorize_reuse(decision)
         return decision
 
-    def release_local_session(self, session_id: str) -> None:
+    def release_local_session(self, session_id: str, *, preserve_reuse: bool = False) -> None:
         """Release only the named session lease and its exact private root."""
         retained = self._retained_local_sessions.get(session_id)
-        if retained is not None:
-            retained.dispose()
+        if retained is not None and retained.dispose(preserve_reuse=preserve_reuse):
             del self._retained_local_sessions[session_id]
             self._released_local_workspace_sessions.add(session_id)
 
@@ -889,16 +903,26 @@ class BackendManager(LLMBackendManagerBase):
                 checkpoint_started = False
                 try:
                     completed_turn_evidence = None
+                    workspace_ownership = None
+                    local_boundary = None
+                    retained_session: Optional[RetainedLocalSession] = None
                     config_backend = getattr(cli, "config_backend", None)
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
                     is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
+                    if is_local and session_id is None:
+                        # Retire unused history, preserving an explicit pending
+                        # reuse decision across unrelated fresh tasks.
+                        for previous_id in tuple(self._retained_local_sessions):
+                            previous = self._retained_local_sessions[previous_id]
+                            if previous.predecessor.writer_completion is not EvidenceStatus.ESTABLISHED:
+                                raise LocalWriterSettlementError("cannot replace retained workspace while writer settlement is uncertain")
+                            self.release_local_session(previous_id, preserve_reuse=True)
                     if is_local and session_id is None and hasattr(cli, "clear_last_session_id"):
                         # Provider metadata from an earlier local call is not
                         # the identity of this fresh invocation.  Clear only
                         # the client's last-result cache; retained workspace
                         # and lifecycle authority remain keyed independently.
                         cli.clear_last_session_id()
-                    retained_session: Optional[RetainedLocalSession] = None
                     if session_id is not None and is_local and session_id in self._released_local_workspace_sessions:
                         raise SessionWorkspaceCompatibilityError("local continuation refused because its original private workspace and generation checkpoint are no longer retained")
                     supports_retained = getattr(cli, "supports_retained_local_continuation", False) is True
@@ -914,6 +938,9 @@ class BackendManager(LLMBackendManagerBase):
                             lifecycle=self._local_result_lifecycle,
                         )
                     workspace_ownership = retained_session.binding.ownership if retained_session is not None else (LocalWorkspaceOwnership() if is_local else None)
+                    if retained_session is not None:
+                        assert workspace_ownership is not None
+                        workspace_ownership.begin_execution()
                     worktree_ctx: contextlib.AbstractContextManager[Any]
                     if retained_session is not None:
                         worktree_ctx = bind_retained_local_workspace(retained_session.binding, is_noedit=is_noedit)
@@ -995,6 +1022,8 @@ class BackendManager(LLMBackendManagerBase):
                                 turn_evidence = local_boundary.evidence()
                                 completed_turn_evidence = turn_evidence
                                 if retained_session is None and supports_retained and turn_evidence.provider_session_id and workspace_ownership is not None:
+                                    if turn_evidence.provider_session_id in self._retained_local_sessions:
+                                        raise LocalContinuationError("fresh provider session identity collides with a reserved local workspace")
                                     workspace_ownership.retain_session()
                                     retained = RetainedLocalSession(
                                         backend_name=backend_name,
@@ -1006,6 +1035,7 @@ class BackendManager(LLMBackendManagerBase):
                                         workspace_fd=os.open(local_boundary.binding.workspace, os.O_RDONLY),
                                     )
                                     self._retained_local_sessions[turn_evidence.provider_session_id] = retained
+                                    self._released_local_workspace_sessions.discard(turn_evidence.provider_session_id)
                                 if not is_noedit and workspace_ownership is not None:
                                     handoff_evidence = local_boundary.evidence()
                                     if handoff_evidence.handoff_authorized:
@@ -1068,8 +1098,8 @@ class BackendManager(LLMBackendManagerBase):
                     # persistence. Keep that checkpoint protected and preserve
                     # its original exception instead of beginning it twice.
                     try:
-                        if "retained_session" in locals() and retained_session is not None:
-                            retained_session.fail()
+                        if retained_session is not None and local_boundary is not None:
+                            retained_session.fail(local_boundary.evidence())
                     except Exception as cleanup_error:
                         logger.warning("Could not invalidate failed retained session: {}", cleanup_error)
                     try:
@@ -1119,6 +1149,13 @@ class BackendManager(LLMBackendManagerBase):
 
                     # Reraise exception if we don't handle it here.
                     raise
+                finally:
+                    # Includes preparation failure and BaseException interruption.
+                    # Unknown descendant writers retain their execution lease.
+                    if workspace_ownership is not None and (not provider_started or (local_boundary is not None and local_boundary.evidence().writer_completion is EvidenceStatus.ESTABLISHED)):
+                        workspace_ownership.release_execution()
+                    if retained_session is not None and local_boundary is not None and retained_session.active_turn_id is not None:
+                        retained_session.fail(local_boundary.evidence())
 
     # ---------- For apply_workspace_test_fix ----------
     @log_calls  # type: ignore[misc]
@@ -1258,6 +1295,13 @@ class BackendManager(LLMBackendManagerBase):
                     cli.close()
             except Exception:
                 pass
+        for session_id in tuple(self._retained_local_sessions):
+            retained = self._retained_local_sessions[session_id]
+            if retained.predecessor.writer_completion is EvidenceStatus.ESTABLISHED:
+                try:
+                    self.release_local_session(session_id)
+                except LocalContinuationError as exc:
+                    logger.warning("Could not release local session at shutdown: {}", exc)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for the current backend.
