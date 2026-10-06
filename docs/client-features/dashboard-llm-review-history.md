@@ -1,5 +1,13 @@
 # Dashboard LLM review history
 
+Muse no-edit reviews permit shell inspection by default. Their existing audit
+entries still record the actual provider result: shell availability is not
+verification completion, and a result rejected by the repository snapshot or
+Git-command mutation audit remains a failed interaction. No history schema,
+polling behavior, or dashboard authorization changes accompany this capability.
+The runnable production-boundary coverage is documented under Muse execution
+in `docs/dashboard-observability.md`.
+
 The dashboard exposes the mounted repository's durable local review audit at
 `/dashboard/reviews` and from the **Review History** section of Issue and PR
 detail pages. This history is independent of open-item, queue, worker, and

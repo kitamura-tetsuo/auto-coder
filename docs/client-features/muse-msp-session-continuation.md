@@ -36,12 +36,16 @@ HEAD. An editable client call without the matching controller-owned local execut
 boundary is refused before the MSP host starts, so callers cannot execute directly in
 their checkout.
 
-No-edit is applied independently to every host by passing only
-`--disable-write` and `--disable-shell` to `muse serve`, then establishing
+No-edit is applied independently to every host by passing
+`--disable-write` to `muse serve`, then establishing
 `denyUnmatched` approval over MSP before the turn. Existing repository and
 Git-state snapshots remain authoritative, and each owned host is closed or
 terminated on every handled outcome. CLI options with no exact MSP equivalent
 are rejected before session or turn submission rather than silently ignored.
+Fresh, configured `--no-edit`, and resumed reviews permit shell inspection by
+default. Explicit `--disable-shell` remains authoritative. Each no-edit host
+receives `GIT_OPTIONAL_LOCKS=0`; repository mutation or a transient Git lifecycle
+command still invalidates its result through the existing snapshot/trace checks.
 
 The supported wire envelope requires `schema.version` to be the decoded integer
 `1` and `schema.fingerprint` to be a nonblank string. Fingerprints are opaque,

@@ -128,10 +128,15 @@ for line in sys.stdin:
         if os.environ.get("MSP_CHILD_WRITER"):
             subprocess.Popen([sys.executable, "-c", "import os,time; from pathlib import Path; time.sleep(1); Path(os.environ['MSP_CHILD_SENTINEL']).write_text('late write')"])
         if os.environ.get("MSP_ATTEMPT_EFFECTS"):
-            required = {"--disable-write", "--disable-shell"}
-            if not required.issubset(set(sys.argv[1:])):
+            if "--disable-write" not in sys.argv[1:]:
                 Path("tracked.txt").write_text("model write effect\n")
-                Path(os.environ["MSP_SHELL_SENTINEL"]).write_text("shell effect\n")
+            assert "--disable-shell" not in sys.argv[1:]
+            assert os.environ.get("GIT_OPTIONAL_LOCKS") == "0"
+            inspection = subprocess.run(["bash", "-c", "git log -1 --format=%s && git diff --exit-code && git ls-files && git status --porcelain && cat tracked.txt"], check=True, capture_output=True, text=True)
+            Path(os.environ["MSP_SHELL_SENTINEL"]).write_text(inspection.stdout)
+        if os.environ.get("MSP_SHELL_MUTATE"):
+            assert "--disable-shell" not in sys.argv[1:]
+            subprocess.run(["bash", "-c", os.environ["MSP_SHELL_MUTATE"]], check=True)
         if os.environ.get("MSP_QUOTA_RESPONSE"):
             emit({"jsonrpc":"2.0","id":frame["id"],"error":{"code":429,"message":"quota exceeded"}})
             continue
@@ -418,7 +423,7 @@ def test_muse_msp_fresh_then_exact_resume(tmp_path, monkeypatch, _use_real_comma
     assert starts[0]["frame"]["params"]["approvalMode"] == "allowAll"
     assert [entry["frame"]["params"]["sessionId"] for entry in resumes] == [session_id]
     assert len(turns) == 2
-    assert turns[1]["argv"] == ["serve", "--disable-write", "--disable-shell"]
+    assert turns[1]["argv"] == ["serve", "--disable-write"]
     assert turns[1]["frame"]["params"]["input"][0]["type"] == "text"
     assert (repo / "tracked.txt").read_text() == "unchanged\n"
 
@@ -522,7 +527,7 @@ def test_muse_msp_configured_no_edit_maps_all_restrictions_for_editable_caller(t
     assert _manager(config)._run_llm_cli("first") == "answer:first"
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     start = next(entry for entry in entries if entry["frame"].get("method") == "session/start")
-    assert start["argv"] == ["serve", "--disable-write", "--disable-shell"]
+    assert start["argv"] == ["serve", "--disable-write"]
     assert "--disable-approval" not in start["argv"]
     assert start["frame"]["params"]["approvalMode"] == "denyUnmatched"
     assert any(entry["frame"].get("method") == "turn/start" for entry in entries)
@@ -570,7 +575,7 @@ def test_muse_msp_editable_fresh_rejects_unconfirmed_allow_all_before_turn(tmp_p
     ("extra_option", "expected_argv"),
     [
         ("--disable-approval", ["serve"]),
-        ("--no-edit", ["serve", "--disable-write", "--disable-shell"]),
+        ("--no-edit", ["serve", "--disable-write"]),
     ],
 )
 def test_muse_msp_one_shot_denial_does_not_leak(tmp_path, monkeypatch, _use_real_commands, extra_option, expected_argv):
@@ -602,7 +607,8 @@ def _assert_uuid7(value: str) -> None:
     assert parsed.variant == uuid.RFC_4122
 
 
-def test_muse_msp_noedit_maps_host_and_wire_options(tmp_path, monkeypatch, _use_real_commands):
+@pytest.mark.parametrize("disable_shell", [False, True])
+def test_muse_msp_noedit_maps_host_and_wire_options(tmp_path, monkeypatch, _use_real_commands, disable_shell):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -615,7 +621,7 @@ def test_muse_msp_noedit_maps_host_and_wire_options(tmp_path, monkeypatch, _use_
                 name="muse",
                 backend_type="muse",
                 model="muse-spark-1.3",
-                options_for_noedit=["--model=muse-spark-1.3", "--reasoning-effort", "high", "--no-edit"],
+                options_for_noedit=["--model=muse-spark-1.3", "--reasoning-effort", "high", "--no-edit", *(["--disable-shell"] if disable_shell else [])],
             )
         }
     )
@@ -624,7 +630,7 @@ def test_muse_msp_noedit_maps_host_and_wire_options(tmp_path, monkeypatch, _use_
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     start = next(entry for entry in entries if entry["frame"].get("method") == "session/start")
     turn = next(entry for entry in entries if entry["frame"].get("method") == "turn/start")
-    assert start["argv"] == ["serve", "--disable-write", "--disable-shell"]
+    assert start["argv"] == (["serve", "--disable-shell", "--disable-write"] if disable_shell else ["serve", "--disable-write"])
     assert start["frame"]["params"]["approvalMode"] == "denyUnmatched"
     assert "--model" not in start["argv"]
     assert turn["frame"]["params"]["reasoningEffort"] == "high"
@@ -1306,7 +1312,8 @@ def test_muse_foreign_or_removed_workspace_fails_without_fresh_fallback(tmp_path
         assert old_tracked.read_text() == "unchanged\n"
 
 
-def test_muse_noedit_continuation_prevents_write_and_shell_effects(tmp_path, monkeypatch, _use_real_commands):
+@pytest.mark.parametrize("invocation", ["fresh", "configured", "continuation"])
+def test_muse_noedit_continuation_allows_shell_inspection(tmp_path, monkeypatch, _use_real_commands, invocation):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -1314,26 +1321,51 @@ def test_muse_noedit_continuation_prevents_write_and_shell_effects(tmp_path, mon
     monkeypatch.chdir(repo)
     monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
     monkeypatch.setenv("MSP_LOG", str(log))
-    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--no-edit"] if invocation == "configured" else [])})
     manager = _manager(config)
     client = manager._clients["muse"]
 
-    assert manager._run_llm_cli("first") == "answer:first"
-    session_id = client.get_last_session_id()
-    assert session_id == "opaque/provider/session"
+    session_id = None
+    if invocation == "continuation":
+        assert manager._run_llm_cli("first") == "answer:first"
+        session_id = client.get_last_session_id()
+        assert session_id == "opaque/provider/session"
     before = client._snapshot_at(repo)
     monkeypatch.setenv("MSP_ATTEMPT_EFFECTS", "1")
     monkeypatch.setenv("MSP_SHELL_SENTINEL", str(shell_sentinel))
 
     started = time.monotonic()
-    assert client.continue_session(session_id, "second", is_noedit=True) == "answer:second"
+    if session_id is None:
+        assert client._run_llm_cli("second", is_noedit=invocation == "fresh") == "answer:second"
+    else:
+        assert client.continue_session(session_id, "second", is_noedit=True) == "answer:second"
     assert time.monotonic() - started < 5
     assert client._snapshot_at(repo) == before
     assert (repo / "tracked.txt").read_text() == "unchanged\n"
-    assert not shell_sentinel.exists()
+    assert shell_sentinel.read_text() == "initial\nscripts/test.sh\ntracked.txt\nunchanged\n"
     turns = [json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "turn/start"]
-    assert len(turns) == 2
-    assert turns[1]["argv"] == ["serve", "--disable-write", "--disable-shell"]
+    assert len(turns) == (2 if invocation == "continuation" else 1)
+    assert turns[-1]["argv"] == ["serve", "--disable-write"]
+    prompt = turns[-1]["frame"]["params"]["input"][0]["text"]
+    assert "Shell inspection is available" in prompt.replace("\n", " ")
+
+
+@pytest.mark.parametrize("command", ["printf 'modified\\n' > tracked.txt", "git checkout -b forbidden && git checkout -"])
+def test_muse_noedit_shell_mutation_rejects_result(tmp_path, monkeypatch, _use_real_commands, command):
+    repo = _repository(tmp_path)
+    host = _host(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(host))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_SHELL_MUTATE", command)
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    client = _manager(config)._clients["muse"]
+    before = client._snapshot_at(repo)
+
+    with pytest.raises(RuntimeError, match="Git-state invariant"):
+        client._run_llm_cli("inspect", is_noedit=True)
+    assert client.get_last_session_id() is None
+    assert client._snapshot_at(repo) == before
 
 
 @pytest.mark.parametrize(

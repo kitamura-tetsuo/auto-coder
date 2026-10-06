@@ -499,6 +499,18 @@ for the production lifecycle regressions, including
 
 ## Implementation workspace tests and Muse interactive refusal
 
+Muse no-edit hosts permit shell inspection by default while retaining
+`--disable-write`, confirmed `denyUnmatched`, repository snapshots, and Git trace
+auditing. The provider-local capability change adds no trace schema or routing
+change: `llm.local-execution` still reports completed on a normal return and
+failed when shell mutation invalidates the result; neither is review approval.
+`tests/test_muse_msp.py::test_muse_noedit_continuation_allows_shell_inspection`
+executes real shell Git queries for fresh, configured, and resumed no-edit hosts;
+`test_muse_noedit_shell_mutation_rejects_result` verifies rejection of file writes
+and transient Git lifecycle changes. `test_muse_msp_noedit_maps_host_and_wire_options`
+also covers explicit shell disabling. Run
+`bash scripts/test.sh tests/test_muse_msp.py tests/test_dashboard_observability.py`.
+
 `llm.local-execution` now brackets each local client call at BackendManager's
 shared dispatch boundary, after preparation and initial tests. Its start reaches
 the mounted detail view before the client returns, including named aliases,

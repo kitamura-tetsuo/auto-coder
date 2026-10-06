@@ -61,7 +61,11 @@ muse:
     intended final files integrated in the original result root `$result_root`;
     Auto-Coder will validate and publish the accepted result through its normal
     handoff workflow. In no-edit mode, do not modify files or Git state and do not
-    use write-capable shell or delegated tools.
+    use shell commands or delegated tools that modify files or Git state. Shell
+    inspection is available: use git diff, git log, git ls-files, git status,
+    directory listings, and text searches to establish evidence. Do not redirect
+    output into repository files or run formatters, installers, or checks that
+    write repository artifacts.
     $task_prompt
 
     You may inspect the repository and run tests as needed. In edit mode, you may

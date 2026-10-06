@@ -12,10 +12,22 @@ worktrees are retained as implementation state; Auto-Coder still owns result
 handoff and pull-request publication. Any repository mutation during no-edit
 execution fails the run. Muse Code is also capable of serving as a
 read-only review and adversarial validation backend (`[backend_adversarial_validation]`);
-in no-edit mode, Auto-Coder starts Muse with `--disable-write` and
-`--disable-shell`, then establishes `denyUnmatched` approval mode over MSP
+in no-edit mode, Auto-Coder starts Muse with `--disable-write` and permits shell
+inspection, then establishes `denyUnmatched` approval mode over MSP
 before submitting the turn. Dangerous bypass and unauthorized workspace-trust
 options fail closed rather than being stripped or passed to the host.
+
+No-edit mode does not implicitly add `--disable-shell`. Read-only commands such
+as `git diff`, `git log`, `git ls-files`, directory listings, and text searches
+are available subject to the host's permission rules. An explicitly configured
+`--disable-shell` remains respected. `GIT_OPTIONAL_LOCKS=0` prevents optional
+index refreshes during inspection. Shell commands must not modify repository
+files or Git state; formatters, dependency installers, and checks that write
+artifacts are outside no-edit authority. The existing repository snapshot,
+Git-command trace, restoration, and process-group settlement still reject a
+mutating no-edit result, including transient Git lifecycle commands. This is
+mutation detection and recovery, not filesystem confinement for arbitrary shell
+commands outside the captured repository.
 
 Editable implementation sessions explicitly request and confirm the official MSP
 `allowAll` mode before submitting a turn, so a host configured for interactive

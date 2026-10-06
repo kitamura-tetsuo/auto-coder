@@ -899,9 +899,6 @@ class MuseClient(LLMClientBase):
             if argument == "--no-edit":
                 effective_noedit = True
                 approval_denial = True
-                for flag in ("--disable-write", "--disable-shell"):
-                    if flag not in host_arguments:
-                        host_arguments.append(flag)
                 index += 1
                 continue
             if argument in {"--model", "--reasoning-effort"}:
@@ -932,10 +929,8 @@ class MuseClient(LLMClientBase):
             raise RuntimeError(f"Muse option is not representable through MSP: {argument}")
         if reasoning is not None and reasoning not in _MUSE_REASONING_EFFORTS:
             raise RuntimeError(f"Muse reasoning effort is not supported by MSP: {reasoning}")
-        if effective_noedit:
-            for flag in ("--disable-write", "--disable-shell"):
-                if flag not in host_arguments:
-                    host_arguments.append(flag)
+        if effective_noedit and "--disable-write" not in host_arguments:
+            host_arguments.append("--disable-write")
         return _MspOptions(host_arguments, reasoning, effective_noedit, approval_denial)
 
     @staticmethod
@@ -1035,6 +1030,8 @@ class MuseClient(LLMClientBase):
             env["MUSE_API_KEY"] = self.config_backend.api_key
         trace_path: Optional[str] = None
         if effective_noedit:
+            # Inspection must not refresh Git's index as an optional side effect.
+            env["GIT_OPTIONAL_LOCKS"] = "0"
             trace = tempfile.NamedTemporaryFile(prefix="auto-coder-muse-git-trace-", delete=False)
             trace_path = trace.name
             trace.close()
