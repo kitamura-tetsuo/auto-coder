@@ -1,5 +1,12 @@
 # Mandatory production-to-view dashboard observability regressions
 
+Merge-operation resume executions retain the stored repository identity and refuse
+foreign work before trace creation. Failed or deferred refreshes keep those
+outcomes while retry deadlines prevent rapid repeated executions; pacing is not
+merge completion. The shared-store collision and restart-pacing regression commands
+are recorded in `docs/dashboard-observability.md`. The existing generic detail view
+and superseded-resumption regression remain applicable without schema changes.
+
 Accepted ordinary closure exposes GitHub thread completion separately from the
 FIXED/INVALID validation evidence. The production consumer emits the existing
 `pr.review-thread-closure` stage with confirmed/unfinished counts and exact failure

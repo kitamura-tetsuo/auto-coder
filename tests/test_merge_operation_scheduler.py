@@ -40,7 +40,7 @@ async def test_resumes_a_due_operation_promptly(tmp_path):
     def resume(operation):
         resumed.append(operation.identity.pr_number)
 
-    scheduler.register_resume_handler(resume)
+    scheduler.register_resume_handler(resume, repository="acme/widgets")
 
     shutdown = asyncio.Event()
     task = asyncio.ensure_future(scheduler.run(shutdown))
@@ -68,7 +68,7 @@ async def test_never_resumes_before_the_deadline(tmp_path):
 
     scheduler = MergeOperationScheduler(store, poll_interval=0.05)
     resumed = []
-    scheduler.register_resume_handler(lambda operation: resumed.append(operation.identity.pr_number))
+    scheduler.register_resume_handler(lambda operation: resumed.append(operation.identity.pr_number), repository="acme/widgets")
 
     shutdown = asyncio.Event()
     task = asyncio.ensure_future(scheduler.run(shutdown))
@@ -94,7 +94,7 @@ async def test_blocked_operation_is_never_dispatched(tmp_path):
 
     scheduler = MergeOperationScheduler(store, poll_interval=0.05)
     resumed = []
-    scheduler.register_resume_handler(lambda operation: resumed.append(operation.identity.pr_number))
+    scheduler.register_resume_handler(lambda operation: resumed.append(operation.identity.pr_number), repository="acme/widgets")
 
     shutdown = asyncio.Event()
     task = asyncio.ensure_future(scheduler.run(shutdown))
@@ -119,7 +119,7 @@ async def test_interrupted_running_effect_is_reopened_as_delivery_unknown(tmp_pa
 
     scheduler = MergeOperationScheduler(store, poll_interval=0.05)
     resumed = []
-    scheduler.register_resume_handler(lambda operation: resumed.append(operation.identity.pr_number))
+    scheduler.register_resume_handler(lambda operation: resumed.append(operation.identity.pr_number), repository="acme/widgets")
 
     shutdown = asyncio.Event()
     task = asyncio.ensure_future(scheduler.run(shutdown))
@@ -151,7 +151,7 @@ async def test_confirmed_operation_is_never_resumed(tmp_path):
 
     scheduler = MergeOperationScheduler(store, poll_interval=0.05)
     resumed = []
-    scheduler.register_resume_handler(lambda operation: resumed.append(operation.identity.pr_number))
+    scheduler.register_resume_handler(lambda operation: resumed.append(operation.identity.pr_number), repository="acme/widgets")
 
     shutdown = asyncio.Event()
     task = asyncio.ensure_future(scheduler.run(shutdown))

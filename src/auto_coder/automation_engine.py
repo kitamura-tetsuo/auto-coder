@@ -521,6 +521,10 @@ class _MergeOperationResumeHandler:
         self._repo_name = repo_name
 
     def __call__(self, operation: MergeOperation) -> None:
+        from .merge_operation_state import owns_merge_operation
+
+        if not owns_merge_operation(self._repo_name, operation.identity):
+            raise ValueError("Merge-operation repository does not match the resume handler")
         pr_number = operation.identity.pr_number
         # As with ``_PrProcessingStageHandler``, this resumption's own scope
         # is opened here so a strict-refresh failure or a superseded-head
@@ -528,7 +532,7 @@ class _MergeOperationResumeHandler:
         # still carries a fresh execution identity (REQ-001 of Issue #1946).
         try:
             handle_cm = get_trace_collector().start_execution(
-                repository=self._repo_name,
+                repository=operation.identity.repository,
                 item_type="pr",
                 item_number=pr_number,
                 origin="merge-operation-resumption",
@@ -549,7 +553,7 @@ class _MergeOperationResumeHandler:
     def _run_impl(self, operation: MergeOperation, pr_number: int) -> Outcome:
         engine = self._engine
         try:
-            raw_pr = engine.github.get_pull_request_metadata_strict(self._repo_name, pr_number)
+            raw_pr = engine.github.get_pull_request_metadata_strict(operation.identity.repository, pr_number)
         except GitHubRequestError as exc:
             logger.info("Could not refresh PR #{} for merge-operation resumption: {}", pr_number, exc)
             _record_pr_stage_result(pr_number, "pr.strict-refresh", f"pr#{pr_number} strict refresh", Outcome.DEFERRED, {"reason": str(exc), "phase": "merge-operation-resumption"})
@@ -572,7 +576,7 @@ class _MergeOperationResumeHandler:
                 {"expected_head": operation.expected_head_sha, "current_head": current_head},
             )
             return Outcome.SUPERSEDED
-        result = engine._process_single_candidate(self._repo_name, Candidate(type="pr", data=pr_data, priority=0), origin="merge-operation-resumption")
+        result = engine._process_single_candidate(operation.identity.repository, Candidate(type="pr", data=pr_data, priority=0), origin="merge-operation-resumption")
         return _map_candidate_result_outcome(result)
 
 
@@ -2677,8 +2681,8 @@ class AutomationEngine:
         # MergeOperationStore (Issue #1937), so this loop reads that store's
         # own due() timings directly instead of duplicating them into a
         # second obligation store.
+        self.merge_operation_scheduler.register_resume_handler(_MergeOperationResumeHandler(self, repo_name), repository=repo_name)
         merge_operation_task = asyncio.create_task(self.merge_operation_scheduler.run(self._shutdown_event), name="merge-operation-scheduler")
-        self.merge_operation_scheduler.register_resume_handler(_MergeOperationResumeHandler(self, repo_name))
         claude_followup_recovery_task = asyncio.create_task(
             self._claude_followup_recovery_loop(repo_name),
             name="claude-followup-quota-recovery",

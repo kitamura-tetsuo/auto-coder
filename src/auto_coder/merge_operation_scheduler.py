@@ -39,12 +39,16 @@ import threading
 import time
 from typing import Callable
 
+from .github_pending_work import repository_ownership_key
 from .logger_config import get_logger
-from .merge_operation_state import MergeOperation, MergeOperationPersistenceError, MergeOperationStore
+from .merge_operation_state import MergeOperation, MergeOperationPersistenceError, MergeOperationStore, owns_merge_operation
 
 logger = get_logger(__name__)
 
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
+# Reevaluation failures are not effect-level throttle attempts. Keep their
+# pacing separate from the adapter's retry budget and governor admission.
+RESUME_RETRY_INTERVAL_SECONDS = 30.0
 
 # The callback resumes normal processing for one PR; it does not return a
 # result to this scheduler because the durable operation and its effects are
@@ -66,13 +70,19 @@ class MergeOperationScheduler:
         self._poll_interval = poll_interval
         self._clock = clock
         self._resume: ResumeCallback | None = None
+        self._repository: str | None = None
+        self._retry_not_before: dict[tuple[str, int], float] = {}
         self._wake_event: asyncio.Event | None = None
         self._in_flight: set[str] = set()
         self._in_flight_lock = threading.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
 
-    def register_resume_handler(self, resume: ResumeCallback) -> None:
+    def register_resume_handler(self, resume: ResumeCallback, *, repository: str) -> None:
         """Register the callback that resumes normal PR processing for one operation."""
+        owner = repository_ownership_key(repository)
+        if self._repository is not None and self._repository != owner:
+            raise ValueError("Merge-operation scheduler is already repository-bound")
+        self._repository = owner
         self._resume = resume
 
     def wake(self) -> None:
@@ -90,6 +100,8 @@ class MergeOperationScheduler:
             return []
         result: list[dict[str, object]] = []
         for operation in operations:
+            if self._repository is not None and not owns_merge_operation(self._repository, operation.identity):
+                continue
             result.append(
                 {
                     "repository": operation.identity.repository,
@@ -112,6 +124,8 @@ class MergeOperationScheduler:
         recovered identically on the next start via
         ``MergeOperationStore.recover_after_restart()``.
         """
+        if self._repository is None or self._resume is None:
+            raise ValueError("Merge-operation scheduler must be bound before serving")
         self._wake_event = asyncio.Event()
         try:
             await self._recover_interrupted()
@@ -139,7 +153,7 @@ class MergeOperationScheduler:
 
     def _next_delay(self) -> float:
         try:
-            upcoming = self._store.next_due_at()
+            upcoming = self._store.next_due_at(repository=self._repository)
         except MergeOperationPersistenceError:
             return self._poll_interval
         now = self._clock()
@@ -152,8 +166,10 @@ class MergeOperationScheduler:
         return min(upcoming - now, max(self._poll_interval, 3600.0))
 
     async def _recover_interrupted(self) -> None:
+        if self._repository is None:
+            raise ValueError("Merge-operation scheduler must be bound before recovery")
         try:
-            recovered = await asyncio.to_thread(self._store.recover_after_restart)
+            recovered = await asyncio.to_thread(self._store.recover_after_restart, now=self._clock(), repository=self._repository)
         except MergeOperationPersistenceError as exc:
             logger.error("Could not recover interrupted merge operations: {}", exc)
             return
@@ -166,15 +182,21 @@ class MergeOperationScheduler:
 
     async def _dispatch_due(self) -> None:
         resume = self._resume
-        if resume is None:
+        if resume is None or self._repository is None:
             return
+        now = self._clock()
+        self._retry_not_before = {key: deadline for key, deadline in self._retry_not_before.items() if deadline > now}
         try:
-            due = await asyncio.to_thread(self._store.due, self._clock())
+            due = await asyncio.to_thread(self._store.due, now, repository=self._repository)
         except MergeOperationPersistenceError as exc:
             logger.error("Could not read due merge operations: {}", exc)
             return
         for operation in due:
+            if not owns_merge_operation(self._repository, operation.identity):
+                continue
             key = operation.identity.key()
+            if (key, operation.generation) in self._retry_not_before:
+                continue
             with self._in_flight_lock:
                 if key in self._in_flight:
                     continue
@@ -189,26 +211,34 @@ class MergeOperationScheduler:
     async def _run_claimed(self, operation: MergeOperation, resume: ResumeCallback) -> None:
         key = operation.identity.key()
         try:
+            if self._repository is None or not owns_merge_operation(self._repository, operation.identity):
+                return
             try:
                 await asyncio.to_thread(resume, operation)
             except Exception as exc:
                 logger.opt(exception=True).error("Merge-operation resume handler raised for {}: {}", key, exc)
+            # Also pace callbacks that return without advancing the operation
+            # (for example a handled strict-refresh deferral). Do not fabricate
+            # an effect result or reset delivery uncertainty/retry counters.
+            now = self._clock()
+            deadline = now + RESUME_RETRY_INTERVAL_SECONDS
+            retry_key = (key, operation.generation)
+            self._retry_not_before[retry_key] = deadline
+            try:
+                await asyncio.to_thread(self._store.defer_resumption, operation, not_before=deadline, now=now)
+                self._retry_not_before.pop(retry_key, None)
+            except MergeOperationPersistenceError:
+                # Retain the local floor even if durable recording failed, so
+                # our completion wake cannot hot-loop on the unchanged row.
+                logger.error("Could not persist merge-operation resumption deadline for {}", key)
         finally:
             with self._in_flight_lock:
                 self._in_flight.discard(key)
         self.wake()
 
 
-_LOCK = threading.Lock()
-_DEFAULT_SCHEDULER: MergeOperationScheduler | None = None
-
-
 def get_merge_operation_scheduler() -> MergeOperationScheduler:
-    """Return the process-wide merge-operation resumption service."""
-    global _DEFAULT_SCHEDULER
-    with _LOCK:
-        if _DEFAULT_SCHEDULER is None:
-            from .merge_operation_state import get_merge_operation_store
+    """Create an engine-owned scheduler over the shared durable store."""
+    from .merge_operation_state import get_merge_operation_store
 
-            _DEFAULT_SCHEDULER = MergeOperationScheduler(get_merge_operation_store())
-        return _DEFAULT_SCHEDULER
+    return MergeOperationScheduler(get_merge_operation_store())
