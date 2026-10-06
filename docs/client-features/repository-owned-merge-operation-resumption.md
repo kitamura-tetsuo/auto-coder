@@ -32,3 +32,7 @@ Run `bash scripts/test.sh tests/test_merge_operation_resumption_isolation.py
  tests/test_merge_operation_scheduler.py tests/test_merge_operation_state.py
  tests/test_merge_operation_adapter.py tests/test_dashboard_observability.py`
 for the bounded production-resumption, state, adapter and dashboard regressions.
+The run-loop regression uses a fake clock and queue barriers to observe the real
+failure-completion wake, verifies no early retry, then advances to the durable
+deadline. It retains a confirmed approval receipt and nonzero merge-throttle
+history to check that pacing preserves existing evidence.
