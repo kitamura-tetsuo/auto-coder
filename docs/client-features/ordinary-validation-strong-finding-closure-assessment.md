@@ -15,6 +15,9 @@ retains the actual ordinary backend/model provenance and independently reports
 each finding as `FIXED`, `INVALID`, `OPEN`, or `INCONCLUSIVE`, plus cumulative
 scope as `BOUNDED`, `EXPANDED`, or `UNKNOWN`. Invalid or absent extension data is
 recorded as a closure diagnostic without erasing a valid ordinary verdict.
+The prompt reports finding convergence as PASS independently of scope: resolved
+findings with EXPANDED/UNKNOWN scope still require a renewed Strong audit and
+cannot authorize bounded closure or merge.
 The retained result also carries repository and PR identity, audited head,
 review-cycle open epoch, and ordinary attempt sequence. Missing required
 identity or repository/diff evidence makes the optional context explicitly

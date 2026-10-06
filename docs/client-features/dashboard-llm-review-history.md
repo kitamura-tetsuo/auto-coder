@@ -44,6 +44,12 @@ durable pending reason carry that diagnostic too, so missing worker credentials
 or failed cgroup confirmation remain visible while the review stays pending.
 These diagnostics do not certify review completion or authorize provider retry.
 
+Complete nonbounded finding convergence from a retained INCONCLUSIVE closure
+assessment appears in the existing ordinary-closure trace as accepted evidence
+with `renewed_strong_required=true` and `additional_model_execution=false`.
+The original review verdict remains in history; this event confirms lifecycle
+convergence, while Strong audit and merge confirmation remain separate gates.
+
 Strong-audit preparation failures also appear in the existing Execution Trace
 reason: exact-base fetch/verification, reviewed-diff, and tracked-path failures
 include Git exit codes and bounded redacted diagnostics. They occur before a

@@ -72,6 +72,7 @@ class ClosureScript:
     finding_id: str = "finding-a"
     observable: bool = True  # False: the authoritative target cannot be read when the evidence is applied
     scope: str = "BOUNDED"  # BOUNDED | EXPANDED | UNKNOWN
+    verdict: str = ""  # optional independent closure verdict
     omit_assessment: bool = False  # the reviewer returns no closure assessment at all
     calls: list[Any] = field(default_factory=list)
     closure_only_calls: list[Any] = field(default_factory=list)
@@ -227,7 +228,7 @@ class Flow:
                 closure.on_review()
             payload = json.loads(raw)
             payload["closure_assessment"] = {
-                "result": "FINDINGS" if closure.status == "STILL_VALID" else "PASS",
+                "result": closure.verdict or ("FINDINGS" if closure.status == "STILL_VALID" else "PASS"),
                 "findings": [],
                 "dispositions": [{"finding_id": closure.finding_id, "status": "OPEN" if closure.status == "STILL_VALID" else closure.status, "evidence": f"Independent exact-finding {closure.status} evidence at {self.head[:8]}"}],
                 "scope": closure.scope,

@@ -17,7 +17,7 @@ import pytest
 
 from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from auto_coder.automation_config import PRProcessingOutcome
-from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerAlias, CorrectionScope, QualifiedRequirement
+from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, BlockerAlias, BlockerDisposition, CorrectionScope, QualifiedRequirement
 from auto_coder.ordinary_closure_evidence import EvidenceState, OrdinaryClosureEvidence, OrdinaryClosureEvidenceRepository
 from auto_coder.pr_processor import _record_pr_stage
 from auto_coder.pr_review_cycle import PrReviewCycleRepository
@@ -217,15 +217,25 @@ def test_missing_assessment_never_manufactures_a_closure_only_call(flow_env: Env
 
 
 @pytest.mark.parametrize("scope", ["EXPANDED", "UNKNOWN"])
-def test_unbounded_scope_requires_a_renewed_strong_audit_and_never_authorizes_merge(flow_env: Env, monkeypatch: pytest.MonkeyPatch, scope: str) -> None:
+@pytest.mark.parametrize("verdict", ["PASS", "INCONCLUSIVE"])
+def test_unbounded_scope_requires_a_renewed_strong_audit_and_never_authorizes_merge(flow_env: Env, monkeypatch: pytest.MonkeyPatch, scope: str, verdict: str) -> None:
     flow = _repaired_flow(flow_env, monkeypatch, 7304 if scope == "EXPANDED" else 7305, resolve_on_approve=True)
-    script = ClosureScript(status="FIXED", scope=scope)
+    script = ClosureScript(status="FIXED", scope=scope, verdict=verdict)
 
-    flow.run(closure=script)
+    with patch("auto_coder.pr_processor._record_pr_stage", wraps=_record_pr_stage) as stages:
+        flow.run(closure=script)
 
     assert "cumulative repair" in script.calls[0].diff_evidence  # full cumulative H0-to-H2 context was supplied
     snapshot = flow_env.cycle.snapshot(flow.pr)
     assert snapshot.requires_new_strong_round is True and snapshot.completion is None
+    assert snapshot.open_findings == () and len(snapshot.closures) == 1
+    record = OrdinaryClosureEvidenceRepository(REPO).inspect(snapshot.closures[0].source_identity).record
+    assert record is not None and record.state is EvidenceState.ACCEPTED and record.verdict == verdict
+    events = [call.args for call in stages.call_args_list if call.args[1] == "pr.ordinary-closure" and call.args[4].get("effect") == "effective-decision-closure"]
+    assert len(events) == 1
+    assert events[0][4]["evidence_status"] == "ACCEPTED"
+    assert events[0][4]["renewed_strong_required"] is True
+    assert events[0][4]["additional_model_execution"] is False
     assert flow.merge.call_count == 0
 
 
@@ -274,6 +284,50 @@ def test_a_newer_ordinary_attempt_prevents_the_older_result_from_closing_finding
     snapshot = flow_env.cycle.snapshot(7308)
     assert snapshot.accepted_closure is None and [item.finding_id for item in snapshot.open_findings] == ["finding-a"]
     assert flow.merge.call_count == 0
+
+
+def test_retained_nonbounded_convergence_recovers_a_closed_ledger_and_open_cycle_without_another_review(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = _repaired_flow(flow_env, monkeypatch, 7318)
+    real_apply = OrdinaryClosureEvidence.apply
+
+    def crash(self, *_args, **_kwargs):
+        raise SimulatedCrash()
+
+    monkeypatch.setattr(OrdinaryClosureEvidence, "apply", crash)
+    with pytest.raises(SimulatedCrash):
+        flow.run(closure=ClosureScript(status="FIXED", scope="EXPANDED", verdict="INCONCLUSIVE"))
+    monkeypatch.setattr(OrdinaryClosureEvidence, "apply", real_apply)
+    snapshot = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr)
+    assert len(snapshot.blockers) == 1
+    blocker = snapshot.blockers[0]
+    flow_env.ledger.record_transition(
+        "https://api.github.com",
+        REPO,
+        flow.pr,
+        operation_id="historical-ledger-only-closure",
+        expected_ledger_revision=snapshot.ledger_revision,
+        blocker_id=blocker.blocker_id,
+        target_disposition=BlockerDisposition.VERIFIED_CORRECTION,
+        evidence="independent current-head correction proof",
+        transition_reason="historical ledger-only closure",
+        reviewed_head_sha=flow.h2,
+    )
+    target = flow_env.target(flow.pr, head=flow.h2)
+    before = flow_env.bridge().project(target)
+    assert [diagnostic.code for diagnostic in before.diagnostics] == ["cross_store_disagreement"]
+    calls = flow.model_calls
+
+    restarted = ClosureScript(status="FIXED", scope="EXPANDED", verdict="INCONCLUSIVE")
+    flow.run(closure=restarted)
+
+    after = flow_env.reconstructed().bridge().project(target)
+    assert after.complete and after.diagnostics == ()
+    assert [record.accepted_state for record in after.records] == ["FIXED"]
+    cycle = flow_env.cycle.snapshot(flow.pr)
+    assert cycle.open_findings == () and cycle.requires_new_strong_round
+    assert len(cycle.closures) == 1 and cycle.completion is None
+    assert flow.model_calls == calls and flow.merge.call_count == 0
+    assert restarted.calls == []
 
 
 def test_nonpassing_independent_gate_blocks_merge_after_valid_bounded_closure(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:

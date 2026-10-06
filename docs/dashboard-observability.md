@@ -235,6 +235,18 @@ Retained evidence waiting on an unavailable observation is a deferred
 admission gate or dashboard projection is added; production-to-view coverage is
 `tests/test_single_review_ordinary_closure_flow.py` and
 `tests/test_effective_decision_pr_flow.py`.
+The parametrized `test_unbounded_scope_requires_a_renewed_strong_audit_and_never_authorizes_merge`
+in `tests/test_single_review_ordinary_closure_flow.py` also covers a complete
+EXPANDED/UNKNOWN assessment carrying INCONCLUSIVE: production emits
+`evidence_status: ACCEPTED`, `renewed_strong_required: true`, and
+`additional_model_execution: false`, while merge remains blocked. Run
+`bash scripts/test.sh tests/test_single_review_ordinary_closure_flow.py`.
+This reuses the existing stage and facts; no dashboard event schema or provider
+route changes are needed.
+`test_retained_nonbounded_convergence_recovers_a_closed_ledger_and_open_cycle_without_another_review`
+in the same test module drives restart recovery of the cross-store disagreement
+through PR processing and confirms convergence without a duplicate ordinary
+review or merge.
 Issue #2260 adds `pr.review-thread-closure` to the existing PR stage timeline.
 Blocked events expose `confirmed_count`, `unfinished_count`, and an `unfinished`
 array whose entries contain the exact thread ID, failed or unconfirmed phase,

@@ -292,8 +292,9 @@ def test_existing_strong_pass_completion_remains_readable(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("scope", ["EXPANDED", "UNKNOWN"])
-def test_complete_nonbounded_scope_requires_renewed_strong_audit(world: World, scope: str) -> None:
-    source_id = _retain(world, scope=scope)
+@pytest.mark.parametrize("verdict", ["PASS", "INCONCLUSIVE"])
+def test_complete_nonbounded_scope_requires_renewed_strong_audit(world: World, scope: str, verdict: str) -> None:
+    source_id = _retain(world, scope=scope, verdict=verdict)
 
     outcome = world.service().apply(source_id, world.observe())
 
@@ -304,6 +305,14 @@ def test_complete_nonbounded_scope_requires_renewed_strong_audit(world: World, s
     assert snapshot.closures[0].bounded is False and snapshot.closures[0].source_identity == source_id
     gate = TwoTierPrGate(REPO, world.cycle())
     assert not gate.authorize_merge(PR, current_head_sha=world.h2, current_base_sha=world.base, current_contract=CONTRACT, current_policy=POLICY)
+    retained = world.service().inspect(source_id)
+    assert retained.state is EvidenceState.ACCEPTED and retained.record is not None
+    assert retained.record.verdict == verdict
+    assert not world.service().dependent_effects_allowed(source_id, world.observe())[0]
+    version = snapshot.transition_version
+    replay = world.service().apply(source_id, world.observe())
+    assert replay.status is ApplicationStatus.ACCEPTED and replay.requires_strong_audit
+    assert world.cycle().snapshot(PR).transition_version == version
 
 
 @pytest.mark.parametrize(
@@ -315,6 +324,10 @@ def test_complete_nonbounded_scope_requires_renewed_strong_audit(world: World, s
         {"ordinary": "INCONCLUSIVE"},
         {"coverage": "UNVERIFIED"},
         {"scope": "BOUNDED", "extra": {"scope_evidence": ""}},  # cumulative diff could not be assessed
+        {"scope": "BOUNDED", "verdict": "INCONCLUSIVE"},
+        {"scope": "EXPANDED", "verdict": "INCONCLUSIVE", "statuses": {"f1": "FIXED", "f2": "INCONCLUSIVE"}},
+        {"scope": "UNKNOWN", "verdict": "INCONCLUSIVE", "ordinary": "INCONCLUSIVE"},
+        {"scope": "EXPANDED", "verdict": "INCONCLUSIVE", "coverage": "UNVERIFIED"},
     ],
 )
 def test_incomplete_or_blocked_evidence_never_certifies(world: World, kwargs: dict) -> None:
@@ -334,7 +347,8 @@ def test_incomplete_or_blocked_evidence_never_certifies(world: World, kwargs: di
     assert world.service().inspect(view.record.source_id).state is EvidenceState.RETAINED
 
 
-def test_new_independent_defect_remains_blocking(world: World) -> None:
+@pytest.mark.parametrize("scope,verdict", [("BOUNDED", "FINDINGS"), ("EXPANDED", "INCONCLUSIVE"), ("UNKNOWN", "INCONCLUSIVE")])
+def test_new_independent_defect_remains_blocking(world: World, scope: str, verdict: str) -> None:
     new = {
         "finding_id": "f3",
         "requirement_ids": ["#2406/REQ-004"],
@@ -346,7 +360,7 @@ def test_new_independent_defect_remains_blocking(world: World) -> None:
         "affected_boundary": "b",
         "focused_regression_scenario": "s",
     }
-    source_id = _retain(world, verdict="FINDINGS", extra={"findings": [new]})
+    source_id = _retain(world, scope=scope, verdict=verdict, extra={"findings": [new]})
 
     assert world.service().apply(source_id, world.observe()).status is ApplicationStatus.NON_AUTHORIZING
     assert world.cycle().snapshot(PR).accepted_closure is None
@@ -391,8 +405,9 @@ def _mutations(world: World) -> dict[str, Callable[[], Callable[[], ObservedTarg
 
 
 @pytest.mark.parametrize("change", ["head", "base", "requirements", "policy", "round-and-finding-revision", "strong-claim", "open-epoch"])
-def test_each_binding_mismatch_rejects_the_stale_source(world: World, change: str) -> None:
-    source_id = _retain(world)
+@pytest.mark.parametrize("scope,verdict", [("BOUNDED", "PASS"), ("EXPANDED", "INCONCLUSIVE")])
+def test_each_binding_mismatch_rejects_the_stale_source(world: World, change: str, scope: str, verdict: str) -> None:
+    source_id = _retain(world, scope=scope, verdict=verdict)
     observer = _mutations(world)[change]()
 
     outcome = world.service().apply(source_id, observer)

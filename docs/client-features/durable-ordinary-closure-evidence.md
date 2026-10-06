@@ -36,6 +36,20 @@ closure through `certify_closure`; `EXPANDED`/`UNKNOWN` scope records
 convergence that requires a renewed strong audit. Incomplete or blocked evidence
 is `NON_AUTHORIZING` and stays retained.
 
+A retained `INCONCLUSIVE` assessment with `EXPANDED`/`UNKNOWN` scope may
+record nonbounded convergence when the ordinary result is a complete semantic
+PASS, every outstanding finding has evidence-backed FIXED/INVALID disposition,
+and there is no diagnostic or new finding. The original assessment verdict is
+preserved. This closes the finding set and requires a renewed Strong audit;
+it grants neither bounded closure nor merge or dependent publication authority.
+BOUNDED INCONCLUSIVE and any incomplete, blocked, stale or superseded evidence
+remain non-authorizing. Existing retained evidence resumes through this same
+application path without rewriting its verdict or invoking another model.
+Reentry also reuses the producing ordinary PASS from nonbounded convergence
+while its attempt remains newest and head/base/Requirements/policy still match.
+It does not require an accepted bounded closure to find that source; the renewed
+Strong audit remains mandatory and cannot be replaced by another ordinary review.
+
 ## Recovery and idempotence
 
 `certify_closure` records the `source_identity` and returns the existing

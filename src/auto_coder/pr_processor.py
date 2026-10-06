@@ -624,6 +624,11 @@ def _resume_retained_closure(repo_name: str, pr_number: int, head_sha: str, inpu
     retained_pass = False
     retained_record: Optional[ClosureEvidenceRecord] = None
     closure = snapshot.accepted_closure
+    if closure is None and snapshot.requires_new_strong_round:
+        # Nonbounded convergence retains the ordinary PASS, but deliberately
+        # creates no accepted bounded closure. Reuse that result while the
+        # renewed Strong audit remains mandatory instead of reviewing it twice.
+        closure = next((item for item in reversed(snapshot.closures) if item.source_identity and (item.head_sha, item.base_sha, item.contract_identity, item.policy_identity) == (head_sha, inputs.base_sha, inputs.contract.identity, inputs.policy.identity)), None)
     if closure is not None and closure.source_identity:
         view = evidence.inspect(closure.source_identity)
         if view.state is EvidenceState.UNAVAILABLE:

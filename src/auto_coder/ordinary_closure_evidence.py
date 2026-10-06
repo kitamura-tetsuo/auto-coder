@@ -646,7 +646,12 @@ class OrdinaryClosureEvidence:
     def _authority_gap(self, record: ClosureEvidenceRecord, observed: ObservedTarget) -> str:
         if record.diagnostic:
             return f"assessment is incomplete and remains pending evidence: {record.diagnostic}"
-        if record.verdict != "PASS":
+        # A complete nonbounded assessment can establish finding convergence
+        # while withholding overall clearance for the renewed Strong audit.
+        # Keep its original verdict in the journal; certify_closure records
+        # nonbounded convergence without granting bounded closure or merge.
+        nonbounded_convergence = record.verdict == "INCONCLUSIVE" and record.scope in {ScopeAssessment.EXPANDED.value, ScopeAssessment.UNKNOWN.value}
+        if record.verdict != "PASS" and not nonbounded_convergence:
             return f"closure assessment verdict is {record.verdict}"
         if not record.ordinary.is_semantic_pass:
             return "ordinary evaluation is not a complete semantic PASS: " + "; ".join(record.ordinary.blockers or ("not PASS",))
