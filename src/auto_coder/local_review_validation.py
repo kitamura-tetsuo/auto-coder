@@ -28,6 +28,10 @@ class VerificationCheckpoint:
     diagnostic_published: bool = False
 
 
+def _verification_response(result: AdversarialValidationResult) -> str:
+    return json.dumps({"summary": result.summary, "dispositions": [asdict(item) for item in result.thread_dispositions], "unverified": [asdict(item) for item in result.unverified_local_repairs]}, sort_keys=True)
+
+
 class LocalRepairVerificationStore:
     """Reserve model entry before invocation and retain the exact report for replay."""
 
@@ -57,19 +61,29 @@ class LocalRepairVerificationStore:
         return VerificationCheckpoint(str(row[0]), str(row[1]), bool(row[2]), bool(row[3]), bool(row[4])) if row else VerificationCheckpoint()
 
     def complete(self, generation_id: str, head_sha: str, result: AdversarialValidationResult) -> None:
-        payload = json.dumps({"summary": result.summary, "dispositions": [asdict(item) for item in result.thread_dispositions], "unverified": [asdict(item) for item in result.unverified_local_repairs]}, sort_keys=True)
+        payload = _verification_response(result)
         with self._connect() as connection:
             connection.execute("UPDATE verifications SET phase='completed', response=? WHERE generation_id=? AND head_sha=?", (payload, generation_id, head_sha))
 
-    def mark_published(self, generation_id: str, head_sha: str, *, diagnostic: bool = False) -> None:
+    def reclaim_missing_roots(self, generation_id: str, head_sha: str, checkpoint: VerificationCheckpoint) -> bool:
+        """Atomically recover a target-acquisition failure before reviewer entry."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE verifications SET phase='executing', response='', published=0, publication_started=0, diagnostic_published=0, diagnostic_started=0 " "WHERE generation_id=? AND head_sha=? AND phase='completed' AND response=?",
+                (generation_id, head_sha, checkpoint.response),
+            )
+            return cursor.rowcount == 1
+
+    def mark_published(self, generation_id: str, head_sha: str, expected_response: str, *, diagnostic: bool = False) -> bool:
         column = "diagnostic_published" if diagnostic else "published"
         with self._connect() as connection:
-            connection.execute(f"UPDATE verifications SET {column}=1 WHERE generation_id=? AND head_sha=?", (generation_id, head_sha))
+            cursor = connection.execute(f"UPDATE verifications SET {column}=1 WHERE generation_id=? AND head_sha=? AND response=?", (generation_id, head_sha, expected_response))
+            return cursor.rowcount == 1
 
-    def reserve_publication(self, generation_id: str, head_sha: str, *, diagnostic: bool = False) -> bool:
+    def reserve_publication(self, generation_id: str, head_sha: str, expected_response: str, *, diagnostic: bool = False) -> bool:
         column = "diagnostic_started" if diagnostic else "publication_started"
         with self._connect() as connection:
-            cursor = connection.execute(f"UPDATE verifications SET {column}=1 WHERE generation_id=? AND head_sha=? AND {column}=0", (generation_id, head_sha))
+            cursor = connection.execute(f"UPDATE verifications SET {column}=1 WHERE generation_id=? AND head_sha=? AND response=? AND {column}=0", (generation_id, head_sha, expected_response))
             return cursor.rowcount == 1
 
 
@@ -111,19 +125,30 @@ def run_pending_local_repair_verification(
     record = repair_store.get(request, generation.bundle_reference)
     result = AdversarialValidationResult(result="INCONCLUSIVE", local_repair_generation_id=generation.generation_id, summary="Independent verification of pending local corrections only.")
     checkpoint = verification_store.get(generation.generation_id, head_sha)
+    retry_claimed = False
+    if checkpoint.phase == "completed":
+        saved = json.loads(checkpoint.response)
+        # This exact failure occurs before worktree/backend entry. A newly
+        # acquired root can safely resume it; uncertain or completed model
+        # invocations retain the original once-per-generation/head checkpoint.
+        missing_roots = saved.get("unverified", [])
+        if not saved.get("dispositions") and missing_roots and all(item.get("reason") == "pending correction roots could not be acquired" and not item.get("thread_id") for item in missing_roots):
+            if select_threads():
+                retry_claimed = verification_store.reclaim_missing_roots(generation.generation_id, head_sha, checkpoint)
+                checkpoint = VerificationCheckpoint() if retry_claimed else verification_store.get(generation.generation_id, head_sha)
     if checkpoint.phase == "completed":
         payload = json.loads(checkpoint.response)
         result.summary = payload["summary"]
         result.thread_dispositions = _extract_thread_dispositions(payload["dispositions"])
         result.unverified_local_repairs = [UnverifiedLocalRepair(**item) for item in payload["unverified"]]
-    elif checkpoint.phase or not verification_store.claim(generation.generation_id, head_sha):
+    elif checkpoint.phase or (not retry_claimed and not verification_store.claim(generation.generation_id, head_sha)):
         result.local_repair_verification_pending = True
         result.unverified_local_repairs = [UnverifiedLocalRepair(identity, reason="Prior verification invocation is still executing or indeterminate; it will not be repeated at the same commit.") for identity in pending]
         if not checkpoint.diagnostic_published:
-            may_send = verification_store.reserve_publication(generation.generation_id, head_sha, diagnostic=True)
+            may_send = verification_store.reserve_publication(generation.generation_id, head_sha, "", diagnostic=True)
             if not publish(result, may_send):
                 raise RuntimeError("pending verification diagnostic publication is unconfirmed")
-            verification_store.mark_published(generation.generation_id, head_sha, diagnostic=True)
+            verification_store.mark_published(generation.generation_id, head_sha, "", diagnostic=True)
         return result
     else:
         targets: Sequence[ClaimedReviewThread] = ()
@@ -142,7 +167,14 @@ def run_pending_local_repair_verification(
             if backend_manager is None:
                 raise RuntimeError("no read-only verification backend is available")
             prompt = render_prompt(
-                "pr.local_repair_verification", repo_name=repository, pr_number=pr_number, head_sha=head_sha, generation_id=generation.generation_id, baseline_sha=record.head_sha, pending_threads=render_claimed_review_threads_section(targets), linked_issue_contract=linked_issue_contract()
+                "pr.local_repair_verification",
+                repo_name=repository,
+                pr_number=pr_number,
+                head_sha=head_sha,
+                generation_id=generation.generation_id,
+                baseline_sha=record.head_sha,
+                pending_threads=render_claimed_review_threads_section(targets, pending_local_correction=True),
+                linked_issue_contract=linked_issue_contract(),
             )
             context = worktree()
             if not isinstance(context, AbstractContextManager):
@@ -188,10 +220,12 @@ def run_pending_local_repair_verification(
         result.summary = f"Verification limited to {len(pending)} pending local correction target(s): {len(result.thread_dispositions)} disposition(s) returned, {len(result.unverified_local_repairs)} target(s) NOT verified. No full PR validation was performed."
         verification_store.complete(generation.generation_id, head_sha, result)
     if not checkpoint.published:
-        may_send = verification_store.reserve_publication(generation.generation_id, head_sha)
+        expected_response = _verification_response(result)
+        may_send = verification_store.reserve_publication(generation.generation_id, head_sha, expected_response)
         if not publish(result, may_send):
             raise RuntimeError("pending local verification report publication is unconfirmed; no new reviewer invocation will be started")
-        verification_store.mark_published(generation.generation_id, head_sha)
+        if not verification_store.mark_published(generation.generation_id, head_sha, expected_response):
+            raise RuntimeError("verification report changed before publication confirmation")
     if head_is_current is not None and not head_is_current():
         raise RuntimeError("PR head changed before verification settlement; the pinned report is retained without settling pending corrections")
     observations = []

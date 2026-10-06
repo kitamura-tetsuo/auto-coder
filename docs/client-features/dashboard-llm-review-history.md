@@ -104,6 +104,11 @@ including strong-audit roots, without requiring repeated finding prose. The
 existing repair-delegation stage reflects local admission failure as `FAILED`
 and pending correction as `DEFERRED`. The worker diagnostic also exposes the
 deferred outcome and its actions through the existing generic trace details.
+Scoped local verification includes exact human-review roots already owned by a
+pending repair generation, while preserving their ordinary GitHub merge gate.
+Empty-root failures recorded before reviewer entry can recover on the same head;
+the existing repair-delegation event shows the resulting dispositions and pending
+reasons. The explicit-target Reason and action list expose those reasons as well.
 
 Accepted-finding adjudication of a shared historical review root uses Strong
 source aliases, and historical roots with the declared oracle-gap fields retain

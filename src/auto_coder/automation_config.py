@@ -1020,6 +1020,7 @@ class ProcessedPRResult:
     error: Optional[str] = None
     outcome: PRProcessingOutcome = PRProcessingOutcome.DEFERRED
     retry_not_before: Optional[float] = None
+    target_reason: Optional[str] = None
 
 
 @dataclass

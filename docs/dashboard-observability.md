@@ -1974,6 +1974,14 @@ Confirmed addressed-thread closure uses `pr.review-thread-closure` with confirme
 and unfinished counts and the scoped effect. The generic detail table displays
 these facts without a schema or renderer change.
 
+Exact ordinary roots owned by the pending generation, including human comments,
+now enter this scoped lane without acquiring automatic thread-closure authority.
+A saved empty-root failure can resume before reviewer entry when those roots are
+available; the eventual event retains the same generation/head and actual
+dispositions or unverified reasons. Executed or indeterminate reviewer attempts
+remain suppressed. Explicit-target Reason and processing actions carry the
+unverified reasons instead of reporting green CI as the deferral cause.
+
 `tests/test_local_review_validation.py::test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_target_in_mounted_view`
 drives the production admission and scoped reviewer through partial results,
 native GitHub report publication, settlement, and forced replay. Its collector and
@@ -1984,6 +1992,11 @@ verdicts. `test_pending_scope_partial_result_is_visible_and_not_repeated_after_r
 `test_incomplete_verification_is_published_as_unverified_not_still_valid`, and
 `test_pending_diagnostic_cannot_absorb_later_completed_report` cover durable
 partial replay, malformed/omitted evidence, and concurrent publication scopes.
+The production pending-lane test also drives resolved and unresolved ordinary
+human roots through this same collector and mounted view.
+`test_missing_roots_before_backend_entry_can_resume_at_same_head` verifies
+same-head recovery and separate diagnostic/report publication;
+`test_missing_root_recovery_claim_has_only_one_owner` verifies atomic readmission.
 The existing local repair tests retain exact-root authentication, admission, and
 causal settlement coverage. Run `bash scripts/test.sh
 tests/test_local_review_validation.py tests/test_local_review_repair.py

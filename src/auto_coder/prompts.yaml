@@ -274,6 +274,8 @@ pr:
     Please fix the issues that are causing the GitHub Actions failures. Make the necessary code changes to resolve the errors.
     DO NOT include git commit or push commands in your response.
 
+  local_repair_verification_heading: "Pending local correction target"
+  local_repair_verification_discussion: "Full thread discussion (chronological; no implementer addressed claim or explicit forced revalidation is implied):"
   local_repair_verification: |-
     Verify ONLY the pending local correction targets listed below, at exact commit $head_sha in repository $repo_name, PR #$pr_number.
     Repair generation: $generation_id. The correction started from $baseline_sha.

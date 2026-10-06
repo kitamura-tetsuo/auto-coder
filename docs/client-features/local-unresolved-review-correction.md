@@ -101,7 +101,12 @@ Different gap identities remain excluded even when their prose is identical.
 When a completed generation requires verification, its original unsettled roots
 are the entire review scope, even if GitHub displays them as resolved.
 Auto-Coder retrieves complete threads, matches durable feedback identities, and
-authenticates the reviewer. Unrelated findings and settled roots are excluded.
+authenticates adversarial reviewer roots. Ordinary review comments, including
+human-authored comments without an addressed marker, are also verified when
+their exact root comment identities belong to the pending generation. This
+scoped selection does not grant them automatic GitHub thread-closure authority;
+ordinary human threads retain their existing merge gate. Unrelated findings,
+truncated threads, and settled roots are excluded.
 The read-only prompt requests only per-target `ADDRESSED`, `STILL_VALID`, or
 `INCONCLUSIVE` dispositions; it does not request a new PR-wide review.
 
@@ -111,6 +116,13 @@ indeterminate invocation is reported without repeating it on the same commit.
 Publication is separately reserved and reconciled against the exact native
 review receipt, preventing blind resend after an uncertain publication. Pending
 execution diagnostics and completed reports have separate publication receipts.
+An empty-root acquisition failure recorded before reviewer entry can resume on
+the same commit once a covered root becomes available. Atomic checkpoint
+readmission allows only one reviewer invocation; a retained model response,
+model failure, or indeterminate invocation is never retried this way. The new
+report has its own publication reservation, so a previous acquisition diagnostic
+cannot suppress the recovered report. Existing saved acquisition failures also
+recover on the next ordinary processing pass without deleting repair state.
 
 The GitHub native review uses a distinct local-repair-verification marker and
 cannot supersede the ordinary adversarial verdict or authorize merge. Its
@@ -126,6 +138,8 @@ unverified target count and reasons with `effect=local-validation-scoped`.
 Incomplete verification is `BLOCKED`; a completed scoped check is `COMPLETED`
 but remains a deferred PR-processing result rather than merge approval.
 Publication or settlement failures are explicitly `FAILED`.
+Processing actions and the explicit-target Reason also expose the concrete
+unverified reasons, rather than using passing CI as the reason for deferral.
 
 Proven owner-exit recovery emits `pr.local-repair-recovery` with a deferred
 outcome, attempt identity, owner PID, next phase, retained workspace, and reason.

@@ -7061,6 +7061,7 @@ class AutomationEngine:
                         result.error = pr_result.error
                     result.outcome = pr_result.outcome
                     result.retry_not_before = pr_result.retry_not_before
+                    result.target_reason = pr_result.target_reason
                     result.success = pr_result.outcome != PRProcessingOutcome.FAILED
                     result.target_outcome = {
                         PRProcessingOutcome.SUCCESS: ExplicitTargetOutcome.SUCCESS,

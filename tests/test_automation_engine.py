@@ -1357,6 +1357,25 @@ BlockingRepository(Path(__import__("sys").argv[1]), Path(__import__("sys").argv[
         assert len(result["errors"]) == expected_error_count
         assert result["prs_processed"] == [{"pr_data": candidate.data, "actions_taken": [action], "outcome": outcome.value}]
 
+    def test_process_single_reports_local_verification_reason_instead_of_green_ci(self, mock_github_client):
+        engine = AutomationEngine(mock_github_client, config=AutomationConfig())
+        candidate = Candidate(type="pr", data={"number": 5467, "title": "PR"}, priority=1)
+        reason = "Reviewer omitted the required disposition; this target was not verified."
+        engine._check_and_handle_closed_branch = Mock(return_value=True)
+        engine._create_candidate_from_single = Mock(return_value=candidate)
+        with (
+            patch("auto_coder.pr_processor._reject_unsafe_codex_cloud_pr", return_value=MagicMock(closed=False, metadata_error=None, authoritative_pr_data=None)),
+            patch("auto_coder.pr_processor._close_empty_pr", return_value=MagicMock(closed=False)),
+            patch("auto_coder.pr_processor._close_stale_jules_pr", return_value=MagicMock(closed=False)),
+            patch(
+                "auto_coder.automation_engine.process_pull_request",
+                return_value=ProcessedPRResult(pr_data=candidate.data, actions_taken=["All GitHub Actions checks passed for PR #5467", reason], outcome=PRProcessingOutcome.DEFERRED, target_reason=reason),
+            ),
+        ):
+            result = engine.process_single("owner/repo", "pr", 5467, explicit_only=True)
+        assert result["target_outcome"] == "deferred", result
+        assert result["target_reason"] == reason
+
     def test_process_single_propagates_remote_head_verification_failure(self, mock_github_client):
         """A nested caught merge-stage exception must reach top-level errors."""
         engine = AutomationEngine(mock_github_client, config=AutomationConfig())

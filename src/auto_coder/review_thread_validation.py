@@ -644,7 +644,7 @@ def change_provenance_reply_fingerprint(claimed: Sequence[ClaimedReviewThread]) 
     return f"<!-- auto-coder-change-provenance-evidence:v1:{digest} -->"
 
 
-def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread], *, snapshot: Optional[BlockerLedgerSnapshot] = None) -> str:
+def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread], *, snapshot: Optional[BlockerLedgerSnapshot] = None, pending_local_correction: bool = False) -> str:
     """Render the evidence block the adversarial-validation prompt injects.
 
     Only threads listed here may receive a ``thread_dispositions`` entry; the
@@ -661,7 +661,10 @@ def render_claimed_review_threads_section(claimed: Sequence[ClaimedReviewThread]
     candidates = extract_closure_candidates(claimed, snapshot=snapshot)
     blocks = []
     for thread in claimed:
-        if thread.is_change_provenance:
+        if pending_local_correction:
+            heading = render_prompt("pr.local_repair_verification_heading", include_header=False)
+            discussion_label = render_prompt("pr.local_repair_verification_discussion", include_header=False)
+        elif thread.is_change_provenance:
             heading = "Change-provenance clarification"
             discussion_label = "Full thread discussion (chronological, includes the implementation-agent addressed claim and rationale):"
         elif thread.revalidation_after_head_change:

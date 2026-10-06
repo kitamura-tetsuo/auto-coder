@@ -77,6 +77,9 @@ def test_pending_scope_partial_result_is_visible_and_not_repeated_after_restart(
     assert "NOT a new PR-wide adversarial validation" in prompt
     assert "ADDRESSED requires a committed focused regression test" in prompt
     assert "Original counterexample 1" in prompt and "Original counterexample 2" in prompt
+    assert "### Pending local correction target: target-1" in prompt
+    assert "### Claimed-addressed review thread:" not in prompt
+    assert "### Forced adversarial-validation revalidation" not in prompt
     assert invoke.call_args.kwargs["is_noedit"] is True
     assert [(target.blocker_id, target.thread_id) for target in first.unverified_local_repairs] == [(identities[1], "target-2")]
     assert second.unverified_local_repairs == first.unverified_local_repairs
@@ -145,10 +148,11 @@ def test_completed_scope_settles_corrected_and_failed_roots_without_full_pr_pass
     assert snapshot.get_blocker_allowance(verification_case[3][1]).failed_count == 0
 
 
-def test_verification_execution_failure_is_visible_for_every_pending_target(verification_case, tmp_path):
+@pytest.mark.parametrize("reason", ["Focused verification failed: test exit code 2", "pending correction roots could not be acquired"])
+def test_verification_execution_failure_is_visible_for_every_pending_target(verification_case, tmp_path, reason):
     publish = MagicMock(return_value=True)
     path = tmp_path / "verification.sqlite3"
-    with patch("auto_coder.local_review_validation.run_llm_prompt", side_effect=RuntimeError("Focused verification failed: test exit code 2")) as invoke:
+    with patch("auto_coder.local_review_validation.run_llm_prompt", side_effect=RuntimeError(reason)) as invoke:
         result = _invoke(verification_case, path, publish)
         _invoke(verification_case, path, publish)
     invoke.assert_called_once()
@@ -157,11 +161,42 @@ def test_verification_execution_failure_is_visible_for_every_pending_target(veri
     assert [(item.blocker_id, item.thread_id) for item in result.unverified_local_repairs] == list(zip(verification_case[3], ("target-1", "target-2")))
     body = format_adversarial_review_summary(result, verification_case[1])
     assert "local repair verification: INCOMPLETE" in body
-    assert "Focused verification failed: test exit code 2" in body
+    assert reason in body
     assert "target-1" in body and "target-2" in body
     assert "`: STILL_VALID" not in body
     snapshot = verification_case[5].get_snapshot("https://api.github.com", "owner/repo", 42)
     assert snapshot.get_generation(verification_case[7].generation_id).settlements == ()
+
+
+def test_missing_roots_before_backend_entry_can_resume_at_same_head(verification_case, tmp_path):
+    publish = MagicMock(return_value=True)
+    path = tmp_path / "verification.sqlite3"
+    response = json.dumps({"thread_dispositions": [_disposition(target.thread_id, "ADDRESSED") for target in verification_case[2]]})
+    with patch("auto_coder.local_review_validation.run_llm_prompt", return_value=response) as invoke:
+        missing = _invoke(verification_case, path, publish, targets=())
+        _invoke(verification_case, path, publish, targets=())
+        invoke.assert_not_called()
+        assert publish.call_count == 1
+        recovered = _invoke(verification_case, path, publish)
+    assert {item.reason for item in missing.unverified_local_repairs} == {"pending correction roots could not be acquired"}
+    invoke.assert_called_once()
+    assert publish.call_count == 2
+    assert recovered.unverified_local_repairs == []
+    assert verification_case[5].get_snapshot("https://api.github.com", "owner/repo", 42).get_outstanding_generation() is None
+
+
+def test_missing_root_recovery_claim_has_only_one_owner(verification_case, tmp_path):
+    path = tmp_path / "verification.sqlite3"
+    _invoke(verification_case, path, MagicMock(return_value=True), targets=())
+    store = LocalRepairVerificationStore(path)
+    generation_id, head = verification_case[7].generation_id, verification_case[1]
+    checkpoint = store.get(generation_id, head)
+    assert store.reclaim_missing_roots(generation_id, head, checkpoint) is True
+    assert LocalRepairVerificationStore(path).reclaim_missing_roots(generation_id, head, checkpoint) is False
+    assert store.get(generation_id, head).phase == "executing"
+    assert store.reserve_publication(generation_id, head, checkpoint.response) is False
+    assert store.mark_published(generation_id, head, checkpoint.response) is False
+    assert store.get(generation_id, head).published is False
 
 
 def test_no_change_completion_never_revalidates_unchanged_commit(verification_case, tmp_path):
@@ -276,9 +311,11 @@ def test_pending_diagnostic_cannot_absorb_later_completed_report(verification_ca
 
 
 @pytest.mark.parametrize("threads_resolved", [False, True])
-def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_target_in_mounted_view(verification_case, monkeypatch, threads_resolved):
+@pytest.mark.parametrize("ordinary_roots", [False, True])
+def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_target_in_mounted_view(verification_case, monkeypatch, threads_resolved, ordinary_roots):
     from types import SimpleNamespace
 
+    from auto_coder.automation_config import ProcessedPRResult
     from auto_coder.execution_trace import Outcome, TraceCollector, get_trace_collector
     from auto_coder.github_app_reviewer import ReviewPublicationResult
     from auto_coder.pr_processor import ClaimedReviewThreadGateState, _handle_pr_merge
@@ -287,7 +324,14 @@ def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_
 
     repository, head, targets, identities, _request_value, ledger, store, _authority = verification_case
     client = MagicMock()
-    roots = [ReviewThread(id=target.thread_id, is_resolved=threads_resolved, comments=[ReviewThreadComment(database_id=target.root_comment_database_id, author_login=target.root_author_login, body=target.original_finding)]) for target in targets]
+    roots = [
+        ReviewThread(
+            id=target.thread_id,
+            is_resolved=threads_resolved,
+            comments=[ReviewThreadComment(database_id=target.root_comment_database_id, author_login="human-reviewer" if ordinary_roots else target.root_author_login, body=target.original_finding.replace("### Auto-Coder adversarial finding\n", "") if ordinary_roots else target.original_finding)],
+        )
+        for target in targets
+    ]
     unrelated = ReviewThread(id="unrelated", comments=[ReviewThreadComment(database_id=99, author_login="auto-coder-reviewer[bot]", body="### Auto-Coder adversarial finding\nUnrelated boundary must not enter this verification")])
     client.get_pr_review_threads_strict.return_value = roots + [unrelated]
     client.get_pull_request_head_sha_strict.return_value = head
@@ -299,6 +343,7 @@ def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_
     monkeypatch.setattr(TraceCollector, "_instance", None)
     collector = get_trace_collector()
     gate_state = ClaimedReviewThreadGateState() if threads_resolved else ClaimedReviewThreadGateState(unresolved=tuple(roots + [unrelated]), blocking_unresolved=tuple(roots + [unrelated]), has_blocking_unresolved=True)
+    processing_status = ProcessedPRResult(pr_data=pr_data)
     with (
         patch("auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress", return_value=True),
         patch("auto_coder.pr_processor._get_mergeable_state", return_value={"mergeable": True, "merge_state_status": "clean"}),
@@ -318,7 +363,7 @@ def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_
         patch("auto_coder.pr_processor._merge_pr") as merge,
     ):
         with collector.start_execution("owner/repo", "pr", 42, origin="worker"):
-            first = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
+            first = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, processing_status=processing_status)
         _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
     assert scoped.call_count == 1, first
     broad.assert_not_called()
@@ -331,6 +376,8 @@ def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_
     body = format_adversarial_review_summary(publish.call_args.args[3], head)
     assert "Pending local corrections NOT verified" in body and "target-2" in body and identities[1] in body
     assert any("no full PR validation was started" in action for action in first)
+    assert processing_status.target_reason == "Reviewer omitted the required disposition; this target was not verified."
+    assert any(processing_status.target_reason in action for action in first)
     snapshot = collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=42)
     events = [event for event in snapshot.events if event.stage_id == "pr.repair-delegation"]
     assert events[-1].outcome == Outcome.BLOCKED.value
@@ -340,6 +387,39 @@ def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_
     with patch("auto_coder.dashboard.ui") as ui:
         _mounted_detail(ui, "pr", 42)
     assert any("local-validation-scoped" in str(call) and "target-2" in str(call) for call in ui.table.call_args_list)
+
+
+def test_scoped_human_root_verification_does_not_authorize_thread_resolution(verification_case):
+    from auto_coder.adversarial_validator import AdversarialValidationResult, ReviewThreadDisposition
+    from auto_coder.automation_config import ProcessedPRResult
+    from auto_coder.pr_processor import ClaimedReviewThreadGateState, _verify_pending_local_correction
+
+    _repo, head, targets, _identities, _request_value, ledger, _store, authority = verification_case
+    client = MagicMock()
+    client.get_pull_request_head_sha_strict.return_value = head
+    roots = [ReviewThread(id=target.thread_id, is_resolved=True, comments=[ReviewThreadComment(database_id=target.root_comment_database_id, author_login="human-reviewer", body="Please correct this original boundary")]) for target in targets]
+    client.get_pr_review_threads_strict.return_value = roots
+    result = AdversarialValidationResult(result="INCONCLUSIVE", local_repair_generation_id=authority.generation_id, thread_dispositions=[ReviewThreadDisposition(**_disposition(target.thread_id, "ADDRESSED")) for target in targets])
+
+    def verify(*args, **kwargs):
+        selected = kwargs["select_threads"]()
+        assert [thread.thread_id for thread in selected] == [thread.thread_id for thread in targets]
+        assert all(thread.original_finding == "Please correct this original boundary" for thread in selected)
+        return result
+
+    pr_data = {"number": 42, "head": {"sha": head}}
+    status = ProcessedPRResult(pr_data=pr_data)
+    actions = []
+    with (
+        patch("auto_coder.durable_repair_allowance.RepairAllowanceLedger", return_value=ledger),
+        patch("auto_coder.pr_processor._get_claimed_review_thread_state", return_value=ClaimedReviewThreadGateState()),
+        patch("auto_coder.local_review_validation.run_pending_local_repair_verification", side_effect=verify),
+        patch("auto_coder.pr_processor.resolve_addressed_review_threads") as close,
+    ):
+        _verify_pending_local_correction(client, "owner/repo", pr_data, AutomationConfig(), actions, status)
+    close.assert_not_called()
+    client.resolve_review_thread.assert_not_called()
+    assert status.target_reason == "Scoped local correction verification completed; full PR validation is still required"
 
 
 @pytest.mark.parametrize("force", [False, True])

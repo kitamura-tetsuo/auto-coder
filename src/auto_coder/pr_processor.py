@@ -1621,6 +1621,7 @@ def _include_pending_local_repair_threads(
     claimed: Sequence[ClaimedReviewThread],
     *,
     allow_incomplete: bool = False,
+    allow_ordinary_roots: bool = False,
 ) -> Tuple[ClaimedReviewThread, ...]:
     """Keep completed repair roots in independent validation after UI resolution."""
     from .durable_repair_allowance import GenerationLifecycleState, RepairAllowanceLedger
@@ -1647,6 +1648,20 @@ def _include_pending_local_repair_threads(
         if current is not None and not thread.comments_truncated and current.root_comment_database_id == thread.comments[0].database_id:
             # Already-classified claims retain their supported reviewer authority.
             selected_existing.append(current)
+            continue
+        root = thread.comments[0]
+        if allow_ordinary_roots and not thread.comments_truncated and root.database_id is not None and not any(root.body.lstrip().startswith(heading) for heading in _ADVERSARIAL_THREAD_HEADINGS):
+            # The durable generation owns this exact ordinary root for scoped
+            # verification, without granting automatic thread-closure authority.
+            selected_existing.append(
+                ClaimedReviewThread(
+                    thread_id=thread.id,
+                    root_comment_database_id=root.database_id,
+                    root_author_login=root.author_login,
+                    original_finding=root.body,
+                    discussion="\n\n".join(f"{comment.author_login or '(unknown author)'}: {comment.body}" for comment in thread.comments),
+                )
+            )
             continue
         # Resolution is presentation state, never independent correctness evidence.
         retained.append(replace(thread, is_resolved=False))
@@ -1696,8 +1711,9 @@ def _verify_pending_local_correction(
             state = _get_claimed_review_thread_state(github_client, repo_name, pr_number, config=config)
             if state.lookup_error:
                 raise RuntimeError(state.lookup_error)
-            selected = _include_pending_local_repair_threads(github_client, repo_name, pr_number, reviewer_identity.login, state.claimed, allow_incomplete=True)
-            observed_targets.update((thread.thread_id, thread) for thread in selected)
+            selected = _include_pending_local_repair_threads(github_client, repo_name, pr_number, reviewer_identity.login, state.claimed, allow_incomplete=True, allow_ordinary_roots=True)
+            claimed_ids = {thread.thread_id for thread in state.claimed}
+            observed_targets.update((thread.thread_id, thread) for thread in selected if thread.thread_id in claimed_ids or (reviewer_identity.matches_login(thread.root_author_login) and any(thread.original_finding.lstrip().startswith(heading) for heading in _ADVERSARIAL_THREAD_HEADINGS)))
             return selected
 
         result = run_pending_local_repair_verification(
@@ -1711,13 +1727,16 @@ def _verify_pending_local_correction(
             head_is_current=lambda: github_client.get_pull_request_head_sha_strict(repo_name, pr_number) == head_sha,
         )
         pending_count = len(result.unverified_local_repairs)
-        if any(item.status == "ADDRESSED" for item in result.thread_dispositions):
+        if any(item.status == "ADDRESSED" and item.thread_id in observed_targets for item in result.thread_dispositions):
             closure = resolve_addressed_review_threads(github_client, repo_name, pr_number, head_sha, tuple(observed_targets.values()), result.thread_dispositions, ledger=CanonicalPRBlockerLedger(), base_sha=str((pr_data.get("base") or {}).get("sha") or ""))
             unfinished = tuple(getattr(closure, "unfinished_outcomes", ()))
             actions.append(f"Scoped local correction thread closure for PR #{pr_number}: {len(closure)} confirmed, {len(unfinished)} unfinished")
             _record_pr_stage(pr_number, "pr.review-thread-closure", f"pr#{pr_number} review-thread closure", Outcome.BLOCKED if unfinished else Outcome.COMPLETED, {"confirmed_count": len(closure), "unfinished_count": len(unfinished), "effect": "local-validation-scoped", "examined_head": head_sha})
         outcome = Outcome.BLOCKED if pending_count else Outcome.COMPLETED
         actions.append(f"Scoped local correction verification for PR #{pr_number}: {len(result.thread_dispositions)} disposition(s), {pending_count} target(s) NOT verified; no full PR validation was started")
+        reasons = list(dict.fromkeys(item.reason for item in result.unverified_local_repairs))
+        for reason in reasons:
+            actions.append(f"Local correction verification pending for PR #{pr_number}: {reason}")
         _record_pr_stage(
             pr_number,
             "pr.repair-delegation",
@@ -1735,6 +1754,7 @@ def _verify_pending_local_correction(
         )
         if processing_status is not None:
             processing_status.outcome = PRProcessingOutcome.DEFERRED
+            processing_status.target_reason = "; ".join(reasons) if reasons else "Scoped local correction verification completed; full PR validation is still required"
     except Exception as exc:
         reason = redact_string(str(exc))[:2000]
         actions.append(f"Local repair verification failed for PR #{pr_number}: {reason}; no full PR validation was started")
@@ -2105,6 +2125,7 @@ def _process_pull_request_impl(
                 processed_pr.priority = processed_pr_result.priority
                 processed_pr.analysis = processed_pr_result.analysis
                 processed_pr.outcome = processed_pr_result.outcome
+                processed_pr.target_reason = processed_pr_result.target_reason
                 # Copy error if it was set
                 if processed_pr_result.error:
                     processed_pr.error = processed_pr_result.error
@@ -3387,6 +3408,7 @@ def _process_pr_for_fixes(
                 processed_pr.actions_taken = [*([projection_action] if projection_action else []), *actions]
                 processed_pr.error = processing_status.error
                 processed_pr.outcome = processing_status.outcome
+                processed_pr.target_reason = processing_status.target_reason
                 # Retain label on successful merge
                 if any("Successfully merged" in action for action in actions):
                     should_process.keep_label()
