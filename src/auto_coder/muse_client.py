@@ -884,7 +884,7 @@ class MuseClient(LLMClientBase):
         self._reject_competing_prompt_sources(arguments)
         host_arguments = ["serve"]
         reasoning: Optional[str] = None
-        approval_denial = effective_noedit
+        approval_denial = False
         index = 0
         harmless = {"exec", "--json"}
         while index < len(arguments):
@@ -898,7 +898,6 @@ class MuseClient(LLMClientBase):
                 continue
             if argument == "--no-edit":
                 effective_noedit = True
-                approval_denial = True
                 index += 1
                 continue
             if argument in {"--model", "--reasoning-effort"}:
@@ -1009,7 +1008,7 @@ class MuseClient(LLMClientBase):
         cwd = self._execution_cwd().resolve()
         msp_options = self._msp_options(effective_noedit)
         effective_noedit = msp_options.noedit
-        self._requested_approval_mode = "denyUnmatched" if msp_options.approval_denial else "allowAll"
+        self._requested_approval_mode = "denyUnmatched" if msp_options.approval_denial else ("onRequest" if effective_noedit else "allowAll")
         self._observed_approval_mode: Optional[str] = None
         self._approvals = _ApprovalState()
         boundary = get_current_local_execution_boundary()
@@ -1032,6 +1031,7 @@ class MuseClient(LLMClientBase):
         if effective_noedit:
             # Inspection must not refresh Git's index as an optional side effect.
             env["GIT_OPTIONAL_LOCKS"] = "0"
+            env["MUSE_DISABLE_APPROVAL_JUDGE"] = "1"
             trace = tempfile.NamedTemporaryFile(prefix="auto-coder-muse-git-trace-", delete=False)
             trace_path = trace.name
             trace.close()

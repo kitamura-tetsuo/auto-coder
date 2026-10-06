@@ -145,3 +145,9 @@ Proven owner-exit recovery emits `pr.local-repair-recovery` with a deferred
 outcome, attempt identity, owner PID, next phase, retained workspace, and reason.
 The generic dashboard detail view shows this recovery separately from repair
 completion; recovery never claims that findings are resolved.
+
+External review comments receive durable canonical blocker IDs before local
+execution. Their original scope is included alongside the linked Issue contract
+without inventing requirement references or granting human-thread auto-closure.
+The original per-comment execution identities remain stable. See
+[External review feedback tracking](external-review-feedback-tracking.md).

@@ -19,3 +19,8 @@ native thread ID with a `STILL_VALID` disposition, including strong-audit roots.
 This preserves repair routing when the latest report rewords the original
 finding rather than reproducing its paragraphs. Other explicit dispositions
 do not authorize corrective delivery.
+
+External review comments also receive controller-owned canonical blocker IDs at
+repair preparation. Their original scope joins managed findings in the repair
+bundle, including mixed reviews; native comment delivery receipts continue to
+prevent duplicate follow-ups. See [External review feedback tracking](external-review-feedback-tracking.md).

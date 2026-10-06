@@ -75,8 +75,10 @@ muse:
     you return.
 
     This unattended Muse session uses controller-selected non-interactive approval
-    mode: allowAll for implementation, denyUnmatched for no-edit or explicitly
-    restricted execution. Host sandbox and permission ceilings still apply. Do not wait for a human decision or a
+    mode: allowAll for implementation, onRequest for no-edit, and denyUnmatched
+    for explicitly restricted execution. Read-only shell inspection may run in
+    no-edit mode; operations requiring approval are unavailable. Host sandbox and
+    permission ceilings still apply. Do not wait for a human decision or a
     controller update. Initial implementation tests, when run, are recorded in
     `.agent-tmp/initial-tests.log`; inspect that baseline and use installed local
     tools before attempting network downloads. Complete verification before

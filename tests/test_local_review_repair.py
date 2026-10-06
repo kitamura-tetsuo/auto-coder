@@ -558,7 +558,8 @@ def test_commit_failure_preserves_corrective_workspace(tmp_path: Path, monkeypat
     assert (workspace / "new_test.py").exists()
 
 
-def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback() -> None:
+@pytest.mark.parametrize("body", ["<!-- auto-coder-two-tier-finding:v1 -->\nFix the reachable race.", "Human review: revert the unrelated nullable default change."])
+def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body: str) -> None:
     evidence = PullRequestRoutingMetadata(
         api_origin="https://api.github.com",
         repository="owner/repo",
@@ -576,7 +577,7 @@ def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback() ->
             ReviewThreadComment(
                 database_id=91,
                 author_login="auto-coder-reviewer[bot]",
-                body="<!-- auto-coder-two-tier-finding:v1 -->\nFix the reachable race.",
+                body=body,
             )
         ],
     )
@@ -604,7 +605,14 @@ def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback() ->
         )
 
     request = execute.call_args.args[0]
-    assert "auto-coder-two-tier-finding:v1" in request.prompt
+    from auto_coder.canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
+
+    snapshot = CanonicalPRBlockerLedger().get_snapshot("https://api.github.com", "owner/repo", 42)
+    blockers = snapshot.get_blockers_for_alias("github_root_comment", "91")
+    assert len(blockers) == 1
+    assert blockers[0].blocker_id in request.prompt
+    assert blockers[0].accepted_scope.description == body
+    assert body in request.prompt
     assert "REQ-001: preserve the race invariant" in request.prompt
     assert request.head_ref == "issue-7_attempt-1"
     assert request.feedback_identities

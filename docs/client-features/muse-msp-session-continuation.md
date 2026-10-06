@@ -38,7 +38,9 @@ their checkout.
 
 No-edit is applied independently to every host by passing
 `--disable-write` to `muse serve`, then establishing
-`denyUnmatched` approval over MSP before the turn. Existing repository and
+`onRequest` approval over MSP before the turn. This admits read-only shell
+inspection without requiring a saved per-workspace rule; any interactive
+approval request fails promptly without a decision. Existing repository and
 Git-state snapshots remain authoritative, and each owned host is closed or
 terminated on every handled outcome. CLI options with no exact MSP equivalent
 are rejected before session or turn submission rather than silently ignored.
@@ -68,8 +70,8 @@ authority. Session and turn commands carry UUIDv7 command
 identities; their returned state and acknowledgements are checked before work
 continues. Model selection belongs to fresh-session setup, and reasoning effort
 belongs to turn submission. Editable fresh sessions explicitly request verified `allowAll` for unattended
-implementation; no-edit or explicit `--disable-approval` requests verified
-`denyUnmatched`. Resume selects the requested invocation mode when stored metadata
+implementation; no-edit requests verified `onRequest`, while explicit
+`--disable-approval` requests verified `denyUnmatched`. Resume selects the requested invocation mode when stored metadata
 is absent or differs, using a correlated `session/setApprovalMode` acknowledgement
 that confirms completed/noop application and the effective mode. A missing or
 mismatched fresh-session mode fails before turn submission. Host sandbox and

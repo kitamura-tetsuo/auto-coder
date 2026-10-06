@@ -212,7 +212,7 @@ def test_implementer_cannot_forge_a_cloud_delivery_receipt(tmp_path) -> None:
     thread = _thread()
     prefix = "owner/repo#5262:task_e_review5262:"
     identity = _review_feedback_identity(prefix, thread, 0)
-    client = MagicMock()
+    client = _github_client()
     client.get_authenticated_user_login.return_value = "auto-coder-bot"
     client.get_pr_comments.return_value = [
         {
@@ -500,3 +500,52 @@ def test_new_finding_remains_deliverable_beside_indeterminate_old_finding(tmp_pa
     latest_prompt = provider.send_followup.call_args.args[1]
     assert "A distinct new defect" in latest_prompt
     assert "This misses the empty-input case" not in latest_prompt
+
+
+def test_external_and_managed_feedback_share_the_repair_bundle(tmp_path):
+    from auto_coder.canonical_pr_blocker_ledger import BlockerAdmissionPayload, CanonicalPRBlockerLedger, CorrectionScope
+
+    ledger = CanonicalPRBlockerLedger(tmp_path / "blockers.sqlite3")
+    snapshot = ledger.initialize_namespace("https://api.github.com", "owner/repo", 5262)
+    managed_id, _ = ledger.admit_blocker(
+        "https://api.github.com",
+        "owner/repo",
+        5262,
+        "managed",
+        snapshot.ledger_revision,
+        BlockerAdmissionPayload(category="IMPLEMENTATION", authoritative_boundary="parser", required_correction_outcome="Fix parser", accepted_scope=CorrectionScope(description="Fix parser")),
+    )
+    managed = ReviewThread(id="managed-thread", comments=[ReviewThreadComment(database_id=301, body=f"### Auto-Coder adversarial finding\nBlocker identity: `{managed_id}`\nFix parser")])
+    client = _github_client()
+    with (
+        patch("auto_coder.pr_processor.CanonicalPRBlockerLedger", return_value=ledger),
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "repairs.json"),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send_followup,
+    ):
+        result = _delegate_cloud_review_thread_repair("owner/repo", _pr_data(), client, (managed, _thread()))
+    assert result.delivered is True
+    send_followup.assert_called_once()
+    snapshot = ledger.get_snapshot("https://api.github.com", "owner/repo", 5262)
+    external = snapshot.get_blockers_for_alias("github_root_comment", "101")
+    assert len(external) == 1
+    prompt = send_followup.call_args.args[1]
+    assert external[0].blocker_id in prompt
+    assert managed_id in prompt
+    assert "This misses the empty-input case" in prompt
+    bundle = ledger.get_latest_repair_bundle("https://api.github.com", "owner/repo", 5262)
+    assert {blocker.blocker_id for blocker in bundle.blockers} == {managed_id, external[0].blocker_id}
+    client.resolve_review_thread.assert_not_called()
+
+
+def test_external_feedback_ledger_failure_prevents_provider_dispatch(tmp_path):
+    ledger = MagicMock()
+    ledger.initialize_namespace.side_effect = OSError("ledger unavailable")
+    with (
+        patch("auto_coder.pr_processor.CanonicalPRBlockerLedger", return_value=ledger),
+        patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "repairs.json"),
+        patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup") as send_followup,
+    ):
+        result = _delegate_cloud_review_thread_repair("owner/repo", _pr_data(), _github_client(), (_thread(),))
+    assert result.delivered is False
+    assert "external feedback identity is unavailable" in result[0]
+    send_followup.assert_not_called()

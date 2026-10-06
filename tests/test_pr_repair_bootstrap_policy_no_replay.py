@@ -675,6 +675,7 @@ def test_pre_upgrade_session_without_process_local_prompt_history_is_still_a_con
     thread = ReviewThread(id="PRRT_legacy", comments=[ReviewThreadComment(database_id=1, body="Legacy session repair detail", author_login="reviewer")])
     github_client = MagicMock()
     github_client.get_pr_comments.return_value = []
+    github_client.get_pull_request_repair_metadata_strict.return_value = PullRequestRepairMetadata("codex/issue-1920", "head-1", "main")
     with (
         patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "review.json"),
         patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=True) as send_followup,
@@ -701,6 +702,10 @@ def test_second_repair_round_on_a_new_head_still_omits_replayed_policies(tmp_pat
     pr_data_round_2 = dict(pr_data_round_1, head={"ref": "codex/issue-2", "sha": "head-round-2"})
     github_client = MagicMock()
     github_client.get_pr_comments.return_value = []
+    github_client.get_pull_request_repair_metadata_strict.side_effect = [
+        PullRequestRepairMetadata("codex/issue-2", "head-round-1", "main"),
+        PullRequestRepairMetadata("codex/issue-2", "head-round-2", "main"),
+    ]
 
     thread_1 = ReviewThread(id="PRRT_r1", comments=[ReviewThreadComment(database_id=10, body="Round 1 finding", author_login="reviewer")])
     thread_2 = ReviewThread(id="PRRT_r2", comments=[ReviewThreadComment(database_id=11, body="Round 2 finding", author_login="reviewer")])
@@ -754,13 +759,16 @@ def test_rejected_followup_delivery_remains_retryable_not_terminal(tmp_path):
         "base": {"ref": "main"},
     }
     thread = ReviewThread(id="PRRT_x", comments=[ReviewThreadComment(database_id=1, body="finding")])
+    github_client = MagicMock()
+    github_client.get_pr_comments.return_value = []
+    github_client.get_pull_request_repair_metadata_strict.return_value = PullRequestRepairMetadata("codex/issue-3", "head-1", "main")
 
     with (
         patch("auto_coder.pr_processor.CloudManager.get_binding", return_value=CloudTaskBinding("codex-cloud", "task_e_retry9003", None)),
         patch("auto_coder.pr_processor._cloud_review_repair_state_path", return_value=tmp_path / "review.json"),
         patch("auto_coder.codex_cloud_client.CodexCloudClient.send_followup", return_value=False) as send_followup,
     ):
-        result = _delegate_cloud_review_thread_repair("owner/repo", pr_data, MagicMock(get_pr_comments=lambda *_: []), (thread,))
+        result = _delegate_cloud_review_thread_repair("owner/repo", pr_data, github_client, (thread,))
 
     send_followup.assert_called_once()
     assert result.delivered is False

@@ -13,7 +13,7 @@ handoff and pull-request publication. Any repository mutation during no-edit
 execution fails the run. Muse Code is also capable of serving as a
 read-only review and adversarial validation backend (`[backend_adversarial_validation]`);
 in no-edit mode, Auto-Coder starts Muse with `--disable-write` and permits shell
-inspection, then establishes `denyUnmatched` approval mode over MSP
+inspection, then establishes `onRequest` approval mode over MSP
 before submitting the turn. Dangerous bypass and unauthorized workspace-trust
 options fail closed rather than being stripped or passed to the host.
 
@@ -32,8 +32,13 @@ commands outside the captured repository.
 Editable implementation sessions explicitly request and confirm the official MSP
 `allowAll` mode before submitting a turn, so a host configured for interactive
 approval cannot defer an unattended issue merely because a tool needs approval.
-No-edit and explicit `--disable-approval` invocations instead request and confirm
-`denyUnmatched`. Fresh sessions must echo the requested mode; absent or mismatched
+No-edit invocations request and confirm `onRequest`, which permits the host
+read-only shell allowlist and sandbox-contained non-dangerous parsed stages.
+Unlike `denyUnmatched`, it does not deny every shell stage lacking a saved rule.
+No-edit authority still prohibits mutation, with detection and restoration as
+described above. Approval requests under `onRequest` fail promptly without
+sending a decision. `MUSE_DISABLE_APPROVAL_JUDGE=1` prevents an automatic
+reviewer from granting approval during no-edit execution. Explicit `--disable-approval` instead selects `denyUnmatched`. Fresh sessions must echo the requested mode; absent or mismatched
 metadata fails before the turn. Exact-session resume selects the mode for the
 current invocation through `session/setApprovalMode` when it differs from the
 stored mode, and verifies the correlated completed/noop acknowledgement and

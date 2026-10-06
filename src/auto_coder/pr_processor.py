@@ -93,6 +93,7 @@ from .effective_review_decision import EffectiveNextAction
 from .entity_invalidation import DurableInvalidationQueue
 from .exceptions import AutoCoderRetryableBackendError, ClaudeFollowupUsageLimitError, DeliveryCertainty
 from .execution_trace import EventKind, Outcome, get_trace_collector
+from .external_review_feedback import retain_external_review_feedback
 from .fix_to_pass_tests_runner import run_local_tests
 from .git_branch import branch_context, git_checkout_branch, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
@@ -8563,8 +8564,21 @@ def _delegate_cloud_review_thread_repair(
             target = resolve_existing_pr_repair_target(repo_name, {"number": pr_number, "head": {"ref": evidence.head_ref, "sha": evidence.head_sha}, "base": pr_data.get("base", {})})
             if target is None:
                 return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: exact head/base target is unavailable"], route_disposition="LOCAL_REQUIRED")
+            external_ids: set[str] = set()
+            try:
+                ledger = CanonicalPRBlockerLedger()
+                selected_identities = {identity for _thread_id, _body, identity in feedback_entries}
+                for thread in unresolved_threads:
+                    for index, comment in enumerate(thread.comments):
+                        identity = _review_feedback_identity(f"{repo_name}#{pr_number}:local:", thread, index)
+                        if identity in selected_identities:
+                            external_ids.update(retain_external_review_feedback(ledger, repo_name, pr_number, thread, comment, target.head_sha))
+            except Exception as exc:
+                return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: external feedback identity is unavailable: {exc}"], route_disposition="LOCAL_REQUIRED")
             feedback = "\n\n".join(f"Thread `{thread_id}`:\n{body}" for thread_id, body, _identity in feedback_entries)
-            bounded_scope = _render_canonical_correction_scope(repo_name, pr_number, canonical_blocker_ids, target)
+            bounded_scope = _render_canonical_correction_scope(repo_name, pr_number, tuple(canonical_blocker_ids) + tuple(sorted(external_ids)), target)
+            if external_ids and not bounded_scope:
+                return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: external feedback scope is unavailable"], route_disposition="LOCAL_REQUIRED")
             if bounded_scope:
                 feedback = f"{bounded_scope}\n\n{feedback}"
             contract = get_linked_issues_context(github_client, repo_name, pr_data.get("body", ""))
@@ -8715,18 +8729,27 @@ def _delegate_cloud_review_thread_repair(
     except Exception:
         pass
 
-    matched_bids = set()
+    matched_bids: set[str] = set()
+    managed_bids: set[str] = set()
+    try:
+        for thread, comment, _identity in pending:
+            matched_bids.update(retain_external_review_feedback(ledger, repo_name, pr_number, thread, comment, target.head_sha))
+        if matched_bids:
+            snapshot = ledger.get_snapshot("https://api.github.com", repo_name, pr_number, require_retained_state=True)
+    except Exception as exc:
+        return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: external feedback identity is unavailable: {exc}"])
     if snapshot is not None:
         for _thread, comment, _identity in canonical_pending:
             m = _BLOCKER_ID_RE.search(comment.body)
             if m and snapshot.get_blocker(m.group(1) or m.group(2)):
-                matched_bids.add(m.group(1) or m.group(2))
+                managed_bids.add(m.group(1) or m.group(2))
             gm = _GAP_ID_RE.search(comment.body)
             if gm and snapshot.get_blocker(gm.group(1) or gm.group(2) or gm.group(3)):
-                matched_bids.add(gm.group(1) or gm.group(2) or gm.group(3))
+                managed_bids.add(gm.group(1) or gm.group(2) or gm.group(3))
 
-    if has_canonical_marker and not matched_bids:
+    if has_canonical_marker and not managed_bids:
         return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: canonical blocker bundle data is absent"])
+    matched_bids.update(managed_bids)
 
     if matched_bids and snapshot is not None:
         bundle_to_bind = build_repair_handoff_bundle(
@@ -8744,6 +8767,9 @@ def _delegate_cloud_review_thread_repair(
             return CloudReviewRepairResult([f"Review repair was not delivered for PR #{pr_number}: bundle {bundle_to_bind.bundle_id} is stale ({val_res.reason})"])
 
         rendered_bundle = render_bounded_repair_payload(bundle_to_bind)
+        external_feedback = "\n\n".join(f"Thread `{thread.id}`:\n{comment.body}" for thread, comment, _identity in pending if not comment.body.startswith(("### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap")))
+        if external_feedback:
+            rendered_bundle += "\n\n" + external_feedback
         ledger.record_repair_bundle(bundle_to_bind, rendered_payload=rendered_bundle)
         details = Template(get_prompt_template("codex_cloud.review_thread_repair_details")).safe_substitute(actionable_feedback=rendered_bundle)
         prompt = build_existing_pr_repair_prompt(target, details, bundle=bundle_to_bind)
