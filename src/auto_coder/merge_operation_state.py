@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from .github_pending_work import PendingWorkOwnershipError, repository_ownership_key
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -33,6 +34,15 @@ MIN_LOCAL_RETRY_INTERVAL_SECONDS = 1.0
 # One real throttle response plus this many further automatic attempts are
 # tolerated before the effect becomes an operational block (REQ-006).
 MAX_THROTTLED_RETRIES_AFTER_FIRST = 3
+
+
+def owns_merge_operation(repository: str, identity: MergeOperationIdentity) -> bool:
+    """Compare repository ownership without rewriting the retained identity."""
+    owner = repository_ownership_key(repository)
+    try:
+        return owner == repository_ownership_key(identity.repository)
+    except PendingWorkOwnershipError:
+        return False
 
 
 class OperationStatus(str, Enum):
@@ -749,7 +759,7 @@ class MergeOperationStore:
             logger.error("Could not manually reset merge-operation effect {}/{}: {}", identity.key(), effect_name.value, exc)
             raise MergeOperationPersistenceError("Merge operation effect could not be reset") from exc
 
-    def recover_after_restart(self, now: float | None = None) -> list[MergeOperation]:
+    def recover_after_restart(self, now: float | None = None, *, repository: str | None = None) -> list[MergeOperation]:
         """Reclassify any effect left ``RUNNING`` by a controller that stopped
         before recording a terminal outcome as ``DELIVERY_UNKNOWN`` (REQ-005):
         a crash mid-dispatch must never be assumed to mean "not sent"."""
@@ -760,6 +770,8 @@ class MergeOperationStore:
                 affected: list[MergeOperation] = []
                 for row in connection.execute("SELECT api_origin, repository, pr_number FROM merge_operations").fetchall():
                     identity = MergeOperationIdentity(row[0], row[1], row[2])
+                    if repository is not None and not owns_merge_operation(repository, identity):
+                        continue
                     if identity.key() not in op_keys:
                         continue
                     operation = self._load_operation(connection, identity)
@@ -823,7 +835,29 @@ class MergeOperationStore:
             logger.error("Could not supersede merge operation {}: {}", identity.key(), exc)
             raise MergeOperationPersistenceError("Merge operation could not be superseded") from exc
 
-    def due(self, now: float | None = None) -> list[MergeOperation]:
+    def defer_resumption(self, operation: MergeOperation, *, not_before: float, now: float) -> None:
+        """Pace reevaluation without changing effect evidence or newer generations.
+
+        A callback may already have completed, blocked, superseded, or deferred
+        the operation. Only a still-waiting identical generation can be delayed;
+        an existing future effect/governor deadline is left unchanged.
+        """
+        try:
+            with _LOCK, self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = self._load_operation(connection, operation.identity)
+                if current is None or current.generation != operation.generation or current.status is not OperationStatus.WAITING:
+                    return
+                if current.not_before > now:
+                    return
+                connection.execute(
+                    "UPDATE merge_operations SET not_before=?, updated_at=? WHERE op_key=?",
+                    (max(current.not_before, not_before), now, operation.identity.key()),
+                )
+        except Exception as exc:
+            raise MergeOperationPersistenceError("Merge operation resumption could not be deferred") from exc
+
+    def due(self, now: float | None = None, *, repository: str | None = None) -> list[MergeOperation]:
         """Operations that are waiting with at least one retryable effect past its deadline."""
         current_time = time.time() if now is None else now
         try:
@@ -832,12 +866,13 @@ class MergeOperationStore:
                     "SELECT api_origin, repository, pr_number FROM merge_operations WHERE status=? AND not_before <= ?",
                     (OperationStatus.WAITING.value, current_time),
                 ).fetchall()
-                return [op for row in rows if (op := self._load_operation(connection, MergeOperationIdentity(row[0], row[1], row[2]))) is not None]
+                identities = [MergeOperationIdentity(row[0], row[1], row[2]) for row in rows]
+                return [op for identity in identities if (repository is None or owns_merge_operation(repository, identity)) and (op := self._load_operation(connection, identity)) is not None]
         except Exception as exc:
             logger.error("Could not read due merge operations: {}", exc)
             raise MergeOperationPersistenceError("Merge operations could not be read") from exc
 
-    def next_due_at(self) -> float | None:
+    def next_due_at(self, *, repository: str | None = None) -> float | None:
         """Earliest deadline among waiting operations, or ``None`` if none are scheduled.
 
         Used by the resumption scheduler to sleep until the next deadline
@@ -846,11 +881,11 @@ class MergeOperationStore:
         """
         try:
             with _LOCK, self._connect() as connection:
-                row = connection.execute(
-                    "SELECT MIN(not_before) FROM merge_operations WHERE status=? AND not_before > 0",
+                rows = connection.execute(
+                    "SELECT api_origin, repository, pr_number, not_before FROM merge_operations WHERE status=? AND not_before > 0",
                     (OperationStatus.WAITING.value,),
-                ).fetchone()
-            return float(row[0]) if row and row[0] is not None else None
+                ).fetchall()
+            return min((float(row[3]) for row in rows if repository is None or owns_merge_operation(repository, MergeOperationIdentity(row[0], row[1], row[2]))), default=None)
         except Exception as exc:
             logger.error("Could not read next due merge operation deadline: {}", exc)
             raise MergeOperationPersistenceError("Merge operations could not be read") from exc

@@ -1,5 +1,25 @@
 # Dashboard observability verification
 
+Merge-operation resumption now refuses foreign repositories before opening a
+trace. Accepted resumptions retain the stored operation repository in the
+`merge-operation-resumption` execution, strict GitHub refresh and normal candidate
+handoff. Escaping refresh errors remain `FAILED`; handled GitHub request errors
+remain `DEFERRED`. Neither retry pacing nor a 404 produces merge completion.
+No event schema or renderer change is needed. Run
+`bash scripts/test.sh tests/test_merge_operation_resumption_isolation.py tests/test_dashboard_observability.py`.
+The shared-store collision test checks retained repository attribution through the
+real handler and collector; the parametrized failure test checks failure/deferred
+outcomes and durable pacing across repeated due checks and scheduler reconstruction.
+`test_run_loop_consumes_failure_self_wake_without_retrying_before_deadline`
+starts the actual scheduler loop and observes its callback's completion wake
+causing a second dispatch pass without another attempt. Explicit wakes before
+the fake-clock deadline also leave the attempt count unchanged; a wake at the
+deadline permits exactly one next attempt. Queue barriers and bounded waits
+observe the loop without sleeping through retry intervals. The operation retains
+a confirmed approval receipt and a prior merge-throttle observation throughout.
+The existing `test_merge_operation_resumption_reaches_detail_view_as_superseded`
+continues to cover the production changed-head exit through the mounted detail view.
+
 Unfinished authenticated adversarial threads after a saved current-head PASS
 reach independent closure instead of another implementation repair. Production
 emits `pr.review-thread-gate` with `DEFERRED`, the examined head, and reason
