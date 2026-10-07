@@ -14,7 +14,7 @@ from auto_coder.accepted_finding_bridge import (
     DispositionOutcome,
     ProjectionTarget,
 )
-from auto_coder.adversarial_validator import AdversarialValidationResult, RequirementCoverageEntry, SpecificationGap
+from auto_coder.adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult, RequirementCoverageEntry, SpecificationGap
 from auto_coder.canonical_pr_blocker_ledger import QualifiedRequirement
 from auto_coder.effective_review_decision import EffectiveNextAction, derive_effective_review_decision
 
@@ -117,6 +117,36 @@ def test_incomplete_or_historical_authority_requires_reconciliation() -> None:
 
     assert (unavailable.status, unavailable.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)
     assert (stale.status, stale.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)
+
+
+def test_demonstrated_ordinary_violation_dispatches_repair_without_approval() -> None:
+    raw = result("NEEDS_FIX")
+    raw.requirement_coverage.append(RequirementCoverageEntry("#5458/REQ-005", "VIOLATED", "Layout drops the read-only restriction"))
+    raw.findings = [AdversarialValidationFinding(requirement_ids=["#5458/REQ-005"], counterexample="Nested read-only Grid commits width")]
+
+    decision = derive_effective_review_decision(raw, projection())
+
+    assert (decision.status, decision.next_action) == ("NEEDS_FIX", EffectiveNextAction.IMPLEMENTATION_REPAIR)
+    assert decision.approval_eligible is False
+    assert decision.requirement_coverage == tuple(raw.requirement_coverage)
+
+    raw.result = "PASS"
+    clearance = derive_effective_review_decision(raw, projection())
+    assert (clearance.status, clearance.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)
+    assert clearance.approval_eligible is False
+
+
+@pytest.mark.parametrize("status", ["PASS", "NEEDS_TESTS", "NEEDS_FIX"])
+@pytest.mark.parametrize("coverage_status", ["VIOLATED", "UNVERIFIED"])
+def test_unsubstantiated_or_unverified_coverage_never_dispatches_repair(status: str, coverage_status: str) -> None:
+    raw = result(status)
+    raw.requirement_coverage.append(RequirementCoverageEntry("REQ-002", coverage_status, "Unsettled evidence"))
+    raw.findings = [AdversarialValidationFinding(requirement_id="REQ-001", counterexample="Different requirement")]
+
+    decision = derive_effective_review_decision(raw, projection())
+
+    assert (decision.status, decision.next_action) == ("BLOCKED", EffectiveNextAction.RECONCILIATION)
+    assert decision.approval_eligible is False
 
 
 def test_exact_closure_proposal_waits_for_owner_then_accepted_closure_passes() -> None:

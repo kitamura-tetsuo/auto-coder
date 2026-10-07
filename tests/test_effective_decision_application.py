@@ -218,6 +218,43 @@ def test_decision_application_does_not_mutate_its_input_and_is_stable_for_rederi
     assert raw_ordinary_clear(raw)
 
 
+def test_ordinary_violation_survives_parsing_and_effective_application_as_repair(env: Env) -> None:
+    response = json.dumps(
+        {
+            "result": "NEEDS_FIX",
+            "summary": "Nested Grid loses the host read-only restriction.",
+            "requirement_coverage": [{"requirement_id": "#2401/REQ-001", "status": "VIOLATED", "evidence": "src/state.py:1 drops the restriction."}],
+            "findings": [
+                {
+                    "requirement_id": "#2401/REQ-001",
+                    "evidence_classification": "DEMONSTRATED",
+                    "finding_identity": "nested-grid-readonly-loss",
+                    "correction_identity": "preserve-host-readonly",
+                    "violated_requirement": "Read-only hosts cannot commit widths.",
+                    "required_behavior": "Read-only hosts cannot commit widths.",
+                    "actual_behavior": "Nested Grid commits widths on a read-only host.",
+                    "reachability": "Host renders a Layout with a Grid child.",
+                    "counterexample": "Enter 200 in the nested width editor; it saves despite the read-only host.",
+                    "evidence": "src/state.py:1 drops the restriction.",
+                    "anchor_path": "src/state.py",
+                    "anchor_line": 1,
+                }
+            ],
+        }
+    )
+    raw, _ = run_ordinary(env, 5484, response)
+    assert raw.result == "NEEDS_FIX"
+    assert raw.accepted_finding_projection is not None
+
+    application = derive_application(raw, raw.accepted_finding_projection)
+
+    assert application.decision.next_action is EffectiveNextAction.IMPLEMENTATION_REPAIR
+    assert application.result.result == "NEEDS_FIX"
+    assert application.result.findings[0].all_requirement_ids == ["#2401/REQ-001"]
+    assert application.result.requirement_coverage[0].status == "VIOLATED"
+    assert application.result.allows_auto_merge is False
+
+
 # -- REQ-003 / REQ-010: pre-send authority ----------------------------------
 
 

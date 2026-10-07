@@ -5,12 +5,16 @@ restoring the original state, similar to how LabelManager handles labels.
 """
 
 import threading
+from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import Any, Optional
 
+from .checkout_lock import checkout_lock
 from .git_branch import switch_to_branch
 from .git_commit import ensure_pushed
 from .git_info import get_current_branch, is_git_repository
 from .logger_config import get_logger
+from .utils import _COMMAND_EXECUTION_CWD
 
 logger = get_logger(__name__)
 
@@ -29,7 +33,7 @@ class BranchManager:
     """
 
     # Track active branches to handle reentrancy if needed
-    _active_branches: set[tuple[int, str]] = set()
+    _active_branches: set[tuple[int, str, str]] = set()
 
     def __init__(
         self,
@@ -58,15 +62,29 @@ class BranchManager:
         self.remote = remote
 
         self.original_branch: Optional[str] = None
-        self._lock = threading.Lock()
+        self._checkout_lease: Optional[AbstractContextManager[None]] = None
+        self._branch_key: Optional[tuple[int, str, str]] = None
         self._reentered = False
         self._switched = False
 
     def __enter__(self) -> "BranchManager":
         """Switch to the target branch."""
+        self._checkout_lease = checkout_lock(self.cwd)
+        self._checkout_lease.__enter__()
+        self._branch_key = (threading.get_ident(), str(Path(self.cwd or _COMMAND_EXECUTION_CWD.get() or Path.cwd()).resolve()), self.branch_name)
+        try:
+            return self._enter_locked()
+        except BaseException:
+            BranchManager._active_branches.discard(self._branch_key)
+            self._checkout_lease.__exit__(None, None, None)
+            self._checkout_lease = None
+            raise
+
+    def _enter_locked(self) -> "BranchManager":
+        """Capture and switch branches only after acquiring checkout ownership."""
         # Reentrancy detection
-        ident = threading.get_ident()
-        branch_key = (ident, self.branch_name)
+        assert self._branch_key is not None
+        branch_key = self._branch_key
 
         if branch_key in BranchManager._active_branches:
             self._reentered = True
@@ -104,8 +122,17 @@ class BranchManager:
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Return to the original branch."""
-        ident = threading.get_ident()
-        branch_key = (ident, self.branch_name)
+        try:
+            self._exit_locked()
+        finally:
+            if self._checkout_lease is not None:
+                self._checkout_lease.__exit__(exc_type, exc_val, exc_tb)
+                self._checkout_lease = None
+
+    def _exit_locked(self) -> None:
+        """Restore the caller before allowing another checkout user to enter."""
+        assert self._branch_key is not None
+        branch_key = self._branch_key
 
         if self._reentered:
             logger.debug(f">>> Skipping exit (reentrant) for branch {self.branch_name}")

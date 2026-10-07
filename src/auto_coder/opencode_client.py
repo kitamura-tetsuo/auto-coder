@@ -31,7 +31,7 @@ from .local_execution_boundary import get_current_local_execution_boundary
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
-from .utils import _COMMAND_EXECUTION_CWD, CommandExecutor
+from .utils import _COMMAND_EXECUTION_CWD, CommandExecutor, prepare_retained_provider_environment
 
 logger = get_logger(__name__)
 
@@ -946,6 +946,7 @@ class OpenCodeClient(LLMClientBase):
 
         env = os.environ.copy()
         self._inject_provider_credentials(env)
+        prepare_retained_provider_environment(env)
         bin_dir: Optional[str] = None
         if is_noedit:
             bin_dir = self._build_restricted_bin_dir(env.get("PATH"), cwd)

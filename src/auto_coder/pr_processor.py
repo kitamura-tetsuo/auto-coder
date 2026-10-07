@@ -58,6 +58,7 @@ from .bounded_repair_bundle import (
 )
 from .branch_manager import BranchManager
 from .canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
+from .checkout_lock import checkout_lock, serialize_checkout
 from .ci_repair_authority import current_ci_failure_authority
 from .ci_repair_verification import FocusedVerification, dedupe_targets, follow_up_budget_exhausted, verify_targets
 from .claude_followup_waits import ClaudeFollowupHoldActive, get_claude_followup_wait_store, wait_from_error
@@ -1707,6 +1708,8 @@ def _verify_pending_local_correction(
     config: AutomationConfig,
     actions: List[str],
     processing_status: Optional[Any],
+    *,
+    retry_failed: bool = False,
 ) -> None:
     """Verify the pending generation once, without starting a full PR review."""
     from .local_review_validation import run_pending_local_repair_verification
@@ -1754,6 +1757,7 @@ def _verify_pending_local_correction(
             worktree=lambda: isolated_pr_head_worktree(repo_name, pr_number, head_sha),
             publish=publish,
             head_is_current=lambda: github_client.get_pull_request_head_sha_strict(repo_name, pr_number) == head_sha,
+            retry_failed=retry_failed,
         )
         pending_count = len(result.unverified_local_repairs)
         if any(item.status == "ADDRESSED" and item.thread_id in observed_targets for item in result.thread_dispositions):
@@ -1775,6 +1779,7 @@ def _verify_pending_local_correction(
                 "route_disposition": "LOCAL_EXECUTION",
                 "local_phase": "awaiting_validation" if pending_count else "validation_complete",
                 "effect": "local-validation-scoped",
+                "explicit_retry_requested": retry_failed,
                 "generation_id": result.local_repair_generation_id,
                 "examined_head": head_sha,
                 "unverified_count": pending_count,
@@ -3287,7 +3292,8 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
                 # Checkout main branch after closing PR
                 main_branch = AutomationConfig().MAIN_BRANCH
-                checkout_result = cmd.run_command(["git", "checkout", main_branch])
+                with checkout_lock():
+                    checkout_result = cmd.run_command(["git", "checkout", main_branch])
                 if checkout_result.success:
                     actions.append(f"Checked out {main_branch} branch")
                 else:
@@ -4816,7 +4822,7 @@ def _handle_pr_merge(
                         processing_status.outcome = PRProcessingOutcome.FAILED
                     return actions
                 if generation is not None and generation.owning_identity == "local-review-repair" and generation.lifecycle_state == GenerationLifecycleState.PENDING_REVALIDATION:
-                    _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                    _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status, retry_failed=force_adversarial_validation)
                     return actions
 
             if thread_gate_enabled:
@@ -4885,7 +4891,7 @@ def _handle_pr_merge(
                                             },
                                         )
                                         if getattr(repair_result, "local_phase", "") in {"completed_no_change", "awaiting_validation"}:
-                                            _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                                            _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status, retry_failed=force_adversarial_validation)
                                         elif processing_status is not None and getattr(repair_result, "deferred", False):
                                             processing_status.outcome = PRProcessingOutcome.DEFERRED
                                         return actions
@@ -4942,7 +4948,7 @@ def _handle_pr_merge(
                                 {"effect": "review-thread-repair", "thread_count": len(repair_threads), "route_disposition": repair_result.route_disposition, "local_phase": repair_result.local_phase},
                             )
                             if repair_result.local_phase in {"completed_no_change", "awaiting_validation"} and adv_enabled:
-                                _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                                _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status, retry_failed=force_adversarial_validation)
                                 return actions
                     if not force_admission_eligible:
                         return actions
@@ -5298,7 +5304,7 @@ def _handle_pr_merge(
                                             processing_status.error = None
                                             processing_status.outcome = PRProcessingOutcome.DEFERRED
                                         if getattr(feedback_actions, "local_phase", "") in {"completed_no_change", "awaiting_validation"}:
-                                            _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status)
+                                            _verify_pending_local_correction(github_client, repo_name, pr_data, config, actions, processing_status, retry_failed=force_adversarial_validation)
                             return actions
                     else:
                         if force_adversarial_validation:
@@ -6462,6 +6468,7 @@ def _handle_pr_merge(
     return actions
 
 
+@serialize_checkout
 def _checkout_pr_branch(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, perform_checkout: bool = True) -> bool:
     """Checkout the PR branch for local testing.
 
@@ -6502,6 +6509,7 @@ def _checkout_pr_branch(repo_name: str, pr_data: Dict[str, Any], config: Automat
         return False
 
 
+@serialize_checkout
 def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, perform_checkout: bool = True) -> bool:
     """Manually fetch and checkout PR branch as fallback."""
     pr_number = pr_data["number"]
@@ -9517,8 +9525,15 @@ def _send_adversarial_validation_feedback_to_cloud_task(
             review_threads = github_client.get_pr_review_threads_strict(repo_name, pr_number)
         except Exception as exc:
             return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}: {exc}"], route_disposition="UNAVAILABLE")
-        requested_feedback = tuple(actionable_feedback) or tuple(
-            thread.comments[0].body for thread in review_threads if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS) and _adversarial_feedback_belongs_to_report(thread.comments[0].body, validation_report, thread.id)
+        # Freshly rendered findings can differ from their retained native roots.
+        # Exact report dispositions still authorize those original identities.
+        requested_feedback = tuple(
+            dict.fromkeys(
+                (
+                    *actionable_feedback,
+                    *(thread.comments[0].body for thread in review_threads if not thread.is_resolved and thread.comments and thread.comments[0].body.startswith(_ADVERSARIAL_THREAD_HEADINGS) and _adversarial_feedback_belongs_to_report(thread.comments[0].body, validation_report, thread.id)),
+                )
+            )
         )
         if not requested_feedback:
             return CloudReviewRepairResult([f"Cannot identify actionable adversarial feedback for PR #{pr_number}; local repair was not attempted"], route_disposition="UNAVAILABLE")
@@ -10258,6 +10273,7 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
         return []
 
 
+@serialize_checkout
 def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch (not necessarily main)."""
     try:

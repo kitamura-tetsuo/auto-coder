@@ -1,5 +1,10 @@
 # Local unresolved-review correction
 
+Fresh reports with reworded actionable findings also retain native roots
+independently upheld by exact `STILL_VALID` thread dispositions. A nonempty
+new wording list must not suppress stable roots or strand the corrective handoff;
+unrelated, addressed, and inconclusive roots remain excluded.
+
 Explicit-local pull requests now consume the `LOCAL_REQUIRED` unresolved-review
 route in ordinary PR processing. Auto-Coder captures actionable comment identities
 and the authoritative exact head, builds a correction prompt from those comments
@@ -123,6 +128,20 @@ model failure, or indeterminate invocation is never retried this way. The new
 report has its own publication reservation, so a previous acquisition diagnostic
 cannot suppress the recovered report. Existing saved acquisition failures also
 recover on the next ordinary processing pass without deleting repair state.
+
+An explicit `--only <PR> --force` may additionally retry a completed failed
+verification at the same head after its report has confirmed publication, only
+when it returned no thread dispositions and left unverified targets. Auto-Coder
+atomically archives the complete prior checkpoint in `verification_history`
+and reserves one next attempt. Attempt numbers appear in the new report summary,
+giving publication reconciliation a distinct exact body. Concurrent retries
+cannot both enter the reviewer. Ordinary restarts still replay; live or
+indeterminate attempts, unconfirmed publications, partial dispositions and
+successful verification are never reset by `--force`. Blocker identities,
+repair allowance and the original correction generation remain unchanged.
+Read-only verification must avoid artifact-writing checks, dependency installs,
+interactive approvals and shell expansion; committed code and regression
+evidence may establish correction when checks cannot run read-only.
 
 The GitHub native review uses a distinct local-repair-verification marker and
 cannot supersede the ordinary adversarial verdict or authorize merge. Its

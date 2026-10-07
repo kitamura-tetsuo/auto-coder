@@ -1,6 +1,8 @@
 """Scoped local correction verification, replay, and GitHub diagnostics."""
 
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -44,7 +46,7 @@ def _disposition(thread_id, status):
     return {"thread_id": thread_id, "status": status, "rationale": "Original boundary independently checked", "evidence": "tracked.txt:1 and focused regression results"}
 
 
-def _invoke(case, path, publish, targets=None, head_is_current=None):
+def _invoke(case, path, publish, targets=None, head_is_current=None, retry_failed=False):
     repository, head, threads, _identities, _request_value, ledger, store, _authority = case
     return run_pending_local_repair_verification(
         "owner/repo",
@@ -59,7 +61,92 @@ def _invoke(case, path, publish, targets=None, head_is_current=None):
         repair_store=store,
         verification_store=LocalRepairVerificationStore(path),
         backend_manager=MagicMock(),
+        retry_failed=retry_failed,
     )
+
+
+def test_explicit_failed_verification_retry_retains_report_and_publishes_new_result(verification_case, tmp_path):
+    case = verification_case
+    path = tmp_path / "verification.sqlite3"
+    publish = MagicMock(return_value=True)
+    with patch("auto_coder.local_review_validation.run_llm_prompt", side_effect=RuntimeError("unattended approval request")) as invoke:
+        failed = _invoke(case, path, publish)
+        replay = _invoke(case, path, publish)
+    invoke.assert_called_once()
+    assert replay.unverified_local_repairs == failed.unverified_local_repairs
+    store = LocalRepairVerificationStore(path)
+    original = store.get(case[7].generation_id, case[1])
+    response = json.dumps({"thread_dispositions": [_disposition(thread.thread_id, "ADDRESSED") for thread in case[2]]})
+    with patch("auto_coder.local_review_validation.run_llm_prompt", return_value=response) as retry:
+        verified = _invoke(case, path, publish, retry_failed=True)
+    retry.assert_called_once()
+    assert not verified.unverified_local_repairs
+    assert "Explicit verification retry: 1" in verified.summary
+    assert publish.call_count == 2
+    assert case[5].get_snapshot("https://api.github.com", "owner/repo", 42).get_outstanding_generation() is None
+    with sqlite3.connect(path) as connection:
+        archived = connection.execute("SELECT attempt, response, published, publication_started FROM verification_history").fetchall()
+    assert archived == [(0, original.response, 1, 1)]
+    current = store.get(case[7].generation_id, case[1])
+    assert (current.attempt, current.phase, current.published) == (1, "completed", True)
+
+
+def test_explicit_retry_claim_has_one_owner_and_preserves_failed_attempt(verification_case, tmp_path):
+    case = verification_case
+    path = tmp_path / "verification.sqlite3"
+    with patch("auto_coder.local_review_validation.run_llm_prompt", side_effect=RuntimeError("verification failed")):
+        _invoke(case, path, lambda *_: True)
+    store = LocalRepairVerificationStore(path)
+    generation, head = case[7].generation_id, case[1]
+    checkpoint = store.get(generation, head)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(LocalRepairVerificationStore(path).retry_failed, generation, head, checkpoint) for _ in range(2)]
+        assert sorted(future.result(timeout=5) for future in futures) == [False, True]
+    assert store.retry_failed(generation, head, checkpoint) is False
+    assert (store.get(generation, head).phase, store.get(generation, head).attempt) == ("executing", 1)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM verification_history").fetchone() == (1,)
+
+
+def test_existing_verification_database_migrates_without_discarding_reports(tmp_path):
+    path = tmp_path / "verification.sqlite3"
+    payload = json.dumps({"summary": "Original failed report", "dispositions": [], "unverified": [{"reason": "host failed"}]})
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE verifications (generation_id TEXT NOT NULL, head_sha TEXT NOT NULL, phase TEXT NOT NULL, "
+            "response TEXT NOT NULL DEFAULT '', published INTEGER NOT NULL DEFAULT 0, publication_started INTEGER NOT NULL DEFAULT 0, "
+            "diagnostic_published INTEGER NOT NULL DEFAULT 0, diagnostic_started INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (generation_id, head_sha))"
+        )
+        connection.execute("INSERT INTO verifications VALUES (?, ?, 'completed', ?, 1, 1, 0, 0)", ("generation", "head", payload))
+    store = LocalRepairVerificationStore(path)
+    original = store.get("generation", "head")
+    assert (original.attempt, original.response, original.published) == (0, payload, True)
+    assert store.retry_failed("generation", "head", original)
+    assert store.get("generation", "head").attempt == 1
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT response FROM verification_history").fetchall() == [(payload,)]
+
+
+@pytest.mark.parametrize("state", ["executing", "unpublished", "partial"])
+def test_force_never_retries_live_unconfirmed_or_partially_verified_result(verification_case, tmp_path, state):
+    case = verification_case
+    path = tmp_path / "verification.sqlite3"
+    store = LocalRepairVerificationStore(path)
+    if state == "executing":
+        assert store.claim(case[7].generation_id, case[1])
+    elif state == "unpublished":
+        with patch("auto_coder.local_review_validation.run_llm_prompt", side_effect=RuntimeError("failed")), pytest.raises(RuntimeError, match="publication is unconfirmed"):
+            _invoke(case, path, lambda *_: False)
+    else:
+        response = json.dumps({"thread_dispositions": [_disposition("target-1", "ADDRESSED")]})
+        with patch("auto_coder.local_review_validation.run_llm_prompt", return_value=response):
+            _invoke(case, path, lambda *_: True)
+    with patch("auto_coder.local_review_validation.run_llm_prompt") as invoke:
+        result = _invoke(case, path, lambda *_: True, retry_failed=True)
+    invoke.assert_not_called()
+    assert result.unverified_local_repairs
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM verification_history").fetchone() == (0,)
 
 
 def test_pending_scope_partial_result_is_visible_and_not_repeated_after_restart(verification_case, tmp_path):
@@ -312,7 +399,8 @@ def test_pending_diagnostic_cannot_absorb_later_completed_report(verification_ca
 
 @pytest.mark.parametrize("threads_resolved", [False, True])
 @pytest.mark.parametrize("ordinary_roots", [False, True])
-def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_target_in_mounted_view(verification_case, monkeypatch, threads_resolved, ordinary_roots):
+@pytest.mark.parametrize("force", [False, True])
+def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_target_in_mounted_view(verification_case, monkeypatch, threads_resolved, ordinary_roots, force):
     from types import SimpleNamespace
 
     from auto_coder.automation_config import ProcessedPRResult
@@ -362,8 +450,11 @@ def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_
         patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "COMMENT", "")) as publish,
         patch("auto_coder.pr_processor._merge_pr") as merge,
     ):
+        if force:
+            with patch("auto_coder.local_review_validation.run_llm_prompt", side_effect=RuntimeError("unattended verification failed")):
+                _invoke(verification_case, repository.parent / "verification.sqlite3", lambda *_: True)
         with collector.start_execution("owner/repo", "pr", 42, origin="worker"):
-            first = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, processing_status=processing_status)
+            first = _handle_pr_merge(client, "owner/repo", pr_data, config, {}, processing_status=processing_status, force_adversarial_validation=force)
         _handle_pr_merge(client, "owner/repo", pr_data, config, {}, force_adversarial_validation=True)
     assert scoped.call_count == 1, first
     broad.assert_not_called()
@@ -382,6 +473,10 @@ def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_
     events = [event for event in snapshot.events if event.stage_id == "pr.repair-delegation"]
     assert events[-1].outcome == Outcome.BLOCKED.value
     assert events[-1].facts["effect"] == "local-validation-scoped"
+    assert events[-1].facts["explicit_retry_requested"] is force
+    if force:
+        with sqlite3.connect(repository.parent / "verification.sqlite3") as connection:
+            assert connection.execute("SELECT COUNT(*) FROM verification_history").fetchone() == (1,)
     assert events[-1].facts["unverified_count"] == 1
     assert events[-1].facts["unverified_targets"][0]["thread_id"] == "target-2"
     with patch("auto_coder.dashboard.ui") as ui:

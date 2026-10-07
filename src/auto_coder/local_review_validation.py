@@ -26,6 +26,7 @@ class VerificationCheckpoint:
     published: bool = False
     publication_started: bool = False
     diagnostic_published: bool = False
+    attempt: int = 0
 
 
 def _verification_response(result: AdversarialValidationResult) -> str:
@@ -39,12 +40,24 @@ class LocalRepairVerificationStore:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS verifications ("
                 "generation_id TEXT NOT NULL, head_sha TEXT NOT NULL, phase TEXT NOT NULL, response TEXT NOT NULL DEFAULT '', "
                 "published INTEGER NOT NULL DEFAULT 0, publication_started INTEGER NOT NULL DEFAULT 0, "
                 "diagnostic_published INTEGER NOT NULL DEFAULT 0, diagnostic_started INTEGER NOT NULL DEFAULT 0, "
                 "PRIMARY KEY (generation_id, head_sha))"
+            )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(verifications)")}
+            if "attempt" not in columns:
+                connection.execute("ALTER TABLE verifications ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS verification_history ("
+                "generation_id TEXT NOT NULL, head_sha TEXT NOT NULL, attempt INTEGER NOT NULL, "
+                "phase TEXT NOT NULL, response TEXT NOT NULL, published INTEGER NOT NULL, "
+                "publication_started INTEGER NOT NULL, diagnostic_published INTEGER NOT NULL, "
+                "diagnostic_started INTEGER NOT NULL, archived_at REAL NOT NULL, "
+                "PRIMARY KEY (generation_id, head_sha, attempt))"
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -57,8 +70,8 @@ class LocalRepairVerificationStore:
 
     def get(self, generation_id: str, head_sha: str) -> VerificationCheckpoint:
         with self._connect() as connection:
-            row = connection.execute("SELECT phase, response, published, publication_started, diagnostic_published FROM verifications WHERE generation_id=? AND head_sha=?", (generation_id, head_sha)).fetchone()
-        return VerificationCheckpoint(str(row[0]), str(row[1]), bool(row[2]), bool(row[3]), bool(row[4])) if row else VerificationCheckpoint()
+            row = connection.execute("SELECT phase, response, published, publication_started, diagnostic_published, attempt FROM verifications WHERE generation_id=? AND head_sha=?", (generation_id, head_sha)).fetchone()
+        return VerificationCheckpoint(str(row[0]), str(row[1]), bool(row[2]), bool(row[3]), bool(row[4]), int(row[5])) if row else VerificationCheckpoint()
 
     def complete(self, generation_id: str, head_sha: str, result: AdversarialValidationResult) -> None:
         payload = _verification_response(result)
@@ -73,6 +86,28 @@ class LocalRepairVerificationStore:
                 (generation_id, head_sha, checkpoint.response),
             )
             return cursor.rowcount == 1
+
+    def retry_failed(self, generation_id: str, head_sha: str, checkpoint: VerificationCheckpoint) -> bool:
+        """Archive a confirmed failed report and atomically reserve one explicit retry."""
+        if checkpoint.phase != "completed" or not checkpoint.published:
+            return False
+        payload = json.loads(checkpoint.response)
+        if payload.get("dispositions") or not payload.get("unverified"):
+            return False
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute("SELECT phase, response, published, attempt FROM verifications WHERE generation_id=? AND head_sha=?", (generation_id, head_sha)).fetchone()
+            if current != ("completed", checkpoint.response, 1, checkpoint.attempt):
+                return False
+            connection.execute(
+                "INSERT INTO verification_history SELECT generation_id, head_sha, attempt, phase, response, published, " "publication_started, diagnostic_published, diagnostic_started, ? FROM verifications WHERE generation_id=? AND head_sha=?",
+                (time.time(), generation_id, head_sha),
+            )
+            connection.execute(
+                "UPDATE verifications SET phase='executing', response='', published=0, publication_started=0, " "diagnostic_published=0, diagnostic_started=0, attempt=attempt+1 WHERE generation_id=? AND head_sha=?",
+                (generation_id, head_sha),
+            )
+            return True
 
     def mark_published(self, generation_id: str, head_sha: str, expected_response: str, *, diagnostic: bool = False) -> bool:
         column = "diagnostic_published" if diagnostic else "published"
@@ -108,8 +143,9 @@ def run_pending_local_repair_verification(
     repair_store: Optional[LocalReviewRepairStore] = None,
     verification_store: Optional[LocalRepairVerificationStore] = None,
     backend_manager: Optional[BackendManager] = None,
+    retry_failed: bool = False,
 ) -> AdversarialValidationResult:
-    """Check only unsettled roots, never rerunning the same generation/head."""
+    """Check unsettled roots once unless an operator explicitly retries failure."""
     from contextlib import AbstractContextManager
 
     ledger = ledger or RepairAllowanceLedger()
@@ -126,6 +162,10 @@ def run_pending_local_repair_verification(
     result = AdversarialValidationResult(result="INCONCLUSIVE", local_repair_generation_id=generation.generation_id, summary="Independent verification of pending local corrections only.")
     checkpoint = verification_store.get(generation.generation_id, head_sha)
     retry_claimed = False
+    if retry_failed and verification_store.retry_failed(generation.generation_id, head_sha, checkpoint):
+        retry_claimed = True
+        reserved = verification_store.get(generation.generation_id, head_sha)
+        checkpoint = VerificationCheckpoint(attempt=reserved.attempt)
     if checkpoint.phase == "completed":
         saved = json.loads(checkpoint.response)
         # This exact failure occurs before worktree/backend entry. A newly
@@ -218,6 +258,8 @@ def run_pending_local_repair_verification(
                     reason = f"{disposition.rationale}; {disposition.evidence}" if disposition else "Reviewer omitted the required disposition; this target was not verified."
                     result.unverified_local_repairs.append(UnverifiedLocalRepair(identity, target.thread_id, reason))
         result.summary = f"Verification limited to {len(pending)} pending local correction target(s): {len(result.thread_dispositions)} disposition(s) returned, {len(result.unverified_local_repairs)} target(s) NOT verified. No full PR validation was performed."
+        if checkpoint.attempt:
+            result.summary += f" Explicit verification retry: {checkpoint.attempt}. Earlier failed reports are retained."
         verification_store.complete(generation.generation_id, head_sha, result)
     if not checkpoint.published:
         expected_response = _verification_response(result)

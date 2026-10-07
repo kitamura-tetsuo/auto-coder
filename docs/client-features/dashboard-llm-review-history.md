@@ -1,5 +1,16 @@
 # Dashboard LLM review history
 
+An explicit retry of failed scoped local verification appears in the existing
+repair-delegation stage with `explicit_retry_requested`; the published report
+identifies its attempt number. Earlier failed reports remain history. A retry
+request itself does not establish correction or merge completion.
+
+Ordinary reviews with concrete requirement violations show correction handoff
+through the existing repair-delegation stage. A matching `VIOLATED` entry does
+not mean evidence is missing; unmatched or unverified entries still show a
+reconciliation wait. Repair dispatch, publication, independent verification,
+and confirmed merge remain separate history facts.
+
 When a repair review encounters stale base/contract/policy authority, the
 Execution Trace records the renewed strong audit's current head/base and
 publication result. Audit completion alone does not close historical findings;

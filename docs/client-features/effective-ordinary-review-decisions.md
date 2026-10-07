@@ -9,6 +9,14 @@ record carries its own source and canonical-association revisions.
 The raw validator result and requirement coverage remain separate diagnostic
 evidence.
 
+A normalized ordinary `NEEDS_FIX` result may dispatch implementation repair
+when its coverage includes `VIOLATED` requirements with matching concrete
+findings. Such a violation is adjudicated evidence for correction, not missing
+evidence and never approval clearance. Unverified requirements, violations
+without matching findings, specification gaps, and unexplained changes still
+require reconciliation. `PASS` continues to require only `VERIFIED` or justified
+`IRRELEVANT` entries.
+
 Operational `ERROR`, `EXHAUSTED`, `BLOCKED`, and `INCONCLUSIVE` outcomes wait
 without dispatching a repair while retaining known accepted obligations for a
 later invocation. Incomplete, ambiguous, stale, or insufficiently

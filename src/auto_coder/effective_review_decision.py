@@ -211,7 +211,9 @@ def derive_effective_review_decision(
     if tests:
         return _decision(result, projection, "NEEDS_TESTS", EffectiveNextAction.FOCUSED_TEST_REPAIR, [item.reason for item in tests], tests)
 
-    coverage_complete = bool(result.requirement_coverage) and all(entry.status in {"VERIFIED", "IRRELEVANT"} for entry in result.requirement_coverage)
+    # A concrete violation is adjudicated evidence for repair, never approval.
+    finding_requirements = {requirement_id for finding in result.findings for requirement_id in finding.all_requirement_ids}
+    coverage_complete = bool(result.requirement_coverage) and all(entry.status in {"VERIFIED", "IRRELEVANT"} or (raw_status == "NEEDS_FIX" and entry.status == "VIOLATED" and entry.requirement_id in finding_requirements) for entry in result.requirement_coverage)
     if result.specification_gaps or result.unexplained_changes or not coverage_complete:
         return _decision(result, projection, "BLOCKED", EffectiveNextAction.RECONCILIATION, ["Specification, provenance, or required coverage remains unresolved"], [])
     if raw_status == "NEEDS_FIX":

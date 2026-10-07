@@ -682,7 +682,7 @@ def test_exact_head_push_uses_lease_and_never_enters_recovery_fallback() -> None
 
 
 @pytest.mark.parametrize("heading", ["### Auto-Coder adversarial finding", "### Auto-Coder material test-oracle gap", "<!-- auto-coder-two-tier-finding:v1:accepted:finding -->"])
-@pytest.mark.parametrize("replay", ["fresh", "verbatim", "disposition"])
+@pytest.mark.parametrize("replay", ["fresh", "verbatim", "disposition", "reworded"])
 def test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelated_threads(heading: str, replay: str) -> None:
     from auto_coder.pr_processor import _send_adversarial_validation_feedback_to_cloud_task
 
@@ -690,7 +690,7 @@ def test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelat
     route = ReviewRepairRouteDecision(ReviewRepairRouteDisposition.LOCAL_REQUIRED, "local", evidence)
     finding = f"{heading}\n\nCorrect the broken invariant."
     report = finding
-    if replay == "disposition":
+    if replay in {"disposition", "reworded"}:
         from auto_coder.adversarial_validator import AdversarialValidationResult, ReviewThreadDisposition, format_adversarial_review_summary
 
         report = format_adversarial_review_summary(
@@ -710,7 +710,8 @@ def test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelat
         patch("auto_coder.local_review_repair.execute_local_review_repair", return_value=LocalReviewRepairOutcome("awaiting_validation", "published", True, True)) as execute,
         patch("auto_coder.pr_processor._resolve_cloud_task_origin") as cloud,
     ):
-        result = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "abc123", report, github, [finding] if replay == "fresh" else (), config=MagicMock())
+        actionable = [finding] if replay == "fresh" else [f"{heading}\n\nReworded current counterexample."] if replay == "reworded" else ()
+        result = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "abc123", report, github, actionable, config=MagicMock())
     execute.assert_called_once()
     request = execute.call_args.args[0]
     assert finding in request.prompt

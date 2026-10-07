@@ -2632,6 +2632,7 @@ class TestAutomationEngineExtended:
         # We need to mock cmd.run_command (for git commands) and gh_logger (for gh commands)
         # Use patch.object to mock the method on the cmd instance
         with patch.object(pr_processor.cmd, "run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess:
+            mock_gh_subprocess.return_value = subprocess.CompletedProcess(["git", "rev-parse", "--absolute-git-dir"], 0, stdout=os.path.join(os.getcwd(), ".git"), stderr="")
             # Mock all git commands to succeed
             # The _force_checkout_pr_manually function makes multiple git calls:
             # merge --abort, reset --hard, clean -fd, fetch (branch:branch), fetch (pull/N/head),
@@ -2646,8 +2647,8 @@ class TestAutomationEngineExtended:
             # Verify at least some git commands were called
             assert mock_run_command.call_count >= 4
 
-            # Verify gh command was NOT called
-            assert mock_gh_subprocess.call_count == 0
+            # Only checkout identity reads may use subprocess; no gh command is allowed.
+            assert [call.args[0] for call in mock_gh_subprocess.call_args_list] == [["git", "rev-parse", "--absolute-git-dir"]] * 2
 
     def test_checkout_pr_branch_without_force_clean(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout without force clean (default behavior)."""
@@ -2662,6 +2663,7 @@ class TestAutomationEngineExtended:
         # Mock cmd.run_command (invoked by pr_processor.cmd)
         # Use patch.object to mock the method on the cmd instance
         with patch.object(pr_processor.cmd, "run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess:
+            mock_gh_subprocess.return_value = subprocess.CompletedProcess(["git", "rev-parse", "--absolute-git-dir"], 0, stdout=os.path.join(os.getcwd(), ".git"), stderr="")
             # Mock all git commands to succeed
             # The _force_checkout_pr_manually function makes multiple git calls even without force clean
             mock_run_command.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
@@ -2674,8 +2676,8 @@ class TestAutomationEngineExtended:
             # Verify at least some git commands were called
             assert mock_run_command.call_count >= 2
 
-            # Verify gh command was NOT called
-            assert mock_gh_subprocess.call_count == 0
+            # Only checkout identity reads may use subprocess; no gh command is allowed.
+            assert [call.args[0] for call in mock_gh_subprocess.call_args_list] == [["git", "rev-parse", "--absolute-git-dir"]] * 2
 
     @patch("auto_coder.automation_engine.get_ghapi_client")
     @patch("subprocess.run")

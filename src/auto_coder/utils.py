@@ -60,22 +60,28 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     binding = context.boundary.binding
     runtime_base = Path(environment.get("AUTO_CODER_RUNTIME_ROOT", tempfile.gettempdir())) / "local-invocations"
     runtime = runtime_base / binding.invocation_id
-    runtime.mkdir(parents=True, exist_ok=False)
+    retained_provider_state = context.boundary.backend_type.lower() == "opencode"
+    if retained_provider_state:
+        runtime = binding.workspace.parent / "provider-runtime"
+    initialized = runtime.exists()
+    runtime.mkdir(parents=True, exist_ok=retained_provider_state)
     home = runtime / "home"
-    home.mkdir()
+    home.mkdir(exist_ok=retained_provider_state)
     if context.boundary.backend_type.lower() == "codex":
         (home / ".codex").mkdir()
     temporary_directory = runtime / "tmp"
-    temporary_directory.mkdir()
+    temporary_directory.mkdir(exist_ok=retained_provider_state)
     original_home = Path(environment.get("HOME", str(Path.home())))
     codex_home = Path(environment.get("CODEX_HOME", str(original_home / ".codex")))
     for name in ("auth.json", "config.toml"):
         source = codex_home / name
-        if source.is_file():
+        if source.is_file() and not initialized:
             destination = home / ".codex" / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
     for relative in (Path(".config/opencode"), Path(".local/share/opencode/auth.json")):
+        if initialized:
+            continue
         source = original_home / relative
         destination = home / relative
         if source.is_dir():
@@ -95,6 +101,13 @@ def _prepare_invocation_runtime(context: _SupervisedCommandContext, environment:
     # granting the worker access to the controller's shared /tmp.
     environment["TMPDIR"] = str(temporary_directory)
     return runtime
+
+
+def prepare_retained_provider_environment(environment: Dict[str, str]) -> None:
+    """Use the supervised OpenCode runtime for preflight and task commands alike."""
+    context = _SUPERVISED_COMMAND.get()
+    if context is not None and context.boundary.backend_type.lower() == "opencode":
+        _prepare_invocation_runtime(context, environment)
 
 
 @contextlib.contextmanager
@@ -914,11 +927,9 @@ class CommandExecutor:
                     # invocation-owned state, so transfer it without touching the
                     # caller or peer repositories.
                     _chown_tree(binding.workspace.parent, worker_uid, worker_gid)
-                # Codex creates PATH aliases and starts an in-process app-server
-                # before processing a read-only review. Keep that bookkeeping in
-                # an invocation-owned home and temporary directory.
-                if boundary.editable or boundary.backend_type.lower() == "codex":
-                    private_runtime = _prepare_invocation_runtime(supervised, launch_env)
+                # Provider CLIs need startup/cache state even for read-only reviews.
+                # Keep it writable only within this invocation's private runtime.
+                private_runtime = _prepare_invocation_runtime(supervised, launch_env)
                 if boundary.backend_type.lower() == "codex" and Path(cmd[0]).name == "codex":
                     validate_codex_effective_directory(cmd[1:], binding.workspace)
                     if not boundary.editable:
@@ -966,7 +977,7 @@ class CommandExecutor:
                         readiness.tracked_contents_checksum,
                     )
             except (OSError, RepositoryReadinessError) as exc:
-                if private_runtime is not None:
+                if private_runtime is not None and boundary.backend_type.lower() != "opencode":
                     shutil.rmtree(private_runtime, ignore_errors=True)
                 identity = f"uid={worker_uid}, gid={worker_gid}"
                 return CommandResult(
@@ -1006,7 +1017,7 @@ class CommandExecutor:
                         shutil.copyfile(provider_output, destination)
                     except OSError as exc:
                         final_message_error = f"Codex final-message transfer failed: {exc}"
-            if result.writer_complete and private_runtime is not None:
+            if result.writer_complete and private_runtime is not None and boundary.backend_type.lower() != "opencode":
                 shutil.rmtree(private_runtime, ignore_errors=True)
             if on_stream is not None:
                 if result.stdout:

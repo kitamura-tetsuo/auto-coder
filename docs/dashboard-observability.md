@@ -1,5 +1,32 @@
 # Dashboard observability verification
 
+Explicit retries of completed failed local verification keep the existing
+`pr.repair-delegation` / `effect=local-validation-scoped` stage, generation and
+examined head. The `explicit_retry_requested` fact distinguishes the operator
+request; outcome, unverified count and concrete reasons still describe the
+actual verification. The native report includes its retry number and prior
+reports remain durable history. No stage, outcome enum or renderer changes.
+Run `bash scripts/test.sh tests/test_local_review_validation.py
+tests/test_dashboard_observability.py` for retained failure, atomic single-owner
+retry, forbidden live/unconfirmed/partial retries and production trace routing.
+
+Ordinary demonstrated requirement violations now retain `NEEDS_FIX` instead of
+being mislabeled as missing coverage. The existing effective-decision consumer
+emits the ordinary correction handoff and repair-delegation stages; unresolved
+evidence still emits reconciliation waits, and neither outcome implies merge.
+No processing origin, provider route, durable format, event schema, or renderer
+changes. Run `bash scripts/test.sh tests/test_effective_review_decision.py
+tests/test_effective_decision_application.py tests/test_dashboard_observability.py`.
+The decision regression binds a nested read-only Grid violation to its exact
+requirement and checks non-approving repair, while unmatched and unverified
+coverage continues to block. The dashboard review-history contract retains the
+distinction between correction handoff, confirmed publication, and approval.
+Reworded actionable feedback retains exact independently upheld native roots
+before the same repair handoff; its trace still reports execution or waiting
+from the actual local repair outcome. Run `bash scripts/test.sh
+tests/test_local_review_repair.py` for fresh, saved, and reworded root matching
+with unrelated threads excluded. This changes no event fields or dashboard view.
+
 Merge-operation resumption now refuses foreign repositories before opening a
 trace. Accepted resumptions retain the stored operation repository in the
 `merge-operation-resumption` execution, strict GitHub refresh and normal candidate
@@ -570,6 +597,14 @@ log's relative path. Ordinary test failures are baseline evidence for repair,
 whereas launch failure or timeout prevents provider submission. Neither a passed
 baseline nor a failed baseline asserts implementation completion. A controller-designated CI-repair invocation instead emits only a result with outcome `skipped`, `baseline: not_run`, and `reason: ci_repair_policy` (no exit code or log path). No-edit roots
 and retained-root continuation emit no new initial-test stage.
+
+Physical-checkout serialization preserves the existing implementation, handoff,
+publication and local-call trace boundaries. Waiting for checkout ownership is
+not provider execution and emits no `llm.local-execution` start. Console/file
+logs identify a contended checkout and its later acquisition once per wait; no origin,
+provider route, durable retry authority or event schema changes. Regression
+`tests/test_checkout_lock.py` exercises concurrent Issue/PR checkout use and
+shutdown while waiting. Run `bash scripts/test.sh tests/test_checkout_lock.py`.
 
 Private workspace storage admission estimates copy space plus a 1 GiB reserve
 before writing a snapshot. Insufficient capacity follows the preparation-failure
@@ -2093,3 +2128,11 @@ Ledger admission failure is a failed repair dispatch, never a successful handoff
 exercises production dispatch with the real ledger and bundle, verifies that
 both identities reach the provider, and checks that no thread is resolved.
 See [External review feedback tracking](client-features/external-review-feedback-tracking.md).
+
+Private runtime allocation for supervised no-edit providers is observability-neutral:
+it changes only the HOME/TMPDIR writable roots supplied to the existing supervisor,
+without changing admission, provider selection, outcomes, durable resumption, or trace
+schemas. Existing `llm.local-execution` completion remains required; allocating runtime
+state is not review clearance. Run `bash scripts/test.sh tests/test_opencode_noedit_live.py`
+with the pinned CLI to verify real no-edit startup and refusal of stale session roots.
+See [Invocation-local filesystem confinement](client-features/invocation-filesystem-confinement.md).

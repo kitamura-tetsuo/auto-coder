@@ -39,6 +39,38 @@ def test_prepare_invocation_runtime_creates_empty_codex_home(tmp_path):
     assert environment["CODEX_HOME"] == str(codex_home)
 
 
+def test_opencode_runtime_preserves_native_state_until_private_workspace_disposal(tmp_path):
+    private_root = tmp_path / "private-call"
+    workspace = private_root / "repository"
+    workspace.mkdir(parents=True)
+    shared_home = tmp_path / "shared-home"
+    config = shared_home / ".config" / "opencode" / "opencode.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"permission":"deny"}')
+    context = SimpleNamespace(
+        boundary=SimpleNamespace(backend_type="opencode", binding=SimpleNamespace(invocation_id="retained-call", workspace=workspace)),
+        supervisor=SimpleNamespace(owner=None),
+    )
+    first_env = {"HOME": str(shared_home)}
+    first_runtime = utils._prepare_invocation_runtime(context, first_env)
+    native_session = first_runtime / "home" / ".local" / "share" / "opencode" / "session.db"
+    native_session.parent.mkdir(parents=True)
+    native_session.write_bytes(b"retained native session")
+    config.write_text('{"permission":"changed externally"}')
+
+    next_env = {"HOME": str(shared_home)}
+    next_runtime = utils._prepare_invocation_runtime(context, next_env)
+
+    assert next_runtime == first_runtime
+    assert next_runtime.parent == private_root
+    assert next_env["HOME"] == first_env["HOME"]
+    assert next_env["TMPDIR"] == first_env["TMPDIR"]
+    assert native_session.read_bytes() == b"retained native session"
+    assert (next_runtime / "home" / ".config" / "opencode" / "opencode.json").read_text() == '{"permission":"deny"}'
+    assert config.read_text() == '{"permission":"changed externally"}'
+    assert not (shared_home / ".local").exists()
+
+
 @pytest.mark.parametrize(
     "stdin_text",
     [

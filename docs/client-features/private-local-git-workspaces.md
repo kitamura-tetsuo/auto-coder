@@ -28,6 +28,10 @@ invocation. Cleanup removes only that invocation's temporary clone after executi
 and edit handoff have finished; non-Git operations continue to use their original
 working directory.
 
+Supervised read-only backends receive an invocation-owned runtime HOME and TMPDIR,
+just as editable backends do. CLI bookkeeping may write there without granting
+write access to the private source, Git metadata, caller, or shared provider state.
+
 After creating a new implementation clone, the backend manager runs
 `bash scripts/test.sh` in that clone before launching the LLM. It uses the target
 repository's startup-validated `TEST_SCRIPT_PATH`, with no additional existence
@@ -64,6 +68,12 @@ index, and supported files under a
 per-target writer lock; stale targets, unsafe paths, symlink ancestors, or partial
 application failures are refused without overwriting caller work. Failed and
 no-edit turns never enter this handoff.
+
+Controller branch-processing contexts retain physical checkout ownership through
+handoff and restoration. Concurrent PR checkout preparation waits for this lease,
+including destructive preparation that does not itself switch branches. See
+`monitored-checkout-ownership.md`; stale-caller checks remain mandatory for
+changes made outside these controller boundaries.
 
 After result handoff, retained-root checkpoint advancement compares the same source
 path scope as handoff: tracked files, non-ignored non-disposable untracked files,

@@ -546,7 +546,10 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 return result
 
             # Stubbed commands
-            if program not in ("git", "gh", "antigravity", "codex", "uv", "node", "uname", "sleep"):
+            # Checkout leases need the real local Git-directory identity;
+            # a branch-name placeholder cannot stand in for a directory.
+            checkout_identity_query = program == "git" and isinstance(cmd, (list, tuple)) and "--absolute-git-dir" in cmd
+            if checkout_identity_query or program not in ("git", "gh", "antigravity", "codex", "uv", "node", "uname", "sleep"):
                 return orig_run(
                     cmd,
                     capture_output=capture_output,
@@ -677,7 +680,8 @@ def stub_git_and_gh_commands(monkeypatch, request):
             raise FileNotFoundError("Codex app-server is unavailable in the generic command stub")
         try:
             program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
-            if program in ("git", "gh", "antigravity", "codex", "uv", "node"):
+            checkout_identity_query = program == "git" and isinstance(cmd, (list, tuple)) and "--absolute-git-dir" in cmd
+            if not checkout_identity_query and program in ("git", "gh", "antigravity", "codex", "uv", "node"):
 
                 class MockStream:
                     def __init__(self, content):

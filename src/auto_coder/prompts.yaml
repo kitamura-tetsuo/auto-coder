@@ -293,6 +293,7 @@ pr:
     This is independent verification of completed corrective work, NOT a new PR-wide adversarial validation.
     Do not explore unrelated requirements, inspect unrelated findings, produce new findings or test-gap requests, or repeat the full PR validation.
     Inspect current repository evidence and, when useful, run focused checks through the target repository's test script. Operate strictly read-only. Do not mutate files, Git state, or GitHub.
+    Do not run checks that write artifacts or require dependency installation. Inspect committed implementation and regression evidence instead when a check cannot run read-only. Use separate simple inspection commands with literal arguments; do not use diagnostic echo, shell variables, exit-code expansion, or command substitution. Read command exit codes from tool-result metadata. If a tool requires interactive approval, report the limitation as INCONCLUSIVE rather than requesting approval or changing permission rules.
     For EACH listed thread, decide only whether its ORIGINAL recorded counterexample/invariant was corrected:
     ADDRESSED requires independently established correction with concrete current-head evidence.
     STILL_VALID requires independently established persistence of the original defect/invariant gap with concrete current-head evidence.

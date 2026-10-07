@@ -13,7 +13,13 @@ On Linux, the child joins its invocation-owned cgroup and then installs a Landlo
 ruleset with `no_new_privs` before `exec`. Editable calls may mutate only the private
 result and owned runtime roots. No-edit calls can inspect the repository but cannot
 mutate repository, Git, or shared scratch paths. They may write only to explicitly
-provided invocation-owned runtime roots, which Codex needs for startup state.
+provided invocation-owned runtime roots. Every supervised backend receives a private
+HOME and TMPDIR for CLI startup/cache state, including OpenCode no-edit reviews;
+source and Git metadata remain read-only. Shared provider configuration is copied
+into the private home rather than granting writes to the controller's home.
+OpenCode's native session state lives beside its private repository and remains
+available across authorized retained-root continuation. It is removed with that
+workspace after all owners release it, rather than after each CLI command.
 The provider and its descendants share that runtime allowance. The kernel
 applies the policy to shells, interpreters, absolute
 executables, Git alternate-directory options, hooks, and every descendant. Writes
