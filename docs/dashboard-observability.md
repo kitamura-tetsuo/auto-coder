@@ -598,6 +598,19 @@ whereas launch failure or timeout prevents provider submission. Neither a passed
 baseline nor a failed baseline asserts implementation completion. A controller-designated CI-repair invocation instead emits only a result with outcome `skipped`, `baseline: not_run`, and `reason: ci_repair_policy` (no exit code or log path). No-edit roots
 and retained-root continuation emit no new initial-test stage.
 
+Explicit `AUTO_CODER_DEFER_LOCAL_TESTS=1` emits that same skipped baseline result
+with `reason=operator_deferred_until_merge`. It provides no verification evidence.
+`tests/test_ci_repair_bootstrap_exemption.py::test_operator_deferral_skips_baseline_and_passes_instruction`
+drives the backend manager through a real local CLI and checks the event.
+Conclusive dispatch non-start restores a generation-bound continuation receipt
+and emits `issue.implementation-not-started` with `DEFERRED`, its generation,
+reason, and `provider_started=false`. This permits normal daemon redispatch,
+while historical start ownership and indeterminate outcomes remain protected.
+`tests/test_implementation_ownership.py::test_normal_admission_resumes_confirmed_non_start_without_only`
+drives normal admission through a conclusive no-start disposition, observes the
+exact production trace facts, and verifies the next normal admission dispatches.
+Run `bash scripts/test.sh tests/test_implementation_ownership.py tests/test_ci_repair_bootstrap_exemption.py`.
+
 Physical-checkout serialization preserves the existing implementation, handoff,
 publication and local-call trace boundaries. Waiting for checkout ownership is
 not provider execution and emits no `llm.local-execution` start. Console/file

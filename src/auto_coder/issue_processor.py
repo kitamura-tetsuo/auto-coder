@@ -45,6 +45,7 @@ from .shutdown_context import new_work_allowed
 from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
 from .utils import CommandExecutor
+from .worktree_utils import LocalPreparationNotStartedError
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -1425,7 +1426,7 @@ def _dispatch_issue_candidates(
                 return AdapterOutcome(DispatchOutcome.LOCAL_COMPLETED)
             else:
                 return AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic=f"unsupported backend type: {backend_type}")
-        except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError, FileNotFoundError) as exc:
+        except (AutoCoderUsageLimitError, CloudSubmissionNotStartedError, FileNotFoundError, LocalPreparationNotStartedError) as exc:
             return AdapterOutcome(DispatchOutcome.NOT_STARTED, diagnostic=str(exc))
         except Exception as exc:
             return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic=str(exc))

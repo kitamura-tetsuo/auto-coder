@@ -4,6 +4,12 @@ When a local PR's current-head CI failure is admitted for repair, Auto-Coder
 repairs it from the reported failures and submits the result to CI for full
 validation. It does not run the repository's full test suite locally.
 
+For an operator-requested post-merge local test run,
+`AUTO_CODER_DEFER_LOCAL_TESTS=1` also defers focused local checks. The initial
+correction and publication still run; no local test success is claimed and
+actual GitHub CI remains required for merge. Regression:
+`tests/test_ci_repair_focused_verification.py::test_operator_deferral_publishes_correction_without_local_test_claim`.
+
 - Initial processing and already-on-the-PR-branch (resumed) processing follow the
   same path: the initial CI-log correction always runs with all available failed-check
   diagnostics, and each local corrective invocation (initial and follow-up) runs under

@@ -49,7 +49,9 @@ from .shutdown_context import new_work_allowed
 from .shutdown_interrupt import mark_invocation_active
 from .utils import bind_supervised_command_execution
 from .worktree_utils import (
+    LocalPreparationNotStartedError,
     LocalWorkspaceOwnership,
+    WorkspacePreparationError,
     bind_retained_local_workspace,
     current_local_caller_checkpoint,
     current_local_caller_identity,
@@ -956,8 +958,15 @@ class BackendManager(LLMBackendManagerBase):
                         )
                     with worktree_ctx:
                         workspace_binding = get_current_local_workspace()
+                        defer_local_tests = os.environ.get("AUTO_CODER_DEFER_LOCAL_TESTS") == "1"
+                        if is_local and not is_noedit and defer_local_tests:
+                            from .prompt_loader import render_prompt
+
+                            prompt = prompt + "\n\n" + render_prompt("operator.deferred_local_tests")
                         if is_local and workspace_binding is not None and not is_noedit and retained_session is None:
-                            if ci_repair_designated():
+                            if defer_local_tests:
+                                record_implementation_workspace_tests_skipped(workspace_binding, "operator_deferred_until_merge")
+                            elif ci_repair_designated():
                                 record_implementation_workspace_tests_skipped(workspace_binding)
                             else:
                                 run_implementation_workspace_tests(workspace_binding, AutomationConfig().TEST_SCRIPT_PATH)
@@ -1147,6 +1156,8 @@ class BackendManager(LLMBackendManagerBase):
                                 provider_attempts += 1
                                 continue
 
+                    if not provider_started and isinstance(exc, WorkspacePreparationError):
+                        raise LocalPreparationNotStartedError(str(exc)) from exc
                     # Reraise exception if we don't handle it here.
                     raise
                 finally:

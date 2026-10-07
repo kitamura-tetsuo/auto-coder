@@ -187,6 +187,17 @@ def test_no_selectors_keeps_ci_diagnostics_and_submits_without_local_claim(harne
     assert h.commits == 1 and h.pushes == 1
 
 
+def test_operator_deferral_publishes_correction_without_local_test_claim(harness, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_DEFER_LOCAL_TESTS", "1")
+    harness.initial_edit = lambda: (harness.repo / "fix.txt").write_text("edit")
+    actions = _run(harness, ["tests/test_a.py"])
+    assert harness.invocations() == []
+    assert not harness.sentinel.exists()
+    assert harness.commits == 1 and harness.pushes == 1
+    assert "Local verification deferred by operator until after merge; GitHub CI remains authoritative" in actions
+    assert not any("passed locally" in action for action in actions)
+
+
 def test_unavailable_targets_are_unverified_and_never_trigger_repair_or_full_run(harness):
     h = harness
     h.set_state("test_a.py", True)

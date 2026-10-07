@@ -24,6 +24,7 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ExplicitTargetOutcome
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.execution_trace import Outcome, get_trace_collector
 from auto_coder.implementation_ownership import (
     OwnershipStartDecision,
     begin_implementation_ownership,
@@ -82,6 +83,74 @@ def test_bare_idle_reservation_does_not_own_generation(tmp_path):
     assert not slots.has_qualifying_implementation_activity(ISSUE)
     gate = evaluate_implementation_start(routing, slots, REPO, ISSUE, "g1")
     assert gate.decision is OwnershipStartDecision.START_NEW
+
+
+def test_confirmed_non_start_continues_without_erasing_historical_ownership(tmp_path):
+    slots, routing = _stores(tmp_path)
+    execution = slots.start_execution(ISSUE, generation="g1")
+    assert execution is not None
+    confirm_implementation_ownership(routing, REPO, ISSUE, "g1")
+    slots.finish_execution(ISSUE, execution)
+    assert evaluate_implementation_start(routing, slots, REPO, ISSUE, "g1").decision is OwnershipStartDecision.ALREADY_OWNED
+    routing.record_implementation_not_started(REPO, 1, "g1", "workspace failed before provider call")
+    assert routing.is_implementation_owned(REPO, 1, "g1")
+    assert evaluate_implementation_start(routing, slots, REPO, ISSUE, "g1").decision is OwnershipStartDecision.CONTINUE
+    assert evaluate_implementation_start(routing, slots, REPO, ISSUE, "g2").decision is OwnershipStartDecision.SUPERSEDE
+    confirm_implementation_ownership(routing, REPO, ISSUE, "g1")
+    assert not routing.implementation_not_started(REPO, 1, "g1")
+    assert evaluate_implementation_start(routing, slots, REPO, ISSUE, "g1").decision is OwnershipStartDecision.ALREADY_OWNED
+
+
+def test_normal_admission_resumes_confirmed_non_start_without_only(tmp_path, monkeypatch):
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    reserved = MagicMock(
+        side_effect=[
+            CandidateProcessingResult(type="issue", number=1, success=False, actions=["not started"], error="all candidates confirmed not started", cloud_submission_not_started=True),
+            CandidateProcessingResult(type="issue", number=1, success=True, actions=["dispatched"]),
+        ]
+    )
+    engine._process_single_candidate_reserved = reserved
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    first = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
+    assert first.success is False
+    assert engine.issue_stage_routing.implementation_not_started(REPO, 1, generation)
+    assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+    snapshot_trace = get_trace_collector().get_snapshot(repository=REPO, item_type="issue", item_number=1)
+    receipts = [event for event in snapshot_trace.events if event.stage_id == "issue.implementation-not-started"]
+    assert len(receipts) == 1
+    assert receipts[0].outcome == Outcome.DEFERRED.value
+    assert receipts[0].facts == {"generation": generation, "reason": "all candidates confirmed not started", "provider_started": False}
+    result = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
+    assert result.success is True
+    assert reserved.call_count == 2
+    assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+    assert not engine.issue_stage_routing.implementation_not_started(REPO, 1, generation)
+
+
+def test_unknown_truthy_nonstart_does_not_authorize_a_second_dispatch(tmp_path, monkeypatch):
+    snapshot = _standalone_snapshot(1, (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+    config = AutomationConfig(repo_name=REPO)
+    config.issue_specification_validation = True
+    config.issue_decomposition_validation = False
+    engine, github = _ready_engine(tmp_path, monkeypatch, {1: snapshot}, config)
+    github.get_issue_comments_strict.return_value = []
+    unknown_result = MagicMock(spec=CandidateProcessingResult, actions=[])
+    reserved = MagicMock(return_value=unknown_result)
+    engine._process_single_candidate_reserved = reserved
+    generation = engine._compute_implementation_generation(REPO, snapshot, None)
+    result = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
+    assert result is unknown_result
+    assert not engine.issue_stage_routing.implementation_not_started(REPO, 1, generation)
+    assert engine.issue_stage_routing.is_implementation_owned(REPO, 1, generation)
+    duplicate = engine._process_single_candidate_unified(REPO, Candidate("issue", dict(snapshot), 0), config, origin="worker")
+    assert duplicate.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert duplicate.actions == ["Deferred - implementation ownership already exists (issue:1)"]
+    assert reserved.call_count == 1
 
 
 def test_finishing_execution_does_not_erase_binding_before_tombstone(tmp_path):

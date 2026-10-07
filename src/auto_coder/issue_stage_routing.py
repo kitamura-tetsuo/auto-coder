@@ -211,6 +211,13 @@ class IssueStageRoutingStore:
                     owned_at REAL NOT NULL,
                     PRIMARY KEY(repository, target_number, generation)
                 );
+                CREATE TABLE IF NOT EXISTS implementation_unstarted_retries (
+                    repository TEXT NOT NULL,
+                    target_number INTEGER NOT NULL,
+                    generation TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    PRIMARY KEY(repository, target_number, generation)
+                );
                 CREATE TABLE IF NOT EXISTS implementation_retry_requests (
                     request_id TEXT PRIMARY KEY,
                     repository TEXT NOT NULL,
@@ -461,7 +468,7 @@ class IssueStageRoutingStore:
                 "SELECT generation FROM issue_lane_arrivals WHERE repository=? AND stage=? AND target_number=?",
                 (classification.repository, classification.stage, classification.target_number),
             ).fetchone()
-            owned = classification.stage == IMPLEMENTATION_STAGE and self._is_owned_locked(classification.repository, classification.target_number, classification.generation)
+            owned = classification.stage == IMPLEMENTATION_STAGE and self._is_owned_locked(classification.repository, classification.target_number, classification.generation) and not self._unstarted_retry_locked(classification.repository, classification.target_number, classification.generation)
             if not classification.eligible or owned:
                 self._connection.execute(
                     "DELETE FROM issue_lane_arrivals WHERE repository=? AND stage=? AND target_number=?",
@@ -676,6 +683,10 @@ class IssueStageRoutingStore:
         timestamp = time.time() if now is None else now
         with self._lock, self._connection:
             self._connection.execute(
+                "DELETE FROM implementation_unstarted_retries WHERE repository=? AND target_number=? AND generation=?",
+                (repository, target_number, generation),
+            )
+            self._connection.execute(
                 "INSERT OR IGNORE INTO implementation_owned_starts(repository,target_number,generation,owned_at) VALUES(?,?,?,?)",
                 (repository, target_number, generation, timestamp),
             )
@@ -683,6 +694,31 @@ class IssueStageRoutingStore:
                 "DELETE FROM issue_lane_arrivals WHERE repository=? AND stage='implementation' AND target_number=? AND generation=?",
                 (repository, target_number, generation),
             )
+
+    def record_implementation_not_started(self, repository: str, target_number: int, generation: str, reason: str) -> None:
+        """Allow continuation only after a conclusive no-submission disposition.
+
+        Historical ownership remains monotonic. Admission consumes this receipt;
+        crashes after admission therefore remain fail closed.
+        """
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO implementation_unstarted_retries VALUES(?,?,?,?)",
+                (repository, target_number, generation, reason),
+            )
+
+    def implementation_not_started(self, repository: str, target_number: int, generation: str) -> bool:
+        with self._lock:
+            return self._unstarted_retry_locked(repository, target_number, generation)
+
+    def _unstarted_retry_locked(self, repository: str, target_number: int, generation: str) -> bool:
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM implementation_unstarted_retries WHERE repository=? AND target_number=? AND generation=?",
+                (repository, target_number, generation),
+            ).fetchone()
+            is not None
+        )
 
     def recover(self, repository: str) -> None:
         """Make pre-ownership attempts retryable while retaining owned tombstones."""

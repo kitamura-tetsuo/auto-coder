@@ -100,6 +100,8 @@ def evaluate_implementation_start(
     """
     existing_generation = slots.implementation_generation(owner)
     owned = routing.is_implementation_owned(repository, owner.number, generation)
+    if routing.implementation_not_started(repository, owner.number, generation) and not slots.has_qualifying_implementation_activity(owner):
+        return OwnershipStartGate(OwnershipStartDecision.CONTINUE, generation)
     if existing_generation == generation:
         if owned and not slots.has_qualifying_implementation_activity(owner):
             # Already durably started *and* the tombstone is already

@@ -10441,7 +10441,9 @@ def _fix_pr_issues_with_testing(
 
         # Focused verification loop over F only; the follow-up budget is shared across F.
         verification = FocusedVerification()
-        if not known_failures:
+        if os.environ.get("AUTO_CODER_DEFER_LOCAL_TESTS") == "1":
+            actions.append("Local verification deferred by operator until after merge; GitHub CI remains authoritative")
+        elif not known_failures:
             actions.append("Local verification not performed: CI diagnostics identified no test file to select; full validation is left to CI")
         else:
             follow_ups = 0

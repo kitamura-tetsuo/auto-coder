@@ -60,6 +60,18 @@ The `local.workspace-tests` trace stage records start, result, invocation identi
 and exit code; its completion proves only initial-test success, never successful
 implementation or publication.
 
+An operator can explicitly defer local implementation tests until after merge
+by setting `AUTO_CODER_DEFER_LOCAL_TESTS=1` for the controller invocation. Fresh
+local implementation roots emit `local.workspace-tests` with `SKIPPED`,
+`baseline=not_run`, and `reason=operator_deferred_until_merge`; no test script is
+run or baseline log created. Local implementation prompts instruct the backend
+to add regression tests without executing them and to report them as unrun.
+The normal GitHub CI and merge gates are preserved. Unsetting the variable
+restores the normal baseline and implementation verification policy. This is an
+operator-owned deferred verification obligation, never successful test evidence.
+PR CI repair also defers its focused local verification loop under this setting;
+it still publishes corrections normally and waits for actual GitHub CI results.
+
 Editable results are computed from the invocation's captured working-file baseline
 to the bound private root's final working-file state. Private commits, branch names,
 staging, and clean status do not control the delta. Before applying it, the

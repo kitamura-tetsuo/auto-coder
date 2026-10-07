@@ -89,8 +89,31 @@ def test_failing_baseline_still_allows_provider_for_ordinary_invocation(tmp_path
     assert marker.read_text() == "run"
 
 
+def test_operator_deferral_skips_baseline_and_passes_instruction(tmp_path, monkeypatch, _use_real_commands):
+    import json
+
+    _, marker = _setup(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTO_CODER_DEFER_LOCAL_TESTS", "1")
+    case = next(_CASES)
+    assert _run(_manager(_config()), case) == "answer:first"
+    assert not marker.exists()
+    events = _baseline_events(case)
+    assert len(events) == 1
+    assert events[0].outcome == Outcome.SKIPPED.value
+    assert events[0].facts["reason"] == "operator_deferred_until_merge"
+    assert events[0].facts["baseline"] == "not_run"
+    frames = [json.loads(line) for line in (tmp_path / "msp.jsonl").read_text().splitlines()]
+    turn = next(frame for frame in frames if frame["frame"].get("method") == "turn/start")
+    prompt = turn["frame"]["params"]["input"][0]["text"]
+    assert "do not execute local tests during this invocation" in prompt
+    assert "normal GitHub CI and merge" in prompt
+    monkeypatch.delenv("AUTO_CODER_DEFER_LOCAL_TESTS")
+    _run(_manager(_config()), next(_CASES))
+    assert marker.read_text() == "run"
+
+
 def test_designated_invocation_still_refuses_on_workspace_preparation_failure(tmp_path, monkeypatch, _use_real_commands):
-    from src.auto_coder.worktree_utils import WorkspacePreparationError
+    from src.auto_coder.worktree_utils import LocalPreparationNotStartedError
 
     repo, marker = _setup(tmp_path, monkeypatch)
     (repo / "sub").mkdir()
@@ -98,7 +121,7 @@ def test_designated_invocation_still_refuses_on_workspace_preparation_failure(tm
     import subprocess
 
     subprocess.run(["git", "update-index", "--add", "--cacheinfo", "160000,0123456789012345678901234567890123456789,sub"], cwd=repo, check=True)  # unsupported submodule entry refuses preparation
-    with pytest.raises(WorkspacePreparationError):
+    with pytest.raises(LocalPreparationNotStartedError, match="Git submodule entries are not supported"):
         _run(_manager(_config()), next(_CASES), designated=True)
     assert not marker.exists()
     assert not (tmp_path / "msp.jsonl").exists()

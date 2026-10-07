@@ -90,6 +90,14 @@ muse:
     reporting implementation success. If a required operation cannot be performed,
     report inability according to the task's requested output contract.
 
+operator:
+  deferred_local_tests: |-
+    The operator explicitly requested local test execution after PR merge for
+    this run. Implement the requested change and add its regression tests, but
+    do not execute local tests during this invocation. Report the tests as not
+    run, never as passed. The controller retains the normal GitHub CI and merge
+    gates, and the operator will run local verification after confirming merge.
+
 opencode:
   execution: |-
     Complete this task in one execution:

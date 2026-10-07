@@ -35,20 +35,24 @@ class WorkspaceHandoffError(WorkspacePreparationError):
     """Raised when a completed private result cannot be applied atomically."""
 
 
-def record_implementation_workspace_tests_skipped(binding: LocalWorkspaceBinding) -> None:
+class LocalPreparationNotStartedError(WorkspacePreparationError):
+    """The controller proved preparation failed before calling the provider."""
+
+
+def record_implementation_workspace_tests_skipped(binding: LocalWorkspaceBinding, reason: str = "ci_repair_policy") -> None:
     """Report that the automatic baseline was intentionally not run (CI-repair policy).
 
     Emits a SKIPPED result for this invocation only. It runs nothing, writes no
     baseline log, and asserts neither dependency preparation nor verification.
     """
-    logger.info("Skipping initial tests in private implementation workspace {} (CI-repair policy); baseline not run", binding.workspace)
+    logger.info("Deferring initial tests in private implementation workspace {} ({}); baseline not run", binding.workspace, reason)
     get_trace_collector().record_event(
         EventKind.STAGE_RESULT,
         "local.workspace-tests",
         "local-backend",
         label="Implementation workspace initial tests",
         outcome=Outcome.SKIPPED,
-        facts={"invocation_id": binding.invocation_id, "baseline": "not_run", "reason": "ci_repair_policy"},
+        facts={"invocation_id": binding.invocation_id, "baseline": "not_run", "reason": reason},
     )
 
 

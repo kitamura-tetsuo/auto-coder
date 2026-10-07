@@ -3460,7 +3460,7 @@ class AutomationEngine:
                 )
             finally:
                 self._lane_context.implementation = False
-            if self.issue_stage_routing.is_implementation_owned(repo_name, item.target_number, item.generation):
+            if self.issue_stage_routing.is_implementation_owned(repo_name, item.target_number, item.generation) and not self.issue_stage_routing.implementation_not_started(repo_name, item.target_number, item.generation):
                 return "owned"
             if result.target_outcome in {ExplicitTargetOutcome.SKIPPED, ExplicitTargetOutcome.BLOCKED}:
                 return "stale"
@@ -6077,7 +6077,9 @@ class AutomationEngine:
                             str(snapshot.get("title") or ""),
                             str(snapshot.get("body") or ""),
                         ).key
-                        if (is_implementation_ready(snapshot) and slots.validation_identity(owner) == current_identity) or not slots.release_unbound_idle_owner(owner):
+                        generation = slots.implementation_generation(owner)
+                        retryable_preparation = generation is not None and self.issue_stage_routing.implementation_not_started(repo_name, item_number, generation)
+                        if (not retryable_preparation and is_implementation_ready(snapshot) and slots.validation_identity(owner) == current_identity) or not slots.release_unbound_idle_owner(owner):
                             result.target_outcome = ExplicitTargetOutcome.DEFERRED
                             result.actions = [f"Deferred - implementation ownership already exists ({owner.key})"]
                             return result
@@ -6794,7 +6796,10 @@ class AutomationEngine:
         finally:
             if not inherited_execution:
                 slots.finish_execution(owner, execution_id)
-                if result.cloud_submission_not_started:
+                if result.cloud_submission_not_started is True:
+                    if candidate.type == "issue" and implementation_key is not None:
+                        self.issue_stage_routing.record_implementation_not_started(repo_name, item_number, implementation_key, result.error or "all dispatch candidates confirmed not started")
+                        _record_issue_stage_result(item_number, "issue.implementation-not-started", f"issue#{item_number} preparation retry", Outcome.DEFERRED, {"generation": implementation_key, "reason": result.error, "provider_started": False})
                     from .cloud_manager import CloudManager
                     from .cloud_run import CloudRunRepository
 
