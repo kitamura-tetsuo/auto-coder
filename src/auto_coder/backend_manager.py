@@ -76,7 +76,7 @@ def _dispose_local_sessions(sessions: dict[str, RetainedLocalSession]) -> None:
             logger.warning("Could not release abandoned local session: {}", exc)
 
 
-_CLOUD_BACKEND_TYPES = frozenset({"claude-routine", "codex-cloud", "jules"})
+CLOUD_BACKEND_TYPES = frozenset({"claude-routine", "codex-cloud", "jules"})
 
 # Global singleton instance for general LLM operations
 _llm_instance: Optional[BackendManager] = None
@@ -604,7 +604,7 @@ class BackendManager(LLMBackendManagerBase):
 
             config_backend = getattr(cli, "config_backend", None)
             backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
-            should_resume = backend_type in _CLOUD_BACKEND_TYPES and self._automatic_session_resume and backend_name == self._last_backend and bool(self._last_session_id)
+            should_resume = backend_type in CLOUD_BACKEND_TYPES and self._automatic_session_resume and backend_name == self._last_backend and bool(self._last_session_id)
             try:
                 try:
                     result = self._execute_backend_with_providers(
@@ -739,7 +739,7 @@ class BackendManager(LLMBackendManagerBase):
             raise SessionWorkspaceCompatibilityError("local continuation refused because its original private workspace and generation checkpoint are no longer retained")
         config_backend = getattr(client, "config_backend", None)
         backend_type = str(getattr(config_backend, "backend_type", "") or backend_name).lower()
-        is_local_backend = backend_type not in _CLOUD_BACKEND_TYPES
+        is_local_backend = backend_type not in CLOUD_BACKEND_TYPES
         if is_local_backend and getattr(client, "supports_retained_local_continuation", False) is not True:
             raise LocalContinuationError("selected local adapter cannot prove retained-workspace continuation compatibility")
         if is_local_backend and session_id not in self._retained_local_sessions:
@@ -908,7 +908,7 @@ class BackendManager(LLMBackendManagerBase):
                     retained_session: Optional[RetainedLocalSession] = None
                     config_backend = getattr(cli, "config_backend", None)
                     backend_type = str(getattr(config_backend, "backend_type", "") or backend_name)
-                    is_local = backend_type.lower() not in _CLOUD_BACKEND_TYPES
+                    is_local = backend_type.lower() not in CLOUD_BACKEND_TYPES
                     if is_local and session_id is None:
                         # Retire unused history, preserving an explicit pending
                         # reuse decision across unrelated fresh tasks.

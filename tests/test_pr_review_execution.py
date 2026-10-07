@@ -54,6 +54,8 @@ def test_strong_prompt_is_independent_and_role_tagged() -> None:
     assert "current source and tests" in prompt
     assert "Accepted portable findings (empty for independent STRONG_AUDIT):\n[]" in prompt
     assert "continue a prior conversation" in prompt
+    assert "Do not execute test wrappers, formatters, builds, setup scripts" in prompt
+    assert "Inspect source/tests and supplied CI evidence" in prompt
 
 
 @pytest.mark.parametrize("mode", list(ReviewMode))

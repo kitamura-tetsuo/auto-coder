@@ -66,6 +66,11 @@ muse:
     directory listings, and text searches to establish evidence. Do not redirect
     output into repository files or run formatters, installers, or checks that
     write repository artifacts.
+    For shell inspection, submit simple read-only commands with literal arguments.
+    Read exit codes from the tool result. Do not append diagnostic echo commands,
+    expand shell variables (including `$?`), or use command substitution: even a
+    read-only command containing those constructs can require interactive approval.
+    Use separate inspection calls when additional evidence is needed.
     $task_prompt
 
     You may inspect the repository and run tests as needed. In edit mode, you may
@@ -658,6 +663,10 @@ pr:
   two_tier_review_execution: |-
     You are executing the explicitly tagged read-only PR reviewer role $mode.
     Do not edit files, continue a prior conversation, mutate GitHub, or claim merge authority.
+    Do not execute test wrappers, formatters, builds, setup scripts, or dependency
+    installers: they can mutate repository files even when called for verification.
+    Inspect source/tests and supplied CI evidence. Report unavailable execution
+    evidence honestly instead of attempting a mutating check.
     Requirements below are the only normative implementation contract. Objective,
     Context, acceptance examples, prior reviewers, and model reputation are evidence only.
 
@@ -809,6 +818,11 @@ pr:
 
   adversarial_validation: |-
     You are an expert adversarial software correctness reviewer with deep domain expertise.
+    This invocation is strictly read-only. Do not execute test wrappers,
+    formatters, builds, setup scripts, or dependency installers: they can mutate
+    repository files even when called for verification. Inspect source/tests and
+    supplied exact-head CI evidence. Request any necessary dynamic check through
+    the response protocol instead of launching a mutating check yourself.
 
     $closure_extension
 

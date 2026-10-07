@@ -58,6 +58,30 @@ def test_ordinary_pass_alone_never_authorizes_completion(tmp_path):
     assert not repo.is_completion_authorized(1, "head-a")
 
 
+def test_renewed_strong_pass_preserves_open_findings_until_exact_closure(tmp_path):
+    repo = PrReviewCycleRepository("owner/repo", tmp_path / "state.json")
+    repo.record_ordinary_pass(1, RoundProvenance("h0", "base0"), _contract())
+    initial = repo.claim_strong_audit(1, RoundProvenance("h0", "base0"), _contract(), _policy())
+    old_round = repo.record_strong_result(1, initial.claim_id, VERDICT_FINDINGS, "strong/model", [_finding("finding-a", initial.claim_id)])
+    repo.acknowledge_publication(1, old_round.round_id)
+    repo.record_ordinary_pass(1, RoundProvenance("h2", "base1"), _contract())
+    renewed = repo.claim_strong_audit(1, RoundProvenance("h2", "base1"), _contract(), _policy())
+    new_round = repo.record_strong_result(1, renewed.claim_id, VERDICT_PASS, "strong/model")
+    repo.acknowledge_publication(1, new_round.round_id)
+
+    snapshot = repo.snapshot(1)
+    assert snapshot.phase == PHASE_ORDINARY_CLOSURE
+    assert [finding.finding_id for finding in snapshot.open_findings] == ["finding-a"]
+    assert snapshot.open_findings[0].origin_round_id == initial.claim_id
+    with pytest.raises(NotApplicableError, match="Outstanding findings prevent PASS completion"):
+        repo.accept_strong_pass_completion(1, new_round.round_id)
+
+    closed = repo.certify_closure(1, RoundProvenance("h2", "base1"), _contract(), _policy(), new_round.round_id, snapshot.finding_set_revision, [FindingDisposition("finding-a", FIXED, "Exact counterexample corrected in regression", "h2")], True, "No changes since the renewed independent audit")
+    assert closed.open_findings == ()
+    assert closed.accepted_closure is not None
+    assert closed.accepted_closure.references_round_id == new_round.round_id
+
+
 def test_strong_pass_requires_publication_ack_before_completion(tmp_path):
     repo = PrReviewCycleRepository("owner/repo", tmp_path / "state.json")
     provenance = RoundProvenance("head-a", "base-a")

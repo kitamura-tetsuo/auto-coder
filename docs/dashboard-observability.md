@@ -255,6 +255,26 @@ Retained evidence waiting on an unavailable observation is a deferred
 admission gate or dashboard projection is added; production-to-view coverage is
 `tests/test_single_review_ordinary_closure_flow.py` and
 `tests/test_effective_decision_pr_flow.py`.
+
+Stale base/contract/policy recovery after ordinary convergence emits
+`pr.strong-audit` with the current `head`, `base`, `reason`,
+`publication_reason`, and `renewed_strong_required=true`. COMPLETED means only
+the renewed audit was accepted and published; retained findings still require
+independent closure and merge has its own confirmation event. Unavailable
+execution is DEFERRED. The existing stage timeline displays these facts without
+a new schema. Runnable coverage is
+`tests/test_single_review_ordinary_closure_flow.py::test_base_advanced_before_review_renews_audit_without_erasing_findings`
+and `tests/test_pr_review_cycle.py::test_renewed_strong_pass_preserves_open_findings_until_exact_closure`.
+`tests/test_single_review_ordinary_closure_flow.py::test_renewed_pass_at_repair_head_closes_retained_findings_without_another_repair`
+verifies that this PASS does not emit another corrective handoff and only reaches
+merge after independent exact closure.
+
+Automatic local reviewer selection uses the existing interaction mode to report
+fresh execution when the manager does not retain the original private workspace;
+the durable finding bundle remains supplied. The production prompt-selection
+regression is `tests/test_adversarial_validator.py::TestRunAdversarialValidation::test_local_rereview_starts_fresh_when_private_workspace_was_released`
+(all six local adapter types). No event schema or dashboard projection changes;
+an explicit continuation refusal remains a failed interaction.
 The parametrized `test_unbounded_scope_requires_a_renewed_strong_audit_and_never_authorizes_merge`
 in `tests/test_single_review_ordinary_closure_flow.py` also covers a complete
 EXPANDED/UNKNOWN assessment carrying INCONCLUSIVE: production emits
@@ -276,6 +296,12 @@ schema migration is required. Run `bash scripts/test.sh
 tests/test_review_thread_validation.py tests/test_pr_blocker_closure.py
 tests/test_adversarial_validation_pr_flow.py` for producer, wrapper, and production
 consumer coverage.
+Browser spec citations (`.spec.ts` and JavaScript/module variants) now satisfy the
+test-evidence recognition step without requiring the words `test` or `oracle`.
+`tests/test_pr_blocker_closure.py::test_oracle_closure_recognizes_cited_browser_spec`
+and `test_oracle_closure_rejects_production_only_or_green_ci_evidence` cover this
+distinction. Production still emits the same confirmed or independent-decision
+closure outcomes; the timeline/detail projection and event fields are unchanged.
 Canonical closure scope is now rendered from the PR ledger before reviewer
 admission, using the resolver's exact alias association. The existing
 `pr.review-thread-closure` BLOCKED facts remain authoritative when a fresh PASS

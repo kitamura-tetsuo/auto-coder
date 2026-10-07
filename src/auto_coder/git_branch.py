@@ -1171,7 +1171,7 @@ def git_pull(
 
 def resolve_pull_conflicts(cwd: Optional[str] = None, merge_method: str = "merge") -> CommandResult:
     """
-    Resolve pull conflicts by attempting merge/rebase strategies.
+    Resolve pull conflicts against FETCH_HEAD from the preceding pull.
 
     Args:
         cwd: Optional working directory for the git command
@@ -1192,7 +1192,7 @@ def resolve_pull_conflicts(cwd: Optional[str] = None, merge_method: str = "merge
         if merge_method == "rebase":
             # Try rebase first
             logger.info("Attempting git rebase to resolve pull conflicts")
-            rebase_result = cmd.run_command(["git", "rebase", "origin/HEAD"], cwd=cwd)
+            rebase_result = cmd.run_command(["git", "rebase", "FETCH_HEAD"], cwd=cwd)
 
             if rebase_result.success:
                 logger.info("Successfully resolved pull conflicts using rebase")
@@ -1209,7 +1209,7 @@ def resolve_pull_conflicts(cwd: Optional[str] = None, merge_method: str = "merge
         else:
             # Default: try merge strategy
             logger.info("Attempting git merge to resolve pull conflicts")
-            merge_result = cmd.run_command(["git", "merge", "--no-ff", "origin/HEAD"], cwd=cwd)
+            merge_result = cmd.run_command(["git", "merge", "--no-ff", "FETCH_HEAD"], cwd=cwd)
 
             if merge_result.success:
                 logger.info("Successfully resolved pull conflicts using merge")

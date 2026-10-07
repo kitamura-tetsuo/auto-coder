@@ -70,6 +70,23 @@ released; an opaque provider session ID is never resumed in a newly cloned root 
 reported as a continuation. A future continuation implementation must retain or
 capture the prior generation and establish the next caller checkpoint explicitly.
 
+Automatic PR rereview selection checks this retained-workspace prerequisite for
+every local adapter before requesting a continuation. A registry entry without
+a workspace owned by the current manager starts a fresh read-only review with
+the durable finding bundle; it does not attempt and then reinterpret a refused
+explicit continuation. Cloud classification is shared with BackendManager.
+`test_local_rereview_starts_fresh_when_private_workspace_was_released` covers
+Muse, Codex, OpenCode, Claude, Gemini and Qwen. Existing interaction events record
+the actual fresh invocation; no continuation is falsely reported as resumed.
+`tests/test_adversarial_test_oracle_gaps.py::test_released_local_session_starts_fresh_and_preserves_gap_identity`
+also exercises the real backend manager: the fresh reviewer receives the existing
+gap identity and can resolve it with current-head evidence, without attempting
+the unavailable continuation or switching to a fallback backend.
+`tests/test_opencode_review.py` checks the same fresh-review selection through
+executable OpenCode fixtures after restarting in a different checkout or loading
+a stale provider session, while its evidence-completion continuation failure
+remains an error within an active review.
+
 For an existing Docker Compose deployment using an `app` service, merge the
 following settings into the final override file (use the actual service name
 when it differs):

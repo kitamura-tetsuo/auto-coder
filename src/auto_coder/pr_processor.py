@@ -86,6 +86,7 @@ from .effective_decision_application import (
     derive_application,
     evidence_revision,
     outstanding_records,
+    raw_ordinary_clear,
     saved_pass_is_clearance,
     settle_accepted_gaps,
 )
@@ -413,11 +414,38 @@ def _outstanding_strong_round(inputs: TwoTierGateInputs, pr_number: int) -> Tupl
     """The accepted strong round whose finding bundle a repair head must close, else why none applies."""
     snapshot = inputs.gate.state.snapshot(pr_number)
     strong_round = snapshot.accepted_strong_round
-    if snapshot.closed or snapshot.phase != PHASE_ORDINARY_CLOSURE or strong_round is None or strong_round.verdict != VERDICT_FINDINGS or not snapshot.open_findings:
+    if snapshot.closed or snapshot.phase != PHASE_ORDINARY_CLOSURE or strong_round is None or not snapshot.open_findings:
         return None, "no accepted strong finding bundle is outstanding"
     if strong_round.base_sha != inputs.base_sha or strong_round.contract_identity != inputs.contract.identity or strong_round.policy_identity != inputs.policy.identity:
         return None, "retained strong evidence is stale for the current base, contract, or policy"
     return strong_round, ""
+
+
+def _renew_stale_strong_round(github_client: Any, repo_name: str, pr_number: int, inputs: TwoTierGateInputs, result: AdversarialValidationResult, actions: List[str]) -> bool:
+    """Renew stale audit authority after ordinary convergence without closing retained findings."""
+    snapshot = inputs.gate.state.snapshot(pr_number)
+    previous = snapshot.accepted_strong_round
+    if previous is None or not snapshot.open_findings or (previous.base_sha, previous.contract_identity, previous.policy_identity) == (inputs.base_sha, inputs.contract.identity, inputs.policy.identity):
+        return False
+    bridge, target = _accepted_state_inputs(repo_name, {"number": pr_number, "base": {"sha": inputs.base_sha}}, inputs.head_sha)
+    projection = project_accepted_findings(bridge, target, ())
+    if not projection.complete or not raw_ordinary_clear(settle_accepted_gaps(result, projection)):
+        return False
+    observed = _ClosureTargetObserver(github_client, repo_name, pr_number)()
+    if (observed.head_sha, observed.base_sha, observed.contract.identity, observed.policy.identity) != (inputs.head_sha, inputs.base_sha, inputs.contract.identity, inputs.policy.identity):
+        raise RuntimeError("PR review target changed before renewed strong audit admission")
+    inputs.gate.ordinary_pass(pr_number, inputs.head_sha, inputs.base_sha, inputs.contract)
+    accepted, reason = _execute_pending_strong_audit(repo_name, pr_number, inputs)
+    published, publication_reason = _consume_pending_two_tier_publication(repo_name, pr_number, inputs, _ClosureTargetObserver(github_client, repo_name, pr_number), github_client=github_client)
+    actions.append(f"Renewed stale strong audit for PR #{pr_number}: {reason}; {publication_reason}; retained findings still require independent closure")
+    _record_pr_stage(
+        pr_number,
+        "pr.strong-audit",
+        f"pr#{pr_number} strong audit",
+        Outcome.COMPLETED if accepted and published else Outcome.DEFERRED,
+        {"backend": inputs.policy.strong_route, "head": inputs.head_sha, "base": inputs.base_sha, "reason": reason, "publication_reason": publication_reason, "renewed_strong_required": True},
+    )
+    return True
 
 
 def _capture_ordinary_closure_input(repo_name: str, pr_number: int, inputs: TwoTierGateInputs, attempt: Any, worktree: str) -> ClosureContextCapture:
@@ -648,7 +676,7 @@ def _resume_retained_closure(repo_name: str, pr_number: int, head_sha: str, inpu
         spent = _closure_attempt_spent(repo_name, pr_number, head_sha, snapshot.finding_set_revision)
     except DecisionRetentionError as exc:
         return RetainedClosureResumption(unavailable=True, reason=f"the closure attempt record is unavailable: {exc}")
-    if strong_round.head_sha == head_sha:
+    if strong_round.head_sha == head_sha and strong_round.verdict == VERDICT_FINDINGS:
         return RetainedClosureResumption(reason="no repair head exists yet; same-head reassessment follows a completed correction or rebuttal")
     if spent:
         return RetainedClosureResumption(reason="the closure-aware ordinary review for this corrective generation already completed")
@@ -714,7 +742,7 @@ def _repair_strong_findings_before_validation(
     retry_not_before = time.time() + 60.0
     try:
         strong_round, _ = _outstanding_strong_round(inputs, pr_number)
-        if strong_round is None or strong_round.head_sha != inputs.head_sha:
+        if strong_round is None or strong_round.verdict != VERDICT_FINDINGS or strong_round.head_sha != inputs.head_sha:
             return False
         if inputs.gate.state.snapshot(pr_number).pending_effect:
             published, reason = _consume_pending_two_tier_publication(repo_name, pr_number, inputs, _ClosureTargetObserver(github_client, repo_name, pr_number), github_client=github_client)
@@ -5315,6 +5343,7 @@ def _handle_pr_merge(
                         review_related_issue_membership = _pr_adversarial_linked_issue_membership(repo_name, pr_data, adversarial_eligibility.issue_numbers)
                         active_review_id: Optional[str] = None
                         closure_input: Optional[ReviewExecutionInput] = None
+                        closure_inputs: Optional[TwoTierGateInputs] = None
                         closure_gate: Optional[TwoTierPrGate] = None
                         try:
                             if retained_reuse is not None:
@@ -5402,6 +5431,8 @@ def _handle_pr_merge(
                         # here (it needs the ordinary session's coverage, not an effective
                         # PASS) and is fenced against newer attempts at its own acceptance.
                         raw_val_result = val_result
+                        if closure_input is None and closure_inputs is not None and _renew_stale_strong_round(github_client, repo_name, pr_number, closure_inputs, val_result, actions):
+                            return actions
                         closure_outcome: Optional[OrdinaryClosureOutcome] = None
                         if closure_input is not None and closure_gate is not None:
                             if val_result.closure_assessment is not None:

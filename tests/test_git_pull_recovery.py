@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.auto_coder.git_branch import git_pull, reset_branch_to_remote
+from src.auto_coder.git_branch import git_pull, reset_branch_to_remote, resolve_pull_conflicts
 from src.auto_coder.utils import CommandResult
 
 
@@ -119,6 +119,45 @@ class TestGitPullDiscardsLocalChanges:
 
         assert result.success is False
         assert (git_sandbox / "store.ts").read_text() == "local edit that blocks the merge\n"
+
+
+class TestGitPullDivergedBranch:
+    """Integrate the requested remote branch rather than the default branch."""
+
+    @pytest.mark.parametrize("remote", ["origin", "upstream"])
+    @pytest.mark.parametrize("strategy", ["pull", "merge", "rebase"])
+    def test_requested_branch_is_integrated(self, git_sandbox: Path, tmp_path: Path, remote: str, strategy: str) -> None:
+        seed = tmp_path / "seed"
+        _run_git(["checkout", "-b", "feature"], cwd=seed)
+        (seed / "remote-feature.ts").write_text("remote feature\n")
+        _run_git(["add", "remote-feature.ts"], cwd=seed)
+        _run_git(["commit", "-m", "remote feature"], cwd=seed)
+        _run_git(["push", "origin", "feature"], cwd=seed)
+        remote_head = _run_git(["rev-parse", "HEAD"], cwd=seed).strip()
+
+        _run_git(["checkout", "-b", "feature"], cwd=git_sandbox)
+        (git_sandbox / "local-feature.ts").write_text("local feature\n")
+        _run_git(["add", "local-feature.ts"], cwd=git_sandbox)
+        _run_git(["commit", "-m", "local feature"], cwd=git_sandbox)
+        local_head = _run_git(["rev-parse", "HEAD"], cwd=git_sandbox).strip()
+        _run_git(["config", "pull.rebase", "false"], cwd=git_sandbox)
+        _run_git(["config", "pull.ff", "only"], cwd=git_sandbox)
+        if remote != "origin":
+            _run_git(["remote", "add", remote, str(tmp_path / "origin.git")], cwd=git_sandbox)
+
+        if strategy == "pull":
+            result = git_pull(remote=remote, branch="feature", cwd=str(git_sandbox), discard_local=False)
+        else:
+            _run_git(["fetch", remote, "feature"], cwd=git_sandbox)
+            result = resolve_pull_conflicts(cwd=str(git_sandbox), merge_method=strategy)
+
+        assert result.success is True, result.stderr
+        assert (git_sandbox / "remote-feature.ts").read_text() == "remote feature\n"
+        assert (git_sandbox / "local-feature.ts").read_text() == "local feature\n"
+        _run_git(["merge-base", "--is-ancestor", remote_head, "HEAD"], cwd=git_sandbox)
+        if strategy != "rebase":
+            _run_git(["merge-base", "--is-ancestor", local_head, "HEAD"], cwd=git_sandbox)
+        assert _run_git(["status", "--porcelain"], cwd=git_sandbox) == ""
 
 
 class TestResetBranchToRemote:

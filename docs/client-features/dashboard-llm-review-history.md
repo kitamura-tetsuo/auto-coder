@@ -1,5 +1,20 @@
 # Dashboard LLM review history
 
+When a repair review encounters stale base/contract/policy authority, the
+Execution Trace records the renewed strong audit's current head/base and
+publication result. Audit completion alone does not close historical findings;
+their independent closure and the confirmed merge remain separate events.
+Review-thread closure recognizes concrete browser spec citations as regression
+evidence even when the reviewer does not use the words `test` or `oracle`.
+Accepted citations follow the existing confirmed-closure history; production-only
+paths and green CI alone still leave the independent-decision outcome unfinished.
+An unavailable renewed reviewer is shown as deferred in the same stage timeline.
+
+Automatic local rereview without a retained private workspace records a fresh
+provider invocation while carrying durable finding obligations forward. A stored
+session ID alone never makes the history a resumed interaction. Explicit
+continuation failures remain failures, with no fallback success recorded.
+
 Muse no-edit reviews permit shell inspection by default. Their existing audit
 entries still record the actual provider result: shell availability is not
 verification completion, and a result rejected by the repository snapshot or

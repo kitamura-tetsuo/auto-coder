@@ -10,7 +10,14 @@ to an ordinary route.
 
 Every invocation is self-contained and bound to the requested head, reviewed
 base, Requirements snapshot, strong-policy identity, round, and attempt. The
-execution checkout's HEAD is checked before and after the no-edit call. Strong
+ordinary and strong prompts explicitly prohibit running test wrappers, builds,
+formatters, setup scripts, or installers that can mutate the checkout. Ordinary
+reviewers request necessary dynamic checks through their existing response
+protocol; they inspect supplied exact-head CI evidence without claiming that
+execution success alone proves semantic coverage. This guidance does not relax
+the runtime mutation audit or turn a denied execution into successful review.
+The existing prompt/render regressions cover both reviewer prompts.
+The execution checkout's HEAD is checked before and after the no-edit call. Strong
 audits start without prior verdicts, finding dispositions, or provider session
 memory. Ordinary closure instead receives the immutable portable finding bundle,
 its revision, current source and tests, and the complete audited-head-to-current-
@@ -28,6 +35,19 @@ or semantically `UNKNOWN` scope remains a complete convergence result, but it
 cannot produce closure evidence; production durably admits a renewed independent
 strong audit. Only complete dispositions, no new findings, and evidence-backed
 `BOUNDED` scope can produce closure evidence.
+
+If the base, contract, or strong policy changes before the repair review, an
+ordinary result that independently clears all other obligations admits a new
+strong audit against the current target. It cannot certify closure against the
+old target. The renewed audit preserves every retained finding, including when
+it returns PASS; the next combined ordinary review receives those findings for
+exact closure against the renewed round. Unavailable strong execution defers
+without erasing findings or approving a merge. Regressions:
+`test_base_advanced_before_review_renews_audit_without_erasing_findings` and
+`test_renewed_strong_pass_preserves_open_findings_until_exact_closure`.
+`test_renewed_pass_at_repair_head_closes_retained_findings_without_another_repair`
+also drives the production reentry: a renewed PASS at the same repair head admits
+exact closure of retained findings without dispatching another implementation.
 
 The output parser validates every execution identity and required field. Invalid,
 stale, incomplete, contradictory, or unavailable output becomes an explicit

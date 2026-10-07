@@ -34,6 +34,67 @@ from tests.test_effective_decision_pr_flow import (
 ADDRESSED = ordinary_response("PRRT_accepted", status="ADDRESSED", evidence="tests/test_state.py asserts the invariant")
 
 
+def test_renewed_pass_at_repair_head_closes_retained_findings_without_another_repair(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    from auto_coder.github_app_reviewer import ReviewerAppConfig
+    from auto_coder.pr_processor import _consume_pending_two_tier_publication
+    from auto_coder.pr_review_cycle import RoundProvenance
+    from tests.test_accepted_finding_bridge import CONTRACT, POLICY
+    from tests.test_effective_decision_pr_flow import reviewer_for
+
+    flow = _repaired_flow(flow_env, monkeypatch, 7352, resolve_on_approve=True)
+    provenance = RoundProvenance(flow.h2, flow_env.base)
+    flow_env.cycle.record_ordinary_pass(flow.pr, provenance, CONTRACT)
+    claim = flow_env.cycle.claim_strong_audit(flow.pr, provenance, CONTRACT, POLICY)
+    renewed = flow_env.cycle.record_strong_result(flow.pr, claim.claim_id, "PASS", "strong/model")
+    reviewer = reviewer_for(flow_env.tmp, monkeypatch, flow.router)
+    config = ReviewerAppConfig("4765828", "client", flow_env.tmp / "reviewer.pem")
+    with patch("auto_coder.pr_processor.load_reviewer_app_config", return_value=config), patch("auto_coder.pr_processor.GitHubAppReviewer", return_value=reviewer):
+        published, reason = _consume_pending_two_tier_publication(REPO, flow.pr, replace(flow.gate_inputs, head_sha=flow.h2))
+    assert published, reason
+    handoffs_before = flow.handoffs
+    script = ClosureScript(status="FIXED")
+
+    actions = flow.run(closure=script)
+
+    assert len(script.calls) == 1, actions
+    assert script.calls[0].round_id == renewed.round_id
+    assert flow.handoffs == handoffs_before
+    assert flow_env.cycle.snapshot(flow.pr).open_findings == ()
+    assert flow.merge.call_count == 1, actions
+
+
+def test_base_advanced_before_review_renews_audit_without_erasing_findings(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import patch
+
+    from auto_coder.pr_processor import _record_pr_stage
+
+    flow = _repaired_flow(flow_env, monkeypatch, 7351)
+    flow.current_base = "d" * 40
+    initial_pr_data = flow.pr_data
+    monkeypatch.setattr(flow, "pr_data", lambda: {**initial_pr_data(), "base": {"ref": "main", "sha": flow.current_base}})
+    script = ClosureScript(status="FIXED")
+
+    with patch("auto_coder.pr_processor._record_pr_stage", wraps=_record_pr_stage) as stages:
+        actions = flow.run(closure=script)
+
+    snapshot = flow_env.cycle.snapshot(flow.pr)
+    assert snapshot.ordinary_pass_base_sha == flow.current_base, actions
+    assert snapshot.attempt_error_reason == "strong reviewer is unavailable", actions
+    assert [item.finding_id for item in snapshot.open_findings] == ["finding-a"]
+    assert snapshot.accepted_closure is None
+    assert script.calls == []
+    assert flow.merge.call_count == 0
+    assert any("Renewed stale strong audit" in action for action in actions)
+    audit_events = [call.args for call in stages.call_args_list if call.args[1] == "pr.strong-audit"]
+    assert len(audit_events) == 1
+    assert audit_events[0][3].value == "deferred"
+    assert audit_events[0][4]["head"] == flow.h2
+    assert audit_events[0][4]["base"] == flow.current_base
+    assert audit_events[0][4]["renewed_strong_required"] is True
+
+
 def _repaired_flow(flow_env: Env, monkeypatch: pytest.MonkeyPatch, pr: int, origin: str = "cloud", **kwargs):
     """A published strong finding at H0 followed by a bounded repair H2 with no review of H2 yet."""
     flow = make_flow(flow_env, monkeypatch, pr, origin, **kwargs)

@@ -23,7 +23,6 @@ from auto_coder.adversarial_validator import (
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.backend_manager import BackendManager
 from auto_coder.exceptions import AutoCoderUsageLimitError
-from auto_coder.local_session_continuation import LocalContinuationError
 from auto_coder.review_feedback_marker import REVIEW_ADDRESSED_MARKER
 from auto_coder.review_thread_validation import (
     ClaimedReviewThread,
@@ -621,7 +620,7 @@ def test_failed_new_head_attempt_does_not_prevent_gap_resolution_on_retry(tmp_pa
 
 
 @pytest.mark.parametrize("switch_backend", [False, True])
-def test_failed_continuation_does_not_fallback_or_falsely_resolve_gap(tmp_path, switch_backend) -> None:
+def test_released_local_session_starts_fresh_and_preserves_gap_identity(tmp_path, switch_backend) -> None:
     initial = parsed_result(gap_payload()).test_oracle_gaps[0]
     validation_context = context()
     validation_context.issue_context = "Linked Issue requires independent server validation."
@@ -648,26 +647,27 @@ def test_failed_continuation_does_not_fallback_or_falsely_resolve_gap(tmp_path, 
     registry.save(prior_session(initial, "sha-a"))
 
     with patch("auto_coder.adversarial_validator.build_adversarial_validation_context", return_value=validation_context):
-        with pytest.raises(LocalContinuationError, match="no retained controller-owned binding"):
-            run_adversarial_validation(
-                "owner/repo",
-                {"number": 1, "head": {"sha": "sha-b"}},
-                AutomationConfig(),
-                backend_manager=manager,
-                session_registry=registry,
-            )
+        result = run_adversarial_validation(
+            "owner/repo",
+            {"number": 1, "head": {"sha": "sha-b"}},
+            AutomationConfig(),
+            backend_manager=manager,
+            session_registry=registry,
+        )
 
     saved = registry.get("owner/repo", 1, "reviewer", "codex", "strong")
     assert primary.continued == []
     assert manager._last_continue_session_resumed is False
+    assert result.result == "PASS"
     assert saved is not None
-    assert saved.session_id == "session-1"
-    assert saved.last_head_sha == "sha-a"
+    assert saved.session_id == "fresh-session"
+    assert saved.last_head_sha == "sha-b"
     assert saved.test_oracle_gaps[0].gap_id == initial.gap_id
     assert saved.test_oracle_gaps[0].authoritative_boundary == initial.authoritative_boundary
-    assert saved.test_oracle_gaps[0].status == "OPEN"
-    assert saved.test_oracle_gaps[0].resolution_head_sha == ""
-    assert primary.fresh_prompts == []
+    assert saved.test_oracle_gaps[0].status == "RESOLVED"
+    assert saved.test_oracle_gaps[0].resolution_head_sha == "sha-b"
+    assert len(primary.fresh_prompts) == 1
+    assert initial.gap_id in primary.fresh_prompts[0]
     assert fallback.fresh_prompts == []
 
 

@@ -520,6 +520,35 @@ class TestAS003TestExistsButProducerContractBroken:
         assert eval_tog.effective_status == "STILL_VALID"
 
 
+@pytest.mark.parametrize("suffix", ["ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs"])
+def test_oracle_closure_recognizes_cited_browser_spec(suffix: str):
+    candidate = ClosureCandidate(thread_id="thread-selection", category="TEST_ORACLE")
+    disposition = ReviewThreadDisposition(
+        thread_id="thread-selection",
+        status="ADDRESSED",
+        rationale="Both selection cases cross the presentation writer and mounted view.",
+        evidence=f"grd-grid-width-selection.spec.{suffix}:23-68 compares exact selected cell addresses before and after setting and clearing widths.",
+    )
+
+    evaluation = evaluate_closure_candidate(candidate, disposition)
+
+    assert evaluation.is_accepted is True
+    assert evaluation.effective_status == "ADDRESSED"
+    assert evaluation.rejection_reason is None
+
+
+@pytest.mark.parametrize("evidence", ["TableGrid.svelte:23 pins column widths.", "The CI run is green.", "grid-width.specification.ts:23 pins column widths."])
+def test_oracle_closure_rejects_production_only_or_green_ci_evidence(evidence: str):
+    candidate = ClosureCandidate(thread_id="thread-selection", category="TEST_ORACLE")
+    disposition = ReviewThreadDisposition(thread_id="thread-selection", status="ADDRESSED", rationale="The column width implementation was updated.", evidence=evidence)
+
+    evaluation = evaluate_closure_candidate(candidate, disposition)
+
+    assert evaluation.is_accepted is False
+    assert evaluation.effective_status == "STILL_VALID"
+    assert evaluation.rejection_reason == "Test oracle gap disposition lacks specific regression test evidence"
+
+
 class TestAS004GroupedRootAndIndependentAggregateVerdict:
     """AS-004: Grouped root and independent aggregate verdict.
 

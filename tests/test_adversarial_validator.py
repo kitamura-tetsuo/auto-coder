@@ -1798,6 +1798,8 @@ class TestBuildAdversarialValidationContext:
         )
 
         assert "Complete Changed-File Manifest" in rendered_prompt
+        assert "This invocation is strictly read-only" in rendered_prompt
+        assert "Request any necessary dynamic check through" in rendered_prompt
         assert "src/early.py" in rendered_prompt
         assert "+early_line" in rendered_prompt
         assert "src/late_secret_feature.py" in rendered_prompt
@@ -2657,13 +2659,14 @@ class TestRunAdversarialValidation:
         manager.continue_session.assert_not_called()
         mock_run_prompt.assert_called_once()
 
+    @pytest.mark.parametrize("backend_type", ["muse", "codex", "opencode", "claude", "gemini", "qwen"])
     @patch("auto_coder.adversarial_validator.build_adversarial_validation_context")
     @patch("auto_coder.adversarial_validator.run_llm_prompt")
-    def test_muse_rereview_starts_fresh_when_private_workspace_was_released(self, mock_run_prompt, mock_build_ctx, tmp_path):
+    def test_local_rereview_starts_fresh_when_private_workspace_was_released(self, mock_run_prompt, mock_build_ctx, tmp_path, backend_type):
         mock_build_ctx.return_value = AdversarialValidationContext(
             repo_name="owner/repo",
             pr_number=5419,
-            pr_title="Muse rereview",
+            pr_title="Local CLI rereview",
             pr_diff="diff --git a/feature.py b/feature.py\n+fixed = True",
             all_changed_files=["feature.py"],
             issue_context="Issue requires a working feature.",
@@ -2675,14 +2678,14 @@ class TestRunAdversarialValidation:
                 repository="owner/repo",
                 pr_number=5419,
                 backend_name="reviewer",
-                backend_type="muse",
-                model_name="muse-spark-1.3",
+                backend_type=backend_type,
+                model_name="review-model",
                 session_id="session-from-previous-worktree",
                 last_head_sha="previous-head",
             )
         )
         manager = MagicMock()
-        manager.get_current_backend_identity.return_value = ("reviewer", "muse", "muse-spark-1.3")
+        manager.get_current_backend_identity.return_value = ("reviewer", backend_type, "review-model")
         manager.has_retained_local_session.return_value = False
         manager._last_session_id = "session-in-current-worktree"
         mock_run_prompt.return_value = json.dumps(

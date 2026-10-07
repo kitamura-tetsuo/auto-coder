@@ -427,7 +427,8 @@ def evaluate_closure_candidate(
     # A missing required test oracle cannot be closed merely because a helper test passes.
     if candidate.category == "TEST_ORACLE":
         # Must have test oracle evidence, not merely implementation assertions
-        if "test" not in combined_text.lower() and "oracle" not in combined_text.lower():
+        cited_spec = re.search(r"\b[\w./-]+\.spec\.[cm]?[jt]sx?\b", combined_text, re.IGNORECASE)
+        if "test" not in combined_text.lower() and "oracle" not in combined_text.lower() and cited_spec is None:
             return ClosureEvaluationResult(
                 candidate=candidate,
                 is_accepted=False,

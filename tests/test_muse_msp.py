@@ -640,6 +640,11 @@ def test_muse_msp_noedit_maps_host_and_wire_options(tmp_path, monkeypatch, _use_
     assert "--model" not in start["argv"]
     assert turn["frame"]["params"]["reasoningEffort"] == "high"
     assert isinstance(turn["frame"]["params"]["input"], list)
+    prompt = turn["frame"]["params"]["input"][0]["text"]
+    assert "submit simple read-only commands with literal arguments" in prompt
+    assert "Read exit codes from the tool result" in prompt
+    assert "including `$?`" in prompt
+    assert "complete prompt" in prompt
     for command in (start, turn):
         _assert_uuid7(command["frame"]["params"]["commandId"])
     assert start["frame"]["params"]["commandId"] != turn["frame"]["params"]["commandId"]

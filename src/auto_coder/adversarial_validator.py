@@ -28,7 +28,7 @@ from .accepted_finding_bridge import (
     render_accepted_findings,
 )
 from .automation_config import AutomationConfig
-from .backend_manager import BackendManager, run_llm_prompt
+from .backend_manager import CLOUD_BACKEND_TYPES, BackendManager, run_llm_prompt
 from .ci_observation import CIConclusion, ObservationAvailability, WorkflowObservation
 from .issue_context import IssueOracleResolution, VerifiedIssueOracle, get_linked_issues_context, resolve_issue_oracles
 from .logger_config import get_logger
@@ -4020,9 +4020,9 @@ def run_adversarial_validation(
 
     backend_name, backend_type, model_name = manager_identity()
     stored_session = registry.get(repo_name, pr_number, backend_name, backend_type, model_name) if backend_name else None
-    # A Muse session can be resumed only while this manager still owns the
+    # A local session can be resumed only while this manager still owns the
     # exact private worktree in which the provider created it.
-    can_continue_stored_session = backend_type.lower() != "muse" or (stored_session is not None and backend_manager.has_retained_local_session(stored_session.session_id))
+    can_continue_stored_session = backend_type.lower() in CLOUD_BACKEND_TYPES or (stored_session is not None and backend_manager.has_retained_local_session(stored_session.session_id))
     if stored_session is not None:
         _populate_test_oracle_gap_requirement_text(stored_session.test_oracle_gaps, context.issue_requirements)
         persisted_resolved_paths = {entry.path for entry in _reusable_recovered_evidence(stored_session, context, head_sha)}

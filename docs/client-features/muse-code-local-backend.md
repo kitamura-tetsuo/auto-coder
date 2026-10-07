@@ -29,6 +29,14 @@ mutating no-edit result, including transient Git lifecycle commands. This is
 mutation detection and recovery, not filesystem confinement for arbitrary shell
 commands outside the captured repository.
 
+The execution prompt directs shell inspection to use simple read-only commands
+with literal arguments and to read exit codes from tool-result metadata. Diagnostic
+echo commands, shell-variable expansion (including `$?`), and command substitution
+can cause the host to request interactive approval even during harmless inspection;
+additional evidence should be gathered through separate inspection calls. This is
+prompt guidance, not a guarantee of model compliance or a permission-rule change.
+Approval refusal, trace emissions, and dashboard projection remain unchanged.
+
 Editable implementation sessions explicitly request and confirm the official MSP
 `allowAll` mode before submitting a turn, so a host configured for interactive
 approval cannot defer an unattended issue merely because a tool needs approval.

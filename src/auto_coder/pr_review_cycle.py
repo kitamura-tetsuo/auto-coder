@@ -548,7 +548,7 @@ class PrReviewCycleRepository:
             return PHASE_ORDINARY_CLOSURE, "closure accepted; publication acknowledgement pending"
         if accepted_round is not None and accepted_round.publication_status == PUBLICATION_PENDING:
             return PHASE_ORDINARY_CLOSURE if accepted_round.verdict == VERDICT_FINDINGS else PHASE_STRONG_PENDING, "strong result accepted; publication acknowledgement pending"
-        if accepted_round is not None and accepted_round.verdict == VERDICT_FINDINGS and open_findings:
+        if accepted_round is not None and open_findings:
             return PHASE_ORDINARY_CLOSURE, f"{len(open_findings)} strong finding(s) outstanding"
         if accepted_round is not None and accepted_round.verdict == VERDICT_FINDINGS and not open_findings:
             return PHASE_ORDINARY_CLOSURE, "all findings dispositioned; awaiting bounded closure certification"

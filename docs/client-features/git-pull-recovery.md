@@ -9,8 +9,13 @@
       - "'git clean' never uses -x, so ignored files (build artifacts, virtualenvs, local configuration) are preserved."
       - "Unfinished merge/rebase/cherry-pick state and a stale .git/index.lock are cleared by aborting all three operations and deleting the lock file, then the pull is retried."
       - "Transient remote failures (host resolution, timeouts, 'RPC failed', 'early EOF', 'unable to access') are retried as-is with an exponential backoff capped at 5 seconds; they never trigger a hard reset."
-      - "Diverging branches and merge conflicts are delegated to resolve_pull_conflicts as before."
+      - "Diverging branches and merge conflicts are delegated to resolve_pull_conflicts, which merges or rebases onto FETCH_HEAD from the attempted pull. It never substitutes origin/HEAD (the remote default branch) for the requested branch, including when pulling from a non-origin remote."
       - "'no tracking information' / 'no such ref was fetched' is still reported as success because it is the normal case for a new branch."
       - "As a last resort the branch is hard-reset onto the remote branch (fetch + 'git reset --hard FETCH_HEAD' + 'git clean -fd')."
       - "The hard reset is refused when the branch has unpushed commits, so committed work is never lost; only uncommitted changes are discarded."
       - "discard_local=False disables every destructive step: the original pull error is returned instead."
+
+Using the fetched pull target changes only Git reconciliation. Processing origins,
+admission gates, provider routing, durable resumption, structured trace fields,
+and dashboard projections are unchanged; commit/push reporting still consumes
+the same command success or failure results.

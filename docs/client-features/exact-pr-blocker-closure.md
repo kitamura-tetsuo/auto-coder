@@ -67,6 +67,15 @@ When evaluating candidate closures for claimed review threads:
 - **Requirement Boundary:** No closure may acquire an obligation from Acceptance Scenarios
   or reviewer comments that the explicit Issue Requirements do not support.
 
+Specific regression evidence may cite a browser `.spec.ts`, `.spec.tsx`, or corresponding
+JavaScript/module spec file and explain its assertions without using the literal words
+`test` or `oracle`. Production-only paths and green CI alone remain insufficient.
+`tests/test_pr_blocker_closure.py` covers these accepted citations and rejected evidence.
+Closure results still use the same production thread-settlement outcomes and dashboard
+fields. An accepted spec citation follows the existing confirmed-closure path;
+insufficient evidence still reports the independent-decision failure. See
+`docs/dashboard-observability.md` for the affected producer and regression inventory.
+
 ## Multi-Blocker Compound Root Resolution Gating
 
 - **Full Obligation Resolution Required:** A single GitHub review root comment or thread
