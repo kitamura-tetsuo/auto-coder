@@ -11,6 +11,15 @@ not mean evidence is missing; unmatched or unverified entries still show a
 reconciliation wait. Repair dispatch, publication, independent verification,
 and confirmed merge remain separate history facts.
 
+A canonical correction verified before its Strong lifecycle closes remains a
+reconciliation wait. Its recovery uses the existing ordinary-review and
+strong-audit stages; only accepted lifecycle closure and final merge produce
+their corresponding completion events. The ledger's closed status alone never
+appears as review clearance or merge completion.
+New exact-head Strong findings retain their ordinary corrective-handoff event
+even while a historical correction awaits lifecycle closure; its blocker IDs
+name only the new round's accepted corrections.
+
 When a repair review encounters stale base/contract/policy authority, the
 Execution Trace records the renewed strong audit's current head/base and
 publication result. Audit completion alone does not close historical findings;

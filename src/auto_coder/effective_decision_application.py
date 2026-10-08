@@ -28,9 +28,11 @@ from typing import Callable, ContextManager, Iterator, Optional, Sequence
 
 from .accepted_finding_bridge import (
     AMBIGUOUS,
+    ASSOCIATED,
     BINDING_CURRENT,
     CATEGORY_IMPLEMENTATION,
     CATEGORY_REGRESSION_GAP,
+    NOT_PUBLISHED,
     OUTCOME_STILL_VALID_OBSERVED,
     AcceptedFindingBridge,
     AcceptedFindingProjection,
@@ -40,6 +42,7 @@ from .accepted_finding_bridge import (
 )
 from .adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from .adversarial_validator import AdversarialValidationFinding, AdversarialValidationResult
+from .canonical_pr_blocker_ledger import BlockerDisposition
 from .effective_review_decision import (
     EffectiveNextAction,
     EffectiveReviewDecision,
@@ -259,6 +262,10 @@ def evidence_revision(projection: AcceptedFindingProjection) -> str:
         "diagnostics": sorted(diagnostic.code for diagnostic in projection.diagnostics),
         "records": sorted((record.source_identity, record.accepted_state, record.association, record.canonical_blocker_id, record.target_binding, tuple(record.root_comment_ids)) for record in projection.records),
     }
+    if not projection.complete and closure_projection_readable(projection):
+        # Older consumers spent reconciliation without a reachable independent
+        # closure path. Admit that path once, preserving its normal attempt budget.
+        payload["closure_recovery_protocol"] = "ledger-ahead-v1"
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:24]
 
 
@@ -470,6 +477,24 @@ def raw_ordinary_clear(result: AdversarialValidationResult) -> bool:
     return result.result.strip().upper() == "PASS" and bool(result.requirement_coverage) and all(entry.status in {"VERIFIED", "IRRELEVANT"} for entry in result.requirement_coverage) and not result.specification_gaps and not result.unexplained_changes
 
 
+def closure_projection_readable(projection: AcceptedFindingProjection) -> bool:
+    """Allow independent closure of a ledger-ahead finding, never approval reuse.
+
+    Local correction verification may close a canonical blocker before the
+    owning Strong lifecycle accepts closure. Its exact identity remains usable
+    for independent reassessment; only that owner can close the obligation.
+    Other disagreements, missing reads and ambiguous associations fail closed.
+    """
+    if projection.complete:
+        return True
+    if not projection.diagnostics or projection.source_revision < 0 or not projection.records:
+        return False
+    if any(not record.canonical_blocker_id or record.target_binding != BINDING_CURRENT or record.association not in {ASSOCIATED, NOT_PUBLISHED} for record in projection.records):
+        return False
+    ahead = {record.source_identity for record in projection.records if record.accepted_state == OPEN and record.ledger_disposition == BlockerDisposition.VERIFIED_CORRECTION.value}
+    return all(diagnostic.code == "cross_store_disagreement" and diagnostic.source_identity in ahead for diagnostic in projection.diagnostics)
+
+
 def closure_ready(projection: AcceptedFindingProjection, head_sha: str, completion_marker: str = "") -> bool:
     """Whether independent closure assessment of every outstanding finding is applicable.
 
@@ -480,7 +505,7 @@ def closure_ready(projection: AcceptedFindingProjection, head_sha: str, completi
     head or a delivered request has completed at the same head (``completion_marker``).
     """
     outstanding = outstanding_records(projection)
-    if not projection.complete or not outstanding:
+    if not closure_projection_readable(projection) or not outstanding:
         return False
     for record in outstanding:
         if record.target_binding != BINDING_CURRENT or not record.canonical_blocker_id or record.association == AMBIGUOUS:

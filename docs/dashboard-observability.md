@@ -398,6 +398,20 @@ drives real cycle acceptance and durable effect consumption, asserts production
 trace emissions and unrelated-root preservation, and covers reply/mutation
 failures, response-loss reconciliation, missing/untrusted roots and head-change
 rollback before successful retry.
+
+Ledger-ahead recovery keeps `pr.adversarial-validation` nonapproving until
+independent lifecycle closure. It reuses `pr.ordinary-closure` and, when audit
+authority changed, `pr.strong-audit`; no renderer or event schema changes are
+needed. Run `bash scripts/test.sh tests/test_effective_decision_application.py
+tests/test_effective_decision_pr_flow.py`. The regressions
+`test_ledger_ahead_of_lifecycle_allows_only_independent_closure` and
+`test_ledger_ahead_reconciliation_resumes_independent_closure_without_approval_shortcut`
+verify incomplete projection retention, exact-source recovery, refusal on
+unavailable/ambiguous evidence, accepted closure before APPROVE, and the separate
+final merge gate.
+`test_new_exact_head_strong_findings_dispatch_while_historical_closure_is_pending`
+also checks that the current round alone reaches corrective handoff while all
+historical lifecycle obligations remain retained.
 Publication recovery preserves those production emissions: an accepted result
 with a pending effect records `pr.strong-audit` as `DEFERRED` with reason
 `resuming accepted review publication without model execution`, then records

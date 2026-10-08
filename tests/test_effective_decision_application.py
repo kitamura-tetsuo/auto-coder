@@ -9,6 +9,7 @@ response, and native review publication goes through the real
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import urlparse
@@ -16,9 +17,10 @@ from urllib.parse import urlparse
 import httpx
 import pytest
 
-from auto_coder.accepted_finding_bridge import OUTCOME_STILL_VALID_OBSERVED, AcceptedFindingBridge, AcceptedFindingProjection, OrdinaryDisposition
+from auto_coder.accepted_finding_bridge import OUTCOME_STILL_VALID_OBSERVED, AcceptedFindingBridge, AcceptedFindingProjection, BridgeDiagnostic, OrdinaryDisposition
 from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from auto_coder.adversarial_validator import AdversarialValidationResult, RequirementCoverageEntry
+from auto_coder.canonical_pr_blocker_ledger import BlockerDisposition
 from auto_coder.effective_decision_application import (
     HANDOFF_DISPATCHED,
     HANDOFF_WAITING,
@@ -32,6 +34,7 @@ from auto_coder.effective_decision_application import (
     apply_effective_decision,
     build_retained_record,
     classify_repair_handoff,
+    closure_projection_readable,
     closure_ready,
     derive_application,
     evidence_revision,
@@ -473,3 +476,38 @@ def test_closure_is_ready_without_effective_pass_only_when_every_outstanding_fin
     upheld = bridge.project(env.target(pr, h2), observation, [OrdinaryDisposition(status="STILL_VALID", rationale="r", evidence="src/state.py:40 still drops state", root_comment_id=41)])
     assert not closure_ready(upheld, h2)
     assert not closure_ready(AcceptedFindingProjection(complete=False), h2)
+
+
+def test_ledger_ahead_of_lifecycle_allows_only_independent_closure(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    pr = 4402
+    save_empty_session(env, pr)
+    inputs = accept_strong(env, pr, [finding_json("finding-a")])
+    strong = env.cycle.snapshot(pr).accepted_strong_round
+    assert strong is not None
+    inputs.gate.state.acknowledge_publication(pr, strong.round_id)
+    roots = published_roots(env, pr, monkeypatch, root_ids={"finding-a": 42})
+    original = env.bridge().project(env.target(pr), roots)
+    h2 = _commit(env.worktree, "independent-local-verification")
+    env.ledger.record_transition(
+        "https://api.github.com",
+        REPO,
+        pr,
+        "local-verification",
+        original.ledger_revision,
+        original.records[0].canonical_blocker_id,
+        BlockerDisposition.VERIFIED_CORRECTION,
+        "Independent local correction verification",
+        reviewed_head_sha=h2,
+    )
+    projection = env.bridge().project(env.target(pr, h2), roots)
+    assert not projection.complete
+    assert [item.code for item in projection.diagnostics] == ["cross_store_disagreement"]
+    assert projection.records[0].accepted_state == "OPEN"
+    assert not saved_pass_is_clearance(projection)
+    assert closure_projection_readable(projection) and closure_ready(projection, h2)
+    assert not closure_ready(projection, env.head)
+    assert env.cycle.snapshot(pr).open_findings[0].finding_id == "finding-a"
+    assert not closure_projection_readable(replace(projection, diagnostics=projection.diagnostics + (BridgeDiagnostic("source_unavailable"),)))
+    assert not closure_projection_readable(replace(projection, records=(replace(projection.records[0], association="UNKNOWN"),)))
+    assert not closure_projection_readable(replace(projection, records=(replace(projection.records[0], ledger_disposition="AUTHORIZED_INVALIDATION"),)))
+    assert evidence_revision(projection) == evidence_revision(env.bridge().project(env.target(pr, h2), roots))

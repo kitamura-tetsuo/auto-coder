@@ -83,6 +83,7 @@ from .effective_decision_application import (
     build_retained_record,
     classify_repair_handoff,
     closure_attempt_key,
+    closure_projection_readable,
     closure_ready,
     derive_application,
     evidence_revision,
@@ -430,7 +431,7 @@ def _renew_stale_strong_round(github_client: Any, repo_name: str, pr_number: int
         return False
     bridge, target = _accepted_state_inputs(repo_name, {"number": pr_number, "base": {"sha": inputs.base_sha}}, inputs.head_sha)
     projection = project_accepted_findings(bridge, target, ())
-    if not projection.complete or not raw_ordinary_clear(settle_accepted_gaps(result, projection)):
+    if not closure_projection_readable(projection) or not raw_ordinary_clear(settle_accepted_gaps(result, projection)):
         return False
     observed = _ClosureTargetObserver(github_client, repo_name, pr_number)()
     if (observed.head_sha, observed.base_sha, observed.contract.identity, observed.policy.identity) != (inputs.head_sha, inputs.base_sha, inputs.contract.identity, inputs.policy.identity):
@@ -751,13 +752,18 @@ def _repair_strong_findings_before_validation(
                 raise RuntimeError(f"Strong finding publication is pending: {reason}")
         bridge, target = _accepted_state_inputs(repo_name, pr_data, inputs.head_sha)
         projection = project_accepted_findings(bridge, target, ())
-        records = outstanding_records(projection)
-        if not projection.complete or not records or any(not record.canonical_blocker_id or record.target_binding != BINDING_CURRENT or record.association == AMBIGUOUS for record in records):
+        records = tuple(record for record in outstanding_records(projection) if record.round_id == strong_round.round_id)
+        current_sources = {record.source_identity for record in records}
+        # A historical correction awaiting lifecycle closure must not hide new,
+        # independently accepted exact-head findings from their repair owner.
+        current_identities_readable = projection.complete or (closure_projection_readable(projection) and all(diagnostic.source_identity not in current_sources for diagnostic in projection.diagnostics))
+        if not current_identities_readable or not records or any(not record.canonical_blocker_id or record.target_binding != BINDING_CURRENT or record.association == AMBIGUOUS for record in records):
             raise RuntimeError("accepted Strong finding identities are unavailable")
         retained = EffectiveDecisionStore(repo_name).load(pr_number)
         if retained is not None and {record.source_identity for record in records} <= set(retained.source_identities) and _corrective_completion_marker(repo_name, pr_data, inputs.head_sha, github_client):
             return False
-        implementation_repair = any(not finding.is_regression_gap for finding in inputs.gate.state.snapshot(pr_number).open_findings)
+        current_findings = tuple(finding for finding in inputs.gate.state.snapshot(pr_number).open_findings if finding.finding_id in strong_round.finding_ids)
+        implementation_repair = any(not finding.is_regression_gap for finding in current_findings)
         # This is the accepted Strong result's corrective handoff, not a synthesized
         # ordinary verdict. No ordinary attempt or review publication is created.
         EffectiveDecisionStore(repo_name).retain(
@@ -780,7 +786,7 @@ def _repair_strong_findings_before_validation(
             )
         )
         bodies, blocker_ids = _compose_actionable_feedback(github_client, repo_name, pr_number, records)
-        report = "\n\n".join(_render_two_tier_finding(finding) for finding in inputs.gate.state.snapshot(pr_number).open_findings)
+        report = "\n\n".join(_render_two_tier_finding(finding) for finding in current_findings)
         result = _send_adversarial_validation_feedback_to_cloud_task(repo_name, pr_data, inputs.head_sha, report, github_client, bodies or (report,), config=config, canonical_blocker_ids=blocker_ids)
         actions.extend(result)
         handoff, wait_reason = _record_handoff_state(repo_name, pr_data, github_client, result)

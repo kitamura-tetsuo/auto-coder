@@ -80,6 +80,21 @@ Unchanged evidence waits explicitly without model or repair work; new exact
 association/authority evidence, a changed head or an explicit `--force` makes
 processing eligible again.
 
+When independent local verification has already marked a canonical blocker
+`VERIFIED_CORRECTION` while its accepted Strong finding remains OPEN, the
+projection stays incomplete and cannot authorize approval. If every source and
+root association is readable and unambiguous and this is the only disagreement,
+the ordinary closure review and stale-authority audit renewal remain reachable.
+The lifecycle owner must independently accept closure before approval. Other
+disagreements, unavailable reads and ambiguous associations still wait. A
+versioned recovery revision gives decisions retained by older consumers one
+focused reconciliation attempt, preserving subsequent unchanged-evidence waits.
+If a renewed exact-head Strong audit accepts new findings while historical
+corrections await lifecycle closure, its repair handoff contains only that
+round's findings and canonical sources. Readable ledger-ahead diagnostics for
+older sources do not suppress this independently accepted current correction;
+historical obligations remain open for later closure and never authorize merge.
+
 ## Closure without an effective PASS
 
 Closure eligibility, requirement coverage and final approval are consumed

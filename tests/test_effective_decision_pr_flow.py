@@ -22,11 +22,11 @@ from auto_coder.accepted_finding_bridge import RootObservation
 from auto_coder.adversarial_validation_attempts import AdversarialValidationAttemptRepository
 from auto_coder.adversarial_validator import run_adversarial_validation
 from auto_coder.automation_config import AutomationConfig, ProcessedPRResult, PRProcessingOutcome
-from auto_coder.canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
+from auto_coder.canonical_pr_blocker_ledger import BlockerDisposition, CanonicalPRBlockerLedger
 from auto_coder.cli_helpers import AdversarialValidationAvailability
 from auto_coder.cloud_task_client_base import CloudTask, CloudTaskState
 from auto_coder.codex_wham_client import FollowUpDeliveryOutcome
-from auto_coder.effective_decision_application import HANDOFF_DISPATCHED, HANDOFF_WAITING, WAIT_ROUTE_UNAVAILABLE, EffectiveDecisionStore
+from auto_coder.effective_decision_application import HANDOFF_DISPATCHED, HANDOFF_WAITING, WAIT_ROUTE_UNAVAILABLE, EffectiveDecisionStore, RetainedDecision
 from auto_coder.github_app_reviewer import GitHubAppReviewer, ReviewerAppConfig, ReviewerAppIdentity
 from auto_coder.pr_processor import (
     ClaimedReviewThreadGateState,
@@ -624,6 +624,92 @@ def _repair_to(flow: Flow, label: str) -> str:
     flow.head = _commit(flow.env.worktree, label)
     flow.router.head_sha = flow.head  # type: ignore[union-attr]
     return flow.head
+
+
+def test_ledger_ahead_reconciliation_resumes_independent_closure_without_approval_shortcut(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = make_flow(flow_env, monkeypatch, 7103, "local", saved_status="BLOCKED")
+    flow.accept_finding()
+    h2 = _repair_to(flow, "locally-verified-repair")
+    snapshot = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr)
+    flow_env.ledger.record_transition(
+        "https://api.github.com",
+        REPO,
+        flow.pr,
+        "local-verification",
+        snapshot.ledger_revision,
+        snapshot.blockers[0].blocker_id,
+        BlockerDisposition.VERIFIED_CORRECTION,
+        "Independent local verifier accepted this exact correction",
+        reviewed_head_sha=h2,
+    )
+    flow.thread_resolved = True
+    EffectiveDecisionStore(REPO).retain(
+        RetainedDecision(
+            repository=REPO,
+            pr_number=flow.pr,
+            head_sha=h2,
+            status="BLOCKED",
+            next_action="RECONCILIATION",
+            evidence_revision="previous-consumer",
+            reconciliation_attempts=["previous-consumer"],
+            publication="CONFIRMED",
+        )
+    )
+    flow.model_responses = [ordinary_response(flow.thread_id, status="ADDRESSED")]
+    # Expanded scope requires renewed Strong completion after closure; the
+    # fixture deliberately leaves that independent reviewer unavailable.
+    script = ClosureScript(status="FIXED", scope="EXPANDED")
+    from auto_coder import pr_processor
+
+    with patch("auto_coder.pr_processor._record_pr_stage", wraps=pr_processor._record_pr_stage) as stages:
+        actions = flow.run(closure=script)
+
+    assert flow.model_calls == 1 and len(script.calls) == 1, actions
+    accepted = flow_env.cycle.snapshot(flow.pr)
+    assert accepted.open_findings == () and accepted.requires_new_strong_round
+    assert accepted.accepted_closure is None  # Expanded scope cannot certify merge completion.
+    assert len(accepted.closures) == 1 and accepted.closures[0].head_sha == h2
+    assert flow.handoffs == 0
+    assert [review["event"] for review in flow.reviews] == ["APPROVE"]
+    retained = flow.retained()
+    assert retained is not None and retained.status == "PASS"
+    assert flow.merge.call_count == 0  # Strong completion and final CI remain separate gates.
+    closure_events = [call for call in stages.call_args_list if call.args[1] == "pr.ordinary-closure"]
+    assert any(call.args[3].value == "completed" and call.args[4]["additional_model_execution"] is False for call in closure_events)
+    assert not any(call.args[1] == "pr.merge-completion" for call in stages.call_args_list)
+
+
+def test_new_exact_head_strong_findings_dispatch_while_historical_closure_is_pending(flow_env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    flow = make_flow(flow_env, monkeypatch, 7104, "local", saved_status="BLOCKED")
+    flow.accept_finding(finding_id="historical-gap")
+    snapshot = flow_env.ledger.get_snapshot("https://api.github.com", REPO, flow.pr)
+    h2 = _repair_to(flow, "new-audit-head")
+    flow_env.ledger.record_transition(
+        "https://api.github.com",
+        REPO,
+        flow.pr,
+        "local-verification",
+        snapshot.ledger_revision,
+        snapshot.blockers[0].blocker_id,
+        BlockerDisposition.VERIFIED_CORRECTION,
+        "Independent local verifier accepted the historical correction",
+        reviewed_head_sha=h2,
+    )
+    flow_env.head = h2
+    flow.root_id += 1
+    flow.thread_id = "PRRT_current_finding"
+    flow.accept_finding(gap=False, finding_id="current-defect")
+
+    actions = flow.run(closure=ClosureScript())
+
+    assert flow.handoffs == 1 and flow.model_calls == 0, actions
+    retained = flow.retained()
+    assert retained is not None and retained.status == "NEEDS_FIX"
+    assert len(retained.source_identities) == 1 and retained.source_identities[0].endswith(":current-defect")
+    assert "current-defect" in flow.handoff_text()
+    assert "historical-gap" not in flow.handoff_text()
+    assert {finding.finding_id for finding in flow_env.cycle.snapshot(flow.pr).open_findings} == {"historical-gap", "current-defect"}
+    assert flow.merge.call_count == 0 and flow.reviews == []
 
 
 @pytest.mark.parametrize("origin", ["cloud", "local"])
