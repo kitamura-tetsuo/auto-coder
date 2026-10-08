@@ -18,11 +18,12 @@ from pathlib import Path
 from typing import NoReturn, Optional, Sequence
 
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
-from .execution_trace import EventKind, Outcome, get_trace_collector
+from .execution_trace import EventKind, Outcome, current_scope, get_trace_collector
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .local_execution_boundary import get_current_local_execution_boundary
 from .logger_config import get_logger
+from .muse_diagnostics import MuseInvocationObserver, TimedFrame
 from .prompt_loader import render_prompt
 from .usage_marker_utils import has_http_429_marker, has_usage_marker_match
 from .utils import _COMMAND_EXECUTION_CWD
@@ -213,6 +214,8 @@ class MuseClient(LLMClientBase):
         self._msp_stdout = bytearray()
         self._msp_stderr = bytearray()
         self._approvals = _ApprovalState()
+        self._diag = MuseInvocationObserver(enabled=False)
+        self._cli_version: Optional[str] = None
 
         override = os.environ.get("AUTOCODER_MUSE_CLI")
         command = shlex.split(override) if override else ["muse"]
@@ -222,6 +225,8 @@ class MuseClient(LLMClientBase):
             raise RuntimeError(f"Muse Code CLI is unavailable: {exc}") from exc
         if result.returncode != 0:
             raise RuntimeError("Muse Code CLI is installed but unusable; run 'muse --version' and verify your installation")
+        version_lines = (result.stdout or "").strip().splitlines()
+        self._cli_version = version_lines[0] if version_lines else None
 
     @classmethod
     def _execution_cwd(cls) -> Path:
@@ -589,9 +594,22 @@ class MuseClient(LLMClientBase):
         if process.stdin is None:
             raise RuntimeError("Muse MSP host has no input stream")
         payload = memoryview((json.dumps(frame, separators=(",", ":")) + "\n").encode())
+        total_bytes = len(payload)
+        diag = self._diag
+        diag.begin_write(frame, total_bytes)
+        monitored = diag.begin_operation("pipe_write")
+        try:
+            self._msp_write(process, payload, total_bytes, deadline)
+        finally:
+            diag.end_operation(monitored)
+
+    def _msp_write(self, process: subprocess.Popen[bytes], payload: memoryview, total_bytes: int, deadline: float) -> None:
+        assert process.stdin is not None
+        diag = self._diag
         stdin_fd = process.stdin.fileno()
         stderr_fd = process.stderr.fileno() if process.stderr is not None else None
         while payload:
+            diag.tick()
             self._check_approval_expiry()
             remaining = self._wait_budget(deadline)
             if remaining <= 0:
@@ -600,7 +618,8 @@ class MuseClient(LLMClientBase):
                     raise self._msp_timeout()
                 continue
             reads = [stderr_fd] if stderr_fd is not None else []
-            readable, writable, _ = select.select(reads, [stdin_fd], [], remaining)
+            wake = diag.select_timeout()
+            readable, writable, _ = select.select(reads, [stdin_fd], [], remaining if wake is None else min(remaining, wake))
             if stderr_fd is not None and stderr_fd in readable:
                 self._drain_msp_stderr(stderr_fd)
             if stdin_fd not in writable:
@@ -612,6 +631,7 @@ class MuseClient(LLMClientBase):
             if written <= 0:
                 raise RuntimeError("Muse MSP host stopped accepting protocol input")
             payload = payload[written:]
+            diag.write_progress(total_bytes - len(payload))
 
     def _drain_msp_stderr(self, stderr_fd: int) -> None:
         try:
@@ -619,9 +639,12 @@ class MuseClient(LLMClientBase):
         except BlockingIOError:
             return
         if chunk:
+            self._diag.read("stderr", len(chunk))
             self._msp_stderr.extend(chunk)
             if len(self._msp_stderr) > 8192:
                 del self._msp_stderr[:-8192]
+        else:
+            self._diag.eof("stderr")
 
     def _raise_msp_failure(self, message: str, payload: object) -> None:
         diagnostic = json.dumps(payload, ensure_ascii=False) if not isinstance(payload, str) else payload
@@ -639,11 +662,29 @@ class MuseClient(LLMClientBase):
         *,
         clean_eof: bool = False,
     ) -> dict[str, object]:
+        diag = self._diag
+        monitored = diag.begin_operation("response_wait" if request_id >= 0 else "notification_wait")
+        try:
+            return self._msp_wait_loop(process, request_id, deadline, notifications, clean_eof=clean_eof)
+        finally:
+            diag.end_operation(monitored)
+
+    def _msp_wait_loop(
+        self,
+        process: subprocess.Popen[bytes],
+        request_id: int,
+        deadline: float,
+        notifications: list[dict[str, object]],
+        *,
+        clean_eof: bool,
+    ) -> dict[str, object]:
         if process.stdout is None:
             raise RuntimeError("Muse MSP host has no output stream")
+        diag = self._diag
         stdout_fd = process.stdout.fileno()
         stderr_fd = process.stderr.fileno() if process.stderr is not None else None
         while True:
+            diag.tick()
             self._check_approval_expiry()
             newline = self._msp_stdout.find(b"\n")
             if newline >= 0:
@@ -652,9 +693,12 @@ class MuseClient(LLMClientBase):
                 try:
                     frame = json.loads(raw)
                 except json.JSONDecodeError as exc:
+                    diag.failure_hint("invalid_frame")
                     raise RuntimeError("Muse MSP host emitted an invalid protocol frame") from exc
                 if not isinstance(frame, dict):
+                    diag.failure_hint("invalid_frame")
                     raise RuntimeError("Muse MSP host emitted a non-object protocol frame")
+                decoded_at = diag.decoded_frame(frame) or time.monotonic()
                 if "method" in frame:
                     method = frame["method"]
                     if not isinstance(method, str):
@@ -664,13 +708,18 @@ class MuseClient(LLMClientBase):
                         self._msp_handle_server_request(process, frame, method, deadline)
                     else:
                         self._msp_handle_notification(frame, method)
-                        notifications.append(frame)
+                        timed = TimedFrame(frame, decoded_at)
+                        diag.notification(timed)
+                        notifications.append(timed)
                         if request_id == -1:
                             return {}
                     continue
                 response_id = frame.get("id")
                 if "id" in frame and type(response_id) is int and response_id == request_id:
+                    error = frame.get("error")
+                    diag.correlated_response(error.get("code") if isinstance(error, dict) else None)
                     if "error" in frame:
+                        diag.failure_hint("rpc_error")
                         self._raise_msp_failure("Muse MSP request failed", frame["error"])
                     result = frame.get("result")
                     if not isinstance(result, dict):
@@ -687,7 +736,8 @@ class MuseClient(LLMClientBase):
             reads = [stdout_fd]
             if stderr_fd is not None:
                 reads.append(stderr_fd)
-            readable, _, _ = select.select(reads, [], [], remaining)
+            wake = diag.select_timeout()
+            readable, _, _ = select.select(reads, [], [], remaining if wake is None else min(remaining, wake))
             if not readable:
                 if time.monotonic() >= deadline:
                     raise self._msp_timeout()
@@ -701,10 +751,13 @@ class MuseClient(LLMClientBase):
             except BlockingIOError:
                 continue
             if chunk:
+                diag.read("stdout", len(chunk))
                 self._msp_stdout.extend(chunk)
                 continue
+            diag.eof("stdout")
             if clean_eof:
                 raise _MspEndOfStream
+            diag.failure_hint("host_eof")
             detail = self._msp_stderr.decode(errors="replace").strip()
             self._raise_msp_failure("Muse MSP host exited before completing the request", detail)
 
@@ -999,7 +1052,42 @@ class MuseClient(LLMClientBase):
             time.sleep(0.01)
         raise RuntimeError("Muse process group did not terminate after SIGKILL; writer settlement is unknown")
 
+    def _pending_approval_remaining(self) -> Optional[float]:
+        now = time.monotonic()
+        limits = [record.first_seen + _MUSE_APPROVAL_SETTLEMENT_SECONDS - now for _, record in self._pending_approvals()]
+        return min(limits) if limits else None
+
     def _run_msp_turn(self, prompt: str, is_noedit: bool, session_id: Optional[str]) -> str:
+        """Run one turn under a per-call, metadata-only diagnostic observer."""
+        diag = self._diag = MuseInvocationObserver()
+        scope = current_scope()
+        boundary = get_current_local_execution_boundary()
+        backend = self.config_backend
+        diag.update_metadata(
+            backend_alias=getattr(backend, "name", None) or "muse",
+            backend_type=getattr(backend, "backend_type", None) or "muse",
+            model=self.model_name,
+            continuation=session_id is not None,
+            requested_session_id=session_id,
+            controller_pid=os.getpid(),
+            cli_version=self._cli_version,
+            execution_id=scope.execution_id if scope else None,
+            repository=scope.repository if scope else None,
+            item=f"{scope.item_type}#{scope.item_number}" if scope else None,
+            invocation_id=boundary.binding.invocation_id if boundary else None,
+        )
+        diag.start()
+        error: Optional[BaseException] = None
+        try:
+            return self._run_msp_turn_observed(prompt, is_noedit, session_id)
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            diag.finish(error)
+
+    def _run_msp_turn_observed(self, prompt: str, is_noedit: bool, session_id: Optional[str]) -> str:
+        diag = self._diag
         # An invocation owns only the identity it establishes successfully.
         # Clear before snapshot/configuration/rendering so any pre-host failure
         # cannot expose a previous invocation's session as its own result.
@@ -1008,6 +1096,7 @@ class MuseClient(LLMClientBase):
         cwd = self._execution_cwd().resolve()
         msp_options = self._msp_options(effective_noedit)
         effective_noedit = msp_options.noedit
+        diag.update_metadata(effective_mode="no-edit" if effective_noedit else "edit", reasoning_effort=msp_options.reasoning_effort)
         self._requested_approval_mode = "denyUnmatched" if msp_options.approval_denial else ("onRequest" if effective_noedit else "allowAll")
         self._observed_approval_mode: Optional[str] = None
         self._approvals = _ApprovalState()
@@ -1039,6 +1128,7 @@ class MuseClient(LLMClientBase):
         command = shlex.split(os.environ.get("AUTOCODER_MUSE_CLI", "muse")) + msp_options.host_arguments
         process: Optional[subprocess.Popen[bytes]] = None
         deadline = time.monotonic() + self.timeout
+        diag.set_budget_sources(deadline, self._pending_approval_remaining, lambda: len(self._msp_stdout))
         notifications: list[dict[str, object]] = []
         command_ids: set[str] = set()
 
@@ -1054,12 +1144,15 @@ class MuseClient(LLMClientBase):
         invocation_error: Optional[BaseException] = None
         try:
             logger.warning("LLM invocation: Muse Code MSP host is being called. Keep LLM calls minimized.")
+            diag.enter_phase("host_startup")
             process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix", bufsize=0)
+            diag.host_started(process)
             self._msp_stdout.clear()
             self._msp_stderr.clear()
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     os.set_blocking(stream.fileno(), False)
+            diag.enter_phase("initialization")
             self._msp_send(
                 process,
                 {
@@ -1074,6 +1167,8 @@ class MuseClient(LLMClientBase):
             server_info = initialized.get("serverInfo")
             schema = initialized.get("schema")
             host_version = server_info.get("version") if isinstance(server_info, dict) else None
+            if isinstance(schema, dict):
+                diag.update_metadata(host_version=host_version, schema_version=schema.get("version"), schema_fingerprint=schema.get("fingerprint"))
             if not isinstance(schema, dict):
                 raise RuntimeError("Muse MSP initialization returned missing or non-object schema metadata " f"(host version={host_version!r}; required schema.version=1 and a nonblank schema.fingerprint)")
             schema_version = schema.get("version")
@@ -1101,6 +1196,7 @@ class MuseClient(LLMClientBase):
                     raise ValueError("Muse session ID must be nonempty")
                 params = {"commandId": session_command_id, "sessionId": session_id}
                 method = "session/resume"
+            diag.enter_phase("session_start_resume")
             self._msp_send(process, {"jsonrpc": "2.0", "id": 2, "method": method, "params": params}, deadline)
             opened = self._msp_wait(process, 2, deadline, notifications)
             metadata = self._session_metadata(opened)
@@ -1109,6 +1205,7 @@ class MuseClient(LLMClientBase):
                 raise RuntimeError("Muse MSP returned an invalid session identity")
             if session_id is not None and canonical_id != session_id:
                 raise RuntimeError("Muse MSP resumed a different session identity")
+            diag.session_confirmed(canonical_id)
             workspace = metadata.get("workspaceRoot")
             if not isinstance(workspace, str) or workspace != str(cwd):
                 raise RuntimeError("Muse MSP session belongs to an incompatible workspace")
@@ -1150,9 +1247,11 @@ class MuseClient(LLMClientBase):
                     "sessionId": canonical_id,
                     "mode": self._requested_approval_mode,
                 }
+                diag.enter_phase("approval_mode_change")
                 self._msp_send(process, {"jsonrpc": "2.0", "id": 3, "method": "session/setApprovalMode", "params": approval_params}, deadline)
                 approval_result = self._msp_wait(process, 3, deadline, notifications)
                 self._validate_command_ack(approval_result, approval_command_id, approval_mode=self._requested_approval_mode)
+                diag.ack_accepted()
                 self._observed_approval_mode = self._requested_approval_mode
             command_id = new_command_id()
             # Automatic settlement is eligible only after denyUnmatched is confirmed for this session.
@@ -1161,13 +1260,17 @@ class MuseClient(LLMClientBase):
             if msp_options.reasoning_effort is not None:
                 turn_params["reasoningEffort"] = msp_options.reasoning_effort
             turn_request_id = 4
+            diag.enter_phase("turn_submission")
             self._msp_send(process, {"jsonrpc": "2.0", "id": turn_request_id, "method": "turn/start", "params": turn_params}, deadline)
             turn_ack = self._msp_wait(process, turn_request_id, deadline, notifications)
             self._validate_command_ack(turn_ack, command_id)
+            diag.ack_accepted()
             turn_id = turn_ack.get("turnId")
             if not isinstance(turn_id, str) or not turn_id or type(turn_ack.get("startedNewTurn")) is not bool or not isinstance(turn_ack.get("disposition"), str) or not turn_ack.get("disposition"):
                 raise RuntimeError("Muse MSP did not acknowledge the submitted turn")
             self._bind_admitted_turn(turn_id)
+            diag.turn_acknowledged(turn_id, notifications)
+            diag.enter_phase("turn_terminal_wait")
             terminal: Optional[dict[str, object]] = None
             notification_cursor = 0
             while terminal is None:
@@ -1193,8 +1296,11 @@ class MuseClient(LLMClientBase):
             # input after completion, then consume every remaining notification
             # through host EOF so a later contradictory terminal cannot escape
             # correlation checks merely by arriving after the first terminal.
+            diag.enter_phase("post_terminal_host_exit_wait")
             if process.stdin is not None:
                 process.stdin.close()
+                diag.stdin_closed()
+            host_wait = diag.begin_operation("host_exit_wait")
             try:
                 while process.poll() is None:
                     poll_deadline = min(deadline, time.monotonic() + 0.05)
@@ -1205,6 +1311,9 @@ class MuseClient(LLMClientBase):
                             raise
             except _MspEndOfStream:
                 pass
+            finally:
+                diag.end_operation(host_wait)
+            diag.enter_phase("result_validation")
             for event in notifications:
                 params_obj = event.get("params")
                 if event.get("method") != "turn/completed":
@@ -1233,13 +1342,17 @@ class MuseClient(LLMClientBase):
         except subprocess.TimeoutExpired as exc:
             invocation_error = AutoCoderTimeoutError(f"Muse MSP invocation timed out after {self.timeout} seconds")
             invocation_error.__cause__ = exc
+            diag.failure(invocation_error)
         except BaseException as exc:
             invocation_error = exc
+            diag.failure(exc)
         finally:
             if process is not None:
+                diag.enter_phase("writer_settlement")
                 if process.stdin is not None:
                     try:
                         process.stdin.close()
+                        diag.stdin_closed()
                     except OSError:
                         pass
                 if invocation_error is None:
@@ -1255,13 +1368,18 @@ class MuseClient(LLMClientBase):
                         # Settlement is independent of protocol/result success.
                         # Failed turns must also release their execution lease.
                         boundary.record_writer_completion(boundary.binding.invocation_id)
+                    diag.settlement_result("confirmed")
                 except BaseException as settlement_error:
+                    diag.settlement_result("failed")
+                    diag.failure(settlement_error, "writer_settlement")
                     if invocation_error is None:
                         invocation_error = settlement_error
                     else:
                         invocation_error.add_note(f"Muse writer settlement also failed: {settlement_error}")
                 if process.returncode != 0 and invocation_error is None:
                     invocation_error = RuntimeError(f"Muse MSP host exited with nonzero status {process.returncode}")
+                    diag.failure_hint("host_exit_nonzero")
+                    diag.failure(invocation_error, "writer_settlement")
             try:
                 # Editable work executes in the controller-owned private repository.
                 # Its Git index, HEAD, refs, branches, stashes, and worktrees are
@@ -1269,11 +1387,13 @@ class MuseClient(LLMClientBase):
                 # Only no-edit turns retain the mutation audit and exact snapshot
                 # invariant.
                 if effective_noedit:
+                    diag.enter_phase("result_validation")
                     assert trace_path is not None
                     assert before is not None
                     mutation_observed = self._trace_contains_git_mutation(trace_path)
                     self._assert_invariants(before, True, mutation_observed)
             except BaseException as invariant_error:
+                diag.failure(invariant_error, "result_validation")
                 self._last_session_id = None
                 if invocation_error is None:
                     invocation_error = invariant_error
