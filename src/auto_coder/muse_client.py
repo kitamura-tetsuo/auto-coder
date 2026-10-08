@@ -1097,7 +1097,9 @@ class MuseClient(LLMClientBase):
         msp_options = self._msp_options(effective_noedit)
         effective_noedit = msp_options.noedit
         diag.update_metadata(effective_mode="no-edit" if effective_noedit else "edit", reasoning_effort=msp_options.reasoning_effort)
-        self._requested_approval_mode = "denyUnmatched" if msp_options.approval_denial else ("onRequest" if effective_noedit else "allowAll")
+        # Review is unattended too. Let the host authorize shell inspection;
+        # --disable-write and the no-edit snapshot/trace still reject mutation.
+        self._requested_approval_mode = "denyUnmatched" if msp_options.approval_denial else "allowAll"
         self._observed_approval_mode: Optional[str] = None
         self._approvals = _ApprovalState()
         boundary = get_current_local_execution_boundary()

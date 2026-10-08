@@ -71,6 +71,11 @@ muse:
     expand shell variables (including `$?`), or use command substitution: even a
     read-only command containing those constructs can require interactive approval.
     Use separate inspection calls when additional evidence is needed.
+    Quote literal path arguments, especially Svelte route paths containing brackets
+    such as 'client/src/routes/[project]/[page]/diff/+layout.svelte'. Unquoted
+    brackets are shell glob syntax, not literal path characters. If shell policy
+    denies inspection, use the file-read/search tools or a permitted simpler
+    command; report unavailable evidence honestly instead of requesting approval.
     $task_prompt
 
     You may inspect the repository and run tests as needed. In edit mode, you may
@@ -80,8 +85,8 @@ muse:
     you return.
 
     This unattended Muse session uses controller-selected non-interactive approval
-    mode: allowAll for implementation, onRequest for no-edit, and denyUnmatched
-    for explicitly restricted execution. Read-only shell inspection may run in
+    mode: allowAll for implementation and no-edit, or denyUnmatched for explicitly
+    restricted execution. Read-only shell inspection may run in
     no-edit mode; operations requiring approval are unavailable. Host sandbox and
     permission ceilings still apply. Do not wait for a human decision or a
     controller update. Initial implementation tests, when run, are recorded in

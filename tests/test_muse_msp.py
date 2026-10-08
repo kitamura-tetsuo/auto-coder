@@ -131,7 +131,7 @@ for line in sys.stdin:
         if os.environ.get("MSP_CHILD_WRITER"):
             subprocess.Popen([sys.executable, "-c", "import os,time; from pathlib import Path; time.sleep(1); Path(os.environ['MSP_CHILD_SENTINEL']).write_text('late write')"])
         if os.environ.get("MSP_ATTEMPT_EFFECTS"):
-            assert effective_mode == "onRequest", "Read-only shell inspection must not use denyUnmatched"
+            assert effective_mode == "allowAll", "Read-only inspection must never park for approval"
             if "--disable-write" not in sys.argv[1:]:
                 Path("tracked.txt").write_text("model write effect\n")
             assert "--disable-shell" not in sys.argv[1:]
@@ -505,7 +505,8 @@ def test_muse_msp_initialize_refusal_clears_prior_session_and_stops_protocol(
     assert methods == ["initialize"]
 
 
-def test_muse_msp_explicit_disable_approval_uses_only_wire_mode(tmp_path, monkeypatch, _use_real_commands):
+@pytest.mark.parametrize("is_noedit", [False, True])
+def test_muse_msp_explicit_disable_approval_uses_only_wire_mode(tmp_path, monkeypatch, _use_real_commands, is_noedit):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -514,9 +515,9 @@ def test_muse_msp_explicit_disable_approval_uses_only_wire_mode(tmp_path, monkey
     monkeypatch.setenv("MSP_LOG", str(log))
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3", options=["--disable-approval"])})
 
-    assert _manager(config)._run_llm_cli("first") == "answer:first"
+    assert _manager(config)._run_llm_cli("first", is_noedit=is_noedit) == "answer:first"
     start = next(json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "session/start")
-    assert start["argv"] == ["serve"]
+    assert start["argv"] == (["serve", "--disable-write"] if is_noedit else ["serve"])
     assert start["frame"]["params"]["approvalMode"] == "denyUnmatched"
 
 
@@ -534,11 +535,11 @@ def test_muse_msp_configured_no_edit_maps_all_restrictions_for_editable_caller(t
     start = next(entry for entry in entries if entry["frame"].get("method") == "session/start")
     assert start["argv"] == ["serve", "--disable-write"]
     assert "--disable-approval" not in start["argv"]
-    assert start["frame"]["params"]["approvalMode"] == "onRequest"
+    assert start["frame"]["params"]["approvalMode"] == "allowAll"
     assert any(entry["frame"].get("method") == "turn/start" for entry in entries)
 
 
-@pytest.mark.parametrize("approval_mode", ["omit", "allowAll", "denyUnmatched"])
+@pytest.mark.parametrize("approval_mode", ["omit", "denyUnmatched", "onRequest", "promptUnmatched"])
 def test_muse_msp_fresh_noedit_rejects_unconfirmed_approval_before_turn(tmp_path, monkeypatch, _use_real_commands, approval_mode):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
@@ -549,7 +550,7 @@ def test_muse_msp_fresh_noedit_rejects_unconfirmed_approval_before_turn(tmp_path
     monkeypatch.setenv("MSP_APPROVAL_MODE", approval_mode)
     config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
 
-    with pytest.raises(RuntimeError, match="fresh session did not confirm approval mode onRequest"):
+    with pytest.raises(RuntimeError, match="fresh session did not confirm approval mode allowAll"):
         _manager(config)._run_llm_cli("first", is_noedit=True)
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     assert any(entry["frame"].get("method") == "session/start" for entry in entries)
@@ -598,7 +599,7 @@ def test_muse_msp_one_shot_denial_does_not_leak(tmp_path, monkeypatch, _use_real
     assert manager._run_llm_cli("first") == "answer:first"
     assert manager._run_llm_cli("second") == "answer:second"
     starts = [json.loads(line)["frame"] for line in log.read_text().splitlines() if json.loads(line)["frame"].get("method") == "session/start"]
-    assert starts[0]["params"]["approvalMode"] == ("denyUnmatched" if extra_option == "--disable-approval" else "onRequest")
+    assert starts[0]["params"]["approvalMode"] == ("denyUnmatched" if extra_option == "--disable-approval" else "allowAll")
     first_start = next(json.loads(line) for line in log.read_text().splitlines() if json.loads(line)["frame"] == starts[0])
     assert first_start["argv"] == expected_argv
     assert starts[1]["params"]["approvalMode"] == "allowAll"
@@ -636,7 +637,7 @@ def test_muse_msp_noedit_maps_host_and_wire_options(tmp_path, monkeypatch, _use_
     start = next(entry for entry in entries if entry["frame"].get("method") == "session/start")
     turn = next(entry for entry in entries if entry["frame"].get("method") == "turn/start")
     assert start["argv"] == (["serve", "--disable-shell", "--disable-write"] if disable_shell else ["serve", "--disable-write"])
-    assert start["frame"]["params"]["approvalMode"] == "onRequest"
+    assert start["frame"]["params"]["approvalMode"] == "allowAll"
     assert "--model" not in start["argv"]
     assert turn["frame"]["params"]["reasoningEffort"] == "high"
     assert isinstance(turn["frame"]["params"]["input"], list)
@@ -644,6 +645,9 @@ def test_muse_msp_noedit_maps_host_and_wire_options(tmp_path, monkeypatch, _use_
     assert "submit simple read-only commands with literal arguments" in prompt
     assert "Read exit codes from the tool result" in prompt
     assert "including `$?`" in prompt
+    assert "Quote literal path arguments" in prompt
+    assert "'client/src/routes/[project]/[page]/diff/+layout.svelte'" in prompt
+    assert "allowAll for implementation and no-edit" in prompt
     assert "complete prompt" in prompt
     for command in (start, turn):
         _assert_uuid7(command["frame"]["params"]["commandId"])
@@ -651,7 +655,7 @@ def test_muse_msp_noedit_maps_host_and_wire_options(tmp_path, monkeypatch, _use_
 
 
 @pytest.mark.parametrize("apply_outcome", ["completed", "noop"])
-def test_muse_msp_resume_reestablishes_approval_denial(tmp_path, monkeypatch, _use_real_commands, apply_outcome):
+def test_muse_msp_resume_reestablishes_automatic_approval(tmp_path, monkeypatch, _use_real_commands, apply_outcome):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -669,7 +673,7 @@ def test_muse_msp_resume_reestablishes_approval_denial(tmp_path, monkeypatch, _u
     approval = next(entry for entry in entries if entry["frame"].get("method") == "session/setApprovalMode")
     turn = next(entry for entry in entries if entry["frame"].get("method") == "turn/start")
     assert resume["frame"]["params"].keys() == {"commandId", "sessionId"}
-    assert approval["frame"]["params"]["mode"] == "onRequest"
+    assert approval["frame"]["params"]["mode"] == "allowAll"
     assert approval["frame"]["params"]["sessionId"] == "opaque/provider/session"
     command_ids = [entry["frame"]["params"]["commandId"] for entry in (resume, approval, turn)]
     assert len(command_ids) == len(set(command_ids))
@@ -712,7 +716,8 @@ def test_muse_msp_resume_rejects_unverified_approval_change_before_turn(tmp_path
 
 
 @pytest.mark.parametrize("stored_mode", ["onRequest", "denyUnmatched", "allowAll"])
-def test_muse_msp_editable_resume_establishes_allow_all(tmp_path, monkeypatch, _use_real_commands, stored_mode):
+@pytest.mark.parametrize("is_noedit", [False, True])
+def test_muse_msp_resume_establishes_allow_all(tmp_path, monkeypatch, _use_real_commands, stored_mode, is_noedit):
     repo = _repository(tmp_path)
     host = _host(tmp_path)
     log = tmp_path / "msp.jsonl"
@@ -727,7 +732,7 @@ def test_muse_msp_editable_resume_establishes_allow_all(tmp_path, monkeypatch, _
     assert session_id == "opaque/provider/session"
     manager.authorize_retained_local_session_reuse(session_id)
     monkeypatch.setenv("MSP_REPORTED_APPROVAL_MODE", stored_mode)
-    assert manager.continue_session(session_id, "second") == "answer:second"
+    assert manager.continue_session(session_id, "second", is_noedit=is_noedit) == "answer:second"
 
     frames = [json.loads(line)["frame"] for line in log.read_text().splitlines()]
     assert sum(frame.get("method") == "session/resume" for frame in frames) == 1
@@ -1457,7 +1462,7 @@ def test_muse_pending_resume_reports_requested_and_effective_approval_policy(
     assert events[0].outcome == Outcome.BLOCKED.value
     assert events[0].facts == {
         "method": "session/resume",
-        "requested_approval_policy": "onRequest" if is_noedit else "allowAll",
+        "requested_approval_policy": "allowAll",
         "effective_approval_policy": reported_mode or "unknown",
         "sessionId": session_id,
         "reason": "pending interactive requests",

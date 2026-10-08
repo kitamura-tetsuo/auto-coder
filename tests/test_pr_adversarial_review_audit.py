@@ -294,8 +294,8 @@ for line in sys.stdin:
     if method == "initialize":
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"serverInfo":{"name":"fixture","version":"1.3.0"},"schema":{"version":1,"fingerprint":"sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"},"capabilities":{"sessionDurability":"durable"}}})
     elif method == "session/start":
-        assert frame["params"]["approvalMode"] == "onRequest"
-        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":"review-session","workspaceRoot":os.getcwd(),"modelId":"muse-spark-1.3","approvalMode":{"mode":"onRequest"}},"pendingRequests":[]}})
+        assert frame["params"]["approvalMode"] == "allowAll"
+        emit({"jsonrpc":"2.0","id":frame["id"],"result":{"session":{"sessionId":"review-session","workspaceRoot":os.getcwd(),"modelId":"muse-spark-1.3","approvalMode":{"mode":"allowAll"}},"pendingRequests":[]}})
     elif method == "turn/start":
         Path(os.environ["MUSE_READY"]).write_text("ready")
         while not Path(os.environ["MUSE_RELEASE"]).exists():

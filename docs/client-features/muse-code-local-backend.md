@@ -13,7 +13,7 @@ handoff and pull-request publication. Any repository mutation during no-edit
 execution fails the run. Muse Code is also capable of serving as a
 read-only review and adversarial validation backend (`[backend_adversarial_validation]`);
 in no-edit mode, Auto-Coder starts Muse with `--disable-write` and permits shell
-inspection, then establishes `onRequest` approval mode over MSP
+inspection, then establishes `allowAll` approval mode over MSP
 before submitting the turn. Dangerous bypass and unauthorized workspace-trust
 options fail closed rather than being stripped or passed to the host.
 
@@ -35,18 +35,22 @@ echo commands, shell-variable expansion (including `$?`), and command substituti
 can cause the host to request interactive approval even during harmless inspection;
 additional evidence should be gathered through separate inspection calls. This is
 prompt guidance, not a guarantee of model compliance or a permission-rule change.
-Approval refusal, trace emissions, and dashboard projection remain unchanged.
+Quote literal path arguments, including Svelte route names containing brackets.
+Denied operations must be replaced with permitted inspection or reported as
+unavailable evidence, never treated as successful verification.
 
 Editable implementation sessions explicitly request and confirm the official MSP
 `allowAll` mode before submitting a turn, so a host configured for interactive
 approval cannot defer an unattended issue merely because a tool needs approval.
-No-edit invocations request and confirm `onRequest`, which permits the host
-read-only shell allowlist and sandbox-contained non-dangerous parsed stages.
-Unlike `denyUnmatched`, it does not deny every shell stage lacking a saved rule.
-No-edit authority still prohibits mutation, with detection and restoration as
-described above. Approval requests under `onRequest` fail promptly without
-sending a decision. `MUSE_DISABLE_APPROVAL_JUDGE=1` prevents an automatic
-reviewer from granting approval during no-edit execution. Explicit `--disable-approval` instead selects `denyUnmatched`. Fresh sessions must echo the requested mode; absent or mismatched
+No-edit invocations also request and confirm `allowAll` so shell inspection does
+not park for a human decision. The host performs automatic authorization; Auto-Coder
+does not send individual approval decisions. `--disable-write`, explicit
+`--disable-shell`, repository snapshots, Git tracing, and mutation restoration
+remain enforced. This is mutation detection and recovery, not arbitrary-shell
+filesystem confinement. `MUSE_DISABLE_APPROVAL_JUDGE=1` remains set in no-edit
+mode; automatic admission comes from the confirmed host mode rather than an
+approval-judge model. Explicit `--disable-approval` overrides the default in both
+edit and no-edit invocations and selects `denyUnmatched`. Fresh sessions must echo the requested mode; absent or mismatched
 metadata fails before the turn. Exact-session resume selects the mode for the
 current invocation through `session/setApprovalMode` when it differs from the
 stored mode, and verifies the correlated completed/noop acknowledgement and
@@ -122,3 +126,17 @@ No-edit turns still capture and enforce their recovery snapshot and Git trace.
 The omission changes no admission, approval, provider-routing, handoff, or trace
 outcome; `test_muse_editable_large_context_does_not_allocate_recovery_snapshot` in
 `tests/test_muse_msp.py` covers the real protocol-host path with large context.
+
+## PR #5495 approval failure prevention
+
+A Muse 1.4.3 review of head `904139da` submitted `git ls-files` with unquoted
+`[project]` and `[page]` path segments. The host reported an incomplete argv and
+requested approval under `onRequest`. The unattended client refused the request,
+published `ERROR`, and later same-head processing reused that error by design.
+Default `allowAll` removes this interactive admission point without changing the
+same-head error-reuse policy or merge requirements. Existing published errors
+still require an explicit `--only <PR> --force` recovery after installing the fix;
+no prior error is rewritten or treated as clearance. Executable MSP-peer tests
+verify fresh/configured/resumed mode confirmation, explicit-denial precedence,
+shell inspection, and rejection/restoration of no-edit mutation. These are
+protocol regression tests, not evidence of a live model's semantic compliance.

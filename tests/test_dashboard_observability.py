@@ -274,6 +274,44 @@ def test_muse_initial_tests_and_interactive_refusal_reach_mounted_detail(mock_ui
 
 
 @patch("auto_coder.dashboard.ui")
+def test_muse_noedit_automatic_permission_reaches_mounted_detail(mock_ui, tmp_path, monkeypatch, _use_real_commands):
+    from auto_coder.cli_helpers import build_backend_manager
+    from auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+    from tests.test_muse_msp import _host, _repository
+
+    repo = _repository(tmp_path)
+    sentinel = tmp_path / "inspection"
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("AUTOCODER_MUSE_CLI", str(_host(tmp_path)))
+    monkeypatch.setenv("MSP_LOG", str(tmp_path / "msp.jsonl"))
+    monkeypatch.setenv("MSP_ATTEMPT_EFFECTS", "1")
+    monkeypatch.setenv("MSP_SHELL_SENTINEL", str(sentinel))
+    config = LLMBackendConfiguration(backends={"muse": BackendConfig(name="muse", backend_type="muse", model="muse-spark-1.3")})
+    collector = get_trace_collector()
+    with (
+        patch("auto_coder.cli_helpers.get_llm_config", return_value=config),
+        patch("auto_coder.muse_client.get_llm_config", return_value=config),
+        collector.start_execution("owner/repo", "pr", 5495, origin="worker") as execution,
+    ):
+        manager = build_backend_manager(["muse"], "muse", {"muse": "muse-spark-1.3"})
+        assert manager._run_llm_cli("review", is_noedit=True) == "answer:first"
+        manager.close()
+        execution.finish(Outcome.COMPLETED)
+    assert sentinel.read_text() == "initial\nscripts/test.sh\ntracked.txt\nunchanged\n"
+    snapshot = collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=5495)
+    results = [event for event in snapshot.events if event.kind == EventKind.STAGE_RESULT.value]
+    assert [(event.stage_id, event.outcome) for event in results] == [("llm.local-execution", "completed")]
+    dispatch = next(event for event in snapshot.events if event.kind == EventKind.STAGE_STARTED.value and event.stage_id == "llm.local-execution")
+    assert dispatch.facts["invocation_id"] == results[0].facts["invocation_id"]
+    assert results[0].facts["phase"] == "read-only"
+    assert dispatch.execution_id == results[0].execution_id
+    diagram = _mounted_detail(mock_ui, "pr", 5495)
+    _assert_required_stage_visible(diagram, "Local LLM call: muse")
+    assert "outcome: completed" in diagram
+    assert "Muse interactive request blocked" not in diagram
+
+
+@patch("auto_coder.dashboard.ui")
 @pytest.mark.parametrize("backend_type", ["muse", "codex", "claude", "gemini", "qwen", "opencode", "codex-cloud", "claude-routine", "jules"])
 @pytest.mark.parametrize("continuation,error_type", [(False, None), (True, None), (False, RuntimeError), (True, KeyboardInterrupt)])
 def test_local_llm_dispatch_reaches_mounted_detail_before_return(mock_ui, tmp_path, backend_type, continuation, error_type):

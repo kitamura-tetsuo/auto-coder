@@ -25,6 +25,16 @@ The anonymous `/api/logs` route exposes the start and result through its existin
 fact allowlist (including backend, provider, phase, and error). The full diagnostic
 facts remain in the local dashboard; no HTTP schema or fact allowlist changes.
 
+Muse read-only calls now confirm host `allowAll` automatic authorization before
+dispatching a turn, like implementation calls. A successful inspection appears
+as a completed `llm.local-execution` with phase `read-only`, without a
+`llm.muse-interactive-request` blocked stage. Explicit `--disable-approval`
+still selects `denyUnmatched`; unexpected interactive requests and rejected
+mutation still appear as failures. Neither automatic permission nor a completed
+client call proves review approval. The mounted-detail regression
+`test_muse_noedit_automatic_permission_reaches_mounted_detail` covers the success
+path alongside the existing interactive-refusal negative control.
+
 Run `bash scripts/test.sh tests/test_dashboard_observability.py tests/test_muse_msp.py`
 for production dispatch-to-mounted-view coverage, admission/preparation negative
 controls, interruption pairing, and executable Muse protocol coverage.
