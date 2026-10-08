@@ -179,6 +179,7 @@ class MuseInvocationObserver:
         self.write_kind: Optional[str] = None
         self.rpc_error_code: Optional[int] = None
         self.operation: Optional[str] = None
+        self._operations: list[str] = []
         self.operation_started = self.started
         self.anchor: Optional[float] = None
         self.next_due: Optional[float] = None
@@ -215,7 +216,18 @@ class MuseInvocationObserver:
 
     @_safe()
     def update_metadata(self, **values: object) -> None:
-        self.metadata.update(values)
+        self.metadata.update({key: self._scalar(value) for key, value in values.items()})
+
+    @staticmethod
+    def _scalar(value: object) -> object:
+        """Keep only bounded scalars; untrusted structured metadata is never retained."""
+        if value is None or type(value) is bool:
+            return value
+        if type(value) is int:
+            return value if abs(value) < 10**15 else "invalid"
+        if isinstance(value, str):
+            return display(value)
+        return f"invalid-{type(value).__name__}"[:MAX_DISPLAY_CHARS]
 
     @_safe()
     def set_budget_sources(self, deadline: float, approval_remaining: Callable[[], Optional[float]], buffered_bytes: Callable[[], int]) -> None:
@@ -267,6 +279,8 @@ class MuseInvocationObserver:
         if self.operation == "host_exit_wait":
             return False
         now = time.monotonic()
+        # Nested operations (e.g. a receipt write inside a response wait) restore the enclosing one.
+        self._operations.append(name)
         self.operation = name
         self.operation_started = now
         if self.anchor is None:
@@ -278,7 +292,9 @@ class MuseInvocationObserver:
     @_safe()
     def end_operation(self, started: bool) -> None:
         if started:
-            self.operation = None
+            if self._operations:
+                self._operations.pop()
+            self.operation = self._operations[-1] if self._operations else None
 
     @_safe()
     def tick(self) -> None:

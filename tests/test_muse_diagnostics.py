@@ -30,12 +30,17 @@ mode = os.environ.get("GATE_MODE", "silent")
 def emit(value):
     print(json.dumps(value), flush=True)
 def wait_gate():
-    while not gate.exists():
+    deadline = time.time() + 60
+    while not gate.exists() and time.time() < deadline:
         time.sleep(0.02)
 for line in sys.stdin:
     frame = json.loads(line)
     method = frame.get("method")
     if method == "initialize":
+        if mode == "bad-schema":
+            junk = {"credential": os.environ["BAD_SECRET"], "detail": "x" * 500}
+            emit({"jsonrpc":"2.0","id":frame["id"],"result":{"serverInfo":{"name":"fixture","version":junk},"schema":{"version":1,"fingerprint":junk}}})
+            continue
         emit({"jsonrpc":"2.0","id":frame["id"],"result":{"serverInfo":{"name":"fixture","version":"7.7"},"schema":{"version":1,"fingerprint":"sha256:b1e6676d624e116e2c1b150fec3192200d2cbca8ed79898e44f8921759c7872f"}}})
     elif method == "session/start":
         session = {"sessionId":"gated/session","workspaceRoot":os.getcwd(),"modelId":"muse-spark-1.3","approvalMode":{"mode":frame["params"]["approvalMode"]}}
@@ -47,7 +52,12 @@ for line in sys.stdin:
         turn = "turn-1"
         ack = {"commandId":frame["params"]["commandId"],"status":"accepted","turnId":turn,"startedNewTurn":True,"disposition":"started"}
         encoded = json.dumps({"jsonrpc":"2.0","id":frame["id"],"result":ack})
-        if mode == "stderr":
+        if mode == "approval-gap":
+            emit({"jsonrpc":"2.0","id":"srv-1","method":"approval/request","params":{"sessionId":"gated/session","turnId":turn,"approvalId":"a1"}})
+            receipt = json.loads(sys.stdin.readline())
+            emit({"jsonrpc":"2.0","method":"approval/resolved","params":{"sessionId":"gated/session","turnId":turn,"approvalId":"a1","policyResult":"allow"}})
+            wait_gate()
+        elif mode == "stderr":
             while not gate.exists():
                 sys.stderr.write("SECRET-STDERR-SENTINEL\n"); sys.stderr.flush(); time.sleep(0.05)
         elif mode == "partial":
@@ -86,7 +96,7 @@ def _records(text: str) -> list[dict]:
     return [json.loads(_ANSI.sub("", line).split(MARKER, 1)[1]) for line in complete.splitlines() if MARKER in line]
 
 
-def _gated(tmp_path: Path, monkeypatch, mode: str, *, timeout: Optional[int] = None, interval: float = 0.2, backend: str = "muse"):
+def _gated(tmp_path: Path, monkeypatch, mode: str, *, timeout: Optional[int] = None, interval: float = 0.2, backend: str = "muse", options: Optional[list[str]] = None):
     repo = _repository(tmp_path)
     peer = tmp_path / "gated-muse"
     peer.write_text(_GATED_PEER)
@@ -97,7 +107,7 @@ def _gated(tmp_path: Path, monkeypatch, mode: str, *, timeout: Optional[int] = N
     monkeypatch.setenv("SEEN", str(tmp_path / "seen"))
     monkeypatch.setenv("GATE_MODE", mode)
     monkeypatch.setattr(muse_diagnostics, "HEARTBEAT_INTERVAL_SECONDS", interval)
-    config = LLMBackendConfiguration(backends={backend: BackendConfig(name=backend, backend_type="muse", model="muse-spark-1.3", timeout=timeout)})
+    config = LLMBackendConfiguration(backends={backend: BackendConfig(name=backend, backend_type="muse", model="muse-spark-1.3", timeout=timeout, options=options or [])})
     return _manager(config, backend), tmp_path / "gate", tmp_path / "seen"
 
 
@@ -407,3 +417,42 @@ def test_before_ack_timing_annotation_is_released_after_fold():
     assert observer.text.first_at == 1.0 and observer.text.before_ack
     assert item.decoded_at is None and old.decoded_at is None
     assert "SECRET" not in json.dumps(observer._payload("heartbeat", time.monotonic()))
+
+
+def test_nested_receipt_write_does_not_disable_response_heartbeats():
+    observer = MuseInvocationObserver(interval=0.05)
+    waiting = observer.begin_operation("response_wait")
+    writing = observer.begin_operation("pipe_write")
+    observer.end_operation(writing)
+    assert observer.operation == "response_wait"
+    assert observer.select_timeout() is not None
+    observer.end_operation(waiting)
+    assert observer.operation is None
+
+
+def test_approval_receipt_before_ack_keeps_response_wait_reporting(tmp_path, monkeypatch, _use_real_commands, sinks):
+    _, log_file = sinks
+    manager, gate, seen = _gated(tmp_path, monkeypatch, "approval-gap", interval=0.2, timeout=120, options=["--disable-approval"])
+    call = _Call(manager)
+    _wait_for(lambda: seen.exists() and len(_heartbeats(log_file)) >= 2)
+    beats = [beat for beat in _heartbeats(log_file) if beat["phase"] == "turn_submission"]
+    assert len(beats) >= 2 and all(beat["wait"]["reason"] == "response_wait" for beat in beats[-2:])
+    gate.write_text("go")
+    call.join()
+    assert call.result == "gated-answer"
+
+
+def test_structured_initialization_metadata_is_not_retained_or_leaked(tmp_path, monkeypatch, _use_real_commands, sinks):
+    console, log_file = sinks
+    manager, _, _ = _gated(tmp_path, monkeypatch, "bad-schema")
+    secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+    monkeypatch.setenv("BAD_SECRET", secret)
+    with pytest.raises(RuntimeError):
+        manager._run_llm_cli("first")
+    for text in (console.getvalue(), log_file.read_text()):
+        assert secret not in text
+        end = _records(text)[-1]
+        assert end["context"]["schema_fingerprint"].startswith("invalid-")
+        assert end["context"]["host_version"].startswith("invalid-")
+        assert end["context"]["invocation_id"] != "unavailable" or end["context"]["execution_id"] == "unavailable"
+        assert len(text.encode()) < 200_000
