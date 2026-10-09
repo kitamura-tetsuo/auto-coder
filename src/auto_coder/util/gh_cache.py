@@ -595,6 +595,11 @@ def get_ghapi_client(
         def __call__(self, path: str, verb: Optional[str] = None, headers: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None, data=None, timeout=None, decode=True):
             # Use the shared caching client
             client = hook_client or get_caching_client()
+            # GhApi passes None when no timeout was specified. In HTTPX that
+            # disables every timeout, potentially holding the shared API slot
+            # forever while waiting for response headers.
+            if timeout is None:
+                timeout = 30.0
 
             if verb is None:
                 verb = "POST" if data else "GET"

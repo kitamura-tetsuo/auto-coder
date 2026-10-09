@@ -757,6 +757,13 @@ the real HTTP-cache factory with a controlled wire transport: fresh persistent
 responses avoid wire admission, while expired responses return to that boundary.
 The private cache isolates credential variants and preserves wire timeout and
 operation identity; local cache results remain diagnostic-only quota evidence.
+`tests/test_gh_cache_timeouts.py` exercises the cached GhApi wire boundary:
+omitted/`None` timeouts become 30 seconds, explicit settings survive cache
+conversion, and a CI read timeout emits the existing `transport_failure` outcome
+with indeterminate delivery and releases the governor for the next PR read.
+Run `bash scripts/test.sh tests/test_gh_cache_timeouts.py` for this regression.
+This changes no execution-trace schema or dashboard projection: a timeout remains
+failed request evidence, never a successful CI result or a completed PR event.
 The streaming GraphQL regressions in `tests/test_only_discovery_cache.py` exercise
 this same production boundary: classification precedes admission, refused work
 never reaches the wire, and accepted bodies remain intact. These transport

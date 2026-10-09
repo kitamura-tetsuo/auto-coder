@@ -6,6 +6,13 @@ The local protective ceilings are one in-flight request, 300 network attempts pe
 rolling 60 seconds, 60 mutations per rolling 60 seconds, and 400 mutations per
 rolling hour, with one second between mutation completion and the next mutation.
 These are conservative local ceilings, not a guarantee of GitHub allowance.
+Cached GhApi calls use a 30-second timeout for connect, read, write, and pool
+waits when the caller omits the timeout or supplies `None`. Explicit numeric or
+HTTPX timeout settings are preserved through the cache transport. These are
+per-operation network timeouts, not a total deadline for pagination or governor
+admission. A read timeout produces the existing transport-failure diagnostic
+with indeterminate delivery and resolves the shared in-flight reservation so
+other requests can proceed; it never counts as successful CI evidence.
 Durable GitHub-dependent obligations preserve repository/entity, processing stage,
 semantic revision, independent unfinished effects, and the next eligible time across
 restart. Actual throttle retries are bounded to three retries after the first response;
