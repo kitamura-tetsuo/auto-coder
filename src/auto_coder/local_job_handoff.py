@@ -81,6 +81,10 @@ class LocalJobRecord:
     diagnostic: str = ""
     provider_entered: bool = False
     runner_owner: str = ""
+    workspace_path: str = ""
+    source_commit: str = ""
+    source_ref: str = ""
+    work_branch: str = ""
 
 
 @dataclass(frozen=True)
@@ -117,7 +121,10 @@ class LocalJobStore:
                 state TEXT NOT NULL, execution_incarnation TEXT NOT NULL DEFAULT '',
                 invocation_outcome TEXT, result_reference TEXT NOT NULL DEFAULT '',
                 diagnostic TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
+                updated_at REAL NOT NULL, provider_entered INTEGER NOT NULL DEFAULT 0,
+                runner_owner TEXT NOT NULL DEFAULT '', workspace_path TEXT NOT NULL DEFAULT '',
+                source_commit TEXT NOT NULL DEFAULT '', source_ref TEXT NOT NULL DEFAULT '',
+                work_branch TEXT NOT NULL DEFAULT '',
                 UNIQUE(kind, repository, target_number, upstream_attempt))"""
             )
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_jobs)")}
@@ -125,6 +132,9 @@ class LocalJobStore:
                 connection.execute("ALTER TABLE local_jobs ADD COLUMN provider_entered INTEGER NOT NULL DEFAULT 0")
             if "runner_owner" not in columns:
                 connection.execute("ALTER TABLE local_jobs ADD COLUMN runner_owner TEXT NOT NULL DEFAULT ''")
+            for name in ("workspace_path", "source_commit", "source_ref", "work_branch"):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE local_jobs ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")  # nosec B608: fixed names
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_job_results (
                 artifact_id TEXT PRIMARY KEY, job_id TEXT NOT NULL,
@@ -161,6 +171,10 @@ class LocalJobStore:
             diagnostic=str(row["diagnostic"]),
             provider_entered=bool(row["provider_entered"]),
             runner_owner=str(row["runner_owner"]),
+            workspace_path=str(row["workspace_path"]),
+            source_commit=str(row["source_commit"]),
+            source_ref=str(row["source_ref"]),
+            work_branch=str(row["work_branch"]),
         )
 
     @staticmethod
@@ -460,6 +474,20 @@ class LocalJobStore:
             return self.get_result_artifact(artifact_id)
         except (OSError, sqlite3.Error, ValueError):
             return None
+
+    def bind_workspace(self, claim: LocalJobClaim, *, workspace_path: Path, source_commit: str, source_ref: str, work_branch: str) -> bool:
+        """Fence a prepared full-job workspace to its exact running incarnation."""
+        if not claim.acquired or not workspace_path.is_absolute() or not source_commit or not source_ref or not work_branch:
+            return False
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE local_jobs SET workspace_path=?, source_commit=?, source_ref=?, work_branch=?, updated_at=? " "WHERE job_id=? AND state=? AND execution_incarnation=? AND workspace_path=''",
+                    (str(workspace_path), source_commit, source_ref, work_branch, time.time(), claim.record.job_id, LocalJobState.RUNNING.value, claim.record.execution_incarnation),
+                )
+            return cursor.rowcount == 1
+        except (OSError, sqlite3.Error):
+            return False
 
     def get_result_artifact(self, artifact_id: str) -> Optional[LocalJobResultArtifact]:
         """Reconstruct one durable output artifact for downstream processing."""

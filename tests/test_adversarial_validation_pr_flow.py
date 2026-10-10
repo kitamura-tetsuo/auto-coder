@@ -2046,11 +2046,12 @@ class TestAdversarialValidationPRFlow:
 
         with (
             patch(
-                "auto_coder.pr_processor._send_adversarial_validation_feedback_to_cloud_task",
-                return_value=["Sent saved report"],
-            ) as mock_feedback,
-            patch("auto_coder.pr_processor._compose_actionable_feedback", return_value=(("Saved actionable finding",), ())),
+                "auto_coder.pr_processor._replay_saved_nonpass_review",
+                return_value=(["Sent saved report"], False),
+            ) as replay_saved_review,
             patch("auto_coder.pr_processor._observe_codex_cloud_remediation_activity") as observe_activity,
+            patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+            patch("auto_coder.pr_processor._corrective_completion_marker", return_value=None),
         ):
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
@@ -2058,10 +2059,10 @@ class TestAdversarialValidationPRFlow:
         mock_worktree.assert_not_called()
         mock_merge_pr.assert_not_called()
         mock_recover_publications.assert_called_once_with("owner/repo", 100)
-        mock_feedback.assert_called_once()
+        replay_saved_review.assert_called_once()
         observe_activity.assert_not_called()
-        assert "Previously rejected" in mock_feedback.call_args.args[3]
-        assert "<!-- auto-coder-adversarial-validation-attempt:v1:7:0123456789abcdef -->" in mock_feedback.call_args.args[3]
+        assert "Previously rejected" in replay_saved_review.call_args.args[4]
+        assert "<!-- auto-coder-adversarial-validation-attempt:v1:7:0123456789abcdef -->" in replay_saved_review.call_args.args[4]
         assert any("already validated as NEEDS_FIX" in action for action in actions)
         assert any("remains non-pass" in action for action in actions)
         assert "Sent saved report" in actions
