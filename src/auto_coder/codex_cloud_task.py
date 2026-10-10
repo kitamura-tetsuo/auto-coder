@@ -18,7 +18,7 @@ def canonical_codex_cloud_task_url(task_id: object) -> Optional[str]:
     """Return the canonical operational URL for an already-selected task ID."""
     if not is_valid_codex_cloud_task_id(task_id):
         return None
-    return f"https://chatgpt.com/codex/cloud/tasks/{str(task_id).strip()}"
+    return f"https://chatgpt.com/remote/{str(task_id).strip()}"
 
 
 def extract_codex_cloud_task_id(value: object) -> Optional[str]:

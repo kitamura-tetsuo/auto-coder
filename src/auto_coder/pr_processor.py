@@ -6818,7 +6818,7 @@ def _extract_session_id_candidates(pr_body: str) -> List[Tuple[str, str]]:
     - Pattern 3: Jules session URLs (jules.google.com/session/...)
     - Pattern 3a: Claude Routine session URLs (claude.ai/code/...)
     - Pattern 3b: GitHub PR URLs (github.com/.../pull/...)
-    - Pattern 3c: Codex Cloud task URLs (chatgpt.com/codex/tasks/...)
+    - Pattern 3c: Codex Cloud task URLs (chatgpt.com/remote/... and historical routes)
     - Pattern 4: Jules Task URLs (jules.google.com/task/...)
     - Pattern 5: Jules Task ID (task 12345)
     - Pattern 6: Standalone session IDs starting with session_
@@ -6876,8 +6876,8 @@ def _extract_session_id_candidates(pr_body: str) -> List[Tuple[str, str]]:
     if match:
         _add("Pattern 3b (GitHub PR URL)", match.group(0).strip())
 
-    # Pattern 3c: Look for Codex Cloud task URLs (e.g., https://chatgpt.com/codex/tasks/task_01HJKLMNOPQRSTUVWXYZ)
-    codex_session_url_pattern = r"(?:chatgpt\.com|chat\.openai\.com|[^\s/]+)/codex/tasks/(task_[a-zA-Z0-9_-]+)"
+    # Pattern 3c: Look for current and historical Codex Cloud task URLs.
+    codex_session_url_pattern = r"(?:chatgpt\.com|chat\.openai\.com|[^\s/]+)/(?:remote|codex/(?:cloud/)?tasks)/(task_[a-zA-Z0-9_-]+)"
     match = re.search(codex_session_url_pattern, pr_body, re.IGNORECASE)
     if match:
         _add("Pattern 3c (Codex Task URL)", match.group(1).strip())
@@ -7164,6 +7164,8 @@ def _is_codex_pr(pr_data: Dict[str, Any]) -> bool:
         return False
 
     # Check for Codex task / session URLs
+    if task_ids_from_text(pr_body):
+        return True
     if re.search(r"https?://(?:chatgpt\.com|chat\.openai\.com|[^\s/]+)/codex/(?:cloud/)?tasks/[a-zA-Z0-9_-]+", pr_body, re.IGNORECASE):
         return True
     if "/codex/tasks/" in pr_body or "/codex/cloud/tasks/" in pr_body:
@@ -7283,7 +7285,7 @@ def _find_codex_cloud_task_for_issue(
                 for comment in comments:
                     comment_body = comment.get("body", "") or ""
                     # Check for direct URL in comment
-                    url_match = re.search(r"(https?://[^\s]+/codex/(?:cloud/)?tasks/[a-zA-Z0-9_-]+)", comment_body)
+                    url_match = re.search(r"(https?://[^\s]+/(?:remote|codex/(?:cloud/)?tasks)/[a-zA-Z0-9_-]+)", comment_body)
                     if url_match:
                         task_id = extract_codex_cloud_task_id(url_match.group(1))
                         if task_id:

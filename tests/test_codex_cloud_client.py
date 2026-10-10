@@ -56,7 +56,8 @@ class TestCodexCloudClient:
             assert client.options == ["--dangerously-bypass-approvals-and-sandbox"]
             warning.assert_called_once_with("Codex Cloud does not support user-selected models; configured model " "'gpt-5.6-terra' for backend 'codex-cloud' is being ignored.")
 
-    def test_start_task(self, mock_backend_config):
+    @pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+    def test_start_task(self, mock_backend_config, route):
         """Test starting a Codex Cloud task with codex cloud exec."""
         with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
             client = CodexCloudClient("codex-cloud")
@@ -64,7 +65,7 @@ class TestCodexCloudClient:
 
             mock_result = MagicMock()
             mock_result.returncode = 0
-            mock_result.stdout = "Task submitted successfully: https://chatgpt.com/codex/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+            mock_result.stdout = f"Task submitted successfully: https://chatgpt.com/{route}/task_e_6aca0ba72ea8832fb8d7b6a369f0f4c3"
             mock_result.stderr = ""
 
             with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=mock_result) as mock_run:
@@ -75,9 +76,9 @@ class TestCodexCloudClient:
                     title="Feature X",
                 )
 
-                assert tid == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+                assert tid == "task_e_6aca0ba72ea8832fb8d7b6a369f0f4c3"
                 assert tid in client.active_tasks
-                assert client.task_urls[tid] == "https://chatgpt.com/codex/cloud/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+                assert client.task_urls[tid] == "https://chatgpt.com/remote/task_e_6aca0ba72ea8832fb8d7b6a369f0f4c3"
 
                 cmd_args = mock_run.call_args[0][0]
                 assert cmd_args == [
@@ -172,25 +173,27 @@ environment_id = "env_from_toml"
                 with pytest.raises(RuntimeError, match="environment not found"):
                     client.start_task("Implement the issue")
 
-    def test_submission_accepts_valid_identity_from_stderr_despite_nonzero_exit(self, mock_backend_config):
+    @pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+    def test_submission_accepts_valid_identity_from_stderr_despite_nonzero_exit(self, mock_backend_config, route):
         """Provider identity is stronger evidence than generic CLI diagnostics."""
         with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
             client = CodexCloudClient("codex-cloud")
             result = MagicMock(
                 returncode=1,
                 stdout="A diagnostic was emitted",
-                stderr="Accepted: https://chatgpt.com/codex/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2",
+                stderr=f"Accepted: https://chatgpt.com/{route}/task_e_6a26c19ac8a88326af83ebfb44b89fe2",
             )
             with patch("auto_coder.codex_cloud_client.CommandExecutor.run_command", return_value=result):
                 submission = client.submit_task("Implement the issue")
 
         assert submission.outcome is CodexSubmissionOutcome.ACCEPTED
         assert submission.task_id == "task_e_6a26c19ac8a88326af83ebfb44b89fe2"
-        assert submission.task_url == "https://chatgpt.com/codex/cloud/tasks/task_e_6a26c19ac8a88326af83ebfb44b89fe2"
+        assert submission.task_url == "https://chatgpt.com/remote/task_e_6a26c19ac8a88326af83ebfb44b89fe2"
 
-    def test_submission_formats_selected_id_not_incidental_url(self, mock_backend_config):
+    @pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+    def test_submission_formats_selected_id_not_incidental_url(self, mock_backend_config, route):
         """The explicit provider identity remains authoritative over incidental URLs."""
-        output = '{"task_id":"task_e_Selected9","url":"https://chatgpt.com/codex/tasks/task_e_Other8"}'
+        output = f'{{"task_id":"task_e_Selected9","url":"https://chatgpt.com/{route}/task_e_Other8"}}'
         with patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config):
             client = CodexCloudClient("codex-cloud")
             with patch(
@@ -200,7 +203,7 @@ environment_id = "env_from_toml"
                 submission = client.submit_task("Implement the issue")
 
         assert submission.task_id == "task_e_Selected9"
-        assert submission.task_url == "https://chatgpt.com/codex/cloud/tasks/task_e_Selected9"
+        assert submission.task_url == "https://chatgpt.com/remote/task_e_Selected9"
         assert client.task_urls == {"task_e_Selected9": submission.task_url}
 
     def test_started_cli_without_identity_is_indeterminate(self, mock_backend_config):
@@ -369,7 +372,7 @@ environment_id = "env_from_toml"
                 assert len(tasks) == 2
                 assert tasks[0].task_id == "task_e_1"
                 assert tasks[0].state == CloudTaskState.RUNNING
-                assert tasks[0].url == "https://chatgpt.com/codex/cloud/tasks/task_e_1"
+                assert tasks[0].url == "https://chatgpt.com/remote/task_e_1"
                 assert tasks[1].task_id == "task_e_2"
                 # READY is normalized to COMPLETED
                 assert tasks[1].state == CloudTaskState.COMPLETED
@@ -392,7 +395,7 @@ environment_id = "env_from_toml"
                 assert task.task_id == "task_e_123"
                 assert task.state == CloudTaskState.COMPLETED
                 assert task.title == "Test Task"
-                assert task.url == "https://chatgpt.com/codex/cloud/tasks/task_e_123"
+                assert task.url == "https://chatgpt.com/remote/task_e_123"
 
                 cmd_args = mock_run.call_args[0][0]
                 assert cmd_args == ["codex", "cloud", "status", "task_e_123"]

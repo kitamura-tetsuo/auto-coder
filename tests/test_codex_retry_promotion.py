@@ -143,6 +143,7 @@ def test_missing_owner_recovery_counts_over_limit_and_preserves_existing_owner(t
 @pytest.mark.parametrize(
     "retained_url",
     [
+        "https://chatgpt.com/remote/task_e_Recovered8",
         "https://chatgpt.com/codex/tasks/task_e_Recovered8",
         "https://chatgpt.com/codex/cloud/tasks/task_e_Recovered8",
         "",
@@ -195,7 +196,7 @@ def test_controller_recovers_missing_receipt_from_owned_request_and_accepted_run
         authority.generation,
         5,
         "task_e_Recovered8",
-        "https://chatgpt.com/codex/cloud/tasks/task_e_Recovered8",
+        "https://chatgpt.com/remote/task_e_Recovered8",
         run.backend_name,
         run.environment_id,
         authority.ownership_reference,
@@ -335,7 +336,7 @@ def test_daemon_reconstructs_canonical_url_from_retained_task_identity(tmp_path,
     run = CloudRunRepository("owner/repo").get(2223, 5)
     assert run is not None
     assert run.task_id == "task_e_Retained7"
-    assert run.task_url == "https://chatgpt.com/codex/cloud/tasks/task_e_Retained7"
+    assert run.task_url == "https://chatgpt.com/remote/task_e_Retained7"
 
 
 @patch("auto_coder.codex_cloud_client.CodexCloudClient")
@@ -536,7 +537,7 @@ def test_claimed_retry_canonicalizes_retained_run_url_without_resubmission(mock_
 
     mock_client_type.return_value.submit_task.assert_not_called()
     assert "already accepted" in result[0]
-    canonical = "https://chatgpt.com/codex/cloud/tasks/task_e_Recovered8"
+    canonical = "https://chatgpt.com/remote/task_e_Recovered8"
     handoff = RetryDispatchRepository("owner/repo").get(authority.request_id)
     run = CloudRunRepository("owner/repo").get(2223, 5)
     assert handoff is not None and handoff.external_url == canonical

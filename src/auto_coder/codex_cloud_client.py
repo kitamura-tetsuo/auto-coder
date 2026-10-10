@@ -124,8 +124,8 @@ class CodexCloudClient(CloudTaskClientBase):
         """Extract a task ID or task URL from Codex Cloud CLI output.
 
         Task IDs typically follow the shape: `task_e_6a26c19ac8a88326af83ebfb44b89fe2`
-        Task URLs may use the historical ``/codex/tasks/`` route or the current
-        ``/codex/cloud/tasks/`` route.
+        Task URLs use ``/remote/``; the historical ``/codex/tasks/`` and
+        ``/codex/cloud/tasks/`` routes are also accepted.
         """
         if not output:
             return None
@@ -162,7 +162,7 @@ class CodexCloudClient(CloudTaskClientBase):
         if not output:
             return None
 
-        url_match = re.search(r"(https?://[^\s]+/codex/(?:cloud/)?tasks/[a-zA-Z0-9_-]+)", output)
+        url_match = re.search(r"(https?://[^\s]+/(?:remote|codex/(?:cloud/)?tasks)/[a-zA-Z0-9_-]+)", output)
         if url_match:
             return url_match.group(1)
         return None
