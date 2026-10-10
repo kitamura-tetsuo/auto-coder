@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import asdict
 from typing import Callable
 
@@ -19,6 +20,32 @@ from .local_review_repair import (
 )
 
 ExecutorFactory = Callable[[str, LocalReviewRepairRequest], Callable[[LocalReviewRepairRequest, str], str]]
+
+
+def resume_pr_correction_publication(job: LocalJobRecord, job_store: LocalJobStore) -> str:
+    """Resume a retained commit before downstream validation is awakened."""
+    artifact = job_store.get_result_artifact(job.result_reference)
+    if artifact is None:
+        raise RuntimeError("local correction result artifact is unavailable")
+    result = json.loads(artifact.output)
+    phase = str(result.get("phase", ""))
+    if phase != "publication_pending":
+        return phase
+    request = PRCorrectionJobAdapter._request(job)
+    ledger = RepairAllowanceLedger()
+    snapshot = ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
+    generation = snapshot.get_outstanding_generation()
+    if generation is None or generation.generation_id != job.owner_generation:
+        raise RuntimeError("local correction allowance changed before publication recovery")
+    authority = LocalRepairAllowanceAuthority(ledger, request, generation.generation_id, snapshot.epoch)
+    outcome = execute_local_review_repair(
+        request,
+        store=LocalReviewRepairStore(local_review_repair_db_path(request.repository)),
+        allowance_authority=authority,
+    )
+    if outcome.phase == "publication_pending":
+        raise RuntimeError(outcome.reason)
+    return outcome.phase
 
 
 def build_captured_executor(backend_name: str, request: LocalReviewRepairRequest) -> Callable[[LocalReviewRepairRequest, str], str]:
@@ -74,6 +101,8 @@ class PRCorrectionJobAdapter:
     def __init__(self, github_client: object, executor_factory: ExecutorFactory) -> None:
         self.github_client = github_client
         self.executor_factory = executor_factory
+        self._executor_lock = threading.Lock()
+        self._executors: dict[str, Callable[[LocalReviewRepairRequest, str], str]] = {}
 
     @staticmethod
     def _request(job: LocalJobRecord) -> LocalReviewRepairRequest:
@@ -82,18 +111,60 @@ class PRCorrectionJobAdapter:
         return LocalReviewRepairRequest(**raw)
 
     def authorize_provider_entry(self, job: LocalJobRecord) -> bool:
+        with self._executor_lock:
+            self._executors.pop(job.job_id, None)
         request = self._request(job)
         if job.kind is not LocalJobKind.PR_REVIEW_CORRECTION or request.attempt_id != job.upstream_attempt:
             return False
         metadata = self.github_client.get_pull_request_routing_metadata_strict(request.repository, request.pr_number)  # type: ignore[attr-defined]
-        if metadata.state != "open" or "<!-- auto-coder:local-llm -->" not in metadata.body or (metadata.head_sha, metadata.head_ref, metadata.head_repository) != (request.head_sha, request.head_ref, request.head_repository):
+        if metadata.state != "open" or (metadata.head_sha, metadata.head_ref, metadata.head_repository) != (request.head_sha, request.head_ref, request.head_repository):
+            return False
+        from .pr_processor import (
+            ReviewRepairRouteDisposition,
+            _revalidate_local_review_repair_route,
+            _review_feedback_identity,
+            _select_review_repair_route,
+            is_adjudication_envelope,
+            is_change_provenance_thread,
+        )
+
+        current_pr = {
+            "number": request.pr_number,
+            "body": metadata.body,
+            "head": {"ref": metadata.head_ref, "sha": metadata.head_sha, "repo": {"full_name": metadata.head_repository}},
+        }
+        route = _select_review_repair_route(request.repository, current_pr, self.github_client)
+        route = _revalidate_local_review_repair_route(route, request.repository, current_pr, self.github_client)
+        if route.disposition is not ReviewRepairRouteDisposition.LOCAL_REQUIRED or route.evidence is None or route.evidence.head_sha != request.head_sha:
+            return False
+        threads = self.github_client.get_pr_review_threads_strict(request.repository, request.pr_number)  # type: ignore[attr-defined]
+        actionable: set[str] = set()
+        for thread in threads:
+            if thread.is_resolved or thread.is_outdated or is_change_provenance_thread(thread):
+                continue
+            addressed_through = max(
+                (index for index, comment in enumerate(thread.comments) if "<!-- auto-coder-review-addressed:v1 -->" in comment.body),
+                default=-1,
+            )
+            for index, comment in enumerate(thread.comments):
+                if index <= addressed_through or is_adjudication_envelope(comment.body):
+                    continue
+                actionable.add(_review_feedback_identity(f"{request.repository}#{request.pr_number}:local:", thread, index))
+        if not set(request.feedback_identities) <= actionable:
             return False
         repair = LocalReviewRepairStore(local_review_repair_db_path(request.repository)).get(request)
         generation = RepairAllowanceLedger().get_snapshot("https://api.github.com", request.repository, request.pr_number).get_outstanding_generation()
-        return bool(repair and repair.local_job_id == job.job_id and not repair.invocation_entered and generation and generation.lifecycle_state is GenerationLifecycleState.RESERVED and generation.generation_id == job.owner_generation and generation.bundle_reference == request.attempt_id)
+        authorized = bool(repair and repair.local_job_id == job.job_id and not repair.invocation_entered and generation and generation.lifecycle_state is GenerationLifecycleState.RESERVED and generation.generation_id == job.owner_generation and generation.bundle_reference == request.attempt_id)
+        if authorized:
+            executor = self.executor_factory(job.backend_name, request)
+            with self._executor_lock:
+                self._executors[job.job_id] = executor
+        return authorized
 
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
         request = self._request(job)
+        with self._executor_lock:
+            executor = self._executors.pop(job.job_id)
         store = LocalReviewRepairStore(local_review_repair_db_path(request.repository))
         incarnation = int(job.upstream_incarnation.split(":", 1)[0])
         ledger = RepairAllowanceLedger()
@@ -102,7 +173,7 @@ class PRCorrectionJobAdapter:
         outcome = execute_local_review_repair(
             request,
             store=store,
-            executor=self.executor_factory(job.backend_name, request),
+            executor=executor,
             allowance_authority=authority,
             accepted_claim=LocalReviewRepairClaim(True, "executing", request.attempt_id, incarnation),
             local_job_id=job.job_id,

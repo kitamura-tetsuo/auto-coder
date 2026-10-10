@@ -113,7 +113,7 @@ class LocalJobRunner:
             free = self.capacity - len(self._active)
             if free <= 0:
                 return 0
-            pending = [job for job in self.store.discover_unsettled() if job.state is LocalJobState.PENDING]
+            pending = [job for job in self.store.discover_unsettled() if job.state is LocalJobState.PENDING and job.kind in self.adapters]
             scheduled = 0
             for job in pending[:free]:
                 # Admission happens before claiming. A draining daemon leaves the

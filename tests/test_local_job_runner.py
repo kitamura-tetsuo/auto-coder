@@ -96,6 +96,17 @@ def test_capacity_leaves_extra_job_pending_until_slot_frees(tmp_path: Path) -> N
     runner.close()
 
 
+def test_runner_ignores_job_kinds_without_a_registered_adapter(tmp_path: Path) -> None:
+    store, issue_job = _accepted(tmp_path, "attempt-1")
+    adapter = BarrierAdapter()
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
+
+    assert runner.poll() == 0
+    assert store.get(issue_job).state is LocalJobState.PENDING  # type: ignore[union-attr]
+    assert adapter.calls == 0
+    runner.close()
+
+
 def test_closed_admission_and_denied_authority_never_enter_provider(tmp_path: Path) -> None:
     store, job_id = _accepted(tmp_path, "attempt-1")
     gate = InvocationAdmissionGate()

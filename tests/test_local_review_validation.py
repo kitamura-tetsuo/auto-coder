@@ -446,7 +446,7 @@ def test_production_pending_lane_excludes_unrelated_threads_and_reports_missing_
         patch("auto_coder.pr_processor.isolated_pr_head_worktree", side_effect=lambda *args: nullcontext(repository)),
         patch("auto_coder.local_review_validation.run_llm_prompt", return_value=json.dumps({"thread_dispositions": [_disposition("target-1", "STILL_VALID")]})) as scoped,
         patch("auto_coder.pr_processor.run_adversarial_validation") as broad,
-        patch("auto_coder.local_review_repair.execute_local_review_repair") as repair,
+        patch("auto_coder.pr_correction_job.offer_pr_correction_job") as repair,
         patch("auto_coder.pr_processor.publish_adversarial_review", return_value=ReviewPublicationResult(True, "COMMENT", "")) as publish,
         patch("auto_coder.pr_processor._merge_pr") as merge,
     ):
@@ -547,7 +547,7 @@ def test_same_commit_actionable_validation_routes_to_local_repair_even_with_forc
         patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),
         patch("auto_coder.pr_processor.get_linked_issues_context", return_value="REQ-001: original invariant"),
         patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(object(), "")),
-        patch("auto_coder.local_review_repair.execute_local_review_repair", return_value=LocalReviewRepairOutcome("executing", "existing local correction is active")) as repair,
+        patch("auto_coder.pr_correction_job.offer_pr_correction_job", return_value=MagicMock(job_id="job-42")) as repair,
         patch("auto_coder.pr_processor.run_adversarial_validation") as broad,
         patch("auto_coder.pr_processor._merge_pr") as merge,
     ):

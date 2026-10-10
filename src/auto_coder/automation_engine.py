@@ -2669,17 +2669,19 @@ class AutomationEngine:
         self._bind_pending_work_scheduler(repo_name)
         if concurrency is None:
             concurrency = self.config.MAX_CONCURRENT_TASKS
+        self._loop = asyncio.get_running_loop()
 
-        from .pr_correction_job import PRCorrectionJobAdapter, build_captured_executor
+        from .pr_correction_job import PRCorrectionJobAdapter, build_captured_executor, resume_pr_correction_publication
 
         local_job_store = LocalJobStore()
 
         def wake_pr_validation(job: Any) -> None:
             assert self._loop is not None
+            phase = resume_pr_correction_publication(job, local_job_store)
             wake = asyncio.run_coroutine_threadsafe(self.invalidate_entity(job.repository, "pr", job.target_number), self._loop)
             wake.result()
             claim = LocalJobClaim(job, True)
-            local_job_store.record_effect(claim, "pr-validation-wake", "completed", "durable PR invalidation scheduled")
+            local_job_store.record_effect(claim, "pr-validation-wake", "completed", f"durable PR invalidation scheduled after {phase}")
             local_job_store.settle(claim, "PR validation wake scheduled")
 
         local_job_runner = LocalJobRunner(
@@ -2704,7 +2706,6 @@ class AutomationEngine:
         await self._enqueue_pending_invalidations(repo_name)
 
         # Record resource usage and unhandled asyncio errors for the whole run
-        self._loop = asyncio.get_running_loop()
         self._shutdown_event = asyncio.Event()
         self._force_stop_event = asyncio.Event()
         if self.is_draining:
@@ -2818,7 +2819,6 @@ class AutomationEngine:
                 # ownership and make their callers wait for the true boundary.
                 for task in all_loop_tasks:
                     task.cancel()
-                local_job_runner.close(wait=False)
                 await self._wait_for_protected_invocations()
                 await self._wait_for_interrupted_local_work()
                 await asyncio.gather(*all_loop_tasks, return_exceptions=True)
@@ -2863,6 +2863,7 @@ class AutomationEngine:
             raise
         finally:
             shutdown_wait.cancel()
+            local_job_runner.close(wait=False)
             get_health_monitor().log_snapshot(reason="engine_stop")
 
     async def _perform_startup_reconciliation(self, repo_name: str) -> None:

@@ -7,12 +7,16 @@ and repair-allowance generation are captured. The PR worker returns a deferred
 `pending` result as soon as that transaction commits; it does not wait for the
 model, workspace, commit, push, or validation.
 
-The independent local runner re-reads uncached PR routing metadata and the
-original repair and allowance ownership immediately before provider entry. A
-closed PR, removed explicit-local declaration, changed head/ref/repository, or
-changed allowance prevents entry without charging invocation. Accepted and
-running jobs retain both the repair-store and local-job ownership, so replayed
-PR processing cannot dispatch the same attempt again.
+The independent local runner re-reads uncached PR routing metadata, actionable
+review-thread identities, and the original repair and allowance ownership
+immediately before provider entry. A closed PR, changed route or cloud owner,
+addressed feedback, changed head/ref/repository, or changed allowance prevents
+entry without charging invocation. Backend construction also occurs during
+this pre-entry authorization, so a confirmed unavailable backend returns the
+unentered job for retry. Accepted and running jobs retain both the repair-store
+and local-job ownership, so replayed PR processing cannot dispatch the same
+attempt again. Runner instances ignore durable job kinds for which they do not
+have an adapter, preserving the separate Issue implementation owner.
 
 Execution continues through the existing detached exact-head correction path,
 including invocation-time allowance charging, commit/push lease protection,
