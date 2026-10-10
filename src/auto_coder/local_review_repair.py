@@ -380,6 +380,15 @@ class LocalReviewRepairStore:
             local_job_id=str(row[9]),
         )
 
+    def get_publication_pending(self, request: LocalReviewRepairRequest) -> Optional[LocalReviewRepairRecord]:
+        """Return retained publication work for this PR without admitting a new claim."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT attempt_id FROM local_review_repair_attempts WHERE repository=? AND pr_number=? " "AND phase='publication_pending' ORDER BY updated_at DESC LIMIT 1",
+                (request.repository, request.pr_number),
+            ).fetchone()
+        return self.get(request, str(row[0])) if row is not None else None
+
 
 def select_local_review_repair_candidates(repository: str) -> list[str]:
     """Return quota-ranked synchronous candidates from the ordinary policy."""
@@ -498,6 +507,17 @@ def execute_local_review_repair(
     if request.head_repository != request.repository:
         return LocalReviewRepairOutcome("not_admitted", "foreign-head pull requests are not eligible")
     store = store or LocalReviewRepairStore(local_review_repair_db_path(request.repository))
+    if executor is None and accepted_claim is None:
+        retained = store.get_publication_pending(request)
+        if retained is not None:
+            outcome = _resume_publication(request, store, retained, Path.cwd())
+            if outcome.published and allowance_authority is not None:
+                allowance_authority.mark_completion(code_changed=True, evidence=f"local correction published as {retained.result_sha}")
+            return outcome
+        try:
+            executor = _prepare_default_executor(request)
+        except LocalBackendUnavailableError as exc:
+            return LocalReviewRepairOutcome("backend_unavailable", str(exc))
     claim = accepted_claim or store.admit(request)
     if not claim.admitted and accepted_claim is None:
         if claim.phase == "publication_pending":
@@ -508,11 +528,7 @@ def execute_local_review_repair(
                     allowance_authority.mark_completion(code_changed=True, evidence=f"local correction published as {record.result_sha}")
                 return outcome
         return LocalReviewRepairOutcome(claim.phase, f"retained local correction phase: {claim.phase}")
-    if executor is None:
-        try:
-            executor = _prepare_default_executor(request)
-        except LocalBackendUnavailableError as exc:
-            return LocalReviewRepairOutcome("backend_unavailable", str(exc))
+    assert executor is not None
 
     root = Path.cwd()
     worktree = tempfile.mkdtemp(prefix=f"auto_coder_review_{request.pr_number}_")
