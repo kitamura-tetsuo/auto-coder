@@ -2195,3 +2195,15 @@ atomic upstream ownership transfer versus adapter entry, exact-job result
 artifacts, and the explicit separation between invocation evidence, downstream
 pending, and terminal settlement. Run `bash scripts/test.sh
 tests/test_local_job_handoff.py`.
+
+## Durable local runner execution
+
+`LocalJobRunner` adds durable provider-entry, runner-owner, actual-result, and
+downstream-eligibility evidence to the same repository-scoped local-job store.
+This is deliberately not presented as an existing `TraceCollector` completion:
+the separately owned Issue/PR downstream consumer has not yet published its
+domain outcome. The durable store is the truthful production observation at
+this boundary; `tests/test_local_job_runner.py` crosses the real runner thread
+and domain-adapter provider boundary, verifies finite capacity and drain
+admission, and reopens the store to verify the output checkpoint. Run `bash
+scripts/test.sh tests/test_local_job_runner.py`.
