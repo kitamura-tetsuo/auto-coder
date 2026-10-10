@@ -156,7 +156,19 @@ class CgroupV2Owner:
             assert self.worker_gid is not None
             membership_controls = (path / "cgroup.procs" for path in self.root.iterdir() if path.is_dir())
             for candidate in (self.root, *membership_controls):
-                candidate_stat = candidate.stat()
+                try:
+                    candidate_stat = candidate.stat()
+                except FileNotFoundError:
+                    if candidate == self.root or candidate.parent == group:
+                        raise
+                    try:
+                        candidate.parent.stat()
+                    except FileNotFoundError:
+                        # A settled peer may remove its cgroup after enumeration.
+                        # Missing shared ancestors or our own group are not peer cleanup.
+                        (group / "cgroup.procs").stat()
+                        continue
+                    raise
                 worker_writable = bool(candidate_stat.st_mode & 0o002)
                 worker_writable |= candidate_stat.st_uid == self.worker_uid and bool(candidate_stat.st_mode & 0o200)
                 worker_writable |= candidate_stat.st_gid == self.worker_gid and bool(candidate_stat.st_mode & 0o020)

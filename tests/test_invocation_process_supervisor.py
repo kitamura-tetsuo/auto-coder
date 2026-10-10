@@ -1,3 +1,4 @@
+import errno
 import os
 import signal
 import sys
@@ -328,6 +329,125 @@ def test_production_owner_rejects_unsafe_termination_profile_before_start(tmp_pa
 
     with pytest.raises(CgroupV2Unavailable, match="cgroup.kill"):
         owner.prepare("unsafe")
+
+
+@pytest.fixture
+def emulated_cgroup_owner(tmp_path: Path, monkeypatch) -> CgroupV2Owner:
+    """Emulate cgroupfs metadata for unit interleavings, not kernel conformance."""
+    root = tmp_path / "cgroups"
+    root.mkdir(mode=0o755)
+    original_mkdir = Path.mkdir
+    original_rmdir = Path.rmdir
+    original_stat = Path.stat
+    controls = ("cgroup.procs", "cgroup.events", "cgroup.kill")
+
+    def mkdir(path: Path, *args, **kwargs) -> None:
+        original_mkdir(path, *args, **kwargs)
+        if path.parent == root:
+            for name in controls:
+                (path / name).write_text("populated 0\n" if name == "cgroup.events" else "")
+
+    def rmdir(path: Path) -> None:
+        if path.parent == root:
+            for name in controls:
+                (path / name).unlink(missing_ok=True)
+        original_rmdir(path)
+
+    def root_owned_stat(path: Path, *args, **kwargs):
+        metadata = original_stat(path, *args, **kwargs)
+        if path == root or root in path.parents:
+            values = list(metadata)
+            values[4:6] = [0, 0]
+            return os.stat_result(values)
+        return metadata
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    monkeypatch.setattr(Path, "stat", root_owned_stat)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    return CgroupV2Owner(root=root, worker_uid=65534, worker_gid=65534)
+
+
+@pytest.mark.parametrize(
+    "change,expected_error",
+    [
+        ("retired-peer", None),
+        ("retired-peer-unsafe-survivor", "membership migration"),
+        ("missing-peer-control", "No such file or directory"),
+        ("peer-permission", "Permission denied"),
+        ("peer-parent-permission", "Permission denied"),
+        ("missing-own-control", "No such file or directory"),
+        ("missing-own-group", "No such file or directory"),
+        ("missing-root", "No such file or directory"),
+    ],
+)
+def test_production_owner_membership_checks_handle_peer_cleanup(tmp_path: Path, monkeypatch, emulated_cgroup_owner: CgroupV2Owner, change: str, expected_error: str | None) -> None:
+    owner = emulated_cgroup_owner
+    peer = owner.prepare("retiring-peer")
+    survivor = owner.prepare("surviving-peer")
+    current = owner.root / "invocation-one"
+    peer_control = peer / "cgroup.procs"
+    original_stat = Path.stat
+    original_iterdir = Path.iterdir
+    peer_check_started = False
+    survivor_checks: list[Path] = []
+
+    if change == "retired-peer-unsafe-survivor":
+        (survivor / "cgroup.procs").chmod(0o666)
+
+    def ordered_inventory(path: Path):
+        # All three groups exist during enumeration. Cleanup happens at the later stat.
+        return iter((current, peer, survivor)) if path == owner.root else original_iterdir(path)
+
+    def stat_with_interleaving(path: Path, *args, **kwargs):
+        nonlocal peer_check_started
+        if path == peer_control and not peer_check_started:
+            peer_check_started = True
+            if change == "peer-permission":
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            if change == "missing-peer-control":
+                path.unlink()
+            else:
+                owner.discard(peer)
+                if change == "missing-own-control":
+                    (current / "cgroup.procs").unlink()
+                elif change == "missing-own-group":
+                    owner.discard(current)
+                elif change == "missing-root":
+                    owner.discard(current)
+                    owner.discard(survivor)
+                    owner.root.rmdir()
+        if path == peer and peer_check_started and change == "peer-parent-permission":
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        if path == survivor / "cgroup.procs":
+            survivor_checks.append(path)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "iterdir", ordered_inventory)
+    monkeypatch.setattr(Path, "stat", stat_with_interleaving)
+
+    if expected_error is None:
+        assert owner.prepare("invocation-one") == current
+        assert current.is_dir()
+        assert not peer.exists()
+        assert survivor.is_dir()
+    else:
+
+        def unexpected_policy_setup():
+            pytest.fail("unsafe cgroup preparation reached policy setup")
+
+        provider_started = tmp_path / "provider-started"
+        supervisor = InvocationProcessSupervisor(owner=owner, filesystem_policy_factory=unexpected_policy_setup)
+        result = supervisor.run(request(tmp_path, f"from pathlib import Path; Path({str(provider_started)!r}).touch()"))
+
+        assert result.outcome is InvocationOutcome.PRESTART_UNAVAILABLE
+        assert result.writer_state is WriterState.NOT_STARTED
+        assert result.returncode is None
+        assert expected_error in result.detail
+        assert not provider_started.exists()
+
+    assert peer_check_started
+    assert survivor_checks == ([survivor / "cgroup.procs"] if change in {"retired-peer", "retired-peer-unsafe-survivor"} else [])
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="cgroup-v2 conformance is Linux-specific")
