@@ -4,7 +4,7 @@ Unit and integration tests for backend_cloud and non-difficult cloud issue routi
 
 import threading
 import time
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 import pytest
 
@@ -424,6 +424,81 @@ class TestNonDifficultCloudIssueRouting:
         unsettled = store.discover_unsettled()
         assert {job.job_id for job in unsettled} == set(completed)
         assert {job.state for job in unsettled} == {LocalJobState.DOWNSTREAM_EFFECTS_PENDING}
+
+    def test_closed_issue_is_refused_at_real_local_provider_entry(self, tmp_path, monkeypatch):
+        """A withdrawal after durable acceptance cannot enter the editing backend."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"local-team": {"backend_type": "codex", "model": "test"}}})
+        store = LocalJobStore(tmp_path / "jobs.sqlite3")
+        prepared_backend = MagicMock()
+        runtime_backend = MagicMock()
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=9),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("auto_coder.cli_helpers.build_backend_manager", return_value=prepared_backend) as build_backend,
+        ):
+            accepted = _dispatch_issue_candidates(
+                "owner/repo",
+                {"number": 2082, "title": "Withdrawn", "body": "Implement", "state": "open", "labels": []},
+                AutomationConfig(),
+                MagicMock(),
+                ["local-team"],
+                local_job_store=store,
+                implementation_execution_id="execution-2082",
+            )
+            assert accepted.result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+            build_backend.reset_mock()
+            build_backend.return_value = runtime_backend
+
+            from auto_coder.automation_engine import AutomationEngine
+            from auto_coder.implementation_slots import ImplementationOwner
+            from auto_coder.invocation_admission import InvocationAdmissionGate
+            from auto_coder.issue_local_job import IssueLocalJobAdapter
+            from auto_coder.local_job_handoff import LocalJobKind
+
+            github = MagicMock()
+            github.get_issue_dispatch_snapshot_strict.return_value = {
+                "number": 2082,
+                "state": "closed",
+                "body": "Implement",
+                "labels": [],
+            }
+            engine = AutomationEngine(github, AutomationConfig())
+            engine._is_issue_author_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+            slots = MagicMock()
+            slots.active_execution_ids.return_value = ("execution-2082",)
+            adapter = IssueLocalJobAdapter(engine, "owner/repo", store, slots, tmp_path)
+            runner = LocalJobRunner(
+                store,
+                InvocationAdmissionGate(),
+                capacity=1,
+                adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+            )
+
+            with patch("auto_coder.issue_local_job.get_current_attempt", return_value=9):
+                assert runner.poll() == 1
+                deadline = time.monotonic() + 5
+                while runner.active_count() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert runner.active_count() == 0
+                runner.close(wait=True)
+
+        refused = store.get(accepted.result.provider_reference)
+        assert refused is not None
+        assert refused.state is LocalJobState.PENDING
+        assert refused.provider_entered is False
+        assert refused.execution_incarnation == ""
+        assert refused.result_reference == ""
+        assert store.get_result_artifact(refused.result_reference) is None
+        build_backend.assert_not_called()
+        runtime_backend._run_llm_cli.assert_not_called()
+        assert github.get_issue_dispatch_snapshot_strict.call_args_list == [
+            call("owner/repo", 2082),
+            call("owner/repo", 2082),
+        ]
+        slots.active_execution_ids.assert_called_once_with(ImplementationOwner("issue", 2082))
 
     def test_jules_alias_uses_selected_credentials_and_tracking_identity(self, tmp_path, monkeypatch):
         """The selected Jules alias owns both transport credentials and binding attribution."""
