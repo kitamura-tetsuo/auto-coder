@@ -2042,6 +2042,10 @@ class TestAdversarialValidationPRFlow:
         config = AutomationConfig()
         config.AUTO_MERGE = True
         config.ENABLE_ADVERSARIAL_VALIDATION = True
+        # This test exercises saved-result replay, not the independently
+        # configurable validation-count ceiling. Keep environment/repository
+        # defaults from diverting the scenario into the limit branch.
+        config.MAX_ADVERSARIAL_VALIDATIONS = 100
         pr_data = {"number": 100, "body": "Fixes #99", "labels": [], "head": {"ref": "feature-branch", "sha": head_sha}}
 
         with (
