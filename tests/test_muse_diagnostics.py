@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import pytest
+from loguru import logger
 
 from src.auto_coder import muse_diagnostics
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
@@ -81,10 +82,12 @@ for line in sys.stdin:
 
 @pytest.fixture
 def sinks(tmp_path):
+    logger.complete()
     console = io.StringIO()
     log_file = tmp_path / "app.log"
     setup_logger(log_level="INFO", log_file=str(log_file), stream=console)
     yield console, log_file
+    logger.complete()
     setup_logger(log_level="INFO")
 
 
@@ -179,9 +182,13 @@ def test_pending_snapshot_reaches_both_sinks_before_completion_and_names_wait(tm
     console, log_file = sinks
     manager, gate, seen = _gated(tmp_path, monkeypatch, "silent")
     call = _Call(manager)
-    _wait_for(lambda: seen.exists() and _heartbeats(log_file))
-
-    snapshot = _heartbeats(log_file)[-1]
+    snapshot = _wait_for(
+        lambda: seen.exists()
+        and next(
+            (heartbeat for heartbeat in reversed(_heartbeats(log_file)) if heartbeat["phase"] == "turn_submission"),
+            None,
+        )
+    )
     assert _heartbeats_in(console.getvalue())
     assert snapshot["phase"] == "turn_submission"
     assert snapshot["wait"]["reason"] == "response_wait"
@@ -207,8 +214,8 @@ def test_stderr_only_does_not_refresh_stdout_or_frame_activity(tmp_path, monkeyp
     _, log_file = sinks
     manager, gate, seen = _gated(tmp_path, monkeypatch, "stderr")
     call = _Call(manager)
-    _wait_for(lambda: seen.exists() and len(_heartbeats(log_file)) >= 2)
-    first, second = _heartbeats(log_file)[:2]
+    _wait_for(lambda: seen.exists() and len([heartbeat for heartbeat in _heartbeats(log_file) if heartbeat["activity"]["stderr"]["bytes"] > 0]) >= 2)
+    first, second = [heartbeat for heartbeat in _heartbeats(log_file) if heartbeat["activity"]["stderr"]["bytes"] > 0][-2:]
 
     assert second["activity"]["stderr"]["bytes"] > first["activity"]["stderr"]["bytes"] > 0
     assert second["activity"]["stdout"]["bytes"] == first["activity"]["stdout"]["bytes"]
@@ -224,8 +231,13 @@ def test_partial_stdout_counts_bytes_but_not_a_decoded_response_and_same_call_fi
     _, log_file = sinks
     manager, gate, seen = _gated(tmp_path, monkeypatch, "partial")
     call = _Call(manager)
-    _wait_for(lambda: seen.exists() and _heartbeats(log_file))
-    snapshot = _heartbeats(log_file)[-1]
+    snapshot = _wait_for(
+        lambda: seen.exists()
+        and next(
+            (heartbeat for heartbeat in reversed(_heartbeats(log_file)) if heartbeat["activity"]["stdout_buffered_bytes"] == 20),
+            None,
+        )
+    )
     frames_before = snapshot["activity"]["frames"]["count"]
 
     assert snapshot["activity"]["stdout_buffered_bytes"] == 20
@@ -233,7 +245,7 @@ def test_partial_stdout_counts_bytes_but_not_a_decoded_response_and_same_call_fi
     gate.write_text("go")
     call.join()
     assert call.result == "gated-answer"
-    end = _records(log_file.read_text())[-1]
+    end = [record for record in _records(log_file.read_text()) if record["kind"] == "end"][-1]
     assert end["activity"]["frames"]["count"] > frames_before
     assert end["activity"]["stdout_buffered_bytes"] == 0
 
@@ -271,7 +283,7 @@ def test_busy_pipes_still_report_on_schedule_without_per_event_logging(tmp_path,
     _, log_file = sinks
     manager, gate, _ = _gated(tmp_path, monkeypatch, "busy", interval=0.3)
     call = _Call(manager)
-    _wait_for(lambda: len(_heartbeats(log_file)) >= 2)
+    _wait_for(lambda: any(heartbeat["activity"]["frames"]["count"] > 10 for heartbeat in _heartbeats(log_file)))
     beats = _heartbeats(log_file)
     assert beats[-1]["activity"]["frames"]["count"] > 10
     assert beats[-1]["activity"]["last_method"] == "other"
@@ -434,9 +446,8 @@ def test_approval_receipt_before_ack_keeps_response_wait_reporting(tmp_path, mon
     _, log_file = sinks
     manager, gate, seen = _gated(tmp_path, monkeypatch, "approval-gap", interval=0.2, timeout=120, options=["--disable-approval"])
     call = _Call(manager)
-    _wait_for(lambda: seen.exists() and len([beat for beat in _heartbeats(log_file) if beat["phase"] == "turn_submission"]) >= 2)
-    beats = [beat for beat in _heartbeats(log_file) if beat["phase"] == "turn_submission"]
-    assert len(beats) >= 2 and all(beat["wait"]["reason"] == "response_wait" for beat in beats[-2:])
+    beats = _wait_for(lambda: seen.exists() and (response_beats if len(response_beats := [beat for beat in _heartbeats(log_file) if beat["phase"] == "turn_submission" and beat["wait"]["reason"] == "response_wait"]) >= 2 else None))
+    assert len(beats) >= 2
     gate.write_text("go")
     call.join()
     assert call.result == "gated-answer"

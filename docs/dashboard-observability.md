@@ -2301,3 +2301,13 @@ Run `bash scripts/test.sh tests/test_terminal_pr_resumption.py
 tests/test_merge_operation_resumption_isolation.py tests/test_dashboard_observability.py`
 for real handlers, durable stores, repeated due selection, and production trace
 evidence reaching the mounted detail view. No schema or renderer changes.
+## Worker-independent local Issue handoff
+
+The `issue.dispatch.local-job` stage emits `ACCEPTED_HANDOFF` with the selected
+backend, durable `job_id`, and job state. This is intentionally not a completed
+implementation event. After acceptance, the originating queue worker is free
+and disappears from Active Workers, while the Issue's implementation slot and
+the pending/running local-job record remain authoritative in-flight evidence.
+Final publication continues to emit
+`issue.local-publication-finalization`; only that separately owned finalizer
+may report publication or terminal no-change/cannot-fix settlement.

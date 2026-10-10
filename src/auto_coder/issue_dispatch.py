@@ -29,6 +29,7 @@ class DispatchOutcome(str, Enum):
 
     NOT_STARTED = "not_started"
     LOCAL_COMPLETED = "local_completed"
+    LOCAL_ACCEPTED = "local_accepted"
     REMOTE_ACCEPTED = "remote_accepted"
     INDETERMINATE = "indeterminate"
     FAILED = "failed"
@@ -63,6 +64,7 @@ class CandidateHandoff:
 
     backend_name: str
     provider: str
+    transfer_before_invocation: bool = False
 
 
 @dataclass(frozen=True)
@@ -531,6 +533,7 @@ class IssueDispatchGuard:
         allowed = {
             DispatchOutcome.NOT_STARTED,
             DispatchOutcome.LOCAL_COMPLETED,
+            DispatchOutcome.LOCAL_ACCEPTED,
             DispatchOutcome.REMOTE_ACCEPTED,
             DispatchOutcome.INDETERMINATE,
             DispatchOutcome.FAILED,
@@ -552,6 +555,15 @@ class IssueDispatchGuard:
                     return replace(claim, outcome=DispatchOutcome.DEFERRED, diagnostic="claim incarnation is stale", tracking_complete=False, admitted=False)
                 if str(row["state"]) == "local_job_handoff":
                     connection.execute("COMMIT")
+                    if observation.outcome is DispatchOutcome.LOCAL_ACCEPTED:
+                        return replace(
+                            claim,
+                            outcome=DispatchOutcome.LOCAL_ACCEPTED,
+                            provider_reference=observation.provider_reference,
+                            diagnostic=observation.diagnostic,
+                            tracking_complete=observation.tracking_complete,
+                            admitted=False,
+                        )
                     return replace(claim, outcome=DispatchOutcome.DEFERRED, diagnostic="claim ownership transferred to durable local job", tracking_complete=False, admitted=False)
                 current_reference = str(row["provider_reference"])
                 if current_reference and observation.provider_reference and current_reference != observation.provider_reference:
@@ -691,7 +703,7 @@ class IssueDispatchGuard:
             # a confirmed NOT_STARTED result can have released the predecessor.
             if not claim.admitted:
                 return claim
-            if not self.mark_invocation_started(claim):
+            if not candidate.transfer_before_invocation and not self.mark_invocation_started(claim):
                 return replace(claim, outcome=DispatchOutcome.DEFERRED, diagnostic="dispatch claim changed before adapter entry", tracking_complete=False, admitted=False)
             try:
                 observation = invoke(candidate)

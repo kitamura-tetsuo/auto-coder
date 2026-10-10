@@ -49,6 +49,7 @@ class LocalJobOffer:
     upstream_attempt: str
     backend_name: str
     invocation_input: str
+    implementation_execution_id: str = ""
 
     @property
     def input_identity(self) -> str:
@@ -88,6 +89,7 @@ class LocalJobRecord:
     publication_remote: str = ""
     owner_incarnation: str = ""
     owner_generation: Optional[str] = None
+    implementation_execution_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,7 @@ class LocalJobStore:
                 source_commit TEXT NOT NULL DEFAULT '', source_ref TEXT NOT NULL DEFAULT '',
                 work_branch TEXT NOT NULL DEFAULT '', publication_remote TEXT NOT NULL DEFAULT '',
                 owner_incarnation TEXT NOT NULL DEFAULT '', owner_generation TEXT,
+                implementation_execution_id TEXT NOT NULL DEFAULT '',
                 UNIQUE(kind, repository, target_number, upstream_attempt))"""
             )
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(local_jobs)")}
@@ -152,6 +155,8 @@ class LocalJobStore:
                     connection.execute(f"ALTER TABLE local_jobs ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")  # nosec B608: fixed names
             if "owner_generation" not in columns:
                 connection.execute("ALTER TABLE local_jobs ADD COLUMN owner_generation TEXT")
+            if "implementation_execution_id" not in columns:
+                connection.execute("ALTER TABLE local_jobs ADD COLUMN implementation_execution_id TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS local_job_results (
                 artifact_id TEXT PRIMARY KEY, job_id TEXT NOT NULL,
@@ -202,6 +207,7 @@ class LocalJobStore:
             publication_remote=str(row["publication_remote"]),
             owner_incarnation=str(row["owner_incarnation"]),
             owner_generation=str(row["owner_generation"]) if row["owner_generation"] is not None else None,
+            implementation_execution_id=str(row["implementation_execution_id"]),
         )
 
     @staticmethod
@@ -228,8 +234,8 @@ class LocalJobStore:
             "INSERT INTO local_jobs "
             "(job_id, kind, repository, target_number, upstream_attempt, upstream_incarnation, "
             "backend_name, input_identity, invocation_input, state, execution_incarnation, "
-            "invocation_outcome, result_reference, diagnostic, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, '', '', ?, ?)",
+            "invocation_outcome, result_reference, diagnostic, implementation_execution_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, '', '', ?, ?, ?)",
             (
                 offer.job_id,
                 offer.kind.value,
@@ -241,6 +247,7 @@ class LocalJobStore:
                 offer.input_identity,
                 offer.invocation_input,
                 LocalJobState.PENDING.value,
+                offer.implementation_execution_id,
                 now,
                 now,
             ),
