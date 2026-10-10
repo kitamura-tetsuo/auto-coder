@@ -353,6 +353,11 @@ class RepairAllowanceLedger:
         self._db_path = Path(db_path) if db_path is not None else default_repair_allowance_db_path()
         self._simulate_failure_before_commit: bool = False
 
+    @property
+    def database_path(self) -> Path:
+        """Return the durable database path for transactional handoff peers."""
+        return self._db_path
+
     # -- storage plumbing ---------------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:

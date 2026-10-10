@@ -66,6 +66,8 @@ class LocalReviewRepairRecord:
     reason: str = ""
     incarnation: int = 0
     workspace_path: str = ""
+    invocation_entered: bool = False
+    local_job_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -222,6 +224,10 @@ class LocalReviewRepairStore:
             for name, declaration in (("owner_pid", "INTEGER"), ("owner_boot_id", "TEXT"), ("owner_start_ticks", "INTEGER")):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE local_review_repair_attempts ADD COLUMN {name} {declaration}")
+            if "invocation_entered" not in columns:
+                connection.execute("ALTER TABLE local_review_repair_attempts ADD COLUMN invocation_entered INTEGER NOT NULL DEFAULT 0")
+            if "local_job_id" not in columns:
+                connection.execute("ALTER TABLE local_review_repair_attempts ADD COLUMN local_job_id TEXT NOT NULL DEFAULT ''")
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -250,7 +256,7 @@ class LocalReviewRepairStore:
                         return LocalReviewRepairClaim(False, str(active[1]), str(active[0]))
                     incarnation = time.time_ns()
                     connection.execute(
-                        "UPDATE local_review_repair_attempts SET phase='executing', reason='', updated_at=?, incarnation=? " "WHERE repository=? AND pr_number=? AND attempt_id=?",
+                        "UPDATE local_review_repair_attempts SET phase='executing', reason='', invocation_entered=0, local_job_id='', updated_at=?, incarnation=? " "WHERE repository=? AND pr_number=? AND attempt_id=?",
                         (time.time(), incarnation, request.repository, request.pr_number, request.attempt_id),
                     )
                     self._set_owner(connection, request)
@@ -339,15 +345,24 @@ class LocalReviewRepairStore:
     ) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE local_review_repair_attempts SET phase=?, result_sha=?, reason=?, workspace_path=?, updated_at=? " "WHERE repository=? AND pr_number=? AND attempt_id=? AND incarnation=?",
-                (phase, result_sha, reason, workspace_path, time.time(), request.repository, request.pr_number, claim.attempt_id, claim.incarnation),
+                "UPDATE local_review_repair_attempts SET phase=?, result_sha=?, reason=?, workspace_path=?, " "invocation_entered=CASE WHEN ?='not_started' THEN 0 ELSE invocation_entered END, updated_at=? " "WHERE repository=? AND pr_number=? AND attempt_id=? AND incarnation=?",
+                (phase, result_sha, reason, workspace_path, phase, time.time(), request.repository, request.pr_number, claim.attempt_id, claim.incarnation),
+            )
+            return cursor.rowcount == 1
+
+    def mark_invocation_entered(self, request: LocalReviewRepairRequest, claim: LocalReviewRepairClaim) -> bool:
+        """Fence backend entry against transfer to a durable local job."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE local_review_repair_attempts SET invocation_entered=1, updated_at=? " "WHERE repository=? AND pr_number=? AND attempt_id=? AND incarnation=? " "AND phase='executing' AND invocation_entered=0 AND local_job_id=''",
+                (time.time(), request.repository, request.pr_number, claim.attempt_id, claim.incarnation),
             )
             return cursor.rowcount == 1
 
     def get(self, request: LocalReviewRepairRequest, attempt_id: Optional[str] = None) -> Optional[LocalReviewRepairRecord]:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT attempt_id, head_sha, head_ref, phase, result_sha, reason, incarnation, workspace_path " "FROM local_review_repair_attempts WHERE repository=? AND pr_number=? AND attempt_id=?",
+                "SELECT attempt_id, head_sha, head_ref, phase, result_sha, reason, incarnation, workspace_path, invocation_entered, local_job_id " "FROM local_review_repair_attempts WHERE repository=? AND pr_number=? AND attempt_id=?",
                 (request.repository, request.pr_number, attempt_id or request.attempt_id),
             ).fetchone()
         if row is None:
@@ -361,6 +376,8 @@ class LocalReviewRepairStore:
             reason=str(row[5]),
             incarnation=int(row[6]),
             workspace_path=str(row[7]),
+            invocation_entered=bool(row[8]),
+            local_job_id=str(row[9]),
         )
 
 
@@ -509,6 +526,9 @@ def execute_local_review_repair(
             store.transition(request, claim, "not_started", reason=added.stderr.strip())
             return LocalReviewRepairOutcome("not_started", f"protected checkout failed: {added.stderr.strip()}")
         store.transition(request, claim, "executing", workspace_path=worktree)
+        if not store.mark_invocation_entered(request, claim):
+            preserve_worktree = True
+            return LocalReviewRepairOutcome("deferred", "local execution ownership changed before backend entry")
         if allowance_authority is not None:
             try:
                 allowance_authority.mark_invocation()
