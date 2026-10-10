@@ -35,6 +35,8 @@ def test_fence_registers_before_transport_and_refuses_replay_or_retired_incarnat
     with pytest.raises(ImplementationSlotUnavailable, match="duplicate send"):
         fence.execute(identity, lambda: pytest.fail("replay reached transport"))
 
+    assert fence.execute(identity, lambda: "forced_send", force=True) == "forced_send"
+
     with slots._state_lock():
         records = slots._read()
         del records[owner.key]

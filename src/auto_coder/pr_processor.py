@@ -6317,7 +6317,7 @@ def _handle_pr_merge(
         # checkout state. Resolve this execution origin before inspecting the
         if _is_codex_pr(pr_data):
             actions.append(f"PR #{pr_number} is a Codex-created PR, sending continuation request to Codex Cloud")
-            feedback_result = _send_codex_cloud_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+            feedback_result = _send_codex_cloud_error_feedback(repo_name, pr_data, failed_checks, config, github_client, force=force_adversarial_validation)
             actions.extend(feedback_result.actions)
             if feedback_result.delivered:
                 actions.append(f"Codex Cloud will handle fixing PR #{pr_number}, skipping local fixes")
@@ -9434,6 +9434,7 @@ def _send_codex_cloud_error_feedback(
     failed_checks: List[Dict[str, Any]],
     config: AutomationConfig,
     github_client: Optional[Any] = None,
+    force: bool = False,
 ) -> CodexCloudFeedbackResult:
     """Send continuation request via continue_if_paused to Codex Cloud for Codex-created PRs.
 
@@ -9443,6 +9444,7 @@ def _send_codex_cloud_error_feedback(
         failed_checks: List of failed GitHub Actions checks
         config: AutomationConfig instance
         github_client: Optional GitHub client instance
+        force: If True, bypass cooldown and duplicate/indeterminate checks
 
     Returns:
         Structured delivery status and action strings describing what was done.
@@ -9500,10 +9502,12 @@ def _send_codex_cloud_error_feedback(
             if attribution_error:
                 actions.append(f"Deferred Codex Cloud continuation for PR #{pr_number}: {attribution_error}")
                 return CodexCloudFeedbackResult(retryable=True, actions=tuple(actions))
+            kwargs: dict[str, Any] = {}
             if prompt is not None:
-                resumed = client.continue_if_paused(task_id, prompt=prompt)
-            else:
-                resumed = client.continue_if_paused(task_id)
+                kwargs["prompt"] = prompt
+            if force:
+                kwargs["force"] = True
+            resumed = client.continue_if_paused(task_id, **kwargs)
 
         if resumed:
             get_trace_logger().log(

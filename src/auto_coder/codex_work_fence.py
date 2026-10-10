@@ -41,7 +41,7 @@ class CodexWorkFence:
     def __init__(self, accounting: CodexWorkAccounting) -> None:
         self.accounting = accounting
 
-    def execute(self, identity: CodexWorkIdentity, send: Callable[[], T]) -> T:
+    def execute(self, identity: CodexWorkIdentity, send: Callable[[], T], force: bool = False) -> T:
         if identity.repository != self.accounting.slots.repo_name:
             raise ImplementationSlotUnavailable("Codex work belongs to a different repository")
         owner = ImplementationOwner("issue", identity.issue_number)
@@ -55,7 +55,7 @@ class CodexWorkFence:
                 causal_baseline=identity.causal_baseline,
                 task_id=identity.task_id,
             )
-            if not registration.created:
+            if not registration.created and not force:
                 raise ImplementationSlotUnavailable("Codex logical operation was already accounted; duplicate send refused")
             return send()
 

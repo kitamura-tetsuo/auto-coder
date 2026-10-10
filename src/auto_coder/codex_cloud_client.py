@@ -511,7 +511,7 @@ class CodexCloudClient(CloudTaskClientBase):
             logger.warning(f"Failed to apply changes for Codex Cloud task {task_id}: {e}")
             return False
 
-    def continue_if_paused(self, task_id: str, prompt: Optional[str] = None) -> bool:
+    def continue_if_paused(self, task_id: str, prompt: Optional[str] = None, force: bool = False) -> bool:
         """Attempt to continue a paused or waiting Codex Cloud task via WHAM follow-up.
 
         Resolves the latest usable assistant turn ID and sends a continuation prompt
@@ -521,6 +521,7 @@ class CodexCloudClient(CloudTaskClientBase):
             task_id: The Codex Cloud task ID.
             prompt: Optional custom continuation prompt. If None, renders the default
                     prompt from prompts.yaml (codex_cloud.continuation).
+            force: If True, bypass cooldown and duplicate/indeterminate checks.
 
         Returns:
             True if the continuation request was accepted, False otherwise.
@@ -532,7 +533,7 @@ class CodexCloudClient(CloudTaskClientBase):
         # Anti-tight-loop cooldown (60 seconds)
         now = time.time()
         last_time = self.last_continued_at.get(task_id, 0.0)
-        if now - last_time < 60.0:
+        if not force and now - last_time < 60.0:
             logger.info(f"Codex Cloud task '{task_id}' was continued {int(now - last_time)}s ago; skipping to avoid tight loops")
             return False
 
@@ -541,7 +542,7 @@ class CodexCloudClient(CloudTaskClientBase):
         else:
             continuation_prompt = prompt
 
-        if self.send_followup(task_id, continuation_prompt):
+        if self.send_followup(task_id, continuation_prompt, force=force):
             self.last_continued_at[task_id] = now
             logger.info(f"Successfully sent continuation follow-up to Codex Cloud task '{task_id}'")
             return True
@@ -645,7 +646,7 @@ class CodexCloudClient(CloudTaskClientBase):
         latest = max(accepted, key=lambda record: record.accepted_at)
         return latest.completed_turn_id
 
-    def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = ()) -> bool:
+    def send_followup(self, task_id: str, message: str, logical_identities: tuple[str, ...] = (), force: bool = False) -> bool:
         """Send work once, reconciling any prior ambiguous POST before retrying."""
         if not is_valid_codex_cloud_task_id(task_id) or not message:
             logger.warning("Codex Cloud follow-up requires a task ID and message")
@@ -664,11 +665,12 @@ class CodexCloudClient(CloudTaskClientBase):
         keys = {hashlib.sha256(f"{task_id}\0{identity}".encode("utf-8")).hexdigest() for identity in identities}
         state_path = _codex_followup_state_path(self.repo_name)
         states = [self.get_followup_delivery(task_id, identity) for identity in identities]
-        if states and all(state is FollowUpDeliveryOutcome.DELIVERED for state in states):
-            return True
-        if any(state is not FollowUpDeliveryOutcome.NOT_DELIVERED for state in states):
-            logger.warning("Codex follow-up contains an indeterminate or partially delivered logical identity; duplicate POST deferred")
-            return False
+        if not force:
+            if states and all(state is FollowUpDeliveryOutcome.DELIVERED for state in states):
+                return True
+            if any(state is not FollowUpDeliveryOutcome.NOT_DELIVERED for state in states):
+                logger.warning("Codex follow-up contains an indeterminate or partially delivered logical identity; duplicate POST deferred")
+                return False
 
         turn_id = wham.resolve_latest_assistant_turn(task_id)
         if not turn_id:
@@ -712,7 +714,7 @@ class CodexCloudClient(CloudTaskClientBase):
             return wham.send_follow_up(task_id=task_id, turn_id=turn_id, prompt=message)
 
         try:
-            result = fence.execute(work_identity, send_registered_followup) if fence is not None and work_identity is not None else send_registered_followup()
+            result = fence.execute(work_identity, send_registered_followup, force=force) if fence is not None and work_identity is not None else send_registered_followup()
         except (OSError, ValueError, TypeError) as exc:
             logger.warning(f"Cannot durably reserve Codex follow-up; request was not sent: {exc}")
             return False

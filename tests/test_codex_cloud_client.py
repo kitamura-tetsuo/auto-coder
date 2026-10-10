@@ -273,6 +273,30 @@ environment_id = "env_from_toml"
 
         wham.send_follow_up.assert_called_once()
 
+    def test_ambiguous_followup_with_force_bypasses_indeterminate(self, mock_backend_config, tmp_path):
+        """Force flag allows retrying even when delivery status is indeterminate."""
+        with (
+            patch("auto_coder.codex_cloud_client.get_llm_config", return_value=mock_backend_config),
+            patch("auto_coder.codex_cloud_client._codex_followup_state_path", return_value=tmp_path / "followups.json"),
+        ):
+            client = CodexCloudClient("codex-cloud", repo_name="owner/repo")
+            wham = MagicMock()
+            wham.resolve_latest_assistant_turn.return_value = "task_e_123~assttrn_1"
+            wham.reconcile_follow_up.return_value = None
+            wham.send_follow_up.side_effect = [
+                FollowUpDeliveryResult(FollowUpDeliveryOutcome.INDETERMINATE, 429),
+                FollowUpDeliveryResult(FollowUpDeliveryOutcome.DELIVERED, 200),
+            ]
+            client.wham_client = wham
+
+            assert client.send_followup("task_e_123", "same logical work") is False
+            # Second attempt with force=False is rejected
+            assert client.send_followup("task_e_123", "same logical work", force=False) is False
+            assert wham.send_follow_up.call_count == 1
+            # Third attempt with force=True bypasses the indeterminate check and sends
+            assert client.send_followup("task_e_123", "same logical work", force=True) is True
+            assert wham.send_follow_up.call_count == 2
+
     def test_stable_identity_reconciles_when_rendered_prompt_changes(self, mock_backend_config, tmp_path):
         """Mutable branch/head context must not create a second logical request."""
         with (
@@ -499,6 +523,10 @@ environment_id = "env_from_toml"
             # Second continuation immediately afterwards is blocked by cooldown
             assert client.continue_if_paused("task_e_123") is False
             assert mock_wham.send_follow_up.call_count == 1
+
+            # Third continuation with force=True bypasses cooldown
+            assert client.continue_if_paused("task_e_123", force=True) is True
+            assert mock_wham.send_follow_up.call_count == 2
 
     def test_stop_task(self, mock_backend_config):
         """Test stop_task removes task from active tasks."""
