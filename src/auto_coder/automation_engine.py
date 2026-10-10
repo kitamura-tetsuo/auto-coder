@@ -941,6 +941,18 @@ class EngineLifecycle(str, Enum):
     FORCED = "forced"
 
 
+@dataclasses.dataclass(frozen=True)
+class RefillFault:
+    """An engine-lifetime admission barrier created by an unexpected refill fault."""
+
+    repository: str
+    target: Optional[int]
+    phase: str
+    exception_class: str
+    disposition: str
+    retry_not_before: Optional[float]
+
+
 class AutomationEngine:
     """Main automation engine that orchestrates GitHub and LLM integration."""
 
@@ -983,6 +995,8 @@ class AutomationEngine:
         # as a refill opportunity even if it hasn't independently observed
         # a store identity change yet.
         self._refill_wake_requested = False
+        self._refill_faults: dict[tuple[str, Optional[int], str], RefillFault] = {}
+        self._refill_faults_lock = threading.Lock()
         self.startup_reconciled = False
         self.startup_reconciliation_error: Optional[str] = None
         self._startup_reconciliation_event: Optional[asyncio.Event] = None
@@ -3917,6 +3931,8 @@ class AutomationEngine:
 
             retry_required = reconciliation_retry_required
             for candidate in candidates:
+                if self._refill_admission_paused(repo_name, candidate.issue_number, "issue"):
+                    continue
                 if await asyncio.to_thread(slots.available_normal_slots) == 0:
                     break
                 # The common dispatch path repeats strict readiness, contract,
@@ -3924,14 +3940,71 @@ class AutomationEngine:
                 # capacity admission checks immediately before implementation.
                 if self.is_draining:
                     return True
-                result = await self._run_local_critical(
-                    f"capacity refill issue #{candidate.issue_number}",
-                    partial(self._process_single_candidate, origin="capacity-refill-intake"),
-                    repo_name,
-                    candidate,
-                )
+                try:
+                    result = await self._run_local_critical(
+                        f"capacity refill issue #{candidate.issue_number}",
+                        partial(self._process_single_candidate, origin="capacity-refill-intake"),
+                        repo_name,
+                        candidate,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    target = getattr(exc, "_auto_coder_fault_issue", candidate.issue_number)
+                    self._record_refill_fault(repo_name, target, "candidate_dispatch", exc, "intervention_required")
+                    # A target-scoped fault must not prevent an independent
+                    # candidate from using remaining capacity in this pass.
+                    continue
                 retry_required = retry_required or result.refill_retry_required
             return not retry_required
+
+    def _record_refill_fault(
+        self,
+        repo_name: str,
+        target: Optional[int],
+        phase: str,
+        exc: Exception,
+        disposition: str,
+        retry_not_before: Optional[float] = None,
+    ) -> None:
+        fault = RefillFault(repo_name, target, phase, type(exc).__name__, disposition, retry_not_before)
+        key = (repo_name, target, disposition)
+        with self._refill_faults_lock:
+            previous = self._refill_faults.get(key)
+            self._refill_faults[key] = fault
+        if previous != fault:
+            logger.opt(exception=exc).error(
+                "Capacity refill fault repository={} target={} phase={} disposition={} retry_not_before={}",
+                repo_name,
+                target,
+                phase,
+                disposition,
+                retry_not_before,
+            )
+
+    def _clear_capacity_fault(self, repo_name: str) -> None:
+        with self._refill_faults_lock:
+            self._refill_faults = {key: fault for key, fault in self._refill_faults.items() if not (fault.repository == repo_name and fault.disposition == "capacity_unavailable")}
+
+    def _refill_admission_paused(self, repo_name: str, target: Optional[int], item_type: str = "issue") -> bool:
+        with self._refill_faults_lock:
+            return any(fault.repository == repo_name and (fault.disposition == "capacity_unavailable" or (fault.disposition == "intervention_required" and (fault.target is None or (item_type == "issue" and fault.target == target)))) for fault in self._refill_faults.values())
+
+    def _refill_fault_snapshot(self) -> tuple[RefillFault, ...]:
+        with self._refill_faults_lock:
+            return tuple(self._refill_faults.values())
+
+    async def _observe_refill_capacity(self, repo_name: str, slots: ImplementationSlotRepository, phase: str) -> Optional[tuple[int, tuple[int, int]]]:
+        try:
+            observation = await asyncio.to_thread(slots.normal_capacity_snapshot)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            retry_at = time.time() + max(1.0, min(60.0, REFILL_RETRY_INTERVAL_SECONDS))
+            self._record_refill_fault(repo_name, None, phase, exc, "capacity_unavailable", retry_at)
+            return None
+        self._clear_capacity_fault(repo_name)
+        return observation
 
     async def _run_due_reclamation_checks(self, repo_name: str, slots: ImplementationSlotRepository) -> int:
         """Service due terminal-PR-backed reclamation obligations for *repo_name* once.
@@ -3989,29 +4062,56 @@ class AutomationEngine:
 
     async def _capacity_refill_loop(self, repo_name: str) -> None:
         """Observe shared slot state and service capacity transitions without GitHub polling."""
-        slots = self._get_implementation_slots(repo_name)
-        previous_count, previous_identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
+        try:
+            slots = self._get_implementation_slots(repo_name)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Shared-state initialization cannot be classified as a safe read
+            # retry. Keep the service alive but repository-paused until the
+            # engine is intentionally stopped.
+            self._record_refill_fault(repo_name, None, "service_initialization", exc, "intervention_required")
+            while True:
+                await asyncio.sleep(CAPACITY_STATE_CHECK_INTERVAL_SECONDS)
+        previous_count = 0
+        previous_identity: Optional[tuple[int, int]] = None
         refill_pending = False
+        capacity_initialized = False
         while True:
-            self._refill_wake_requested = False
-            await self._run_due_reclamation_checks(repo_name, slots)
-            if self._refill_wake_requested:
-                refill_pending = True
-            available_count, identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
-            if available_count > 0 and (previous_count == 0 or identity != previous_identity):
-                refill_pending = True
-                logger.info("Normal implementation capacity became available; requesting fresh Issue refill")
-            previous_count, previous_identity = available_count, identity
-            if refill_pending and available_count > 0:
-                refill_pending = not await self._refill_normal_implementation_slots(repo_name)
-                current_count, current_identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
-                # Dispatch may run long enough for another process to fill and
-                # release a slot between samples. Atomic state replacement is
-                # the durable evidence that this transition needs a fresh pass.
-                if current_count > 0 and current_identity != previous_identity:
+            try:
+                self._refill_wake_requested = False
+                await self._run_due_reclamation_checks(repo_name, slots)
+                if self._refill_wake_requested:
                     refill_pending = True
-                previous_count, previous_identity = current_count, current_identity
-            delay = REFILL_RETRY_INTERVAL_SECONDS if refill_pending else CAPACITY_STATE_CHECK_INTERVAL_SECONDS
+                observed = await self._observe_refill_capacity(repo_name, slots, "capacity_observation")
+                if observed is None:
+                    # A successful recovery must service the opportunity even
+                    # when no later slot transition or webhook occurs.
+                    refill_pending = True
+                    await asyncio.sleep(max(1.0, min(60.0, REFILL_RETRY_INTERVAL_SECONDS)))
+                    continue
+                available_count, identity = observed
+                if available_count > 0 and (refill_pending or (capacity_initialized and (previous_count == 0 or identity != previous_identity))):
+                    refill_pending = True
+                    logger.info("Normal implementation capacity became available; requesting fresh Issue refill")
+                previous_count, previous_identity = available_count, identity
+                capacity_initialized = True
+                if refill_pending and available_count > 0 and not self._refill_admission_paused(repo_name, None):
+                    refill_pending = not await self._refill_normal_implementation_slots(repo_name)
+                    current = await self._observe_refill_capacity(repo_name, slots, "post_dispatch_capacity_observation")
+                    if current is None:
+                        await asyncio.sleep(max(1.0, min(60.0, REFILL_RETRY_INTERVAL_SECONDS)))
+                        continue
+                    current_count, current_identity = current
+                    if current_count > 0 and current_identity != previous_identity:
+                        refill_pending = True
+                    previous_count, previous_identity = current_count, current_identity
+                delay = REFILL_RETRY_INTERVAL_SECONDS if refill_pending else CAPACITY_STATE_CHECK_INTERVAL_SECONDS
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._record_refill_fault(repo_name, None, "service_control", exc, "intervention_required")
+                delay = CAPACITY_STATE_CHECK_INTERVAL_SECONDS
             await asyncio.sleep(delay)
 
     async def _worker_loop(self, repo_name: str, worker_id: int, item_type: Optional[str] = None) -> None:
@@ -4971,6 +5071,7 @@ class AutomationEngine:
             "open_items": open_items_status,
             "pending_work": self.pending_work_scheduler.snapshot() if self.pending_work_scheduler is not None else [],
             "merge_operations": self.merge_operation_scheduler.snapshot(),
+            "refill_faults": [dataclasses.asdict(fault) for fault in self._refill_fault_snapshot()],
         }
         return status
 
@@ -5676,6 +5777,18 @@ class AutomationEngine:
         )
 
         def dispatch() -> CandidateProcessingResult:
+            if self._refill_admission_paused(repo_name, cast(Optional[int], item_number), candidate.type):
+                reason = f"Automatic evaluation paused after an unexpected refill fault for {repo_name}"
+                return CandidateProcessingResult(
+                    type=candidate.type,
+                    number=item_number if isinstance(item_number, int) else None,
+                    title=candidate.data.get("title"),
+                    error=reason,
+                    target_outcome=ExplicitTargetOutcome.DEFERRED,
+                    target_reason=reason,
+                    actions=[reason],
+                    refill_retry_required=False,
+                )
             cache_issue = candidate.type == "issue" and isinstance(item_number, int) and not isinstance(item_number, bool) and not continue_execution and not retry
             if cache_issue:
                 retained = self._future_issue_admission_deferral(repo_name, cast(int, item_number))
@@ -5760,6 +5873,13 @@ class AutomationEngine:
                 if isinstance(item_number, int) and not isinstance(item_number, bool):
                     record_stage = _record_issue_stage_result if candidate.type == "issue" else _record_pr_stage_result
                     record_stage(item_number, f"{candidate.type}.implementation-admission", f"{candidate.type}#{item_number} implementation admission", Outcome.DEFERRED, {"reason": reason})
+            except Exception as exc:
+                # Preserve the innermost real target while recursive child
+                # dispatch unwinds to the refill containment boundary.
+                if candidate.type == "issue" and isinstance(item_number, int) and not isinstance(item_number, bool):
+                    if not hasattr(exc, "_auto_coder_fault_issue"):
+                        setattr(exc, "_auto_coder_fault_issue", item_number)
+                raise
             if cache_issue and observed:
                 self.issue_admission_cache.remember(repo_name, cast(int, item_number), policy, epoch, result)
             return result

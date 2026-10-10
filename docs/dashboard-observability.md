@@ -1,5 +1,15 @@
 # Dashboard observability verification
 
+Capacity-refill exception containment adds the engine-status `refill_faults`
+collection; no execution-trace stage, provider route, durable-resumption record,
+or dashboard event schema changes. The collection reports repository, actual
+Issue when known, phase, exception class, disposition, and retry eligibility.
+`tests/test_capacity_refill.py` exercises production status projection, target
+isolation, continued independent dispatch, and clearing only after a validated
+slot-store observation. Existing generic status consumers remain compatible
+because the field is additive; an unexpected refill fault is also emitted via
+the configured loguru ERROR sinks rather than represented as a successful trace.
+
 Explicit retries of completed failed local verification keep the existing
 `pr.repair-delegation` / `effect=local-validation-scoped` stage, generation and
 examined head. The `explicit_retry_requested` fact distinguishes the operator

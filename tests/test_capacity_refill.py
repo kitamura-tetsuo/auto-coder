@@ -2,7 +2,7 @@ import asyncio
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from auto_coder.automation_config import AutomationConfig, CandidateProcessingResult
+from auto_coder.automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from auto_coder.automation_engine import AutomationEngine
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository, ImplementationSlotUnavailable
 from auto_coder.util.gh_cache import OpenGitHubEntities, OpenGitHubIssue
@@ -140,6 +140,109 @@ def test_dispatch_authority_failure_keeps_refill_pending(monkeypatch, tmp_path):
     assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is False
     assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
     assert attempts == 2
+
+
+def test_unexpected_candidate_fault_pauses_only_actual_issue_and_continues(monkeypatch, tmp_path):
+    """REQ-001/002/004/006/008: isolate a fault without replay or global stop."""
+    github = MagicMock()
+    github.get_open_entities_strict.return_value = OpenGitHubEntities(issues=[OpenGitHubIssue(20), OpenGitHubIssue(30)])
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: {
+        "number": number,
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+    }
+    github.get_issue_details.side_effect = lambda issue: issue
+    engine = AutomationEngine(github, AutomationConfig())
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    attempted = []
+
+    def process(_repo, candidate, **_kwargs):
+        attempted.append(candidate.issue_number)
+        if candidate.issue_number == 20:
+            raise RuntimeError("effect state is unknown")
+        return CandidateProcessingResult(type="issue", number=candidate.issue_number, success=True)
+
+    monkeypatch.setattr(engine, "_process_single_candidate", process)
+
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    assert attempted == [20, 30]
+    fault = engine.get_status()["refill_faults"]
+    assert fault == [
+        {
+            "repository": "owner/repo",
+            "target": 20,
+            "phase": "candidate_dispatch",
+            "exception_class": "RuntimeError",
+            "disposition": "intervention_required",
+            "retry_not_before": None,
+        }
+    ]
+
+    paused = engine._process_single_candidate_unified(
+        "owner/repo",
+        Candidate(type="issue", data={"number": 20}, priority=0),
+        engine.config,
+    )
+    assert paused.target_outcome is not None
+    assert paused.error and "paused" in paused.error
+
+
+def test_capacity_fault_clears_only_after_valid_store_observation(monkeypatch, tmp_path):
+    """REQ-003/008/009: missing evidence is unavailable, never synthetic capacity."""
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    slots = ImplementationSlotRepository("owner/repo", 1, tmp_path / "slots.json")
+    observations = [RuntimeError("corrupt image"), (1, (4, 9))]
+
+    def observe():
+        value = observations.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(slots, "normal_capacity_snapshot", observe)
+
+    assert asyncio.run(engine._observe_refill_capacity("owner/repo", slots, "capacity_observation")) is None
+    fault = engine.get_status()["refill_faults"][0]
+    assert fault["disposition"] == "capacity_unavailable"
+    assert fault["retry_not_before"] is not None
+    assert engine._refill_admission_paused("owner/repo", 99)
+
+    assert asyncio.run(engine._observe_refill_capacity("owner/repo", slots, "capacity_observation")) == (1, (4, 9))
+    assert engine.get_status()["refill_faults"] == []
+
+
+def test_refill_initialization_fault_keeps_service_paused_until_cancel(monkeypatch):
+    """REQ-001/002/009: unusable shared state pauses without ending the task."""
+    engine = AutomationEngine(MagicMock(), AutomationConfig())
+    monkeypatch.setattr(
+        engine,
+        "_get_implementation_slots",
+        MagicMock(side_effect=RuntimeError("store initialization failed")),
+    )
+    monkeypatch.setattr("auto_coder.automation_engine.CAPACITY_STATE_CHECK_INTERVAL_SECONDS", 0.01)
+
+    async def scenario():
+        task = asyncio.create_task(engine._capacity_refill_loop("owner/repo"))
+        for _ in range(100):
+            if engine.get_status()["refill_faults"]:
+                break
+            await asyncio.sleep(0.01)
+        assert not task.done()
+        task.cancel()
+        results = await asyncio.gather(task, return_exceptions=True)
+        assert isinstance(results[0], asyncio.CancelledError)
+
+    asyncio.run(scenario())
+    assert engine.get_status()["refill_faults"] == [
+        {
+            "repository": "owner/repo",
+            "target": None,
+            "phase": "service_initialization",
+            "exception_class": "RuntimeError",
+            "disposition": "intervention_required",
+            "retry_not_before": None,
+        }
+    ]
 
 
 def test_ownership_failure_does_not_abort_other_refill_candidates(monkeypatch, tmp_path):
