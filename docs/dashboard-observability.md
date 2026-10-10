@@ -2195,3 +2195,14 @@ atomic upstream ownership transfer versus adapter entry, exact-job result
 artifacts, and the explicit separation between invocation evidence, downstream
 pending, and terminal settlement. Run `bash scripts/test.sh
 tests/test_local_job_handoff.py`.
+
+The full-job Issue workspace producer remains observability-neutral until its
+separate worker-route sibling connects it to production dispatch. It adds no
+processing origin, provider selection, admission rule, or dashboard event
+schema: its persistent clone and result manifest refine the existing headless
+local-job evidence rather than claiming execution or downstream completion.
+`tests/test_issue_job_workspace.py` exercises the real Git boundary, concurrent
+model-entry barriers, pinned-source refusal, restart-readable results, and
+model-created-HEAD rejection. A future route must emit its own scoped start and
+outcome events when it begins invoking this producer. Run `bash scripts/test.sh
+tests/test_issue_job_workspace.py tests/test_local_job_handoff.py`.
