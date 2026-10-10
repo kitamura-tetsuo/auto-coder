@@ -350,12 +350,12 @@ class LocalReviewRepairStore:
             )
             return cursor.rowcount == 1
 
-    def mark_invocation_entered(self, request: LocalReviewRepairRequest, claim: LocalReviewRepairClaim) -> bool:
+    def mark_invocation_entered(self, request: LocalReviewRepairRequest, claim: LocalReviewRepairClaim, *, local_job_id: str = "") -> bool:
         """Fence backend entry against transfer to a durable local job."""
         with self._connect() as connection:
             cursor = connection.execute(
-                "UPDATE local_review_repair_attempts SET invocation_entered=1, updated_at=? " "WHERE repository=? AND pr_number=? AND attempt_id=? AND incarnation=? " "AND phase='executing' AND invocation_entered=0 AND local_job_id=''",
-                (time.time(), request.repository, request.pr_number, claim.attempt_id, claim.incarnation),
+                "UPDATE local_review_repair_attempts SET invocation_entered=1, updated_at=? " "WHERE repository=? AND pr_number=? AND attempt_id=? AND incarnation=? " "AND phase='executing' AND invocation_entered=0 AND local_job_id=?",
+                (time.time(), request.repository, request.pr_number, claim.attempt_id, claim.incarnation, local_job_id),
             )
             return cursor.rowcount == 1
 
@@ -379,6 +379,15 @@ class LocalReviewRepairStore:
             invocation_entered=bool(row[8]),
             local_job_id=str(row[9]),
         )
+
+    def get_publication_pending(self, request: LocalReviewRepairRequest) -> Optional[LocalReviewRepairRecord]:
+        """Return retained publication work for this PR without admitting a new claim."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT attempt_id FROM local_review_repair_attempts WHERE repository=? AND pr_number=? " "AND phase='publication_pending' ORDER BY updated_at DESC LIMIT 1",
+                (request.repository, request.pr_number),
+            ).fetchone()
+        return self.get(request, str(row[0])) if row is not None else None
 
 
 def select_local_review_repair_candidates(repository: str) -> list[str]:
@@ -491,18 +500,28 @@ def execute_local_review_repair(
     store: Optional[LocalReviewRepairStore] = None,
     executor: Optional[Callable[[LocalReviewRepairRequest, str], str]] = None,
     allowance_authority: Optional[LocalRepairAllowanceAuthority] = None,
+    accepted_claim: Optional[LocalReviewRepairClaim] = None,
+    local_job_id: str = "",
+    provider_entry_authorizer: Optional[Callable[[], bool]] = None,
+    provider_entry_checkpoint: Optional[Callable[[], bool]] = None,
 ) -> LocalReviewRepairOutcome:
     """Run one fenced correction in a detached exact-head checkout and publish it."""
     if request.head_repository != request.repository:
         return LocalReviewRepairOutcome("not_admitted", "foreign-head pull requests are not eligible")
-    if executor is None:
+    store = store or LocalReviewRepairStore(local_review_repair_db_path(request.repository))
+    if executor is None and accepted_claim is None:
+        retained = store.get_publication_pending(request)
+        if retained is not None:
+            outcome = _resume_publication(request, store, retained, Path.cwd())
+            if outcome.published and allowance_authority is not None:
+                allowance_authority.mark_completion(code_changed=True, evidence=f"local correction published as {retained.result_sha}")
+            return outcome
         try:
             executor = _prepare_default_executor(request)
         except LocalBackendUnavailableError as exc:
             return LocalReviewRepairOutcome("backend_unavailable", str(exc))
-    store = store or LocalReviewRepairStore(local_review_repair_db_path(request.repository))
-    claim = store.admit(request)
-    if not claim.admitted:
+    claim = accepted_claim or store.admit(request)
+    if not claim.admitted and accepted_claim is None:
         if claim.phase == "publication_pending":
             record = store.get(request, claim.attempt_id)
             if record is not None:
@@ -511,6 +530,7 @@ def execute_local_review_repair(
                     allowance_authority.mark_completion(code_changed=True, evidence=f"local correction published as {record.result_sha}")
                 return outcome
         return LocalReviewRepairOutcome(claim.phase, f"retained local correction phase: {claim.phase}")
+    assert executor is not None
 
     root = Path.cwd()
     worktree = tempfile.mkdtemp(prefix=f"auto_coder_review_{request.pr_number}_")
@@ -526,7 +546,20 @@ def execute_local_review_repair(
             store.transition(request, claim, "not_started", reason=added.stderr.strip())
             return LocalReviewRepairOutcome("not_started", f"protected checkout failed: {added.stderr.strip()}")
         store.transition(request, claim, "executing", workspace_path=worktree)
-        if not store.mark_invocation_entered(request, claim):
+        if provider_entry_authorizer is not None:
+            try:
+                authorized = provider_entry_authorizer()
+            except Exception as exc:
+                reason = f"provider-entry authority is unavailable after preparation: {exc}"
+                store.transition(request, claim, "not_started", reason=reason)
+                return LocalReviewRepairOutcome("not_started", reason)
+            if not authorized:
+                store.transition(request, claim, "not_started", reason="provider-entry authority changed during preparation")
+                return LocalReviewRepairOutcome("not_started", "provider-entry authority changed during preparation")
+        if provider_entry_checkpoint is not None and not provider_entry_checkpoint():
+            preserve_worktree = True
+            return LocalReviewRepairOutcome("indeterminate", "durable provider-entry checkpoint failed")
+        if not store.mark_invocation_entered(request, claim, local_job_id=local_job_id):
             preserve_worktree = True
             return LocalReviewRepairOutcome("deferred", "local execution ownership changed before backend entry")
         if allowance_authority is not None:

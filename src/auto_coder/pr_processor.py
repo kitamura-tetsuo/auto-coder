@@ -8592,11 +8592,18 @@ def _delegate_cloud_review_thread_repair(
     if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED:
         route = _revalidate_local_review_repair_route(route, repo_name, pr_data, github_client)
         if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED and config is not None:
-            from .local_review_repair import LocalRepairValidationRequired, LocalReviewRepairRequest, admit_local_repair_allowance, execute_local_review_repair
+            from .local_review_repair import LocalRepairValidationRequired, LocalReviewRepairRequest, admit_local_repair_allowance, select_local_review_repair_candidates
+            from .pr_correction_job import offer_pr_correction_job
 
             evidence = route.evidence
             if evidence is None:
                 return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: authoritative target evidence is absent"], route_disposition="LOCAL_REQUIRED")
+            if evidence.head_repository != repo_name:
+                return CloudReviewRepairResult(
+                    [f"Local review repair was not admitted for PR #{pr_number}: foreign-head pull requests are not eligible"],
+                    route_disposition="LOCAL_REQUIRED",
+                    local_phase="not_admitted",
+                )
             if validated_head_sha and evidence.head_sha != validated_head_sha:
                 return CloudReviewRepairResult([f"Local review repair was not admitted for PR #{pr_number}: validated head has changed"], route_disposition="CONFLICT")
             implementer = (get_pr_author_login(pr_data) or "").lower()
@@ -8684,12 +8691,25 @@ def _delegate_cloud_review_thread_repair(
                     route_disposition="LOCAL_EXECUTION",
                     local_phase="not_admitted",
                 )
-            outcome = execute_local_review_repair(request, allowance_authority=allowance_authority)
+            candidates = select_local_review_repair_candidates(repo_name)
+            if not candidates:
+                return CloudReviewRepairResult(
+                    [f"Local review repair was not admitted for PR #{pr_number}: no configured synchronous local backend is available"],
+                    route_disposition="LOCAL_EXECUTION",
+                    local_phase="backend_unavailable",
+                )
+            job = offer_pr_correction_job(request, candidates[0])
+            if job is None:
+                return CloudReviewRepairResult(
+                    [f"Local review repair was not admitted for PR #{pr_number}: durable local job acceptance failed"],
+                    route_disposition="LOCAL_EXECUTION",
+                    local_phase="not_admitted",
+                )
             return CloudReviewRepairResult(
-                [f"Local review correction for PR #{pr_number} is {outcome.phase}: {outcome.reason}"],
-                deferred=outcome.phase not in {"not_admitted", "not_started", "backend_unavailable", "terminal_failure"},
+                [f"Local review correction for PR #{pr_number} is pending: durable job {job.job_id} was accepted"],
+                deferred=True,
                 route_disposition="LOCAL_EXECUTION",
-                local_phase=outcome.phase,
+                local_phase="pending",
             )
     if route.disposition is not ReviewRepairRouteDisposition.CLOUD:
         if route.disposition is ReviewRepairRouteDisposition.LOCAL_REQUIRED:

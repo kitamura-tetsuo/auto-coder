@@ -295,7 +295,7 @@ class Flow:
             patch("auto_coder.pr_processor._merge_pr", self.merge),
             patch("auto_coder.pr_processor.get_linked_issues_context", return_value="REQ-001: Preserve accepted findings."),
             patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(object(), "")),
-            patch("auto_coder.local_review_repair.execute_local_review_repair", side_effect=self._local_execution),
+            patch("auto_coder.pr_correction_job.offer_pr_correction_job", side_effect=self._local_offer),
         ]
         if self.exhausted:
             exhaustion = MagicMock(is_exhausted=True, exhausted_blocker_ids=("blk-exhausted",))
@@ -371,11 +371,9 @@ class Flow:
             patch("auto_coder.pr_processor.GitHubAppReviewer", reviewer_factory),
         ]
 
-    def _local_execution(self, request: Any, **_kwargs: Any):
-        from auto_coder.local_review_repair import LocalReviewRepairOutcome
-
+    def _local_offer(self, request: Any, _backend_name: str, **_kwargs: Any):
         self.local_executions.append(request)
-        return LocalReviewRepairOutcome("awaiting_validation", "published", True, True)
+        return MagicMock(job_id=f"job-{len(self.local_executions)}")
 
     # -- observation ---------------------------------------------------
 

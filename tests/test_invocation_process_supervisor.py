@@ -336,6 +336,7 @@ def emulated_cgroup_owner(tmp_path: Path, monkeypatch) -> CgroupV2Owner:
     """Emulate cgroupfs metadata for unit interleavings, not kernel conformance."""
     root = tmp_path / "cgroups"
     root.mkdir(mode=0o755)
+    root.chmod(0o755)
     original_mkdir = Path.mkdir
     original_rmdir = Path.rmdir
     original_stat = Path.stat
@@ -344,8 +345,11 @@ def emulated_cgroup_owner(tmp_path: Path, monkeypatch) -> CgroupV2Owner:
     def mkdir(path: Path, *args, **kwargs) -> None:
         original_mkdir(path, *args, **kwargs)
         if path.parent == root:
+            path.chmod(0o755)
             for name in controls:
-                (path / name).write_text("populated 0\n" if name == "cgroup.events" else "")
+                control = path / name
+                control.write_text("populated 0\n" if name == "cgroup.events" else "")
+                control.chmod(0o644)
 
     def rmdir(path: Path) -> None:
         if path.parent == root:

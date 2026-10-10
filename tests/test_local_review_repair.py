@@ -498,8 +498,8 @@ def test_publication_pending_resumes_without_rerunning_executor(tmp_path: Path, 
     assert retained is not None
     _git(repository, "push", "origin", f"{retained.result_sha}:refs/heads/repair-head")
     reconstructed = replace(request, head_sha=retained.result_sha, feedback_identities=("comment-1", "comment-2"))
-    with patch("auto_coder.local_review_repair.git_push") as recovery_push:
-        second = execute_local_review_repair(reconstructed, store=store, executor=executor)
+    with patch("auto_coder.local_review_repair.git_push") as recovery_push, patch("auto_coder.local_review_repair._prepare_default_executor") as prepare:
+        second = execute_local_review_repair(reconstructed, store=store)
 
     assert first.phase == "publication_pending"
     assert second.phase == "awaiting_validation"
@@ -507,6 +507,7 @@ def test_publication_pending_resumes_without_rerunning_executor(tmp_path: Path, 
     executor.assert_called_once()
     push.assert_called_once()
     recovery_push.assert_not_called()
+    prepare.assert_not_called()
 
 
 def test_unstaged_output_is_committed_and_published_to_existing_branch(tmp_path: Path, monkeypatch, _use_custom_subprocess_mock) -> None:
@@ -594,7 +595,7 @@ def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body
         patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),
         patch("auto_coder.pr_processor.get_linked_issues_context", return_value="REQ-001: preserve the race invariant"),
         patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(MagicMock(), "")),
-        patch("auto_coder.local_review_repair.execute_local_review_repair", return_value=LocalReviewRepairOutcome("awaiting_validation", "published", True, True)) as execute,
+        patch("auto_coder.pr_correction_job.offer_pr_correction_job", return_value=MagicMock(job_id="job-42")) as offer,
     ):
         result = _delegate_cloud_review_thread_repair(
             "owner/repo",
@@ -604,7 +605,7 @@ def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body
             config=MagicMock(),
         )
 
-    request = execute.call_args.args[0]
+    request = offer.call_args.args[0]
     from auto_coder.canonical_pr_blocker_ledger import CanonicalPRBlockerLedger
 
     snapshot = CanonicalPRBlockerLedger().get_snapshot("https://api.github.com", "owner/repo", 42)
@@ -616,10 +617,9 @@ def test_local_route_invokes_real_execution_boundary_with_two_tier_feedback(body
     assert "REQ-001: preserve the race invariant" in request.prompt
     assert request.head_ref == "issue-7_attempt-1"
     assert request.feedback_identities
-    assert execute.call_args.kwargs["allowance_authority"] is not None
     assert result.route_disposition == "LOCAL_EXECUTION"
     assert result.deferred is True
-    assert "awaiting_validation" in result[0]
+    assert "pending" in result[0]
 
 
 def test_local_route_propagates_cannot_fix_as_terminal_failure() -> None:
@@ -641,16 +641,13 @@ def test_local_route_propagates_cannot_fix_as_terminal_failure() -> None:
         patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),
         patch("auto_coder.pr_processor.get_linked_issues_context", return_value="REQ-010"),
         patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(MagicMock(), "")),
-        patch(
-            "auto_coder.local_review_repair.execute_local_review_repair",
-            return_value=LocalReviewRepairOutcome("terminal_failure", "local backend could not correct the finding", True, False),
-        ),
+        patch("auto_coder.pr_correction_job.offer_pr_correction_job", return_value=MagicMock(job_id="job-42")),
     ):
         result = _delegate_cloud_review_thread_repair("owner/repo", pr_data, MagicMock(), (thread,), config=MagicMock())
 
-    assert result.local_phase == "terminal_failure"
-    assert result.deferred is False
-    assert "terminal_failure" in result[0]
+    assert result.local_phase == "pending"
+    assert result.deferred is True
+    assert "pending" in result[0]
 
 
 def test_exact_head_push_uses_lease_and_never_enters_recovery_fallback() -> None:
@@ -707,19 +704,19 @@ def test_validated_local_feedback_overrides_addressed_claim_and_excludes_unrelat
         patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),
         patch("auto_coder.pr_processor.get_linked_issues_context", return_value="REQ-001: preserve invariant"),
         patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(object(), "")),
-        patch("auto_coder.local_review_repair.execute_local_review_repair", return_value=LocalReviewRepairOutcome("awaiting_validation", "published", True, True)) as execute,
+        patch("auto_coder.pr_correction_job.offer_pr_correction_job", return_value=MagicMock(job_id="job-42")) as offer,
         patch("auto_coder.pr_processor._resolve_cloud_task_origin") as cloud,
     ):
         actionable = [finding] if replay == "fresh" else [f"{heading}\n\nReworded current counterexample."] if replay == "reworded" else ()
         result = _send_adversarial_validation_feedback_to_cloud_task("owner/repo", pr_data, "abc123", report, github, actionable, config=MagicMock())
-    execute.assert_called_once()
-    request = execute.call_args.args[0]
+    offer.assert_called_once()
+    request = offer.call_args.args[0]
     assert finding in request.prompt
     assert "Unrelated request" not in request.prompt
     assert len(request.feedback_identities) == 1
     assert request.head_sha == "abc123"
     assert result.route_disposition == "LOCAL_EXECUTION"
-    assert result.local_phase == "awaiting_validation"
+    assert result.local_phase == "pending"
     cloud.assert_not_called()
 
 
@@ -960,13 +957,13 @@ def test_validated_gap_matches_stable_identity_and_uses_current_instructions():
         patch("auto_coder.pr_processor._revalidate_local_review_repair_route", return_value=route),
         patch("auto_coder.pr_processor.get_linked_issues_context", return_value="REQ-001"),
         patch("auto_coder.local_review_repair.admit_local_repair_allowance", return_value=(object(), "")),
-        patch("auto_coder.local_review_repair.execute_local_review_repair", return_value=LocalReviewRepairOutcome("awaiting_validation", "published", True, True)) as execute,
+        patch("auto_coder.pr_correction_job.offer_pr_correction_job", return_value=MagicMock(job_id="job-42")) as offer,
     ):
         result = _delegate_cloud_review_thread_repair("owner/repo", {"number": 42, "body": evidence.body, "base": {"ref": "main"}}, MagicMock(), threads, config=MagicMock(), validated_feedback=(current,), validated_head_sha="abc123")
-    execute.assert_called_once()
-    request = execute.call_args.args[0]
+    offer.assert_called_once()
+    request = offer.call_args.args[0]
     assert current in request.prompt
     assert "Old reproduction" not in request.prompt
     assert "TOG-other" not in request.prompt
     assert len(request.feedback_identities) == 1
-    assert result.local_phase == "awaiting_validation"
+    assert result.local_phase == "pending"

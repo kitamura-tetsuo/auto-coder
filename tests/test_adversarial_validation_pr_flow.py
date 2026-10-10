@@ -2208,7 +2208,6 @@ class TestAdversarialValidationPRFlow:
         client = MagicMock()
         client.get_pr_review_threads_strict.return_value = []
         if local:
-            from auto_coder.local_review_repair import LocalReviewRepairOutcome
             from auto_coder.pr_processor import ReviewRepairRouteDecision, ReviewRepairRouteDisposition
             from auto_coder.util.gh_cache import PullRequestRoutingMetadata
 
@@ -2222,8 +2221,8 @@ class TestAdversarialValidationPRFlow:
             client.get_pr_review_threads_strict.return_value = [ReviewThread(id="finding", comments=[ReviewThreadComment(database_id=1, author_login="reviewer", body=finding_body)])]
             monkeypatch.setattr("auto_coder.pr_processor._get_claimed_review_thread_state", lambda *args, **kwargs: ClaimedReviewThreadGateState())
             monkeypatch.setattr("auto_coder.local_review_repair.admit_local_repair_allowance", lambda request: (object(), ""))
-            execute = MagicMock(return_value=LocalReviewRepairOutcome("awaiting_validation", "published", True, True))
-            monkeypatch.setattr("auto_coder.local_review_repair.execute_local_review_repair", execute)
+            offer = MagicMock(return_value=MagicMock(job_id="job-100"))
+            monkeypatch.setattr("auto_coder.pr_correction_job.offer_pr_correction_job", offer)
             monkeypatch.setattr("auto_coder.pr_processor.get_linked_issues_context", lambda *args: "REQ-001: idempotency")
         from auto_coder.execution_trace import TraceCollector, get_trace_collector
 
@@ -2242,14 +2241,14 @@ class TestAdversarialValidationPRFlow:
             from auto_coder.execution_trace import Outcome
             from tests.test_dashboard_observability import _mounted_detail
 
-            execute.assert_called_once()
-            assert finding_body in execute.call_args.args[0].prompt
-            assert execute.call_args.args[0].head_sha == "abc123456789"
+            offer.assert_called_once()
+            assert finding_body in offer.call_args.args[0].prompt
+            assert offer.call_args.args[0].head_sha == "abc123456789"
             events = [event for event in collector.get_snapshot(repository="owner/repo", item_type="pr", item_number=100).events if event.stage_id == "pr.repair-delegation"]
             assert len(events) == 1
             assert events[0].outcome == Outcome.DEFERRED.value
             assert events[0].facts["route_disposition"] == "LOCAL_EXECUTION"
-            assert events[0].facts["local_phase"] == "awaiting_validation"
+            assert events[0].facts["local_phase"] == "pending"
             with patch("auto_coder.dashboard.ui") as mock_ui:
                 diagram = _mounted_detail(mock_ui, "pr", 100)
             assert "repair delegation" in diagram and "deferred" in diagram

@@ -96,6 +96,43 @@ def test_capacity_leaves_extra_job_pending_until_slot_frees(tmp_path: Path) -> N
     runner.close()
 
 
+def test_runner_ignores_job_kinds_without_a_registered_adapter(tmp_path: Path) -> None:
+    store, issue_job = _accepted(tmp_path, "attempt-1")
+    adapter = BarrierAdapter()
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.PR_REVIEW_CORRECTION: adapter})
+
+    assert runner.poll() == 0
+    assert store.get(issue_job).state is LocalJobState.PENDING  # type: ignore[union-attr]
+    assert adapter.calls == 0
+    runner.close()
+
+
+def test_pr_only_runner_does_not_consume_issue_downstream_effects(tmp_path: Path) -> None:
+    store, issue_job = _accepted(tmp_path, "attempt-downstream")
+    claim = store.claim(issue_job, "issue-runner")
+    assert claim is not None and claim.acquired
+    assert store.mark_provider_entered(claim)
+    artifact = store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, '{"workspace_path":"/tmp/issue"}')
+    assert artifact is not None
+    assert store.record_result(claim, InvocationOutcome.COMPLETED, artifact.artifact_id)
+    assert store.mark_downstream_pending(claim)
+    wakes: list[str] = []
+    runner = LocalJobRunner(
+        store,
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.PR_REVIEW_CORRECTION: BarrierAdapter()},
+        completion_wake=lambda job: wakes.append(job.job_id),
+    )
+
+    assert runner.wake_downstream() == 0
+    time.sleep(0.05)
+    retained = store.get(issue_job)
+    assert retained is not None and retained.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    assert wakes == []
+    runner.close()
+
+
 def test_closed_admission_and_denied_authority_never_enter_provider(tmp_path: Path) -> None:
     store, job_id = _accepted(tmp_path, "attempt-1")
     gate = InvocationAdmissionGate()
