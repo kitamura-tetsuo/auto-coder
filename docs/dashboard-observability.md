@@ -2177,3 +2177,20 @@ schemas. Existing `llm.local-execution` completion remains required; allocating 
 state is not review clearance. Run `bash scripts/test.sh tests/test_opencode_noedit_live.py`
 with the pinned CLI to verify real no-edit startup and refusal of stale session roots.
 See [Invocation-local filesystem confinement](client-features/invocation-filesystem-confinement.md).
+
+# Attempt-bound local job evidence
+
+`LocalJobStore` adds a durable resumption boundary but no production dashboard
+event yet: this stage is only the evidence producer and has no worker/domain
+adapter from which a scoped trace can truthfully report execution. In
+particular, accepted, claimed, and `result_recorded` envelopes must not reuse a
+completion outcome or the existing `LOCAL_COMPLETED` presentation. A later
+consumer integration must add its production trace and mounted-view contract
+when it becomes responsible for execution or downstream effects.
+
+`tests/test_local_job_handoff.py` is the runnable contract for this currently
+headless boundary. It covers real Issue and PR admission authorities, durable
+reopen, one-winner contention, stale-write rejection, restart reconciliation,
+and the explicit separation between invocation evidence, downstream pending,
+and terminal settlement. Run `bash scripts/test.sh
+tests/test_local_job_handoff.py`.
