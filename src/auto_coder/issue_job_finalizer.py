@@ -99,6 +99,7 @@ class IssueJobFinalizer:
             refreshed = self._store.get(job_id)
             if refreshed is None or not self._store.settle(self._claim(refreshed), record.invocation_outcome.value):
                 return IssuePublicationResult(job_id, "pending", diagnostic="could not settle unsuccessful result")
+            self._finish_execution(refreshed)
             return IssuePublicationResult(job_id, record.invocation_outcome.value)
 
         owner = ImplementationOwner("issue", record.target_number)
@@ -172,6 +173,7 @@ class IssueJobFinalizer:
                 self._store.record_effect(claim, "publication", "skipped", "no changes")
                 if not self._store.settle(claim, "no_change"):
                     return IssuePublicationResult(job_id, "pending", diagnostic="could not settle no-change result")
+                self._finish_execution(record)
                 return IssuePublicationResult(job_id, "no_change")
             if not status.stdout.strip() and head.stdout.strip() != record.source_commit:
                 parent = self._git(workspace, "rev-parse", "HEAD^")
@@ -238,7 +240,16 @@ class IssueJobFinalizer:
         self._store.record_effect(claim, "pr", "completed", str(pr_number))
         if not self._store.record_effect(claim, "association", "completed", str(pr_number)) or not self._store.settle(claim, f"pr:{pr_number}"):
             return IssuePublicationResult(job_id, "pending", pr_number, "final association checkpoint failed")
+        self._finish_execution(record)
         return IssuePublicationResult(job_id, "published", pr_number)
+
+    def _finish_execution(self, record: LocalJobRecord) -> None:
+        """Release only the exact execution transferred by the Issue worker."""
+        if not record.implementation_execution_id:
+            return
+        owner = ImplementationOwner("issue", record.target_number)
+        if self._slots.owner_incarnation(owner) == record.owner_incarnation and self._slots.implementation_generation(owner) == record.owner_generation:
+            self._slots.finish_execution(owner, record.implementation_execution_id)
 
     def _completed_evidence(self, record: LocalJobRecord, name: str) -> str:
         effect = self._store.get_effect(record.job_id, record.execution_incarnation, name)

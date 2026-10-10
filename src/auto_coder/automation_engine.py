@@ -626,6 +626,14 @@ class _IssueProcessingStageHandler:
         if issue_number is None:
             logger.warning("Malformed Issue pending-work identity {!r}; discarding obligation", entity)
             return StageOutcome(superseded=True)
+        if engine._refill_admission_paused(self._repo_name, issue_number, "issue"):
+            logger.info(
+                "Issue pending-work evaluation remains unfinished behind refill fault repository={} issue={} stage={}",
+                self._repo_name,
+                issue_number,
+                ISSUE_PROCESSING_STAGE,
+            )
+            return StageOutcome()
         try:
             fresh_issue = engine.github.get_issue_dispatch_snapshot_strict(self._repo_name, issue_number)
         except GitHubRequestError as exc:
@@ -942,6 +950,18 @@ class EngineLifecycle(str, Enum):
     FORCED = "forced"
 
 
+@dataclasses.dataclass(frozen=True)
+class RefillFault:
+    """An engine-lifetime admission barrier created by an unexpected refill fault."""
+
+    repository: str
+    target: Optional[int]
+    phase: str
+    exception_class: str
+    disposition: str
+    retry_not_before: Optional[float]
+
+
 class AutomationEngine:
     """Main automation engine that orchestrates GitHub and LLM integration."""
 
@@ -984,6 +1004,8 @@ class AutomationEngine:
         # as a refill opportunity even if it hasn't independently observed
         # a store identity change yet.
         self._refill_wake_requested = False
+        self._refill_faults: dict[tuple[str, Optional[int], str], RefillFault] = {}
+        self._refill_faults_lock = threading.Lock()
         self.startup_reconciled = False
         self.startup_reconciliation_error: Optional[str] = None
         self._startup_reconciliation_event: Optional[asyncio.Event] = None
@@ -1030,6 +1052,7 @@ class AutomationEngine:
         # this gate is a separate follow-up (#2010); today this gate only
         # tracks invocations and never gates the daemon's own exit.
         self.invocation_gate = InvocationAdmissionGate()
+        self.local_job_store: Optional[LocalJobStore] = None
         # Full Jules discovery is deliberately delayed after startup.  Claiming
         # a cycle advances this deadline before any HTTP work begins, so a
         # failed listing cannot cause a hot retry on the next loop iteration.
@@ -2666,6 +2689,7 @@ class AutomationEngine:
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start independent Issue and PR pools with ``concurrency`` workers each."""
+        self._get_local_job_store()
         self._bind_pending_work_scheduler(repo_name)
         if concurrency is None:
             concurrency = self.config.MAX_CONCURRENT_TASKS
@@ -2801,6 +2825,20 @@ class AutomationEngine:
             # preventing ordinary Issue/PR work from serving the repository.
             logger.error(f"Codex initial-PR recovery is unavailable for {repo_name}: {type(exc).__name__}")
         capacity_task = asyncio.create_task(self._capacity_refill_loop(repo_name), name="implementation-capacity-refill") if isinstance(slot_repository, ImplementationSlotRepository) else None
+        local_runner = None
+        local_runner_task = None
+        if isinstance(slot_repository, ImplementationSlotRepository):
+            from .issue_local_job import IssueLocalJobAdapter
+
+            assert self.local_job_store is not None
+            local_runner = LocalJobRunner(
+                self.local_job_store,
+                self.invocation_gate,
+                capacity=max(1, self.config.MAX_CONCURRENT_IMPLEMENTATIONS),
+                adapters={LocalJobKind.ISSUE_IMPLEMENTATION: IssueLocalJobAdapter(self, repo_name, self.local_job_store, slot_repository, Path.cwd())},
+                completion_wake=lambda _job: self._resume_local_issue_publications(repo_name, slot_repository),
+            )
+            local_runner_task = asyncio.create_task(self._local_job_runner_loop(local_runner), name="durable-local-job-runner")
 
         # Reserve worker capacity for each type so either lane can make progress.
         workers = [asyncio.create_task(self._worker_loop(repo_name, offset * concurrency + i, item_type), name=f"{item_type}-worker-{i}") for offset, item_type in enumerate(("issue", "pr")) for i in range(concurrency)]
@@ -2810,6 +2848,8 @@ class AutomationEngine:
             all_loop_tasks.append(codex_recovery_task)
         if capacity_task is not None:
             all_loop_tasks.append(capacity_task)
+        if local_runner_task is not None:
+            all_loop_tasks.append(local_runner_task)
         shutdown_wait = asyncio.create_task(self._shutdown_event.wait(), name="graceful-shutdown-request")
         try:
             done, _ = await asyncio.wait({*all_loop_tasks, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED)
@@ -2862,9 +2902,27 @@ class AutomationEngine:
             get_health_monitor().record_event("engine_stop", f"unhandled error: {type(e).__name__}: {e}", "")
             raise
         finally:
+            if local_runner is not None:
+                local_runner.close(wait=False)
             shutdown_wait.cancel()
             local_job_runner.close(wait=False)
             get_health_monitor().log_snapshot(reason="engine_stop")
+
+    async def _local_job_runner_loop(self, runner: Any) -> None:
+        """Continuously discover durable local jobs without occupying a worker."""
+        assert self._shutdown_event is not None
+        while not self._shutdown_event.is_set():
+            await asyncio.to_thread(runner.poll)
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=0.25)
+            except asyncio.TimeoutError:
+                pass
+
+    def _get_local_job_store(self) -> LocalJobStore:
+        """Return the engine-wide durable authority for daemon and explicit routes."""
+        if self.local_job_store is None:
+            self.local_job_store = LocalJobStore()
+        return self.local_job_store
 
     async def _perform_startup_reconciliation(self, repo_name: str) -> None:
         """Complete startup recovery, retrying governed admission failures durably.
@@ -3866,7 +3924,10 @@ class AutomationEngine:
         """
         async with self._refill_lock:
             slots = self._get_implementation_slots(repo_name)
-            if await asyncio.to_thread(slots.available_normal_slots) == 0:
+            entry_capacity = await self._observe_refill_capacity(repo_name, slots, "refill_entry_capacity_observation")
+            if entry_capacity is None:
+                return False
+            if entry_capacity[0] == 0:
                 return True
             blocked_issue_numbers: set[int] = set()
             reconciliation_retry_required = False
@@ -3878,7 +3939,26 @@ class AutomationEngine:
                     if self._future_issue_admission_deferral(repo_name, observed.number) is not None:
                         blocked_issue_numbers.add(observed.number)
                         continue
-                    snapshot = await asyncio.to_thread(self.github.get_issue_dispatch_snapshot_strict, repo_name, observed.number)
+                    try:
+                        snapshot = await asyncio.to_thread(
+                            self.github.get_issue_dispatch_snapshot_strict,
+                            repo_name,
+                            observed.number,
+                        )
+                    except GitHubRequestDeferred as exc:
+                        deferred = _reconciliation_admission_deferral(exc)
+                        if deferred is None:
+                            raise
+                        self._defer_issue_evaluation(
+                            repo_name,
+                            observed.number,
+                            {"number": observed.number},
+                            deferred,
+                            CandidateProcessingResult(type="issue", number=observed.number),
+                            revision_known=False,
+                        )
+                        blocked_issue_numbers.add(observed.number)
+                        continue
                     if not isinstance(snapshot, dict) or snapshot.get("number") != observed.number:
                         raise RuntimeError(f"GitHub returned an ambiguous Issue snapshot for #{observed.number}")
                     if "pull_request" in snapshot or not self._is_open_issue(snapshot):
@@ -3941,27 +4021,104 @@ class AutomationEngine:
                     candidate.data["refill_metadata_open_children"] = metadata_children
                     candidates.append(candidate)
                 candidates.sort(key=lambda value: (-value.priority, value.data.get("created_at", ""), value.issue_number or 0))
+            except PendingWorkPersistenceError as exc:
+                self._record_refill_fault(
+                    repo_name,
+                    None,
+                    "refill_enumeration_persistence",
+                    exc,
+                    "intervention_required",
+                )
+                return True
             except Exception as exc:
                 logger.warning(f"Authoritative Issue refill enumeration failed for {repo_name}; obligation remains pending: {exc}")
                 return False
 
             retry_required = reconciliation_retry_required
             for candidate in candidates:
-                if await asyncio.to_thread(slots.available_normal_slots) == 0:
+                if self._refill_admission_paused(repo_name, candidate.issue_number, "issue"):
+                    continue
+                candidate_capacity = await self._observe_refill_capacity(repo_name, slots, "candidate_capacity_observation")
+                if candidate_capacity is None:
+                    return False
+                if candidate_capacity[0] == 0:
                     break
                 # The common dispatch path repeats strict readiness, contract,
                 # hierarchy, ownership, authorization, duplicate and atomic
                 # capacity admission checks immediately before implementation.
                 if self.is_draining:
                     return True
-                result = await self._run_local_critical(
-                    f"capacity refill issue #{candidate.issue_number}",
-                    partial(self._process_single_candidate, origin="capacity-refill-intake"),
-                    repo_name,
-                    candidate,
-                )
+                try:
+                    result = await self._run_local_critical(
+                        f"capacity refill issue #{candidate.issue_number}",
+                        partial(self._process_single_candidate, origin="capacity-refill-intake"),
+                        repo_name,
+                        candidate,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._record_candidate_refill_exception(repo_name, candidate.issue_number, exc)
+                    # A target-scoped fault must not prevent an independent
+                    # candidate from using remaining capacity in this pass.
+                    continue
                 retry_required = retry_required or result.refill_retry_required
             return not retry_required
+
+    def _record_candidate_refill_exception(self, repo_name: str, candidate_number: Optional[int], exc: Exception) -> None:
+        """Classify an escaped refill dispatch from authoritative failure scope."""
+        persistence_failure = isinstance(exc, PendingWorkPersistenceError)
+        target = None if persistence_failure else getattr(exc, "_auto_coder_fault_issue", candidate_number)
+        phase = "pending_work_persistence" if persistence_failure else "candidate_dispatch"
+        self._record_refill_fault(repo_name, target, phase, exc, "intervention_required")
+
+    def _record_refill_fault(
+        self,
+        repo_name: str,
+        target: Optional[int],
+        phase: str,
+        exc: Exception,
+        disposition: str,
+        retry_not_before: Optional[float] = None,
+    ) -> None:
+        fault = RefillFault(repo_name, target, phase, type(exc).__name__, disposition, retry_not_before)
+        key = (repo_name, target, disposition)
+        with self._refill_faults_lock:
+            previous = self._refill_faults.get(key)
+            self._refill_faults[key] = fault
+        if previous != fault:
+            logger.opt(exception=exc).error(
+                "Capacity refill fault repository={} target={} phase={} disposition={} retry_not_before={}",
+                repo_name,
+                target,
+                phase,
+                disposition,
+                retry_not_before,
+            )
+
+    def _clear_capacity_fault(self, repo_name: str) -> None:
+        with self._refill_faults_lock:
+            self._refill_faults = {key: fault for key, fault in self._refill_faults.items() if not (fault.repository == repo_name and fault.disposition == "capacity_unavailable")}
+
+    def _refill_admission_paused(self, repo_name: str, target: Optional[int], item_type: str = "issue") -> bool:
+        with self._refill_faults_lock:
+            return any(fault.repository == repo_name and (fault.disposition == "capacity_unavailable" or (fault.disposition == "intervention_required" and (fault.target is None or (item_type == "issue" and fault.target == target)))) for fault in self._refill_faults.values())
+
+    def _refill_fault_snapshot(self) -> tuple[RefillFault, ...]:
+        with self._refill_faults_lock:
+            return tuple(self._refill_faults.values())
+
+    async def _observe_refill_capacity(self, repo_name: str, slots: ImplementationSlotRepository, phase: str) -> Optional[tuple[int, tuple[int, int]]]:
+        try:
+            observation = await asyncio.to_thread(slots.normal_capacity_snapshot)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            retry_at = time.time() + max(1.0, min(60.0, REFILL_RETRY_INTERVAL_SECONDS))
+            self._record_refill_fault(repo_name, None, phase, exc, "capacity_unavailable", retry_at)
+            return None
+        self._clear_capacity_fault(repo_name)
+        return observation
 
     async def _run_due_reclamation_checks(self, repo_name: str, slots: ImplementationSlotRepository) -> int:
         """Service due terminal-PR-backed reclamation obligations for *repo_name* once.
@@ -4019,29 +4176,57 @@ class AutomationEngine:
 
     async def _capacity_refill_loop(self, repo_name: str) -> None:
         """Observe shared slot state and service capacity transitions without GitHub polling."""
-        slots = self._get_implementation_slots(repo_name)
-        previous_count, previous_identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
+        try:
+            slots = self._get_implementation_slots(repo_name)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Shared-state initialization cannot be classified as a safe read
+            # retry. Keep the service alive but repository-paused until the
+            # engine is intentionally stopped.
+            self._record_refill_fault(repo_name, None, "service_initialization", exc, "intervention_required")
+            while True:
+                await asyncio.sleep(CAPACITY_STATE_CHECK_INTERVAL_SECONDS)
+        previous_count = 0
+        previous_identity: Optional[tuple[int, int]] = None
         refill_pending = False
+        capacity_initialized = False
         while True:
-            self._refill_wake_requested = False
-            await self._run_due_reclamation_checks(repo_name, slots)
-            if self._refill_wake_requested:
-                refill_pending = True
-            available_count, identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
-            if available_count > 0 and (previous_count == 0 or identity != previous_identity):
-                refill_pending = True
-                logger.info("Normal implementation capacity became available; requesting fresh Issue refill")
-            previous_count, previous_identity = available_count, identity
-            if refill_pending and available_count > 0:
-                refill_pending = not await self._refill_normal_implementation_slots(repo_name)
-                current_count, current_identity = await asyncio.to_thread(slots.normal_capacity_snapshot)
-                # Dispatch may run long enough for another process to fill and
-                # release a slot between samples. Atomic state replacement is
-                # the durable evidence that this transition needs a fresh pass.
-                if current_count > 0 and current_identity != previous_identity:
+            try:
+                self._refill_wake_requested = False
+                await self._run_due_reclamation_checks(repo_name, slots)
+                if self._refill_wake_requested:
                     refill_pending = True
-                previous_count, previous_identity = current_count, current_identity
-            delay = REFILL_RETRY_INTERVAL_SECONDS if refill_pending else CAPACITY_STATE_CHECK_INTERVAL_SECONDS
+                observed = await self._observe_refill_capacity(repo_name, slots, "capacity_observation")
+                if observed is None:
+                    # A successful recovery must service the opportunity even
+                    # when no later slot transition or webhook occurs.
+                    refill_pending = True
+                    await asyncio.sleep(max(1.0, min(60.0, REFILL_RETRY_INTERVAL_SECONDS)))
+                    continue
+                available_count, identity = observed
+                if available_count > 0 and (refill_pending or (capacity_initialized and (previous_count == 0 or identity != previous_identity))):
+                    refill_pending = True
+                    logger.info("Normal implementation capacity became available; requesting fresh Issue refill")
+                previous_count, previous_identity = available_count, identity
+                capacity_initialized = True
+                if refill_pending and available_count > 0 and not self._refill_admission_paused(repo_name, None):
+                    refill_pending = not await self._refill_normal_implementation_slots(repo_name)
+                    current = await self._observe_refill_capacity(repo_name, slots, "post_dispatch_capacity_observation")
+                    if current is None:
+                        refill_pending = True
+                        await asyncio.sleep(max(1.0, min(60.0, REFILL_RETRY_INTERVAL_SECONDS)))
+                        continue
+                    current_count, current_identity = current
+                    if current_count > 0 and current_identity != previous_identity:
+                        refill_pending = True
+                    previous_count, previous_identity = current_count, current_identity
+                delay = REFILL_RETRY_INTERVAL_SECONDS if refill_pending else CAPACITY_STATE_CHECK_INTERVAL_SECONDS
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._record_refill_fault(repo_name, None, "service_control", exc, "intervention_required")
+                delay = CAPACITY_STATE_CHECK_INTERVAL_SECONDS
             await asyncio.sleep(delay)
 
     async def _worker_loop(self, repo_name: str, worker_id: int, item_type: Optional[str] = None) -> None:
@@ -5001,6 +5186,7 @@ class AutomationEngine:
             "open_items": open_items_status,
             "pending_work": self.pending_work_scheduler.snapshot() if self.pending_work_scheduler is not None else [],
             "merge_operations": self.merge_operation_scheduler.snapshot(),
+            "refill_faults": [dataclasses.asdict(fault) for fault in self._refill_fault_snapshot()],
         }
         return status
 
@@ -5706,6 +5892,18 @@ class AutomationEngine:
         )
 
         def dispatch() -> CandidateProcessingResult:
+            if self._refill_admission_paused(repo_name, cast(Optional[int], item_number), candidate.type):
+                reason = f"Automatic evaluation paused after an unexpected refill fault for {repo_name}"
+                return CandidateProcessingResult(
+                    type=candidate.type,
+                    number=item_number if isinstance(item_number, int) else None,
+                    title=candidate.data.get("title"),
+                    error=reason,
+                    target_outcome=ExplicitTargetOutcome.DEFERRED,
+                    target_reason=reason,
+                    actions=[reason],
+                    refill_retry_required=False,
+                )
             cache_issue = candidate.type == "issue" and isinstance(item_number, int) and not isinstance(item_number, bool) and not continue_execution and not retry
             if cache_issue:
                 retained = self._future_issue_admission_deferral(repo_name, cast(int, item_number))
@@ -5790,6 +5988,13 @@ class AutomationEngine:
                 if isinstance(item_number, int) and not isinstance(item_number, bool):
                     record_stage = _record_issue_stage_result if candidate.type == "issue" else _record_pr_stage_result
                     record_stage(item_number, f"{candidate.type}.implementation-admission", f"{candidate.type}#{item_number} implementation admission", Outcome.DEFERRED, {"reason": reason})
+            except Exception as exc:
+                # Preserve the innermost real target while recursive child
+                # dispatch unwinds to the refill containment boundary.
+                if candidate.type == "issue" and isinstance(item_number, int) and not isinstance(item_number, bool):
+                    if not hasattr(exc, "_auto_coder_fault_issue"):
+                        setattr(exc, "_auto_coder_fault_issue", item_number)
+                raise
             if cache_issue and observed:
                 self.issue_admission_cache.remember(repo_name, cast(int, item_number), policy, epoch, result)
             return result
@@ -7003,17 +7208,27 @@ class AutomationEngine:
                             jules_mode,
                             manual_retry=True,
                             retry_authority=retry_authority,
+                            **({"explicit_only": True} if explicit_only and candidate.type == "issue" else {}),
                         )
                         result.actions.insert(
                             0,
                             f"Retry accepted for issue #{item_number}: request={retry_authority.request_id} attempt={retry_authority.attempt_id} phase=owned",
                         )
                     elif advance_issue_attempt:
-                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True)
+                        if explicit_only and candidate.type == "issue":
+                            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True, explicit_only=True)
+                        else:
+                            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True)
                     else:
-                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
+                        if explicit_only and candidate.type == "issue":
+                            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, explicit_only=True)
+                        else:
+                            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
         finally:
-            if not inherited_execution:
+            from .issue_dispatch import DispatchOutcome
+
+            local_job_owns_execution = candidate.type == "issue" and result.dispatch_result is not None and result.dispatch_result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+            if not inherited_execution and not local_job_owns_execution:
                 slots.finish_execution(owner, execution_id)
                 if result.cloud_submission_not_started is True:
                     if candidate.type == "issue" and implementation_key is not None:
@@ -7049,6 +7264,7 @@ class AutomationEngine:
         advance_issue_attempt: bool = False,
         manual_retry: bool = False,
         retry_authority: Optional[ImplementationRetryRequest] = None,
+        explicit_only: bool = False,
     ) -> CandidateProcessingResult:
         """Process a candidate after its durable owner slot is reserved."""
         result = CandidateProcessingResult(
@@ -7216,6 +7432,8 @@ class AutomationEngine:
                             label_context=should_process,
                             implementation_slots=implementation_slots,
                             retry_authority=retry_authority,
+                            local_job_store=(self._get_local_job_store() if explicit_only or self.local_job_store is not None else None),
+                            implementation_execution_id=implementation_slots.current_execution_id(ImplementationOwner("issue", item_number)) or "",
                         )
                         result.actions = dispatch.actions
                         result.dispatch_result = dispatch.result
@@ -7229,6 +7447,7 @@ class AutomationEngine:
 
                     if result.dispatch_result is not None and result.dispatch_result.outcome not in {
                         DispatchOutcome.LOCAL_COMPLETED,
+                        DispatchOutcome.LOCAL_ACCEPTED,
                         DispatchOutcome.REMOTE_ACCEPTED,
                     }:
                         result.success = False
@@ -7322,6 +7541,8 @@ class AutomationEngine:
         issue_data: Dict[str, Any],
         error: GitHubRequestError,
         result: CandidateProcessingResult,
+        *,
+        revision_known: bool = True,
     ) -> CandidateProcessingResult:
         """Retain an Issue hierarchy/readiness evaluation interrupted by GitHub.
 
@@ -7331,7 +7552,10 @@ class AutomationEngine:
         being reported as an ordinary error, so a registered stage handler
         resumes it through current authoritative state (REQ-001, REQ-002).
         """
-        revision = _issue_content_revision(issue_data)
+        # Initial refill enumeration can be refused before a snapshot exists.
+        # Its empty revision requires a fresh strict read when due rather than
+        # pretending the number-only placeholder was authoritative content.
+        revision = _issue_content_revision(issue_data) if revision_known else ""
         identity = WorkIdentity(repo_name, f"issue:{item_number}", ISSUE_PROCESSING_STAGE, revision)
         obligation = get_pending_work_store(repo_name).defer(
             identity,

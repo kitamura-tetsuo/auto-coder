@@ -10,7 +10,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TypedDict, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, TypedDict, Union, cast
 
 from dateutil import parser
 
@@ -46,6 +46,9 @@ from .trace_logger import get_trace_logger
 from .util.gh_cache import GitHubClient
 from .utils import CommandExecutor
 from .worktree_utils import LocalPreparationNotStartedError
+
+if TYPE_CHECKING:
+    from .local_job_handoff import LocalJobStore
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -1310,6 +1313,8 @@ def _dispatch_issue_candidates(
     label_context: Optional[LabelManagerContext] = None,
     implementation_slots: Optional[ImplementationSlotRepository] = None,
     retry_authority: Optional[ImplementationRetryRequest] = None,
+    local_job_store: Optional["LocalJobStore"] = None,
+    implementation_execution_id: str = "",
 ) -> IssueDispatchExecution:
     """Execute one caller-ranked ordinary sequence through the durable boundary."""
     from .cli_helpers import build_backend_manager
@@ -1351,13 +1356,14 @@ def _dispatch_issue_candidates(
     else:
         identity = IssueAttemptIdentity(owner, repository, issue_number, str(attempt))
     llm_config = get_llm_config(repo_name=repo_name)
+    remote_types = {"codex-cloud", "claude-routine", "jules"}
+    local_types = {"codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider", "opencode"}
     candidates = []
     for name in candidate_names:
         backend_config = llm_config.get_backend_config(name)
-        candidates.append(CandidateHandoff(name, (backend_config.backend_type if backend_config is not None else None) or name))
+        provider = (backend_config.backend_type if backend_config is not None else None) or name
+        candidates.append(CandidateHandoff(name, provider, local_job_store is not None and provider.lower() in local_types))
     actions: List[str] = []
-    remote_types = {"codex-cloud", "claude-routine", "jules"}
-    local_types = {"codex", "codex-mcp", "antigravity", "qwen", "auggie", "muse", "claude", "aider", "opencode"}
 
     def invoke(candidate: CandidateHandoff) -> AdapterOutcome:
         nonlocal actions
@@ -1408,11 +1414,62 @@ def _dispatch_issue_candidates(
                 )
             elif backend_type in local_types:
                 model = llm_config.get_model_for_backend(candidate.backend_name) or ""
+                # Backend construction is the existing synchronous preparation
+                # boundary. A missing CLI/model is positively not started and
+                # must release this claim so the ranked successor can run.
                 manager = build_backend_manager(
                     selected_backends=[candidate.backend_name],
                     primary_backend=candidate.backend_name,
                     models={candidate.backend_name: model},
                 )
+                if local_job_store is not None:
+                    from .local_job_handoff import LocalJobKind, LocalJobOffer
+
+                    issue_labels = filter_legacy_auto_coder_label(issue_data.get("labels", []))
+                    prompt = render_prompt(
+                        "issue.action",
+                        repo_name=repo_name,
+                        issue_number=issue_number,
+                        issue_title=issue_data.get("title", "Unknown"),
+                        issue_body=(issue_data.get("body") or "")[:10000],
+                        issue_labels=", ".join(issue_labels),
+                        issue_state=issue_data.get("state", "open"),
+                        issue_author=(issue_data.get("user") or {}).get("login", issue_data.get("author", "unknown")),
+                        commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
+                        labels=issue_labels,
+                        label_prompt_mappings=config.label_prompt_mappings,
+                        label_priorities=config.label_priorities,
+                        parent_issue_body=issue_data.get("parent_issue_body", ""),
+                        has_sub_issues=False,
+                        sub_issues_summary="",
+                        main_branch=config.MAIN_BRANCH,
+                    )
+                    accepted = local_job_store.offer_issue(
+                        LocalJobOffer(
+                            LocalJobKind.ISSUE_IMPLEMENTATION,
+                            repo_name,
+                            issue_number,
+                            identity.implementation_attempt_id,
+                            candidate.backend_name,
+                            prompt,
+                            implementation_execution_id,
+                        ),
+                        identity,
+                        IssueDispatchGuard(),
+                    )
+                    if accepted is None:
+                        return AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic="durable local-job handoff was not confirmed", tracking_complete=False)
+                    actions = [f"Accepted local implementation job {accepted.job_id} for issue #{issue_number}"]
+                    if label_context is not None:
+                        label_context.keep_label()
+                    _record_dispatch_stage(
+                        issue_number,
+                        "issue.dispatch.local-job",
+                        f"issue#{issue_number} local implementation handoff",
+                        Outcome.ACCEPTED_HANDOFF,
+                        {"backend_name": candidate.backend_name, "job_id": accepted.job_id, "state": accepted.state.value},
+                    )
+                    return AdapterOutcome(DispatchOutcome.LOCAL_ACCEPTED, accepted.job_id)
                 actions = _take_issue_actions(
                     repo_name,
                     issue_data,

@@ -200,6 +200,8 @@ class IssueJobWorkspaceProducer:
         claim: LocalJobClaim,
         source: IssueJobSource,
         invoke: Callable[[Path, str], str],
+        *,
+        checkpoint_result: bool = True,
     ) -> IssueJobCheckpoint:
         """Run one invocation and retain its clone until downstream retirement."""
         record = claim.record
@@ -234,6 +236,8 @@ class IssueJobWorkspaceProducer:
             },
             sort_keys=True,
         )
+        if not checkpoint_result:
+            return IssueJobCheckpoint(record.job_id, record.execution_incarnation, workspace, source.source_commit, source.work_branch, manifest_json, output)
         artifact = self._store.persist_result_artifact(claim, InvocationOutcome.COMPLETED, manifest_json)
         if artifact is None or not self._store.record_result(claim, InvocationOutcome.COMPLETED, artifact.artifact_id):
             raise IssueJobWorkspaceError("successful workspace result could not be durably checkpointed")

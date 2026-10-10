@@ -3,6 +3,8 @@
 from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.cloud_manager import CloudManager, CloudTaskBinding
 from auto_coder.cloud_run import CloudRun, CloudRunRepository
@@ -21,21 +23,55 @@ def pr(number: int, issue: int, ref: str, body_extra: str = "") -> dict[str, obj
     return {"number": number, "body": f"Closes #{issue}\n{body_extra}", "head": {"ref": ref, "repo": {"full_name": "owner/repo"}}}
 
 
-def test_supported_task_urls_are_exact_and_normalized():
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+def test_supported_task_urls_are_exact_and_normalized(route):
     task = "task_e_Ab19"
+    alternate_task = "task_e_Cd28"
     text = " ".join(
         [
-            f"https://chatgpt.com/codex/tasks/{task}",
-            f"https://chat.openai.com/codex/cloud/tasks/{task}/?x=1#ok",
-            "https://evil.example/codex/tasks/task_e_Evil",
-            "https://chatgpt.com.evil.example/codex/tasks/task_e_Suffix",
-            "https://user@chatgpt.com/codex/tasks/task_e_User",
-            "https://chatgpt.com:443/codex/tasks/task_e_Port",
-            "https://chatgpt.com/codex/tasks/task_e_Extra/more",
-            "https://chatgpt.com/codex/tasks/task_fake",
+            f"https://chatgpt.com/{route}/{task}",
+            f"https://chat.openai.com/{route}/{alternate_task}/?x=1#ok",
+            f"https://evil.example/{route}/task_e_Evil",
+            f"https://chatgpt.com.evil.example/{route}/task_e_Suffix",
+            f"https://user@chatgpt.com/{route}/task_e_User",
+            f"https://chatgpt.com:443/{route}/task_e_Port",
+            f"https://chatgpt.com/{route}/task_e_Extra/more",
+            f"https://chatgpt.com/{route}/task_fake",
         ]
     )
-    assert task_ids_from_text(text) == {task}
+    assert task_ids_from_text(text) == {task, alternate_task}
+
+
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+def test_task_url_establishes_durable_origin_without_publication_intent(tmp_path, route):
+    runs = CloudRunRepository("owner/repo", tmp_path / "runs.json")
+    bindings = CodexPrAttributionRepository("owner/repo", tmp_path / "bindings.json")
+    run = replace(accepted_run(2229, 4, "task_e_Published", ""), publication_head_repository="")
+    assert runs.save(run)
+    metadata = pr(32, 2229, "unrelated-branch", f"https://chatgpt.com/{route}/{run.task_id}")
+
+    result = resolve_codex_pr_origin("owner/repo", metadata, runs, bindings)
+
+    assert result.disposition is AttributionDisposition.VERIFIED
+    assert result.origin is not None
+    assert (result.origin.task_id, result.origin.issue_number, result.origin.provider, result.origin.backend_name, result.origin.attempt, result.origin.launch_identity) == (
+        "task_e_Published",
+        2229,
+        "codex-cloud",
+        "codex-alias",
+        4,
+        "request-2229-4",
+    )
+    assert result.origin.evidence == "authoritative-pr-task-url+closing-reference"
+    assert result.consistency_token == "1"
+
+    reloaded_runs = CloudRunRepository("owner/repo", tmp_path / "runs.json")
+    reloaded_bindings = CodexPrAttributionRepository("owner/repo", tmp_path / "bindings.json")
+    assert reloaded_bindings.get(32) == result
+    assert reloaded_runs.get(2229, 4) == run
+    metadata["body"] = f"Closes #2229\nhttps://chatgpt.com/remote/{run.task_id}\nhttps://chatgpt.com/codex/tasks/{run.task_id}"
+    assert resolve_codex_pr_origin("owner/repo", metadata, reloaded_runs, reloaded_bindings) == result
+    assert reloaded_bindings.get(32) == result
 
 
 def test_url_free_exact_publication_intent_establishes_durable_origin(tmp_path):
@@ -69,7 +105,8 @@ def test_historical_binding_exposes_new_qualifying_conflict_without_rebinding(tm
     assert removed_proof == original
 
 
-def test_weak_evidence_stays_unresolved_and_conflicting_proof_is_explicit(tmp_path):
+@pytest.mark.parametrize("second_route", ["remote", "codex/cloud/tasks"])
+def test_weak_evidence_stays_unresolved_and_conflicting_proof_is_explicit(tmp_path, second_route):
     runs = CloudRunRepository("owner/repo", tmp_path / "runs.json")
     bindings = CodexPrAttributionRepository("owner/repo", tmp_path / "bindings.json")
     runs.save(accepted_run(9, 0, "task_e_First", "expected-one"))
@@ -77,8 +114,9 @@ def test_weak_evidence_stays_unresolved_and_conflicting_proof_is_explicit(tmp_pa
     weak = resolve_codex_pr_origin("owner/repo", pr(50, 9, "guessed-branch"), runs, bindings)
     assert weak.disposition is AttributionDisposition.UNRESOLVED
     assert weak.boundary == "no coherent accepted task and qualifying PR publication proof"
-    conflicting = pr(51, 9, "guessed-branch", "https://chatgpt.com/codex/tasks/task_e_First https://chat.openai.com/codex/cloud/tasks/task_e_Second")
+    conflicting = pr(51, 9, "guessed-branch", f"https://chatgpt.com/codex/tasks/task_e_First https://chat.openai.com/{second_route}/task_e_Second")
     assert resolve_codex_pr_origin("owner/repo", conflicting, runs, bindings).disposition is AttributionDisposition.CONFLICT
+    assert bindings.get(51).disposition is AttributionDisposition.UNRESOLVED
 
 
 def test_unaccepted_run_and_foreign_head_cannot_become_verified(tmp_path):
@@ -212,7 +250,7 @@ def test_real_pr_processing_verifies_url_free_intent_without_retargeting_jules(t
         process_pull_request(github, AutomationConfig(), repository, {"number": 2237})
 
     assert github.strict_reads == 2
-    assert github.update_attempts == ["Closes #2229\n\nhttps://chatgpt.com/codex/cloud/tasks/task_e_Published"]
+    assert github.update_attempts == ["Closes #2229\n\nhttps://chatgpt.com/remote/task_e_Published"]
     established = CodexPrAttributionRepository(repository).get(2237)
     assert established.disposition is AttributionDisposition.VERIFIED
     assert established.origin is not None
@@ -283,7 +321,8 @@ def _prepare_projection(tmp_path, monkeypatch):
     CloudRunRepository("owner/repo").save(run)
 
 
-def test_verified_projection_uses_fresh_body_and_is_idempotent(tmp_path, monkeypatch):
+@pytest.mark.parametrize("present_route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+def test_verified_projection_uses_fresh_body_and_is_idempotent(tmp_path, monkeypatch, present_route):
     """REQ-001/002/003: only the exact durable origin reaches a fresh PR body."""
     from auto_coder.pr_processor import _link_codex_cloud_pr_to_issue
 
@@ -292,16 +331,18 @@ def test_verified_projection_uses_fresh_body_and_is_idempotent(tmp_path, monkeyp
     github = ProjectionGitHub(_projection_metadata("Author's new summary\n\nTesting retained\n\nCloses #2230"))
 
     first = _link_codex_cloud_pr_to_issue("owner/repo", stale, github)
-    expected = "Author's new summary\n\nTesting retained\n\nCloses #2230\n\nhttps://chatgpt.com/codex/cloud/tasks/task_e_Projected77"
+    expected = "Author's new summary\n\nTesting retained\n\nCloses #2230\n\nhttps://chatgpt.com/remote/task_e_Projected77"
     assert (first.status, first.confirmed, first.confirmed_body) == ("updated", True, expected)
     assert github.live["body"] == expected
     assert stale["body"] == expected
     assert github.update_attempts == [expected]
 
-    github.live["body"] = "Author edit\n\nCloses #2230\n\n[task](https://chat.openai.com/codex/cloud/tasks/task_e_Projected77/?view=1#turn)"
+    retained_body = f"Author edit\n\nCloses #2230\n\n[task](https://chat.openai.com/{present_route}/task_e_Projected77/?view=1#turn)"
+    github.live["body"] = retained_body
     second = _link_codex_cloud_pr_to_issue("owner/repo", stale, github)
     assert second.status == "present"
-    assert stale["body"] == github.live["body"]
+    assert second.confirmed_body == retained_body
+    assert stale["body"] == github.live["body"] == retained_body
     assert github.update_attempts == [expected]
 
 

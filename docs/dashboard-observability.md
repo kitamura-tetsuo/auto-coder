@@ -1,5 +1,21 @@
 # Dashboard observability verification
 
+Capacity-refill exception containment adds the engine-status `refill_faults`
+collection; no execution-trace stage, provider route, durable-resumption record,
+or dashboard event schema changes. The collection reports repository, actual
+Issue when known, phase, exception class, disposition, and retry eligibility.
+`tests/test_capacity_refill.py` exercises production status projection, target
+isolation, continued independent dispatch, and clearing only after a validated
+slot-store observation. Pending-work retention failures are projected as
+repository-scoped `pending_work_persistence` intervention faults, while nested
+child failures preserve the innermost child target. Existing generic status consumers remain compatible
+because the field is additive; an unexpected refill fault is also emitted via
+the configured loguru ERROR sinks rather than represented as a successful trace.
+The production regressions also cover entry/per-candidate/post-dispatch capacity
+reads, refill-enumeration timed deferrals, unreadable pending-work enumeration,
+and pending-handler suppression before strict refresh. These use the same status
+schema and existing pending-work trace behavior; no new dashboard event is added.
+
 Explicit retries of completed failed local verification keep the existing
 `pr.repair-delegation` / `effect=local-validation-scoped` stage, generation and
 examined head. The `explicit_retry_requested` fact distinguishes the operator
@@ -2301,3 +2317,14 @@ be presented as PR validation. These changes add no event schema or renderer
 shape; `bash scripts/test.sh tests/test_pr_correction_job.py
 tests/test_local_job_runner.py` is the runnable production-to-durable-wake
 contract.
+
+## Worker-independent local Issue handoff
+
+The `issue.dispatch.local-job` stage emits `ACCEPTED_HANDOFF` with the selected
+backend, durable `job_id`, and job state. This is intentionally not a completed
+implementation event. After acceptance, the originating queue worker is free
+and disappears from Active Workers, while the Issue's implementation slot and
+the pending/running local-job record remain authoritative in-flight evidence.
+Final publication continues to emit
+`issue.local-publication-finalization`; only that separately owned finalizer
+may report publication or terminal no-change/cannot-fix settlement.

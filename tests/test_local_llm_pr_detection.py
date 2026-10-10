@@ -75,7 +75,8 @@ class TestIsLocalLLMPrDetection:
         }
         assert _is_local_llm_pr(pr_2) is True
 
-    def test_cloud_llms_and_bots_excluded(self):
+    @pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+    def test_cloud_llms_and_bots_excluded(self, route):
         """Jules, Codex Cloud, Claude Routine, and Dependabot PRs are excluded."""
         # Jules PR
         jules_pr = {
@@ -89,7 +90,7 @@ class TestIsLocalLLMPrDetection:
         # Codex Cloud PR
         codex_pr = {
             "number": 2,
-            "body": "Closes #10\n\nhttps://chatgpt.com/codex/tasks/task_12345",
+            "body": f"Closes #10\n\nhttps://chatgpt.com/{route}/task_e_12345",
             "user": {"login": "octocat"},
             "head": {"ref": "issue-10"},
         }

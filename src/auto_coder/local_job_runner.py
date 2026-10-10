@@ -25,6 +25,10 @@ class LocalJobExecutionResult:
     definitely_not_started: bool = False
 
 
+class LocalJobProviderEntryRefused(RuntimeError):
+    """Authoritative permission disappeared before actual provider entry."""
+
+
 class LocalJobDomainAdapter(Protocol):
     """Domain-owned authority and invocation boundary used by the runner."""
 
@@ -226,14 +230,20 @@ class LocalJobRunner:
                 self.store.release_unentered_claim(claim, "authoritative provider-entry permission denied")
                 self._checkpoint_without_provider(handle, claim, "authorization_denied")
                 return
-            deferred_entry = bool(getattr(adapter, "deferred_provider_entry", False))
-            if not deferred_entry and not self.store.mark_provider_entered(claim):
-                self.store.record_runner_diagnostic(claim, "provider-entry checkpoint failed")
-                self._checkpoint_without_provider(handle, claim, "entry_checkpoint_failed", settle=False)
-                return
-
             try:
-                result = adapter.invoke(claim.record)
+                invoke_at_entry = getattr(adapter, "invoke_at_provider_entry", None)
+                if callable(invoke_at_entry):
+                    result = invoke_at_entry(claim.record, lambda: self.store.mark_provider_entered(claim))
+                else:
+                    if not self.store.mark_provider_entered(claim):
+                        self.store.record_runner_diagnostic(claim, "provider-entry checkpoint failed")
+                        self._checkpoint_without_provider(handle, claim, "entry_checkpoint_failed", settle=False)
+                        return
+                    result = adapter.invoke(claim.record)
+            except LocalJobProviderEntryRefused as exc:
+                self.store.release_unentered_claim(claim, str(exc))
+                self._checkpoint_without_provider(handle, claim, "authorization_denied")
+                return
             except Exception as exc:
                 result = LocalJobExecutionResult(InvocationOutcome.FAILED, f"{type(exc).__name__}: {exc}", "provider raised")
             except BaseException as exc:

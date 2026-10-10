@@ -2,7 +2,10 @@
 Unit and integration tests for backend_cloud and non-difficult cloud issue routing.
 """
 
-from unittest.mock import ANY, MagicMock, patch
+import sqlite3
+import threading
+import time
+from unittest.mock import ANY, MagicMock, call, patch
 
 import pytest
 
@@ -27,6 +30,8 @@ from auto_coder.llm_backend_config import (
     is_cloud_mode_enabled,
     is_jules_mode_enabled,
 )
+from auto_coder.local_job_handoff import LocalJobState, LocalJobStore
+from auto_coder.local_job_runner import LocalJobRunner
 from auto_coder.quota_selector import BackendQuotaEvaluation
 
 
@@ -261,6 +266,242 @@ class TestNonDifficultCloudIssueRouting:
         assert execution.result.outcome is DispatchOutcome.INDETERMINATE
         assert "local invocation failed after edit" in execution.result.diagnostic
         remote.assert_not_called()
+
+    def test_local_candidate_is_durably_accepted_without_entering_backend(self, tmp_path, monkeypatch):
+        """A production handoff returns immediately and leaves the exact job pending."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"local-team": {"backend_type": "codex", "model": "test"}}})
+        store = LocalJobStore(tmp_path / "jobs.sqlite3")
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=4),
+            patch("auto_coder.issue_processor.get_commit_log", return_value="abc initial"),
+            patch("auto_coder.cli_helpers.build_backend_manager") as backend,
+        ):
+            execution = _dispatch_issue_candidates(
+                "owner/repo",
+                {
+                    "number": 2080,
+                    "title": "Background work",
+                    "body": "Implement the requirement",
+                    "state": "open",
+                    "labels": [],
+                    "user": {"login": "allowed"},
+                },
+                AutomationConfig(),
+                MagicMock(),
+                ["local-team"],
+                local_job_store=store,
+            )
+
+        assert execution.result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+        assert execution.result.provider_reference
+        assert execution.actions == [f"Accepted local implementation job {execution.result.provider_reference} for issue #2080"]
+        accepted = store.get(execution.result.provider_reference)
+        assert accepted is not None
+        assert accepted.state is LocalJobState.PENDING
+        assert accepted.upstream_attempt == "4"
+        assert accepted.backend_name == "local-team"
+        assert "Implement the requirement" in accepted.invocation_input
+        backend.assert_called_once_with(
+            selected_backends=["local-team"],
+            primary_backend="local-team",
+            models={"local-team": "test"},
+        )
+
+    def test_not_started_local_preparation_advances_ranked_pool(self, tmp_path, monkeypatch):
+        """Durable mode preserves confirmed-not-started fallback before acceptance."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict(
+            {
+                "backends": {
+                    "broken-local": {"backend_type": "codex", "model": "broken"},
+                    "healthy-local": {"backend_type": "codex", "model": "healthy"},
+                }
+            }
+        )
+        store = LocalJobStore(tmp_path / "jobs.sqlite3")
+
+        from auto_coder.worktree_utils import LocalPreparationNotStartedError
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=7),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch(
+                "auto_coder.cli_helpers.build_backend_manager",
+                side_effect=[LocalPreparationNotStartedError("broken CLI is unavailable"), MagicMock()],
+            ) as prepare,
+        ):
+            execution = _dispatch_issue_candidates(
+                "owner/repo",
+                {"number": 2081, "title": "Fallback", "body": "Implement", "labels": []},
+                AutomationConfig(),
+                MagicMock(),
+                ["broken-local", "healthy-local"],
+                local_job_store=store,
+            )
+
+        assert execution.result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+        assert execution.result.backend_name == "healthy-local"
+        assert prepare.call_count == 2
+        jobs = store.discover_unsettled()
+        assert len(jobs) == 1
+        assert jobs[0].backend_name == "healthy-local"
+
+    def test_two_durable_issue_jobs_enter_backends_concurrently(self, tmp_path, monkeypatch):
+        """The production dispatch/runner path never serializes private roots on cwd."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"local-team": {"backend_type": "codex", "model": "test"}}})
+        store = LocalJobStore(tmp_path / "jobs.sqlite3")
+        entered_a = threading.Event()
+        entered_b = threading.Event()
+        release_a = threading.Event()
+
+        class ConcurrentManager:
+            def _run_llm_cli(self, prompt):  # type: ignore[no-untyped-def]
+                if "Issue A" in prompt:
+                    entered_a.set()
+                    assert release_a.wait(5)
+                else:
+                    entered_b.set()
+                return "ACTION_SUMMARY: implemented"
+
+        manager = ConcurrentManager()
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", side_effect=lambda _repo, number: number),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("auto_coder.cli_helpers.build_backend_manager", return_value=manager),
+        ):
+            for number, title in ((31, "Issue A"), (32, "Issue B")):
+                accepted = _dispatch_issue_candidates(
+                    "owner/repo",
+                    {"number": number, "title": title, "body": "Implement", "labels": []},
+                    AutomationConfig(),
+                    MagicMock(),
+                    ["local-team"],
+                    local_job_store=store,
+                )
+                assert accepted.result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+
+            from auto_coder.invocation_admission import InvocationAdmissionGate
+            from auto_coder.issue_job_workspace import IssueJobCheckpoint
+            from auto_coder.issue_local_job import IssueLocalJobAdapter
+            from auto_coder.local_job_handoff import LocalJobKind
+
+            adapter = IssueLocalJobAdapter(MagicMock(), "owner/repo", store, MagicMock(), tmp_path)
+
+            def execute(_producer, claim, _source, invoke, *, checkpoint_result=True):  # type: ignore[no-untyped-def]
+                output = invoke(tmp_path, claim.record.invocation_input)
+                return IssueJobCheckpoint(claim.record.job_id, claim.record.execution_incarnation, tmp_path, "head", "branch", output, output)
+
+            completed = []
+            with (
+                patch.object(adapter, "authorize_provider_entry", return_value=True),
+                patch("auto_coder.issue_local_job.subprocess.run") as git,
+                patch("auto_coder.issue_job_workspace.IssueJobWorkspaceProducer.execute", new=execute),
+            ):
+                git.return_value.stdout = "refs/heads/main\n"
+                runner = LocalJobRunner(
+                    store,
+                    InvocationAdmissionGate(),
+                    capacity=2,
+                    adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+                    completion_wake=lambda job: completed.append(job.job_id),
+                )
+                assert runner.poll() == 2
+                assert entered_a.wait(5)
+                assert entered_b.wait(5), "Issue B did not enter while Issue A remained blocked"
+                assert not release_a.is_set()
+                release_a.set()
+                deadline = time.monotonic() + 5
+                while runner.active_count() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert runner.active_count() == 0
+                runner.close(wait=True)
+
+        unsettled = store.discover_unsettled()
+        assert {job.job_id for job in unsettled} == set(completed)
+        assert {job.state for job in unsettled} == {LocalJobState.DOWNSTREAM_EFFECTS_PENDING}
+
+    def test_closed_issue_is_refused_at_real_local_provider_entry(self, tmp_path, monkeypatch):
+        """A withdrawal after durable acceptance cannot enter the editing backend."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        llm_config = LLMBackendConfiguration.load_from_dict({"backends": {"local-team": {"backend_type": "codex", "model": "test"}}})
+        store = LocalJobStore(tmp_path / "jobs.sqlite3")
+        prepared_backend = MagicMock()
+        runtime_backend = MagicMock()
+
+        with (
+            patch("auto_coder.llm_backend_config.get_llm_config", return_value=llm_config),
+            patch("auto_coder.issue_processor.get_current_attempt", return_value=9),
+            patch("auto_coder.issue_processor.get_commit_log", return_value=""),
+            patch("auto_coder.cli_helpers.build_backend_manager", return_value=prepared_backend) as build_backend,
+        ):
+            accepted = _dispatch_issue_candidates(
+                "owner/repo",
+                {"number": 2082, "title": "Withdrawn", "body": "Implement", "state": "open", "labels": []},
+                AutomationConfig(),
+                MagicMock(),
+                ["local-team"],
+                local_job_store=store,
+                implementation_execution_id="execution-2082",
+            )
+            assert accepted.result.outcome is DispatchOutcome.LOCAL_ACCEPTED
+            build_backend.reset_mock()
+            build_backend.return_value = runtime_backend
+
+            from auto_coder.automation_engine import AutomationEngine
+            from auto_coder.implementation_slots import ImplementationOwner
+            from auto_coder.invocation_admission import InvocationAdmissionGate
+            from auto_coder.issue_local_job import IssueLocalJobAdapter
+            from auto_coder.local_job_handoff import LocalJobKind
+
+            github = MagicMock()
+            github.get_issue_dispatch_snapshot_strict.return_value = {
+                "number": 2082,
+                "state": "closed",
+                "body": "Implement",
+                "labels": [],
+            }
+            engine = AutomationEngine(github, AutomationConfig())
+            engine._is_issue_author_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+            slots = MagicMock()
+            slots.active_execution_ids.return_value = ("execution-2082",)
+            adapter = IssueLocalJobAdapter(engine, "owner/repo", store, slots, tmp_path)
+            runner = LocalJobRunner(
+                store,
+                InvocationAdmissionGate(),
+                capacity=1,
+                adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+            )
+
+            with patch("auto_coder.issue_local_job.get_current_attempt", return_value=9):
+                assert runner.poll() == 1
+                deadline = time.monotonic() + 5
+                while runner.active_count() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert runner.active_count() == 0
+                runner.close(wait=True)
+
+        refused = store.get(accepted.result.provider_reference)
+        assert refused is not None
+        assert refused.state is LocalJobState.PENDING
+        assert refused.provider_entered is False
+        assert refused.execution_incarnation == ""
+        assert refused.result_reference == ""
+        assert store.get_result_artifact(refused.result_reference) is None
+        with sqlite3.connect(store.path) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM local_job_results").fetchone() == (0,)
+        build_backend.assert_not_called()
+        runtime_backend._run_llm_cli.assert_not_called()
+        assert github.get_issue_dispatch_snapshot_strict.call_args_list == [
+            call("owner/repo", 2082),
+            call("owner/repo", 2082),
+        ]
+        slots.active_execution_ids.assert_called_once_with(ImplementationOwner("issue", 2082))
 
     def test_jules_alias_uses_selected_credentials_and_tracking_identity(self, tmp_path, monkeypatch):
         """The selected Jules alias owns both transport credentials and binding attribution."""
@@ -608,8 +849,9 @@ backend_type = "codex-cloud"
     @patch("auto_coder.issue_processor._dispatch_issue_candidates")
     @patch("auto_coder.issue_processor._ordinary_issue_candidates", return_value=["jules-alias"])
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
-    def test_automation_engine_routes_non_difficult_to_backend_cloud(self, mock_high_score_cloud, mock_candidates, mock_dispatch, mock_label_manager):
-        """The normal cloud route exposes the shared boundary's structured result."""
+    def test_automation_engine_routes_non_difficult_to_backend_cloud(self, mock_high_score_cloud, mock_candidates, mock_dispatch, mock_label_manager, tmp_path, monkeypatch):
+        """The explicit route initializes and passes the shared durable authority."""
+        monkeypatch.setenv("HOME", str(tmp_path))
         dispatch_result = DispatchResult(
             IssueAttemptIdentity("owner", "repo", 105, "0"),
             DispatchOutcome.REMOTE_ACCEPTED,
@@ -645,10 +887,12 @@ backend_type = "codex-cloud"
             candidate,
             config,
             jules_mode=True,
+            explicit_only=True,
         )
 
         mock_candidates.assert_called_once_with("owner/repo")
         mock_dispatch.assert_called_once()
+        assert isinstance(mock_dispatch.call_args.kwargs["local_job_store"], LocalJobStore)
         mock_high_score_cloud.assert_not_called()
         assert result.success is True
         assert result.actions == ["Cloud action"]

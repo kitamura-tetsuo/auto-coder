@@ -113,8 +113,6 @@ def offer_pr_correction_job(
 class PRCorrectionJobAdapter:
     """Revalidate exact-head authority immediately before local model entry."""
 
-    deferred_provider_entry = True
-
     def __init__(self, github_client: object, executor_factory: ExecutorFactory, job_store: LocalJobStore | None = None) -> None:
         self.github_client = github_client
         self.executor_factory = executor_factory
@@ -184,6 +182,11 @@ class PRCorrectionJobAdapter:
         return bool(repair and repair.local_job_id == job.job_id and not repair.invocation_entered and generation and generation.lifecycle_state is GenerationLifecycleState.RESERVED and generation.generation_id == job.owner_generation and generation.bundle_reference == request.attempt_id)
 
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
+        """Invoke directly while preserving the durable entry checkpoint."""
+        return self.invoke_at_provider_entry(job, lambda: self.job_store.mark_provider_entered(LocalJobClaim(job, True)))
+
+    def invoke_at_provider_entry(self, job: LocalJobRecord, checkpoint: Callable[[], bool]) -> LocalJobExecutionResult:
+        """Prepare first, then revalidate and checkpoint actual model entry."""
         request = self._request(job)
         with self._executor_lock:
             executor = self._executors.pop(job.job_id)
@@ -200,7 +203,7 @@ class PRCorrectionJobAdapter:
             accepted_claim=LocalReviewRepairClaim(True, "executing", request.attempt_id, incarnation),
             local_job_id=job.job_id,
             provider_entry_authorizer=lambda: self._authority_is_current(job),
-            provider_entry_checkpoint=lambda: self.job_store.mark_provider_entered(LocalJobClaim(job, True)),
+            provider_entry_checkpoint=checkpoint,
         )
         result = InvocationOutcome.COMPLETED
         if outcome.phase == "terminal_failure":

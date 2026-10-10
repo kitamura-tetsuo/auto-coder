@@ -46,7 +46,7 @@ class AttributionResult:
     consistency_token: str = ""
 
 
-_TASK_PATH = re.compile(r"^/codex(?:/cloud)?/tasks/(task_e_[A-Za-z0-9]+)/?$")
+_TASK_PATH = re.compile(r"^/(?:remote|codex(?:/cloud)?/tasks)/(task_e_[A-Za-z0-9]+)/?$")
 _URL_CANDIDATE = re.compile(r"https://[^\s<>()]+", re.IGNORECASE)
 
 
