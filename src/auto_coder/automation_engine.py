@@ -6984,9 +6984,10 @@ class AutomationEngine:
                         jules_mode,
                         force_adversarial_validation=True,
                         advance_issue_attempt=True,
+                        explicit_only=explicit_only,
                     )
                 else:
-                    result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, force_adversarial_validation=True)
+                    result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, force_adversarial_validation=True, explicit_only=explicit_only)
             else:
                 with slots.serialize(owner):
                     if retry_authority is not None:
@@ -7011,15 +7012,16 @@ class AutomationEngine:
                             jules_mode,
                             manual_retry=True,
                             retry_authority=retry_authority,
+                            explicit_only=explicit_only,
                         )
                         result.actions.insert(
                             0,
                             f"Retry accepted for issue #{item_number}: request={retry_authority.request_id} attempt={retry_authority.attempt_id} phase=owned",
                         )
                     elif advance_issue_attempt:
-                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True)
+                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True, explicit_only=explicit_only)
                     else:
-                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
+                        result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, explicit_only=explicit_only)
         finally:
             from .issue_dispatch import DispatchOutcome
 
@@ -7060,6 +7062,7 @@ class AutomationEngine:
         advance_issue_attempt: bool = False,
         manual_retry: bool = False,
         retry_authority: Optional[ImplementationRetryRequest] = None,
+        explicit_only: bool = False,
     ) -> CandidateProcessingResult:
         """Process a candidate after its durable owner slot is reserved."""
         result = CandidateProcessingResult(
@@ -7227,7 +7230,7 @@ class AutomationEngine:
                             label_context=should_process,
                             implementation_slots=implementation_slots,
                             retry_authority=retry_authority,
-                            local_job_store=self._get_local_job_store(),
+                            local_job_store=(self._get_local_job_store() if explicit_only or self.local_job_store is not None else None),
                             implementation_execution_id=implementation_slots.current_execution_id(ImplementationOwner("issue", item_number)) or "",
                         )
                         result.actions = dispatch.actions
