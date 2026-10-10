@@ -4,9 +4,11 @@ Accepted local Issue implementation jobs prepare a persistent, job-owned Git
 clone before model entry. The clone is bound to the durable job and execution
 incarnation, exact repository, pinned source ref and commit, and intended work
 branch. Preparation fails closed if the source ref has advanced or durable job
-authority changes. While holding the short preparation lease, it also snapshots
-the accepted checkout's tracked, staged, unstaged, untracked, and ignored working
-files into the clone; the lease is released before model entry.
+authority changes, or if the shared checkout is not currently at that exact
+commit and branch. While holding the short preparation lease, it snapshots the
+accepted checkout's index separately from its tracked, unstaged, untracked, and
+ignored working files, preserving distinct staged and working-file versions in
+the clone; the lease is released before model entry.
 
 The long-running invocation operates only in that clone and therefore does not
 retain or mutate the controller's shared checkout. Concurrent jobs for the same

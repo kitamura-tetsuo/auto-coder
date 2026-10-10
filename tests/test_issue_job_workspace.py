@@ -99,6 +99,32 @@ def test_source_advance_does_not_replace_authorized_commit(tmp_path: Path, _use_
     assert record.workspace_path == ""
 
 
+def test_unrelated_checked_out_branch_is_refused_before_invocation(tmp_path: Path, _use_real_commands) -> None:
+    repo, head = repository(tmp_path)
+    git(repo, "switch", "-c", "peer")
+    (repo / "value.txt").write_text("peer content\n", encoding="utf-8")
+    git(repo, "commit", "-am", "peer")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 7)
+    invoked = False
+
+    def invoke(*_args) -> str:
+        nonlocal invoked
+        invoked = True
+        return "ACTION_SUMMARY: should not run"
+
+    with pytest.raises(IssueJobWorkspaceError, match="authorized source commit"):
+        IssueJobWorkspaceProducer(store, tmp_path / "workspaces").execute(
+            acquired,
+            IssueJobSource("owner/repo", repo, "main", head, "issue-7"),
+            invoke,
+        )
+
+    assert not invoked
+    record = LocalJobStore(store.path).get(acquired.record.job_id)
+    assert record is not None and record.result_reference == "" and record.workspace_path == ""
+
+
 def test_model_head_change_is_not_a_successful_checkpoint(tmp_path: Path, _use_real_commands) -> None:
     repo, head = repository(tmp_path)
     store = LocalJobStore(tmp_path / "jobs.sqlite3")
@@ -175,9 +201,33 @@ def test_preparation_preserves_authorized_tracked_untracked_and_ignored_content(
         assert prompt == "prompt-6"
         assert (workspace / "tracked-context.txt").read_text(encoding="utf-8") == "authorized modification\n"
         assert (workspace / "staged-context.txt").read_text(encoding="utf-8") == "authorized staged content\n"
+        assert git(workspace, "show", ":staged-context.txt") == "authorized staged content"
         assert (workspace / "untracked-context.txt").read_text(encoding="utf-8") == "authorized untracked content\n"
         assert (workspace / "local.env").read_text(encoding="utf-8") == "TOKEN=accepted-input\n"
         return "ACTION_SUMMARY: inspected retained context"
 
     checkpoint = producer.execute(acquired, IssueJobSource("owner/repo", repo, "main", head, "issue-6"), inspect)
     assert checkpoint.workspace.joinpath("local.env").read_text(encoding="utf-8") == "TOKEN=accepted-input\n"
+
+
+def test_distinct_head_index_and_worktree_versions_are_preserved(tmp_path: Path, _use_real_commands) -> None:
+    repo, head = repository(tmp_path)
+    (repo / "value.txt").write_text("staged version\n", encoding="utf-8")
+    git(repo, "add", "value.txt")
+    (repo / "value.txt").write_text("working version\n", encoding="utf-8")
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+    acquired = claim(store, 8)
+
+    def inspect(workspace: Path, _prompt: str) -> str:
+        assert git(workspace, "show", "HEAD:value.txt") == "original"
+        assert git(workspace, "show", ":value.txt") == "staged version"
+        assert (workspace / "value.txt").read_text(encoding="utf-8") == "working version\n"
+        return "ACTION_SUMMARY: preserved source layers"
+
+    IssueJobWorkspaceProducer(store, tmp_path / "workspaces").execute(
+        acquired,
+        IssueJobSource("owner/repo", repo, "main", head, "issue-8"),
+        inspect,
+    )
+    assert git(repo, "show", ":value.txt") == "staged version"
+    assert (repo / "value.txt").read_text(encoding="utf-8") == "working version\n"

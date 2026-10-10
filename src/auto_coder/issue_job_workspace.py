@@ -125,15 +125,49 @@ class IssueJobWorkspaceProducer:
                 actual = self._git(repository, "rev-parse", f"{source.source_ref}^{{commit}}")
                 if actual != source.source_commit:
                     raise IssueJobWorkspaceError("authorized source ref no longer identifies the pinned commit")
+                checkout_commit = self._git(repository, "rev-parse", "HEAD")
+                if checkout_commit != source.source_commit:
+                    raise IssueJobWorkspaceError("shared checkout does not contain the authorized source commit")
+                source_symbolic_ref = subprocess.run(
+                    ["git", "rev-parse", "--symbolic-full-name", source.source_ref],
+                    cwd=repository,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                checkout_symbolic_ref = subprocess.run(
+                    ["git", "symbolic-ref", "-q", "HEAD"],
+                    cwd=repository,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                if source_symbolic_ref.startswith("refs/heads/") and checkout_symbolic_ref != source_symbolic_ref:
+                    raise IssueJobWorkspaceError("shared checkout is not on the authorized source ref")
                 source_files = self._working_files(repository)
+                source_index_tree = self._git(repository, "write-tree")
+                staged_patch = subprocess.run(
+                    ["git", "diff", "--cached", "--binary", "--full-index", source.source_commit, "--"],
+                    cwd=repository,
+                    capture_output=True,
+                )
+                if staged_patch.returncode != 0:
+                    raise IssueJobWorkspaceError("authorized source index could not be captured")
                 result = subprocess.run(["git", "clone", "--no-hardlinks", "--no-checkout", str(repository), str(workspace)], capture_output=True, text=True)
                 if result.returncode != 0:
                     raise IssueJobWorkspaceError(result.stderr.strip() or "private clone failed")
                 self._git(workspace, "checkout", "--detach", source.source_commit)
-                self._copy_working_files(repository, workspace, source_files)
-                if self._working_files(repository) != source_files or self._working_files(workspace) != source_files:
-                    raise IssueJobWorkspaceError("authorized source working state changed during capture")
                 self._git(workspace, "switch", "-c", source.work_branch)
+                if staged_patch.stdout:
+                    apply_index = subprocess.run(
+                        ["git", "apply", "--cached", "--binary", "-"],
+                        cwd=workspace,
+                        input=staged_patch.stdout,
+                        capture_output=True,
+                    )
+                    if apply_index.returncode != 0:
+                        raise IssueJobWorkspaceError("authorized source index could not be restored")
+                self._copy_working_files(repository, workspace, source_files)
+                if self._git(repository, "write-tree") != source_index_tree or self._git(workspace, "write-tree") != source_index_tree or self._working_files(repository) != source_files or self._working_files(workspace) != source_files:
+                    raise IssueJobWorkspaceError("authorized source working state changed during capture")
                 if self._git(workspace, "rev-parse", "HEAD") != source.source_commit:
                     raise IssueJobWorkspaceError("private workspace source verification failed")
             if not self._store.bind_workspace(
