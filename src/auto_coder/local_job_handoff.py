@@ -381,7 +381,7 @@ class LocalJobStore:
 
     def persist_result_artifact(self, claim: LocalJobClaim, outcome: InvocationOutcome, output: str) -> Optional[LocalJobResultArtifact]:
         """Durably bind invocation output to the exact job and incarnation."""
-        if not claim.acquired or not output:
+        if not claim.acquired:
             return None
         artifact_id = hashlib.sha256(json.dumps([claim.record.job_id, claim.record.execution_incarnation, outcome.value, output], separators=(",", ":")).encode()).hexdigest()
         try:

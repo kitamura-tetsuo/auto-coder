@@ -130,3 +130,60 @@ def test_competing_runners_enter_provider_only_once(tmp_path: Path) -> None:
     assert store.get(job_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING  # type: ignore[union-attr]
     first.close()
     second.close()
+
+
+def test_failed_completion_wake_replays_without_reinvoking_provider(tmp_path: Path) -> None:
+    store, job_id = _accepted(tmp_path, "attempt-1")
+    adapter = BarrierAdapter()
+    wake_attempts: list[str] = []
+
+    def wake(job):  # type: ignore[no-untyped-def]
+        wake_attempts.append(job.job_id)
+        if len(wake_attempts) == 1:
+            raise RuntimeError("consumer unavailable")
+
+    runner = LocalJobRunner(
+        store,
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+        completion_wake=wake,
+    )
+    assert runner.poll() == 1
+    assert adapter.entered.wait(5)
+    adapter.release.set()
+    _wait(lambda: runner.active_count() == 0)
+
+    assert store.get(job_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING  # type: ignore[union-attr]
+    assert wake_attempts == [job_id]
+    assert runner.wake_downstream() == 1
+    assert wake_attempts == [job_id, job_id]
+    assert adapter.calls == 1
+    runner.close()
+
+
+@dataclass
+class EmptyOutputAdapter:
+    def authorize_provider_entry(self, job):  # type: ignore[no-untyped-def]
+        return True
+
+    def invoke(self, job):  # type: ignore[no-untyped-def]
+        return LocalJobExecutionResult(InvocationOutcome.COMPLETED, "")
+
+
+def test_empty_actual_output_is_still_durably_checkpointed(tmp_path: Path) -> None:
+    store, job_id = _accepted(tmp_path, "attempt-1")
+    runner = LocalJobRunner(
+        store,
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: EmptyOutputAdapter()},
+    )
+    assert runner.poll() == 1
+    _wait(lambda: runner.active_count() == 0)
+
+    record = store.get(job_id)
+    assert record is not None and record.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    artifact = store.get_result_artifact(record.result_reference)
+    assert artifact is not None and artifact.output == ""
+    runner.close()

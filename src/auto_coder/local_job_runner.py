@@ -69,6 +69,7 @@ class LocalJobRunner:
 
     def poll(self) -> int:
         """Schedule as many pending envelopes as free runner slots permit."""
+        self.wake_downstream()
         with self._lock:
             self._reap_locked()
             if self._closed:
@@ -98,6 +99,13 @@ class LocalJobRunner:
                 scheduled += 1
             return scheduled
 
+    def wake_downstream(self) -> int:
+        """Replay durable completion eligibility without claiming or invoking."""
+        with self._lock:
+            if self._closed:
+                return 0
+        return self._wake_downstream()
+
     def active_count(self) -> int:
         with self._lock:
             self._reap_locked()
@@ -111,6 +119,21 @@ class LocalJobRunner:
 
     def _reap_locked(self) -> None:
         self._active = {job_id: future for job_id, future in self._active.items() if not future.done()}
+
+    def _wake_downstream(self) -> int:
+        if self.completion_wake is None:
+            return 0
+        notified = 0
+        for job in self.store.discover_unsettled():
+            if job.state is not LocalJobState.DOWNSTREAM_EFFECTS_PENDING:
+                continue
+            try:
+                self.completion_wake(job)
+                notified += 1
+            except Exception as exc:
+                # Eligibility remains durable and can be replayed later.
+                logger.warning("Local job completion wake failed for {}: {}", job.job_id, exc)
+        return notified
 
     def _execute(self, claim: LocalJobClaim, handle: InvocationHandle) -> None:
         # Keep the same daemon admission gate visible at provider boundaries in
@@ -139,8 +162,10 @@ class LocalJobRunner:
 
             try:
                 result = adapter.invoke(claim.record)
-            except BaseException as exc:
+            except Exception as exc:
                 result = LocalJobExecutionResult(InvocationOutcome.FAILED, f"{type(exc).__name__}: {exc}", "provider raised")
+            except BaseException as exc:
+                result = LocalJobExecutionResult(InvocationOutcome.INTERRUPTED, f"{type(exc).__name__}: {exc}", "provider interrupted")
 
             handle.begin_checkpointing(result.outcome.value)
             artifact = self.store.persist_result_artifact(claim, result.outcome, result.output)

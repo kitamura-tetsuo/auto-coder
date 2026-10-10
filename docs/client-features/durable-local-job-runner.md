@@ -18,7 +18,10 @@ origin, and execution incarnation. Actual output (including failures) is bound
 to that incarnation as a result artifact, recorded as the invocation result,
 and moved to `downstream_effects_pending` before a completion wake is emitted.
 Wake replay only rediscovers durable downstream work and cannot claim the job
-or invoke the model again.
+or invoke the model again. `wake_downstream()` performs this replay explicitly,
+and every later `poll()` also retries eligible notifications before scheduling
+new provider work. Empty provider output remains an actual checkpointed result;
+provider exceptions and interruptions are recorded as distinct outcomes.
 
 The daemon's `InvocationAdmissionGate` is checked before a claim. Graceful
 drain therefore leaves queued work pending while protecting already-admitted
