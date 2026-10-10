@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from auto_coder.implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from auto_coder.issue_job_finalizer import IssueJobFinalizer
 from auto_coder.issue_job_workspace import IssueJobSource, IssueJobWorkspaceProducer
@@ -92,3 +94,34 @@ def test_cannot_fix_never_touches_git_or_publication(tmp_path: Path) -> None:
 
     assert result.disposition == "cannot_fix"
     assert store.get(acquired.record.job_id).state.value == "settled"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(("target", "closed_issue"), [(4, 41), (41, 4)])
+def test_same_branch_pr_for_different_issue_is_not_attributed(
+    tmp_path: Path,
+    _use_real_commands,
+    target: int,
+    closed_issue: int,
+) -> None:
+    _source, store, slots, checkpoint = _completed_job(tmp_path, target)
+    creates = 0
+
+    def create(*_args) -> None:
+        nonlocal creates
+        creates += 1
+
+    existing = {
+        "number": 77,
+        "head": {"ref": checkpoint.work_branch},
+        "body": f"Closes #{closed_issue}",
+    }
+    result = IssueJobFinalizer(store, slots, lambda *_: existing, create).finalize(checkpoint.job_id)
+
+    assert result.disposition == "pending"
+    assert result.pr_number is None
+    assert creates == 0
+    owner = next(item for item in slots.snapshot().owners if item.owner == ImplementationOwner("issue", target))  # type: ignore[union-attr]
+    assert owner.implementation_prs == ()
+    assert store.get(checkpoint.job_id).state.value == "downstream_effects_pending"  # type: ignore[union-attr]
+    assert store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "pr").state == "indeterminate"  # type: ignore[union-attr]
+    assert store.get_effect(checkpoint.job_id, checkpoint.execution_incarnation, "association") is None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -216,6 +217,7 @@ class IssueJobFinalizer:
         head = pr.get("head")
         head_ref = head.get("ref") if isinstance(head, Mapping) else pr.get("head_ref")
         body = str(pr.get("body") or "")
-        if isinstance(number, int) and head_ref == record.work_branch and f"Closes #{record.target_number}" in body:
+        closes_target = re.search(rf"(?:^|\W)Closes\s+#{record.target_number}(?!\d)", body) is not None
+        if isinstance(number, int) and head_ref == record.work_branch and closes_target:
             return number
         return None
