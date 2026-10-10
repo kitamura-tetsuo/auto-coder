@@ -2051,6 +2051,7 @@ class TestAdversarialValidationPRFlow:
             ) as mock_feedback,
             patch("auto_coder.pr_processor._observe_codex_cloud_remediation_activity") as observe_activity,
             patch("auto_coder.pr_processor.check_pr_repair_exhaustion", return_value=None),
+            patch("auto_coder.pr_processor._corrective_completion_marker", return_value=None),
         ):
             actions = _handle_pr_merge(client, "owner/repo", pr_data, config, {})
 
