@@ -7018,22 +7018,15 @@ class AutomationEngine:
                             f"Retry accepted for issue #{item_number}: request={retry_authority.request_id} attempt={retry_authority.attempt_id} phase=owned",
                         )
                     elif advance_issue_attempt:
-                        result = self._process_single_candidate_reserved(
-                            repo_name,
-                            candidate,
-                            config,
-                            jules_mode,
-                            advance_issue_attempt=True,
-                            **({"explicit_only": True} if explicit_only and candidate.type == "issue" else {}),
-                        )
+                        if explicit_only and candidate.type == "issue":
+                            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True, explicit_only=True)
+                        else:
+                            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, advance_issue_attempt=True)
                     else:
-                        result = self._process_single_candidate_reserved(
-                            repo_name,
-                            candidate,
-                            config,
-                            jules_mode,
-                            **({"explicit_only": True} if explicit_only and candidate.type == "issue" else {}),
-                        )
+                        if explicit_only and candidate.type == "issue":
+                            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode, explicit_only=True)
+                        else:
+                            result = self._process_single_candidate_reserved(repo_name, candidate, config, jules_mode)
         finally:
             from .issue_dispatch import DispatchOutcome
 
