@@ -89,6 +89,20 @@ def test_empty_local_metadata_still_finds_open_pr_by_closing_reference(tmp_path)
     assert result.pull_request.presence is PullRequestPresence.AMBIGUOUS
 
 
+def test_remote_task_url_discovers_open_pr_from_retained_legacy_run(tmp_path):
+    pr = {"number": 47, "state": "open", "body": f"Fixes #1863\nhttps://chatgpt.com/remote/{TASK}", "head": {"ref": "unrelated-branch", "repo": {"full_name": "owner/repo"}}, "html_url": "https://github.com/owner/repo/pull/47"}
+
+    result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
+
+    assert result.pull_request.presence is PullRequestPresence.PR_PRESENT
+    assert result.pull_request.number == 47
+    assert result.pull_request.url == "https://github.com/owner/repo/pull/47"
+    assert result.binding.task_id == TASK
+    assert result.execution.state is CloudTaskState.COMPLETED
+    assert result.errors == ()
+    assert CloudRunRepository("owner/repo", tmp_path / "runs.json").get(1863, 2) == run_record()
+
+
 def test_attribution_unavailable_never_becomes_task_publication(tmp_path):
     from auto_coder.codex_pr_attribution import AttributionDisposition, AttributionResult
 
@@ -103,22 +117,25 @@ def test_attribution_unavailable_never_becomes_task_publication(tmp_path):
 
 
 @pytest.mark.parametrize("merged", [False, True])
-def test_canonical_task_url_and_closed_publication(tmp_path, merged):
-    pr = {"number": 45, "state": "closed", "merged": merged, "body": f"Fixes #1863\nhttps://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+def test_canonical_task_url_and_closed_publication(tmp_path, merged, route):
+    pr = {"number": 45, "state": "closed", "merged": merged, "body": f"Fixes #1863\nhttps://chatgpt.com/{route}/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
     result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
     assert result.pull_request.presence is PullRequestPresence.PREVIOUSLY_PUBLISHED
 
 
 @pytest.mark.parametrize("state", ["", "unknown", None])
-def test_missing_pr_lifecycle_never_proves_closed_publication(tmp_path, state):
-    pr = {"number": 45, "state": state, "body": f"Fixes #1863\nhttps://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
+@pytest.mark.parametrize("route", ["remote", "codex/tasks"])
+def test_missing_pr_lifecycle_never_proves_closed_publication(tmp_path, state, route):
+    pr = {"number": 45, "state": state, "body": f"Fixes #1863\nhttps://chatgpt.com/{route}/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
     result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
     assert result.pull_request.presence is PullRequestPresence.UNKNOWN
 
 
 @pytest.mark.parametrize("state", ["open", "closed", "", "unknown", None])
-def test_task_url_without_closing_reference_never_establishes_publication(tmp_path, state):
-    pr = {"number": 45, "state": state, "body": f"https://chatgpt.com/codex/tasks/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
+@pytest.mark.parametrize("route", ["remote", "codex/tasks"])
+def test_task_url_without_closing_reference_never_establishes_publication(tmp_path, state, route):
+    pr = {"number": 45, "state": state, "body": f"https://chatgpt.com/{route}/{TASK}", "html_url": "https://github.com/owner/repo/pull/45"}
     result, _ = make_service(tmp_path, GitHubReads([pr]), wham_response())
     assert result.pull_request.presence is PullRequestPresence.NO_MATCHING_PR
     assert result.pull_request.number is None

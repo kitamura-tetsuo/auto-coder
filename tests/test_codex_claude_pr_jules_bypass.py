@@ -9,6 +9,7 @@ from auto_coder.automation_config import AutomationConfig
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.pr_processor import (
     _close_empty_pr,
+    _extract_session_id_candidates,
     _find_codex_cloud_task_for_issue,
     _is_claude_pr,
     _is_codex_or_claude_pr,
@@ -57,7 +58,7 @@ def test_is_codex_pr_detection():
     assert _is_codex_pr(normal_pr) is False
 
 
-@pytest.mark.parametrize("route", ["codex/tasks", "codex/cloud/tasks"])
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
 def test_supported_codex_url_routes_have_identical_unsafe_branch_classification(route):
     pr = {
         "number": 7,
@@ -70,7 +71,7 @@ def test_supported_codex_url_routes_have_identical_unsafe_branch_classification(
     assert _is_unsafe_codex_cloud_branch(pr) is True
 
 
-@pytest.mark.parametrize("route", ["codex/tasks", "codex/cloud/tasks"])
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
 def test_supported_codex_url_routes_defer_empty_work_branch_to_recovery(route):
     pr = {
         "number": 7,
@@ -133,11 +134,12 @@ def test_is_codex_or_claude_pr():
     assert _is_codex_or_claude_pr({"body": "Regular PR", "user": {"login": "user1"}}) is False
 
 
-def test_is_jules_pr_excludes_codex_and_claude():
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+def test_is_jules_pr_excludes_codex_and_claude(route):
     """Verify that Codex and Claude PRs are never identified as Jules PRs."""
     codex_pr = {
         "number": 1,
-        "body": "Closes #10\n\nhttps://chatgpt.com/codex/tasks/task_e_123",
+        "body": f"Closes #10\n\nhttps://chatgpt.com/{route}/task_e_123",
         "user": {"login": "google-labs-jules[bot]"},  # Even if bot login spoofed
     }
     assert _is_jules_pr(codex_pr) is False
@@ -158,14 +160,15 @@ def test_is_jules_pr_excludes_codex_and_claude():
     assert _is_jules_pr(jules_pr) is True
 
 
-def test_should_skip_waiting_for_jules_bypasses_codex_and_claude():
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+def test_should_skip_waiting_for_jules_bypasses_codex_and_claude(route):
     """Verify _should_skip_waiting_for_jules immediately returns False for Codex/Claude PRs."""
     github_client = MagicMock()
     config = AutomationConfig()
 
     codex_pr = {
         "number": 10,
-        "body": "Closes #5\n\nhttps://chatgpt.com/codex/tasks/task_e_999",
+        "body": f"Closes #5\n\nhttps://chatgpt.com/{route}/task_e_999",
         "user": {"login": "octocat"},
     }
     assert _should_skip_waiting_for_jules(github_client, "owner/repo", codex_pr, config) is False
@@ -180,14 +183,15 @@ def test_should_skip_waiting_for_jules_bypasses_codex_and_claude():
     github_client.get_pr_comments.assert_not_called()
 
 
-def test_send_jules_error_feedback_bypasses_codex_and_claude():
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+def test_send_jules_error_feedback_bypasses_codex_and_claude(route):
     """Verify _send_jules_error_feedback never messages Jules or comments on Codex/Claude PRs."""
     github_client = MagicMock()
     config = AutomationConfig()
 
     codex_pr = {
         "number": 10,
-        "body": "Closes #5\n\nhttps://chatgpt.com/codex/tasks/task_e_999",
+        "body": f"Closes #5\n\nhttps://chatgpt.com/{route}/task_e_999",
         "user": {"login": "octocat"},
     }
 
@@ -207,7 +211,7 @@ def test_find_codex_cloud_task_for_issue_cloud_manager(tmp_path: Path):
 
     with patch("auto_coder.pr_processor.CloudManager", return_value=cloud_manager):
         url = _find_codex_cloud_task_for_issue(repo, 42)
-        assert url == "https://chatgpt.com/codex/cloud/tasks/task_e_abcdef123456"
+        assert url == "https://chatgpt.com/remote/task_e_abcdef123456"
 
 
 def test_find_codex_cloud_task_for_issue_rejects_placeholder_session(tmp_path: Path):
@@ -229,18 +233,34 @@ def test_find_codex_cloud_task_for_issue_falls_back_after_placeholder_session(tm
     with patch("auto_coder.pr_processor.CloudManager", return_value=cloud_manager):
         url = _find_codex_cloud_task_for_issue(repo, 42, github_client)
 
-    assert url == "https://chatgpt.com/codex/cloud/tasks/task_e_real123"
+    assert url == "https://chatgpt.com/remote/task_e_real123"
 
 
-def test_find_codex_cloud_task_for_issue_comments(tmp_path: Path):
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+def test_find_codex_cloud_task_for_issue_comments(tmp_path: Path, route):
     """Verify finding Codex Cloud task URL via GitHub issue comments."""
     repo = "test-owner/test-repo"
     cloud_csv = tmp_path / "empty.csv"
     cloud_manager = CloudManager(repo, cloud_file_path=cloud_csv)
 
     github_client = MagicMock()
-    github_client.get_issue_comments.return_value = [{"body": "I started a Codex Cloud task to work on this issue. Task ID: task_e_comment123\n\nhttps://chatgpt.com/codex/tasks/task_e_comment123"}]
+    github_client.get_issue_comments.return_value = [{"body": f"[Codex task](https://chatgpt.com/{route}/task_e_comment123)"}]
 
     with patch("auto_coder.pr_processor.CloudManager", return_value=cloud_manager):
         url = _find_codex_cloud_task_for_issue(repo, 99, github_client)
-        assert url == "https://chatgpt.com/codex/cloud/tasks/task_e_comment123"
+        assert url == "https://chatgpt.com/remote/task_e_comment123"
+
+
+@pytest.mark.parametrize("route", ["remote", "codex/tasks", "codex/cloud/tasks"])
+def test_codex_task_url_precedes_incidental_task_token_in_session_candidates(route):
+    body = f"Old task_e_Incidental1\n[Current task](https://chatgpt.com/{route}/task_e_Current2)"
+
+    assert _extract_session_id_candidates(body) == [
+        ("Pattern 3c (Codex Task URL)", "task_e_Current2"),
+        ("Pattern 7 (Codex task_ prefix)", "task_e_Incidental1"),
+    ]
+
+
+@pytest.mark.parametrize("body", ["https://example.com/remote/task_e_Unrelated1", "https://chatgpt.com/remote/settings", "/remote/task_e_Unrelated1"])
+def test_unrelated_remote_paths_do_not_identify_codex_prs(body):
+    assert _is_codex_pr({"body": body, "user": {"login": "octocat"}}) is False
