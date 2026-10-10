@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from multiprocessing import get_context
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 
 from auto_coder.invocation_admission import InvocationAdmissionGate
 from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
@@ -155,11 +156,149 @@ def test_failed_completion_wake_replays_without_reinvoking_provider(tmp_path: Pa
     _wait(lambda: runner.active_count() == 0)
 
     assert store.get(job_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING  # type: ignore[union-attr]
-    assert wake_attempts == [job_id]
+    _wait(lambda: wake_attempts == [job_id])
     assert runner.wake_downstream() == 1
-    assert wake_attempts == [job_id, job_id]
+    _wait(lambda: wake_attempts == [job_id, job_id])
     assert adapter.calls == 1
     runner.close()
+
+
+class FailDownstreamOnceStore(LocalJobStore):
+    failed = False
+
+    def mark_downstream_pending(self, claim):  # type: ignore[no-untyped-def]
+        if not self.failed:
+            self.failed = True
+            return False
+        return super().mark_downstream_pending(claim)
+
+
+def test_restart_recovers_committed_result_without_reinvoking_provider(tmp_path: Path) -> None:
+    accepted_store, job_id = _accepted(tmp_path, "attempt-1")
+    failing_store = FailDownstreamOnceStore(accepted_store.path)
+    adapter = BarrierAdapter()
+    first = LocalJobRunner(
+        failing_store,
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+    )
+    assert first.poll() == 1
+    assert adapter.entered.wait(5)
+    adapter.release.set()
+    _wait(lambda: first.active_count() == 0)
+    assert LocalJobStore(failing_store.path).get(job_id).state is LocalJobState.RESULT_RECORDED  # type: ignore[union-attr]
+    first.close()
+
+    wakes: list[str] = []
+    restarted = LocalJobRunner(
+        LocalJobStore(failing_store.path),
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter},
+        completion_wake=lambda job: wakes.append(job.job_id),
+    )
+    assert restarted.poll() == 0
+    _wait(lambda: wakes == [job_id])
+    recovered = LocalJobStore(failing_store.path).get(job_id)
+    assert recovered is not None and recovered.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING
+    assert LocalJobStore(failing_store.path).get_result_artifact(recovered.result_reference).output == "output:implement"  # type: ignore[union-attr]
+    assert adapter.calls == 1
+    restarted.close()
+
+
+def test_blocking_completion_notification_never_occupies_submitter_or_capacity(tmp_path: Path) -> None:
+    store, completed_id = _accepted(tmp_path, "attempt-1", "implement-completed")
+    first_adapter = BarrierAdapter()
+    runner = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: first_adapter})
+    assert runner.poll() == 1
+    assert first_adapter.entered.wait(5)
+    first_adapter.release.set()
+    _wait(lambda: runner.active_count() == 0)
+    assert store.get(completed_id).state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING  # type: ignore[union-attr]
+
+    _, pending_id = _accepted(tmp_path, "attempt-2", "implement-pending")
+    notification_entered = Event()
+    release_notification = Event()
+
+    def blocking_wake(job):  # type: ignore[no-untyped-def]
+        if job.job_id == completed_id:
+            notification_entered.set()
+            assert release_notification.wait(5)
+
+    next_adapter = BarrierAdapter()
+    next_adapter.release.set()
+    runner.completion_wake = blocking_wake
+    runner.adapters[LocalJobKind.ISSUE_IMPLEMENTATION] = next_adapter
+    poll_returned = Event()
+    submitter = Thread(target=lambda: (runner.poll(), poll_returned.set()))
+    submitter.start()
+
+    assert notification_entered.wait(5)
+    assert poll_returned.wait(1)
+    assert next_adapter.entered.wait(1)
+    assert store.get(pending_id).provider_entered  # type: ignore[union-attr]
+    release_notification.set()
+    submitter.join(5)
+    runner.close(wait=True)
+
+
+@dataclass
+class PreentryProcessAdapter:
+    marker: str
+
+    def authorize_provider_entry(self, job):  # type: ignore[no-untyped-def]
+        Path(self.marker).write_text(job.execution_incarnation, encoding="utf-8")
+        while True:
+            time.sleep(1)
+
+    def invoke(self, job):  # type: ignore[no-untyped-def]
+        raise AssertionError("provider must not be reached in terminated process")
+
+
+def _run_until_preentry_blocked(store_path: str, marker: str) -> None:
+    runner = LocalJobRunner(
+        LocalJobStore(Path(store_path)),
+        InvocationAdmissionGate(),
+        capacity=1,
+        adapters={LocalJobKind.ISSUE_IMPLEMENTATION: PreentryProcessAdapter(marker)},
+    )
+    runner.poll()
+    while True:
+        time.sleep(1)
+
+
+def test_restart_recovers_dead_preentry_owner_but_suppresses_ambiguous_owner(tmp_path: Path) -> None:
+    store, recoverable_id = _accepted(tmp_path, "attempt-1")
+    marker = tmp_path / "preentry"
+    child = get_context("spawn").Process(target=_run_until_preentry_blocked, args=(str(store.path), str(marker)))
+    child.start()
+    _wait(marker.exists)
+    claimed = store.get(recoverable_id)
+    assert claimed is not None and claimed.state is LocalJobState.RUNNING
+    assert not claimed.provider_entered and claimed.runner_owner.startswith(f"process:{child.pid}:")
+    child.terminate()
+    child.join(5)
+    assert not child.is_alive()
+
+    adapter = BarrierAdapter()
+    adapter.release.set()
+    restarted = LocalJobRunner(store, InvocationAdmissionGate(), capacity=1, adapters={LocalJobKind.ISSUE_IMPLEMENTATION: adapter})
+    assert restarted.poll() == 1
+    assert adapter.entered.wait(5)
+    _wait(lambda: restarted.active_count() == 0)
+    assert adapter.calls == 1
+
+    _, ambiguous_id = _accepted(tmp_path, "attempt-2")
+    ambiguous = store.claim(ambiguous_id, "unverifiable-owner")
+    assert ambiguous is not None and ambiguous.acquired
+    adapter.entered.clear()
+    assert restarted.poll() == 0
+    assert not adapter.entered.wait(0.1)
+    retained = store.get(ambiguous_id)
+    assert retained is not None and retained.state is LocalJobState.RUNNING
+    assert not retained.provider_entered
+    restarted.close()
 
 
 @dataclass

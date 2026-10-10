@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import threading
-import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional, Protocol
 
 from loguru import logger
@@ -36,6 +37,37 @@ class LocalJobDomainAdapter(Protocol):
 CompletionWake = Callable[[LocalJobRecord], None]
 
 
+def _process_start_token(pid: int) -> Optional[str]:
+    """Return Linux's immutable process start tick, or no liveness authority."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        # The parenthesized process name may contain spaces. Fields following
+        # its closing parenthesis start at field 3; starttime is field 22.
+        fields_after_name = stat[stat.rindex(")") + 2 :].split()
+        return fields_after_name[19]
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def current_runner_owner() -> str:
+    """Create restart-reconcilable evidence for this process lifetime."""
+    pid = os.getpid()
+    start = _process_start_token(pid)
+    return f"process:{pid}:{start}" if start else f"ambiguous:{pid}"
+
+
+def runner_owner_alive(owner: str) -> Optional[bool]:
+    """Return authoritative liveness; None means replay must stay suppressed."""
+    parts = owner.split(":")
+    if len(parts) != 3 or parts[0] != "process" or not parts[1].isdigit():
+        return None
+    pid = int(parts[1])
+    observed = _process_start_token(pid)
+    if observed is None:
+        return False if not os.path.exists(f"/proc/{pid}") else None
+    return observed == parts[2]
+
+
 class LocalJobRunner:
     """Run accepted jobs without borrowing Issue or PR worker capacity.
 
@@ -61,14 +93,17 @@ class LocalJobRunner:
         self.capacity = capacity
         self.adapters = dict(adapters)
         self.completion_wake = completion_wake
-        self.runner_id = runner_id or uuid.uuid4().hex
+        self.runner_id = runner_id or current_runner_owner()
         self._executor = ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="local-job-runner")
+        self._notification_executor = ThreadPoolExecutor(max_workers=capacity, thread_name_prefix="local-job-notification")
         self._lock = threading.Lock()
         self._active: dict[str, Future[None]] = {}
+        self._notifying: set[str] = set()
         self._closed = False
 
     def poll(self) -> int:
         """Schedule as many pending envelopes as free runner slots permit."""
+        self._recover_unsettled()
         self.wake_downstream()
         with self._lock:
             self._reap_locked()
@@ -100,11 +135,15 @@ class LocalJobRunner:
             return scheduled
 
     def wake_downstream(self) -> int:
-        """Replay durable completion eligibility without claiming or invoking."""
+        """Schedule durable notifications without running callbacks on the caller."""
         with self._lock:
             if self._closed:
                 return 0
-        return self._wake_downstream()
+            eligible = [job for job in self.store.discover_unsettled() if job.state is LocalJobState.DOWNSTREAM_EFFECTS_PENDING and job.job_id not in self._notifying]
+            for job in eligible:
+                self._notifying.add(job.job_id)
+                self._notification_executor.submit(self._notify_downstream, job)
+            return len(eligible)
 
     def active_count(self) -> int:
         with self._lock:
@@ -116,24 +155,29 @@ class LocalJobRunner:
         with self._lock:
             self._closed = True
         self._executor.shutdown(wait=wait, cancel_futures=False)
+        self._notification_executor.shutdown(wait=wait, cancel_futures=False)
 
     def _reap_locked(self) -> None:
         self._active = {job_id: future for job_id, future in self._active.items() if not future.done()}
 
-    def _wake_downstream(self) -> int:
-        if self.completion_wake is None:
-            return 0
-        notified = 0
+    def _recover_unsettled(self) -> None:
         for job in self.store.discover_unsettled():
-            if job.state is not LocalJobState.DOWNSTREAM_EFFECTS_PENDING:
-                continue
-            try:
+            if job.state is LocalJobState.RESULT_RECORDED:
+                self.store.recover_downstream_pending(job)
+            elif job.state is LocalJobState.RUNNING and not job.provider_entered:
+                alive = runner_owner_alive(job.runner_owner)
+                if alive is False:
+                    self.store.release_dead_owner_claim(job, "previous runner owner is authoritatively dead")
+
+    def _notify_downstream(self, job: LocalJobRecord) -> None:
+        try:
+            if self.completion_wake is not None:
                 self.completion_wake(job)
-                notified += 1
-            except Exception as exc:
-                # Eligibility remains durable and can be replayed later.
-                logger.warning("Local job completion wake failed for {}: {}", job.job_id, exc)
-        return notified
+        except Exception as exc:
+            logger.warning("Local job completion wake failed for {}: {}", job.job_id, exc)
+        finally:
+            with self._lock:
+                self._notifying.discard(job.job_id)
 
     def _execute(self, claim: LocalJobClaim, handle: InvocationHandle) -> None:
         # Keep the same daemon admission gate visible at provider boundaries in
@@ -178,11 +222,7 @@ class LocalJobRunner:
             handle.confirm_settled(artifact.artifact_id)
             current = self.store.get(claim.record.job_id)
             if current is not None and self.completion_wake is not None:
-                try:
-                    self.completion_wake(current)
-                except Exception as exc:
-                    # Eligibility is durable; a replayed wake cannot reinvoke.
-                    logger.warning("Local job completion wake failed for {}: {}", current.job_id, exc)
+                self.wake_downstream()
         finally:
             reset_invocation_gate(gate_token)
 

@@ -2205,7 +2205,11 @@ the separately owned Issue/PR downstream consumer has not yet published its
 domain outcome. The durable store is the truthful production observation at
 this boundary; `tests/test_local_job_runner.py` crosses the real runner thread
 and domain-adapter provider boundary, verifies finite capacity and drain
-admission, and reopens the store to verify the output checkpoint. Run `bash
+admission, reopens the store to recover committed results and authoritatively
+dead pre-provider owners, suppresses ambiguous-owner replay, and verifies that
+blocking downstream callbacks never occupy the submitting worker. These
+recovery transitions retain the existing local-job schema and do not claim a
+domain completion trace. Run `bash
 scripts/test.sh tests/test_local_job_runner.py`.
 
 Terminal PR resumptions now emit `pr.pending-work-resume-refresh` or
