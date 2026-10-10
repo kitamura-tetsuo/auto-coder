@@ -32,7 +32,9 @@ exceptions and interruptions are recorded as distinct outcomes.
 The daemon's `InvocationAdmissionGate` is checked before a claim. Graceful
 drain therefore leaves queued work pending while protecting already-admitted
 provider calls through their result checkpoint. A failed result or downstream
-checkpoint remains visibly running and keeps its invocation admission handle
-unsettled; forced shutdown does not manufacture completion.
+checkpoint remains visibly unfinished and keeps its invocation admission handle
+unsettled. A committed result is recoverable as described above, while a failed
+result-artifact checkpoint remains running for reconciliation; forced shutdown
+does not manufacture completion.
 
 Regression coverage is in `tests/test_local_job_runner.py`.
