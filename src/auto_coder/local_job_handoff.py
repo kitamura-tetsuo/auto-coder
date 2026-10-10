@@ -143,7 +143,7 @@ class LocalJobStore:
         """Persist an Issue job only while its exact dispatch claim is current."""
         if offer.kind is not LocalJobKind.ISSUE_IMPLEMENTATION or offer.repository != identity.full_repository_name or offer.target_number != identity.issue_number or offer.upstream_attempt != identity.implementation_attempt_id:
             return None
-        ownership = guard.inspect(identity)
+        ownership = guard.inspect_pending_claim(identity)
         if ownership is None or ownership.outcome is not DispatchOutcome.INDETERMINATE or not ownership.claim_incarnation or ownership.backend_name != offer.backend_name:
             return None
         return self._offer(offer, ownership.claim_incarnation)
@@ -158,8 +158,14 @@ class LocalJobStore:
         """Persist a PR job only for the exact repair claim and allowance generation."""
         if offer.kind is not LocalJobKind.PR_REVIEW_CORRECTION or offer.repository != request.repository or offer.target_number != request.pr_number or offer.upstream_attempt != request.attempt_id:
             return None
-        repair = repair_store.get(request)
-        allowance = allowance_ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
+        try:
+            repair = repair_store.get(request)
+            allowance = allowance_ledger.get_snapshot("https://api.github.com", request.repository, request.pr_number)
+        except Exception:
+            # Upstream authorities own their state and diagnostics.  A local
+            # job offer must fail closed without attempting to repair, erase,
+            # or reinterpret either database.
+            return None
         generation = allowance.get_outstanding_generation()
         if repair is None or repair.phase != "executing" or generation is None or generation.owning_identity != "local-review-repair" or generation.bundle_reference != request.attempt_id:
             return None

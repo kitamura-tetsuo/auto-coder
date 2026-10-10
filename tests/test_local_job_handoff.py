@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from auto_coder.durable_repair_allowance import RepairAllowanceLedger
-from auto_coder.issue_dispatch import CandidateHandoff, IssueAttemptIdentity, IssueDispatchGuard
+from auto_coder.issue_dispatch import AdapterOutcome, CandidateHandoff, DispatchOutcome, IssueAttemptIdentity, IssueDispatchGuard
 from auto_coder.local_job_handoff import (
     InvocationOutcome,
     LocalJobKind,
@@ -53,6 +53,15 @@ def test_offer_refuses_caller_identity_without_upstream_ownership(tmp_path: Path
     guard = IssueDispatchGuard(tmp_path / "dispatch.sqlite3")
     identity = IssueAttemptIdentity("owner", "repo", 42, "not-admitted")
     offer = LocalJobOffer(LocalJobKind.ISSUE_IMPLEMENTATION, "owner/repo", 42, "not-admitted", "codex", "input")
+
+    assert store.offer_issue(offer, identity, guard) is None
+    assert store.get(offer.job_id) is None
+
+
+def test_issue_offer_refuses_a_finalized_indeterminate_invocation(tmp_path: Path) -> None:
+    store, guard, identity, dispatch_claim, offer = _issue_offer(tmp_path)
+    finalized = guard.finalize(dispatch_claim, AdapterOutcome(DispatchOutcome.INDETERMINATE, diagnostic="backend may have started"))
+    assert finalized.outcome is DispatchOutcome.INDETERMINATE
 
     assert store.offer_issue(offer, identity, guard) is None
     assert store.get(offer.job_id) is None
@@ -126,3 +135,19 @@ def test_pr_offer_requires_exact_real_claim_and_allowance_generation(tmp_path: P
     stale = LocalReviewRepairRequest("owner/repo", 7, "owner/repo", "feature", "b" * 40, ("blocker-1",), "repair")
     stale_offer = LocalJobOffer(LocalJobKind.PR_REVIEW_CORRECTION, "owner/repo", 7, stale.attempt_id, "codex", stale.prompt)
     assert store.offer_pr_correction(stale_offer, stale, repair_store, ledger) is None
+
+
+def test_pr_offer_fails_closed_when_allowance_state_is_unreadable(tmp_path: Path) -> None:
+    request = LocalReviewRepairRequest("owner/repo", 7, "owner/repo", "feature", "a" * 40, ("blocker-1",), "repair")
+    repair_store = LocalReviewRepairStore(tmp_path / "repairs.sqlite3")
+    assert repair_store.admit(request).admitted
+    allowance_path = tmp_path / "allowance.sqlite3"
+    ledger = RepairAllowanceLedger(allowance_path)
+    authority, _ = admit_local_repair_allowance(request, ledger)
+    assert authority is not None
+    allowance_path.write_bytes(b"not sqlite")
+    offer = LocalJobOffer(LocalJobKind.PR_REVIEW_CORRECTION, "owner/repo", 7, request.attempt_id, "codex", request.prompt)
+    store = LocalJobStore(tmp_path / "jobs.sqlite3")
+
+    assert store.offer_pr_correction(offer, request, repair_store, ledger) is None
+    assert store.get(offer.job_id) is None

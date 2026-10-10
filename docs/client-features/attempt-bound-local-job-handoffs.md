@@ -13,6 +13,13 @@ identity, and reconstructible invocation input are committed together. Replays
 of the same origin return the same job, while changed input or authority fails
 closed rather than overwriting it.
 
+For Issues, only the dispatch guard's internal pre-adapter `pending` claim is
+admission authority. A finalized `INDETERMINATE` observation may represent an
+invocation that entered its backend and therefore cannot authorize a new job,
+even though the guard's general inspection API intentionally presents both
+states as indeterminate to existing consumers. Unreadable PR repair or
+allowance evidence likewise refuses the offer without modifying either owner.
+
 Jobs move through separate `pending`, `running`, `result_recorded`,
 `downstream_effects_pending`, and `settled` states. Only a pending job is
 claimable. Claim acquisition creates a random execution incarnation in one

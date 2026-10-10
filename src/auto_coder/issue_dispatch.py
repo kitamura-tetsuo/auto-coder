@@ -374,6 +374,28 @@ class IssueDispatchGuard:
             logger.error(f"Issue dispatch ownership read failed for {identity}: {exc}")
             return DispatchResult(identity, DispatchOutcome.DEFERRED, diagnostic=f"ownership read failed: {exc}", tracking_complete=False)
 
+    def inspect_pending_claim(self, identity: IssueAttemptIdentity) -> Optional[DispatchResult]:
+        """Return only the exact pre-adapter claim for ``identity``.
+
+        ``inspect`` intentionally presents both the internal ``pending`` state
+        and a finalized indeterminate adapter observation as
+        :class:`DispatchOutcome.INDETERMINATE`.  A durable local-job producer
+        must not confuse those states: only the former proves that the model
+        invocation has not yet crossed the adapter boundary.
+        """
+        try:
+            with self._process_lock, self._connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM issue_dispatch_handoffs WHERE repository_owner=? AND repository_name=? AND issue_number=? AND attempt_id=? AND state='pending'",
+                    self._key(identity),
+                ).fetchone()
+            if row is None:
+                return None
+            return replace(self._result_from_row(identity, row), admitted=True)
+        except Exception as exc:
+            logger.error(f"Pending Issue dispatch ownership read failed for {identity}: {exc}")
+            return None
+
     def get_legacy_issue_ownership(self, repository_owner: str, repository_name: str, issue_number: int) -> Optional[LegacyIssueOwnership]:
         """Return preserved attempt-unassociated legacy ownership evidence."""
         try:
