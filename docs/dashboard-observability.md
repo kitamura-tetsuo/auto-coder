@@ -479,6 +479,16 @@ does not claim Review execution, READY evidence, or provider admission.
 The final post-processing routing refresh likewise emits no additional stage:
 it consumes durable validation evidence for lane bookkeeping, while the existing
 validation and implementation-admission events remain the observable outcomes.
+Automatic tracking-parent dispatch now persists all open children independently
+and emits `issue.hierarchy-admission` as `deferred` with `child_issue_numbers` and
+`authorizes_execution=false`. This reports durable handoff, never child execution
+or parent completion. Run `bash scripts/test.sh tests/test_dashboard_observability.py
+-k daemon_parent_child_handoff` for the production-to-mounted-detail regression
+and `bash scripts/test.sh tests/test_decomposition_validation_lifecycle.py
+-k daemon_parent_queues` for duplicate/restart and all automatic-origin coverage.
+Shutdown before handoff records the same deferred hierarchy stage with a reason
+and no handed-off child list. `tests/test_graceful_shutdown.py::test_parent_routing_snapshot_failure_cannot_abandon_validation_batch`
+checks joined validation ownership and retention of the parent obligation.
 Issue #2081 corrected an earlier defect in this same area: an
 execution-routing-only change (configured backend, alias, model, fallback
 order/membership, quota-based selection) no longer rebinds the engine-owned
@@ -1203,6 +1213,7 @@ also mount and refresh the detail view from that snapshot.
 | Issue pending-work resumption | `tests/test_issue_production_instrumentation.py::TestDurableResumptionCreatesAnotherExecution::test_resumption_origin_and_identity_differ_from_a_fresh_evaluation` |
 | Validation-publication resumption | `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_validation_publication_resumption_origin_is_recorded` (drives `_ValidationPublicationStageHandler` and reads the real `TraceCollector` snapshot back); `tests/test_validation_publication_resumption.py::test_validation_publication_stage_handler_resumes_after_restart_without_readiness_label` (same production handler, asserts the durable-effect/no-duplicate-delivery contract rather than the diagnostic trace) |
 | Decomposition-publication resumption (Issue #2026) | `tests/test_decomposition_validation_publication_resumption.py::test_decomposition_publication_stage_handler_resumes_after_restart` (drives the new `_DecompositionPublicationStageHandler`, registered on its own `DECOMPOSITION_PUBLICATION_STAGE`, through the same `origin="decomposition-publication-resumption"` trace scope as the specification handler; asserts the durable per-effect completion contract). Before Issue #2026 the decomposition (parent-set) BLOCKED route did not participate in the pending-work store at all, so an interrupted findings comment or readiness withdrawal for a parent submission had no resumption path or trace emission; this closes that gap without changing the specification-route emission. |
+| Submitted-parent durable child handoff | `tests/test_dashboard_observability.py::test_daemon_parent_child_handoff_reaches_mounted_detail` verifies independent durable child work and a deferred hierarchy stage in the mounted parent detail view; `tests/test_decomposition_validation_lifecycle.py::test_daemon_parent_queues_all_open_children_without_inline_dispatch` verifies coalescing and restart for worker, refill and pending-work origins. |
 | PR pending-work resumption | `tests/test_pr_production_instrumentation.py::TestPrResumptionSupersededHead::test_pending_work_resumption_records_superseded_on_changed_head`; `tests/test_dashboard_observability.py::TestJoinedProductionToView::test_pr_pending_work_resumption_reaches_detail_view_as_superseded` |
 | Merge-operation resumption | `tests/test_pr_production_instrumentation.py::TestMergeOperationResumeSupersededHead::test_merge_operation_resumption_records_superseded_on_changed_head`; `tests/test_dashboard_observability.py::TestJoinedProductionToView::test_merge_operation_resumption_reaches_detail_view_as_superseded` |
 | Asynchronous PR adversarial validation | `tests/test_dashboard_observability.py::TestNewOriginCoverage::test_asynchronous_pr_adversarial_validation_origin_is_recorded` (drives `_handle_pr_merge` through the real `AdversarialValidationScheduler` admission and reads the real `pr.adversarial-validation` event back; `test_take_pr_actions_preserves_structured_adversarial_failure` mocks `_handle_pr_merge` itself, so it does not exercise this emission) |
@@ -1919,6 +1930,17 @@ an event schema or processing origin.
 drives new-change publication, clean-tree recovery, existing-PR reuse, empty
 diff, and failed fetch/inspection/push through the production processing boundary.
 See `docs/client-features/local-issue-pr-publication-recovery.md`.
+
+Asynchronous job publication recovery emits
+`issue.local-publication-finalization` from the `startup-recovery` origin for
+each resumed durable job. The generic stage-detail projection exposes the exact
+job ID, disposition, optional PR number, and diagnostic. Confirmed publication,
+authenticated no-change, and `CANNOT_FIX` dispositions are `COMPLETED`; an
+unconfirmed commit, push, PR, or owner association remains `DEFERRED`. This adds
+no renderer or event-schema fields. The production finalization boundary and
+its restart dispositions are exercised by
+`tests/test_issue_job_finalizer.py`; run
+`bash scripts/test.sh tests/test_issue_job_finalizer.py tests/test_dashboard_observability.py`.
 # Codex retirement-accounting fence
 
 Initial-PR recovery stops observing after durable queue handoff or verified

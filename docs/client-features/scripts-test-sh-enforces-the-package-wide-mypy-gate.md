@@ -1,5 +1,10 @@
 # scripts/test.sh enforces the package-wide mypy gate
 
+Both root development dependency declarations require `mypy>=2.4.0`, and
+`uv.lock` resolves mypy 2.4.0. Provision the committed development toolchain
+with `uv sync --locked --extra dev`; `uv run --locked mypy --version`
+reports the checker selected by that lockfile.
+
 `scripts/test.sh` runs `mypy --config-file pyproject.toml -p auto_coder` --
 the same command, package scope, and root `pyproject.toml` `[tool.mypy]`
 configuration as the `PR Tests` "Lint & Type Check" job and the `mypy`
@@ -13,6 +18,12 @@ both CI and local execution. The Black/isort/Flake8/mypy quality-stage order,
 CI check-only vs. local auto-fix formatting behavior, and the collector's
 exactly-once invocation with the original argument vector and exit status
 are unchanged.
+
+The GitHub cache bridge explicitly types its request-extension payload as
+`dict[str, object]`, matching its context variable under mypy 2.4.0's
+literal-key inference. It still forwards only present `timeout` and
+`auto_coder_operation_id` entries with their original values and restores
+the previous context after either successful or failed delegation.
 
 Container forwarding (`AM_I_AUTOCODER_CONTAINER=true` with an explicit,
 nonempty `REPO_NAME` and no true `INSIDE_TARGET_EXECUTION`) still redirects

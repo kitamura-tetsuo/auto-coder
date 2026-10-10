@@ -55,6 +55,33 @@ def _assert_required_stage_visible(diagram: str, display_text: str) -> None:
 
 
 @patch("auto_coder.dashboard.ui")
+def test_daemon_parent_child_handoff_reaches_mounted_detail(mock_ui, tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    parent = {"number": 5540, "title": "Tracking", "body": "## Objective\nCoordinate child work.", "state": "open", "labels": [{"name": "implementation-ready"}], "created_at": "2020-01-01T00:00:00Z"}
+    child = {"number": 5542, "title": "Projection", "body": "Parent-Issue: #5540\nBlocked-By:\n## Requirements\nREQ-001: Project the query result.", "state": "open", "labels": [], "created_at": "2020-01-01T00:00:00Z"}
+    github = MagicMock()
+    github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [child] if number == 5540 else []
+    github.get_parent_issue_details_strict.return_value = None
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(parent if number == 5540 else child)
+    config = AutomationConfig()
+    config.issue_specification_validation = False
+    config.issue_decomposition_validation = False
+    engine = AutomationEngine(github, config)
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch:
+        result = engine._process_single_candidate_unified("owner/repo", Candidate("issue", parent, 0), config, origin="durable-invalidation-worker")
+        dispatch.assert_not_called()
+    assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+    assert result.error is None
+    assert engine.invalidations.claim("owner/repo").identity == EntityIdentity("owner/repo", "issue", 5542)
+    snapshot = get_trace_collector().get_snapshot(repository="owner/repo", item_type="issue", item_number=5540)
+    event = next(event for event in snapshot.events if event.stage_id == "issue.hierarchy-admission")
+    assert event.outcome == Outcome.DEFERRED.value
+    assert event.facts["child_issue_numbers"] == [5542]
+    assert event.facts["authorizes_execution"] is False
+    _assert_required_stage_visible(_mounted_detail(mock_ui, "issue", 5540), "hierarchy admission")
+
+
+@patch("auto_coder.dashboard.ui")
 def test_interrupted_local_repair_recovery_reaches_mounted_detail(mock_ui, tmp_path, monkeypatch, _use_custom_subprocess_mock):
     from dataclasses import replace
 

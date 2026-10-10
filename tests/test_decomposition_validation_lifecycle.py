@@ -261,6 +261,37 @@ def test_parent_submission_reaches_set_then_child_validation_before_dispatch(tmp
     assert child["labels"] == []
 
 
+@pytest.mark.parametrize("origin", ["durable-invalidation-worker", "capacity-refill-intake", "issue-pending-work-resumption"])
+def test_daemon_parent_queues_all_open_children_without_inline_dispatch(tmp_path, monkeypatch, origin):
+    """A busy child must not occupy a parent's worker ahead of other families."""
+    from auto_coder.automation_config import ExplicitTargetOutcome
+    from auto_coder.entity_invalidation import DurableInvalidationQueue
+    from auto_coder.execution_trace import Outcome
+
+    monkeypatch.setenv("AUTO_CODER_INVALIDATION_DB", str(tmp_path / "invalidations.sqlite3"))
+    parent = issue(5540, "Parent", PARENT_BODY, ready=True)
+    children = [issue(5541, "Completed", CHILD_BODY, state="closed"), issue(5542, "Next", CHILD_BODY), issue(5543, "Dependent", CHILD_BODY)]
+    github = relationship_github(parent, children)
+    engine = configured_engine(tmp_path, github, lambda *_args: DecompositionAnalysisResult("READY"), lambda *_args: SpecificationAnalysisResult("READY"))
+    candidate = Candidate("issue", parent, 0, issue_number=5540)
+    with patch.object(engine, "_process_single_candidate_reserved") as dispatch, patch("auto_coder.automation_engine._record_issue_stage_result") as trace:
+        for _ in range(2):
+            result = engine._process_single_candidate_unified("owner/repo", candidate, engine.config, origin=origin)
+            assert result.target_outcome is ExplicitTargetOutcome.DEFERRED
+            assert result.error is None
+            assert result.success is False
+        dispatch.assert_not_called()
+        trace.assert_any_call(5540, "issue.hierarchy-admission", "issue#5540 hierarchy admission", Outcome.DEFERRED, {"child_issue_numbers": [5542, 5543], "reason": "Deferred - submitted children queued for independent evaluation", "authorizes_execution": False})
+
+    restarted = DurableInvalidationQueue(tmp_path / "invalidations.sqlite3")
+    claims = [restarted.claim("owner/repo"), restarted.claim("owner/repo")]
+    assert [claim.identity.number for claim in claims] == [5542, 5543]
+    assert [claim.generation for claim in claims] == [1, 1]
+    assert restarted.claim("owner/repo") is None
+    assert engine.implementation_slots.active_owners() == ()
+    github.remove_labels.assert_not_called()
+
+
 def test_explicit_parent_adapter_preserves_membership_and_never_dispatches_parent(tmp_path):
     parent = issue(10, "Parent", PARENT_BODY, ready=True)
     children = [issue(11, "First", CHILD_BODY), issue(12, "Second", CHILD_BODY)]
