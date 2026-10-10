@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from .attempt_manager import get_current_attempt
 from .implementation_slots import ImplementationOwner, ImplementationSlotRepository
 from .issue_dispatch import IssueAttemptIdentity, IssueDispatchGuard
 from .issue_job_workspace import IssueJobSource, IssueJobWorkspaceProducer
 from .local_job_handoff import InvocationOutcome, LocalJobClaim, LocalJobRecord, LocalJobStore
-from .local_job_runner import LocalJobExecutionResult
+from .local_job_runner import LocalJobExecutionResult, LocalJobProviderEntryRefused
 from .utils import bind_command_execution_cwd, reset_command_execution_cwd
 
 if TYPE_CHECKING:
@@ -54,15 +54,30 @@ class IssueLocalJobAdapter:
         if authority is None or authority.claim_incarnation != job.upstream_incarnation:
             return False
         owner = ImplementationOwner("issue", job.target_number)
-        if not self._slots.active_execution_ids(owner):
+        if not job.implementation_execution_id or job.implementation_execution_id not in self._slots.active_execution_ids(owner):
             return False
         try:
             snapshot = self._engine.github.get_issue_dispatch_snapshot_strict(job.repository, job.target_number)
-            return isinstance(snapshot, dict) and self._engine._is_issue_author_allowed(snapshot) and self._engine._authorize_stale_jules_dispatch(job.repository, job.target_number, snapshot) is not None
+            if not isinstance(snapshot, dict) or not self._engine._is_issue_author_allowed(snapshot):
+                return False
+            authorized = self._engine._authorize_stale_jules_dispatch(job.repository, job.target_number, snapshot)
+            if authorized is None:
+                return False
+            parent_number = self._engine._get_authoritative_parent_number(job.repository, job.target_number, authorized)
+            family_set = self._engine._fetch_authoritative_decomposition_set(job.repository, parent_number) if parent_number is not None else None
+            current_generation = self._engine._compute_implementation_generation(job.repository, authorized, family_set)
+            return self._slots.implementation_generation(owner) == current_generation
         except Exception:
             return False
 
     def invoke(self, job: LocalJobRecord) -> LocalJobExecutionResult:
+        return self.invoke_at_provider_entry(job, lambda: True)
+
+    def invoke_at_provider_entry(
+        self,
+        job: LocalJobRecord,
+        mark_provider_entered: Callable[[], bool],
+    ) -> LocalJobExecutionResult:
         # LocalJobRunner already owns this exact incarnation; the workspace
         # producer only needs the fenced identity for its durable writes.
         claim = LocalJobClaim(job, True)
@@ -81,6 +96,10 @@ class IssueLocalJobAdapter:
             from .cli_helpers import build_backend_manager
             from .llm_backend_config import get_llm_config
 
+            if not self.authorize_provider_entry(job):
+                raise LocalJobProviderEntryRefused("authoritative provider-entry permission denied after preparation")
+            if not mark_provider_entered():
+                raise LocalJobProviderEntryRefused("provider-entry checkpoint failed")
             config = get_llm_config(repo_name=job.repository)
             model = config.get_model_for_backend(job.backend_name) or ""
             manager = build_backend_manager(selected_backends=[job.backend_name], primary_backend=job.backend_name, models={job.backend_name: model})

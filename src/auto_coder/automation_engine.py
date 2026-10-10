@@ -2666,7 +2666,7 @@ class AutomationEngine:
 
     async def start_automation(self, repo_name: str, concurrency: Optional[int] = None) -> None:
         """Start independent Issue and PR pools with ``concurrency`` workers each."""
-        self.local_job_store = LocalJobStore()
+        self._get_local_job_store()
         self._bind_pending_work_scheduler(repo_name)
         if concurrency is None:
             concurrency = self.config.MAX_CONCURRENT_TASKS
@@ -2867,6 +2867,12 @@ class AutomationEngine:
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=0.25)
             except asyncio.TimeoutError:
                 pass
+
+    def _get_local_job_store(self) -> LocalJobStore:
+        """Return the engine-wide durable authority for daemon and explicit routes."""
+        if self.local_job_store is None:
+            self.local_job_store = LocalJobStore()
+        return self.local_job_store
 
     async def _perform_startup_reconciliation(self, repo_name: str) -> None:
         """Complete startup recovery, retrying governed admission failures durably.
@@ -7221,7 +7227,7 @@ class AutomationEngine:
                             label_context=should_process,
                             implementation_slots=implementation_slots,
                             retry_authority=retry_authority,
-                            local_job_store=self.local_job_store,
+                            local_job_store=self._get_local_job_store(),
                             implementation_execution_id=implementation_slots.current_execution_id(ImplementationOwner("issue", item_number)) or "",
                         )
                         result.actions = dispatch.actions

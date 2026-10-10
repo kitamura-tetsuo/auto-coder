@@ -849,8 +849,9 @@ backend_type = "codex-cloud"
     @patch("auto_coder.issue_processor._dispatch_issue_candidates")
     @patch("auto_coder.issue_processor._ordinary_issue_candidates", return_value=["jules-alias"])
     @patch("auto_coder.issue_processor._process_issue_high_score_cloud")
-    def test_automation_engine_routes_non_difficult_to_backend_cloud(self, mock_high_score_cloud, mock_candidates, mock_dispatch, mock_label_manager):
-        """The normal cloud route exposes the shared boundary's structured result."""
+    def test_automation_engine_routes_non_difficult_to_backend_cloud(self, mock_high_score_cloud, mock_candidates, mock_dispatch, mock_label_manager, tmp_path, monkeypatch):
+        """The explicit route initializes and passes the shared durable authority."""
+        monkeypatch.setenv("HOME", str(tmp_path))
         dispatch_result = DispatchResult(
             IssueAttemptIdentity("owner", "repo", 105, "0"),
             DispatchOutcome.REMOTE_ACCEPTED,
@@ -886,10 +887,12 @@ backend_type = "codex-cloud"
             candidate,
             config,
             jules_mode=True,
+            explicit_only=True,
         )
 
         mock_candidates.assert_called_once_with("owner/repo")
         mock_dispatch.assert_called_once()
+        assert isinstance(mock_dispatch.call_args.kwargs["local_job_store"], LocalJobStore)
         mock_high_score_cloud.assert_not_called()
         assert result.success is True
         assert result.actions == ["Cloud action"]

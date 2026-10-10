@@ -6,6 +6,9 @@ entered. The dispatch result is `local_accepted`, which means durable,
 in-progress ownership rather than completed implementation. The Issue worker
 can acknowledge its invalidation and serve another candidate while the local
 runner retains the Issue attempt and its logical implementation slot.
+Daemon invalidations and explicit `process-issues --only` dispatch lazily open
+the same durable authority, so an explicit route does not fall back to a
+synchronous editing call merely because `start_automation` was not entered.
 
 The daemon polls the durable store on a runner-owned executor lane. Immediately
 before provider entry, the Issue adapter strictly refetches the open Issue,
@@ -13,6 +16,10 @@ reapplies the normal readiness, family, specification, dependency and author
 authority path, verifies the exact dispatch incarnation and attempt, and
 requires the original implementation owner to remain active. Refusal returns
 an unentered claim to pending; it never falls through to another provider.
+Authorization also recomputes the current contract generation against the
+generation retained by the exact active execution. Workspace preparation does
+not count as provider entry: the adapter repeats this authorization immediately
+before the editing call and only then checkpoints `provider_entered`.
 Accepted work executes in its job-owned private clone. Its immutable result
 manifest is checkpointed by the runner and routed to `IssueJobFinalizer`, which
 owns commit, push, Issue-to-PR association and settlement. Restart discovery
