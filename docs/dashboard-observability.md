@@ -6,7 +6,9 @@ or dashboard event schema changes. The collection reports repository, actual
 Issue when known, phase, exception class, disposition, and retry eligibility.
 `tests/test_capacity_refill.py` exercises production status projection, target
 isolation, continued independent dispatch, and clearing only after a validated
-slot-store observation. Existing generic status consumers remain compatible
+slot-store observation. Pending-work retention failures are projected as
+repository-scoped `pending_work_persistence` intervention faults, while nested
+child failures preserve the innermost child target. Existing generic status consumers remain compatible
 because the field is additive; an unexpected refill fault is also emitted via
 the configured loguru ERROR sinks rather than represented as a successful trace.
 

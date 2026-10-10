@@ -3950,13 +3950,19 @@ class AutomationEngine:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    target = getattr(exc, "_auto_coder_fault_issue", candidate.issue_number)
-                    self._record_refill_fault(repo_name, target, "candidate_dispatch", exc, "intervention_required")
+                    self._record_candidate_refill_exception(repo_name, candidate.issue_number, exc)
                     # A target-scoped fault must not prevent an independent
                     # candidate from using remaining capacity in this pass.
                     continue
                 retry_required = retry_required or result.refill_retry_required
             return not retry_required
+
+    def _record_candidate_refill_exception(self, repo_name: str, candidate_number: Optional[int], exc: Exception) -> None:
+        """Classify an escaped refill dispatch from authoritative failure scope."""
+        persistence_failure = isinstance(exc, PendingWorkPersistenceError)
+        target = None if persistence_failure else getattr(exc, "_auto_coder_fault_issue", candidate_number)
+        phase = "pending_work_persistence" if persistence_failure else "candidate_dispatch"
+        self._record_refill_fault(repo_name, target, phase, exc, "intervention_required")
 
     def _record_refill_fault(
         self,

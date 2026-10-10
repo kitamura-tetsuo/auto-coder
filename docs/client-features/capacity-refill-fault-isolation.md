@@ -9,8 +9,11 @@ fresh refill evaluation.
 
 An unexpected candidate failure is not safe replay evidence. The engine records
 an `intervention_required` pause for the actual Issue (or the repository when a
-target cannot be identified), leaves established invocation ownership intact,
-and continues considering independent Issues. All automatic candidate origins
+target cannot be identified). A pending-work persistence failure always widens
+that pause to the repository because no Issue in the repository can prove a
+durable timed handoff while the shared store is unavailable. Existing records
+are left intact. Other target-scoped faults leave established invocation
+ownership intact and continue considering independent Issues. All automatic candidate origins
 consult the same engine-lifetime pause before beginning evaluation, so a queued,
 pending-work, or newly enumerated copy cannot bypass it. Intervention pauses do
 not expire and are discarded only with the engine instance; they are not a new

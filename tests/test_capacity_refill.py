@@ -245,6 +245,71 @@ def test_refill_initialization_fault_keeps_service_paused_until_cancel(monkeypat
     ]
 
 
+def test_nested_child_fault_preserves_child_pause_and_sibling_progress(monkeypatch, tmp_path):
+    """REQ-002: recursive dispatch attributes an escaped fault to the child."""
+    parent = {
+        "number": 10,
+        "title": "Parent",
+        "body": "## Objective\nCoordinate children.",
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+    }
+    child = {
+        "number": 11,
+        "title": "Child",
+        "body": "Parent-Issue: #10\n## Requirements\nREQ-001: Implement child.",
+        "state": "open",
+        "labels": [],
+    }
+    sibling = {
+        "number": 12,
+        "title": "Independent",
+        "body": "## Requirements\nREQ-001: Implement sibling.",
+        "state": "open",
+        "labels": [{"name": "implementation-ready"}],
+    }
+    snapshots = {10: parent, 11: child, 12: sibling}
+    github = MagicMock()
+    github.get_issue_dispatch_snapshot_strict.side_effect = lambda _repo, number: dict(snapshots[number])
+    github.get_direct_sub_issues_strict.side_effect = lambda _repo, number: [dict(child)] if number == 10 else []
+    github.get_issue_details.side_effect = lambda value: value
+    github.get_open_entities_strict.return_value = OpenGitHubEntities(issues=[OpenGitHubIssue(11), OpenGitHubIssue(12)])
+    engine = AutomationEngine(github, AutomationConfig())
+    engine.implementation_slots = ImplementationSlotRepository("owner/repo", 2, tmp_path / "slots.json")
+    engine._is_issue_author_allowed = MagicMock(return_value=True)
+    engine._defer_initial_issue_stabilization = MagicMock(return_value=False)
+    engine._is_issue_specification_validation_enabled = MagicMock(return_value=False)
+    engine._is_issue_decomposition_validation_enabled = MagicMock(return_value=False)
+    attempted = []
+
+    def reserved(_repo, candidate, *_args, **_kwargs):
+        attempted.append(candidate.issue_number)
+        if candidate.issue_number == 11:
+            raise RuntimeError("child effect outcome is unknown")
+        return CandidateProcessingResult(type="issue", number=candidate.issue_number, success=True)
+
+    monkeypatch.setattr(engine, "_process_single_candidate_reserved", reserved)
+
+    try:
+        engine._process_single_candidate_unified(
+            "owner/repo",
+            Candidate("issue", dict(parent), 0, issue_number=10),
+            engine.config,
+        )
+    except RuntimeError as exc:
+        engine._record_candidate_refill_exception("owner/repo", 10, exc)
+    else:
+        raise AssertionError("nested child fault did not escape candidate dispatch")
+
+    fault = engine.get_status()["refill_faults"][0]
+    assert fault["target"] == 11
+    assert engine._refill_admission_paused("owner/repo", 11)
+    assert not engine._refill_admission_paused("owner/repo", 10)
+
+    assert asyncio.run(engine._refill_normal_implementation_slots("owner/repo")) is True
+    assert attempted == [11, 12]
+
+
 def test_ownership_failure_does_not_abort_other_refill_candidates(monkeypatch, tmp_path):
     github = MagicMock()
     github.get_open_entities_strict.return_value = OpenGitHubEntities(issues=[OpenGitHubIssue(20), OpenGitHubIssue(30)])
